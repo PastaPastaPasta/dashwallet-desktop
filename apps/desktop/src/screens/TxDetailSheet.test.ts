@@ -50,7 +50,7 @@ describe("transaction detail status", () => {
 
 describe("the abandon confirmation", () => {
   const OUTGOING = "Abandon this transaction? Its coins come back to the balance. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.";
-  const INCOMING = "Abandon this transaction? Dash Wallet stops counting it. If it reaches the network anyway, it counts again.";
+  const INCOMING = "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.";
 
   it("warns about paying twice when the wallet spent inputs", () => {
     expect(abandonQuestion({ totalDebit: 50_000_226 })).toBe(OUTGOING);

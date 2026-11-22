@@ -163,7 +163,7 @@ function LabelEditor({ walletId, txid, label }: { walletId: string; txid: string
  * coins. An unknown debit takes the spending text. */
 export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit">): string {
   return x.totalDebit === 0
-    ? "Abandon this transaction? Dash Wallet stops counting it. If it reaches the network anyway, it counts again."
+    ? "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again."
     : "Abandon this transaction? Its coins come back to the balance. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.";
 }
 

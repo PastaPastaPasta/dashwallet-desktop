@@ -129,8 +129,9 @@ export interface ReceiveWorld {
 export const newReceiveWorld = (): ReceiveWorld => ({ firstUnused: 0, issued: 0, requests: [], nextRequest: 1, usernameInRequests: false });
 
 /** The funded wallet's coins: the confirmed ones add up to `FUNDED_BALANCES.confirmed`; the
- * unconfirmed one (neither mined nor InstantSend-locked) cannot be spent yet. */
-export function buildCoins(variant: HistoryVariant): Utxo[] {
+ * unconfirmed one (neither mined nor InstantSend-locked) cannot be spent yet. It is the output of
+ * the history's pending receive, `pendingTxid`, when there is one. */
+export function buildCoins(variant: HistoryVariant, pendingTxid?: string): Utxo[] {
   if (variant === "empty") return [];
   const { hex, address } = makeIds(prng(0x5e17));
   const coin = (amount: number, confirmations: number, extra: Partial<Utxo> = {}): Utxo => ({
@@ -157,7 +158,7 @@ export function buildCoins(variant: HistoryVariant): Utxo[] {
     coin(750_000_000, 40),
     coin(250_000_000, 12, { isChange: true }),
     coin(19_698_287, 6),
-    coin(20_000_000, 0),
+    coin(20_000_000, 0, pendingTxid ? { outpoint: { txid: pendingTxid, vout: 0 } } : {}),
   ];
 }
 
@@ -512,10 +513,10 @@ function changed({ world, emit }: Ctx, wallet: FixtureWallet, txids: string[]) {
   emit({ kind: "historyChanged", network, walletId: wallet.summary.walletId, txids });
 }
 
-function moveBalance(wallet: FixtureWallet, delta: number) {
+function moveBalance(wallet: FixtureWallet, delta: number, bucket: "confirmed" | "unconfirmed" = "confirmed") {
   const b = wallet.summary.balances;
   if (!b) return;
-  wallet.summary = { ...wallet.summary, balances: { ...b, confirmed: b.confirmed + delta, total: b.total + delta } };
+  wallet.summary = { ...wallet.summary, balances: { ...b, [bucket]: b[bucket] + delta, total: b.total + delta } };
 }
 
 export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, chargeLease, paymentLock, setPaymentLock, contactPaid }: SendDeps): Handlers {
@@ -823,8 +824,12 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       if (mine) {
         w.coins = [...w.coins.filter((u) => !(mine.change && sameOutpoint(u.outpoint, mine.change))), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];
         delete ctx.world.send.sent[txid];
-      } else if (row.amount > 0) w.coins = w.coins.filter((u) => u.outpoint.txid !== txid);
-      moveBalance(w, -row.amount);
+        moveBalance(w, -row.amount);
+      } else {
+        // An incoming payment the wallet abandons: its outputs go, and so does its pending amount.
+        w.coins = w.coins.filter((u) => u.outpoint.txid !== txid);
+        moveBalance(w, -row.amount, row.status.instantLocked || row.status.confirmations > 0 ? "confirmed" : "unconfirmed");
+      }
       changed(ctx, w, [txid]);
       return null;
     },

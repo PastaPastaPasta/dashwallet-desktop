@@ -277,9 +277,12 @@ describe("fixture send engine", () => {
     expect(await cmd.txDetailExtras(W, row.txid)).toMatchObject({ canAbandon: true, canResend: false, totalDebit: 0 });
     await expect(cmd.resendTransaction(W, row.txid)).rejects.toMatchObject({ code: "tx_action_refused", data: { kind: "txAction", refusal: "notSentByWallet" } });
     const before = (await cmd.balance(W))!;
+    const coinsOf = async () => (await cmd.utxos(W, { includeLocked: true, fullyMixedOnly: false, minConfirmations: null })).filter((u) => u.outpoint.txid === row.txid);
+    expect(await coinsOf()).toHaveLength(1);
     await cmd.abandonTransaction(W, row.txid);
     expect(await cmd.txDetailExtras(W, row.txid)).toMatchObject({ canAbandon: false, canResend: false, abandoned: true });
-    expect((await cmd.balance(W))!.total).toBe(before.total - row.amount);
+    expect(await cmd.balance(W)).toMatchObject({ confirmed: before.confirmed, unconfirmed: before.unconfirmed - row.amount, total: before.total - row.amount });
+    expect(await coinsOf()).toEqual([]);
   });
 
   it("labels a transaction", async () => {

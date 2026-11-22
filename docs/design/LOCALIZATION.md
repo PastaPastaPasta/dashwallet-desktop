@@ -137,9 +137,11 @@ Documented English changes (copy fixes made on purpose, not by a conversion):
   still counts, so sending the same payment again could pay twice." An abandoned payment can still
   reach the network, so sending it again could pay twice; the old text did not say so.
 - For an incoming payment, the same confirmation reads "Abandon this transaction? Dash Wallet stops
-  counting it. If it reaches the network anyway, it counts again." Like dash-qt, the engine abandons
+  counting it. If it's locked or confirmed anyway, it counts again." Like dash-qt, the engine abandons
   any unconfirmed transaction, incoming too. A recipient spent nothing and sent nothing, so the
-  outgoing text's coins and double payment don't apply to them.
+  outgoing text's coins and double payment don't apply to them. An abandoned payment that peers relay
+  again is still ignored; it counts again only once it gets an InstantSend lock (shown as "InstantSend")
+  or a confirmation.
 
 ### What the checks catch
 
