@@ -714,6 +714,13 @@ impl HistoryStore {
         Arc::clone(&self.collateral_wake)
     }
 
+    /// `f` over every wallet's entries under the store's read lock, its
+    /// results together.
+    pub fn read_each<R>(&self, f: impl FnMut(&HashMap<Txid, TxEntry>) -> Vec<R>) -> Vec<R> {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        map.values().map(|h| &h.txs).flat_map(f).collect()
+    }
+
     /// A copy of one wallet's entries (empty when unknown).
     pub fn snapshot(&self, wallet: &WalletId) -> HashMap<Txid, TxEntry> {
         self.read(wallet, HashMap::clone)

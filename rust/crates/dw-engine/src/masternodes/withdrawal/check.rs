@@ -15,7 +15,7 @@ use tokio::time::Instant;
 
 use super::drive::{Window, identity_key, key_hashes, window};
 use super::net::{MnWithdrawNet, Proved};
-use super::{Env, HeldKey, WalletKeys, WithdrawalError, on_db};
+use super::{Env, HeldKey, PayoutChange, WalletKeys, WithdrawalError, on_db};
 use crate::masternodes::WithdrawalCheckingReason;
 use crate::masternodes::protx_records::ProTxOperationState;
 use crate::platform::trust::Rule5;
@@ -139,7 +139,9 @@ impl Seen {
 
 /// One look (P4): the identity read under rule 5, the barriers' clearing
 /// terms applied, then (a)–(c), in this order of reasons: SPV unsynced,
-/// (c) unverified, (b) a barrier pending, (a) Platform behind.
+/// (c) unverified, (b) a barrier pending, (b) a payout change unconfirmed
+/// in the wallets' history, (a) Platform behind, or a change in a block
+/// above the proof's core height.
 pub(crate) async fn look(
     env: &impl Env,
     net: &impl MnWithdrawNet,
@@ -149,6 +151,7 @@ pub(crate) async fn look(
     let identity = gated(env.rule_5(), env.waits().probe, || net.identity(id)).await?;
     let header_tip = env.chain().header_tip;
     let pending = pending_barriers(env, pro_tx_hash, &identity).await?;
+    let (unconfirmed, unapplied) = unpaid_changes(&env.payout_changes(pro_tx_hash), &identity.read);
     let core = identity.read.core_height;
     let reason = if header_tip.is_none() {
         Some(WithdrawalCheckingReason::SpvUnsynced)
@@ -156,7 +159,9 @@ pub(crate) async fn look(
         Some(WithdrawalCheckingReason::Unverified)
     } else if pending {
         Some(WithdrawalCheckingReason::PayoutChangePending)
-    } else if header_tip.is_some_and(|tip| core < tip) {
+    } else if unconfirmed {
+        Some(WithdrawalCheckingReason::PayoutChangeUnconfirmed)
+    } else if unapplied || header_tip.is_some_and(|tip| core < tip) {
         Some(WithdrawalCheckingReason::PlatformBehind)
     } else {
         None
@@ -166,6 +171,26 @@ pub(crate) async fn look(
         header_tip,
         reason,
     })
+}
+
+/// Of the payout changes Drive's window in `read` doesn't pay (all of
+/// them, with no window): whether one is out of a block, and whether one
+/// is in a block above the proof's core height.
+fn unpaid_changes(changes: &[PayoutChange], read: &Proved<Option<Identity>>) -> (bool, bool) {
+    let paid = match read.value.as_ref().map(window) {
+        Some(Window::Pays { script, .. }) => Some(script),
+        _ => None,
+    };
+    let unpaid = || {
+        (changes.iter()).filter(|c| {
+            paid.as_ref()
+                .is_none_or(|p| c.script.as_deref() != Some(p.as_bytes()))
+        })
+    };
+    (
+        unpaid().any(|c| c.height.is_none()),
+        unpaid().any(|c| c.height.is_some_and(|h| h > read.core_height)),
+    )
 }
 
 /// Whether a payout-change barrier of the masternode is still pending

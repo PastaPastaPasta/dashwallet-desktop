@@ -3,9 +3,12 @@
 //! the crate-level calls the facade binds (`masternodes/withdrawals.rs`),
 //! the quote's `withdrawal_ready` wait (P4) and the background recheck (P8).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use dashcore::Network;
+use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+use dashcore::hashes::Hash;
+use dashcore::{Network, OutPoint, Txid};
 use dpp::identity::IdentityPublicKey;
 use dpp::identity::core_script::CoreScript;
 use dpp::state_transition::StateTransition;
@@ -24,9 +27,11 @@ use super::net::{Answer, MnWithdrawNet, Proved, SdkMnWithdrawals};
 use super::recheck::{mark, recheck_all, recheck_record};
 use super::sign::{Request, WithdrawalKeyChoice, retry, withdraw};
 use super::{
-    Alarm, Authorize, Chain, Env, HeldKey, Hold, Waits, WalletKeys, WithdrawalError,
+    Alarm, Authorize, Chain, Env, HeldKey, Hold, PayoutChange, Waits, WalletKeys, WithdrawalError,
     WithdrawalRuntime, load, on_db,
 };
+use crate::history::TxEntry;
+use crate::masternodes::protx::ops::conflict_height;
 use crate::masternodes::protx_records::ProTxOperationState;
 use crate::masternodes::{MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::platform::trust::Rule5;
@@ -34,6 +39,40 @@ use crate::platform::withdrawal::destination;
 use crate::platform::{BudgetPurpose, FlowKind};
 use crate::platform::{PlatformError, WithdrawAmount};
 use crate::{EngineError, NetworkSession, WalletId};
+
+/// The ProUpRegTxs of `pro_tx_hash` in one wallet's `history`, but those
+/// out of a block that are abandoned or conflicted (MG-04's reading).
+fn payout_changes_in(
+    history: &HashMap<Txid, TxEntry>,
+    pro_tx_hash: &[u8; 32],
+) -> Vec<PayoutChange> {
+    let change = |(txid, e): (&Txid, &TxEntry)| {
+        let Some(TransactionPayload::ProviderUpdateRegistrarPayloadType(p)) =
+            &e.tx.special_transaction_payload
+        else {
+            return None;
+        };
+        if p.pro_tx_hash.to_byte_array() != *pro_tx_hash {
+            return None;
+        }
+        let height = e.context.block_info().map(|b| b.height());
+        let inputs: Vec<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
+        if height.is_none()
+            && (e.is_abandoned() || conflict_height(history, &inputs, Some(txid)).is_some())
+        {
+            return None;
+        }
+        let script = match &p.payouts {
+            None => Some(p.script_payout.to_bytes()),
+            Some(shares) => match shares.as_slice() {
+                [one] => Some(one.script_payout.to_bytes()),
+                _ => None,
+            },
+        };
+        Some(PayoutChange { script, height })
+    };
+    history.iter().filter_map(change).collect()
+}
 
 /// The session as the withdrawal's core reads it.
 pub(crate) struct SessionEnv {
@@ -107,6 +146,10 @@ impl Env for SessionEnv {
             return Ok(None);
         };
         Ok(self.session.barrier_operation_state(wallet, &row).await?)
+    }
+
+    fn payout_changes(&self, pro_tx_hash: &[u8; 32]) -> Vec<PayoutChange> {
+        (self.session.hub.history).read_each(|history| payout_changes_in(history, pro_tx_hash))
     }
 
     fn waits(&self) -> Waits {

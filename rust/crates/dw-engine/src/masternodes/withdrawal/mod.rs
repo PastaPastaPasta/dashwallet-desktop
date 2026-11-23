@@ -220,6 +220,16 @@ pub(crate) struct Alarm {
     pub(crate) what: String,
 }
 
+/// A ProUpRegTx of the masternode in a loaded wallet's history, neither
+/// conflicted nor abandoned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PayoutChange {
+    /// Its new payout script; `None` for several payees.
+    pub(crate) script: Option<Vec<u8>>,
+    /// Its block's height; `None` while out of a block.
+    pub(crate) height: Option<u32>,
+}
+
 /// What the withdrawal's core reads of the session (tests script it).
 pub(crate) trait Env: Send + Sync {
     /// The app database (records and barriers are app-wide).
@@ -238,6 +248,10 @@ pub(crate) trait Env: Send + Sync {
         &self,
         barrier: &PayoutBarrierRow,
     ) -> impl Future<Output = Result<Option<ProTxOperationState>, WithdrawalError>> + Send;
+    /// The masternode's payout changes in every loaded wallet's history,
+    /// another installation's included: a change this one signed has a
+    /// barrier, one seen only in history has none.
+    fn payout_changes(&self, pro_tx_hash: &[u8; 32]) -> Vec<PayoutChange>;
     fn waits(&self) -> Waits;
     /// UNIX seconds.
     fn now(&self) -> u64;

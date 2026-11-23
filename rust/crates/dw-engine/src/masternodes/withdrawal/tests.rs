@@ -678,6 +678,10 @@ impl Env for Scene {
             .cloned())
     }
 
+    fn payout_changes(&self, _: &[u8; 32]) -> Vec<super::PayoutChange> {
+        Vec::new()
+    }
+
     fn waits(&self) -> Waits {
         WAITS
     }
