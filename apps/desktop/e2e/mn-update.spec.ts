@@ -34,7 +34,7 @@ const sheet = (page: Page) => page.getByTestId("mn-change-keys-sheet");
 const PAYOUT = "yNewPayoutMn7qR2vWx9KfT4Mn7qR2vWx9";
 
 for (const theme of THEMES) {
-  test(`change keys ${theme}: the PoSe warning, the recorded payout, send; 0 serious axe issues`, async ({ page }) => {
+  test(`change keys ${theme}: the PoSe warning, the recorded payout, then send or the held line; 0 serious axe issues`, async ({ page }) => {
     const errors = await open(page, "mn-list", theme);
     await page.getByTestId(`mn-row-${HOME}`).click();
     await shot(page, "pane-home", theme);
@@ -45,6 +45,7 @@ for (const theme of THEMES) {
     await expect(sheet(page)).toContainText("If the payout was changed elsewhere, this sets it back.");
     await expect(page.getByTestId("mn-change-nothing")).toBeVisible();
     if (REGISTRAR_UPDATE_SENDS) await expect(page.getByTestId("mn-change-send")).toBeDisabled();
+    else await expect(page.getByTestId("mn-change-send")).toHaveCount(0);
     await shot(page, "change-keys-open", theme);
     await page.getByTestId("mn-change-operator-keychain").click();
     await expect(page.getByTestId("mn-change-pose")).toContainText("Changing the operator key immediately PoSe-bans the masternode.");
@@ -107,7 +108,11 @@ test("a given operator key and another payout address are signed as reviewed; a 
   if (REGISTRAR_UPDATE_SENDS) await expect(page.getByTestId("mn-change-send")).toBeDisabled();
   await page.getByTestId("mn-change-payout-input").fill(PAYOUT);
   await expect(page.getByTestId("mn-change-review-payout")).toContainText("Changes");
-  if (!REGISTRAR_UPDATE_SENDS) return;
+  if (!REGISTRAR_UPDATE_SENDS) {
+    await expect(page.getByTestId("mn-change-held")).toBeVisible();
+    await expect(page.getByTestId("mn-change-send")).toHaveCount(0);
+    return;
+  }
   await page.getByTestId("mn-change-passphrase").fill(FIXTURE_PASSPHRASE);
   await page.getByTestId("mn-change-send").click();
   await expect(page.getByTestId("mn-change-keys-sent")).toBeVisible();

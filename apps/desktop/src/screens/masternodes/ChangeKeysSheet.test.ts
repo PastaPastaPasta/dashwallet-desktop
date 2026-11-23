@@ -15,6 +15,7 @@ import { ChangeKeysSheet } from "./ChangeKeysSheet";
 
 const HASH = "4e".repeat(32);
 const ops = vi.hoisted(() => ({ current: [] as unknown[] }));
+const credentialError = vi.hoisted(() => ({ current: null as string | null }));
 
 vi.mock("../../masternodes/queries", async (original) => ({
   ...(await original<typeof import("../../masternodes/queries")>()),
@@ -22,7 +23,7 @@ vi.mock("../../masternodes/queries", async (original) => ({
   useMasternodesRefresh: () => () => undefined,
 }));
 vi.mock("./credential", () => ({
-  useCredential: () => ({ ready: true, error: null, authorize: async () => null, setError: () => undefined }),
+  useCredential: () => ({ ready: true, error: credentialError.current, authorize: async () => null, setError: () => undefined }),
   CredentialField: () => createElement("i", { "data-testid": "credential" }),
 }));
 vi.mock("../../components/sheet", () => ({
@@ -66,5 +67,14 @@ describe("Change keys or payout while registrar updates can't be sent", () => {
     expect(html).not.toContain("mn-change-unsent-resend");
     expect(html).not.toContain('data-testid="credential"');
     expect(html).toContain('data-testid="mn-change-held"');
+  });
+
+  it("names a failed Discard where the passphrase field's error used to show", () => {
+    try {
+      credentialError.current = "The change couldn't be discarded.";
+      expect(render([unsent])).toMatch(/role="alert" data-testid="mn-change-unsent-error">The change couldn&#x27;t be discarded\.</);
+    } finally {
+      credentialError.current = null;
+    }
   });
 });

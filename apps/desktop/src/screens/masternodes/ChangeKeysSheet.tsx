@@ -334,7 +334,16 @@ function UnsentUpdate({
         <strong>{t(`${P}.notSent.title`)}</strong> {t(`${P}.notSent.text`)}
       </p>
       {op.lastError === "send.no_peers" && <p className="mg-muted mg-small mg-flush">{t(`${P}.notSent.noPeers`)}</p>}
-      {REGISTRAR_UPDATE_SENDS ? <CredentialField c={credential} busy={busy} testId="mn-change-unsent" /> : <HeldLine />}
+      {REGISTRAR_UPDATE_SENDS ? (
+        <CredentialField c={credential} busy={busy} testId="mn-change-unsent" />
+      ) : (
+        <>
+          <HeldLine />
+          <p className="form-problem" role="alert" data-testid="mn-change-unsent-error">
+            {credential.error}
+          </p>
+        </>
+      )}
       <footer className="mg-sheet-footer">
         <span>
           <DashButton variant="tintedGray" size="medium" data-testid="mn-change-unsent-discard" disabled={busy} onClick={() => void act("discard")}>

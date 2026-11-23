@@ -87,10 +87,10 @@ export function pinToPreview(r: UpdateRegistrarRequest, p: UpdateRegistrarPrevie
   return { ...r, operator, voting };
 }
 
-/** A registrar update of this masternode that is signed but didn't go out: resend or discard it. */
 /** Off until a sent update whose transaction never confirms releases its fee coins: preview and discard only. */
 export const REGISTRAR_UPDATE_SENDS = false;
 
+/** A registrar update of this masternode that is signed but didn't go out: resend or discard it. */
 export const unsentUpdate = (ops: ProTxOperation[] | undefined, proTxHash: string) =>
   ops?.find((o) => o.kind === "update_registrar" && o.proTxHash === proTxHash && (o.state.kind === "not_sent" || o.state.kind === "signed")) ?? null;
 
