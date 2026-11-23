@@ -93,8 +93,10 @@ export function useMasternodesItem(walletId: string | null): { shown: boolean; b
   const mine = useMyProposals(walletId ?? "", reads);
   const nodes = useMasternodes(walletId ?? "", reads);
   const shown = reads && (setting === "on" || autoShowsMasternodes(nodes.data, mine.data));
-  // Auto has no answer until both reads have one: a link to Masternodes waits instead of going home.
-  const settled = setting !== "auto" || walletId === null || (!nodes.isPending && !mine.isPending);
+  // No answer yet: no wallet (an unlock re-reads the list), Auto's reads still out, or a first
+  // read that failed. A link to Masternodes then waits instead of going home.
+  const answered = (q: { isPending: boolean; isError: boolean; data: unknown }) => !q.isPending && !(q.isError && q.data === undefined);
+  const settled = walletId !== null && (setting !== "auto" || (answered(nodes) && answered(mine)));
   return { shown, badge: shown ? badgeCount(mine.data) + bannedCount(nodes.data) : 0, settled };
 }
 

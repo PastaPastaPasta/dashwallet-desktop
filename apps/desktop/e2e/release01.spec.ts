@@ -700,7 +700,7 @@ test.describe("Show Masternodes", () => {
   });
 
   test("Auto shows it for a wallet with masternodes, and Off hides it", async ({ page }) => {
-    await open(page, "my-masternodes");
+    await open(page, "mn-list");
     await page.getByTestId("hero").waitFor();
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
     await page.getByTestId("settings-show-masternodes-auto").click();
@@ -711,8 +711,8 @@ test.describe("Show Masternodes", () => {
   });
 
   test("Auto shows it for a proposal in progress, and Off hides it", async ({ page }) => {
-    // `governance`: one of the wallet's proposals is confirming.
-    await open(page, "governance");
+    // `governance-proposal-only`: a confirming proposal is the wallet's only masternode work.
+    await open(page, "governance-proposal-only");
     await page.getByTestId("hero").waitFor();
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
     await page.getByTestId("settings-show-masternodes-auto").click();
