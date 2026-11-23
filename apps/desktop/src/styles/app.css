@@ -6207,6 +6207,38 @@ button.bell-row-open:focus-visible {
   min-width: 0;
 }
 
+.mg-choice.is-disabled {
+  opacity: 0.55;
+}
+
+.sh-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-m);
+  margin-bottom: var(--dw-space-m);
+}
+
+.sh-choice h3 {
+  margin: 0;
+}
+
+.sh-setup-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: var(--dw-space-m) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sh-setup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  gap: var(--dw-space-s);
+  align-items: end;
+}
+
 .page-masternodes .mg-notice {
   margin-bottom: var(--dw-space-l);
 }

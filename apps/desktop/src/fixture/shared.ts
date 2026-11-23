@@ -549,7 +549,7 @@ type Base = (theme: ThemeName | null) => World;
 
 function shBase(base: Base, theme: ThemeName | null, set: (s: SharedWorld, w: World) => void = () => {}): World {
   const w = base(theme);
-  w.route = { page: "masternodes" } as World["route"];
+  w.settings.ui = { ...w.settings.ui, showMasternodes: true };
   set(w.shared, w);
   return w;
 }
