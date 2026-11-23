@@ -624,7 +624,8 @@ pub(crate) struct SessionHub {
     /// is applied wholly before the wallet leaves or not at all; taken
     /// before every other lock of the hub's.
     unloaded: Mutex<HashSet<WalletId>>,
-    /// Wallets with a Remove Unconfirmed batch whose rescan is not made yet.
+    /// Wallets with a Remove Unconfirmed batch, or a single Abandon, whose
+    /// rescan is not made yet.
     abandon_batches: Mutex<HashMap<WalletId, usize>>,
     /// Tests: holds the next event right after its wallet's check.
     #[cfg(test)]
@@ -634,7 +635,8 @@ pub(crate) struct SessionHub {
 #[cfg(test)]
 pub(crate) type PublishedHook = Box<dyn FnOnce(crate::WalletId) -> bool + Send>;
 
-/// A Remove Unconfirmed batch in progress ([`SessionHub::abandon_batch`]).
+/// A Remove Unconfirmed batch, or a single Abandon, in progress
+/// ([`SessionHub::abandon_batch`]).
 pub(crate) struct AbandonBatch<'a> {
     hub: &'a SessionHub,
     wallet: WalletId,
@@ -1075,7 +1077,8 @@ impl SessionHub {
         AbandonBatch { hub: self, wallet }
     }
 
-    /// Whether a Remove Unconfirmed batch of `wallet` is in progress.
+    /// Whether a Remove Unconfirmed batch, or a single Abandon, of `wallet`
+    /// is in progress.
     pub(crate) fn abandon_batch_pending(&self, wallet: &WalletId) -> bool {
         (self
             .abandon_batches

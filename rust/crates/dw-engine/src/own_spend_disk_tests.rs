@@ -3307,7 +3307,12 @@ fn a_sync_commit_during_a_single_abandon_keeps_its_rewind_record() {
             .rt
             .spawn(async move { s.abandon_transaction(id, txid).await })
     };
-    assert!(pause.wait_reached(std::time::Duration::from_secs(60)));
+    if !pause.wait_reached(std::time::Duration::from_secs(60)) {
+        let ended = abandoning
+            .is_finished()
+            .then(|| engine.block_on(abandoning));
+        panic!("the abandon never reached its rescan: {ended:?}");
+    }
     let replay = Arc::clone(&session.live().unwrap().replay);
     let height = synced(&engine, &session, id) + 1;
     let (before, after) = engine.block_on(async {
@@ -3347,10 +3352,10 @@ fn a_late_event_for_a_live_transaction_writes_its_balance() {
 }
 
 /// A single Abandon of a locked payment a ChainLock beat, stopped after
-/// its sweep and before its rescan, its rewind record dropped by a sync
-/// commit in between. After the restart, and after Repair ▸ Rescan from the
-/// wallet's birth, the payment's other coin is held once and offered,
-/// never the coin the winner spent.
+/// its sweep and before its rescan, its rewind record lost some other way
+/// (an older build's, or a failed rewind write). After the restart, and
+/// after Repair ▸ Rescan from the wallet's birth, the payment's other coin
+/// is held once and offered, never the coin the winner spent.
 #[test]
 fn a_rescan_restores_the_coin_of_an_abandon_stopped_without_its_rewind_record() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
