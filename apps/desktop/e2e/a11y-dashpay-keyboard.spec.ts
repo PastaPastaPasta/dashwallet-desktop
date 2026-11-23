@@ -6,7 +6,7 @@ import { armRecorder, expectSaid, heardBy, liveRegion, liveState } from "./liveR
 // H-05 O5a: each DashPay task done with the keyboard alone (Tab, Shift+Tab, Enter, Space, Escape,
 // arrows and typing) on the fixture backend, with an axe pass at every new screen and dialog. A
 // modal sheet must be named and `aria-modal`, take focus, keep Tab inside, and give focus back to
-// its opener on Escape. The gaps found are the `defect:` tests at the end: each marks itself
+// its opener on Escape. A gap found is a `defect:` test at the end that marks itself
 // `test.fail` just before the assertion the app fails, so a fix shows up as an unexpected pass.
 
 // An axe pass at each screen and a Tab walk both ways in each modal make a long test, which WebKit
@@ -750,18 +750,97 @@ const bellState = (page: Page) =>
     return `focus on ${a === document.body ? "<body>" : (a?.getAttribute("data-testid") ?? a?.tagName)} with the popover open`;
   });
 
-test("defect (#287): Tab past the bell popover's last control moves focus behind it while it stays open", async ({ page }) => {
+test("keyboard only: Tab past the bell popover's last control closes it and leaves focus on Hide balance (#287)", async ({ page }) => {
   const errors = await open(page, "dashpay-registered");
-  const { popover } = await openBell(page);
+  const { bell, popover } = await openBell(page);
   await tabTo(page, popover.getByTestId("bell-see-all"));
   await page.keyboard.press("Tab");
   await rendered(page);
+  await expect.poll(() => bellState(page)).toBe("closed");
+  await expect(bell).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("toolbar-discreet")).toBeFocused();
   expect(errors).toEqual([]);
-  test.fail(
-    true,
-    "Toolbar bell popover (role=dialog, no aria-modal): Tab from See all goes to the toolbar's Hide balance and Lock wallet, then the sidebar, while the popover stays open over the page; expected focus kept in the popover, or the popover closed when focus leaves it.",
-  );
-  await expect.poll(() => bellState(page)).toMatch(/^(closed|focus kept)$/);
+});
+
+test("keyboard only: Shift+Tab from the bell popover's heading to the bell keeps it open, and Tab goes back in (#287)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  const { bell, popover } = await openBell(page);
+  await page.keyboard.press("Shift+Tab");
+  await rendered(page);
+  await expect(bell).toBeFocused();
+  await expect(popover).toBeVisible();
+  await expect(bell).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Tab");
+  await rendered(page);
+  await expect.poll(() => bellState(page)).toBe("focus kept");
+  expect(errors).toEqual([]);
+});
+
+test("keyboard only: Tab through the bell popover's request rows and their actions keeps it open (#287)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  const { popover } = await openBell(page);
+  await expect(popover.getByTestId("bell-request")).not.toHaveCount(0);
+  expect(await popover.getByTestId("bell-request").count()).toBeGreaterThan(1);
+  const seeAll = popover.getByTestId("bell-see-all");
+  const path: string[] = [];
+  for (let i = 0; i < 40 && !(await seeAll.evaluate((el) => el === document.activeElement)); i++) {
+    await page.keyboard.press("Tab");
+    await rendered(page);
+    path.push(await focusName(page));
+    expect(await bellState(page), `after ${path.join(" → ")}`).toBe("focus kept");
+  }
+  await expect(seeAll).toBeFocused();
+  expect(path.filter((p) => p === "bell-accept").length, path.join(" → ")).toBeGreaterThan(1);
+  for (let i = 1; i < path.length; i++) {
+    await page.keyboard.press("Shift+Tab");
+    await rendered(page);
+    expect(await bellState(page)).toBe("focus kept");
+  }
+  expect(await focusName(page)).toBe(path[0]);
+  expect(errors).toEqual([]);
+});
+
+test("keyboard only: focus in Accept's passphrase sheet keeps the bell popover open (#287)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  const { popover } = await openBell(page);
+  const accept = popover.getByTestId("bell-request").filter({ hasText: "heidi" }).getByTestId("bell-accept");
+  await tabTo(page, accept);
+  await page.keyboard.press("Enter");
+  const sheet = page.getByTestId("grant-sheet");
+  await expect(sheet.locator("input[type=password]")).toBeFocused();
+  await expectTabTrapped(page, sheet);
+  await expect(popover).toBeVisible();
+  await escapeReturnsTo(page, sheet, accept);
+  await expect.poll(() => bellState(page)).toBe("focus kept");
+  expect(errors).toEqual([]);
+});
+
+test("keyboard only: Tab out of the bell popover while its Ignore runs closes it once the Ignore ends (#287)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  const { bell, popover } = await openBell(page);
+  const ignore = popover.getByTestId("bell-request").filter({ hasText: "heidi" }).getByTestId("bell-ignore");
+  await tabTo(page, ignore);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("dashpay_ignore_contact"));
+  await page.keyboard.press("Enter");
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("dashpay_ignore_contact"))).toBe(true);
+  await tabTo(page, popover.getByTestId("bell-see-all"));
+  await page.keyboard.press("Tab");
+  const discreet = page.getByTestId("toolbar-discreet");
+  await expect(discreet).toBeFocused();
+  await release.evaluate((r) => r());
+  await expect.poll(() => bellState(page)).toBe("closed");
+  await expect(bell).toHaveAttribute("aria-expanded", "false");
+  await expect(discreet).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("keyboard only: Escape from inside the bell popover closes it and gives focus back to the bell", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  const { bell, popover } = await openBell(page);
+  await tabTo(page, popover.getByTestId("bell-accept").first());
+  await escapeReturnsTo(page, popover, bell);
+  await expect(bell).toHaveAttribute("aria-expanded", "false");
+  expect(errors).toEqual([]);
 });
 
 test("keyboard only: while a contact payment is sent, Confirm payment keeps focus in the dialog, then the result's Close takes it (#288)", async ({ page }) => {
