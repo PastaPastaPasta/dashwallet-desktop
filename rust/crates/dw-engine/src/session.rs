@@ -473,7 +473,7 @@ impl NetworkSession {
             tokio::task::spawn_blocking(move || crate::multiwallet::read_startup_list(&appdb))
                 .await??
         };
-        let unloaded = match &startup_list {
+        let unloaded: std::collections::HashSet<[u8; 32]> = match &startup_list {
             Some(list) => {
                 let db_path = data_dir.join(WALLET_DB_FILE);
                 let registered = tokio::task::spawn_blocking(move || {
@@ -505,6 +505,24 @@ impl NetworkSession {
             }
             None => Default::default(),
         };
+        // Before any wallet loads: an abandon marked but not swept is swept,
+        // so its change is never credited. A wallet this start leaves closed
+        // is swept when it is opened.
+        {
+            let (persister, appdb) = (Arc::clone(&persister), Arc::clone(&appdb));
+            let db_path = data_dir.join(WALLET_DB_FILE);
+            let closed = unloaded.clone();
+            tokio::task::spawn_blocking(move || {
+                let wallets: Vec<WalletId> = crate::store::registered_wallet_ids(&db_path)
+                    .map_err(|e| EngineError::Storage(format!("wallet list: {e}")))?
+                    .into_iter()
+                    .filter(|id| !closed.contains(id))
+                    .map(WalletId)
+                    .collect();
+                crate::tx_actions::finish_marked_abandons(&persister, &appdb, &db_path, &wallets)
+            })
+            .await??;
+        }
         let hub = Arc::new(SessionHub::new(network.clone(), Arc::clone(&sink)));
         let tap = Arc::new(crate::platform::journal::ChangesetTap::new(
             Arc::clone(&hub),
@@ -834,6 +852,7 @@ impl NetworkSession {
     }
 
     fn start_pump(self: &Arc<Self>, manager: &Arc<Manager>, appdb: Arc<AppDb>) {
+        let _ = self.hub.appdb.set(Arc::downgrade(&appdb));
         let (stop, stop_rx) = watch::channel(false);
         let target = SessionPump {
             hub: Arc::clone(&self.hub),

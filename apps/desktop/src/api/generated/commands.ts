@@ -4142,6 +4142,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "send.broadcast_rejected",
   "send.broadcast_unknown",
   "send.cancelled",
+  "send.held_until_restart",
   "labels.invalid_address",
   "labels.duplicate_address",
   "labels.own_address",

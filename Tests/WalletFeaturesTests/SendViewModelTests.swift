@@ -568,6 +568,21 @@ struct SendViewModelTests {
         #expect(draft.abandoned.isEmpty)
     }
 
+    /// Not sent, its copy not removed: a definite failure that says its coins
+    /// stay reserved until a restart, with no Broadcast again.
+    @Test func heldUntilRestartIsNotSentAndNotRetried() async {
+        world.sender.configure.withLock {
+            $0 = { draft in draft.state.withLock { $0.broadcastError = ServiceError(code: .sendHeldUntilRestart) } }
+        }
+        let model = makeModel()
+        fillValid(model)
+        await reviewToConfirm(model)
+        await model.confirm()
+        #expect(model.phase == .failed(SendFailure(code: .sendHeldUntilRestart, message: L10n.Send.heldUntilRestart)))
+        #expect(!model.canBroadcastAgain)
+        #expect(!SendViewModel.preparedGoneAfter.contains(.sendHeldUntilRestart))
+    }
+
     /// Errors the engine raises before it hands a first broadcast to the
     /// network leave the transaction pending (m1-engine.md §2.7.1 "not
     /// dispatched"): a definite failure, abandoned on dismiss, never

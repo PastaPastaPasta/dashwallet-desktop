@@ -268,12 +268,23 @@ pub(super) fn spendable(
     id: WalletId,
     coin: OutPoint,
 ) -> bool {
+    spendable_for(engine, session, id, coin, COIN / 2)
+}
+
+/// [`spendable`] for a payment of `amount`.
+pub(super) fn spendable_for(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    coin: OutPoint,
+    amount: u64,
+) -> bool {
     let (_draft, prepared) = prepare(
         engine,
         session,
         id,
         CoinSource::Outpoints(vec![coin]),
-        COIN / 2,
+        amount,
         false,
         &Arc::new(Accept::default()),
     );
@@ -1917,7 +1928,7 @@ fn a_locked_payment_a_chainlock_beat_in_its_own_session_leaves_at_the_chainlock(
         let appdb = Arc::clone(&session.live().unwrap().appdb);
         let (marks, read) = crate::tx_actions::load_abandoned(&appdb, id);
         assert!(
-            read && !marks.iter().any(|(t, _)| *t == p),
+            read && !marks.copies.iter().any(|(t, _)| *t == p),
             "{state}: marked abandoned"
         );
         let held_now = held(&engine, &session, id);
@@ -1952,13 +1963,12 @@ fn a_locked_payment_a_chainlock_beat_in_its_own_session_leaves_at_the_chainlock(
 }
 
 /// The abandon of a locked payment a ChainLock beat, with its unlocked
-/// child, stops after the payment's abandoned mark is stored and before
-/// its sweep, as at an exit. The next open shows the payment
-/// InstantSend-locked and the child live, its output counted, and replays
-/// from the rewind the abandon stored; once the replay is done a second
-/// abandon of the payment takes both, after a restart too. An exit after
-/// the sweep and before the later marks instead leaves the child out of
-/// the history, not shown Abandoned, with the balances the abandon left.
+/// child, stops after both abandoned marks are stored and before its sweep,
+/// as at an exit. The next open shows the payment InstantSend-locked, as it
+/// was (its mark abandons nothing while it is locked), and the open's sweep
+/// of marked payments takes the child, its output not counted; it replays
+/// from the rewind the abandon stored, and once the replay is done a
+/// second abandon of the payment takes it, after a restart too.
 #[test]
 fn an_override_abandon_cut_before_its_sweep_ends_with_the_next() {
     let (_dir, engine, session, id, paid, payment, child) = payment_and_child(false);
@@ -1990,8 +2000,8 @@ fn an_override_abandon_cut_before_its_sweep_ends_with_the_next() {
         .find(|r| r.0 == payment.txid().to_string())
         .unwrap();
     assert!(row.2, "shown InstantSend-locked: {row:?}");
-    assert!(!abandoned(&engine, &session, id, child.txid()), "the child");
-    assert!(held(&engine, &session, id).contains(&child_change));
+    assert!(abandoned(&engine, &session, id, child.txid()), "the child");
+    assert!(!held(&engine, &session, id).contains(&child_change));
     header_chain(&session, &[(TIP + 1, won)]);
     start_spv(&engine, &session);
     let state = "the cut abandon's replay";
@@ -3608,7 +3618,7 @@ fn a_rescan_restores_the_coin_of_an_abandon_stopped_without_its_rewind_record() 
 
 /// Two locked payments a ChainLock beat, of coins funded in different
 /// blocks; Remove Unconfirmed takes both, and the abandon of the one whose
-/// coins were funded lower fails after its sweep, at its abandoned marks.
+/// coins were funded lower fails once its sweep is stored.
 /// The checkpoint still goes below that funding block, so the rescan
 /// brings its free coin back, whichever ran first.
 #[test]
@@ -3660,7 +3670,7 @@ fn a_remove_unconfirmed_that_fails_after_a_sweep_still_rescans_its_coins() {
     mined(&engine, &session, id, TIP, vec![paid.clone()]);
     start_spv(&engine, &session);
 
-    *session.hub.fail_marks_of.lock().unwrap() = Some(low_payment.txid());
+    *session.hub.fail_after_sweep_of.lock().unwrap() = Some(low_payment.txid());
     let failed = engine.block_on(session.drop_unconfirmed(Some(id)));
     assert!(failed.is_err(), "{failed:?}");
     let checkpoint = synced(&engine, &session, id);

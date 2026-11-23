@@ -204,6 +204,11 @@ pub enum SendError {
     /// may be retried, `abandon` is refused.
     #[error("broadcast outcome unknown: {reason}")]
     BroadcastUnknown { reason: String },
+    /// Code `send.held_until_restart`: not sent, but its saved copy could
+    /// not be removed. The inputs stay reserved until a restart lists the
+    /// payment pending, where it can be abandoned.
+    #[error("not sent; its coins stay reserved until a restart")]
+    HeldUntilRestart,
 }
 
 impl NotImplementedError for SendError {
@@ -249,6 +254,7 @@ impl From<dw_engine::EngineError> for SendError {
                 F::NoPeers => Self::NoPeers,
                 F::BroadcastRejected { reason } => Self::BroadcastRejected { reason },
                 F::BroadcastUnknown { reason } => Self::BroadcastUnknown { reason },
+                F::HeldUntilRestart => Self::HeldUntilRestart,
             },
             E::SpvNotRunning => Self::NoPeers,
             E::InvalidConfig(_) | E::InvalidArgument(_) | E::InvalidAddress(_) => {
@@ -293,6 +299,7 @@ impl SendError {
             Self::NoPeers => "send.no_peers",
             Self::BroadcastRejected { .. } => "send.broadcast_rejected",
             Self::BroadcastUnknown { .. } => "send.broadcast_unknown",
+            Self::HeldUntilRestart => "send.held_until_restart",
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::NetworkNotOpen { .. } => "network_not_open",
             Self::WalletNotFound { .. } => "wallet_not_found",

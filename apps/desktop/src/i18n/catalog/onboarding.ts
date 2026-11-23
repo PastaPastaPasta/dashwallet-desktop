@@ -132,6 +132,7 @@ export const onboarding = {
     invalid_xpub: "This is not an extended public key (tpub or xpub) of this network.",
     not_implemented: "Dash Wallet cannot do this yet.",
     io: "The file could not be read or written.",
+    storage: "Dash Wallet could not read or write its data folder. Check that the disk has free space, then try again or restart Dash Wallet.",
     vault: {
       wallet_secret_exists: "This wallet's keys are already in the wallet.",
       locked: "Unlock the wallet and try again.",
