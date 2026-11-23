@@ -1,5 +1,7 @@
 // My masternodes' view model (model.ts, MG-10 §1.2, §1.7, §1.9, §3.8).
 
+import { createElement, Fragment } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_PREFS, ui } from "../app/ui";
 import { LANGUAGES, t, type Language } from "../i18n";
@@ -237,5 +239,15 @@ describe("a payout group's line", () => {
       "1.25 DASH in 4 payments",
       "1.25 DASH in 1,234 payments",
     ]);
+  });
+});
+
+describe("the summary's and groups' counts", () => {
+  it("group a count of 1,234 in English", () => {
+    const yours = t.rich("masternodes.myMasternodes.summary.yours", { count: 1234, muted: (c) => createElement("span", null, c) });
+    expect(renderToStaticMarkup(createElement(Fragment, null, yours))).toBe("1,234 <span>yours</span>");
+    expect(t("masternodes.myMasternodes.summary.active", { count: 1234 })).toBe("1,234 active");
+    expect(t("masternodes.myMasternodes.summary.activeTracked", { active: 1234, tracked: 1234 })).toBe("1,234 active · 1,234 tracked");
+    expect(t("masternodes.myMasternodes.retiredCount", { count: 1234 })).toBe("Retired (1,234)");
   });
 });
