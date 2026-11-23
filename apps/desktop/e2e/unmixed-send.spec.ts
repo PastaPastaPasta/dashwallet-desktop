@@ -78,13 +78,21 @@ test("UNMIXED nothing is said in a wallet that does not mix, or for a fully mixe
   await expect(page.getByTestId("pay-confirm-unmixed")).toHaveCount(0);
 });
 
-// The all-mixed selection (BIP44 denominations dash-qt mixed) is model.test.ts `paysWithUnmixed`:
-// coin control here offers the send account's coins only.
-test("UNMIXED a selection of unmixed coins while mixing says it too", async ({ page }) => {
-  await setUp(page, "light", "mixing", 2);
-  await page.getByTestId("pay-amount").fill("0.1");
+// Coin control spends the send account's coins: a BIP44 denomination dash-qt mixed is one.
+test("UNMIXED selected coins: silent for a mixed denomination alone, said once an unmixed coin is in", async ({ page }) => {
+  await setUp(page, "light", "mixing", 1);
+  await page.evaluate(() => {
+    const w = window.__dwFixture!.world;
+    const mixed = w.wallets[0].coins[1];
+    w.coinjoin.restoredOutpoints = [`${mixed.outpoint.txid}:${mixed.outpoint.vout}`];
+  });
+  await page.getByTestId("pay-amount").fill("0.05");
   await page.getByTestId("pay-advanced").locator("summary").click();
   await page.getByTestId("coin-choice-selected").check();
+  await page.getByRole("checkbox", { name: /^Use 0\.100001 / }).check();
+  await review(page);
+  await expect(page.getByTestId("pay-confirm-unmixed")).toHaveCount(0);
+  await page.getByTestId("pay-confirm-cancel").click();
   await page.getByRole("checkbox", { name: /^Use 0\.50/ }).check();
   await review(page);
   await expect(page.getByTestId("pay-confirm-unmixed")).toHaveText(NOTE);

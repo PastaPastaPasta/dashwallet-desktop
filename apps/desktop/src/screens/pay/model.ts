@@ -526,21 +526,16 @@ export function failureText(e: unknown, chain: Chain, unit: Unit = "DASH", conta
 }
 
 /** The confirm sheet says the payment is not private (lane F): a normal or selected payment while
- * mixing runs, or with fully mixed coins in the wallet, that spends a coin which is not fully
- * mixed. Automatic selection never spends a denomination (dw-engine `auto_selectable`), so every
+ * mixing runs, or with fully mixed coins in the wallet, that spends a coin which is not mixed at
+ * all. Automatic selection never spends a denomination (dw-engine `auto_selectable`), so every
  * input of "Any available funds" is unmixed. Coin control spends exactly the selected coins: one
- * that is not a denomination, or has fewer rounds than the target, is unmixed. A selection of
- * denominations at the target or more may be fully mixed (the salted QT-043 rule), so it says
- * nothing. A fully mixed payment never says it. */
+ * that is not a denomination is unmixed. A denomination is mixed, at least partly, or its rounds
+ * are unknown, so it says nothing of it. A fully mixed payment never says it. */
 export function paysWithUnmixed(advanced: Advanced, coins: readonly Utxo[] | undefined, status: CoinJoinStatus | undefined): boolean {
   if (!status || advanced.coins === "mixed") return false;
   if (status.state === "idle" && status.balances.fullyMixed === 0) return false;
   if (advanced.coins === "any") return true;
   if (!coins) return false;
   const byKey = new Map(coins.map((c) => [outpointKey(c.outpoint), c]));
-  const target = status.amountAndRounds.rounds;
-  return advanced.selected.some((k) => {
-    const c = byKey.get(k);
-    return c !== undefined && (!c.coinjoinDenominated || c.coinjoinRounds === null || c.coinjoinRounds < target);
-  });
+  return advanced.selected.some((k) => byKey.get(k)?.coinjoinDenominated === false);
 }

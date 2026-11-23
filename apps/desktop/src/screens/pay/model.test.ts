@@ -451,10 +451,10 @@ describe("why a payment cannot be reviewed yet (P15)", () => {
 describe("paysWithUnmixed", () => {
   const status = (state: CoinJoinStatus["state"], fullyMixed: number) =>
     ({ state, balances: { fullyMixed }, amountAndRounds: { rounds: 4 } }) as unknown as CoinJoinStatus;
-  const coin = (vout: number, rounds: number | null) =>
-    ({ outpoint: { txid: "aa".repeat(32), vout }, coinjoinDenominated: rounds !== null, coinjoinRounds: rounds }) as unknown as Utxo;
+  const coin = (vout: number, denominated: boolean, rounds: number | null) =>
+    ({ outpoint: { txid: "aa".repeat(32), vout }, coinjoinDenominated: denominated, coinjoinRounds: rounds }) as unknown as Utxo;
   const key = (vout: number) => `${"aa".repeat(32)}:${vout}`;
-  const coins = [coin(0, null), coin(1, 4), coin(2, 7), coin(3, 2)];
+  const coins = [coin(0, false, null), coin(1, true, 4), coin(2, true, 7), coin(3, true, 2), coin(4, true, null)];
   const selected = (...vouts: number[]) => ({ ...DEFAULT_ADVANCED, coins: "selected" as const, selected: vouts.map(key) });
 
   it("says Any available funds is unmixed while mixing runs or mixed coins are held: it never spends a denomination", () => {
@@ -471,7 +471,12 @@ describe("paysWithUnmixed", () => {
   it("says nothing for a selection of mixed coins, and says it once one selected coin is not mixed", () => {
     expect(paysWithUnmixed(selected(1, 2), coins, status("mixing", 5))).toBe(false);
     expect(paysWithUnmixed(selected(1, 0), coins, status("mixing", 5))).toBe(true);
-    expect(paysWithUnmixed(selected(2, 3), coins, status("mixing", 5))).toBe(true);
     expect(paysWithUnmixed(selected(0), undefined, status("mixing", 5))).toBe(false);
+  });
+
+  it("does not call a partly mixed denomination, or one whose rounds are unknown, unmixed", () => {
+    expect(paysWithUnmixed(selected(3), coins, status("mixing", 5))).toBe(false);
+    expect(paysWithUnmixed(selected(4), coins, status("mixing", 5))).toBe(false);
+    expect(paysWithUnmixed(selected(3, 4, 0), coins, status("mixing", 5))).toBe(true);
   });
 });
