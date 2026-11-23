@@ -8,8 +8,10 @@
 //!   cargo test --release -p dw-engine --test h06_perf -- --ignored --nocapture
 //! ```
 //!
-//! `DWD_H06_DATADIR` is the unpacked `regtest40k-dw.tar.gz` (git show
-//! 042695b9f:ci/gate/fixtures/regtest40k-dw.tar.gz); each run opens a copy.
+//! `DWD_H06_DATADIR` is the unpacked `regtest40k-dw.tar.gz` of commit
+//! `042695b9f`, which is on no branch: download it pinned to the full SHA
+//! and check its SHA-256, as the research note's "Reproduce" section does.
+//! Each run opens a copy.
 
 #![cfg(target_os = "linux")]
 
@@ -22,6 +24,9 @@ use dw_engine::{
     HistorySort, NetworkSession, SessionOptions, WalletId,
 };
 use dw_testutil::perf::{iters, measure, memory_mib, ms, sample};
+
+/// The history records of the fixture's wallet (commit `042695b9f`).
+const FIXTURE_RECORDS: u32 = 40_053;
 
 struct Quiet;
 
@@ -119,9 +124,13 @@ fn h06_history_and_open_on_the_40k_wallet() {
     let first = engine
         .block_on(session.history_page(wallet, newest(None)))
         .unwrap();
-    let total = first.total_matching.unwrap_or(0);
+    assert_eq!(
+        first.total_matching,
+        Some(FIXTURE_RECORDS),
+        "DWD_H06_DATADIR is not the regtest40k fixture"
+    );
     assert_eq!(first.records.len(), 200);
-    println!("H06 history: {total} records");
+    println!("H06 history: {FIXTURE_RECORDS} records");
 
     let n = iters(50);
     let page1 = measure(3, n, || {
@@ -131,14 +140,14 @@ fn h06_history_and_open_on_the_40k_wallet() {
     });
     println!("H06 history_page(200) first page: {page1}");
 
-    let mut cursor = first.next_cursor.clone();
-    for _ in 0..(total as usize / 2 / 200) {
+    let mut cursor = (first.next_cursor.clone()).expect("a continuation after page 1");
+    for page in 2..=(FIXTURE_RECORDS as usize / 2 / 200 + 1) {
         let p = engine
-            .block_on(session.history_page(wallet, newest(cursor)))
+            .block_on(session.history_page(wallet, newest(Some(cursor))))
             .unwrap();
-        cursor = p.next_cursor;
+        cursor = (p.next_cursor).unwrap_or_else(|| panic!("no continuation after page {page}"));
     }
-    let deep = cursor.clone();
+    let deep = Some(cursor);
     let deep_page = measure(3, n, || {
         engine
             .block_on(session.history_page(wallet, newest(deep.clone())))

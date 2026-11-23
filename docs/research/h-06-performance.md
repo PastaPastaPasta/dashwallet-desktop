@@ -22,8 +22,8 @@ the history read path between the gate and this work.
 | `history_page`, user-space instructions per call (mean of the three shapes) | — | 0.89 × 10⁹ | **0.18 × 10⁹** (−79 %) | load-independent | — |
 | Wallet open, 40k wallet (engine only) | ≤ 1.5 s (cold start) | 5.3–15.8 s wall, 7.3–9 s CPU | unchanged | load 41–104 | **miss** |
 | Engine PSS after open and 3×(3+60) pages, idle 5 s | ≤ 400 MB with the UI | 292–348 MiB | **210 MiB** | load 50–100 | **miss** with the UI's 195–257 MiB (ADR 0003) |
-| Cold load with DashPay: session open over 500 contacts and 1,350 payments | (within cold start) | — | 0.32–0.49 s wall, 0.30–0.46 s CPU | load 70 | pass |
-| Cold load: first contacts read (builds the read model) | — | — | 9–21 ms | load 70 | pass |
+| Cold load with DashPay: session open over 500 contacts and 1,200 payments (open only) | (within cold start) | — | 0.35–0.59 s wall, 0.31–0.42 s CPU | load 26–130 | pass |
+| Cold load: first contacts read (builds the read model) | — | — | 10–20 ms | load 26–130 | pass |
 
 The contacts budget holds with room. The U5 budgets do not hold for the engine on the 40k wallet:
 `history_page` is 4.6× over after this work, wallet open 4–10× over, and engine memory plus the UI's own
@@ -123,8 +123,9 @@ the provenance entities (the profile and both requests of each contact), the res
 payments' txids and copies of their history entries for `last_activity_at`. A search costs the same as
 the full list because every row's summary is built before the text filter. Follow-up 4.
 
-A cold load of a wallet with 500 contacts and 1,350 payments in its DashPay overlay (the local half of a
-restore with DashPay) opens the session in 0.32–0.49 s and serves the first contacts read in 9–21 ms. A
+A cold load of a wallet with 500 contacts and 1,200 payments in its DashPay overlay (the local half of a
+restore with DashPay) opens the session in 0.35–0.59 s and serves the first contacts read in 10–20 ms. The
+previous session is closed outside the measurement (an earlier version of the probe timed the close too). A
 network restore (DashPay sync of 500 contacts' requests and profiles from Platform) was not measured: it
 needs testnet identities with 500 contacts, which this offline probe does not have.
 
@@ -164,8 +165,13 @@ needs testnet identities with 500 contacts, which this offline probe does not ha
 
 ```sh
 # The 40k fixture, unpacked (public regtest test data; passphrase "g02-regtest-fixture", not needed offline).
-fixture=$(mktemp -d) && chmod 700 "$fixture"
-git show 042695b9f:ci/gate/fixtures/regtest40k-dw.tar.gz | tar xz -C "$fixture"
+# Commit 042695b9f is on no branch, so download the archive pinned to it and check it before unpacking.
+fixture=$(mktemp -d) && chmod 700 "$fixture" &&
+  curl -fsSL -o "$fixture.tar.gz" \
+    https://raw.githubusercontent.com/PastaPastaPasta/dashwallet-desktop/042695b9f6262e9df9ce9623a60307184ee1d28c/ci/gate/fixtures/regtest40k-dw.tar.gz &&
+  echo "78c18e238ea290512b042318547a0e91c23c6c82c10bc77c384c903785e73885  $fixture.tar.gz" | sha256sum -c - &&
+  tar xzf "$fixture.tar.gz" -C "$fixture" &&
+  test -d "$fixture/regtest" || echo "fixture setup failed; stop here" >&2
 
 cd rust
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
