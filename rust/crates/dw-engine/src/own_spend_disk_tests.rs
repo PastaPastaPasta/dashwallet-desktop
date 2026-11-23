@@ -1990,10 +1990,10 @@ fn beaten_with_an_undelivered_grandchild() -> (
     (dir, engine, session, id, paid, payment, grandchild)
 }
 
-/// key-wallet credits the grandchild while the abandon holds its plan,
-/// before its sweep is stored. The abandon covers it or refuses; it never
-/// reports done with the grandchild credited. A grandchild credited after
-/// it shows in Activity and Abandon takes it.
+/// The abandon holds the wallet manager from its plan until its sweep is
+/// stored, so key-wallet cannot credit a grandchild in between: one that
+/// arrives meanwhile is credited after, shows in Activity, and Abandon
+/// takes it.
 #[test]
 fn a_grandchild_credited_between_the_plan_and_the_sweep_is_never_left_credited() {
     let (_dir, engine, session, id, _paid, payment, grandchild) =
@@ -2011,23 +2011,22 @@ fn a_grandchild_credited_between_the_plan_and_the_sweep_is_never_left_credited()
     eventually("the abandon's plan, before its sweep", || {
         pause.reached.load(std::sync::atomic::Ordering::SeqCst)
     });
-    let (result, credited_during) = std::thread::scope(|scope| {
-        let delivered = scope.spawn(|| mempool(&engine, &session, id, &grandchild));
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let credited_during = delivered.is_finished();
-        pause.release.notify_one();
-        let result = engine.block_on(abandoning).unwrap();
-        delivered.join().unwrap();
-        (result, credited_during)
+    let manager_held = engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        wm.try_write().is_err()
     });
+    pause.release.notify_one();
+    let result = engine.block_on(abandoning).unwrap();
+    assert!(
+        manager_held,
+        "the abandon let go of the wallet manager between its plan and its sweep"
+    );
     match result {
-        Ok(()) => assert!(
-            !credited_during,
-            "the grandchild was credited between the plan and the sweep, and the abandon reported done"
-        ),
-        Err(crate::EngineError::TxActionRefused(_)) => {}
+        Ok(()) | Err(crate::EngineError::TxActionRefused(_)) => {}
         Err(e) => panic!("{e:?}"),
     }
+    mempool(&engine, &session, id, &grandchild);
     eventually("the grandchild's event lands", || {
         (session.hub.history).get(&id, &grandchild.txid()).is_some()
     });
@@ -2290,6 +2289,322 @@ fn abandon_hold_on_a_large_wallet() {
             .unwrap_or_default()
             .trim()
     );
+}
+
+/// key-wallet credits `tx` from the mempool and its record is stored, and
+/// the history has not heard of it; returns the events that tell it, for
+/// the caller to hand over.
+fn credited_with_late_events(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    tx: &Transaction,
+) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let manager = session.manager().unwrap();
+    let tx = tx.clone();
+    let events = engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let mut rx = wm.subscribe_events();
+        assert!(wm.process_mempool_transaction(&tx, None).await.is_relevant);
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    });
+    session.live().unwrap().persister.flush(id.0).unwrap();
+    events
+}
+
+/// An unlocked payment, its child abandoned, and after a restart a
+/// grandchild spending the child's change and another coin U of the
+/// wallet, which key-wallet has credited and stored and the history has
+/// not heard of when the payment is abandoned. The abandon goes through
+/// and takes the grandchild: Abandoned, its output not counted, U
+/// released in the store. Its late event changes none of that, nor does a
+/// restart, after which U is offered once its funding is mined.
+#[test]
+fn abandoning_an_unlocked_payment_takes_a_grandchild_the_history_has_not_heard() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b, u) = (
+        OutPoint::new(paid.txid(), 0),
+        OutPoint::new(paid.txid(), 1),
+        OutPoint::new(paid.txid(), 5),
+    );
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change]),
+        COIN / 100,
+        false,
+    );
+    mempool(&engine, &session, id, &child);
+    wait_stored(&session, id, &[payment.txid(), child.txid()]);
+    abandon(&engine, &session, id, child.txid());
+    let session = reopen(&engine, session);
+    let left = change_of(&child, &own_scripts(&engine, &session, id));
+    let owner = |o: OutPoint, tx: &Transaction| {
+        Address::from_script(
+            &tx.output[o.vout as usize].script_pubkey,
+            dashcore::Network::Regtest,
+        )
+        .unwrap()
+    };
+    let to = fresh_address(&engine, &session, id);
+    let mut spend = super::spend_of(left, vec![(to.script_pubkey(), COIN)]);
+    spend.input.push(TxIn {
+        previous_output: u,
+        ..Default::default()
+    });
+    let grandchild = super::signed_by_wallet_each(
+        &engine,
+        &session,
+        id,
+        &[owner(left, &child), owner(u, &paid)],
+        spend,
+    );
+    let paid_back = OutPoint::new(grandchild.txid(), 0);
+    start_spv(&engine, &session);
+    let late = credited_with_late_events(&engine, &session, id, &grandchild);
+    wait_stored(&session, id, &[grandchild.txid()]);
+    assert!((session.hub.history).get(&id, &grandchild.txid()).is_none());
+    assert!(held(&engine, &session, id).contains(&paid_back));
+
+    engine
+        .block_on(session.abandon_transaction(id, payment.txid()))
+        .unwrap();
+    for event in &late {
+        session.hub.apply_wallet_event(event);
+    }
+    let mut session = session;
+    for state in ["the abandon and the late event", "a restart after"] {
+        if state != "the abandon and the late event" {
+            session = reopen(&engine, session);
+        }
+        assert!(abandoned(&engine, &session, id, payment.txid()), "{state}");
+        assert!(
+            abandoned(&engine, &session, id, grandchild.txid()),
+            "{state}: the grandchild"
+        );
+        assert!(
+            !held(&engine, &session, id).contains(&paid_back),
+            "{state}: the grandchild's output is counted"
+        );
+        let row = stored_row(&session, id, u);
+        assert!(
+            row.is_some_and(|(spent, _)| !spent),
+            "{state}: U is not released in the store: {row:?}"
+        );
+    }
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(spendable(&engine, &session, id, u), "U is not offered");
+}
+
+/// A payment to a contact, and the contact's spend of it to another of
+/// their addresses, which key-wallet holds in the wallet's account for
+/// that contact: abandoning the payment
+/// leaves the contact's spend alone, with no abandoned mark and out of the
+/// history, after a restart too.
+#[test]
+fn abandoning_a_payment_to_a_contact_leaves_the_contacts_spend_of_it() {
+    use key_wallet::account::AccountType;
+    use key_wallet::managed_account::ManagedCoreFundsAccount;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let master =
+        key_wallet::bip32::ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[101; 32])
+            .unwrap();
+    let xpub = key_wallet::bip32::ExtendedPubKey::from_priv(&master);
+    let account_type = AccountType::DashpayExternalAccount {
+        index: 0,
+        user_identity_id: [1; 32],
+        friend_identity_id: [2; 32],
+    };
+    let manager = session.manager().unwrap();
+    engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let (w, info) = wm.get_wallet_mut_and_info_mut(&id.0).unwrap();
+        w.add_account(account_type, Some(xpub)).unwrap();
+        let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
+            parent_wallet_id: Some(id.0),
+            account_type,
+            network: dashcore::Network::Regtest,
+            account_xpub: xpub,
+            is_watch_only: true,
+        });
+        (info.core_wallet.accounts)
+            .insert_funds_bearing_account(managed)
+            .unwrap();
+    });
+    let contact_at = |index| {
+        let child = xpub
+            .derive_pub(&[key_wallet::bip32::ChildNumber::Normal { index }])
+            .unwrap();
+        Address::p2pkh(
+            &dashcore::PublicKey::new(child.public_key),
+            dashcore::Network::Regtest,
+        )
+    };
+    let contact = contact_at(0);
+    let payment = send_to(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 0)]),
+        &contact.to_string(),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let to_contact = (payment.output.iter())
+        .position(|o| o.script_pubkey == contact.script_pubkey())
+        .unwrap();
+    let mut theirs = super::spend_of(
+        OutPoint::new(payment.txid(), to_contact as u32),
+        vec![(contact_at(1).script_pubkey(), COIN / 2 - 1_000)],
+    );
+    let sighash = dashcore::sighash::SighashCache::new(&theirs)
+        .legacy_signature_hash(
+            0,
+            &contact.script_pubkey(),
+            dashcore::sighash::EcdsaSighashType::All.to_u32(),
+        )
+        .unwrap();
+    let key = (master.derive_priv(&[key_wallet::bip32::ChildNumber::Normal { index: 0 }]))
+        .unwrap()
+        .private_key;
+    let sig = key.sign_ecdsa(dashcore::secp256k1::Message::from_digest(
+        *sighash.as_byte_array(),
+    ));
+    theirs.input[0].script_sig = dashcore::blockdata::script::Builder::new()
+        .push_slice(dashcore::ecdsa::Signature::sighash_all(sig).serialize())
+        .push_key(&dashcore::PublicKey::new(
+            dashcore::secp256k1::PublicKey::from_secret_key(&key),
+        ))
+        .into_script();
+    credited_unheard(&engine, &session, id, &theirs);
+    let in_contacts = engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm.get_wallet_info(&id.0).unwrap();
+        (info.core_wallet.accounts.all_accounts().into_iter())
+            .filter(|a| a.managed_account_type().is_contact_owned())
+            .any(|a| a.transactions().contains_key(&theirs.txid()))
+    });
+    assert!(in_contacts, "key-wallet does not hold the contact's spend");
+    start_spv(&engine, &session);
+
+    abandon(&engine, &session, id, payment.txid());
+    let mark = |session: &Arc<NetworkSession>| {
+        let (scope, key) = (id.to_string(), format!("abandoned:{}", theirs.txid()));
+        (engine.block_on(session.appdb_op(move |db| db.setting(&scope, &key)))).unwrap()
+    };
+    assert_eq!(
+        mark(&session),
+        None,
+        "the contact's spend is marked abandoned"
+    );
+    assert!((session.hub.history).get(&id, &theirs.txid()).is_none());
+    drop(manager);
+    let session = reopen(&engine, session);
+    assert!(abandoned(&engine, &session, id, payment.txid()));
+    assert_eq!(mark(&session), None);
+    assert!(
+        (session.hub.history).get(&id, &theirs.txid()).is_none(),
+        "the contact's spend is in the history after a restart"
+    );
+}
+
+/// A single Abandon of a locked payment a ChainLock beat, stopped after
+/// its sweep and before its rescan, its rewind record dropped by a sync
+/// commit in between. After the restart, and after Repair ▸ Rescan from the
+/// wallet's birth, the payment's other coin is held once and offered,
+/// never the coin the winner spent.
+#[test]
+fn a_rescan_restores_the_coin_of_an_abandon_stopped_without_its_rewind_record() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, 1);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    wait_stored(&session, id, &[winner.txid()]);
+    let won = block_hash(std::slice::from_ref(&winner));
+    chain_lock(&engine, &session, id, TIP + 1, won);
+    let session = reopen(&engine, session);
+    header_chain(&session, &[(TIP + 1, won)]);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    start_spv(&engine, &session);
+
+    (session.hub.quit_before_rescan).store(true, std::sync::atomic::Ordering::SeqCst);
+    let stopped = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(stopped.is_err(), "{stopped:?}");
+    let replay = Arc::clone(&session.live().unwrap().replay);
+    let height = synced(&engine, &session, id) + 1;
+    let (before, after) = engine.block_on(async {
+        let before = replay.get(id).await.unwrap();
+        replay.note(crate::replay_record::ReplayNote::Committed { wallet: id, height });
+        replay.settled().await;
+        (before, replay.get(id).await.unwrap())
+    });
+    assert!(before.is_some(), "the abandon stored no rewind record");
+    assert!(
+        after.is_none(),
+        "the rewind record is still stored: {after:?}"
+    );
+
+    let session = reopen(&engine, session);
+    start_spv(&engine, &session);
+    assert!(abandoned(&engine, &session, id, payment.txid()));
+    let check = |session: &Arc<NetworkSession>, state: &str| {
+        let coins_held = coins(&engine, session, id);
+        assert_eq!(
+            coins_held.iter().filter(|(o, _)| *o == a).count(),
+            1,
+            "{state}: the coin is not held exactly once: {coins_held:?}"
+        );
+        assert_eq!(
+            balances(session, id).total,
+            coins_held.iter().map(|(_, v)| v).sum::<u64>(),
+            "{state}"
+        );
+        assert!(
+            spendable(&engine, session, id, a),
+            "{state}: the coin is not offered"
+        );
+        assert!(
+            !spendable(&engine, session, id, b),
+            "{state}: the winner's coin is"
+        );
+    };
+    check(&session, "the restart");
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    check(&session, "the rescan");
 }
 
 /// Two locked payments a ChainLock beat, of coins funded in different

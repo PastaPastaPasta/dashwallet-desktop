@@ -211,7 +211,8 @@ struct Facts {
     /// transaction pays one of this wallet's change addresses: a payment of
     /// this wallet whose coins it does not know yet.
     debit_unknown: bool,
-    /// Some inputs are not resolved to coins of this wallet or not.
+    /// Some inputs are not known to be this wallet's coins or another's
+    /// (their funding transaction is not known).
     inputs_unresolved: bool,
     matures_in: Option<u32>,
 }
@@ -325,7 +326,11 @@ fn unmined_descendants(
     core: &ManagedWalletInfo,
     root: Txid,
 ) -> (Vec<Txid>, BTreeSet<Txid>) {
-    let accounts = core.accounts.all_accounts();
+    // A contact's account records the contact's own spends: not this
+    // wallet's to abandon.
+    let accounts: Vec<_> = (core.accounts.all_accounts().into_iter())
+        .filter(|a| !a.managed_account_type().is_contact_owned())
+        .collect();
     let locks = core.instant_send_locks();
     let mut open: Vec<(Txid, &Transaction, bool)> = (txs.iter())
         .filter(|(_, e)| e.context.block_info().is_none() && !locked(e))
@@ -578,6 +583,10 @@ impl NetworkSession {
             .abandon_unrewound(manager, wallet, root, &mut recorded)
             .await;
         let abandoned = result.as_ref().ok().cloned().unwrap_or_default();
+        #[cfg(test)]
+        if (self.hub.quit_before_rescan).swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Internal("quit before the rescan".into()));
+        }
         if result.is_ok() || recorded.is_some() {
             self.finish_abandons(manager, wallet, &abandoned, recorded)
                 .await?;
@@ -630,6 +639,7 @@ impl NetworkSession {
             // key-wallet's copy.
             let copies: HashMap<Txid, Transaction> = (info.core_wallet.accounts.all_accounts())
                 .into_iter()
+                .filter(|a| !a.managed_account_type().is_contact_owned())
                 .flat_map(|a| a.transactions().iter())
                 .filter(|(t, _)| descendants.contains(t))
                 .map(|(t, r)| (*t, r.transaction.clone()))
@@ -650,6 +660,7 @@ impl NetworkSession {
                     wallet,
                     &abandoned,
                     &links,
+                    &copies,
                     info.core_wallet.observed_spent_outpoints(),
                 )
             });
@@ -986,20 +997,24 @@ impl NetworkSession {
         }
     }
 
-    /// The coins abandoning `abandoned` releases: their inputs that none of
-    /// them nor of the abandoned `links` between them created and no
-    /// processed block spent (`observed`): key-wallet keeps the claim on a
-    /// coin a block spent.
+    /// The coins abandoning `abandoned` releases: the inputs of each (from
+    /// the history, or key-wallet's copy of one it has not heard of) that
+    /// none of them nor of the abandoned `links` between them created and
+    /// no processed block spent (`observed`): key-wallet keeps the claim on
+    /// a coin a block spent.
     fn released(
         &self,
         wallet: WalletId,
         abandoned: &BTreeSet<Txid>,
         links: &BTreeSet<Txid>,
+        copies: &HashMap<Txid, Transaction>,
         observed: &BTreeMap<OutPoint, u32>,
     ) -> Vec<OutPoint> {
         (abandoned.iter())
-            .filter_map(|t| self.hub.history.get(&wallet, t))
-            .flat_map(|e| e.tx.input.into_iter().map(|i| i.previous_output))
+            .filter_map(|t| {
+                (self.hub.history.get(&wallet, t).map(|e| e.tx)).or_else(|| copies.get(t).cloned())
+            })
+            .flat_map(|tx| tx.input.into_iter().map(|i| i.previous_output))
             .filter(|o| {
                 !abandoned.contains(&o.txid)
                     && !links.contains(&o.txid)

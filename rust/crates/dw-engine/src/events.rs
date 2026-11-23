@@ -579,6 +579,9 @@ pub(crate) struct SessionHub {
     /// Tests: the next abandon quits before its sweep, as at an exit.
     #[cfg(test)]
     pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: the next abandon returns after its sweep, without its rescan.
+    #[cfg(test)]
+    pub(crate) quit_before_rescan: std::sync::atomic::AtomicBool,
     /// Tests: how many abandons pass before [`Self::pause_abandon`] holds one.
     #[cfg(test)]
     pub(crate) pause_abandon_skip: std::sync::atomic::AtomicUsize,
@@ -765,6 +768,8 @@ impl SessionHub {
             pause_abandon: Mutex::new(None),
             #[cfg(test)]
             quit_before_sweep: Default::default(),
+            #[cfg(test)]
+            quit_before_rescan: Default::default(),
             #[cfg(test)]
             last_release: Mutex::new(None),
             #[cfg(test)]
@@ -1051,8 +1056,6 @@ impl SessionHub {
             .unwrap_or(0)
     }
 
-    /// Forgets the in-memory state of an unloaded wallet; its name stays
-    /// (the "Open Wallet" menu lists it).
     /// Marks a Remove Unconfirmed batch of `wallet` in progress until the
     /// returned guard drops: its abandons store rewind records it makes
     /// only at its end, which a sync commit must leave stored meanwhile.
@@ -1075,6 +1078,8 @@ impl SessionHub {
         .contains_key(wallet)
     }
 
+    /// Forgets the in-memory state of an unloaded wallet; its name stays
+    /// (the "Open Wallet" menu lists it).
     pub(crate) fn unload_wallet(&self, id: &WalletId) {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         unloaded.insert(*id);

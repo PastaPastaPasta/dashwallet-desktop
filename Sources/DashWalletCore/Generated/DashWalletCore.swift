@@ -11525,8 +11525,9 @@ public struct TxDetailExtras: Equatable, Hashable {
     /**
      * dash-qt "Abandon transaction" enablement (§4.5 item 8): not abandoned,
      * unconfirmed, not coinbase, and no InstantSend lock unless the
-     * ChainLock exception `abandon_transaction` describes holds and would
-     * go through.
+     * ChainLock exception `abandon_transaction` describes holds and its
+     * plan would not refuse as `InstantLocked`. One whose plan refuses with
+     * `RescanFirst` stays enabled: that refusal says what to do.
      */
     public let canAbandon: Bool
     /**
@@ -11568,8 +11569,9 @@ public struct TxDetailExtras: Equatable, Hashable {
         /**
          * dash-qt "Abandon transaction" enablement (§4.5 item 8): not abandoned,
          * unconfirmed, not coinbase, and no InstantSend lock unless the
-         * ChainLock exception `abandon_transaction` describes holds and would
-         * go through.
+         * ChainLock exception `abandon_transaction` describes holds and its
+         * plan would not refuse as `InstantLocked`. One whose plan refuses with
+         * `RescanFirst` stays enabled: that refusal says what to do.
          */canAbandon: Bool, 
         /**
          * dash-qt "Resend transaction" enablement (§4.5 item 9): unconfirmed,

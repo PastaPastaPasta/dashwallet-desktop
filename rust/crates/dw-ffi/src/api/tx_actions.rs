@@ -27,8 +27,9 @@ pub struct TxDetailExtras {
     pub abandoned: bool,
     /// dash-qt "Abandon transaction" enablement (§4.5 item 8): not abandoned,
     /// unconfirmed, not coinbase, and no InstantSend lock unless the
-    /// ChainLock exception `abandon_transaction` describes holds and would
-    /// go through.
+    /// ChainLock exception `abandon_transaction` describes holds and its
+    /// plan would not refuse as `InstantLocked`. One whose plan refuses with
+    /// `RescanFirst` stays enabled: that refusal says what to do.
     pub can_abandon: bool,
     /// dash-qt "Resend transaction" enablement (§4.5 item 9): unconfirmed,
     /// not abandoned, not coinbase, no InstantSend lock, sent by this wallet.
