@@ -316,7 +316,10 @@ mod tests {
             (r#"{"showMasternodes":false}"#, MasternodesItem::Auto),
             (r#"{"showMasternodes":"yes"}"#, MasternodesItem::Auto),
             (r#"{"unit":"duffs"}"#, MasternodesItem::Auto),
-            (r#"{"showMasternodes":true,"masternodesItem":"off"}"#, MasternodesItem::Off),
+            (
+                r#"{"showMasternodes":true,"masternodesItem":"off"}"#,
+                MasternodesItem::Off,
+            ),
             (r#"{"masternodesItem":"on"}"#, MasternodesItem::On),
             (r#"{"masternodesItem":"sometimes"}"#, MasternodesItem::Auto),
         ];
@@ -324,7 +327,10 @@ mod tests {
             std::fs::write(path(dir.path()), file).unwrap();
             assert_eq!(read(dir.path()).masternodes_item, want, "{file}");
         }
-        assert_eq!(UiSettings::default().masternodes_item, MasternodesItem::Auto);
+        assert_eq!(
+            UiSettings::default().masternodes_item,
+            MasternodesItem::Auto
+        );
     }
 
     #[test]
