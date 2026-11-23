@@ -1,5 +1,5 @@
 import type { SyncStatus } from "../api/generated/SyncStatus";
-import { t } from "../i18n";
+import { formatLocale, t } from "../i18n";
 
 /** Overall sync progress, 0–100, as the mean of the phases that report a target. `null`
  * before any phase reports one. Raw: the engine does not damp, and neither does this. */
@@ -9,6 +9,9 @@ export function syncPercent(s: SyncStatus): number | null {
   // Never "100%" while the engine says it is not caught up: that reads as a bug.
   return raw === null ? null : Math.min(raw, MAX_SYNCING_PERCENT);
 }
+
+/** A sync percentage with one decimal, as `toFixed(1)` rounds it, in the formatting locale. */
+export const oneDecimal = (percent: number) => new Intl.NumberFormat(formatLocale(undefined), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(Number(percent.toFixed(1)));
 
 /** The mean of the phases that report a target, as the engine has them (up to 100). */
 function phasePercent(s: SyncStatus): number | null {

@@ -16,7 +16,9 @@ import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { UsernameCheck } from "../api/generated/UsernameCheck";
 import type { UsernameRuleName } from "../api/generated/UsernameRuleName";
 import { waitText } from "../onboarding/model";
-import { awaitsContinue, COPY, failureText, stepOf, WAITS, type CardStep } from "./status";
+import { formatLocale, messageTable, t } from "../i18n";
+import { listed } from "../network/choice";
+import { awaitsContinue, COPY, failureText, stepOf, WAITS, withTable, type CardStep } from "./status";
 
 /** The engine's cap (`check_username`'s `maxLength`); the field takes no more. */
 export const MAX_LABEL = 23;
@@ -24,110 +26,80 @@ export const MAX_LABEL = 23;
 /** F4: `name_availability` waits for the typing to settle. */
 export const AVAILABILITY_DEBOUNCE_MS = 400;
 
-const UNREAD_KIND: Record<LockKind, string> = { shielded: "Shielded", platformAddress: "Platform" };
 /** The kinds whose transfers couldn't be read, `""` for none. */
 export const unreadText = (kinds: readonly LockKind[]): string =>
-  kinds.length > 0 ? `${kinds.map((k) => UNREAD_KIND[k]).join(" and ")} transfers couldn't be checked; try again.` : "";
+  kinds.length > 0 ? t("dashpay.finished.unread", { kinds: listed(kinds.map((k) => t(`dashpay.finished.kind.${k}`))) }) : "";
 
-const KIND_NAME: Record<LockKind, string> = { shielded: "Shielded", platformAddress: FLOW_NAME.platformAddressFund };
+const kindName = (kind: LockKind) => (kind === "shielded" ? t("dashpay.finished.kind.shielded") : FLOW_NAME.platformAddressFund);
 
 /** Each kind's part of a report that has an "Add from Dash wallet" row, so the two are told apart. */
-const byKindText = (r: FinishReport): string =>
+const byKindText = (r: FinishReport): string[] =>
   r.byKind.some((k) => k.kind === "platformAddress")
-    ? ` ${r.byKind.map((k) => `${KIND_NAME[k.kind]}: ${k.completed} completed${k.stillPending > 0 ? `, ${k.stillPending} still pending` : ""}.`).join(" ")}`
-    : "";
+    ? r.byKind.map((k) =>
+        k.stillPending > 0
+          ? t("dashpay.finished.byKindPending", { kind: kindName(k.kind), completed: k.completed, stillPending: k.stillPending })
+          : t("dashpay.finished.byKind", { kind: kindName(k.kind), completed: k.completed }),
+      )
+    : [];
+
+/** Finish transfers' report. */
+const finishedText = (r: FinishReport): string => {
+  const counts =
+    r.alreadyUsed > 0
+      ? t("dashpay.finished.countsUsed", { resumed: r.resumed, completed: r.completed, stillPending: r.stillPending, alreadyUsed: r.alreadyUsed })
+      : t("dashpay.finished.counts", { resumed: r.resumed, completed: r.completed, stillPending: r.stillPending });
+  return [counts, ...byKindText(r), ...(r.unread.length > 0 ? [unreadText(r.unread)] : [])].join(" ");
+};
+
+const reg = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(`dashpay.registration.${prefix}`, keys);
+const username = (label: string) => ({ username: `@${label}` });
 
 export const REG_COPY = {
-  header: (n: 1 | 2, title: string) => `Step ${n} of 2 · ${title}`,
-  name: {
-    step: "Choose a username",
-    title: "Choose your Dash username",
-    field: "Username",
-    contested:
-      "The Dash network must vote to approve this username before it is created. Usernames with a number 2–9, or 20 characters or more, are approved at once.",
-    votingLink: "What is username voting?",
-    /** DP1-10 D13: the instant username beside a contested one. */
-    instantTitle: "Create instant username",
-    instantOnly: "An instant username needs a number 2–9 or 20 characters or more.",
-    next: "Continue",
-    cancel: "Cancel",
+  header: (n: 1 | 2, title: string) => t("dashpay.registration.header", { n, title }),
+  name: reg("name", ["step", "title", "field", "contested", "votingLink", "instantTitle", "instantOnly", "next", "cancel"]),
+  confirm: withTable(reg("confirm", ["step", "title", "fee", "credits", "contested", "quoting", "quoteFailed", "accept", "pay", "register", "back"]), {
+    message: (label: string) => t("dashpay.registration.confirm.message", username(label)),
+    shortfall: (amount: string) => t("dashpay.registration.confirm.shortfall", { amount }),
+    fromCredits: (credits: string) => t("dashpay.registration.confirm.fromCredits", { credits: new Intl.NumberFormat(formatLocale(undefined)).format(BigInt(credits)) }),
+  }),
+  progress: withTable(reg("progress", ["title", "close", "home", "readFailed", "finish"]), {
+    message: (label: string) => t("dashpay.registration.progress.message", username(label)),
+    authorize: (label: string) => t("dashpay.registration.progress.authorize", username(label)),
+    unlock: (label: string) => t("dashpay.registration.progress.unlock", username(label)),
+    get continue() {
+      return COPY.continue;
+    },
+    get unlockAction() {
+      return COPY.unlock;
+    },
+    get repair() {
+      return COPY.repair.action;
+    },
+  }),
+  get recovery() {
+    return t("dashpay.registration.recovery");
   },
-  confirm: {
-    step: "Confirm",
-    title: "Confirm your username",
-    message: (label: string) => `You have chosen @${label} as your username. Please note that the username can NOT be changed once it is registered.`,
-    fee: "Upgrade fee",
-    credits: "Part of it becomes credits that pay for contacts and profile changes.",
-    contested:
-      "The network votes on this username for about two weeks. If it is not approved, the payment is not returned; your identity keeps its credits and you can choose another username.",
-    quoting: "Working out the cost…",
-    quoteFailed: "Could not work out the cost.",
-    shortfall: (amount: string) => `You need at least ${amount} to create this username.`,
-    fromCredits: (credits: string) => `Paid from your identity's credits: up to ${BigInt(credits).toLocaleString("en-US")} credits`,
-    accept: "I accept",
-    pay: "Confirm & pay",
-    register: "Confirm",
-    back: "Back",
-  },
-  progress: {
-    title: "Creating your username",
-    message: (label: string) => `Your username @${label} is being created on the Dash network. It may take some time.`,
-    close: "You can close this page or the app: the registration goes on, and Home shows its progress.",
-    home: "Let me know when it's done",
-    readFailed: "Could not read the registration's progress. It goes on; Home shows it.",
-    authorize: (label: string) => `Paused. Confirm to finish creating @${label}.`,
-    unlock: (label: string) => `Unlock the wallet to finish creating @${label}.`,
-    continue: COPY.continue,
-    unlockAction: COPY.unlock,
-    finish: "Finish transfers",
-    repair: COPY.repair.action,
-  },
-  recovery:
-    "Your funds are safe. The payment is locked for this registration, and Dash Wallet finishes it once the network confirms it. If it does not finish, Tools ▸ Repair can finish the transfer.",
-  failed: { title: "Registration failed", another: "Choose another username" },
-  stopped: { title: "Registration stopped" },
-  done: {
-    title: (label: string) => `Welcome to DashPay, @${label}`,
-    message: "Your username is ready. Friends can now find you and pay you by name.",
-    next: "What's next",
-    action: "Go to wallet",
-    // An invitation's request to its inviter (DP5-03 C2, F2).
-    requestSent: "A contact request was sent to your inviter.",
-    requestRefused: "The contact request to your inviter could not be sent. You can add them from Contacts.",
-  },
-  nameFailed: {
-    title: "Your identity is ready",
-    message: (label: string, why: string) => `@${label} could not be registered. ${why}`,
-    another: "Choose another username",
-  },
-  voting: {
-    title: "Voting for your username has begun",
-    message: (label: string) => `Your username @${label} has been requested on the Dash network.`,
-    action: "Done",
-    info: "What is username voting?",
-  },
-  wedge: {
-    title: "Start a new registration?",
-    // m4 §2.2 "The wedge" (DEC-197), verbatim.
-    text: "An earlier registration's payment could not be confirmed, and it may still appear on the network. You can start a new registration now. The earlier payment may still confirm. If it does, its funds show up as a transfer this wallet can recover later with Tools ▸ Repair ▸ Finish transfers, as a separate identity, so you may have paid for two registrations. The earlier registration can't be discarded.",
-    confirm: "Start a new registration",
-    cancel: "Cancel",
-  },
-  finished: (r: FinishReport) =>
-    `${r.resumed} resumed, ${r.completed} completed, ${r.stillPending} still pending${r.alreadyUsed > 0 ? `, ${r.alreadyUsed} already used` : ""}.${byKindText(r)}${r.unread.length > 0 ? ` ${unreadText(r.unread)}` : ""}`,
-} as const;
+  failed: reg("failed", ["title", "another"]),
+  stopped: reg("stopped", ["title"]),
+  done: withTable(reg("done", ["message", "next", "action", "requestSent", "requestRefused"]), {
+    title: (label: string) => t("dashpay.registration.done.title", username(label)),
+  }),
+  nameFailed: withTable(reg("nameFailed", ["title", "another"]), {
+    message: (label: string, why: string) => t("dashpay.registration.nameFailed.message", { ...username(label), why }),
+  }),
+  voting: withTable(reg("voting", ["title", "action", "info"]), {
+    message: (label: string) => t("dashpay.registration.voting.message", username(label)),
+  }),
+  wedge: reg("wedge", ["title", "text", "confirm", "cancel"]),
+  announced: (title: string, lines: string[]) => t("dashpay.registration.announced", { title, lines: lines.join(" ") }),
+  finished: finishedText,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Step 1: the name (IOS-066, F4)
 
 /** Android's checklist rows, plus the engine's double-hyphen rule. */
-export const RULE_TEXT: Record<UsernameRuleName, string> = {
-  minLength: "At least 3 characters",
-  maxLength: "At most 23 characters",
-  allowedCharacters: "Letters, numbers and hyphens only",
-  noEdgeHyphen: "Must start and end with a letter or number",
-  noDoubleHyphen: "No two hyphens in a row",
-};
+export const RULE_TEXT: Readonly<Record<UsernameRuleName, string>> = reg("rule", ["minLength", "maxLength", "allowedCharacters", "noEdgeHyphen", "noDoubleHyphen"]);
 
 export type AvailabilityTone = "pending" | "ok" | "problem" | "neutral";
 
@@ -140,23 +112,23 @@ export interface AvailabilityLine {
  * not settled or the answer is not in. */
 export function availabilityLine(check: UsernameCheck | undefined, availability: NameAvailability | undefined, pending: boolean): AvailabilityLine | null {
   if (!check?.valid) return null;
-  if (pending || !availability) return { text: "Checking…", tone: "pending" };
+  if (pending || !availability) return { text: t("dashpay.registration.availability.checking"), tone: "pending" };
   switch (availability.kind) {
     case "available":
-      return { text: "Username available", tone: "ok" };
+      return { text: t("dashpay.registration.availability.available"), tone: "ok" };
     case "contestOpen":
       return {
-        text: "This username has already been requested, but you can request it too and let the network vote to decide if you can have it.",
+        text: t("dashpay.registration.availability.contestOpen"),
         tone: "neutral",
       };
     case "taken":
-      return { text: "Username taken", tone: "problem" };
+      return { text: t("dashpay.registration.availability.taken"), tone: "problem" };
     case "locked":
-      return { text: "This username is blocked", tone: "problem" };
+      return { text: t("dashpay.registration.availability.locked"), tone: "problem" };
     case "invalid":
-      return { text: "This username is not valid", tone: "problem" };
+      return { text: t("dashpay.registration.availability.invalid"), tone: "problem" };
     case "unknown":
-      return { text: "Could not check availability. You can still continue.", tone: "neutral" };
+      return { text: t("dashpay.registration.availability.unknown"), tone: "neutral" };
   }
 }
 
@@ -218,13 +190,12 @@ export type ScreenActionKind = "home" | "continue" | "unlock" | "finish" | "repa
 /** R9's next steps (PRODUCT #4). */
 export type WelcomeStepKind = "editProfile" | "findFriends" | "share";
 
-export const SHARE_TITLE = "Share my username";
+export const shareTitle = () => t("dashpay.registration.welcome.share.title");
 
-export const WELCOME_STEPS: { kind: WelcomeStepKind; title: string; text: string }[] = [
-  { kind: "editProfile", title: "Add a photo and name", text: "So friends know it's you." },
-  { kind: "findFriends", title: "Find friends", text: "Search for people you know by username." },
-  { kind: "share", title: SHARE_TITLE, text: "Show my QR code or copy my link." },
-];
+const WELCOME_KINDS: readonly WelcomeStepKind[] = ["editProfile", "findFriends", "share"];
+
+export const welcomeSteps = (): { kind: WelcomeStepKind; title: string; text: string }[] =>
+  WELCOME_KINDS.map((kind) => ({ kind, title: t(`dashpay.registration.welcome.${kind}.title`), text: t(`dashpay.registration.welcome.${kind}.text`) }));
 
 export interface ScreenAction {
   kind: ScreenActionKind;
@@ -259,19 +230,19 @@ const act = (kind: ScreenActionKind, label: string): ScreenAction => ({ kind, la
 export function nameFailureText(code: string): string {
   switch (code) {
     case "name.taken":
-      return "Username was taken by another user.";
+      return t("dashpay.registration.nameFailure.taken");
     case "name.contest_open":
-      return "Another user requested it, and the network is voting on it.";
+      return t("dashpay.registration.nameFailure.contestOpen");
     case "name.locked":
-      return "The network blocked this username.";
+      return t("dashpay.registration.nameFailure.locked");
     case "name.invalid":
     case "name.unavailable_for_invite":
-      return "This username is not valid.";
+      return t("dashpay.registration.nameFailure.invalid");
     case "platform.insufficient_credits":
     case "platform.grant_exceeded":
-      return "The identity's credits did not cover it.";
+      return t("dashpay.registration.nameFailure.credits");
     default:
-      return `It stopped with ${code}.`;
+      return t("dashpay.failure.stoppedWith", { code });
   }
 }
 
@@ -394,30 +365,30 @@ export function isRunning(row: RegistrationStatus | undefined): boolean {
 export function startErrorText(e: unknown, amount: (duffs: number) => string, discreet = false): string {
   if (hasCode(e, "registration.funding_insufficient") && e.data?.kind === "duffs") {
     const { needed, available } = e.data;
-    if (needed === null) return "Not enough Dash to pay for the username.";
+    if (needed === null) return t("dashpay.failure.fundingShort");
     return discreet
-      ? `Not enough Dash to pay for the username: ${amount(needed)} needed.`
-      : `Not enough Dash to pay for the username: ${amount(needed)} needed, ${amount(available)} available.`;
+      ? t("dashpay.failure.fundingNeeded", { needed: amount(needed) })
+      : t("dashpay.failure.fundingNeededAvailable", { needed: amount(needed), available: amount(available) });
   }
-  if (hasCode(e, "registration.coins_locked")) return "The coins to pay with are held by another payment. Try again once it ends.";
-  if (hasCode(e, "registration.not_synced")) return "Wait until the wallet has finished syncing, then try again.";
+  if (hasCode(e, "registration.coins_locked")) return t("dashpay.registration.startError.coinsLocked");
+  if (hasCode(e, "registration.not_synced")) return t("dashpay.registration.startError.notSynced");
   if (hasCode(e, "registration.funding_unknown_recent")) {
     const secs = e.data?.kind === "draftWait" ? e.data.waitSecs : null;
     // m4 §2.2, verbatim.
     return secs === null
-      ? "This wallet can't yet tell when the earlier registration's payment was sent. Try again later."
-      : `The earlier registration's payment was sent less than an hour ago. Try again in ${waitText(secs)}.`;
+      ? t("dashpay.registration.startError.fundingUnknownLater")
+      : t("dashpay.registration.startError.fundingUnknownWait", { wait: waitText(secs) });
   }
-  if (hasCode(e, "registration.already_has_username")) return "This wallet already has a username.";
-  if (hasCode(e, "registration.in_progress")) return "This registration's payment must be finished first. Open Repair to finish it.";
-  if (hasCode(e, "platform.grant_exceeded")) return "The cost went above what you approved. Try again.";
-  if (hasCode(e, "platform.insufficient_credits")) return "The identity's credits do not cover this username.";
-  if (hasCode(e, "name.taken")) return "Username taken. Choose another one.";
-  if (hasCode(e, "name.locked")) return "This username is blocked. Choose another one.";
-  if (hasCode(e, "name.invalid")) return "This username is not valid.";
-  if (hasCode(e, "name.contest_open")) return "The network is already voting on this username, and it can no longer be joined.";
-  if (hasCode(e, "platform.unavailable") || hasCode(e, "platform.timeout")) return "Could not reach the Dash network. Try again.";
-  if (hasCode(e, "platform.context_unavailable")) return "Wait until the wallet has finished syncing, then try again.";
-  if (hasCode(e, "vault.locked") || hasCode(e, "vault.mixing_only") || hasCode(e, "platform.signer_unavailable")) return "Unlock the wallet and try again.";
+  if (hasCode(e, "registration.already_has_username")) return t("dashpay.registration.startError.hasUsername");
+  if (hasCode(e, "registration.in_progress")) return t("dashpay.registration.startError.inProgress");
+  if (hasCode(e, "platform.grant_exceeded")) return t("dashpay.registration.startError.grantExceeded");
+  if (hasCode(e, "platform.insufficient_credits")) return t("dashpay.registration.startError.insufficientCredits");
+  if (hasCode(e, "name.taken")) return t("dashpay.registration.startError.taken");
+  if (hasCode(e, "name.locked")) return t("dashpay.registration.startError.locked");
+  if (hasCode(e, "name.invalid")) return t("dashpay.registration.startError.invalid");
+  if (hasCode(e, "name.contest_open")) return t("dashpay.registration.startError.contestOpen");
+  if (hasCode(e, "platform.unavailable") || hasCode(e, "platform.timeout")) return t("dashpay.registration.startError.unreachable");
+  if (hasCode(e, "platform.context_unavailable")) return t("dashpay.registration.startError.notSynced");
+  if (hasCode(e, "vault.locked") || hasCode(e, "vault.mixing_only") || hasCode(e, "platform.signer_unavailable")) return t("dashpay.registration.startError.unlock");
   return isAppError(e) || e instanceof Error ? e.message : String(e);
 }

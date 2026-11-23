@@ -20,7 +20,7 @@ export const networkName = (choice: string) =>
 
 /** "a", "a and b", "a, b and c": the catalog's own words in English and the pseudo-locales, the
  * language's list pattern in a translation. */
-const listed = (items: string[]) => {
+export const listed = (items: string[]) => {
   const { tag, pseudo } = t.language;
   if (tag !== "en" && !pseudo) return new Intl.ListFormat(tag, { type: "conjunction" }).format(items);
   return items.length < 2 ? items.join("") : t("common.listLast", { rest: items.slice(0, -1).join(t("common.listSeparator")), last: items.at(-1)! });

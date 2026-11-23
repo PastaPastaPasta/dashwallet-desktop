@@ -5,6 +5,7 @@ import { useId, useState, type ReactNode } from "react";
 import { navigate, ui } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import type { CardActionKind, CardModel } from "../../dashpay/status";
+import { useT } from "../../i18n";
 import { VotingInfoSheet } from "./AboutDashPay";
 
 const ICONS: Record<CardModel["tone"], ReactNode> = {
@@ -59,6 +60,7 @@ export function defaultCardAction(kind: CardActionKind, retry: () => void) {
 }
 
 export function DashPayCard({ card, onAction }: { card: CardModel; onAction: (kind: CardActionKind) => void }) {
+  const tr = useT();
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
   const { action, step } = card;
@@ -80,10 +82,8 @@ export function DashPayCard({ card, onAction }: { card: CardModel; onAction: (ki
           </h2>
           {step && (
             <div className="dashpay-card-step" data-testid="dashpay-card-step">
-              <span>
-                ({step.n}/3) {step.text}
-              </span>
-              <progress className="dashpay-card-progress" max={3} value={step.n} aria-label="Registration progress" />
+              <span>{tr("dashpay.step.shown", { step: `${step.n}/3`, text: step.text })}</span>
+              <progress className="dashpay-card-progress" max={3} value={step.n} aria-label={tr("dashpay.step.progress")} />
             </div>
           )}
           <div data-testid="dashpay-card-lines">

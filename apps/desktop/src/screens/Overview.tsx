@@ -22,7 +22,7 @@ import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
 import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type HeroSync, type PoolReading } from "../format/homeBalance";
-import { isSyncing, syncPercent } from "../format/sync";
+import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
 import { buyCredits } from "./dashpay/MyProfile";
@@ -32,14 +32,12 @@ import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 import { defaultRoute, transferFor } from "../transfer/model";
-import { formatLocale, t, useT } from "../i18n";
+import { t, useT } from "../i18n";
 
 /** dash-qt's overview shows this many recent transactions. */
 const RECENT_COUNT = 5;
 const RECENT_FILTER: HistoryFilter = { categories: [], text: null, sort: "newestFirst" };
 
-/** A sync percentage with one decimal, as `toFixed(1)` rounds it, in the formatting locale. */
-const oneDecimal = (percent: number) => new Intl.NumberFormat(formatLocale(undefined), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(Number(percent.toFixed(1)));
 
 /** `amount` null: the read failed, shown as "—" with no unit; `undefined`: still being read. */
 function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { title: string; subtitle: string; amount: string | null | undefined; unitName: string; testId: string; fiat: ReactNode }) {
