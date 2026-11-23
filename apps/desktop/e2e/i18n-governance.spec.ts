@@ -7,10 +7,29 @@ import { checkArea, PSEUDO } from "./pseudo";
 // clock and budget, the list and its states, the pane, the vote sheet, Governance numbers, Create
 // proposal, Mine and the status bar's voting item, reached as governance.spec.ts reaches them.
 
+/** The fixture's proposal names, and the one the create specs type. */
+const PROPOSALS = [
+  "alt-wallet-hardening",
+  "community-meetups",
+  "dash-docs-refresh",
+  "dash-incubator-nov",
+  "dashcon-2027-venue",
+  "desktop-wallet-i18n",
+  "merchant-kit",
+  "node-docs-refresh",
+  "old-hackathon",
+  "old-website-redesign",
+  "podcast-season-3",
+  "school-outreach",
+  "translations-2027",
+  "wallet-audit-2027",
+  "desktop-translations",
+];
+
 /** Amounts, counts, proposal names, addresses, links, dates and the fixture's masternodes. */
 const DATA = [
   /^[+−-]?[\p{Nd}.,٫٬\s]+( (t?DASH|mDASH|μDASH|duffs))?$/u,
-  /^\u2068?[a-z0-9_-]+\u2069?$/,
+  new RegExp(`^\u2068?(${PROPOSALS.join("|")})\u2069?$`),
   /^[1-9A-HJ-NP-Za-km-z]{4}…[1-9A-HJ-NP-Za-km-z]{4}$/,
   /^[1-9A-HJ-NP-Za-km-z]{30,}$/,
   /^(https:\/\/)?[\w.-]+\.\w+\/\S*$/,
@@ -185,6 +204,23 @@ test("Governance follows a language change with no reload", async ({ page }) => 
   await expect(page.getByTestId("governance-create")).toHaveText(/^⟦.+⟧$/);
   await expect(page.getByTestId("governance-clock-title")).toHaveText(/^⟦.+⟧$/);
   await expect(page.getByTestId("status-governance")).toHaveText(/^⟦.+⟧$/);
+  expect(errors).toEqual([]);
+});
+
+test("the vote sheet's rows follow a language change, keeping the vote and the checked masternodes", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await open(page, "governance", "light", "en");
+  await toGovernance(page);
+  await toVote(page);
+  await page.getByTestId("vote-outcome-no").click();
+  const box = page.getByTestId("vote-nodes").locator("input[type=checkbox]:enabled").first();
+  await box.uncheck();
+  const sub = page.getByTestId("vote-nodes").locator(".mg-node-sub").first();
+  await expect(sub).not.toHaveText(/⟦/);
+  await page.evaluate(() => window.__dwFixture!.setLanguage("en-XA"));
+  await expect(sub).toHaveText(/^⟦.+⟧$/);
+  await expect(page.getByTestId("vote-outcome-no")).toHaveAttribute("aria-checked", "true");
+  await expect(box).not.toBeChecked();
   expect(errors).toEqual([]);
 });
 

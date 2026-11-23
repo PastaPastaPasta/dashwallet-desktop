@@ -482,3 +482,24 @@ describe("Governance numbers", () => {
 // The row type is the engine's; keep the fixture's sample rows honest about it.
 const _rows: ProposalRow[] = ROWS;
 void _rows;
+
+describe("counts and weights in the vote sheet", () => {
+  it("are grouped for the display language at 1,234", () => {
+    const big = node({ proTxHash: "a".repeat(64), weight: 1234 });
+    const casts = Array.from({ length: 1234 }, (_, i) => ({ proTxHash: i === 0 ? big.proTxHash : `${i}`.padStart(64, "c"), hash: "f".repeat(64), peers: 8, rejected: null }));
+    const read = () => {
+      const v = voteResult(casts, [big], "yes");
+      return [selectionNote([{ weight: 1234 }]), v.title, v.line, v.rows[0].sub];
+    };
+    expect(read()).toEqual(["1 masternode · weight 1,234 · no fee", "1,234 of 1,234 votes sent", "Yes · weight 2,467 of 2,467", "weight 1,234 · to 8 peers"]);
+    const de: Language = { tag: "de-x-dwtest", name: "Deutsch", dir: "ltr", messages: new Map() };
+    LANGUAGES.push(de);
+    try {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: "de-x-dwtest" } });
+      expect(read()).toEqual(["1 masternode · weight 1.234 · no fee", "1.234 of 1.234 votes sent", "Yes · weight 2.467 of 2.467", "weight 1.234 · to 8 peers"]);
+    } finally {
+      LANGUAGES.pop();
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
+    }
+  });
+});

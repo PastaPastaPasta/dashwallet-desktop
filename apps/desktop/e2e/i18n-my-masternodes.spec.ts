@@ -17,6 +17,7 @@ const DATA = [
   /^[1-9A-HJ-NP-Za-km-z]{4}…[1-9A-HJ-NP-Za-km-z]{4}$/,
   /^⁨?[A-Z][a-z]{2} \d{1,2}(, \d{4})?⁩?$/,
   /^—$/,
+  /^fixture: [a-z ]+$/,
 ];
 
 const open = async (page: Page, scenario: string, theme: Theme, lang: string, extra = "") => {
@@ -104,35 +105,38 @@ test("My masternodes follows a language change with no reload", async ({ page })
   expect(errors).toEqual([]);
 });
 
-/** The left edges of `re`'s two groups in the first text node under `root` that matches it. */
-async function lefts(root: Locator, re: RegExp): Promise<[number, number] | null> {
-  return root.evaluate(
+/** Under a right-to-left language a number is read before the word after it: it sits right of
+ * it. `re`'s first group is the number's first digit, its second the word. */
+async function readFirst(root: Locator, what: string, re: RegExp) {
+  await expect(root).toContainText(re);
+  const at = await root.evaluate(
     (el, [source, flags]) => {
       const re = new RegExp(source, flags);
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-        const m = re.exec(n.textContent ?? "");
-        if (!m?.indices) continue;
-        const left = (g: number) => {
-          const r = document.createRange();
-          r.setStart(n!, m.indices![g]![0]);
-          r.setEnd(n!, m.indices![g]![0] + 1);
-          return r.getBoundingClientRect().left;
-        };
-        return [left(1), left(2)] as [number, number];
-      }
-      return null;
+      const nodes: Text[] = [];
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
+      const text = nodes.map((n) => n.data).join("");
+      const m = re.exec(text);
+      if (!m?.indices) return null;
+      const left = (g: number) => {
+        let i = m.indices![g]![0];
+        for (const n of nodes) {
+          if (i < n.data.length) {
+            const r = document.createRange();
+            r.setStart(n, i);
+            r.setEnd(n, i + 1);
+            return r.getBoundingClientRect().left;
+          }
+          i -= n.data.length;
+        }
+        return 0;
+      };
+      return [left(1), left(2)] as [number, number];
     },
     [re.source, `${re.flags}d`] as const,
   );
-}
-
-/** The number, then what it counts: the number is drawn first. */
-async function inOrder(root: Locator, what: string, re: RegExp) {
-  await expect(root).toContainText(re);
-  const at = await lefts(root, re);
   expect(at, what).not.toBeNull();
-  expect(at![0], what).toBeLessThan(at![1]);
+  expect(at![0], what).toBeGreaterThan(at![1]);
 }
 
 /** An amount drawn with the Dash glyph: its number comes before the glyph. */
@@ -141,53 +145,55 @@ async function glyphAfter(amount: Locator, what: string) {
   expect(number, what).toBeLessThan(glyph);
 }
 
-/** Under a right-to-left language an amount is read first: it sits right of `word`. */
-async function amountFirst(root: Locator, word: RegExp, what: string) {
-  const [amount, after] = await root.evaluate(
-    (el, [source, flags]) => {
-      const re = new RegExp(source, flags);
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-        if (n.parentElement?.closest(".amount")) continue;
-        const m = re.exec(n.textContent ?? "");
-        if (!m) continue;
-        const r = document.createRange();
-        r.setStart(n, m.index);
-        r.setEnd(n, m.index + 1);
-        return [el.querySelector(".amount")!.getBoundingClientRect().left, r.getBoundingClientRect().left];
-      }
-      return [0, 0];
-    },
-    [word.source, word.flags] as const,
-  );
+/** Under a right-to-left language an amount is read first: it sits right of the text after it. */
+async function amountFirst(root: Locator, what: string) {
+  const [amount, after] = await root.evaluate((el) => {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (n.parentElement?.closest(".amount") || !/\p{Nd}/u.test(n.textContent ?? "")) continue;
+      const r = document.createRange();
+      r.selectNodeContents(n);
+      return [el.querySelector(".amount")!.getBoundingClientRect().left, r.getBoundingClientRect().left];
+    }
+    return [0, 0];
+  });
   expect(amount, what).toBeGreaterThan(after);
 }
+
+const COLLATERAL = /(\p{Nd})[\p{Nd}.,٫٬]*[⁦-⁩‪-‮]* ?[⁦-⁩‪-‮]*(Dash|hsaD)/u;
 
 test.describe("amounts and counts keep their order under ar-XB", () => {
   const go = (page: Page, scenario = "mn-list") => open(page, scenario, "light", "ar-XB");
 
-  test("collateral amounts read number first, before Dash", async ({ page }) => {
+  test("collateral amounts are read number first, then Dash", async ({ page }) => {
     await go(page);
     await select(page, HOME);
-    await inOrder(page.getByTestId("mn-roles"), "a masternode's collateral", /(\p{Nd})[\p{Nd}.,٫٬]*[⁦-⁩‪-‮]* ?[⁦-⁩‪-‮]*(Dash|hsaD)/u);
+    await readFirst(page.getByTestId("mn-roles").locator("li", { hasText: /\p{Nd}/u }), "a masternode's collateral", COLLATERAL);
     await go(page, "mn-empty-coin");
-    await inOrder(page.getByTestId("mn-empty-coin"), "the collateral coin", /(\p{Nd})[\p{Nd}.,٫٬]*[⁦-⁩‪-‮]* ?[⁦-⁩‪-‮]*(Dash|hsaD)/u);
+    await readFirst(page.getByTestId("mn-empty-coin"), "the collateral coin", COLLATERAL);
+    await readFirst(page.getByTestId("mn-empty").locator("li").first(), "Own one", COLLATERAL);
   });
 
-  test("the operator's share keeps its number before %", async ({ page }) => {
+  test("the operator's share is read number first, then %", async ({ page }) => {
     await go(page);
+    await page.evaluate((home) => (window.__dwFixture!.world.masternodes.operatorRewards[home] = 1250), HOME);
     await select(page, HOME);
-    await inOrder(page.getByTestId("mn-fact-operator-share"), "the operator's share", /(\p{Nd})[\p{Nd}.,٫٬]*[⁦-⁩‪-‮]*(%)/u);
+    await readFirst(page.getByTestId("mn-fact-operator-share"), "the operator's share", /(\p{Nd})[\p{Nd}.,٫٬]*[⁦-⁩‪-‮]*(%)/u);
   });
 
   test("payout amounts: the glyph after the number, and the total read before its payments", async ({ page }) => {
+    await go(page);
+    await select(page, HOME);
+    await glyphAfter(page.getByTestId("mn-fact-last-payout").locator(".amount").first(), "the last payout");
+    await amountFirst(page.getByTestId("mn-fact-last-payout"), "the last payout, before its date");
     await go(page, "mn-v24-payouts");
     await select(page, HOME);
     await glyphAfter(page.getByTestId("mn-summary-payouts").locator(".amount").first(), "the summary");
-    await glyphAfter(page.getByTestId("mn-fact-last-payout").locator(".amount").first(), "the last payout");
-    for (const id of ["mn-payouts-attributed", "mn-payouts-flagged"]) {
-      await glyphAfter(page.getByTestId(id).locator(".amount").first(), id);
-      await amountFirst(page.getByTestId(id).locator("p"), /\p{Nd}/u, id);
+    const groups = page.locator('[data-testid="mn-payouts-attributed"], [data-testid="mn-payouts-flagged"]');
+    await expect(groups.first()).toBeVisible();
+    for (const g of await groups.all()) {
+      await glyphAfter(g.locator(".amount").first(), "a payout group");
+      await amountFirst(g.locator("p"), "a payout group");
     }
   });
 });

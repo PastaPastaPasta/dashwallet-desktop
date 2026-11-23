@@ -94,7 +94,7 @@ function VoteForm({
   const info = useGovernanceInfo();
   const refresh = useGovernanceRefresh();
   const names = useNodeNames(wallet.walletId);
-  const rows = useMemo(() => voteRows(nodes, now, undefined, names), [nodes, now, names]);
+  const rows = useMemo(() => voteRows(nodes, now, undefined, names), [nodes, now, names, t.language]);
   const [outcome, setOutcome] = useState<VoteOutcomeName | null>(() => presetOutcome(nodes));
   const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set(rows.filter((r) => r.eligible).map((r) => r.proTxHash)));
   const credential = useCredential(wallet.walletId, t("masternodes.governance.vote.ask"), null);

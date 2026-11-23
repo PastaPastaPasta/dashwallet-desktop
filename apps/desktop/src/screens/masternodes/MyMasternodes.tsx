@@ -195,7 +195,7 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
           </div>
         </div>
         {row.status === "pose_banned" && (
-          <p className="mg-notice mg-notice-danger" data-testid="mn-banned">
+          <p className="mg-notice mg-notice-danger mn-banned-notice" data-testid="mn-banned">
             <strong>{MnText.banned}</strong> {MnText.bannedText(row.bannedSeenAt === null ? null : shortDate(row.bannedSeenAt))}
           </p>
         )}
