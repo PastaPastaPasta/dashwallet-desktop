@@ -177,6 +177,13 @@ export const transfer = {
 
   /** Dash wallet ⇄ Shielded and Send from Shielded (shielded/flow.ts, ShieldedSheet.tsx). */
   shielded: {
+    /** While Shielded's account is not established (shielded/syncing.ts). */
+    sync: {
+      syncing: "Shielded is still syncing; try again when it finishes.",
+      scanning: "Scanning…",
+      /** `when` is how long ago, as "5 min ago". */
+      lastChecked: "Last checked {when}",
+    },
     card: {
       inactive: "Shielded is not active on this network yet.",
       finish: "Finish",

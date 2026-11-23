@@ -9,7 +9,9 @@ import type { ContestedName } from "../api/generated/ContestedName";
 import type { ContestedNames } from "../api/generated/ContestedNames";
 import type { NameRejectionName } from "../api/generated/NameRejectionName";
 import type { NameVoteCast } from "../api/generated/NameVoteCast";
+import { DEFAULT_PREFS, ui } from "../app/ui";
 import { FIXTURE_NAMES, ID_1, ID_2, VOTER_A, VOTER_B, VOTER_C } from "../fixture/names";
+import { LANGUAGES, type Language } from "../i18n";
 import { FIXTURE_NOW, secs } from "../fixture/wallet";
 import {
   choiceOptions,
@@ -22,17 +24,18 @@ import {
   nameErrorText,
   nameRejectedText,
   nameVoteResult,
+  NameText,
   nameVoterRows,
   normalizeLabel,
   pickedVoters,
   sameChoice,
   shortIdentity,
   tallyView,
-  UNCONFIRMED_TEXT,
   voteBlocked,
   voteButtonText,
   voterLine,
   votesLeftText,
+  votesText,
   youText,
 } from "./names";
 
@@ -232,7 +235,7 @@ describe("the result", () => {
     const view = nameVoteResult(casts, n.voters, "a11ce", ABSTAIN);
     expect(view.title).toBe("1 of 3 votes counted · 1 not confirmed yet");
     expect(view.line).toBe("Abstain on a11ce · weight 1 of 6");
-    expect(view.rows[0]).toMatchObject({ state: "unconfirmed", sub: UNCONFIRMED_TEXT, chip: { text: "Unconfirmed", tone: "neutral" } });
+    expect(view.rows[0]).toMatchObject({ state: "unconfirmed", sub: "Sent, but Platform didn't confirm it. It may still count: check again in a minute.", chip: { text: "Unconfirmed", tone: "neutral" } });
     expect(view.rows[1]).toMatchObject({ state: "refused", sub: "It has used all its votes on this name, so its choice can't change.", chip: { text: "Not counted" } });
     expect(view.unconfirmed).toBe(true);
     // A re-read that still shows the old choice keeps it unconfirmed.
@@ -279,5 +282,47 @@ describe("errors", () => {
       if (e.data?.kind === "contestLabel") expect(nameErrorText(e), e.code).toContain(`“${e.data.label}”`);
       if (e.data?.kind === "contender") expect(nameErrorText(e), e.code).toContain(shortIdentity(e.data.identity));
     }
+  });
+});
+
+describe("counts and weights", () => {
+  const big = (): ContestedNames => {
+    const n = names();
+    n.contests[0].contenders[0].votes = 1234;
+    n.voters[1].weight = 1234;
+    return n;
+  };
+  const read = () => {
+    const n = big();
+    const result = nameVoteResult([cast(VOTER_B, null)], n.voters, "a11ce", LOCK);
+    return [votesText(1234), tallyView(a11ce(n)).lead, result.title, result.line, result.rows[0].sub, NameText.limitNote(5), NameText.limitNote(1)];
+  };
+
+  it("read as before in English, with counts and weights of 1,000 or more grouped", () => {
+    expect(read()).toEqual([
+      "1,234 votes",
+      "8ZtW…R97P leads with 1,234 of 1,243 votes",
+      "1 of 1 vote counted",
+      "Lock on a11ce · weight 1,234 of 1,234",
+      "weight 1,234 · Platform counted it",
+      "Each masternode has 5 votes per username: its first vote and 4 changes. This wallet counts the votes it sent, so votes sent from another wallet aren't included.",
+      "Each masternode has 1 votes per username: its first vote and 0 changes. This wallet counts the votes it sent, so votes sent from another wallet aren't included.",
+    ]);
+  });
+
+  it("are grouped for the display language", () => {
+    const de: Language = { tag: "de-x-dwtest", name: "Deutsch", dir: "ltr", messages: new Map() };
+    LANGUAGES.push(de);
+    try {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: "de-x-dwtest" } });
+      expect(read().slice(0, 5)).toEqual(["1.234 votes", "8ZtW…R97P leads with 1.234 of 1.243 votes", "1 of 1 vote counted", "Lock on a11ce · weight 1.234 of 1.234", "weight 1.234 · Platform counted it"]);
+    } finally {
+      LANGUAGES.pop();
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
+    }
+  });
+
+  it("an unknown rejection reason never reads an inherited property", () => {
+    expect(nameRejectedText("toString" as never)).toBe("Not counted, for a reason this version of the wallet doesn't know.");
   });
 });

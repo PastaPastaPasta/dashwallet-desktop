@@ -17,9 +17,6 @@ const DATA = [/^\+?[\p{Nd}.,٫٬\s•*#]+ (t?DASH|mDASH|μDASH|duffs)$/u, /^[Xy]
  * (needs a whole-sentence key). */
 const ROUTE_TO = [/^to$/];
 
-/** Still English, from shielded/syncing.ts (shared with Receive): the send form's sync line. */
-const SYNC_LINE = [/^Last checked /, /^Scanning…$/];
-
 async function openHome(page: Page, scenario: string, theme: Theme, lang: string, extra = "") {
   await page.goto(fixtureUrl(scenario, theme, `${extra}&lang=${lang}`));
   await page.getByTestId("toolbar").waitFor();
@@ -196,7 +193,6 @@ const STATES: Record<string, State> = {
   "send-form": {
     scenario: "funded",
     roots: ["shielded-sheet"],
-    data: SYNC_LINE,
     go: async (page) => {
       await page.getByTestId("sidebar-pay").click();
       await page.getByTestId("shielded-send").click();
