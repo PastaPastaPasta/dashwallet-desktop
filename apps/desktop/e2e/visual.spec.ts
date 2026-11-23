@@ -1072,9 +1072,9 @@ for (const theme of THEMES) {
   }
 }
 
-// MG-10 S2: the registration wizard's steps, Release collateral and the In progress group, under
-// MG-00's frame names. `reg-review` and `reg-done` are the hosted FundNew masternode, `reg-operator-evo`
-// the self-run evonode, `reg-prove` the saved External registration reopened from In progress.
+// MG-10 S2: the registration wizard's steps and the In progress group, under
+// MG-00's frame names. `reg-review` is the hosted FundNew masternode, which can't send yet, `reg-operator-evo`
+// the self-run evonode.
 async function openMasternodes(page: Page, scenario: string, theme: Theme) {
   await page.clock.setFixedTime(FIXTURE_NOW);
   await page.goto(fixtureUrl(scenario, theme));
@@ -1110,11 +1110,8 @@ for (const theme of THEMES) {
     await shootStep(page, "reg-keys", theme);
     await page.getByTestId("reg-continue").click();
     await page.getByTestId("reg-review").waitFor();
+    await page.getByTestId("reg-send-off").waitFor();
     await shootStep(page, "reg-review", theme);
-    await page.getByTestId("reg-passphrase").fill("demo");
-    await page.getByTestId("reg-register").click();
-    await page.getByTestId("reg-done-body").waitFor();
-    await shootStep(page, "reg-done", theme);
   });
 
   test(`visual reg-operator-evo ${theme}`, async ({ page }) => {
@@ -1129,24 +1126,6 @@ for (const theme of THEMES) {
     await page.getByTestId("reg-service").fill("203.0.113.20:19999");
     await page.getByTestId("reg-service").blur();
     await shootStep(page, "reg-operator-evo", theme);
-  });
-
-  test(`visual reg-prove ${theme}`, async ({ page }) => {
-    await openMasternodes(page, "reg-prepared", theme);
-    await page.locator("[data-testid^=mn-op-continue-]").click();
-    await page.getByTestId("reg-sign-request").waitFor();
-    await page.getByTestId("reg-signature").blur();
-    await shootStep(page, "reg-prove", theme);
-  });
-
-  test(`visual upd-release ${theme}`, async ({ page }) => {
-    await openMasternodes(page, "mn-list", theme);
-    await page.getByTestId(`mn-row-${"4e".repeat(32)}`).click();
-    await page.getByTestId("mn-facts").waitFor();
-    await page.getByTestId("mn-more").click();
-    await page.getByTestId("mn-more-release").click();
-    await page.getByTestId("mn-release-sheet").waitFor();
-    await shootStep(page, "upd-release", theme);
   });
 
   test(`visual mn-inprogress ${theme}`, async ({ page }) => {

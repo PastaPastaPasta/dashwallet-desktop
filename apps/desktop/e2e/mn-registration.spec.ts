@@ -4,7 +4,6 @@ import {
   DUP_SERVICE,
   EXTERNAL_ADDRESS,
   EXTERNAL_OUTPOINT,
-  EXTERNAL_SIGNATURE,
   HOME,
   keyInfo,
   OP_CONFIRMED,
@@ -16,6 +15,8 @@ import {
   OP_PREPARED,
   OP_SENT,
   OP_SENT_OVERDUE,
+  OP_SIGNED,
+  OP_UPDATE,
   REG_COIN,
   REG_COIN_LOCKED,
 } from "../src/fixture/masternodes";
@@ -62,12 +63,20 @@ async function hostedToKeys(page: Page, service = SERVICE, operatorKey = OPERATO
   await expect(page.getByTestId("reg-owner")).toBeVisible();
 }
 
+const SEND_OFF = "You can review this registration, but this version can't send it yet. Nothing has been sent.";
+
+/** While registrations don't send (REGISTRATION_SENDS), Review and Prove end with the send-off line. */
+async function expectSendOff(page: Page) {
+  await expect(page.getByTestId("reg-send-off")).toHaveText(SEND_OFF);
+  for (const gone of ["reg-register", "reg-submit", "reg-passphrase", "reg-error"]) await expect(page.getByTestId(gone)).toHaveCount(0);
+}
+
 async function toReview(page: Page) {
   await next(page);
   await expect(page.getByTestId("reg-review")).toBeVisible();
 }
 
-test("hosted regular, FundNew: Type → Review → Register → Sent; 0 serious axe issues", async ({ page }) => {
+test("hosted regular, FundNew: Type → Review, which can't send yet; 0 serious axe issues", async ({ page }) => {
   const errors = await open(page, "reg");
   await setUp(page);
   await expect(sheet(page)).toContainText("Step 1 of 5");
@@ -94,22 +103,14 @@ test("hosted regular, FundNew: Type → Review → Register → Sent; 0 serious 
   await expect(sheet(page)).toContainText("The collateral moves to a new address in this wallet; only the network fee leaves it.");
   await fontsReady(page);
   expect(await seriousAxeViolations(page)).toEqual([]);
-  // The passphrase is asked before anything is signed.
-  await page.getByTestId("reg-register").click();
-  await expect(page.getByTestId("reg-error")).toHaveText("Enter your passphrase to register.");
-  await page.getByTestId("reg-passphrase").fill("demo");
-  await page.getByTestId("reg-register").click();
-  await expect(step(page, "done")).toContainText("Registration sent");
-  await expect(page.getByTestId("reg-done-body")).toContainText("waiting for 1 confirmation");
-  await expect(page.getByTestId("reg-done-body")).toContainText("Send your operator the ProTx hash.");
-  await expect(page.getByTestId("reg-hash")).toHaveText(/^[0-9a-f]{64}$/);
-  await fontsReady(page);
-  expect(await seriousAxeViolations(page)).toEqual([]);
-  await page.getByTestId("reg-done").click();
+  await expectSendOff(page);
+  // Enter on the form sends nothing either.
+  await sheet(page).locator("form").evaluate((f: HTMLFormElement) => f.requestSubmit());
+  await expect(step(page, "review")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByTestId("reg-discard-confirm").click();
   await expect(sheet(page)).toHaveCount(0);
-  // The sent registration waits in In progress, and its masternode is listed unconfirmed.
-  await expect(page.getByTestId("mn-group-in-progress")).toContainText("Registration · waiting for 1 confirmation");
-  await expect(page.getByTestId("mn-group-mine")).toContainText(SERVICE);
+  await expect(page.getByTestId("mn-group-in-progress")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -142,7 +143,7 @@ test("self-run evonode: the wallet's operator key and Platform node, to Review",
   await expect(review).toContainText(`${keyInfo("operator", 2).publicKeyHex.slice(0, 8)}, keypair 3 of this wallet`);
   await expect(review).toContainText(`${keyInfo("platform_node", 0).platformNodeId!.slice(0, 8)} · 36656 / 1443`);
   await expect(page.getByTestId("reg-review-fee")).toContainText("0.00000567");
-  await expect(page.getByTestId("reg-register")).toBeVisible();
+  await expectSendOff(page);
   expect(errors).toEqual([]);
 });
 
@@ -165,13 +166,11 @@ test("ExistingUtxo: a locked coin can't be picked, Continue needs a pick, the re
   await toReview(page);
   await expect(page.getByTestId("reg-review-collateral")).toContainText(`${REG_COIN.slice(0, 8)}:0, 1000.00000000 tDASH in this wallet`);
   await expect(sheet(page)).toContainText("Only the fee leaves this wallet.");
-  await page.getByTestId("reg-passphrase").fill("demo");
-  await page.getByTestId("reg-register").click();
-  await expect(page.getByTestId("reg-done-body")).toBeVisible();
+  await expectSendOff(page);
   expect(errors).toEqual([]);
 });
 
-test("External: Continue at Review saves it, Prove shows the message, reopening lands on Prove, a signature sends it", async ({ page }) => {
+test("External: Review names the other wallet's coin and can't send; nothing is saved to In progress", async ({ page }) => {
   const errors = await open(page, "reg");
   await setUp(page);
   await next(page);
@@ -185,73 +184,31 @@ test("External: Continue at Review saves it, Prove shows the message, reopening 
   await next(page);
   await expect(page.getByTestId("reg-owner")).toBeVisible();
   await toReview(page);
-  await expect(sheet(page)).toContainText("Step 5 of 6");
   await expect(page.getByTestId("reg-review-collateral")).toContainText(`${EXTERNAL_OUTPOINT.slice(0, 8)}:0, in another wallet`);
-  await expect(sheet(page)).toContainText("Next, you sign a message with the wallet that holds the collateral.");
-  await expect(page.getByTestId("reg-register")).toHaveCount(0);
-  await page.getByTestId("reg-continue").click();
-  await expect(step(page, "prove")).toContainText("Prove the collateral");
-  await expect(sheet(page)).toContainText("Step 6 of 6");
-  await expect(page.getByTestId("reg-sign-address")).toHaveText(EXTERNAL_ADDRESS);
-  await expect(page.getByTestId("reg-sign-message")).toHaveText(/^y\S+\|0\|y\S+\|y\S+\|5e[0-9a-f]+$/);
-  await expect(page.getByTestId("reg-prove-saved")).toHaveText("Saved in In progress. You can close this and continue later.");
-  await expect(page.getByTestId("reg-back")).toBeDisabled();
+  await expectSendOff(page);
+  await expect(page.getByTestId("reg-continue")).toHaveCount(0);
   await fontsReady(page);
   expect(await seriousAxeViolations(page)).toEqual([]);
-  const message = await page.getByTestId("reg-sign-message").innerText();
-  // Closing at Prove asks nothing: the registration is saved.
+  await sheet(page).locator("form").evaluate((f: HTMLFormElement) => f.requestSubmit());
+  await expect(step(page, "review")).toBeVisible();
+  await expect(step(page, "prove")).toHaveCount(0);
   await page.keyboard.press("Escape");
+  await page.getByTestId("reg-discard-confirm").click();
   await expect(sheet(page)).toHaveCount(0);
-  await expect(page.getByTestId("reg-discard")).toHaveCount(0);
-  const group = page.getByTestId("mn-group-in-progress");
-  await expect(group).toContainText("Needs signature");
-  await group.locator("[data-testid^=mn-op-continue-]").click();
-  await expect(step(page, "prove")).toBeVisible();
-  await expect(page.getByTestId("reg-sign-message")).toHaveText(message);
-  await expect(page.getByTestId("reg-cancel")).toBeVisible();
-  // A signature that isn't the collateral key's stays on Prove, on the field.
-  await page.getByTestId("reg-signature").fill(`H${"B".repeat(86)}=`);
-  await page.getByTestId("reg-passphrase").fill("demo");
-  await page.getByTestId("reg-submit").click();
-  await expect(page.getByTestId("reg-error-signature")).toHaveText("This signature isn't from the collateral's address over this message.");
-  await expect(step(page, "prove")).toBeVisible();
-  await page.getByTestId("reg-signature").fill(EXTERNAL_SIGNATURE);
-  await page.getByTestId("reg-passphrase").fill("demo");
-  await page.getByTestId("reg-submit").click();
-  await expect(page.getByTestId("reg-done-body")).toContainText("waiting for 1 confirmation");
-  await page.getByTestId("reg-done").click();
-  await expect(group).toContainText("Registration · waiting for 1 confirmation");
-  await expect(group).not.toContainText("Needs signature");
+  await expect(page.getByTestId("mn-group-in-progress")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
-test("a saved External registration reopens at Prove from In progress ▸ Continue", async ({ page }) => {
-  const errors = await open(page, "reg-prepared");
-  await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
-  await expect(step(page, "prove")).toBeVisible();
-  await expect(page.getByTestId("reg-sign-address")).toHaveText(EXTERNAL_ADDRESS);
-  await page.getByTestId("reg-submit").click();
-  await expect(page.getByTestId("reg-error-signature")).toHaveText("Paste the signature from the other wallet.");
-  await page.getByTestId("reg-cancel").click();
-  await expect(sheet(page)).toHaveCount(0);
-  expect(errors).toEqual([]);
-});
-
-test("D5: Register re-reads the preview; changed figures show and need a second press", async ({ page }) => {
+test("D5: Review shows the preview's figures and nothing changed while Register is off", async ({ page }) => {
   const errors = await open(page, "reg-preview-changes");
   await setUp(page);
   await hostedToKeys(page);
   await toReview(page);
+  // The fixture's fee rises only on a second read, which only Register makes: Review keeps the first.
   await expect(page.getByTestId("reg-review-fee")).toContainText("0.00000453");
-  await page.getByTestId("reg-passphrase").fill("demo");
-  await page.getByTestId("reg-register").click();
-  await expect(page.getByTestId("reg-changed")).toHaveText("The figures changed. Check them again.");
-  await expect(page.getByTestId("reg-review-fee")).toContainText("0.00000573");
-  await expect(page.getByTestId("reg-review-total")).toContainText("0.00000573");
-  await expect(step(page, "review")).toBeVisible();
-  await expect(page.getByTestId("reg-done-body")).toHaveCount(0);
-  await page.getByTestId("reg-register").click();
-  await expect(page.getByTestId("reg-done-body")).toBeVisible();
+  await expect(page.getByTestId("reg-review-total")).toContainText("0.00000453");
+  await expect(page.getByTestId("reg-changed")).toHaveCount(0);
+  await expectSendOff(page);
   expect(errors).toEqual([]);
 });
 
@@ -352,12 +309,14 @@ test("In progress: each state's row and action; nothing on a conflicted one", as
   await expect(page.getByTestId(`mn-op-${OP_CONFLICTED}`)).toHaveCount(0);
   await expect(page.getByTestId(`mn-op-conflicted-${OP_CONFLICTED}`).getByRole("button")).toHaveCount(0);
   await expect(page.getByTestId(`mn-op-status-${OP_NEEDS_SIGNATURE}`)).toHaveText("Needs signature");
-  await expect(page.getByTestId(`mn-op-continue-${OP_NEEDS_SIGNATURE}`)).toHaveText("Continue");
   await expect(page.getByTestId(`mn-op-status-${OP_INPUTS_SPENT}`)).toHaveText("The coins for the fee were spent");
-  await expect(page.getByTestId(`mn-op-refresh-${OP_INPUTS_SPENT}`)).toHaveText("Get a new message");
   await expect(page.getByTestId(`mn-op-status-${OP_NOT_SENT}`)).toContainText("Not sent: ");
-  await expect(page.getByTestId(`mn-op-resend-${OP_NOT_SENT}`)).toHaveText("Send again");
-  // Sent: Send again, never Discard.
+  // While registrations and registrar updates don't send, their rows offer no Continue, Get a new
+  // message or Send again; Discard stays wherever the state allows it.
+  const held = [OP_NEEDS_SIGNATURE, OP_INPUTS_SPENT, OP_SIGNED, OP_NOT_SENT, OP_SENT, OP_SENT_OVERDUE, OP_UPDATE];
+  for (const id of held) for (const a of ["continue", "refresh", "resend"]) await expect(page.getByTestId(`mn-op-${a}-${id}`)).toHaveCount(0);
+  for (const id of [OP_NEEDS_SIGNATURE, OP_INPUTS_SPENT, OP_SIGNED, OP_NOT_SENT]) await expect(page.getByTestId(`mn-op-more-${id}`)).toBeVisible();
+  // Sent: never Discard.
   await expect(page.getByTestId(`mn-op-status-${OP_SENT}`)).toHaveText("Registration · waiting for 1 confirmation");
   await expect(page.getByTestId(`mn-op-more-${OP_SENT}`)).toHaveCount(0);
   await expect(page.getByTestId(`mn-op-overdue-${OP_SENT}`)).toHaveCount(0);
@@ -367,15 +326,11 @@ test("In progress: each state's row and action; nothing on a conflicted one", as
   await expect(page.getByTestId(`mn-op-activity-${OP_DISSOLVE}`)).toHaveCount(0);
   await fontsReady(page);
   expect(await seriousAxeViolations(page)).toEqual([]);
-  // Send again on a sent row: the confirm names the row's debit, and the grant sends it.
-  await page.getByTestId(`mn-op-resend-${OP_SENT}`).click();
-  await expect(page.getByTestId("mn-op-resend-text")).toHaveText("Send the same transaction again. It costs at most 0.00000453 tDASH.");
+  // A dissolution still sends again: the confirm names the row's debit (penalty and fee), and the grant sends it.
+  await page.getByTestId(`mn-op-resend-${OP_DISSOLVE}`).click();
+  await expect(page.getByTestId("mn-op-resend-text")).toHaveText("Send the same transaction again. It costs at most 25.00000453 tDASH.");
   await page.getByTestId("mn-op-resend-passphrase").fill("demo");
   await page.getByTestId("mn-op-resend-confirm").click();
-  await expect(page.getByTestId("mn-op-resend-sheet")).toHaveCount(0);
-  await page.getByTestId(`mn-op-resend-${OP_NOT_SENT}`).click();
-  await expect(page.getByTestId("mn-op-resend-text")).toHaveText("Send it again. It costs at most 0.00000453 tDASH.");
-  await page.keyboard.press("Escape");
   await expect(page.getByTestId("mn-op-resend-sheet")).toHaveCount(0);
   // Discard from More.
   await page.getByTestId(`mn-op-more-${OP_NOT_SENT}`).click();
@@ -390,43 +345,25 @@ test("In progress: each state's row and action; nothing on a conflicted one", as
   expect(errors).toEqual([]);
 });
 
-test("In progress ▸ Continue reopens a needs-signature row at Prove; an inputs-spent row gets a new message", async ({ page }) => {
-  const errors = await open(page, "mn-ops");
-  await page.getByTestId(`mn-op-continue-${OP_NEEDS_SIGNATURE}`).click();
-  await expect(step(page, "prove")).toBeVisible();
-  await page.getByTestId("reg-cancel").click();
-  await expect(sheet(page)).toHaveCount(0);
-  await page.getByTestId(`mn-op-refresh-${OP_INPUTS_SPENT}`).click();
-  await expect(page.getByTestId("reg-inputs-spent")).toHaveText(/The coins for the fee were spent\. Sign the new message\./);
-  await expect(page.getByTestId("reg-submit")).toBeDisabled();
-  const before = await page.getByTestId("reg-sign-message").innerText();
-  await page.getByTestId("reg-new-message").click();
-  await expect(page.getByTestId("reg-inputs-spent")).toHaveCount(0);
-  await expect(page.getByTestId("reg-sign-message")).not.toHaveText(before);
-  await expect(page.getByTestId("reg-signature")).toBeVisible();
+test("a saved registration keeps only Discard; Discard releases it", async ({ page }) => {
+  const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
+  for (const a of ["continue", "refresh", "resend"]) await expect(page.getByTestId(`mn-op-${a}-${OP_PREPARED}`)).toHaveCount(0);
+  await page.getByTestId(`mn-op-more-${OP_PREPARED}`).click();
+  await expect(page.getByRole("menuitem")).toHaveText(["Discard"]);
+  await page.getByTestId(`mn-op-more-${OP_PREPARED}-discard`).click();
+  await page.getByTestId("mn-op-discard-confirm").click();
+  await expect(page.getByTestId("mn-group-in-progress")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
-test("Lock it again, then Release collateral, on Home node", async ({ page }) => {
+test("a released collateral shows its notice, with no Lock it again and no Release in More", async ({ page }) => {
   const errors = await open(page, "mn-released");
   await page.getByTestId(`mn-row-${HOME}`).click();
-  await expect(page.getByTestId("mn-released")).toContainText("Collateral released: spending it ends this masternode.");
-  await page.getByTestId("mn-lock-again").click();
-  await expect(page.getByTestId("mn-released")).toHaveCount(0);
+  await expect(page.getByTestId("mn-released")).toHaveText("Collateral released: spending it ends this masternode.");
+  await expect(page.getByTestId("mn-lock-again")).toHaveCount(0);
   await page.getByTestId("mn-more").click();
-  await expect(page.getByTestId("mn-more-release")).toHaveText("Release collateral…");
-  await page.getByTestId("mn-more-release").click();
-  const release = page.getByTestId("mn-release-sheet");
-  await expect(release).toContainText("Home node's 1,000 Dash collateral is locked");
-  await expect(page.getByTestId("mn-release-warning")).toBeVisible();
-  await expect(page.getByTestId("mn-release-confirm")).toBeDisabled();
-  await fontsReady(page);
-  expect(await seriousAxeViolations(page)).toEqual([]);
-  await page.getByTestId("mn-release-understood").check();
-  await page.getByTestId("mn-release-confirm").click();
-  await expect(release).toHaveCount(0);
-  await expect(page.getByTestId("mn-released")).toBeVisible();
-  await page.getByTestId("mn-more").click();
-  await expect(page.getByTestId("mn-more-lock-again")).toHaveText("Lock it again");
+  await expect(page.getByTestId("mn-more-lock-again")).toHaveCount(0);
+  await expect(page.getByTestId("mn-more-release")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
