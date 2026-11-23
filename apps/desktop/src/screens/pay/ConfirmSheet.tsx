@@ -175,15 +175,24 @@ export function ConfirmSheet({
   useEffect(() => {
     if (policyKnown && prompt === "none") cancel.current?.focus();
   }, [policyKnown, prompt]);
+  const unsignedButton = useRef<HTMLButtonElement>(null);
+  const unsignedFailed = useRef(false);
   // The field was disabled while `authorize` ran: after a refusal, focus goes back to it.
   const field = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    if (!busy && error) field.current?.focus();
+    if (!busy && error && !unsignedFailed.current) field.current?.focus();
   }, [busy, error]);
   const form = useRef<HTMLFormElement>(null);
+  const dialog = () => form.current?.closest<HTMLElement>('[role="dialog"]');
   const holdFocus = () => {
-    if (form.current?.contains(document.activeElement)) form.current.closest<HTMLElement>('[role="dialog"]')?.focus();
+    if (form.current?.contains(document.activeElement)) dialog()?.focus();
   };
+  useEffect(() => {
+    if (busy || !unsignedFailed.current) return;
+    unsignedFailed.current = false;
+    const a = document.activeElement;
+    if (a === document.body || a === dialog()) unsignedButton.current?.focus();
+  }, [busy]);
 
   // Set before the first await, so a second Send in the same frame (before `busy` renders) does
   // not run the accept, which cannot be undone, twice.
@@ -318,6 +327,7 @@ export function ConfirmSheet({
       psbt = await draft.createUnsigned(spec);
     } catch (e) {
       if (!mounted.current) return;
+      unsignedFailed.current = true;
       setBusy(false);
       setError(failureText(e, chain));
       return;
@@ -465,6 +475,7 @@ export function ConfirmSheet({
           {!contact && (
             <DashButton
               key="unsigned"
+              ref={unsignedButton}
               variant={actions.unsignedFirst ? "filledBlue" : "tintedBlue"}
               size="large"
               data-testid="pay-confirm-unsigned"
