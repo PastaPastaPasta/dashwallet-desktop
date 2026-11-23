@@ -4,12 +4,14 @@ import type { MasternodeTypeName } from "./MasternodeTypeName";
 import type { PlatformFacts } from "./PlatformFacts";
 
 /**
- * What a ProTx says, as built: addresses, keys and the indices of the
- * keychain keys it uses. An empty `payoutAddress` or `collateralAddress`
- * in a preview is issued at registration.
+ * What a ProTx carries, for display. No secret, no signature.
  */
 export type ProTxTerms = { masternodeType: MasternodeTypeName, version: number, service: string, ownerAddress: string, ownerIndex: number | null, votingAddress: string, votingIndex: number | null, operatorPublicKey: string, operatorIndex: number | null,
 /**
  * Basis points.
  */
-operatorReward: number, payoutAddress: string, collateral: CollateralKindName | null, collateralOutpoint: string | null, collateralAddress: string | null, platform: PlatformFacts | null, platformNodeIndex: number | null, };
+operatorReward: number,
+/**
+ * Empty for a `newAddress` payout before registration.
+ */
+payoutAddress: string, collateral: CollateralKindName | null, collateralOutpoint: string | null, collateralAddress: string | null, platform: PlatformFacts | null, platformNodeIndex: number | null, };

@@ -5,14 +5,14 @@ import type { ProTxTerms } from "./ProTxTerms";
 import type { SignRequest } from "./SignRequest";
 
 /**
- * A saved ProTx of the wallet, its state derived on read.
+ * One of the wallet's ProTx operations.
  */
 export type ProTxOperation = { id: string, kind: ProTxOperationKindName, proTxHash: string | null, txid: string | null, state: ProTxOperationStateName, signRequest: SignRequest | null, fee: number,
 /**
- * What a resend is charged: the grant cap for Send again.
+ * The cap a resend's `masternodeOp` grant takes.
  */
-debit: number,
+debit: number, overdue: boolean, createdAt: number, signedAt: number | null, sentAt: number | null,
 /**
- * `sent` and not in a block well past its expected time.
+ * The last attempt's failure code.
  */
-overdue: boolean, createdAt: number, signedAt: number | null, sentAt: number | null, lastError: string | null, terms: ProTxTerms, };
+lastError: string | null, terms: ProTxTerms, };

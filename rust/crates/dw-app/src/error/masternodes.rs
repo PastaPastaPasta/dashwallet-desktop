@@ -2,8 +2,7 @@
 //! engine's `code()`s; `tests::codes_match_the_engine` holds them equal. The
 //! common codes come through `Engine`, and a lease's refusals through
 //! `Platform`. Codes of calls no command binds yet carry no `data`; the slice
-//! that binds the call adds it (S2: `protx_refused`, `keys_exhausted`,
-//! `operation_state`).
+//! that binds the call adds it.
 
 use dw_engine::masternodes::MasternodesError;
 
@@ -94,8 +93,13 @@ impl From<MasternodesError> for AppError {
             M::InFlight => (C::InFlight, None),
             M::KeysExhausted { role } => (C::KeysExhausted, Some(ErrorData::KeyRole { role })),
             M::NoOwnerKey => (C::NoOwnerKey, None),
-            M::UpdatePending { .. } => (C::UpdatePending, None),
-            M::UpdateSuperseded { .. } => (C::UpdateSuperseded, None),
+            M::UpdatePending { operation } => {
+                (C::UpdatePending, Some(ErrorData::Operation { operation }))
+            }
+            M::UpdateSuperseded { operation } => (
+                C::UpdateSuperseded,
+                Some(ErrorData::Operation { operation }),
+            ),
             M::SharedSessionNotFound => (C::SharedSessionNotFound, None),
             M::SharedStage { .. } => (C::SharedStage, None),
             M::SharedMessage { .. } => (C::SharedMessage, None),
@@ -248,15 +252,21 @@ mod tests {
         );
         assert_eq!(
             data(MasternodesError::OperationState {
-                state: "inputs_spent".into()
+                state: "sent".into()
             }),
-            serde_json::json!({ "kind": "operationState", "state": "inputs_spent" })
+            serde_json::json!({ "kind": "operationState", "state": "sent" })
         );
         assert_eq!(
             data(MasternodesError::KeysExhausted {
-                role: "platform_node".into()
+                role: "owner".into()
             }),
-            serde_json::json!({ "kind": "keyRole", "role": "platform_node" })
+            serde_json::json!({ "kind": "keyRole", "role": "owner" })
+        );
+        assert_eq!(
+            data(MasternodesError::UpdatePending {
+                operation: "op2".into()
+            }),
+            serde_json::json!({ "kind": "operation", "operation": "op2" })
         );
         assert_eq!(
             data(MasternodesError::PlatformUnavailable {
