@@ -22,6 +22,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine as _;
 use dw_appdb::{SqlValue, TableRows};
@@ -29,7 +30,7 @@ use dw_vault::{Credential, GrantPurpose, LockState, Vault, VaultError, WalletBac
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::compat::write_new_private;
+use crate::compat::{write_new_private, write_new_private_io};
 use crate::events::unix_now;
 use crate::gate::Lifecycle;
 use crate::keys::{AutoBackup, Checked, Origin};
@@ -578,6 +579,9 @@ impl NetworkSession {
                     }
                     other => other,
                 })?;
+            if this.automatic_backup_failed(wallet_id).await {
+                this.automatic_backup(wallet_id).await;
+            }
             Ok(BackupInfo {
                 path: dest,
                 wallet_id,
@@ -955,11 +959,16 @@ impl NetworkSession {
             let appdb = this.live()?.appdb;
             let dir = this.backup_directory();
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
-                appdb.set_setting("", KEEP_SETTING, Some(&keep.to_string()))?;
+                let value = keep.to_string();
                 if keep == 0 {
-                    for (scope, _) in appdb.settings_of_key(AUTO_FAILED_SETTING)? {
-                        appdb.set_setting(&scope, AUTO_FAILED_SETTING, None)?;
-                    }
+                    appdb.set_setting_clearing_local(
+                        "",
+                        KEEP_SETTING,
+                        Some(&value),
+                        AUTO_FAILED_SETTING,
+                    )?;
+                } else {
+                    appdb.set_setting("", KEEP_SETTING, Some(&value))?;
                 }
                 prune(&dir, None, keep)
             })
@@ -981,25 +990,35 @@ impl NetworkSession {
         drop(self.try_enter()?);
         let appdb = self.live()?.appdb;
         self.on_runtime(async move {
-            let rows =
-                tokio::task::spawn_blocking(move || appdb.settings_of_key(AUTO_FAILED_SETTING))
-                    .await??;
+            let rows = tokio::task::spawn_blocking(move || {
+                appdb.local_settings_of_key(AUTO_FAILED_SETTING)
+            })
+            .await??;
             Ok(rows
                 .into_iter()
-                .filter_map(|(scope, at)| {
-                    let id = scope.strip_prefix("local:")?.parse().ok()?;
-                    Some((id, at.parse().ok()?))
-                })
+                .filter_map(|(id, at)| Some((id.parse().ok()?, at.parse().ok()?)))
                 .collect())
         })
         .await
     }
 
+    /// Whether the latest automatic backup of `id` failed, or its record
+    /// cannot be read.
+    async fn automatic_backup_failed(&self, id: WalletId) -> bool {
+        let Ok(live) = self.live() else { return false };
+        let scope = dw_appdb::local_scope(&id.to_string());
+        let recorded =
+            tokio::task::spawn_blocking(move || live.appdb.setting(&scope, AUTO_FAILED_SETTING))
+                .await;
+        !matches!(recorded, Ok(Ok(None)))
+    }
+
     /// Writes an automatic backup of `id` when the policy keeps any and the
-    /// data key is available, then rotates. A failure is recorded
-    /// ([`Self::automatic_backup_failures`]) and sends
+    /// data key is available, then rotates, and sends `Backups`. A failure
+    /// is recorded ([`Self::automatic_backup_failures`]) and sends
     /// `Notice{BackupFailed}`; a missing data key skips quietly (dash-qt
-    /// backs up when the wallet loads; here the key may not be there yet).
+    /// backs up when the wallet loads; here the key may not be there yet),
+    /// and so does a backup of the same minute that is already written.
     pub(crate) async fn automatic_backup(self: &Arc<Self>, id: WalletId) {
         let keep = match self.backup_keep() {
             Ok(0) | Err(_) => return,
@@ -1018,19 +1037,29 @@ impl NetworkSession {
         if path.exists() {
             return;
         }
+        #[cfg(test)]
+        crate::coins::pause_at(&self.backups.pause).await;
         let result = async {
             let bytes = self.backup_bytes(id, None, true).await?;
             let (data_dir, d) = (self.data_dir().to_path_buf(), dir.clone());
-            tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
+            tokio::task::spawn_blocking(move || -> Result<bool, EngineError> {
                 crate::fsutil::create_owned_dir(&data_dir, Path::new(BACKUP_DIR))?;
-                write_new_private(&path, &bytes)?;
-                prune(&d, Some(id), keep)
+                match write_new_private_io(&path, &bytes) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+                    Err(e) => {
+                        return Err(BackupFailure::DestinationUnwritable(e.to_string()).into());
+                    }
+                }
+                prune(&d, Some(id), keep)?;
+                Ok(true)
             })
             .await?
         }
         .await;
         let failed_at = match &result {
-            Ok(()) => None,
+            Ok(false) => return,
+            Ok(true) => None,
             Err(EngineError::Backup(BackupFailure::VaultLocked)) => return,
             Err(_) => Some(unix_now().to_string()),
         };
@@ -1046,7 +1075,9 @@ impl NetworkSession {
             }
         }
         match result {
-            Ok(()) => {}
+            Ok(_) => self.sink.emit(EngineEvent::Backups {
+                network: self.network.clone(),
+            }),
             Err(EngineError::Backup(BackupFailure::VaultLocked)) => {}
             Err(e) => {
                 tracing::warn!(wallet_id = %id, error = %e, "automatic backup failed");
@@ -1067,6 +1098,43 @@ impl NetworkSession {
             this.automatic_backup(id).await;
         });
     }
+
+    /// Starts an automatic backup of every wallet in the background, once
+    /// per session: at open (dash-qt backs a wallet up when it loads,
+    /// QT-116), or while an encrypted vault is locked then, at its first
+    /// unlock.
+    pub(crate) fn back_up_every_wallet_once(self: &Arc<Self>) {
+        if !matches!(
+            self.vault.lock_state(),
+            LockState::Unlocked | LockState::Unencrypted
+        ) || self.backups.started.swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        #[cfg(test)]
+        self.backups.runs.fetch_add(1, Ordering::SeqCst);
+        let this = Arc::clone(self);
+        self.rt.spawn(async move {
+            let Ok(_op) = this.enter().await else { return };
+            let Ok(manager) = this.manager() else { return };
+            for id in manager.list_wallet_ids_blocking() {
+                this.automatic_backup(WalletId(id)).await;
+            }
+        });
+    }
+}
+
+/// The session's automatic backup state.
+#[derive(Default)]
+pub(crate) struct BackupRuntime {
+    /// [`NetworkSession::back_up_every_wallet_once`] ran.
+    started: AtomicBool,
+    /// Tests: how often it ran.
+    #[cfg(test)]
+    pub(crate) runs: std::sync::atomic::AtomicUsize,
+    /// Tests: holds the next automatic backup after its same-minute check.
+    #[cfg(test)]
+    pub(crate) pause: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 fn list_automatic(dir: &Path, wallet: Option<WalletId>) -> Result<Vec<BackupInfo>, EngineError> {

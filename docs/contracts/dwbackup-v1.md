@@ -181,11 +181,16 @@ the asset lock is the inviter's.
 ## 4. Automatic backups (QT-116)
 
 - File: `<network dir>/backups/<wallet id>.YYYY-MM-DD-HH-MM.dwbackup` (UTC), mode 0600.
-- Written when a wallet is added (create, import, restore, keys attached) and for every wallet
-  when a session opens, if the policy keeps any and the DEK is available (vault unlocked or
-  unencrypted); otherwise skipped silently, as dash-qt backs up only what it can. A DashPay
-  registration that reaches `FundingSent` also triggers one (§3.1), so the newest backup carries its
-  asset-lock outpoint.
+- Written when a wallet is added (create, import, restore, keys attached), and for every wallet
+  once per session: when it opens, or for an encrypted vault that is locked then, in the background
+  after its first unlock. Written only if the policy keeps any and the DEK is available (vault
+  unlocked or unencrypted); otherwise skipped silently, as dash-qt backs up only what it can. A
+  DashPay registration that reaches `FundingSent` also triggers one (§3.1), so the newest backup
+  carries its asset-lock outpoint. A user backup that succeeds triggers one for a wallet whose
+  latest automatic backup failed, before it returns.
+- A file of the same name (an automatic backup of the same minute) is left as it is and the
+  backup is skipped, whether it was there before or appears while the backup is built. A written
+  backup sends `EngineEvent::Backups`.
 - Encrypted vault: slot `vault_passphrase`; unencrypted: `vault_key`. A user backup and an
   automatic backup of the same wallet can run at the same time: neither writes anything but its
   own destination file (created with `O_EXCL`, mode 0600).
@@ -193,8 +198,9 @@ the asset lock is the inviter's.
   `backup.keep`); lowering `keep` deletes the oldest at once.
 - A failure sends `Notice{BackupFailed}` with the wallet id and cause, and records its time in the
   wallet's `local:` settings scope (`backup.auto_failed_at`, never exported); a later automatic
-  backup of the wallet that succeeds deletes it, and so do `keep` 0 and removing the wallet. A
-  vault locked meanwhile neither records nor deletes it. `automatic_backup_failures` lists them.
+  backup of the wallet that succeeds deletes it, and so do `keep` 0 (in the transaction that writes
+  it) and removing the wallet. A vault locked meanwhile neither records nor deletes it.
+  `automatic_backup_failures` lists them, skipping a record that is not UTF-8 text.
 - Watch-only wallets have no vault records and are not backed up (`backup_wallet` returns
   `NotImplemented{call: "backup_wallet.watch_only"}`).
 

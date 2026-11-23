@@ -80,6 +80,8 @@ describe("event bridge", () => {
     // Issue 340: a failed automatic backup rereads Settings ▸ Backups; other notices read nothing.
     expect(invalidationsFor({ kind: "notice", network: "testnet", code: "backupFailed", detail: "" })).toEqual([keys.backupsAll]);
     expect(invalidationsFor({ kind: "notice", network: "testnet", code: "spvError", detail: "" })).toEqual([]);
+    // A written automatic backup rereads them too, so an open tab drops a failure row it cleared.
+    expect(invalidationsFor({ kind: "backups", network: "testnet" })).toEqual([keys.backupsAll]);
     expect(invalidationsFor({ kind: "masternodes", network: "testnet" })).toEqual([["masternodes"]]);
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);

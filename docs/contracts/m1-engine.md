@@ -534,6 +534,7 @@ stay in dw-uri for M2 (IOS-048 OS registration).
 | `HistoryChanged {network, wallet_id, txids}` | tx added or status changed, including confirmations of young transactions on a new block; `txids` empty = reload all (rescan) | re-query `history_page`, current receive address | E1 |
 | `LockState {network, state}` | vault lock state changed | lock screen, status bar | B (emitted) |
 | `Notice {network, code, detail}` | `PlatformContextUnavailable`, `SpvError`, `UncleanShutdown`, `SyncStalled` (engine, once per 45 s stall), `WalletSecretNotDeleted` (no longer sent since E0-04 DEC-134: `remove_wallet` fails closed instead; kept in the bindings); `DashPayStartupIncomplete` (E0-05: a wallet's bring-up ended `PartialNoIdentity`, `DiscoveryFailed`, `PartialAccountsPending`, `SeedBindingUnverified` or `IdentityScanIncomplete`, or the unlock drain was refused for the seed binding; `detail` is `wallet <id>: <status>` with the snake_case status; withheld by dw-ffi until E0-13 binds it); `BackupFailed` is never sent yet (no automatic backups) | banner / log | E1 |
+| `Backups {network}` | an automatic backup was written ([`dwbackup-v1.md`](dwbackup-v1.md) §4); withheld by dw-ffi | re-read `automatic_backups`, `automatic_backup_failures` | QT-116 |
 
 `WalletCreated` is also sent when keys are attached to a registered wallet. The M0 events
 `SyncProgress`, `PeersChanged` and `WalletChanged` are removed.

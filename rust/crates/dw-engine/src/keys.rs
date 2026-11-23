@@ -484,20 +484,25 @@ impl NetworkSession {
         let _op = self.enter().await?;
         self.manager()?;
         self.leases.wait_gates().await;
-        let (out, epoch_changed) = self
+        let (out, epoch_changed, unlocked) = self
             .rt
             .spawn_blocking(move || {
                 let before = this.vault.lock_state();
                 let epoch = this.vault.epoch();
                 let out = f(&this.vault);
                 this.emit_lock_state_change(before);
+                let unlocked =
+                    before != LockState::Unlocked && this.vault.lock_state() == LockState::Unlocked;
                 let after = this.vault.epoch();
                 if after != epoch {
                     this.leases.epoch_changed(after);
                 }
-                (out.map_err(EngineError::from), after != epoch)
+                (out.map_err(EngineError::from), after != epoch, unlocked)
             })
             .await?;
+        if unlocked {
+            self.back_up_every_wallet_once();
+        }
         if epoch_changed {
             // Inline: the call returns with no task still holding the
             // session, and an unlock returns with its background leases.

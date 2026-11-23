@@ -123,6 +123,9 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // yet (the notice view comes with its task).
     case "notice":
       return event.code === "backupFailed" ? [keys.backupsAll] : [];
+    // An automatic backup was written: Settings ▸ Backups lists it, and its failure row goes.
+    case "backups":
+      return [keys.backupsAll];
     // `newTransactions` is announced above (payments/received.ts), not read as a query.
     case "newTransactions":
       return [];
