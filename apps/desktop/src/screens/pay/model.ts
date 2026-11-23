@@ -253,6 +253,8 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
       return { text: t("pay.error.broadcastUnknown"), field: null };
     case "send.cancelled":
       return { text: t("pay.error.cancelled"), field: null };
+    case "send.held_until_restart":
+      return { text: t("pay.error.heldUntilRestart"), field: null };
     // A payment to a contact (DP3-06 D13).
     case "contact.payment_locked":
       return { text: t("pay.error.contactLocked"), field: null };
@@ -474,9 +476,21 @@ export type Sending = { amount: number; fee: number; note?: string };
 const RELEASED = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent", "send.cancelled"] as const;
 
 /** A contact payment's first broadcast refused before its hand-off, its transaction still held
- * (DP3-01 D20, D23): another payment to the contact is locked or under way, or its lock row could
- * not be written. Nothing was sent; the sheet abandons it. */
-const CONTACT_HELD = ["contact.payment_locked", "storage"] as const;
+ * (DP3-01 D20, D23): another payment to the contact is locked or under way. Nothing was sent; the
+ * sheet abandons it. */
+const CONTACT_HELD = ["contact.payment_locked"] as const;
+
+/** A first broadcast whose record could not be written: refused before its hand-off, so nothing
+ * was sent, and the engine refuses a retry of it. The sheet abandons it. */
+export const UNRECORDED = "storage" as const;
+
+/** A first broadcast that was not sent: `abandon`, where the engine still holds the transaction,
+ * then `notSent`. A payment held until a restart refuses its abandon; it is reported not sent all
+ * the same. */
+export async function settleNotSent(abandon: (() => Promise<unknown>) | null, notSent: () => void): Promise<void> {
+  if (abandon) await abandon().catch(() => undefined);
+  notSent();
+}
 
 /** The outcome of a failed broadcast of `prepared` (U-03 D10). Only a first attempt the engine
  * released, or one whose handle was already gone (never dispatched), is "not sent". Anything
@@ -490,8 +504,10 @@ export function broadcastFailure(
   unit: Unit = "DASH",
   contact = false,
 ): Outcome {
+  // Not sent, but its coins stay reserved until a restart: no retry, which would send it.
+  if (hasCode(e, "send.held_until_restart")) return { kind: "failed", text: failureText(e, chain, unit) };
   const gone = hasCode(e, "app.unknown_handle");
-  const notSent = [...RELEASED, ...(contact ? CONTACT_HELD : [])];
+  const notSent = [...RELEASED, UNRECORDED, ...(contact ? CONTACT_HELD : [])];
   if (first && (gone || notSent.some((c) => hasCode(e, c)))) return { kind: "failed", text: failureText(e, chain, unit) };
   // The handle went with the draft (a lock or network switch closed it): nothing to retry here.
   const text = gone ? t("pay.error.noRetryHere") : failureText(e, chain, unit);

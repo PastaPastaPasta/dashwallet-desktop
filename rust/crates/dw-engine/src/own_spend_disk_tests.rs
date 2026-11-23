@@ -268,12 +268,23 @@ pub(super) fn spendable(
     id: WalletId,
     coin: OutPoint,
 ) -> bool {
+    spendable_for(engine, session, id, coin, COIN / 2)
+}
+
+/// [`spendable`] for a payment of `amount`.
+pub(super) fn spendable_for(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    coin: OutPoint,
+    amount: u64,
+) -> bool {
     let (_draft, prepared) = prepare(
         engine,
         session,
         id,
         CoinSource::Outpoints(vec![coin]),
-        COIN / 2,
+        amount,
         false,
         &Arc::new(Accept::default()),
     );

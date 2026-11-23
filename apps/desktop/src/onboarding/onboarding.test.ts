@@ -215,7 +215,9 @@ describe("onboarding view model: create", () => {
     model.back();
     model.confirmWrittenDown();
     await solve(model);
-    expect(model.failure).toBe("Something went wrong (storage).");
+    expect(model.failure).toBe(
+      "Dash Wallet could not read or write its data folder. Check that the disk has free space, then try again or restart Dash Wallet.",
+    );
   });
 
   it("aSecondClickWhileACallRunsIsIgnored", async () => {
@@ -697,5 +699,11 @@ describe("failureText: Close Wallet and the network close (DEC-1046)", () => {
     expect(failureText({ code: "wallet", message: "a wallet is still opening; close the network once it is open", data: null })).toBe("A wallet is still opening; close the network once it is open.");
     // Any other `wallet` failure stays generic: the code is shared.
     expect(failureText({ code: "wallet", message: "disk full", data: null })).toBe("Something went wrong (wallet).");
+  });
+
+  it("says a storage failure is the data folder's, and how to get past it", () => {
+    expect(failureText(appError("storage"))).toBe(
+      "Dash Wallet could not read or write its data folder. Check that the disk has free space, then try again or restart Dash Wallet.",
+    );
   });
 });
