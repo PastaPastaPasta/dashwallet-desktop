@@ -4977,6 +4977,7 @@ button.bell-row-open:focus-visible {
 
 .coinjoin-explainer p {
   margin: 0 0 var(--dw-space-m);
+  overflow-wrap: anywhere;
 }
 
 .license-text {

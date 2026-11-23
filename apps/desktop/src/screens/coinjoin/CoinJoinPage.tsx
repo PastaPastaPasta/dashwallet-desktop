@@ -3,7 +3,7 @@
 // panel and advanced view in a collapsed "Session details" (QT-042, D10). The numbers behind the
 // level are on Settings ▸ CoinJoin. "How CoinJoin works" is dash-qt's CoinJoin information.
 
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { CoinJoinStatus } from "../../api/generated/CoinJoinStatus";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend, useLockStatus, useShieldedStatus } from "../../api/queries";
@@ -33,13 +33,15 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
   const { action } = view;
   const lockText = lockLine(lock.data?.state);
   const [explainer, setExplainer] = useState(false);
+  // WebKit can press a button without focusing it: focus goes back to the opener by ref.
+  const explainerOpener = useRef<HTMLButtonElement>(null);
   return (
     <Page route="coinJoin" badge={<ExperimentalBadge testId="coinjoin-experimental" />}>
       <p className="coinjoin-subtitle">{CoinJoinText.subtitle}</p>
-      <DashButton variant="plainBlue" className="coinjoin-explainer-link" data-testid="coinjoin-explainer-open" onClick={() => setExplainer(true)}>
+      <DashButton ref={explainerOpener} variant="plainBlue" className="coinjoin-explainer-link" data-testid="coinjoin-explainer-open" onClick={() => setExplainer(true)}>
         {t("coinjoin.explainer.link")}
       </DashButton>
-      {explainer && <CoinJoinExplainer onClose={() => setExplainer(false)} />}
+      {explainer && <CoinJoinExplainer returnFocus={() => explainerOpener.current} onClose={() => setExplainer(false)} />}
       <section className="coinjoin-status card-l1" data-testid="coinjoin-status" data-state={view.state} aria-labelledby={`${id}-title`}>
         <Icon id="coinjoin" size={56} className="coinjoin-status-icon" />
         <div className="coinjoin-card-body">
@@ -85,10 +87,10 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
 }
 
 /** dash-qt's CoinJoin information (QT-018, QT-153): what mixing does, in a few lines. */
-function CoinJoinExplainer({ onClose }: { onClose: () => void }) {
+function CoinJoinExplainer({ onClose, returnFocus }: { onClose: () => void; returnFocus: () => HTMLElement | null }) {
   const t = useT();
   return (
-    <Sheet title={t("coinjoin.explainer.title")} width="small" testId="coinjoin-explainer" onClose={onClose}>
+    <Sheet title={t("coinjoin.explainer.title")} width="small" testId="coinjoin-explainer" onClose={onClose} returnFocus={returnFocus}>
       <div className="coinjoin-explainer">
         {(["what", "rounds", "control", "cost", "pay"] as const).map((k) => (
           <p key={k}>{t(`coinjoin.explainer.${k}`)}</p>

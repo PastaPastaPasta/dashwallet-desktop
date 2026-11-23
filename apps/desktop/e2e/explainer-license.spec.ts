@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { seriousAxeViolations } from "./axe";
+import { seriousAxeViolations, settleAnimations } from "./axe";
 import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
 import { showSettingsView } from "./settings";
 
@@ -14,7 +14,7 @@ for (const theme of THEMES) {
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
     await page.getByTestId("coinjoin-status-title").waitFor();
     await fontsReady(page);
-    await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)));
+    await settleAnimations(page);
     await page.screenshot({ path: artifactPath(info, `${theme}-coinjoin-page.png`) });
     await page.getByTestId("coinjoin-explainer-open").click();
     const sheet = page.getByTestId("coinjoin-explainer");
@@ -27,6 +27,14 @@ for (const theme of THEMES) {
     await page.getByTestId("coinjoin-explainer-close").click();
     await expect(sheet).toHaveCount(0);
     await expect(page.getByTestId("coinjoin-explainer-open")).toBeFocused();
+    // WebKit on macOS does not focus a button it clicks: focus still comes back to it.
+    const opener = page.getByTestId("coinjoin-explainer-open");
+    await opener.blur();
+    await opener.dispatchEvent("click");
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
+    await expect(opener).toBeFocused();
     expect(errors).toEqual([]);
   });
 
@@ -39,7 +47,7 @@ for (const theme of THEMES) {
     await expect(text).toContainText("Copyright (c) Dash Wallet Desktop contributors");
     await expect(text).toContainText('THE SOFTWARE IS PROVIDED "AS IS"');
     expect(await seriousAxeViolations(page)).toEqual([]);
-    await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)));
+    await settleAnimations(page);
     await page.screenshot({ path: artifactPath(info, `${theme}-settings-about.png`) });
     await card.scrollIntoViewIfNeeded();
     await card.screenshot({ path: artifactPath(info, `${theme}-settings-about-license.png`) });
