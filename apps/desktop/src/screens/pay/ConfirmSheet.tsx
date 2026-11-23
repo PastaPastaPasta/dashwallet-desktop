@@ -39,6 +39,7 @@ import {
   failureText,
   isContact,
   keepsPromise,
+  settleNotSent,
   subtractsFee,
   UNRECORDED,
   unsignedKeepsPromise,
@@ -301,14 +302,12 @@ export function ConfirmSheet({
     } catch (e) {
       // "Not sent" only when the engine released it, held it back before its hand-off, or the
       // window locked before it was asked (then it is abandoned here); nothing else is abandoned
-      // after a broadcast. One whose record could not be written may stay held until a restart,
-      // when its abandon is refused.
+      // after a broadcast.
       const never = refusedWhileLocked(e);
       const o = never ? ({ kind: "failed", text: t("pay.error.lockedBeforeSend") } as const) : broadcastFailure(e, chain, { txid: prepared.summary.txid, draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
       if (o.kind === "failed") {
-        if (toContact || never) await draft.abandon(d, prepared.handle);
-        else if (hasCode(e, UNRECORDED)) await draft.abandon(d, prepared.handle).catch(() => undefined);
-        notSent(o.text);
+        const held = toContact || never || hasCode(e, UNRECORDED);
+        await settleNotSent(held ? () => draft.abandon(d, prepared.handle) : null, () => notSent(o.text));
       } else attempt.outcome(accepted && o.kind === "unknown" ? { ...o, text: `${accepted} ${o.text}` } : o);
     } finally {
       // The lease ends with the first broadcast (dwcli's point): a retry needs none.

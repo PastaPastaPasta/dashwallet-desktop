@@ -30,6 +30,7 @@ import {
   recipientOf,
   mixedFeeText,
   sendErrorText,
+  settleNotSent,
   withSubtractFee,
 } from "./model";
 
@@ -180,6 +181,21 @@ describe("the engine's refusals", () => {
     expect(broadcastFailure(err("storage"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
     // A code the renderer does not know may come after the bytes left: unknown, never abandoned.
     expect(broadcastFailure(err("internal"), "test", held, true)).toMatchObject({ kind: "unknown", retry: true });
+  });
+
+  it("reports a payment not sent even when its abandon is refused", async () => {
+    const shown: string[] = [];
+    await settleNotSent(() => Promise.reject(err("send.held_until_restart")), () => shown.push("refused"));
+    let abandoned = false;
+    await settleNotSent(
+      async () => {
+        abandoned = true;
+      },
+      () => shown.push("abandoned"),
+    );
+    await settleNotSent(null, () => shown.push("released"));
+    expect(shown).toEqual(["refused", "abandoned", "released"]);
+    expect(abandoned).toBe(true);
   });
 
   it("says a payment not sent whose coins stay reserved needs a restart, with no retry", () => {

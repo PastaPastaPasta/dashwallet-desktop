@@ -484,6 +484,14 @@ const CONTACT_HELD = ["contact.payment_locked"] as const;
  * was sent, and the engine refuses a retry of it. The sheet abandons it. */
 export const UNRECORDED = "storage" as const;
 
+/** A first broadcast that was not sent: `abandon`, where the engine still holds the transaction,
+ * then `notSent`. A payment held until a restart refuses its abandon; it is reported not sent all
+ * the same. */
+export async function settleNotSent(abandon: (() => Promise<unknown>) | null, notSent: () => void): Promise<void> {
+  if (abandon) await abandon().catch(() => undefined);
+  notSent();
+}
+
 /** The outcome of a failed broadcast of `prepared` (U-03 D10). Only a first attempt the engine
  * released, or one whose handle was already gone (never dispatched), is "not sent". Anything
  * else may have reached the network: it stays unknown, never abandoned, so the user is not
