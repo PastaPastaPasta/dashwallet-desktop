@@ -33,7 +33,7 @@ const AREAS: Record<string, string[]> = {
 
   contacts: ["screens/contacts"],
 
-  dashpay: ["screens/dashpay/AboutDashPay.tsx", "screens/dashpay/Claim.tsx", "screens/dashpay/DashPayCard.tsx", "screens/dashpay/JoinDashPay.tsx", "screens/dashpay/Registration.tsx", "screens/dashpay/ShareSheet.tsx", "screens/dashpay/Welcome.tsx"],
+  dashpay: ["screens/dashpay/AboutDashPay.tsx", "screens/dashpay/Claim.tsx", "screens/dashpay/DashPayCard.tsx", "screens/dashpay/JoinDashPay.tsx", "screens/dashpay/Registration.tsx", "screens/dashpay/ShareSheet.tsx", "screens/dashpay/TopUpSheet.tsx", "screens/dashpay/Welcome.tsx", "screens/dashpay/WithdrawSheet.tsx"],
 
   coinjoin: ["screens/coinjoin"],
 

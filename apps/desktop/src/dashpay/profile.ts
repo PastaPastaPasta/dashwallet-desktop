@@ -13,7 +13,7 @@ import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
-import { t } from "../i18n";
+import { formatLocale, t } from "../i18n";
 import { REG_COPY } from "./registration";
 import { COPY, homeCard, namesState, type CardModel, type NamesState, type StatusInputs } from "./status";
 
@@ -36,8 +36,8 @@ export const PROFILE_COPY = {
     unknownLine: "Dash Wallet reads it from the network.",
     updating: "Updating…",
     /** m3: the balance while the cost table, which turns it into Dash, is not read. */
-    creditsOnly: (credits: string) => `${credits} credits`,
-    estimate: (requests: string, updates: string) => `≈ ${requests} contact requests · ${updates} profile updates`,
+    creditsOnly: (credits: string) => t("dashpay.credits.only", { credits }),
+    estimate: (requests: string, updates: string) => t("dashpay.credits.estimate", { requests, updates }),
     low: {
       title: "Your credit balance is low",
       text: "Top-up your credits to continue making changes to your profile and adding contacts",
@@ -48,7 +48,9 @@ export const PROFILE_COPY = {
     },
     topUp: "Top up",
     toppingUp: "Topping up…",
-    pendingFirst: "Finish the pending top-up first.",
+    get pendingFirst() {
+      return t("dashpay.credits.pendingFirst");
+    },
     /** D14: a top-up that ended while the sheet was hidden. */
     unseen: "Your top-up has an update.",
     showResult: "Show",
@@ -168,9 +170,12 @@ export const creditsToDuffs = (credits: string | bigint, costs: Pick<CostTable, 
 
 /** Android's `buy_credits_estimated_items` (D6): how many contact requests and profile updates
  * `credits` pay for. */
+/** A count of credits, grouped as the formatting locale groups it. */
+export const creditCount = (credits: string | bigint) => new Intl.NumberFormat(formatLocale(undefined)).format(BigInt(credits));
+
 export function estimateText(credits: string | bigint, costs: CostTable): string {
   const c = BigInt(credits);
-  const n = (cost: string) => (BigInt(cost) > 0n ? (c / BigInt(cost)).toLocaleString("en-US") : "—");
+  const n = (cost: string) => (BigInt(cost) > 0n ? creditCount(c / BigInt(cost)) : "—");
   return PROFILE_COPY.credits.estimate(n(costs.contactRequest), n(costs.profileUpdate));
 }
 
@@ -233,7 +238,7 @@ export const holdsTopUp = (main: IdentitySummary, pending: PendingTopUp[], stuck
 /** A credit balance as shown (D29, D30): the amount once the cost table is read, raw credits until then; masked only in Discreet Mode. */
 export function creditBalance(credits: string, costs: CostTable | undefined, discreet: boolean, amount: (duffs: number) => string, masked: string): string {
   if (discreet) return masked;
-  return costs ? amount(creditsToDuffs(credits, costs)) : PROFILE_COPY.credits.creditsOnly(BigInt(credits).toLocaleString("en-US"));
+  return costs ? amount(creditsToDuffs(credits, costs)) : PROFILE_COPY.credits.creditsOnly(creditCount(credits));
 }
 
 /** The credits block (C1–C8). */

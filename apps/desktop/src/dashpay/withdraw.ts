@@ -16,75 +16,37 @@ import type { WithdrawalStatusName } from "../api/generated/WithdrawalStatusName
 import type { WithdrawOutcome } from "../api/generated/WithdrawOutcome";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
-import { creditsToDuffs } from "./profile";
+import { messageTable, t } from "../i18n";
+import { creditCount, creditsToDuffs, PROFILE_COPY } from "./profile";
+import { withTable } from "./status";
 import { platformOp } from "./topup";
 
 export type WithdrawApi = Pick<Backend, "creditsWithdraw" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
-export const WITHDRAW_COPY = {
-  title: "Withdraw credits",
-  action: "Withdraw",
-  form: {
-    intro: "Turn credits back into Dash. Dash Platform sends it to a Dash address.",
-    amount: "Amount",
-    max: "Max",
-    maxLine: "Everything but the network's fee.",
-    to: "To",
-    toHint: "Your wallet's receive address. You can paste another Dash address.",
-    invalidAmount: "Enter an amount.",
-    noCosts: "Waiting for the network's prices. Try Max, or wait a moment.",
-    invalidTo: "Enter a Dash address.",
-    platformTo: "This is a Dash Platform address. Withdraw to a Dash address.",
-    unconfirmed: "Your last withdrawal is not on Dash Platform yet and may still go through. If you withdraw again, at most one of the two goes through.",
-    next: "Continue",
-    cancel: "Cancel",
-  },
-  confirm: {
-    message: "The following credits leave your identity. Dash Platform pays the Dash to the address below.",
-    withdraw: "Withdraw",
-    fee: "Network fee",
-    total: "Taken from credits",
-    receive: "You receive about",
-    to: "To",
-    quoting: "Working out the fee…",
-    back: "Back",
-    go: "Confirm & withdraw",
-  },
+const wd = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(prefix ? `dashpay.withdraw.${prefix}` : "dashpay.withdraw", keys);
+
+export const WITHDRAW_COPY = withTable(wd("", ["title", "action", "unseen", "show", "ok", "close"]), {
+  form: withTable(
+    wd("form", ["intro", "amount", "max", "maxLine", "to", "toHint", "invalidAmount", "first", "noCosts", "invalidTo", "platformTo", "unconfirmed", "next", "cancel"]),
+    { amountUnit: (unit: string) => t("dashpay.withdraw.form.amountUnit", { unit }) },
+  ),
+  confirm: wd("confirm", ["message", "withdraw", "fee", "total", "receive", "to", "quoting", "back", "go"]),
   refused: {
     /** Followed by the document id. */
-    document: "Withdrawal document:",
-  },
-  running: {
-    title: "Withdrawing…",
-    text: "Dash Platform confirms the withdrawal. You can close this: My Profile shows it.",
-  },
-  done: {
-    title: "Withdrawal queued",
-    text: (amount: string, to: string) => `${amount} is on its way to ${to}. Dash Platform sends it to the Dash chain, usually within minutes, or hours later when Platform's daily withdrawal limit is reached.`,
-    balance: (balance: string) => `Your credit balance is ${balance}.`,
-    landed: "Your credit balance updates shortly.",
-  },
-  recent: {
-    title: "Withdrawals",
-    row: (amount: string) => `Withdrawal of ${amount}`,
-    /** A withdrawal whose amount does not read. */
-    unknownAmount: "an unknown amount",
-    unconfirmed: "Withdrawal not on Dash Platform yet",
-    /** Followed by the document id. */
-    unconfirmedText: "It may have been sent, and shows here once Dash Platform takes it. Document:",
-    status: {
-      pending: "Pending",
-      complete: "Sent",
-      failed: "Failed: the credits were not returned",
-      unknown: "Status unknown",
+    get document() {
+      return t("dashpay.withdraw.document");
     },
   },
-  /** A withdrawal that ended while the sheet was hidden. */
-  unseen: "Your withdrawal has an update.",
-  show: "Show",
-  ok: "Done",
-  close: "Close",
-} as const;
+  running: wd("running", ["title", "text"]),
+  done: withTable(wd("done", ["title", "landed"]), {
+    text: (amount: string, to: string) => t("dashpay.withdraw.done.text", { amount, to }),
+    balance: (balance: string) => t("dashpay.withdraw.done.balance", { balance }),
+  }),
+  recent: withTable(wd("recent", ["title", "unconfirmed", "unconfirmedText"]), {
+    row: (amount: string) => t("dashpay.withdraw.recent.row", { amount }),
+    status: wd("recent.status", ["pending", "complete", "failed", "unknown"]),
+  }),
+});
 
 export type WithdrawStep = "form" | "confirm" | "running" | "done" | "refused";
 
@@ -136,12 +98,14 @@ export interface WithdrawalRow {
 /** The withdrawals My Profile lists: the newest `RECENT_SHOWN` (the engine reads them newest first). */
 const listed = (list: Withdrawal[] | undefined) => (list ?? []).slice(0, RECENT_SHOWN);
 
-/** A row's amount: the payout, else the credits, else unknown (D25 n5). */
-function rowAmount(w: Withdrawal, shown: number | null, amount: (duffs: number) => string): string {
+/** A row's amount: the payout, else the credits, else `null`: unknown (D25 n5). */
+function rowAmount(w: Withdrawal, shown: number | null, amount: (duffs: number) => string): string | null {
   if (shown !== null) return amount(shown);
-  if (w.credits === null) return WITHDRAW_COPY.recent.unknownAmount;
-  return `${BigInt(w.credits).toLocaleString("en-US")} credits`;
+  if (w.credits === null) return null;
+  return PROFILE_COPY.credits.creditsOnly(creditCount(w.credits));
 }
+
+const rowTitle = (amount: string | null) => (amount === null ? t("dashpay.withdraw.recent.rowUnknown") : WITHDRAW_COPY.recent.row(amount));
 
 /** My Profile's rows. */
 export function withdrawalRows(list: Withdrawal[] | undefined, costs: Pick<CostTable, "creditsPerDuff"> | undefined, amount: (duffs: number) => string): WithdrawalRow[] {
@@ -151,7 +115,7 @@ export function withdrawalRows(list: Withdrawal[] | undefined, costs: Pick<CostT
     const at = w.updatedAt ?? w.createdAt;
     return {
       id: w.id,
-      title: WITHDRAW_COPY.recent.row(rowAmount(w, shown, amount)),
+      title: rowTitle(rowAmount(w, shown, amount)),
       status: s.text,
       pending: s.pending,
       to: w.to,
@@ -180,30 +144,30 @@ export function withdrawErrorText(e: unknown, credits: (c: string) => string): s
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "credits.withdrawal_out_of_range":
-      return e.data?.kind === "creditRange" ? `Withdraw between ${credits(e.data.min)} and ${credits(e.data.max)}.` : "Dash Platform does not take a withdrawal of this amount.";
+      return e.data?.kind === "creditRange" ? t("dashpay.withdraw.error.range", { min: credits(e.data.min), max: credits(e.data.max) }) : t("dashpay.withdraw.error.rangeUnknown");
     case "platform.insufficient_credits":
-      return e.data?.kind === "credits" ? `Not enough credits: ${credits(e.data.needed)} needed with the fee, ${credits(e.data.available)} available.` : "Not enough credits.";
+      return e.data?.kind === "credits" ? t("dashpay.withdraw.error.credits", { needed: credits(e.data.needed), available: credits(e.data.available) }) : t("dashpay.withdraw.error.creditsShort");
     case "identity.keys_missing":
-      return "This identity has no transfer key in this wallet, so it cannot withdraw.";
+      return t("dashpay.withdraw.error.keysMissing");
     case "invalid_argument":
-      return "Enter a Dash address of this network.";
+      return t("dashpay.withdraw.error.address");
     case "platform.broadcast_unknown":
-      return "It may have been sent. Check your withdrawals in My Profile before trying again.";
+      return t("dashpay.withdraw.error.maybeSent");
     case "credits.withdrawal_landed":
-      return "Your last withdrawal went through after all, so this one does not. Withdraw again only if you want a second one.";
+      return t("dashpay.withdraw.error.landed");
     case "platform.context_unavailable":
-      return "Waiting for the network to sync and verify this identity. Try again shortly.";
+      return t("dashpay.withdraw.error.context");
     case "platform.trust_mismatch":
-      return "This identity's data could not be verified against the network. Nothing was withdrawn.";
+      return t("dashpay.withdraw.error.trust");
     case "platform.unavailable":
     case "platform.timeout":
-      return "Dash Platform did not answer. Try again.";
+      return t("dashpay.withdraw.error.unavailable");
     case "platform.signer_unavailable":
-      return "Unlock the wallet fully and try again.";
+      return t("dashpay.withdraw.error.signer");
     case "platform.grant_exceeded":
-      return "The cost went above what you approved.";
+      return t("dashpay.withdraw.error.grantExceeded");
     default:
-      return `It stopped with ${e.code}.`;
+      return t("dashpay.withdraw.error.stoppedWith", { code: e.code });
   }
 }
 
