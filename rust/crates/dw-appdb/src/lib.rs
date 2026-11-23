@@ -520,6 +520,16 @@ pub struct PriorRows {
     locks: Vec<PriorLock>,
 }
 
+/// A backup's rows of one wallet, for [`AppDb::write_settings_and_locks`].
+#[derive(Debug, Clone, Copy)]
+pub struct BackupRows<'a> {
+    pub tables: &'a [TableRows],
+    /// The wallet's rows stored already (an interrupted restore's, of a
+    /// wallet not registered) are deleted first, as [`AppDb::readmit_wallet`]
+    /// deletes a removed wallet's: the proposals its removal kept stay.
+    pub replace: bool,
+}
+
 /// An outpoint and its lock row (reason, created, released), if it had one.
 type PriorLock = (String, u32, Option<(String, i64, Option<i64>)>);
 
@@ -1182,8 +1192,10 @@ impl AppDb {
     }
 
     /// Sets `settings` in wallet scope `wallet_id` and a manual lock on each
-    /// of `locks`, all in one transaction, and returns what they replaced
-    /// for [`Self::restore_settings_and_locks`]. Where a key already has a
+    /// of `locks`, then inserts `backup`'s rows as
+    /// [`Self::import_wallet_rows`] does, all in one transaction, and returns
+    /// what the settings and locks replaced for
+    /// [`Self::restore_settings_and_locks`]. Where a key already has a
     /// value, `merge(key, stored, new)` is what is stored, read and written
     /// in the same transaction.
     pub fn write_settings_and_locks(
@@ -1193,9 +1205,14 @@ impl AppDb {
         merge: &dyn Fn(&str, &str, &str) -> String,
         locks: &[(String, u32)],
         now: u64,
+        backup: Option<BackupRows<'_>>,
     ) -> Result<PriorRows> {
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(BackupRows { replace: true, .. }) = backup {
+            delete_wallet_rows(&tx, wallet_id)?;
+            proposals::restore_kept(&tx, wallet_id)?;
+        }
         let mut prior = PriorRows {
             wallet_id: wallet_id.to_owned(),
             settings: Vec::with_capacity(settings.len()),
@@ -1227,6 +1244,9 @@ impl AppDb {
                 .optional()?;
             Self::lock_manual_on(&tx, wallet_id, txid, *vout, now)?;
             prior.locks.push((txid.clone(), *vout, old));
+        }
+        if let Some(backup) = backup {
+            rows::insert_rows(&tx, wallet_id, backup.tables)?;
         }
         tx.commit()?;
         Ok(prior)
@@ -2708,7 +2728,7 @@ mod tests {
         ];
         let settings = [("a", "new".to_owned()), ("b", "x".to_owned())];
         let prior = db
-            .write_settings_and_locks(W, &settings, &|_, _, new| new.to_owned(), &locks, 9)
+            .write_settings_and_locks(W, &settings, &|_, _, new| new.to_owned(), &locks, 9, None)
             .unwrap();
         assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("new"));
         assert_eq!(db.setting(W, "b").unwrap().as_deref(), Some("x"));
@@ -2734,7 +2754,7 @@ mod tests {
         let merge = |key: &str, stored: &str, new: &str| format!("{key}:{stored}+{new}");
         let settings = [("a", "new".to_owned()), ("b", "x".to_owned())];
         let prior = db
-            .write_settings_and_locks(W, &settings, &merge, &[], 9)
+            .write_settings_and_locks(W, &settings, &merge, &[], 9, None)
             .unwrap();
         assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("a:old+new"));
         assert_eq!(db.setting(W, "b").unwrap().as_deref(), Some("x"));

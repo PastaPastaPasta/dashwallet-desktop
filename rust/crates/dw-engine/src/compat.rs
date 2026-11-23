@@ -674,6 +674,7 @@ impl NetworkSession {
                             issued,
                             locks,
                             coinjoin_salt: wallet.coinjoin_salt,
+                            rows: Vec::new(),
                         },
                     })
                 })
@@ -908,6 +909,9 @@ pub(crate) struct ImportedState {
     /// Core's persistent coin locks (`lockedutxo`).
     pub(crate) locks: Vec<dashcore::OutPoint>,
     pub(crate) coinjoin_salt: Option<[u8; 32]>,
+    /// A backup's app rows of the wallet (DEC-210 rows: labels, address
+    /// book, notes, local contacts, settings, its salt and coin locks).
+    pub(crate) rows: Vec<dw_appdb::TableRows>,
 }
 
 /// What `import_wallet_dat` carries out of the blocking read.
@@ -984,15 +988,19 @@ impl NetworkSession {
 
     /// Stores `state` for wallet `id` in one transaction: the range
     /// setting, Core's coin locks and its CoinJoin salt, so the same coins
-    /// count as fully mixed (QT-043, m3-engine.md §5). The salt replaces a
-    /// stored one; each stored counter of the range only rises, so an older
-    /// copy of the file does not narrow it; Core's locks are added to any
-    /// the wallet has. Returns what was replaced, for
+    /// count as fully mixed (QT-043, m3-engine.md §5), then a backup's rows.
+    /// The salt replaces a stored one; each stored counter of the range only
+    /// rises, so an older copy of the file does not narrow it; Core's locks
+    /// are added to any the wallet has. A backup's rows are added to those
+    /// of a `registered` wallet; those of one not registered (an earlier
+    /// restore's, stopped before it registered the wallet) are replaced.
+    /// Returns what the settings and locks replaced, for
     /// [`Self::restore_imported_state`].
     pub(crate) async fn write_imported_state(
         self: &Arc<Self>,
         id: WalletId,
         state: &ImportedState,
+        registered: bool,
     ) -> Result<Option<dw_appdb::PriorRows>, EngineError> {
         let mut settings = Vec::new();
         if let Some((external, internal)) = state.issued {
@@ -1006,10 +1014,11 @@ impl NetworkSession {
         let locks: Vec<(String, u32)> = (state.locks.iter())
             .map(|o| (o.txid.to_string(), o.vout))
             .collect();
-        if settings.is_empty() && locks.is_empty() {
+        if settings.is_empty() && locks.is_empty() && state.rows.is_empty() {
             return Ok(None);
         }
         let key = id.to_string();
+        let rows = state.rows.clone();
         self.appdb_op(move |db| {
             db.write_settings_and_locks(
                 &key,
@@ -1017,6 +1026,10 @@ impl NetworkSession {
                 &widen_issued,
                 &locks,
                 crate::coins::now_secs(),
+                (!rows.is_empty()).then_some(dw_appdb::BackupRows {
+                    tables: &rows,
+                    replace: !registered,
+                }),
             )
         })
         .await
