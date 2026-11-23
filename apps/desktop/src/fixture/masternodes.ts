@@ -25,6 +25,7 @@ import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { UpdateRegistrarPreview } from "../api/generated/UpdateRegistrarPreview";
 import type { UpdateRegistrarRequest } from "../api/generated/UpdateRegistrarRequest";
+import { DUP_KEY, PAYEE_REUSE } from "../masternodes/protxReasons";
 import type { Ctx, Handlers } from "./handlers";
 import { FIXTURE_WALLET_ID, type FixtureWallet, type World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
@@ -336,9 +337,9 @@ function planUpdate(world: World, walletId: string, request: UpdateRegistrarRequ
   const payoutAddress = request.payout.kind === "address" ? request.payout.address : "";
   const ownerAddress = hash in m.ownerKeys ? keyInfo("owner", m.ownerKeys[hash]).address! : addr(`ow${hash.slice(0, 4)}`);
   if (operatorChanges && m.listed.some((l) => l.proTxHash !== hash && basicKey(l.facts.operatorPublicKey) === operatorKey))
-    throw fail("masternodes.protx_refused", "bad-protx-dup-key", { kind: "reason", reason: "bad-protx-dup-key" });
+    throw fail("masternodes.protx_refused", DUP_KEY, { kind: "reason", reason: DUP_KEY });
   if (payoutAddress && (payoutAddress === ownerAddress || payoutAddress === votingAddress))
-    throw fail("masternodes.protx_refused", "bad-protx-payee-reuse", { kind: "reason", reason: "bad-protx-payee-reuse" });
+    throw fail("masternodes.protx_refused", PAYEE_REUSE, { kind: "reason", reason: PAYEE_REUSE });
   const terms: ProTxTerms = {
     masternodeType: listed.facts.kind,
     version: 2,

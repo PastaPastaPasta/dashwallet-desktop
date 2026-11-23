@@ -9,6 +9,7 @@ import type { UpdateRegistrarPreview } from "../api/generated/UpdateRegistrarPre
 import type { UpdateRegistrarRequest } from "../api/generated/UpdateRegistrarRequest";
 import { t } from "../i18n";
 import { mnErrorText } from "./model";
+import { DUP_KEY, PAYEE_REUSE, PENDING_DUP } from "./protxReasons";
 
 const P = "masternodes.myMasternodes.changeKeys";
 const BLS_HEX = /^[0-9a-fA-F]{96}$/;
@@ -127,9 +128,9 @@ export const signerLine = (p: UpdateRegistrarPreview) => t(p.ownerKey.kind === "
 /** A preview or send refusal as a sentence (§1.7's list, then §3.8's table). */
 export function changeKeysErrorText(e: unknown): string {
   if (isAppError(e) && e.code === "masternodes.protx_refused" && e.data?.kind === "reason") {
-    if (e.data.reason === "bad-protx-payee-reuse") return t(`${P}.payeeReuse`);
-    if (e.data.reason === "protx-dup") return t(`${P}.keyInUse`);
-    if (e.data.reason === "bad-protx-dup-key") return t(`${P}.keyListed`);
+    if (e.data.reason === PAYEE_REUSE) return t(`${P}.payeeReuse`);
+    if (e.data.reason === PENDING_DUP) return t(`${P}.keyInUse`);
+    if (e.data.reason === DUP_KEY) return t(`${P}.keyListed`);
   }
   if (feeWentUp(e)) return t(`${P}.feeChanged`);
   return mnErrorText(e);
