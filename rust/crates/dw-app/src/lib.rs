@@ -242,12 +242,14 @@ pub fn run() {
     // Ready, and the window cannot paint until that hook returns. With the
     // single-instance plugin it waits for the build, during which the plugin forwards and
     // exits where it can. Without it (macOS, or Linux without a session
-    // bus) it comes first, so a refused launch ends before GTK starts and
-    // GLib autolaunches a session bus of its own.
+    // bus) it comes first, so a refused launch ends before Tauri starts.
     let take_lock = || {
         instance::InstanceLock::acquire(&root, instance::InstanceLock::LAUNCH_WAIT).unwrap_or_else(
             |e| {
                 eprintln!("dash-wallet: {e}");
+                if let Some(dialog) = instance::refusal_dialog(&e) {
+                    shell::native::show_refusal(dialog);
+                }
                 std::process::exit(1);
             },
         )
@@ -312,6 +314,7 @@ pub fn run() {
         if let RunEvent::Exit = event
             && let Some(state) = handle.try_state::<AppState>()
         {
+            shell::quit::hide_for_exit(handle);
             // Flush and release every wallet database before the process ends.
             if let Err(e) = tauri::async_runtime::block_on(state.shutdown_engine()) {
                 eprintln!("dash-wallet: engine shutdown: {e}");
