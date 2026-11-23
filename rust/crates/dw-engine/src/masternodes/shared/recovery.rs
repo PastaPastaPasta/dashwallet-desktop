@@ -6,8 +6,13 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use dashcore::{OutPoint, Txid};
+use dashcore::blockdata::script::Instruction;
+use dashcore::secp256k1::{Message, ecdsa};
+use dashcore::{OutPoint, PublicKey, ScriptBuf, Txid};
 use dw_appdb::SharedSessionRow;
+use dw_protx::shared::SpecialTx;
+use dw_protx::shared::session::Session;
+use dw_protx::shared::session::funding::decode_frozen;
 use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use key_wallet::{DerivationPath, Utxo};
 use serde::Deserialize;
@@ -361,6 +366,65 @@ impl NetworkSession {
             }
             _ => Ok(()),
         }
+    }
+
+    /// The transaction of a copy `l`'s import refused, when it carries this
+    /// wallet's valid signature over one of `l`'s own inputs and `l` isn't
+    /// out yet: those bytes, or a later copy of them, may reach the network
+    /// (the wallet on another install, or a database restored from an
+    /// older backup).
+    pub(super) async fn own_signed_copy(
+        &self,
+        wallet: WalletId,
+        l: &Loaded,
+        theirs: &Session,
+    ) -> Result<Option<SpecialTx>, MasternodesError> {
+        let own = l.own_inputs();
+        if l.out() || own.is_empty() {
+            return Ok(None);
+        }
+        let Ok(frozen) = decode_frozen(theirs) else {
+            return Ok(None);
+        };
+        let tx = frozen.tx;
+        let network = self.network.core_network();
+        let w = self.wallet(&wallet).await?;
+        let state = crate::wallet_read::info_of(&w).await?;
+        let signed = (tx.input.iter().enumerate()).any(|(index, input)| {
+            own.contains(&input.previous_output)
+                && signer_of(&tx, index).is_some_and(|key| {
+                    let address = dashcore::Address::p2pkh(&key, network);
+                    own_address_info(&state.core_wallet, &address).is_some()
+                })
+        });
+        Ok(signed.then_some(tx))
+    }
+
+    /// Marks `l` out with `tx`, its outcome unknown (MG-10 §4.4's uncertain
+    /// rules): the stage reads out, no discard is accepted, and the abandon
+    /// is the exit. Its reservation and locks stay.
+    pub(super) async fn mark_possibly_out(
+        &self,
+        wallet: WalletId,
+        l: &Loaded,
+        tx: &SpecialTx,
+    ) -> Result<(), MasternodesError> {
+        let (w, id) = (wallet.to_string(), l.row.id.clone());
+        let (bytes, txid) = (tx.to_bytes(), tx.txid().to_string());
+        self.appdb_op(move |db| {
+            if db.mark_shared_session_out_durable(
+                &w,
+                &id,
+                &bytes,
+                &txid,
+                crate::coins::now_secs(),
+            )? {
+                db.record_shared_session_attempt(&w, &id, Some(UNKNOWN_CODE))?;
+            }
+            Ok(())
+        })
+        .await?;
+        Ok(())
     }
 
     /// The SPV client's state as Activity's calls read it: running, and
@@ -717,6 +781,31 @@ impl NetworkSession {
             .map(|c| c.utxo.value())
             .sum())
     }
+}
+
+/// The code a hand-off of unknown outcome records.
+const UNKNOWN_CODE: &str = "send.broadcast_unknown";
+
+/// The key whose valid `SIGHASH_ALL` P2PKH signature over `tx` input
+/// `index` its scriptSig carries (a high-S one counts: it could be made
+/// standard).
+fn signer_of(tx: &SpecialTx, index: usize) -> Option<PublicKey> {
+    let mut pushes = tx.input.get(index)?.script_sig.instructions();
+    let (Some(Ok(Instruction::PushBytes(sig))), Some(Ok(Instruction::PushBytes(key))), None) =
+        (pushes.next(), pushes.next(), pushes.next())
+    else {
+        return None;
+    };
+    let (&hash_type, der) = sig.as_bytes().split_last()?;
+    if hash_type != 0x01 {
+        return None;
+    }
+    let mut signature = ecdsa::Signature::from_der(der).ok()?;
+    signature.normalize_s();
+    let key = PublicKey::from_slice(key.as_bytes()).ok()?;
+    let hash = tx.signature_hash_all(index, &ScriptBuf::new_p2pkh(&key.pubkey_hash()))?;
+    ecdsa::verify(&signature, Message::from_digest(hash), &key.inner).ok()?;
+    Some(key)
 }
 
 /// §4.4 rule 3, on an out session not settled.

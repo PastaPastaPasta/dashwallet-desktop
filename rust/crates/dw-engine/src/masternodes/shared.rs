@@ -495,12 +495,20 @@ impl Masternodes {
                         .await?;
                     true
                 }
-                Some(l) => match import::apply(l, &theirs)? {
-                    Some(new) => {
+                Some(l) => match import::apply(l, &theirs) {
+                    Ok(Some(new)) => {
                         s.save_shared(wallet, l, &new, l.approved.as_ref()).await?;
                         true
                     }
-                    None => false,
+                    Ok(None) => false,
+                    Err(e) => {
+                        // MG-10 EP 4: a refused copy carrying our signature
+                        // may still go out, so the session reads out.
+                        if let Some(tx) = s.own_signed_copy(wallet, l, &theirs).await? {
+                            s.mark_possibly_out(wallet, l, &tx).await?;
+                        }
+                        return Err(e);
+                    }
                 },
             };
             let session = s.shared_view(wallet, &id).await?;

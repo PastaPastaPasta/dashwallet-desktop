@@ -998,6 +998,79 @@ fn test_a_spend_back_whose_input_another_spend_holds_is_not_sent_again() {
     );
 }
 
+/// Wallet `w`'s row of `id` written back as `before` left it (a database
+/// restored from a backup older than the signing).
+fn restore(f: &Fx, w: usize, id: &str, before: &dw_appdb::SharedSessionRow) {
+    let conn =
+        rusqlite::Connection::open(f.session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    let n = conn
+        .execute(
+            "UPDATE shared_mn_sessions SET envelope = ?1, contribution = ?2,
+                 approved_terms = ?3, signed_tx = ?4, txid = ?5, out_at = ?6,
+                 last_error = ?7, updated_at = ?8
+             WHERE wallet_id = ?9 AND id = ?10",
+            rusqlite::params![
+                before.envelope,
+                before.contribution,
+                before.approved_terms,
+                before.signed_tx,
+                before.txid,
+                before.out_at.map(|v| v as i64),
+                before.last_error,
+                before.updated_at as i64,
+                f.wallets[w].to_string(),
+                id
+            ],
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
+/// MG-10 EP 4 (funds review): a copy whose import is refused but which
+/// carries this wallet's signature over its own input (the wallet signed
+/// on another install, or its database was restored from before the
+/// signing) may still reach the network: the session reads out, of
+/// unknown outcome, with the abandon as its exit and no discard.
+#[test]
+fn test_a_refused_copy_carrying_our_signature_reads_possibly_out() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.imported(1, &f.message(0, &id));
+    let before = f.row(1, &id);
+    let signed = f.sign(1, &id, 301 * COIN).unwrap();
+    restore(&f, 1, &id, &before);
+    f.spv(true, 1);
+    assert!(f.row(1, &id).out_at.is_none());
+    assert!(
+        (f.recovery(1, &id).actions.iter()).any(|a| matches!(a, RecoveryAction::Discard { .. })),
+        "not out: discard"
+    );
+    let mut copy = parse(&signed.message.text);
+    copy.revision += 1;
+    assert_message(f.import(1, &copy.to_text()).unwrap_err(), "conflict");
+    let row = f.row(1, &id);
+    assert!(row.out_at.is_some(), "{row:?}");
+    assert_eq!(row.last_error.as_deref(), Some("send.broadcast_unknown"));
+    let s = f.session_of(1, &id);
+    assert_eq!(s.stage, SharedStage::FundingSigned);
+    let r = s.recovery;
+    assert!(
+        !r.actions
+            .iter()
+            .any(|a| matches!(a, RecoveryAction::Discard { .. })),
+        "{r:?}"
+    );
+    assert_eq!(abandon_action(&r), Some((spend_fee(1), true, None)));
+    assert_eq!(
+        r.handoff_error.map(|e| e.outcome),
+        Some(HandoffErrorOutcome::Unknown)
+    );
+    let e = f
+        .run(f.mn().discard_shared_session(f.wallets[1], id.clone()))
+        .unwrap_err();
+    assert_eq!(code(e), "masternodes.shared_stage");
+}
+
 /// T4 "participant `funding_signed`": with nothing signed back the replay
 /// is refused at the out stage; a held reserved coin with no ownership
 /// path, though not the largest, blocks the abandon (a named behaviour
