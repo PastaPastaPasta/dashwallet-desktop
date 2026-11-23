@@ -865,6 +865,9 @@ fn turning_backups_off_during_an_automatic_backup_leaves_no_backup_and_no_record
         let off = session
             .rt
             .spawn(async move { s.set_backup_policy(0).await });
+        wait_until("turning off ends or waits for the policy lock", || {
+            off.is_finished() || session.backups.policy_waiting() > 0
+        });
         pause.release.notify_one();
         engine.block_on(backup).unwrap();
         engine.block_on(off).unwrap().unwrap();
@@ -932,15 +935,43 @@ fn a_credential_change_backs_every_wallet_up_again() {
             .block_on(session.automatic_backups(Some(ids[0])))
             .unwrap()
     };
-    let after_recovery = listed();
-    assert_eq!(after_recovery.len(), 2, "{after_recovery:?}");
-    let dir = session.backup_directory();
-    for b in after_recovery {
-        if !b.path.to_string_lossy().contains(".2020-") {
-            let old = dir.join(format!("{}.2021-01-01-00-00.{EXTENSION}", ids[0]));
-            std::fs::rename(&b.path, old).unwrap();
-        }
-    }
+    let newest = || {
+        listed()
+            .into_iter()
+            .find(|b| {
+                let name = b.path.to_string_lossy();
+                !name.contains(".2020-") && !name.contains(".2021-")
+            })
+            .unwrap()
+            .path
+    };
+    let sealed_with = |file: PathBuf, folder: &str, old: &[u8], new: &[u8]| {
+        let (engine_b, session_b) = open(dir.path().join(folder), Arc::new(Notices::default()));
+        let restore = |pw: &[u8]| {
+            engine_b
+                .block_on(session_b.restore_backup(file.clone(), Some(Zeroizing::new(pw.to_vec()))))
+        };
+        assert!(
+            matches!(
+                restore(old),
+                Err(EngineError::Backup(BackupFailure::WrongPassphrase))
+            ),
+            "{folder}: the old passphrase"
+        );
+        assert_eq!(
+            restore(new).unwrap(),
+            [ids[0]],
+            "{folder}: the new passphrase"
+        );
+    };
+    assert_eq!(listed().len(), 2);
+    sealed_with(newest(), "b", VAULT_PASSPHRASE, b"new pw");
+    let backups = session.backup_directory();
+    std::fs::rename(
+        newest(),
+        backups.join(format!("{}.2021-01-01-00-00.{EXTENSION}", ids[0])),
+    )
+    .unwrap();
 
     engine
         .block_on(session.change_passphrase(
@@ -951,6 +982,7 @@ fn a_credential_change_backs_every_wallet_up_again() {
     notices.wait_for_written(2);
 
     assert_eq!(listed().len(), 3);
+    sealed_with(newest(), "c", b"new pw", b"newer pw");
     assert_eq!(notices.backup_failed(), 0);
 }
 
@@ -1069,6 +1101,32 @@ fn a_lock_during_the_first_unlocks_backups_lets_the_next_unlock_finish_them() {
     });
     assert_eq!(notices.written(), 0);
     unlock(&engine, &session);
+
+    notices.wait_for_written(2);
+    assert_eq!(session.backups.runs.load(Ordering::SeqCst), 2);
+    assert_eq!(notices.backup_failed(), 0);
+}
+
+/// An unlock that comes while a run that found the vault locked is ending
+/// still gets every wallet backed up.
+#[test]
+fn an_unlock_while_a_locked_run_ends_backs_every_wallet_up() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session, _) =
+        relaunched_locked(dir.path(), &[PHRASE, OTHER_PHRASE], 10, notices.clone());
+    let pause = Arc::new(TestPause::default());
+    *session.backups.pause.lock().unwrap() = Some(pause.clone());
+    let ending = Arc::new(TestPause::default());
+    *session.backups.pause_locked.lock().unwrap() = Some(ending.clone());
+    unlock(&engine, &session);
+    assert!(pause.wait_reached(Duration::from_secs(60)));
+    session.lock_vault_sync().unwrap();
+    pause.release.notify_one();
+    assert!(ending.wait_reached(Duration::from_secs(60)));
+
+    unlock(&engine, &session);
+    ending.release.notify_one();
 
     notices.wait_for_written(2);
     assert_eq!(session.backups.runs.load(Ordering::SeqCst), 2);

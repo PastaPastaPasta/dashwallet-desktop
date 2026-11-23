@@ -958,7 +958,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let _policy = this.backups.policy.lock().await;
+            let _policy = this.backups.hold_policy().await;
             let appdb = this.live()?.appdb;
             let dir = this.backup_directory();
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
@@ -1028,7 +1028,7 @@ impl NetworkSession {
     /// it). The caller must not hold the lifecycle lock.
     pub(crate) async fn automatic_backup(self: &Arc<Self>, id: WalletId) -> AutomaticRun {
         let _lifecycle = self.wallet_lifecycle.hold().await;
-        let _policy = self.backups.policy.lock().await;
+        let _policy = self.backups.hold_policy().await;
         if self.require_wallet(&id).is_err() || !self.vault.has_wallet_secret(&id.0) {
             return AutomaticRun::Done;
         }
@@ -1125,7 +1125,8 @@ impl NetworkSession {
     /// per session: at open (dash-qt backs a wallet up when it loads,
     /// QT-116), or while an encrypted vault is locked then, at its first
     /// unlock. A wallet that finds the vault locked again ends the run, and
-    /// the next unlock starts it over.
+    /// the next unlock starts it over (at once, if one came while the run
+    /// was ending).
     pub(crate) fn back_up_every_wallet_once(self: &Arc<Self>) {
         if !matches!(
             self.vault.lock_state(),
@@ -1142,7 +1143,10 @@ impl NetworkSession {
             for id in manager.list_wallet_ids_blocking() {
                 let Ok(_op) = this.enter().await else { return };
                 if this.automatic_backup(WalletId(id)).await == AutomaticRun::Locked {
+                    #[cfg(test)]
+                    crate::coins::pause_at(&this.backups.pause_locked).await;
                     this.backups.started.store(false, Ordering::SeqCst);
+                    this.back_up_every_wallet_once();
                     break;
                 }
             }
@@ -1188,6 +1192,30 @@ pub(crate) struct BackupRuntime {
     /// Tests: holds the next restore after each wallet it registered.
     #[cfg(test)]
     pub(crate) pause_restore: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next run that found the vault locked, before it
+    /// lets the next unlock start one.
+    #[cfg(test)]
+    pub(crate) pause_locked: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: how many wait for `policy`.
+    #[cfg(test)]
+    policy_waiting: std::sync::atomic::AtomicUsize,
+}
+
+impl BackupRuntime {
+    async fn hold_policy(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        #[cfg(test)]
+        self.policy_waiting.fetch_add(1, Ordering::SeqCst);
+        let guard = self.policy.lock().await;
+        #[cfg(test)]
+        self.policy_waiting.fetch_sub(1, Ordering::SeqCst);
+        guard
+    }
+
+    /// Tests: how many wait for the policy lock.
+    #[cfg(test)]
+    pub(crate) fn policy_waiting(&self) -> usize {
+        self.policy_waiting.load(Ordering::SeqCst)
+    }
 }
 
 fn list_automatic(dir: &Path, wallet: Option<WalletId>) -> Result<Vec<BackupInfo>, EngineError> {
