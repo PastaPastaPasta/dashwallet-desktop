@@ -172,6 +172,12 @@ describe("the engine's refusals", () => {
     });
     for (const code of ["send.no_peers", "send.prepared_tx_spent", "send.cancelled", "app.unknown_handle"] as const)
       expect(broadcastFailure(err(code), "test", held, true).kind).toBe("failed");
+    // Its record not written: refused before the hand-off, and a retry would be refused too.
+    expect(broadcastFailure(err("storage"), "test", held, true)).toEqual({
+      kind: "failed",
+      text: "The payment could not be recorded in this wallet.",
+    });
+    expect(broadcastFailure(err("storage"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
     // A code the renderer does not know may come after the bytes left: unknown, never abandoned.
     expect(broadcastFailure(err("internal"), "test", held, true)).toMatchObject({ kind: "unknown", retry: true });
   });

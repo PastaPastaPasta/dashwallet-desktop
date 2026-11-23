@@ -276,8 +276,11 @@ describe("IOS-050 U-03's promise and refusals for a contact (D9, D13)", () => {
     const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 1_000_000, fee: 226 };
     expect(broadcastFailure(err("contact.payment_locked"), "test", held, true, "DASH", true)).toMatchObject({ kind: "failed" });
     expect(broadcastFailure(err("storage"), "test", held, true, "DASH", true)).toMatchObject({ kind: "failed" });
-    // To an address, or on a retry, it stays unknown.
-    expect(broadcastFailure(err("storage"), "test", held, true)).toMatchObject({ kind: "unknown" });
+    // A first broadcast to an address whose record could not be written was not sent either; on a
+    // retry it stays unknown.
+    expect(broadcastFailure(err("storage"), "test", held, true)).toMatchObject({ kind: "failed" });
+    expect(broadcastFailure(err("storage"), "test", held, false, "DASH", true)).toMatchObject({ kind: "unknown" });
+    expect(broadcastFailure(err("contact.payment_locked"), "test", held, true)).toMatchObject({ kind: "unknown" });
     expect(broadcastFailure(err("contact.payment_locked"), "test", held, false, "DASH", true)).toMatchObject({ kind: "unknown" });
   });
 });
