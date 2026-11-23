@@ -194,11 +194,11 @@ the asset lock is the inviter's.
 - Every backup, automatic or user, and every Dash Core export is written to a temporary file
   beside its name (`.<name>.tmp-<pid>-<16 hex digits>`, mode 0600), synced, and only then given
   its name by a hard link that fails if the name exists, after which the temporary file is removed
-  and, on Unix, the folder synced. Where the file system has no hard links (FAT, exFAT) the temporary file is renamed
-  once the name is found free. A stop mid-write leaves nothing at the name.
+  and, on Unix, the folder synced. Where the file system has no hard links (FAT, exFAT) the
+  temporary file is renamed once the name is found free. A stop mid-write leaves nothing at the name.
 - An automatic backup file counts only if it is complete, which is checked without its passphrase
-  and without holding the body in memory (only each bundle's version, network and wallet id are
-  kept): the magic line, a header line of the same version naming just the wallet of the file's
+  by reading the body as a stream (only the first bundle's version, network and wallet id are
+  kept; reading stops at a second bundle): the magic line, a header line of the same version naming just the wallet of the file's
   name and the session's network, then a body that is one whole JSON object (`{"bundles": [...]}`;
   no cut of the file leaves one, and only the final newline may be missing) holding one bundle of
   that wallet and network, of a version this build reads, the file at most 1 GiB. Backups written
@@ -208,9 +208,12 @@ the asset lock is the inviter's.
   this minute's name it fails the backup.
 - A complete backup of the same name (an automatic backup of the same minute) is left as it is and
   counts as this minute's backup, whether it was there before or appears while the backup is
-  built. One found before the backup is built deletes a failure record only if its header time is
-  in this minute or not before the recorded failure, so a backup written while the clock was ahead
-  does not hide a later failure. A file of that name that is not a complete backup is renamed
+  built. One that appears while the backup is built deletes a failure record. One found before the
+  backup is built deletes it only if its header time is in this minute or not before the recorded
+  failure (for a record whose time cannot be read, only if in this minute), so a file whose header
+  is older than the failure, for example from a clock stepped back during a run or a file copied
+  in, does not hide it. A backup written while the clock was ahead takes its name and header time
+  from that clock, so once the clock reaches that minute it still clears the record. A file of that name that is not a complete backup is renamed
   `<name>.incomplete` (or `<name>.incomplete-<n>`) and the backup is written; if it cannot be
   renamed, the backup fails.
   A written backup sends `EngineEvent::Backups`.

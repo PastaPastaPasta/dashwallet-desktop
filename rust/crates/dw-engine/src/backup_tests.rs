@@ -1857,8 +1857,9 @@ fn a_fifo_at_a_backups_name_neither_hangs_nor_stops_a_backup() {
     assert!(std::fs::metadata(&old).unwrap().file_type().is_fifo());
 }
 
-/// A complete backup at this minute's name that is older than a recorded
-/// failure (written while the clock was ahead) leaves the record.
+/// A complete backup at this minute's name whose header is older than a
+/// recorded failure (a clock stepped back during a run, or a file copied
+/// in) leaves the record.
 #[test]
 fn a_backup_at_this_minutes_name_older_than_a_failure_leaves_its_record() {
     let dir = dw_testutil::private_tempdir();
@@ -1902,4 +1903,94 @@ fn a_backup_dated_in_the_future_ranks_below_an_older_one() {
     assert_eq!(listed.len(), 2);
     assert!(listed.iter().any(|b| b.path == older));
     assert!(!future.exists());
+}
+
+fn recorded(session: &NetworkSession, id: WalletId) -> Option<String> {
+    session
+        .live()
+        .unwrap()
+        .appdb
+        .setting(&dw_appdb::local_scope(&id.to_string()), AUTO_FAILED_SETTING)
+        .unwrap()
+}
+
+/// A record whose time cannot be read is deleted by a complete backup of
+/// this minute at this minute's name, and kept by one with an older header.
+#[test]
+fn an_unreadable_record_is_cleared_only_by_a_backup_of_this_minute() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session, id, bytes) = emptied(dir.path(), Arc::new(Notices::default()));
+    let backups = session.backup_directory();
+    not_at_a_minute_end();
+    let name = backups.join(automatic_name(&id, unix_now()));
+
+    record_failure_at(&session, id, "not a time");
+    let old = with_header(&bytes, |h| h["created_at"] = 2000.into());
+    std::fs::write(&name, &old).unwrap();
+    run_automatic(&engine, &session, id);
+    assert_eq!(recorded(&session, id).as_deref(), Some("not a time"));
+
+    std::fs::remove_file(&name).unwrap();
+    let now = with_header(&bytes, |h| h["created_at"] = unix_now().into());
+    std::fs::write(&name, &now).unwrap();
+    run_automatic(&engine, &session, id);
+    assert_eq!(recorded(&session, id), None);
+    assert_eq!(std::fs::read(&name).unwrap(), now);
+}
+
+/// A directory at this minute's name is set aside as `.incomplete` and
+/// that minute's backup is written.
+#[test]
+fn a_directory_at_this_minutes_name_is_set_aside() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session, id, _) = emptied(dir.path(), notices.clone());
+    let backups = session.backup_directory();
+    not_at_a_minute_end();
+    let name = backups.join(automatic_name(&id, unix_now()));
+    std::fs::create_dir(&name).unwrap();
+
+    run_automatic(&engine, &session, id);
+
+    assert!(failures(&engine, &session).is_empty());
+    assert_eq!(notices.backup_failed(), 0);
+    let listed = list_automatic(&backups, "regtest", None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, name);
+    let mut aside = name.clone().into_os_string();
+    aside.push(".incomplete");
+    assert!(std::fs::metadata(aside).unwrap().is_dir());
+}
+
+/// A symlink to a FIFO at this minute's name is followed and never
+/// opened: it is set aside and that minute's backup is written.
+#[cfg(unix)]
+#[test]
+fn a_symlink_to_a_fifo_at_this_minutes_name_is_set_aside() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session, id, _) = emptied(dir.path(), Arc::new(Notices::default()));
+    let backups = session.backup_directory();
+    let fifo = dir.path().join("fifo");
+    mkfifo(&fifo);
+    not_at_a_minute_end();
+    let name = backups.join(automatic_name(&id, unix_now()));
+    std::os::unix::fs::symlink(&fifo, &name).unwrap();
+
+    let s = Arc::clone(&session);
+    unless_stuck_on(&engine, &session, &[&fifo], async move {
+        s.automatic_backup(id).await
+    });
+
+    assert!(failures(&engine, &session).is_empty());
+    let listed = list_automatic(&backups, "regtest", None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, name);
+    let mut aside = name.clone().into_os_string();
+    aside.push(".incomplete");
+    assert!(
+        std::fs::symlink_metadata(aside)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
