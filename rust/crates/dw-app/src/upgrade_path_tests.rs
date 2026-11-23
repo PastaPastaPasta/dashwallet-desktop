@@ -51,18 +51,11 @@ const CHILD_DEADLINE: Duration = Duration::from_secs(600);
 const RENAMED: &[(&str, &str, &str)] = &[("get_network_choice", "launched", "active")];
 
 /// Fields a later build dropped, with why that loses nothing.
-const DROPPED: &[(&str, &str, &str)] = &[
-    (
-        "get_network_choice",
-        "restartNeeded",
-        "the window switches networks without a restart",
-    ),
-    (
-        "ui_settings",
-        "showMasternodes",
-        "masternodesItem replaces it: a saved true reads as on",
-    ),
-];
+const DROPPED: &[(&str, &str, &str)] = &[(
+    "get_network_choice",
+    "restartNeeded",
+    "the window switches networks without a restart",
+)];
 
 /// Values each unlock or open sets anew: compared for presence only.
 const VOLATILE: &[(&str, &str)] = &[("quick_unlock_policy", "lastPassphraseAt")];
