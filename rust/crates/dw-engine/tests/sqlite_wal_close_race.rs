@@ -67,7 +67,9 @@ fn journal_mode(path: &Path) -> String {
 }
 
 /// Four threads open `path`, read from it and drop the connection, over and
-/// over for [`RUN`]; every one of them must then stop within [`FINISH`].
+/// over for [`RUN`]; every one of them must then stop within [`FINISH`]. A
+/// hang ends the process: the stuck thread holds SQLite's global VFS mutex,
+/// which would block the other test of this binary with no timeout.
 fn race_opens_and_closes(path: PathBuf) {
     assert_eq!(journal_mode(&path), "wal");
     let path = Arc::new(path);
@@ -115,12 +117,13 @@ fn race_opens_and_closes(path: PathBuf) {
                 .iter()
                 .map(|s| STEPS[usize::from(s.load(Ordering::Relaxed))])
                 .collect();
-            panic!(
+            eprintln!(
                 "hung on SQLite {}: threads not done {FINISH:?} after the stop, {} cycles; \
                  threads in {in_flight:?}",
                 rusqlite::version(),
                 cycles.load(Ordering::Relaxed)
             );
+            std::process::exit(101);
         }
     }
     assert!(cycles.load(Ordering::Relaxed) > 0);
