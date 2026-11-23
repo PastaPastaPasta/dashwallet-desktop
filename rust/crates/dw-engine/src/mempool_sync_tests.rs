@@ -643,3 +643,23 @@ fn a_rescan_from_the_birth_height_marks_the_balance_catching_up() {
         "Balances is sent when the rescan rewinds below the birth block"
     );
 }
+
+/// A chain view (`history_page`, `tx_detail`, the notices) reads the history
+/// store's own entries, not a copy of the wallet's whole history per read
+/// (H-06: on a 40k wallet the copy cost more than the page).
+#[test]
+fn a_chain_view_reads_the_history_store_in_place() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let manager = session.manager().unwrap();
+    session.hub.history.with_wallet(id, |_| ());
+    let store = session
+        .hub
+        .history
+        .read(&id, |txs| std::ptr::from_ref(txs) as usize);
+    let viewed = engine
+        .block_on(session.with_view(&manager, id, |view| {
+            std::ptr::from_ref(view.history) as usize
+        }))
+        .unwrap();
+    assert_eq!(viewed, store);
+}

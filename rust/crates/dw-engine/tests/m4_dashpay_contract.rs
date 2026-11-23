@@ -242,6 +242,7 @@ const NOT_FACADE: &[&str] = &[
     "bringup.rs",
     "contact_names.rs",
     "contacts_model.rs",
+    "contacts_perf_tests.rs",
     "contacts_tests.rs",
     "contest_watch.rs",
     "contest_watch_tests.rs",
