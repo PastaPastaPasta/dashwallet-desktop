@@ -23,7 +23,7 @@ const cr = <K extends string>(prefix: string, keys: readonly K[]) => messageTabl
 const at = (label: string) => `@${label}`;
 
 export const PROFILE_COPY = withTable(
-  pr("", ["loading", "noProfile", "editProfile", "share", "usernames", "identity", "identityId", "noUsername", "updating", "notLoaded", "chooseName"]),
+  pr("", ["loading", "noProfile", "editProfile", "share", "usernames", "identity", "copyIdentityId", "noUsername", "updating", "notLoaded", "chooseName"]),
   {
     /** The requested name while its vote runs and no other name is held (as the chip says it). */
     contested: (label: string) => t("dashpay.profile.contested", { username: at(label) }),
