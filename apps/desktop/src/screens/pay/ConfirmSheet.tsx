@@ -16,7 +16,7 @@ import { refusedWhileLocked } from "../../api/lockGate";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy, useWallets } from "../../api/queries";
+import { keys, useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy, useUtxos, useWallets } from "../../api/queries";
 import { navigate, useUi } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
@@ -40,6 +40,7 @@ import {
   isContact,
   keepsPromise,
   mixedSendNotes,
+  paysWithUnmixed,
   settleNotSent,
   subtractsFee,
   UNRECORDED,
@@ -157,6 +158,10 @@ export function ConfirmSheet({
   const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
   const mixed = mixedSendNotes(coins.coins, estimate);
   const toast = useActionToast(walletId);
+  const normal = coins.coins !== "mixed";
+  const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: normal });
+  const utxos = useUtxos(walletId, coins.coins === "selected");
+  const unmixed = normal && paysWithUnmixed(coins, utxos.data, mixing.data);
 
   // A failed read of the policy counts as "on" (U-03 D3). With the signing window, an unread
   // window also asks: the prompt waits until that read settles. A sheet that sends nothing
@@ -448,6 +453,11 @@ export function ConfirmSheet({
           </>
         )}
         {changeAddress !== null && <p className="placeholder-note">{t("pay.confirm.changeNote")}</p>}
+        {unmixed && (
+          <p className="placeholder-note" data-testid="pay-confirm-unmixed">
+            {t("pay.confirm.unmixed")}
+          </p>
+        )}
         {!policyKnown ? (
           <LoadingState testId="pay-confirm-policy" text={t("pay.confirm.checkingPolicy")} />
         ) : (

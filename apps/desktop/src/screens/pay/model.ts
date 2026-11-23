@@ -10,6 +10,7 @@ import type { AddressClass } from "../../api/generated/AddressClass";
 import type { AppError } from "../../api/generated/AppError";
 import type { ChangePolicy } from "../../api/generated/ChangePolicy";
 import type { ContactRecipient } from "../../api/generated/ContactRecipient";
+import type { CoinJoinStatus } from "../../api/generated/CoinJoinStatus";
 import type { CoinSource } from "../../api/generated/CoinSource";
 import type { FeeMode } from "../../api/generated/FeeMode";
 import type { LockStatus } from "../../api/generated/LockStatus";
@@ -538,4 +539,19 @@ export function failureText(e: unknown, chain: Chain, unit: Unit = "DASH", conta
   if (send) return send.text;
   if (isAppError(e)) return e.message;
   return e instanceof Error ? e.message : String(e);
+}
+
+/** The confirm sheet says the payment is not private (lane F): a normal or selected payment while
+ * mixing runs, or with fully mixed coins in the wallet, that spends a coin which is not mixed at
+ * all. Automatic selection never spends a denomination (dw-engine `auto_selectable`), so every
+ * input of "Any available funds" is unmixed. Coin control spends exactly the selected coins: one
+ * that is not a denomination is unmixed. A denomination is mixed, at least partly, or its rounds
+ * are unknown, so it says nothing of it. A fully mixed payment never says it. */
+export function paysWithUnmixed(advanced: Advanced, coins: readonly Utxo[] | undefined, status: CoinJoinStatus | undefined): boolean {
+  if (!status || advanced.coins === "mixed") return false;
+  if (status.state === "idle" && status.balances.fullyMixed === 0) return false;
+  if (advanced.coins === "any") return true;
+  if (!coins) return false;
+  const byKey = new Map(coins.map((c) => [outpointKey(c.outpoint), c]));
+  return advanced.selected.some((k) => byKey.get(k)?.coinjoinDenominated === false);
 }
