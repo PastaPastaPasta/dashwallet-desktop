@@ -102,7 +102,7 @@ function hourOf(secs: number, locale?: string): string {
 }
 
 /** "Oct 31 at 2:02 PM". */
-function dateTime(secs: number, locale?: string): string {
+export function dateTime(secs: number, locale?: string): string {
   return t("masternodes.governance.dateTime", { date: shortDate(secs, locale), time: formatDate(secs, locale, HOUR_MINUTE) });
 }
 

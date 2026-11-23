@@ -1451,6 +1451,48 @@ impl AppDb {
             .optional()?)
     }
 
+    /// The values of `key` in every wallet's `local:` scope
+    /// ([`local_scope`]), as `(wallet id, value)` in wallet id order. A row
+    /// whose scope or value is not UTF-8 text is skipped.
+    pub fn local_settings_of_key(&self, key: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT scope, value FROM settings_kv
+             WHERE key = ?1 AND scope >= 'local:' AND scope < 'local;' ORDER BY scope",
+        )?;
+        let mut rows = stmt.query([key])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            let text = |i: usize| r.get_ref(i).ok().and_then(|v| v.as_str().ok());
+            if let (Some(scope), Some(value)) = (text(0), text(1))
+                && let Some(wallet) = scope.strip_prefix("local:")
+            {
+                out.push((wallet.to_owned(), value.to_owned()));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Sets `key` of `scope` (`None` deletes it) and deletes `cleared` from
+    /// every wallet's `local:` scope, in one transaction.
+    pub fn set_setting_clearing_local(
+        &self,
+        scope: &str,
+        key: &str,
+        value: Option<&str>,
+        cleared: &str,
+    ) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        Self::put_setting(&tx, scope, key, value)?;
+        tx.execute(
+            "DELETE FROM settings_kv WHERE key = ?1 AND scope >= 'local:' AND scope < 'local;'",
+            [cleared],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Sets a value, or deletes the key for `None`.
     pub fn set_setting(&self, scope: &str, key: &str, value: Option<&str>) -> Result<()> {
         Self::put_setting(&self.conn(), scope, key, value)
@@ -2857,6 +2899,50 @@ mod tests {
             ]
         );
         assert!(db.settings_with_prefix(W, "none").unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_settings_of_a_key_skip_unreadable_rows_and_clear_with_a_write() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(&local_scope(W2), "k", Some("2")).unwrap();
+        db.set_setting(&local_scope(W), "k", Some("1")).unwrap();
+        db.set_setting(W, "k", Some("wallet")).unwrap();
+        db.set_setting("", "k", Some("app")).unwrap();
+        db.set_setting(&local_scope(W), "other", Some("x")).unwrap();
+        let insert = "INSERT INTO settings_kv (scope, key, value) VALUES (CAST(?1 AS TEXT), 'k', CAST(?2 AS TEXT))";
+        db.conn()
+            .execute(insert, params![b"local:cc".to_vec(), b"\xff".to_vec()])
+            .unwrap();
+        db.conn()
+            .execute(insert, params![b"local:\xfe".to_vec(), b"3".to_vec()])
+            .unwrap();
+        assert_eq!(
+            db.local_settings_of_key("k").unwrap(),
+            vec![
+                (W.to_string(), "1".to_string()),
+                (W2.to_string(), "2".to_string())
+            ]
+        );
+
+        db.set_setting_clearing_local("", "keep", Some("0"), "k")
+            .unwrap();
+        assert!(db.local_settings_of_key("k").unwrap().is_empty());
+        let left: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM settings_kv WHERE key = 'k' AND scope >= 'local:' AND scope < 'local;'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+        assert_eq!(db.setting("", "keep").unwrap().as_deref(), Some("0"));
+        assert_eq!(db.setting(W, "k").unwrap().as_deref(), Some("wallet"));
+        assert_eq!(db.setting("", "k").unwrap().as_deref(), Some("app"));
+        assert_eq!(
+            db.setting(&local_scope(W), "other").unwrap().as_deref(),
+            Some("x")
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ import type { AppError } from "./AppError";
 import type { AppEvent } from "./AppEvent";
 import type { AttachedKeyRoleName } from "./AttachedKeyRoleName";
 import type { AuthGrant } from "./AuthGrant";
+import type { AutomaticBackupFailure } from "./AutomaticBackupFailure";
 import type { AvatarCandidateInfo } from "./AvatarCandidateInfo";
 import type { AvatarSizeName } from "./AvatarSizeName";
 import type { AvatarSourceArgs } from "./AvatarSourceArgs";
@@ -1086,6 +1087,15 @@ export function restoreBackup(path: string, passphrase: string | null): Promise<
  */
 export function automaticBackups(walletId: string | null): Promise<Array<BackupSummary>> {
   return invoke<Array<BackupSummary>>("automatic_backups", { walletId });
+}
+
+/**
+ * Wallets whose latest automatic backup failed, and when. A wallet's
+ * entry goes when one succeeds, when automatic backups are turned off
+ * and with the wallet.
+ */
+export function automaticBackupFailures(): Promise<Array<AutomaticBackupFailure>> {
+  return invoke<Array<AutomaticBackupFailure>>("automatic_backup_failures");
 }
 
 /**
@@ -3085,6 +3095,7 @@ export type CommandArgs = {
   backup_wallet: { walletId: string; destPath: string; backupPassphrase: string | null };
   restore_backup: { path: string; passphrase: string | null };
   automatic_backups: { walletId: string | null };
+  automatic_backup_failures: {  };
   backup_directory: {  };
   backup_policy: {  };
   set_backup_policy: { keep: number };
@@ -3422,6 +3433,7 @@ export type CommandResults = {
   backup_wallet: BackupSummary;
   restore_backup: Array<string>;
   automatic_backups: Array<BackupSummary>;
+  automatic_backup_failures: Array<AutomaticBackupFailure>;
   backup_directory: string;
   backup_policy: BackupPolicyInfo;
   set_backup_policy: BackupPolicyInfo;
@@ -3761,6 +3773,7 @@ export const COMMANDS: Record<CommandName, string> = {
   backup_wallet: "backup",
   restore_backup: "backup",
   automatic_backups: "backup",
+  automatic_backup_failures: "backup",
   backup_directory: "backup",
   backup_policy: "backup",
   set_backup_policy: "backup",

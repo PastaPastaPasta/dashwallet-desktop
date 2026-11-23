@@ -1145,6 +1145,13 @@ fn check_destination(dest: &Path) -> Result<(), EngineError> {
 /// Creates `dest` (failing if it exists) with mode 0600 and writes `bytes`.
 /// A failed write removes the partial file.
 pub(crate) fn write_new_private(dest: &Path, bytes: &[u8]) -> Result<(), EngineError> {
+    write_new_private_io(dest, bytes)
+        .map_err(|e| CompatFailure::DestinationUnwritable(e.to_string()).into())
+}
+
+/// [`write_new_private`] with the I/O error, whose kind is `AlreadyExists`
+/// when `dest` exists.
+pub(crate) fn write_new_private_io(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -1152,12 +1159,11 @@ pub(crate) fn write_new_private(dest: &Path, bytes: &[u8]) -> Result<(), EngineE
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let unwritable = |e: std::io::Error| CompatFailure::DestinationUnwritable(e.to_string());
-    let mut f = opts.open(dest).map_err(unwritable)?;
+    let mut f = opts.open(dest)?;
     if let Err(e) = f.write_all(bytes).and_then(|()| f.sync_all()) {
         drop(f);
         let _ = std::fs::remove_file(dest);
-        return Err(unwritable(e).into());
+        return Err(e);
     }
     Ok(())
 }

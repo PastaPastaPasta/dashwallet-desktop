@@ -1,4 +1,4 @@
-# `.dwbackup` format, version 1
+# `.dwbackup` format, versions 1 and 2
 
 Status: **contract**, 2026-10-06 (R2, M2). Writer and reader: `rust/crates/dw-engine/src/backup.rs`
 (container) and `rust/crates/dw-vault/src/vault/compat.rs` (key material). Calls:
@@ -18,8 +18,13 @@ DWBACKUP 1\n
 <body JSON>\n
 ```
 
-The first line is the magic `DWBACKUP ` and the decimal format version. A reader refuses other
-versions with `backup.unsupported_version{version}`.
+The first line is the magic `DWBACKUP ` and the decimal format version, which the header's
+`format_version` repeats. A writer writes version 2 only for a payload holding a `{"tb": …}`
+value (§2.3) and version 1 otherwise, so a backup without one stays readable by apps that read
+version 1 only. A reader refuses versions other than 1 and 2 with
+`backup.unsupported_version{version}`, before any bundle is opened. (Apps up to 0.3.0 read version
+1 only: their restore refuses a version 2 file as `backup.unsupported_version{version: 2}`, their
+file inspection reports it as an unknown file, and their automatic backup list skips it.)
 
 ### 1.1 Header (plain, authenticated)
 
@@ -107,7 +112,7 @@ Payload plaintext (JSON):
 | `name` | Display name, or `null`. |
 | `birth_height` | The wallet's birth height; a restore scans from it (0 when `null`). |
 | `created_at` | When the wallet was added on the source device. |
-| `app_rows` | The wallet's `app.sqlite` rows: `[{table, columns, rows}]`, every table with a `wallet_id` column (but `dp_contact_info`, §3.1, and `removed_wallets`, DEC-210: which wallets were removed, until an open with no other instance of the database forgets them) plus `settings_kv` rows scoped to the wallet; the DashPay `dp_*` rows of the wallet are among them (§3.1). Values are `null` or `{"i": int}`, `{"r": real}`, `{"t": text}`, `{"b": base64}`. Rowid aliases are left out. |
+| `app_rows` | The wallet's `app.sqlite` rows: `[{table, columns, rows}]`, every table with a `wallet_id` column (but `dp_contact_info`, §3.1, and `removed_wallets`, DEC-210: which wallets were removed, until an open with no other instance of the database forgets them) plus `settings_kv` rows scoped to the wallet; the DashPay `dp_*` rows of the wallet are among them (§3.1). Values are `null` or `{"i": int}`, `{"r": real}`, `{"t": text}`, `{"b": base64}`, or `{"tb": base64}` (version 2): a TEXT value whose bytes are not valid UTF-8, stored back as TEXT with the same bytes. Rowid aliases are left out. |
 
 The payload holds this wallet's data only and is built in memory (no temporary file). Backups
 written before review M4 also carry `wallet_sqlite`, a base64 online backup of the whole network's
@@ -176,17 +181,32 @@ the asset lock is the inviter's.
 ## 4. Automatic backups (QT-116)
 
 - File: `<network dir>/backups/<wallet id>.YYYY-MM-DD-HH-MM.dwbackup` (UTC), mode 0600.
-- Written when a wallet is added (create, import, restore, keys attached) and for every wallet
-  when a session opens, if the policy keeps any and the DEK is available (vault unlocked or
-  unencrypted); otherwise skipped silently, as dash-qt backs up only what it can. A DashPay
-  registration that reaches `FundingSent` also triggers one (§3.1), so the newest backup carries its
-  asset-lock outpoint.
+- Written when a wallet is added (create, import, restore, keys attached), and for every wallet
+  once per session: when it opens, or for an encrypted vault that is locked then, in the background
+  after its first unlock. A wallet that finds the vault locked again ends that run, and the next
+  unlock starts it over. A call that changes the vault's credential (encrypt, recover, passphrase
+  change) starts it again, now or at the next unlock: the backups before it are sealed under the
+  credential it replaced. Written only if the policy keeps any and the DEK is available (vault
+  unlocked or unencrypted); otherwise skipped silently, as dash-qt backs up only what it can. A
+  DashPay registration that reaches `FundingSent` also triggers one (§3.1), so the newest backup
+  carries its asset-lock outpoint. A user backup that succeeds triggers one for a wallet whose
+  latest automatic backup failed, before it returns.
+- A file of the same name (an automatic backup of the same minute) is left as it is and the
+  backup is skipped, whether it was there before or appears while the backup is built. A written
+  backup sends `EngineEvent::Backups`.
+- Each automatic backup runs under the wallet lifecycle lock, after checking that the wallet is
+  still registered with its keys: none is written for a wallet removed, or a restore rolled back,
+  before it. `set_backup_policy` waits for one being written, so `keep` 0 leaves none behind.
 - Encrypted vault: slot `vault_passphrase`; unencrypted: `vault_key`. A user backup and an
   automatic backup of the same wallet can run at the same time: neither writes anything but its
   own destination file (created with `O_EXCL`, mode 0600).
 - The newest `keep` per wallet are kept (`backup_policy`, 0..=10, default 10, dw-appdb setting
   `backup.keep`); lowering `keep` deletes the oldest at once.
-- A failure sends `Notice{BackupFailed}` with the wallet id and cause.
+- A failure sends `Notice{BackupFailed}` with the wallet id and cause, and records its time in the
+  wallet's `local:` settings scope (`backup.auto_failed_at`, never exported); a later automatic
+  backup of the wallet that succeeds deletes it, and so do `keep` 0 (in the transaction that writes
+  it) and removing the wallet. A vault locked meanwhile neither records nor deletes it.
+  `automatic_backup_failures` lists them, skipping a record that is not UTF-8 text.
 - Watch-only wallets have no vault records and are not backed up (`backup_wallet` returns
   `NotImplemented{call: "backup_wallet.watch_only"}`).
 
