@@ -664,13 +664,23 @@ impl NetworkSession {
                     info.core_wallet.observed_spent_outpoints(),
                 )
             });
-            // A coin another pending transaction of the wallet still spends
-            // (key-wallet records conflicting mempool spends) stays spent.
-            let still_spent: HashSet<OutPoint> = (info.core_wallet.accounts.all_accounts())
+            // A coin another transaction of the wallet still spends stays
+            // spent: one key-wallet records (it keeps conflicting mempool
+            // spends), or one the history holds and this abandon leaves (it
+            // loads every stored record; key-wallet holds none for a
+            // payment hydrated at load).
+            let mut still_spent: HashSet<OutPoint> = (info.core_wallet.accounts.all_accounts())
                 .into_iter()
                 .flat_map(|a| a.transactions().values())
                 .flat_map(|r| r.transaction.input.iter().map(|i| i.previous_output))
                 .collect();
+            (self.hub.history).read(&wallet, |txs| {
+                let left = (txs.iter()).filter(|(t, e)| {
+                    !e.abandoned && !abandoned.contains(*t) && !links.contains(*t)
+                });
+                still_spent
+                    .extend(left.flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output)));
+            });
             released.retain(|o| !still_spent.contains(o));
             (abandoned, released, overridden.is_some(), copies, links)
         };
@@ -819,15 +829,19 @@ impl NetworkSession {
         // key-wallet walks by its own records: one it holds as pending can
         // be locked or mined in the history, and then what spends it is
         // not the wallet's to abandon.
-        let settled = (self.hub.history).read(&wallet, |txs| {
-            (planned.iter()).any(|t| {
-                !exempt(t)
-                    && txs
-                        .get(t)
-                        .is_some_and(|e| locked(e) || e.context.block_info().is_some())
-            })
+        let (mined, held_locked) = (self.hub.history).read(&wallet, |txs| {
+            let settled = |f: &dyn Fn(&TxEntry) -> bool| {
+                (planned.iter()).any(|t| !exempt(t) && txs.get(t).is_some_and(f))
+            };
+            (
+                settled(&|e| e.context.block_info().is_some()),
+                settled(&|e| locked(e)),
+            )
         });
-        if settled || planned.iter().any(|t| locks.contains(t) && !exempt(t)) {
+        if mined {
+            return Err(EngineError::TxActionRefused(TxActionRefusal::Confirmed));
+        }
+        if held_locked || planned.iter().any(|t| locks.contains(t) && !exempt(t)) {
             return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
         }
         Ok((planned, overridden))
