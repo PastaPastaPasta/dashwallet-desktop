@@ -57,7 +57,7 @@ Sections 7 to 9 need more than one machine or account:
 
 | Section | What it needs | Real hardware or VM |
 |---|---|---|
-| 7 to 9, DashPay | four wallets, each in its own OS account and data root: A and D on the Apple silicon Mac, B and C on the Windows 11 PC, so each OS sends to and receives from the other. With one machine only, every cell of the other OS is **incomplete** | VM is enough |
+| 7 to 9, DashPay | four wallets, each in its own OS account and data root: A and D on the Apple silicon Mac, B and C on the Windows 11 PC, so each OS sends to and receives from the other. With one machine only, every by-hand cell of the other OS is **incomplete** | VM is enough |
 | 7.6, the self-test | the GitHub CLI and permission to run workflows on the repository; no machine of yours | CI (hosted runners) |
 | 8, VoiceOver | a Mac with headphones | **real** Mac preferred: a macOS VM is enough for most checks, but its audio and the VoiceOver keys often misbehave |
 | 8, Narrator | a Windows 11 PC with headphones | VM with working audio is enough |
@@ -642,7 +642,8 @@ so "Pending Requests" and "Hidden" are not shown yet.
       "Contact Requests (1)" and "My Contacts" as headings. Each row is read with its name and its state
       ("Unverified", "Setting up" when shown). Choosing a contact announces "<name>, <relation>", and the detail
       ("Contact") follows with "Identity", "Relation" "Contact", **Pay** and "Only visible to you". Choosing the
-      waiting sender (D on A, C on B) gives "Request received" with **Accept <name>** and **Ignore <name>**.
+      waiting sender (D on A, C on B) gives "Request received" with **Accept**, **Accept and pay** and **Ignore**
+      (the row and the bell name the sender: **Accept <name>**, **Ignore <name>**).
 - [ ] **Add contact**: the section "Add a New Contact" opens inside the page (it is not a dialog, and Escape does not
       close it); its heading is read, then **Close**, the tabs **Search**, **Scan** and **My QR**, and **Search
       username** with its label. Type the waiting sender's username and select the result. Expected: its card is
