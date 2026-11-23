@@ -66,6 +66,9 @@ dash-wallet [--datadir DIR] [--network mainnet|testnet|regtest|devnet-NAME] [--s
             [link]…
 ```
 
+An option's value follows it as the next argument or after `=` (`--datadir DIR` or `--datadir=DIR`); an
+option that takes no value, such as `--no-platform`, refuses one.
+
 The `--selftest` options exist only in a build with dw-app's `selftest` feature
 (`pnpm tauri build --no-bundle --features selftest`, as `tauri-selftest.yml` does); release and
 packaged builds leave it off and refuse them as unknown options (E0-13 D17).

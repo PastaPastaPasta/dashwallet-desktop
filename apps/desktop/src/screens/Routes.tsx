@@ -15,9 +15,7 @@ import { PayToContact } from "./pay/PayToContact";
 import { ShieldedSendLink } from "./ShieldedSheet";
 
 /** The placeholder text of each route that `Placeholder` renders. */
-const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "coinJoin" | "tools" | "settings" | "notifications" | "joinDashPay" | "profile" | "masternodes">, string> = {
-  explore: "Explore is not available yet.",
-};
+type NotYetRoute = Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "coinJoin" | "tools" | "settings" | "notifications" | "joinDashPay" | "profile" | "masternodes">;
 
 /** `wide`: the page's tables take the window's width, as Activity's table mode does. */
 export function Page({ route, wide = false, badge, children }: { route: Route; wide?: boolean; badge?: ReactNode; children?: ReactNode }) {
@@ -47,10 +45,11 @@ export function NotYet({ testId, children }: { testId: string; children: ReactNo
 }
 
 /** A page whose content comes with a later task. */
-export function Placeholder({ route }: { route: keyof typeof NOT_YET }) {
+export function Placeholder({ route }: { route: NotYetRoute }) {
+  const t = useT();
   return (
     <Page route={route}>
-      <NotYet testId={`placeholder-${route}`}>{NOT_YET[route]}</NotYet>
+      <NotYet testId={`placeholder-${route}`}>{t(`app.notYet.${route}`)}</NotYet>
     </Page>
   );
 }

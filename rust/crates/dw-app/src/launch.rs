@@ -95,6 +95,7 @@ impl Default for LaunchOptions {
 
 pub const USAGE: &str = "\
 usage: dash-wallet [options] [link]
+  an option's value follows it as the next argument or after =: --datadir=<dir>
   link                   a dash:, pay:, dashwallet: or dashpay: link to open
   --datadir <dir>        data root (default: the platform app-data directory)
   --network <name>       mainnet | testnet | regtest | devnet-<name> (default: the
@@ -223,14 +224,35 @@ fn option_name(arg: &str) -> &str {
     if plain { name } else { "(not shown)" }
 }
 
+/// The options that take no value: `--name=value` is an error for them.
+const FLAGS: &[&str] = &["--help", "--sync", "--no-sync", "--no-platform"];
+
 /// Parses the arguments after the program name. Unknown arguments that do
 /// not start with `--` are ignored (runtimes add some); unknown `--` options
-/// are errors. No error quotes a value (D30).
+/// are errors. A value option takes its value as the next argument or after
+/// the first `=` (`--datadir=<dir>`): Microsoft Edge WebDriver hands a
+/// WebView2 app its arguments only as `--name=value` switches. An option
+/// without a value refuses one. No error quotes a value (D30).
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, String> {
     let mut opts = LaunchOptions::default();
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
-        let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
+        let (arg, mut inline) = match arg.split_once('=') {
+            Some((name, value)) if arg.starts_with("--") => {
+                (name.to_owned(), Some(value.to_owned()))
+            }
+            _ => (arg, None),
+        };
+        if inline.is_some() && FLAGS.contains(&arg.as_str()) {
+            return Err(format!("{arg} takes no value"));
+        }
+        let mut value = |name: &str| {
+            inline
+                .take()
+                .or_else(|| it.next())
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| format!("{name} needs a value"))
+        };
         match arg.as_str() {
             "--help" | "-h" => return Ok(ParseOutcome::Help),
             "--datadir" => opts.data_dir = Some(PathBuf::from(value("--datadir")?)),
@@ -506,6 +528,115 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// `--name=value` sets a value option as its two-argument form does, with
+    /// the same checks: Microsoft Edge WebDriver hands a WebView2 app its
+    /// arguments only as `--name=value` switches.
+    #[test]
+    fn value_options_take_name_equals_value() {
+        let spaced = run(&[
+            "--datadir",
+            "C:\\dw",
+            "--network",
+            "regtest",
+            "--sync",
+            "--spv-peer",
+            "127.0.0.1:19899",
+            "--dapi",
+            "https://127.0.0.1:1",
+            "--quorum-url",
+            "https://127.0.0.1:22444",
+            "--ca-cert",
+            "/tmp/gw.pem",
+            "--protocol-version",
+            "9",
+            "--no-platform",
+            "--collateral-rpc",
+            "http://u:p@127.0.0.1:19898",
+            "--theme",
+            "light",
+            "--window-size",
+            "1280x800",
+        ]);
+        let joined = run(&[
+            "--datadir=C:\\dw",
+            "--network=regtest",
+            "--sync",
+            "--spv-peer=127.0.0.1:19899",
+            "--dapi=https://127.0.0.1:1",
+            "--quorum-url=https://127.0.0.1:22444",
+            "--ca-cert=/tmp/gw.pem",
+            "--protocol-version=9",
+            "--no-platform",
+            "--collateral-rpc=http://u:p@127.0.0.1:19898",
+            "--theme=light",
+            "--window-size=1280x800",
+        ]);
+        assert_eq!(joined, spaced);
+        // Split at the first `=` only: the value keeps the rest, and its case.
+        assert_eq!(
+            run(&["--dapi=https://h:1/?a=b"]).dapi_addresses,
+            vec!["https://h:1/?a=b".to_owned()]
+        );
+        assert_eq!(
+            run(&["--datadir=C:\\Users\\Runner=X"]).data_dir,
+            Some(PathBuf::from("C:\\Users\\Runner=X"))
+        );
+    }
+
+    #[test]
+    fn name_equals_value_is_checked_as_the_spaced_form_is() {
+        let err = |a: &[&str]| parse(a.iter().map(|s| s.to_string())).unwrap_err();
+        assert!(err(&["--network=moon"]).contains("unknown network"));
+        assert!(err(&["--theme=blue"]).contains("expected light or dark"));
+        assert!(err(&["--window-size=0x5"]).contains("expected WxH"));
+        assert!(err(&["--protocol-version=nine"]).contains("not a number"));
+        assert!(err(&["--collateral-rpc=http://x", "--network=testnet"]).contains("regtest only"));
+        // An empty value is no value, in either form.
+        for name in ["--datadir", "--network", "--dapi", "--theme"] {
+            assert!(
+                err(&[&format!("{name}=")]).contains("needs a value"),
+                "{name}="
+            );
+            assert!(err(&[name, ""]).contains("needs a value"), "{name} \"\"");
+            assert!(
+                err(&[name, "", "--help"]).contains("needs a value"),
+                "{name} \"\" --help"
+            );
+        }
+        // Options that take no value refuse one.
+        for flag in [
+            "--help=x",
+            "--sync=1",
+            "--no-sync=0",
+            "--no-platform=1",
+            "--help=",
+        ] {
+            let e = err(&[flag]);
+            assert!(e.contains("takes no value"), "{flag}: {e}");
+            assert!(!e.contains('='), "{e}");
+        }
+        // Unknown names stay unknown, with or without a value.
+        assert_eq!(err(&["--bogus=1"]), "unknown option --bogus");
+        assert_eq!(err(&["--fixture=x"]), "unknown option --fixture");
+        assert_eq!(err(&["--datadirx=C:\\dw"]), "unknown option --datadirx");
+        assert_eq!(err(&["--Datadir=C:\\dw"]), "unknown option --Datadir");
+        // D30: the value is never quoted.
+        let e = err(&["--network=dashpay://invite?pk=cPlanted"]);
+        assert!(!e.contains("Planted") && !e.contains("dash"), "{e}");
+    }
+
+    /// The OS hands a link over as one argument that starts with its scheme
+    /// (the Windows `"%1"`, a `.desktop` `%u`, `open`): one with `=` and `--`
+    /// in it is still a link, never an option.
+    #[test]
+    fn a_link_with_equals_and_dashes_is_a_link_not_an_option() {
+        let link = "dash:yPlanted?label=--datadir=C:\\x&message=--network=mainnet";
+        let o = run(&[link]);
+        assert_eq!(o.links, vec![link.to_owned()]);
+        assert_eq!(o.data_dir, None);
+        assert!(!o.network_given);
     }
 
     #[test]
