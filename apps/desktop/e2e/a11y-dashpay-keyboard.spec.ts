@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
+import { IDENTITY } from "../src/fixture/dashpay";
 import { fixtureUrl, fontsReady, trackPageErrors } from "./helpers";
 import { armRecorder, expectSaid, heardBy, liveRegion, liveState } from "./liveRegion";
 
@@ -253,6 +254,40 @@ test("keyboard only: Show Request in Add contact moves focus to the sender's det
   await expect(heading).toHaveText("Grace Hopper");
   await expect.poll(async () => ((await heading.evaluate((el) => el === document.activeElement)) ? "the detail heading" : await focusName(page))).toBe("the detail heading");
   await expectAxeClean(page);
+  expect(errors).toEqual([]);
+});
+
+test("Show Request before the contact list has loaded: the sender's detail takes focus once it shows (#407)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  // The toolbar's own reads of the list (the bell's requests) are done first, so the next read
+  // held is the Contacts page's.
+  const listReads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "dashpay_contacts").length);
+  await expect(page.getByTestId("toolbar-bell-badge")).toBeVisible();
+  let reads = -1;
+  await expect.poll(async () => {
+    const was = reads;
+    reads = await listReads();
+    return reads === was;
+  }, { intervals: [500] }).toBe(true);
+  // The list's next read answers only when released: the link's card offers Show Request (from its
+  // own eligibility read) while the list, and so the sender's detail, is not there yet.
+  await page.evaluate(() => {
+    const w = window as unknown as { __release?: () => void };
+    w.__release = window.__dwFixture!.hold("dashpay_contacts");
+  });
+  await page.evaluate((identity) => window.__dwFixture!.deliverLinks([{ kind: "addContact", identity, username: "grace" }]), IDENTITY.grace);
+  const show = page.getByTestId("add-contact-show");
+  await expect(show).toHaveText("Show Request");
+  await tabTo(page, show);
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("add-contact")).toHaveCount(0);
+  await rendered(page);
+  await expect(page.getByTestId("contact-detail")).toHaveCount(0);
+
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  const heading = page.getByTestId("contact-detail").getByRole("heading", { level: 2 });
+  await expect(heading).toHaveText("Grace Hopper");
+  await expect.poll(async () => ((await heading.evaluate((el) => el === document.activeElement)) ? "the detail heading" : await focusName(page))).toBe("the detail heading");
   expect(errors).toEqual([]);
 });
 
