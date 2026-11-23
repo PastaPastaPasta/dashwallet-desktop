@@ -205,7 +205,7 @@ function WalletChrome({
   const bellOwner = wallet && main ? `${wallet.walletId}:${main}` : undefined;
   const bellPanel =
     wallet && main
-      ? (id: string, close: () => void) => <NotificationsPopover key={bellOwner} walletId={wallet.walletId} identity={main} network={network} id={id} close={close} />
+      ? (id: string, close: (o?: { refocus?: boolean }) => void) => <NotificationsPopover key={bellOwner} walletId={wallet.walletId} identity={main} network={network} id={id} close={close} />
       : undefined;
   const joined = !sidebarJoins(dashpay.status);
   const [layer, setLayer] = useState<HTMLDivElement | null>(null);

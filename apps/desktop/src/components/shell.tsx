@@ -271,7 +271,7 @@ export function Toolbar({
   onLock: () => void;
   /** The bell's popover (DP2-09 D11), given its id and `close`; without it the bell opens the
    * Notifications page. */
-  bellPanel?: (id: string, close: () => void) => ReactNode;
+  bellPanel?: (id: string, close: (o?: { refocus?: boolean }) => void) => ReactNode;
   /** Whose bell `bellPanel` is (wallet and identity): another owner closes it (DP2-09 D27). */
   bellOwner?: string;
 }) {
@@ -285,9 +285,9 @@ export function Toolbar({
   if (openFor !== null && openFor !== bellOwner) setOpenFor(null);
   const bell = useRef<HTMLButtonElement>(null);
   const panelId = useId();
-  const closeBell = useCallback(() => {
+  const closeBell = useCallback(({ refocus = true }: { refocus?: boolean } = {}) => {
     setOpenFor(null);
-    bell.current?.focus();
+    if (refocus) bell.current?.focus();
   }, []);
   const open = openFor !== null && openFor === bellOwner && !!bellPanel;
   return (
