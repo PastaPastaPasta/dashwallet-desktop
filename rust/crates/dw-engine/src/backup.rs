@@ -1139,7 +1139,10 @@ impl NetworkSession {
         self.backups.runs.fetch_add(1, Ordering::SeqCst);
         let this = Arc::clone(self);
         self.rt.spawn(async move {
-            let Ok(manager) = this.manager() else { return };
+            let Ok(manager) = this.manager() else {
+                this.backups.started.store(false, Ordering::SeqCst);
+                return;
+            };
             for id in manager.list_wallet_ids_blocking() {
                 let Ok(_op) = this.enter().await else { return };
                 if this.automatic_backup(WalletId(id)).await == AutomaticRun::Locked {
