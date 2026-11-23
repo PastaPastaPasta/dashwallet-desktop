@@ -203,7 +203,9 @@ uninstalling or the unsigned first launch, so that script does: on a Mac with Ap
 and Windows 10, it installs the release candidate fresh, then upgrades in place from 0.1.0, 0.2.0 and 0.3.0 twice
 each, once with the vault behind a passphrase and once with its key in the OS secret store (one vault per network,
 so these are two runs from an empty data root), downgrades, restores, and uninstalls with the data kept and removed. From a clean data root the network is chosen on Welcome, and 0.1.0 applies it only after a restart (#101
-item 12). No release has quick unlock, so there is no Touch ID or Windows Hello step.
+item 12). No release has quick unlock, so there is no Touch ID or Windows Hello step. Its sections 7 to 9 add, on
+both OSes, the DashPay journeys the Linux suites automate, VoiceOver and Narrator (for H-05), and the DashPay flows
+that only the browser fixture tests cover, run in the real app on testnet.
 
 ## What the funds fixes leave for the release candidate
 
