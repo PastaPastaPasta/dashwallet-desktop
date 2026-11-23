@@ -3,6 +3,8 @@
 // MG-06 D24, the sidebar rule and the create wizard's helpers.
 
 import { describe, expect, it } from "vitest";
+import { DEFAULT_PREFS, ui } from "../app/ui";
+import { LANGUAGES, type Language } from "../i18n";
 import type { GovernanceInfo } from "../api/generated/GovernanceInfo";
 import type { MyProposal } from "../api/generated/MyProposal";
 import type { MyProposalState } from "../api/generated/MyProposalState";
@@ -40,6 +42,7 @@ import {
   nodeName,
   numbersRows,
   paneNote,
+  paymentsSuffix,
   presetOutcome,
   rejectedText,
   sameFee,
@@ -47,6 +50,7 @@ import {
   shortAddress,
   sortRows,
   spanLong,
+  shortDate,
   spanShort,
   statusChip,
   voteBar,
@@ -88,6 +92,41 @@ describe("times", () => {
     expect(ago(NOW - 30, NOW)).toBe("just now");
     expect(ago(NOW - 40 * 60, NOW)).toBe("40 min ago");
     expect(ago(NOW - 2 * 3600, NOW)).toBe("2 hours ago");
+  });
+
+  it("keeps the short and long spans' English from the catalog, up to a whole mainnet cycle", () => {
+    /** A mainnet superblock cycle, 16,616 blocks of 2.625 minutes: the longest span the clock shows. */
+    const cycle = 16_616 * 157.5;
+    const spans: [number, string, string][] = [
+      [0, "1 min", "1 minute"],
+      [60, "1 min", "1 minute"],
+      [59 * 60, "59 min", "59 minutes"],
+      [3600, "1 h", "1 hour"],
+      [86_400 + 6 * 3600, "1 d 6 h", "1 day 6 hours"],
+      [cycle, "30 d 6 h", "30 days 6 hours"],
+    ];
+    for (const [secs, short, long] of spans) {
+      expect(spanShort(secs), `${secs} s`).toBe(short);
+      expect(spanLong(secs), `${secs} s`).toBe(long);
+    }
+  });
+
+  it("formats counts and dates for each language in turn, with no formatter kept from the last one", () => {
+    const de: Language = { tag: "de-x-dwtest", name: "Deutsch", dir: "ltr", messages: new Map() };
+    const day = secs(new Date("2026-11-04T15:00:00Z"));
+    LANGUAGES.push(de);
+    try {
+      const english = [paymentsSuffix(1234), shortDate(day, "en-US"), shortDate(day, "de-DE")];
+      expect(english[0]).toBe("× 1,234 payments");
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: "de-x-dwtest" } });
+      expect(paymentsSuffix(1234)).toBe("× 1.234 payments");
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
+      expect([paymentsSuffix(1234), shortDate(day, "en-US"), shortDate(day, "de-DE")]).toEqual(english);
+      expect(english[1]).not.toBe(english[2]);
+    } finally {
+      LANGUAGES.pop();
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
+    }
   });
 });
 

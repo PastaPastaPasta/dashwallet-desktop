@@ -29,6 +29,7 @@ import {
   type NodeNames,
 } from "../../governance/model";
 import { useGovernanceInfo, useGovernanceRefresh, useVotingMasternodes } from "../../governance/queries";
+import { useT } from "../../i18n";
 import { useNodeNames } from "../../masternodes/queries";
 import { failureText } from "../pay/model";
 import { StatusChip, useNowSecs } from "./common";
@@ -44,12 +45,13 @@ interface VoteDone {
 }
 
 export function VoteSheet({ row, wallet, network, onClose }: { row: ProposalRow; wallet: WalletSummary; network: NetworkInfo; onClose: () => void }) {
+  const t = useT();
   const nodes = useVotingMasternodes(wallet.walletId, row.hash);
   const names = useNodeNames(wallet.walletId);
   const [result, setResult] = useState<VoteDone | null>(null);
   const [busy, setBusy] = useState(false);
   return (
-    <Sheet title={`Vote on ${row.name}`} width="medium" testId="vote-sheet" closable={!busy} onClose={onClose} focusKey={result ? "result" : nodes.data ? "form" : "loading"}>
+    <Sheet title={t("masternodes.governance.vote.title", { name: row.name })} width="medium" testId="vote-sheet" closable={!busy} onClose={onClose} focusKey={result ? "result" : nodes.data ? "form" : "loading"}>
       {result ? (
         <VoteResult {...result} names={names} onDone={onClose} />
       ) : nodes.data ? (
@@ -60,7 +62,7 @@ export function VoteSheet({ row, wallet, network, onClose }: { row: ProposalRow;
           {governanceErrorText(nodes.error) ?? failureText(nodes.error, chainOf(network))}
         </p>
       ) : (
-        <LoadingState testId="vote-sheet-loading" text="Reading your masternodes…" />
+        <LoadingState testId="vote-sheet-loading" text={t("masternodes.governance.pane.reading")} />
       )}
     </Sheet>
   );
@@ -85,6 +87,7 @@ function VoteForm({
   onCancel: () => void;
   onResult: (r: VoteDone) => void;
 }) {
+  const t = useT();
   const b = useBackend();
   const shown = useDisplay(network);
   const now = useNowSecs();
@@ -94,7 +97,7 @@ function VoteForm({
   const rows = useMemo(() => voteRows(nodes, now, undefined, names), [nodes, now, names]);
   const [outcome, setOutcome] = useState<VoteOutcomeName | null>(() => presetOutcome(nodes));
   const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set(rows.filter((r) => r.eligible).map((r) => r.proTxHash)));
-  const credential = useCredential(wallet.walletId, "Enter your passphrase to vote.", null);
+  const credential = useCredential(wallet.walletId, t("masternodes.governance.vote.ask"), null);
   const picked = rows.filter((r) => r.eligible && checked.has(r.proTxHash));
   const toggle = (hash: string) =>
     setChecked((s) => {
@@ -140,16 +143,20 @@ function VoteForm({
       }}
     >
       <p className="mg-muted mg-small mg-flush">
-        <AmountText text={shown.compact(row.paymentAmount)} unitName={shown.name} /> {paymentsSuffix(row.paymentsRequested)} ·{" "}
-        <StatusChip chip={statusChip(row.status, row.closeCall)} /> {threshold !== undefined && votesView(row.tally, threshold).head}
+        {t.rich("masternodes.governance.vote.summary", {
+          amount: <AmountText text={shown.compact(row.paymentAmount)} unitName={shown.name} />,
+          payments: paymentsSuffix(row.paymentsRequested),
+          chip: <StatusChip chip={statusChip(row.status, row.closeCall)} />,
+          votes: threshold !== undefined ? votesView(row.tally, threshold).head : "",
+        })}
       </p>
       <OutcomePicker outcome={outcome} disabled={busy} onChange={setOutcome} />
-      <ul className="mg-nodes card-l1" aria-label="Vote with" data-testid="vote-nodes">
+      <ul className="mg-nodes card-l1" aria-label={t("masternodes.governance.vote.with")} data-testid="vote-nodes">
         <li className="mg-node mg-node-head" aria-hidden="true">
           <span />
-          <span>Vote with</span>
-          <span className="mg-node-weight">Weight</span>
-          <span className="mg-node-result">Last vote seen</span>
+          <span>{t("masternodes.governance.vote.with")}</span>
+          <span className="mg-node-weight">{t("masternodes.governance.vote.weight")}</span>
+          <span className="mg-node-result">{t("masternodes.governance.vote.lastSeen")}</span>
         </li>
         {rows.map((r) => (
           <li key={r.proTxHash} className="mg-node" aria-disabled={r.eligible ? undefined : true} data-testid={`vote-node-${shortHash(r.proTxHash)}`}>
@@ -187,7 +194,7 @@ function VoteForm({
         </span>
         <span className="mg-actions">
           <DashButton variant="tintedGray" size="medium" data-testid="vote-cancel" disabled={busy} onClick={onCancel}>
-            Cancel
+            {t("common.cancel")}
           </DashButton>
           <DashButton
             type="submit"
@@ -196,7 +203,11 @@ function VoteForm({
             data-testid="vote-send"
             disabled={busy || outcome === null || picked.length === 0 || !credential.ready}
           >
-            {busy ? "Voting…" : outcome ? `Vote ${outcomeText(outcome)}` : "Vote"}
+            {busy
+              ? t("masternodes.governance.vote.voting")
+              : outcome
+                ? t("masternodes.governance.vote.voteFor", { outcome: outcomeText(outcome) })
+                : t("masternodes.governance.pane.vote")}
           </DashButton>
         </span>
       </footer>
@@ -209,10 +220,11 @@ const ARROW_STEP: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowL
 /** §4.25.4's segmented Yes · No · Abstain as a radiogroup (MG-00): one tab stop on the chosen
  *  outcome (the first when none is), the arrow keys move and choose. */
 function OutcomePicker({ outcome, disabled, onChange }: { outcome: VoteOutcomeName | null; disabled: boolean; onChange: (o: VoteOutcomeName) => void }) {
+  const t = useT();
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const tabStop = outcome === null ? 0 : OUTCOMES.indexOf(outcome);
   return (
-    <div className="segmented mg-outcomes" role="radiogroup" aria-label="Your vote" data-testid="vote-outcome">
+    <div className="segmented mg-outcomes" role="radiogroup" aria-label={t("masternodes.governance.vote.yourVote")} data-testid="vote-outcome">
       {OUTCOMES.map((o, i) => (
         <button
           key={o}
@@ -244,6 +256,7 @@ function OutcomePicker({ outcome, disabled, onChange }: { outcome: VoteOutcomeNa
 }
 
 function VoteResult({ casts, nodes, outcome, names, onDone }: VoteDone & { names: NodeNames; onDone: () => void }) {
+  const t = useT();
   const view = voteResult(casts, nodes, outcome, names);
   return (
     <div className="mg-sheet-body" data-testid="vote-result">
@@ -260,7 +273,13 @@ function VoteResult({ casts, nodes, outcome, names, onDone }: VoteDone & { names
               <span className="mg-node-name">{r.name}</span>
               <span className="mg-node-sub">{r.sub}</span>
             </span>
-            <StatusChip chip={r.sent ? { text: "Sent", tone: "success", tooltip: "" } : { text: "Not sent", tone: "neutral", tooltip: "" }} />
+            <StatusChip
+              chip={
+                r.sent
+                  ? { text: t("masternodes.governance.result.chipSent"), tone: "success", tooltip: "" }
+                  : { text: t("masternodes.governance.result.chipNotSent"), tone: "neutral", tooltip: "" }
+              }
+            />
           </li>
         ))}
       </ul>
@@ -269,7 +288,7 @@ function VoteResult({ casts, nodes, outcome, names, onDone }: VoteDone & { names
         <span />
         <span className="mg-actions">
           <DashButton variant="filledBlue" size="medium" data-testid="vote-done" data-autofocus onClick={onDone}>
-            Done
+            {t("masternodes.governance.vote.done")}
           </DashButton>
         </span>
       </footer>

@@ -247,6 +247,38 @@ describe("pseudo-locales", () => {
   });
 });
 
+describe("cached formatters and catalog checks", () => {
+  it("follow each language switch, there and back", () => {
+    const ru: Language = { tag: "ru-x-dwtest", name: "Русский", dir: "ltr", messages: new Map([["shell.status.peers", { one: "{count} пир", few: "{count} пира", many: "{count} пиров", other: "{count} пира" }]]) };
+    const de: Language = { tag: "de-x-dwtest", name: "Deutsch", dir: "ltr", messages: new Map([["shell.status.peers", { one: "{count} Peer", other: "{count} Peers" }]]) };
+    LANGUAGES.push(ru, de);
+    try {
+      const peers = () => [21, 5, 1234].map((count) => t("shell.status.peers", { count }));
+      const english = peers();
+      expect(english).toEqual(["21 peers", "5 peers", "1,234 peers"]);
+      choose("ru-x-dwtest");
+      const russian = peers();
+      expect(russian).toEqual(["21 пир", "5 пиров", `${new Intl.NumberFormat("ru").format(1234)} пира`]);
+      choose("de-x-dwtest");
+      expect(peers()).toEqual(["21 Peers", "5 Peers", "1.234 Peers"]);
+      choose(null);
+      expect(peers()).toEqual(english);
+      choose("ru-x-dwtest");
+      expect(peers()).toEqual(russian);
+    } finally {
+      LANGUAGES.pop();
+      LANGUAGES.pop();
+    }
+  });
+
+  it("check a swapped-in catalog afresh", () => {
+    const xx: Language = { tag: "xx", name: "X", dir: "ltr", messages: new Map([["shell.status.synced", "Synkd"]]) };
+    expect(isComplete(xx)).toBe(false);
+    xx.messages = new Map(flatten(en));
+    expect(isComplete(xx)).toBe(true);
+  });
+});
+
 describe("bidi isolation", () => {
   it("isolates a right-to-left value inside a left-to-right sentence, and leaves left-to-right values as they are", () => {
     expect(t("network.confirmTitle", { network: "Testnet" })).toBe("Switch to Testnet?");
