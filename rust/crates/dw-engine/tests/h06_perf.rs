@@ -45,14 +45,13 @@ fn copy_dir(from: &Path, to: &Path) {
 struct Datadir(tempfile::TempDir);
 
 impl Datadir {
-    fn new() -> Option<Self> {
-        let Some(src) = std::env::var_os("DWD_H06_DATADIR").map(PathBuf::from) else {
-            eprintln!("DWD_H06_DATADIR unset: skipped");
-            return None;
-        };
+    fn new() -> Self {
+        let src = std::env::var_os("DWD_H06_DATADIR")
+            .map(PathBuf::from)
+            .expect("DWD_H06_DATADIR: the unpacked regtest40k fixture (see the module docs)");
         let dir = dw_testutil::private_tempdir();
         copy_dir(&src, dir.path());
-        Some(Self(dir))
+        Self(dir)
     }
 }
 
@@ -97,7 +96,7 @@ fn newest(cursor: Option<String>) -> HistoryQuery {
 #[test]
 #[ignore = "H-06 probe: needs DWD_H06_DATADIR; run in release"]
 fn h06_history_and_open_on_the_40k_wallet() {
-    let Some(dir) = Datadir::new() else { return };
+    let dir = Datadir::new();
     let (rss0, pss0) = memory_mib();
 
     let ((engine, session), open) = sample(|| {

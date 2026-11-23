@@ -75,7 +75,7 @@ Three contained fixes, each its own commit:
 3. **A page selects its records instead of sorting all of them** (`history::page`). It filters, keeps
    the indices after the cursor, selects the first `limit` with `select_nth_unstable_by` and sorts only
    those, comparing borrowed keys. The cursor, `total_matching` and the order are unchanged; a new test
-   walks every page of four sorts and five page sizes against the full sort. The CSV export still sorts
+   walks every page of four sorts and five page sizes, over three input orders, against the full sort. The CSV export still sorts
    everything. 0.26 → 0.18 × 10⁹ instructions per call.
 
 What remains (92 ms) is deriving 40k records per call (`records_of`, `status_of`, the owned-script and
@@ -83,7 +83,9 @@ history lookups), and its allocation and freeing. That is the read-model work un
 
 The view now holds the history store's read lock while the records are derived (about 90 ms on this
 wallet), where it used to hold it while copying the map. A block's history update waits for it about as
-long as it waited for the copy.
+long as it waited for the copy. A writer queued on that lock also holds back later readers, so two
+concurrent `history_page` calls with a block arriving between them run one after the other; the read model
+in #296 removes the long hold.
 
 ### Wallet open
 
