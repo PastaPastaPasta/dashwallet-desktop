@@ -2278,7 +2278,11 @@ impl ShieldedDispatch for EngineDispatch {
             }),
             anchor: Some(payload.anchor),
             identity_id: match payload.kind {
-                ShieldedDispatchKind::IdentityTopUp { identity_id } => Some(identity_id),
+                // A create's: the id its notes give, before anything is
+                // sent, so a registration finds what it may have paid for
+                // (C-funding F11).
+                ShieldedDispatchKind::IdentityTopUp { identity_id }
+                | ShieldedDispatchKind::IdentityCreate { identity_id } => Some(identity_id),
                 _ => None,
             },
             selected: selected.into_iter().collect(),

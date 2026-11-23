@@ -365,9 +365,9 @@ const MIGRATE_V9: &str = "UPDATE meta SET v = 10 WHERE k = 'schema';";
 /// gating, reserving nothing) or settled. `disposition_kind` and
 /// `disposition_reason` are the library's stored strings, in the
 /// combinations it decodes; no combination reads as unknown to the CHECK.
-/// `identity_id` is a top-up's identity. A note's `spent` is set once a
-/// proved scan or result shows it spent. `IF NOT EXISTS`, as
-/// `shielded_redrive`.
+/// `identity_id` is a top-up's identity, or the one a create makes. A
+/// note's `spent` is set once a proved scan or result shows it spent.
+/// `IF NOT EXISTS`, as `shielded_redrive`.
 const SHIELDED_ARTIFACT: &str = "
 CREATE TABLE IF NOT EXISTS shielded_artifact (
   wallet             BLOB NOT NULL CHECK (length(wallet) = 32),
@@ -623,7 +623,7 @@ pub struct NewShieldedArtifact {
     /// Required for a dispatched one, as is `anchor`.
     pub kind: Option<ArtifactKind>,
     pub anchor: Option<[u8; 32]>,
-    /// A top-up's identity.
+    /// A top-up's identity, or the one a create makes (C-funding F11).
     pub identity_id: Option<[u8; 32]>,
     /// The nullifiers of the wallet's own notes it spends.
     pub selected: Vec<[u8; 32]>,
@@ -1850,13 +1850,14 @@ impl DispatchJournal {
             ));
         }
         let top_up = artifact.kind == Some(ArtifactKind::IdentityTopUp);
-        if (artifact.identity_id.is_some() && !top_up)
+        let names = top_up || artifact.kind == Some(ArtifactKind::IdentityCreate);
+        if (artifact.identity_id.is_some() && !names)
             || (top_up
                 && artifact.origin == ArtifactOrigin::Dispatched
                 && artifact.identity_id.is_none())
         {
             return Err(AppDbError::Corrupt(
-                "only a top-up names an identity, and a dispatched one must".into(),
+                "only a top-up or a create names an identity, and a dispatched top-up must".into(),
             ));
         }
         let status = match artifact.origin {

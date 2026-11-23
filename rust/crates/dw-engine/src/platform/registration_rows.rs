@@ -124,11 +124,15 @@ pub(crate) enum Funding {
     /// `denomination` in credits, and `fallback`, the wallet's own Platform
     /// receive address fixed at Draft, where Platform returns the payment
     /// less a penalty if it cannot create the identity (F13). `identity`:
-    /// the id the create's notes give, once the call returns it (F11).
+    /// the id the create's notes give, once the call or the dispatch
+    /// journal names it (F11). `attempt`: how many earlier creates of the
+    /// row were proved never to execute (F12's "definitely unsent"); each
+    /// attempt signs under its own call step.
     Shielded {
         denomination: u64,
         fallback: String,
         identity: Option<String>,
+        attempt: u32,
     },
 }
 
@@ -173,12 +177,16 @@ impl Funding {
                 denomination,
                 fallback,
                 identity,
+                attempt,
             } => {
                 let mut value = json!({
                     "v": v, "kind": "shielded", "denomination": denomination, "fallback": fallback,
                 });
                 if let Some(identity) = identity {
                     value["identity"] = json!(identity);
+                }
+                if *attempt > 0 {
+                    value["attempt"] = json!(attempt);
                 }
                 value
             }
@@ -219,6 +227,10 @@ impl Funding {
                     denomination: value.get("denomination")?.as_u64()?,
                     fallback: field("fallback")?,
                     identity: optional("identity")?,
+                    attempt: match value.get("attempt") {
+                        None => 0,
+                        Some(a) => u32::try_from(a.as_u64()?).ok()?,
+                    },
                 },
                 _ => return None,
             })
@@ -319,11 +331,13 @@ mod tests {
                 denomination: 3_000_000_000,
                 fallback: "tdash1qown".into(),
                 identity: None,
+                attempt: 0,
             },
             Funding::Shielded {
                 denomination: 3_000_000_000,
                 fallback: "tdash1qown".into(),
                 identity: Some("Carol1dentity".into()),
+                attempt: 2,
             },
         ];
         for f in all {
@@ -358,6 +372,7 @@ mod tests {
             r#"{"v":1,"kind":"shielded","fallback":"tdash1qown"}"#,
             r#"{"v":1,"kind":"shielded","denomination":1}"#,
             r#"{"v":1,"kind":"shielded","denomination":1,"fallback":"f","identity":7}"#,
+            r#"{"v":1,"kind":"shielded","denomination":1,"fallback":"f","attempt":"1"}"#,
             "core_balance",
             "",
             "wallet",

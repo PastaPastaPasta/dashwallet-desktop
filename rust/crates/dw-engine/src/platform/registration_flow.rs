@@ -150,6 +150,15 @@ pub(crate) fn identity_step(draft: i64) -> String {
     format!("registration/{draft}/identity")
 }
 
+/// A Shielded-funded row's create step for `attempt` (C-funding F12): the
+/// identity step, then one per create proved never to execute.
+pub(crate) fn shielded_step(draft: i64, attempt: u32) -> String {
+    match attempt {
+        0 => identity_step(draft),
+        n => format!("registration/{draft}/identity/{n}"),
+    }
+}
+
 /// The identity an asset lock creates: Platform's id for a proof of
 /// `outpoint` (rs-dpp `create_identifier`, the same for both proof kinds).
 pub(crate) fn identity_for(outpoint: OutPoint) -> Identifier {
@@ -419,6 +428,67 @@ pub(crate) trait RegistrationLib: Send + Sync {
         inviter: &str,
         lease: &Lease,
     ) -> impl Future<Output = Result<(), ContactError>> + Send;
+    /// The wallet's own Platform receive address, bech32m: a Shielded-funded
+    /// create's fallback (C-funding F13).
+    fn fallback_address(&self) -> impl Future<Output = Result<String, PlatformError>> + Send;
+    /// The library's pool-funded create with keys 0–5 of `identity_index`
+    /// through the dispatch hook (C-funding F11), under the wallet's
+    /// shielded lock: `denomination` from the shielded account, the
+    /// proof-of-possession signatures by `permit`'s counting identity
+    /// signer and the spend by its shielded key set, never the seed. The id
+    /// it answers is not proof of the identity: the library answers one for
+    /// any accepted transition.
+    fn create_from_pool(
+        &self,
+        identity_index: u32,
+        denomination: u64,
+        fallback: &str,
+        permit: &CallPermit,
+    ) -> impl Future<Output = Result<String, PlatformError>> + Send;
+    /// The pool-funded creates the dispatch journal holds for the wallet,
+    /// each by the identity it makes; an error while the journal cannot be
+    /// read.
+    fn pool_creates(&self) -> impl Future<Output = Result<Vec<PoolCreate>, PlatformError>> + Send;
+    /// F12's proofs of a create's identity: present at `identity`, or
+    /// absent at a height at or above that of a proof showing every one of
+    /// `nullifiers` spent; anything else is unknown.
+    fn pool_evidence(
+        &self,
+        identity: &str,
+        nullifiers: &[[u8; 32]],
+    ) -> impl Future<Output = Result<PoolEvidence, PlatformError>> + Send;
+}
+
+/// A pool-funded create in the dispatch journal (C-funding F11, F12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PoolCreate {
+    /// The identity its notes give, base58.
+    pub(crate) identity: String,
+    pub(crate) state: PoolState,
+    /// When its artifact was written, unix seconds.
+    pub(crate) at: u64,
+    /// The nullifiers of the notes it spends.
+    pub(crate) nullifiers: Vec<[u8; 32]>,
+}
+
+/// The journal's disposition of a create (C-funding F12, item 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PoolState {
+    /// Sent or not, its outcome is not proved.
+    Unresolved,
+    /// Platform spent its notes: it executed.
+    Executed,
+    /// It never executed and never can (refused, abandoned, pruned).
+    NotExecuted,
+}
+
+/// What [`RegistrationLib::pool_evidence`] proved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PoolEvidence {
+    Present,
+    /// Absent in a proof no older than the proof of the spent notes.
+    Absent,
+    Unknown,
 }
 
 /// How an invitation's claim failed (DP5-02 §3).
@@ -1156,12 +1226,10 @@ pub(crate) fn interpret(row: &RegistrationRow) -> Result<(Phase, Funding), &'sta
             feature: String::new(),
         }
         .code()),
-        // No flow step runs it yet (C4b-2): never funded, discarded or
-        // advanced here.
-        Funding::Shielded { .. } => Err(unsupported()),
-        Funding::CoreBalance { .. } | Funding::ExistingIdentity | Funding::Invitation { .. } => {
-            Ok((phase, funding))
-        }
+        Funding::CoreBalance { .. }
+        | Funding::ExistingIdentity
+        | Funding::Invitation { .. }
+        | Funding::Shielded { .. } => Ok((phase, funding)),
     }
 }
 
@@ -1207,6 +1275,43 @@ pub(crate) fn claim_discard_refused(
                 || code == InvitationError::Claimed.code()
         });
     (released && !disproved).then_some("the claim may have reached the network")
+}
+
+pub(crate) fn is_shielded(row: &RegistrationRow) -> bool {
+    matches!(interpret(row), Ok((_, Funding::Shielded { .. })))
+}
+
+/// The marker of a Shielded-funded row's current create step
+/// ([`shielded_step`]); `None` for any other row.
+pub(crate) fn shielded_step_status(
+    leases: &LeaseTable,
+    wallet: WalletId,
+    row: &RegistrationRow,
+) -> CallStepStatus {
+    match interpret(row) {
+        Ok((_, Funding::Shielded { attempt, .. })) => {
+            leases.call_step(wallet, &shielded_step(row.id, attempt)).status
+        }
+        _ => CallStepStatus::None,
+    }
+}
+
+/// C-funding F6: a Shielded-funded row's funds are committed from the
+/// moment its create's spend key may have been released (`step`, its
+/// current create step's marker, standing or `Sent`) or a create of it is
+/// known (its id stored), until the identity exists, a proof says the
+/// create can never execute (the row moves to its next attempt) or the row
+/// failed for good (refunded). `discard_registration` refuses meanwhile.
+pub(crate) fn shielded_committed(row: &RegistrationRow, step: CallStepStatus) -> bool {
+    let Ok((phase, Funding::Shielded { identity, .. })) = interpret(row) else {
+        return false;
+    };
+    let ended = row.error.is_some() && !row.retryable;
+    let released = matches!(step, CallStepStatus::Marked { .. } | CallStepStatus::Sent);
+    phase < Phase::IdentityRegistered
+        && row.identity.is_none()
+        && !ended
+        && (identity.is_some() || released)
 }
 
 /// A claim row stopped on `invitation.already_has_identity` (DP5-03 D24):
@@ -1873,6 +1978,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 Funding::Invitation {
                     link_id, identity, ..
                 } => self.claim_invitation(row, &link_id, &identity).await,
+                Funding::Shielded { .. } => self.pool_step(row, funding).await,
                 _ => Ok(Step::Fail(internal(), false)),
             },
             Phase::FundingSent | Phase::ProofWaiting => self.create_identity(row, phase).await,
@@ -1976,8 +2082,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 )
                 .await;
         }
+        // No Core funds move for a claim or a Shielded-funded row: no SPV
+        // sync to wait for (DP5-02 D9, C-funding F1).
         let hold = match funding {
-            Funding::Invitation { .. } => self.lib.claim_hold(),
+            Funding::Invitation { .. } | Funding::Shielded { .. } => self.lib.claim_hold(),
             _ => self.lib.funding_hold(),
         };
         if let Some(wait) = hold {

@@ -259,6 +259,12 @@ pub enum RegistrationError {
     /// nothing was written or signed; quote again.
     #[error("the cost changed since the quote")]
     QuoteChanged,
+    /// A row's failure, never returned by a call: Platform executed the
+    /// row's Shielded-funded create and made no identity of it (C-funding
+    /// F12), so it paid the denomination less a penalty to the row's
+    /// fallback address. Nothing retries it; it can be discarded.
+    #[error("the network returned the payment without creating the identity")]
+    Refunded,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -283,6 +289,7 @@ impl RegistrationError {
             Self::FundingUnknownRecent { .. } => "registration.funding_unknown_recent",
             Self::ShieldedNotReady { .. } => "registration.shielded_not_ready",
             Self::QuoteChanged => "registration.quote_changed",
+            Self::Refunded => "registration.refunded",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Platform(e) => e.code(),
