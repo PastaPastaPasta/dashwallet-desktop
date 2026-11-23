@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { DEFAULT_PREFS, ui } from "../app/ui";
-import { LANGUAGES, type Language } from "../i18n";
+import { LANGUAGES, t, type Language } from "../i18n";
 import type { MasternodeDetail } from "../api/generated/MasternodeDetail";
 import type { MasternodeOverview } from "../api/generated/MasternodeOverview";
 import type { MasternodePayout } from "../api/generated/MasternodePayout";
@@ -226,5 +226,16 @@ describe("the masternode list's height", () => {
       LANGUAGES.pop();
       ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
     }
+  });
+});
+
+describe("a payout group's line", () => {
+  it("reads as before: its total, then 1 payment or the count", () => {
+    expect([1, 2, 4, 1234].map((count) => t("masternodes.myMasternodes.payoutsIn", { amount: "1.25 DASH", count }))).toEqual([
+      "1.25 DASH in 1 payment",
+      "1.25 DASH in 2 payments",
+      "1.25 DASH in 4 payments",
+      "1.25 DASH in 1,234 payments",
+    ]);
   });
 });
