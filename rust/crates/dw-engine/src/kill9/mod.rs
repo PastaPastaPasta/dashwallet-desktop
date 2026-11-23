@@ -43,10 +43,14 @@ pub(crate) fn child(row: &str) -> Option<Child> {
     })
 }
 
-/// An engine on `root` with its regtest session open offline and its vault,
-/// encrypted with `pass` (made if there is none: the parent unlocks the
-/// child's), unlocked.
-pub(crate) fn engine_at(root: &Path, pass: &'static [u8]) -> (Engine, Arc<NetworkSession>) {
+/// An engine on `root` with its regtest session open offline (without
+/// Platform if `no_platform`) and its vault, encrypted with `pass` (made if
+/// there is none: the parent unlocks the child's), unlocked.
+pub(crate) fn engine_at(
+    root: &Path,
+    pass: &'static [u8],
+    no_platform: bool,
+) -> (Engine, Arc<NetworkSession>) {
     let engine = Engine::new(
         EngineConfig {
             data_root: root.join("data"),
@@ -67,6 +71,7 @@ pub(crate) fn engine_at(root: &Path, pass: &'static [u8]) -> (Engine, Arc<Networ
                 dapi_addresses: vec!["http://127.0.0.1:1".into()],
                 quorum_url: Some("http://127.0.0.1:1".into()),
                 spv_peers: vec!["127.0.0.1:1".into()],
+                no_platform,
                 ..Default::default()
             },
         ))

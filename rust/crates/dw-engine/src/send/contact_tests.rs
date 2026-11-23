@@ -3019,3 +3019,6 @@ fn t2_testnet_the_money_gate_verifies_a_contact() {
 
 #[path = "contact_pay_tests.rs"]
 mod pay;
+
+#[cfg(unix)]
+mod kill9;

@@ -86,7 +86,7 @@ fn restore_platform(lib: &Fake, state: &serde_json::Value) {
 }
 
 fn fixture_at(dir: tempfile::TempDir, root: &std::path::Path, import: bool) -> Fixture {
-    let (engine, session) = kill9::engine_at(root, PASS);
+    let (engine, session) = kill9::engine_at(root, PASS, false);
     let wallet = if import {
         engine
             .block_on(session.import_wallet(

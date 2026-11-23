@@ -125,6 +125,8 @@ pub(crate) struct FakeRequests {
     writes: AtomicU32,
     /// Runs inside each write, before it lands.
     pub(crate) during: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Runs as a failed write's request is read back, before the answer.
+    pub(crate) reading: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// What a key upgrade costs.
     fee: u64,
     /// The `contactInfo` documents a write publishes.
@@ -246,6 +248,9 @@ impl RequestNet for FakeRequests {
         recipient: Identifier,
     ) -> Result<Option<ContactRequest>, PlatformError> {
         self.up()?;
+        if let Some(reading) = &*self.reading.lock().unwrap() {
+            reading();
+        }
         let landed = self.landed.load(Ordering::SeqCst);
         Ok(landed.then(|| ContactRequest::new(sender, recipient, 0, 0, 0, vec![1; 96], 1, 9_000)))
     }
@@ -1562,6 +1567,10 @@ fn t2_testnet_requests() {
     eprintln!("T2 established after {seen:?} passes (A, C)");
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+#[cfg(unix)]
+#[path = "requests_tests/kill9.rs"]
+mod kill9;
 
 /// The contract vector of `dashpay_accept_request`'s grant rules (U-07, Sol
 /// r1 #3), in the step language `apps/desktop/src/fixture/accept.test.ts`
