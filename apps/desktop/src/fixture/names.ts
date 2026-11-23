@@ -264,6 +264,14 @@ export function nameScenarios(base: (theme: ThemeName | null, patch?: (n: NamesW
         n.refuse = { [VOTER_A]: "unconfirmed" };
         n.downAfterVote = true;
       }),
+    /** The wallet's masternode rows hold two of the voters: the regular one labelled "Home node", the
+     * evonode without a label (MG-09 F3); the banned one is no row. */
+    "names-labelled": (t: ThemeName | null) => {
+      const w = base(t);
+      const [home, , club] = w.masternodes.rows;
+      w.masternodes.rows.push({ ...home, proTxHash: VOTER_A }, { ...club, proTxHash: VOTER_B });
+      return w;
+    },
     /** A watch-only wallet browses. */
     "names-watch-only": (t: ThemeName | null) => {
       const w = base(t);
