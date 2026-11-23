@@ -531,6 +531,8 @@ jobs:
           [[ -n "$bundle" ]] || { echo "::error::no $kind bundle"; exit 1; }
           echo "BUNDLE=$bundle" >> "$GITHUB_ENV"
       - name: Links through the OS
+        # It takes under a minute; a hang fails here, and the upload below still keeps its trace.
+        timeout-minutes: 10
         run: |
           export DW_LINKS_OUT=$PWD/deep-links-out
           if [[ "$MATRIX_OS" == linux ]]; then

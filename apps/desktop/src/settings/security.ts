@@ -7,75 +7,100 @@ import { hasCode, type Backend } from "../api/backend";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { LockStatus } from "../api/generated/LockStatus";
 import { LockModel } from "../onboarding/lock";
+import { withTable } from "../dashpay/status";
+import { formatLocale, messageTable, t } from "../i18n";
+import { settings } from "../i18n/catalog/settings";
 import { failureText, Model } from "../onboarding/model";
 import { passphraseProblem } from "../onboarding/passphrase";
 
-export const SecurityText = {
-  encrypted: "Encrypted",
-  notEncrypted: "Not encrypted",
-  encryptHint: "Anyone who can use this computer can spend from this wallet. Encrypt it with a passphrase.",
-  /** dash-qt `AskPassphraseDialog` after `encryptWallet`. */
-  walletEncrypted:
-    "Your wallet is now encrypted. Remember that encrypting your wallet cannot fully protect your funds from being stolen by malware infecting your computer.",
-  lockedAfterEncrypt: "The wallet is locked: unlock it with the new passphrase.",
-  /** dash-qt `AskPassphraseDialog` after `changePassphrase`. */
-  passphraseChanged: "Wallet passphrase was successfully changed.",
-  sameAsOld: "The new passphrase is the same as the current one.",
-  quickUnlockUnavailable: "Not available on this computer",
-  quickUnlockWhy: "Touch ID and Windows Hello are coming soon.",
-  requireAuthentication: "Ask for my passphrase for every payment",
-  requireAuthenticationHint: "Every payment asks for the passphrase, even just after you unlock.",
-  signingWindowHint:
-    "For 5 minutes after you unlock, payments can add up to the spending limit without asking again. A total over the limit still asks. Locking, sleep and quitting end it.",
-  spendLimit: "Spending limit",
-  spendLimitHint: "The total payments can add up to during those 5 minutes. Touch ID, when available, checks each payment against this limit on its own, not a running total.",
-  encryptFirst: "Encrypt the wallet first.",
-  autohideBalance: "Hide balances when the app starts",
-  lockedAutomatically: "Locked automatically.",
-  autoLockSeconds: (secs: number) =>
-    secs % 60 === 0 ? `${secs / 60} minute${secs === 60 ? "" : "s"}` : `${secs} second${secs === 1 ? "" : "s"}`,
-  /** IOS-009 "Delete All Wallets?". */
-  wipeTitle: "Delete all wallet data?",
-  wipeMessage:
-    "Every wallet on this network is removed from this computer: its keys, its recovery phrase, its history and its settings. Your coins stay on the network. A wallet that spends comes back from its recovery phrase, or from a backup or export you kept; a watch-only wallet comes back with its extended public key. A governance proposal you paid for is kept, so it comes back when you add its wallet again.",
-  /** iOS's sentence, typed exactly. */
-  wipeAcceptPhrase: "I accept that I will lose my coins if I no longer possess the recovery phrase",
-  acceptPhraseMismatch: "Type the sentence exactly as shown.",
-  wiped: "The wallets and the vault were deleted. Backups and exports were kept.",
-  /** Backups and exports are files the user chose to keep: the wipe leaves them (D27). */
-  wipeKeeps: (dir: string) =>
-    `Backups and exports in ${dir} are not deleted. An export for Dash Core holds private keys in plain text: delete it yourself if you no longer need it.`,
-  wipeNoList: (why: string) => `The list of every wallet could not be read: ${why} Nothing was deleted.`,
-  /** The wallets are gone but not all of the vault: dw-vault deletes the vault file before its
-   * older copies, so what is left on disk is not known (D33, D45). */
-  vaultKept: (why: string) =>
-    `Every wallet was removed, but the vault could not be fully deleted${why ? `: ${why}` : "."} Try again. If you close this instead, part of it may stay on this computer, and a wallet you add next may be kept under the old passphrase.`,
-  wipeStopped: (name: string, why: string, removed: number) =>
-    `${name} could not be removed: ${why} ${removed === 0 ? "Nothing was deleted." : `${removed === 1 ? "The wallet" : `The ${removed} wallets`} before it ${removed === 1 ? "was" : "were"} removed; the others and the vault were kept.`}`,
-};
+const duration = (unit: "seconds" | "minutes" | "hours", n: number) => t(`settings.security.${unit}`, { count: n, amount: String(n) });
+
+export const SecurityText = withTable(
+  messageTable("settings.security", [
+    "encrypted",
+    "notEncrypted",
+    "encryptHint",
+    "encryptedLocked",
+    "passphraseChanged",
+    "sameAsOld",
+    "quickUnlockUnavailable",
+    "quickUnlockWhy",
+    "requireAuthentication",
+    "requireAuthenticationHint",
+    "signingWindowHint",
+    "spendLimit",
+    "spendLimitHint",
+    "encryptFirst",
+    "autohideBalance",
+    "lockedAutomatically",
+    "wipeTitle",
+    "wipeMessage",
+    "wipeAcceptPhrase",
+    "acceptPhraseMismatch",
+    "wiped",
+  ]),
+  {
+    autoLockSeconds: (secs: number) =>
+      secs % 60 === 0 ? duration("minutes", secs / 60) : duration("seconds", secs),
+    wipeKeeps: (dir: string) => t("settings.security.wipeKeeps", { dir }),
+    wipeNoList: (why: string) => t("settings.security.wipeNoList", { reason: why }),
+    /** The wallets are gone but not all of the vault: dw-vault deletes the vault file before its
+     * older copies, so what is left on disk is not known (D33, D45). */
+    vaultKept: (why: string) => (why ? t("settings.security.vaultKept", { reason: why }) : t("settings.security.vaultKeptNoReason")),
+    wipeStopped: (name: string, why: string, removed: number) =>
+      removed === 0 ? t("settings.security.wipeStoppedNone", { name, reason: why }) : t("settings.security.wipeStopped", { name, reason: why, count: removed }),
+  },
+);
+
 
 /** The label Settings shows for a spend-limit value, in duffs. */
 export function spendLimitLabel(duffs: number): string {
-  return SPEND_LIMITS.find((c) => c.duffs === duffs)?.label ?? `${duffs} duffs`;
+  return SPEND_LIMITS.find((c) => c.duffs === duffs)?.label ?? t("settings.security.duffs", { amount: String(duffs) });
 }
+
+const dash = (duffs: number) => ({
+  duffs,
+  get label() {
+    return t("settings.security.dash", { amount: new Intl.NumberFormat(formatLocale(undefined), { maximumFractionDigits: 8 }).format(duffs / 1e8) });
+  },
+});
 
 /** The iOS spending-limit options, in duffs. The signing window and quick unlock share them. */
 export const SPEND_LIMITS: { duffs: number; label: string }[] = [
-  { duffs: 0, label: "0 DASH" },
-  { duffs: 10_000_000, label: "0.1 DASH" },
-  { duffs: 50_000_000, label: "0.5 DASH" },
-  { duffs: 100_000_000, label: "1 DASH" },
-  { duffs: 500_000_000, label: "5 DASH" },
+  dash(0),
+  dash(10_000_000),
+  dash(50_000_000),
+  dash(100_000_000),
+  dash(500_000_000),
 ];
 
 /** The auto-lock choices (IOS-015 without "Immediately", D12): seconds, `null` = Never. */
 export const AUTO_LOCK_CHOICES: { secs: number | null; label: string }[] = [
-  { secs: null, label: "Never" },
-  { secs: 60, label: "1 minute" },
-  { secs: 300, label: "5 minutes" },
-  { secs: 3600, label: "1 hour" },
-  { secs: 86_400, label: "24 hours" },
+  {
+    secs: null,
+    get label() {
+      return t("settings.security.never");
+    },
+  },
+  ...[60, 300].map((secs) => ({
+    secs,
+    get label() {
+      return duration("minutes", secs / 60);
+    },
+  })),
+  ...[3600, 86_400].map((secs) => ({
+    secs,
+    get label() {
+      return duration("hours", secs / 3600);
+    },
+  })),
 ];
+
+/** The ends of a typed sentence are trimmed and it is NFC-normalized; case and inner spacing must
+ * match. The sentence in the app's language is read at check time, and English always works. */
+const accepted = (s: string) => s.normalize("NFC").trim();
+export const acceptsPhrase = (typed: string) =>
+  [SecurityText.wipeAcceptPhrase, settings.security.wipeAcceptPhrase].some((phrase) => accepted(typed) === accepted(phrase));
 
 type LockApi = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly">;
 const passphrase = (p: string): CredentialSpec => ({ kind: "passphrase", passphrase: p });
@@ -355,7 +380,7 @@ export class WipeModel extends Model {
   /** The sentence must be typed exactly (whitespace at the ends aside). */
   accept(sentence: string) {
     if (this.step !== "sentence") return;
-    if (sentence.trim() !== SecurityText.wipeAcceptPhrase) {
+    if (!acceptsPhrase(sentence)) {
       this.error = SecurityText.acceptPhraseMismatch;
       return this.changed();
     }

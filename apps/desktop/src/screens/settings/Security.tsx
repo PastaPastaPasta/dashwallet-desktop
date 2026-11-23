@@ -12,6 +12,7 @@ import { DashButton } from "../../components/basics";
 import { NewPassphraseForm, PassphrasePrompt } from "../../components/passphrase";
 import { Sheet } from "../../components/sheet";
 import { showToast } from "../../components/toast";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { PassphraseText } from "../../onboarding/passphrase";
 import { AUTO_LOCK_CHOICES, ChangePassphraseModel, EncryptModel, PaymentAuthModel, SPEND_LIMITS, SecurityText, SpendLimitModel, WipeModel, spendLimitLabel } from "../../settings/security";
@@ -27,6 +28,7 @@ type SecuritySheet = "encrypt" | "change" | "wipe" | null;
 let wipeAcrossLock: WipeModel | null = null;
 
 export function SecurityTab() {
+  const t = useT();
   const lock = useLockStatus();
   const { prefs, save, problem } = useSavePrefs();
   const [sheet, setSheet] = useState<SecuritySheet>(() => (wipeAcrossLock ? "wipe" : null));
@@ -37,9 +39,9 @@ export function SecurityTab() {
   const canForget = encrypted && (status?.walletsWithSecrets.length ?? 0) > 0;
   return (
     <>
-      <SettingsCard title="Wallet encryption" testId="settings-encryption">
+      <SettingsCard title={t("settings.security.encryption")} testId="settings-encryption">
         <p className="settings-row" data-testid="settings-encryption-state">
-          <span className="settings-row-title">Status</span>
+          <span className="settings-row-title">{t("settings.security.status")}</span>
           <span>{encrypted ? SecurityText.encrypted : SecurityText.notEncrypted}</span>
         </p>
         <Done text={notice} testId="settings-security-notice" />
@@ -47,34 +49,34 @@ export function SecurityTab() {
           <>
             <Hint>{SecurityText.encryptHint}</Hint>
             <DashButton variant="plainBlue" data-testid="settings-encrypt" onClick={() => setSheet("encrypt")}>
-              Encrypt wallet…
+              {t("settings.security.encrypt")}
             </DashButton>
           </>
         )}
         {encrypted && (
           <DashButton variant="plainBlue" data-testid="settings-change-passphrase" onClick={() => setSheet("change")}>
-            Change passphrase…
+            {t("settings.security.change")}
           </DashButton>
         )}
         <DashButton variant="plainBlue" data-testid="settings-security-recovery-phrase" onClick={() => ui.set({ dialog: "recoveryPhrase", recoveryWallet: null })}>
-          Show recovery phrase…
+          {t("settings.security.showPhrase")}
         </DashButton>
         {canForget && (
           <DashButton variant="plainBlue" data-testid="settings-forgot" onClick={() => ui.set({ forgotPassphrase: true })}>
-            Forgot passphrase?
+            {t("settings.security.forgot")}
           </DashButton>
         )}
       </SettingsCard>
-      <SettingsCard title="Unlocking" testId="settings-unlocking">
+      <SettingsCard title={t("settings.security.unlocking")} testId="settings-unlocking">
         <NotYetRow
           testId="settings-quick-unlock"
-          title="Touch ID or Windows Hello, and its spending limit"
+          title={t("settings.security.quickUnlock")}
           label={SecurityText.quickUnlockUnavailable}
           why={SecurityText.quickUnlockWhy}
         />
         <div className="settings-row">
           <label className="settings-row-title" htmlFor={`${id}-auto-lock`}>
-            Lock automatically after
+            {t("settings.security.autoLock")}
           </label>
           <select
             id={`${id}-auto-lock`}
@@ -95,11 +97,11 @@ export function SecurityTab() {
             ))}
           </select>
         </div>
-        <Hint>{encrypted ? "Counts from the last key press, click or scroll in this window." : SecurityText.encryptFirst}</Hint>
+        <Hint>{encrypted ? t("settings.security.autoLockHint") : SecurityText.encryptFirst}</Hint>
         <Problem text={problem} testId="settings-security-not-saved" />
       </SettingsCard>
       <PaymentAuthCard encrypted={encrypted} known={!!status} />
-      <SettingsCard title="Privacy" testId="settings-privacy">
+      <SettingsCard title={t("settings.security.privacy")} testId="settings-privacy">
         <label className="checkbox-row">
           <input
             type="checkbox"
@@ -110,17 +112,17 @@ export function SecurityTab() {
           {SecurityText.autohideBalance}
         </label>
       </SettingsCard>
-      <SettingsCard title="Delete wallet data" testId="settings-wipe-card">
-        <Hint>Removes every wallet of this network from this computer.</Hint>
+      <SettingsCard title={t("settings.security.wipeCard")} testId="settings-wipe-card">
+        <Hint>{t("settings.security.wipeHint")}</Hint>
         <DashButton variant="plainRed" data-testid="settings-wipe" onClick={() => setSheet("wipe")}>
-          Wipe wallet…
+          {t("settings.security.wipe")}
         </DashButton>
       </SettingsCard>
       {sheet === "encrypt" && (
         <EncryptSheet
           onClose={(done) => {
             setSheet(null);
-            if (done) setNotice(`${SecurityText.walletEncrypted} ${SecurityText.lockedAfterEncrypt}`);
+            if (done) setNotice(SecurityText.encryptedLocked);
           }}
         />
       )}
@@ -138,6 +140,7 @@ export function SecurityTab() {
 }
 
 function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: boolean }) {
+  const t = useT();
   const backend = useBackend();
   const id = useId();
   const [model] = useState(() => new PaymentAuthModel(backend));
@@ -156,7 +159,7 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
   }, [model, limit]);
   const askEveryTime = encrypted && model.on === true;
   return (
-    <SettingsCard title="Payments" testId="settings-payments">
+    <SettingsCard title={t("settings.security.payments")} testId="settings-payments">
       <label className="checkbox-row">
         <input
           type="checkbox"
@@ -199,16 +202,14 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
           onClose={() => model.cancel()}
         >
           <p className="sheet-text">
-            {model.pending
-              ? "Turn on: every payment asks for the passphrase."
-              : "Turn off: for 5 minutes after you unlock, payments can add up to the spending limit without asking again. A total over the limit still asks."}
+            {model.pending ? t("settings.security.turnOnText") : t("settings.security.turnOffText")}
           </p>
           <PassphrasePrompt
             testId="settings-payment-auth-passphrase"
             error={model.lock.message ?? model.error}
             busy={model.busy}
             disabled={model.lock.blocked}
-            submitLabel={model.pending ? "Turn on" : "Turn off"}
+            submitLabel={model.pending ? t("settings.security.turnOn") : t("settings.security.turnOff")}
             onSubmit={(p) => model.confirm(p)}
           />
         </Sheet>
@@ -216,15 +217,14 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
       {limit.pending !== null && (
         <Sheet title={SecurityText.spendLimit} width="small" testId="settings-spend-limit-sheet" closable={!limit.busy} onClose={() => limit.cancel()}>
           <p className="sheet-text" data-testid="settings-spend-limit-pending">
-            Change the limit from {spendLimitLabel(limit.limit ?? 0)} to {spendLimitLabel(limit.pending)}. Payments during the 5 minutes after you unlock can add up to{" "}
-            {spendLimitLabel(limit.pending)}. A total over that still asks for the passphrase.
+            {t("settings.security.spendLimitChange", { from: spendLimitLabel(limit.limit ?? 0), to: spendLimitLabel(limit.pending) })}
           </p>
           <PassphrasePrompt
             testId="settings-spend-limit-passphrase"
             error={limit.lock.message ?? limit.error}
             busy={limit.busy}
             disabled={limit.lock.blocked}
-            submitLabel="Save"
+            submitLabel={t("common.save")}
             onSubmit={(p) => limit.confirm(p)}
           />
         </Sheet>
@@ -234,6 +234,7 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
 }
 
 function EncryptSheet({ onClose }: { onClose: (done: boolean) => void }) {
+  const t = useT();
   const backend = useBackend();
   const [model] = useState(() => new EncryptModel(backend));
   useModel(model);
@@ -242,19 +243,19 @@ function EncryptSheet({ onClose }: { onClose: (done: boolean) => void }) {
     if (model.step === "done") onClose(true);
   }, [model.step, onClose]);
   return (
-    <Sheet title="Encrypt wallet" width="medium" testId="settings-encrypt-sheet" focusKey={model.step} closable={model.step !== "working"} onClose={() => onClose(false)}>
+    <Sheet title={t("settings.security.encryptTitle")} width="medium" testId="settings-encrypt-sheet" focusKey={model.step} closable={model.step !== "working"} onClose={() => onClose(false)}>
       <p className="sheet-warning" role="note">
         {PassphraseText.warning}
       </p>
       {model.step === "working" ? (
         <p className="sheet-text" role="status">
-          Encrypting…
+          {t("settings.security.encrypting")}
         </p>
       ) : (
         <NewPassphraseForm
           testId="settings-encrypt"
           error={model.error}
-          submitLabel="Encrypt wallet"
+          submitLabel={t("settings.security.encryptSubmit")}
           onEdit={() => model.edited()}
           onSubmit={(text, confirmation) => model.encrypt(text, confirmation)}
         />
@@ -264,6 +265,7 @@ function EncryptSheet({ onClose }: { onClose: (done: boolean) => void }) {
 }
 
 function ChangePassphraseSheet({ onClose }: { onClose: (done: boolean) => void }) {
+  const t = useT();
   const backend = useBackend();
   const [model] = useState(() => new ChangePassphraseModel(backend));
   useModel(model);
@@ -290,10 +292,10 @@ function ChangePassphraseSheet({ onClose }: { onClose: (done: boolean) => void }
   };
   const error = model.message;
   return (
-    <Sheet title="Change passphrase" width="medium" testId="settings-change-sheet" closable={!model.lock.working} onClose={() => onClose(false)}>
+    <Sheet title={t("settings.security.changeTitle")} width="medium" testId="settings-change-sheet" closable={!model.lock.working} onClose={() => onClose(false)}>
       <form className="secret-form" onSubmit={submit} data-testid="settings-change-form">
         <div className="form-field">
-          <label htmlFor={`${id}-current`}>Current passphrase</label>
+          <label htmlFor={`${id}-current`}>{t("settings.security.current")}</label>
           <input
             id={`${id}-current`}
             type="password"
@@ -306,11 +308,11 @@ function ChangePassphraseSheet({ onClose }: { onClose: (done: boolean) => void }
           />
         </div>
         <div className="form-field">
-          <label htmlFor={`${id}-new`}>New passphrase</label>
+          <label htmlFor={`${id}-new`}>{t("settings.security.new")}</label>
           <input id={`${id}-new`} type="password" autoComplete="new-password" data-testid="settings-change-new" value={text} onChange={edit(setText)} />
         </div>
         <div className="form-field">
-          <label htmlFor={`${id}-repeat`}>Repeat the new passphrase</label>
+          <label htmlFor={`${id}-repeat`}>{t("settings.security.repeat")}</label>
           <input
             id={`${id}-repeat`}
             type="password"
@@ -322,7 +324,7 @@ function ChangePassphraseSheet({ onClose }: { onClose: (done: boolean) => void }
         </div>
         <Problem text={error} testId="settings-change-error" />
         <DashButton type="submit" variant="filledBlue" size="large" fill data-testid="settings-change-submit" disabled={model.lock.working || model.lock.blocked}>
-          Change passphrase
+          {t("settings.security.changeSubmit")}
         </DashButton>
       </form>
     </Sheet>
@@ -330,6 +332,7 @@ function ChangePassphraseSheet({ onClose }: { onClose: (done: boolean) => void }
 }
 
 function WipeSheet({ onClose }: { onClose: () => void }) {
+  const t = useT();
   const backend = useBackend();
   const client = useQueryClient();
   const [model] = useState(() => wipeAcrossLock ?? new WipeModel(backend));
@@ -373,17 +376,18 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
             model.accept(sentence);
           }}
         >
-          <p className="sheet-warning" role="note">
+          <p className="sheet-warning settings-wipe-warning" role="note">
             {SecurityText.wipeMessage}
           </p>
           <p className="field-hint" data-testid="settings-wipe-keeps">
-            {SecurityText.wipeKeeps(backupDir.data ?? "the backup folder")}
+            {SecurityText.wipeKeeps(backupDir.data ?? t("settings.security.backupFolder"))}
           </p>
           <div className="form-field">
-            <label htmlFor={`${id}-sentence`}>Type: {SecurityText.wipeAcceptPhrase}</label>
+            <label className="settings-wipe-label" htmlFor={`${id}-sentence`}>{t.rich("settings.security.wipeType", { sentence: <bdi data-testid="settings-wipe-phrase">{SecurityText.wipeAcceptPhrase}</bdi> })}</label>
             <input
               id={`${id}-sentence`}
               data-testid="settings-wipe-sentence"
+              dir="auto"
               data-autofocus
               autoComplete="off"
               value={sentence}
@@ -392,7 +396,7 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
           </div>
           <Problem text={model.error} testId="settings-wipe-error" />
           <DashButton type="submit" variant="filledBlue" size="large" fill data-testid="settings-wipe-continue">
-            Continue
+            {t("settings.security.continue")}
           </DashButton>
         </form>
       )}
@@ -403,18 +407,18 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
             error={model.lock.message ?? model.error}
             busy={model.busy}
             disabled={model.lock.blocked}
-            submitLabel="Delete everything"
+            submitLabel={t("settings.security.deleteEverything")}
             onSubmit={(p) => model.wipe(p)}
           />
         ) : (
           // No autofocus: Enter on opening this step must not delete everything (D35).
           <DashButton variant="filledBlue" size="large" fill data-testid="settings-wipe-confirm" disabled={model.busy} onClick={() => void model.wipe("")}>
-            Delete everything
+            {t("settings.security.deleteEverything")}
           </DashButton>
         ))}
       {model.step === "working" && (
         <p className="sheet-text" role="status">
-          Deleting…
+          {t("settings.security.deleting")}
         </p>
       )}
       {model.step === "stopped" && (
@@ -422,7 +426,7 @@ function WipeSheet({ onClose }: { onClose: () => void }) {
           <Problem text={model.error} testId="settings-wipe-error" />
           {/* Enter on a stop tries again; closing is a choice the text explains (D39). */}
           <DashButton variant="tintedBlue" size="large" fill data-testid="settings-wipe-retry" data-autofocus onClick={() => model.retry()}>
-            Try again
+            {t("settings.security.tryAgain")}
           </DashButton>
         </>
       )}
