@@ -2,7 +2,8 @@
 // scan across a table, under whose it is. The welcome and My Profile open it.
 
 import { Sheet } from "../../components/sheet";
-import { SHARE_TITLE } from "../../dashpay/registration";
+import { shareTitle } from "../../dashpay/registration";
+import { useT } from "../../i18n";
 import { Avatar } from "../contacts/Avatar";
 import { MyQrTab } from "../contacts/AddContact";
 
@@ -29,9 +30,10 @@ export function ShareSheet({
   returnFocus?: () => HTMLElement | null;
   onClose: () => void;
 }) {
+  useT();
   const initials = who ? (Array.from(who.name ?? who.username)[0] ?? "?").toUpperCase() : "";
   return (
-    <Sheet title={SHARE_TITLE} width="small" testId={testId} returnFocus={returnFocus} onClose={onClose}>
+    <Sheet title={shareTitle()} width="small" testId={testId} returnFocus={returnFocus} onClose={onClose}>
       {who && (
         <div className="share-who" data-testid="share-who">
           <Avatar letters={initials} identity={identity} own />

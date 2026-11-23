@@ -26,11 +26,13 @@ import type { StatusInputs } from "../../dashpay/status";
 import type { RegistrationWizard } from "../../dashpay/wizard";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
+import { useT } from "../../i18n";
 import { VotingInfoSheet } from "./AboutDashPay";
 import { ShareSheet } from "./ShareSheet";
 import { WelcomeSteps } from "./Welcome";
 
 export function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; title: string; id: string }) {
+  useT();
   return (
     <header className="registration-header">
       <p className="registration-step" data-testid="registration-step">
@@ -45,6 +47,7 @@ export function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; tit
 
 /** The last call's refusal; a claim's (`claim`, DP5-03 C12) in its own words. */
 export function ErrorLine({ wiz, inputs, claim = false }: { wiz: RegistrationWizard; inputs: StatusInputs; claim?: boolean }) {
+  useT();
   if (wiz.error === null) return null;
   return (
     <p className="registration-error" role="alert" data-testid="registration-error">
@@ -55,6 +58,7 @@ export function ErrorLine({ wiz, inputs, claim = false }: { wiz: RegistrationWiz
 
 /** Step 1 (IOS-066, F4): the checklist as the user types, then the network's answer. */
 function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string }) {
+  useT();
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
   // The engine checks the label as given; the host trims it.
@@ -133,6 +137,7 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
 /** The wedge (m4 §2.2, DEC-197): a start refused behind a registration whose funding is unknown.
  * A refusal of the start past it shows here, over the step. */
 function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: RegistrationQuote; inputs: StatusInputs }) {
+  useT();
   return (
     <Sheet title={REG_COPY.wedge.title} width="small" testId="registration-wedge" onClose={() => wiz.dismissWedge()}>
       <p className="sheet-text">{REG_COPY.wedge.text}</p>
@@ -157,6 +162,7 @@ function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: Re
 
 /** Step 2's cost: the quote in Dash (D2), or what the identity's credits may pay (D6). */
 function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizard; walletId: string; identity: string | null; inputs: StatusInputs }) {
+  useT();
   const quote = useLabelQuote(walletId, wiz.label, identity === null);
   const credits = useNameCredits(walletId, identity, wiz.label);
   // Either read failing says so (review r2 L1).
@@ -189,6 +195,7 @@ function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizar
 
 /** Step 2 (IOS-067): the cost in Dash (D2) from the wallet's coins, or the identity's credits (D6). */
 function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
+  useT();
   const id = useId();
   const [accepted, setAccepted] = useState(false);
   const identity = wiz.mode.kind === "credits" ? wiz.mode.identity : null;
@@ -238,6 +245,7 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
 
 /** Steps 1 and 2, and the passphrase prompt their grants ask for. */
 export function WizardSteps({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
+  useT();
   useModel(wiz);
   return (
     <>
@@ -270,6 +278,7 @@ export function RegistrationScreen({
   /** Whose username the welcome's Share my username shows, once known. */
   share?: { walletId: string; identity: string; username: string | null } | null;
 }) {
+  const tr = useT();
   useModel(wiz);
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
@@ -305,7 +314,7 @@ export function RegistrationScreen({
     }
     const active = document.activeElement;
     if (active !== title.current && (lost() || section.current?.contains(active))) title.current?.focus();
-    else if (active !== title.current || from === false) setAnnounced(`${model.title}. ${model.lines.join(" ")}`);
+    else if (active !== title.current || from === false) setAnnounced(REG_COPY.announced(model.title, model.lines));
     // Only the switch to the welcome moves focus or speaks, not a later change of its text.
   }, [welcome]);
   return (
@@ -336,10 +345,8 @@ export function RegistrationScreen({
         </h2>
         {step && (
           <div className="dashpay-card-step" data-testid="registration-progress-step">
-            <span>
-              ({step.n}/3) {step.text}
-            </span>
-            <progress className="dashpay-card-progress" max={3} value={step.n} aria-label="Registration progress" />
+            <span>{tr("dashpay.step.shown", { step: `${step.n}/3`, text: step.text })}</span>
+            <progress className="dashpay-card-progress" max={3} value={step.n} aria-label={tr("dashpay.step.progress")} />
           </div>
         )}
         <div data-testid="registration-lines" id={`${id}-lines`}>
