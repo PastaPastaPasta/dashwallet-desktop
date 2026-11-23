@@ -395,7 +395,6 @@ fn a_conflict_another_wallet_fetches_without_a_chain_lock_leaves_the_change_spen
 /// never C. Pins the way out for a known gap.
 #[test]
 fn a_change_a_conflict_no_wallet_fetches_frees_is_spendable_once_the_wallet_is_restored() {
-    use crate::ImportOptions;
     let other = OutPoint::new(Txid::from_byte_array([0x59; 32]), 0);
     let Abandoned {
         _dir,
@@ -415,26 +414,9 @@ fn a_change_a_conflict_no_wallet_fetches_frees_is_spendable_once_the_wallet_is_r
         "D's block is not fetched, so C still spends the change"
     );
 
-    let wipe = (session.vault())
-        .authorize(
-            dw_vault::GrantPurpose::Wipe,
-            Some(&id.0),
-            dw_vault::Credential::None,
-        )
-        .unwrap()
-        .id;
-    engine.block_on(session.remove_wallet(id, wipe)).unwrap();
+    remove(&engine, &session, id);
     let session = reopen(&engine, session);
-    let id = engine
-        .block_on(session.import_wallet(
-            zeroize::Zeroizing::new(super::PHRASE.to_vec()),
-            zeroize::Zeroizing::new(Vec::new()),
-            ImportOptions {
-                birth_height: Some(super::BIRTH),
-                ..Default::default()
-            },
-        ))
-        .unwrap();
+    let id = restore(&engine, &session, super::PHRASE);
     mined(&engine, &session, id, FUNDED_AT, vec![funding]);
     mined(&engine, &session, id, TIP + 1, vec![payment.clone()]);
     assert!(
@@ -596,6 +578,32 @@ fn block_for(
     });
 }
 
+fn remove(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) {
+    let wipe = (session.vault())
+        .authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&id.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    engine.block_on(session.remove_wallet(id, wipe)).unwrap();
+}
+
+/// Restores the wallet of `phrase`, born at [`super::BIRTH`].
+fn restore(engine: &Engine, session: &Arc<NetworkSession>, phrase: &[u8]) -> WalletId {
+    engine
+        .block_on(session.import_wallet(
+            zeroize::Zeroizing::new(phrase.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(super::BIRTH),
+                ..Default::default()
+            },
+        ))
+        .unwrap()
+}
+
 fn start_offline_spv(engine: &Engine, session: &Arc<NetworkSession>) {
     engine.block_on(session.start_spv()).unwrap();
     super::own_spend_disk_tests::eventually("SPV runs", || {
@@ -618,7 +626,6 @@ enum Restart {
 /// releases the change once P is found again, relayed or mined, at once and
 /// after a restart. The other wallet keeps C until it is restored too.
 fn restart_before_the_conflicts_chain_lock(restart: Restart) {
-    use crate::ImportOptions;
     let (_dir, engine, session, id) = engine_wallet();
     let other = engine
         .block_on(session.create_wallet(12))
@@ -752,26 +759,9 @@ fn restart_before_the_conflicts_chain_lock(restart: Restart) {
     let session = reopen(&engine, session);
     overturned_stays(&session);
 
-    let wipe = (session.vault())
-        .authorize(
-            dw_vault::GrantPurpose::Wipe,
-            Some(&id.0),
-            dw_vault::Credential::None,
-        )
-        .unwrap()
-        .id;
-    engine.block_on(session.remove_wallet(id, wipe)).unwrap();
+    remove(&engine, &session, id);
     let session = reopen(&engine, session);
-    let id = engine
-        .block_on(session.import_wallet(
-            zeroize::Zeroizing::new(super::PHRASE.to_vec()),
-            zeroize::Zeroizing::new(Vec::new()),
-            ImportOptions {
-                birth_height: Some(super::BIRTH),
-                ..Default::default()
-            },
-        ))
-        .unwrap();
+    let id = restore(&engine, &session, super::PHRASE);
     let both = [id, other];
     block_for(&engine, &session, &both, &[id], FUNDED_AT, funding_block);
     block_for(&engine, &session, &both, &[], TIP, vec![foreign()]);
@@ -833,22 +823,23 @@ fn a_restart_before_a_conflicts_block_keeps_the_overturned_spend_through_a_resca
     restart_before_the_conflicts_chain_lock(Restart::BeforeTheBlock);
 }
 
+struct Overturned {
+    _dir: tempfile::TempDir,
+    engine: Engine,
+    session: Arc<NetworkSession>,
+    id: WalletId,
+    c: Transaction,
+    back: OutPoint,
+    /// Each block's height, transactions and whether the wallet fetches it.
+    blocks: Vec<(u32, Vec<Transaction>, bool)>,
+}
+
 /// C, locked, spends the wallet's coin A0 and a foreign X and pays the
 /// wallet back: C:0 is money C sent to this wallet. D, mined and then
 /// ChainLocked, spends A0 when `fetched`, so the wallet fetches its block,
 /// and X only otherwise, so no wallet does. With `restart`, Dash Wallet
-/// restarts between C and D. Returns C, C:0 and the session after D's lock.
-fn money_an_overturned_payment_sent(
-    fetched: bool,
-    restart: bool,
-) -> (
-    tempfile::TempDir,
-    Engine,
-    Arc<NetworkSession>,
-    WalletId,
-    Transaction,
-    OutPoint,
-) {
+/// restarts between C and D. Returns the session after D's lock.
+fn money_an_overturned_payment_sent(fetched: bool, restart: bool) -> Overturned {
     let (dir, engine, session, id) = engine_wallet();
     let to: Vec<Address> = (0..COINS)
         .map(|_| fresh_address(&engine, &session, id))
@@ -896,13 +887,32 @@ fn money_an_overturned_payment_sent(
         signature: BLSSignature::from([0; 96]),
     };
     let fetched_for: &[WalletId] = if fetched { &[id] } else { &[] };
-    block_for(&engine, &session, &[id], fetched_for, height, vec![d]);
+    block_for(
+        &engine,
+        &session,
+        &[id],
+        fetched_for,
+        height,
+        vec![d.clone()],
+    );
     deliver_all(&engine, &session, &[id], move |wm| {
         Box::pin(async move {
             wm.apply_chain_lock(chain_lock);
         })
     });
-    (dir, engine, session, id, c, back)
+    Overturned {
+        _dir: dir,
+        engine,
+        session,
+        id,
+        c,
+        back,
+        blocks: vec![
+            (FUNDED_AT, vec![funded], true),
+            (TIP, vec![foreign()], false),
+            (height, vec![d], fetched),
+        ],
+    }
 }
 
 /// The usual order, D's block and then its ChainLock, in a wallet that
@@ -910,7 +920,15 @@ fn money_an_overturned_payment_sent(
 /// restart. On main it stayed offered for good.
 #[test]
 fn money_an_overturned_payment_sent_goes_once_the_conflicts_chain_lock_lands() {
-    let (_dir, engine, session, id, c, back) = money_an_overturned_payment_sent(true, false);
+    let Overturned {
+        _dir,
+        engine,
+        session,
+        id,
+        c,
+        back,
+        ..
+    } = money_an_overturned_payment_sent(true, false);
     assert!(
         !held(&engine, &session, id).contains(&back),
         "C:0 never existed"
@@ -925,8 +943,20 @@ fn money_an_overturned_payment_sent_goes_once_the_conflicts_chain_lock_lands() {
     assert!(!records(&session, id, c.txid()), "C is gone");
 }
 
+/// C's money to the wallet stays offered, at once and after a restart.
+/// Quitting and reopening Dash Wallet, then removing the wallet and
+/// restoring it from its recovery phrase, takes it away for good: the
+/// restored wallet's scan never finds C, so A0 is back unless D spent it.
 fn money_stays_offered(fetched: bool, restart: bool) {
-    let (_dir, engine, session, id, c, back) = money_an_overturned_payment_sent(fetched, restart);
+    let Overturned {
+        _dir,
+        engine,
+        session,
+        id,
+        c,
+        back,
+        blocks,
+    } = money_an_overturned_payment_sent(fetched, restart);
     let offered = |session: &Arc<NetworkSession>| {
         assert!(
             held(&engine, session, id).contains(&back),
@@ -941,18 +971,37 @@ fn money_stays_offered(fetched: bool, restart: bool) {
     offered(&session);
     let session = reopen(&engine, session);
     offered(&session);
+
+    remove(&engine, &session, id);
+    let id = restore(&engine, &session, super::PHRASE);
+    for (height, txs, fetched) in blocks {
+        let fetched_for: &[WalletId] = if fetched { &[id] } else { &[] };
+        block_for(&engine, &session, &[id], fetched_for, height, txs);
+    }
+    let unspent = if fetched { COINS - 1 } else { COINS };
+    let gone = |session: &Arc<NetworkSession>| {
+        assert!(
+            !held(&engine, session, id).contains(&back),
+            "the restore takes C:0 away"
+        );
+        assert!(!records(session, id, c.txid()), "and C");
+        assert_eq!(total(&engine, session, id), unspent as u64 * COIN);
+    };
+    gone(&session);
+    let session = reopen(&engine, session);
+    gone(&session);
 }
 
 /// Pins a known gap (#338): a restart between C and D leaves C's money to
-/// the wallet offered for good, although the wallet fetches D's block. The
-/// same on main.
+/// the wallet offered until it is restored, although the wallet fetches D's
+/// block. The same on main.
 #[test]
 fn known_gap_after_a_restart_money_an_overturned_payment_sent_stays_offered() {
     money_stays_offered(true, true);
 }
 
 /// Pins a known gap (#327): no wallet fetches D's block, so C's money to the
-/// wallet stays offered for good. The same on main.
+/// wallet stays offered until it is restored. The same on main.
 #[test]
 fn known_gap_money_an_overturned_payment_sent_stays_offered_when_no_wallet_fetches_the_conflict() {
     money_stays_offered(false, false);
@@ -963,6 +1012,123 @@ fn known_gap_money_an_overturned_payment_sent_stays_offered_when_no_wallet_fetch
 fn known_gap_money_an_overturned_payment_sent_stays_offered_after_a_restart_when_no_wallet_fetches_the_conflict()
  {
     money_stays_offered(false, true);
+}
+
+const OTHER_PHRASE: &[u8] =
+    b"legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+/// Pins a known gap. L, locked, spends the wallet's coins A0 and A1 with
+/// change; C2, locked, spends that change and pays another wallet B open in
+/// Dash Wallet. D, mined and then ChainLocked, spends A1. The wallet drops L
+/// and C2 together, but B records only C2, whose input D does not spend, so
+/// B keeps C2 pending and its money available. Quitting and reopening Dash
+/// Wallet, then removing B and restoring it from its recovery phrase, takes
+/// that money away for good.
+#[test]
+fn known_gap_money_a_locked_payment_built_on_an_overturned_one_sent_another_wallet_stays_until_it_is_restored()
+ {
+    let (_dir, engine, session, id) = engine_wallet();
+    let other = restore(&engine, &session, OTHER_PHRASE);
+    let both = [id, other];
+    let to: Vec<Address> = (0..COINS)
+        .map(|_| fresh_address(&engine, &session, id))
+        .collect();
+    let funded = funding(7, &to, COIN);
+    let (a0, a1) = (
+        OutPoint::new(funded.txid(), 0),
+        OutPoint::new(funded.txid(), 1),
+    );
+    let blocks = |session: &NetworkSession, wallets: &[WalletId]| {
+        block_for(
+            &engine,
+            session,
+            wallets,
+            &[id],
+            FUNDED_AT,
+            vec![funded.clone()],
+        );
+        block_for(&engine, session, wallets, &[], TIP, vec![foreign()]);
+    };
+    blocks(&session, &both);
+    let change_to = fresh_address(&engine, &session, id);
+    let mut l = super::spend_of(
+        a0,
+        vec![(change_to.script_pubkey(), COIN), (elsewhere(), COIN / 2)],
+    );
+    l.input.push(TxIn {
+        previous_output: a1,
+        ..Default::default()
+    });
+    let l = super::signed_by_wallet(&engine, &session, id, &to[0], l);
+    let to_other = fresh_address(&engine, &session, other);
+    let c2 = super::spend_of(
+        OutPoint::new(l.txid(), 0),
+        vec![(to_other.script_pubkey(), COIN - 1_000)],
+    );
+    let c2 = super::signed_by_wallet(&engine, &session, id, &change_to, c2);
+    let paid = OutPoint::new(c2.txid(), 0);
+    let (first, second) = (l.clone(), c2.clone());
+    deliver_all(&engine, &session, &both, move |wm| {
+        Box::pin(async move {
+            wm.process_mempool_transaction(&first, Some(lock_for(&first)))
+                .await;
+            wm.process_mempool_transaction(&second, Some(lock_for(&second)))
+                .await;
+        })
+    });
+    wait_stored(&session, id, &[l.txid(), c2.txid()]);
+    wait_stored(&session, other, &[c2.txid()]);
+    assert!(held(&engine, &session, other).contains(&paid));
+
+    let d = super::spend_of(a1, vec![(elsewhere(), COIN - 1_000)]);
+    let height = TIP + 2;
+    let chain_lock = ChainLock {
+        block_height: height,
+        block_hash: block_with(vec![d.clone()]).block_hash(),
+        signature: BLSSignature::from([0; 96]),
+    };
+    block_for(&engine, &session, &both, &[id], height, vec![d.clone()]);
+    deliver_all(&engine, &session, &both, move |wm| {
+        Box::pin(async move {
+            wm.apply_chain_lock(chain_lock);
+        })
+    });
+    super::own_spend_disk_tests::eventually("D beats L, and C2 with it", || {
+        !records(&session, id, l.txid()) && !records(&session, id, c2.txid())
+    });
+    assert!(held(&engine, &session, id).contains(&a0));
+
+    let offered = |session: &Arc<NetworkSession>| {
+        assert!(
+            held(&engine, session, other).contains(&paid),
+            "known gap: C2:0 shows"
+        );
+        assert!(
+            spendable(&engine, session, other, paid),
+            "known gap: C2:0 is offered"
+        );
+        assert!(records(session, other, c2.txid()), "C2 stays pending");
+    };
+    offered(&session);
+    let session = reopen(&engine, session);
+    offered(&session);
+
+    remove(&engine, &session, other);
+    let other = restore(&engine, &session, OTHER_PHRASE);
+    let both = [id, other];
+    blocks(&session, &both);
+    block_for(&engine, &session, &both, &[id], height, vec![d]);
+    let gone = |session: &Arc<NetworkSession>| {
+        assert!(
+            !held(&engine, session, other).contains(&paid),
+            "the restore takes C2:0 away"
+        );
+        assert!(!records(session, other, c2.txid()), "and C2");
+        assert_eq!(total(&engine, session, other), 0);
+    };
+    gone(&session);
+    let session = reopen(&engine, session);
+    gone(&session);
 }
 
 /// D, which beats C, is mined but its ChainLock has not landed when the
