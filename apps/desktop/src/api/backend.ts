@@ -144,6 +144,9 @@ import type { MasternodeOverview } from "./generated/MasternodeOverview";
 import type { MasternodePayout } from "./generated/MasternodePayout";
 import type { RevealedMasternodeKey } from "./generated/RevealedMasternodeKey";
 import type { UntrackOutcome } from "./generated/UntrackOutcome";
+import type { ProTxOperation } from "./generated/ProTxOperation";
+import type { UpdateRegistrarPreview } from "./generated/UpdateRegistrarPreview";
+import type { UpdateRegistrarRequest } from "./generated/UpdateRegistrarRequest";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
 import type { VerifyMessageResult } from "./generated/VerifyMessageResult";
@@ -660,6 +663,16 @@ export interface Backend {
   mnKeys(walletId: string, role: MasternodeKeyRoleName, start: number, count: number): Promise<MasternodeKeyInfo[]>;
   /** Consumes a `revealSecret` grant; the result is secret and never cached. */
   mnRevealKey(walletId: string, role: MasternodeKeyRoleName, index: number, grant: string): Promise<RevealedMasternodeKey>;
+  /** Plans a ProUpRegTx (owner-signed: voting key, operator public key, payout); signs nothing (MG-10 S3). */
+  mnPreviewUpdateRegistrar(walletId: string, request: UpdateRegistrarRequest): Promise<UpdateRegistrarPreview>;
+  /** Signs with the owner key and sends, under a `masternodeOp` grant covering the preview's `totalDebit`. */
+  mnUpdateRegistrar(walletId: string, request: UpdateRegistrarRequest, grant: string): Promise<ProTxOperation>;
+  /** The wallet's ProTx operations, states derived on this read. */
+  mnOperations(walletId: string): Promise<ProTxOperation[]>;
+  /** Sends a signed operation that didn't go out again, under a `masternodeOp` grant covering its `debit`. */
+  mnResendOperation(walletId: string, operation: string, grant: string): Promise<ProTxOperation>;
+  /** Deletes an operation that was never handed to the network. */
+  mnDiscardOperation(walletId: string, operation: string): Promise<null>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */

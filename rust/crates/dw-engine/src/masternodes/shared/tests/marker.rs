@@ -157,7 +157,7 @@ fn offered(f: &Fx, coin: OutPoint) -> bool {
 fn marked(f: &Fx, txid: Txid) -> BTreeSet<OutPoint> {
     let (sent, read) = crate::tx_actions::load_sent(&f.db(), f.wallets[0]);
     assert!(read);
-    sent.get(&txid).cloned().unwrap_or_default()
+    sent.get(&txid).map(|m| m.coins.clone()).unwrap_or_default()
 }
 
 struct Shared {

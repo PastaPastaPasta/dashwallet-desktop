@@ -402,9 +402,9 @@ struct Mine {
     listed: Vec<String>,
 }
 
-async fn identities_of(wallet: &PlatformWallet) -> BTreeMap<String, Mine> {
-    let state = wallet.state().await;
-    state
+async fn identities_of(wallet: &PlatformWallet) -> Result<BTreeMap<String, Mine>, PlatformError> {
+    let state = crate::wallet_read::info_of(wallet).await?;
+    Ok(state
         .identity_manager
         .wallet_managed_identities(&wallet.wallet_id())
         .filter(|m| m.identity_index.is_some())
@@ -421,7 +421,7 @@ async fn identities_of(wallet: &PlatformWallet) -> BTreeMap<String, Mine> {
             };
             (id.to_string(Encoding::Base58), mine)
         })
-        .collect()
+        .collect())
 }
 
 /// Whether a row's label is `label`'s contest (DPNS's normalized compare).
@@ -504,7 +504,9 @@ impl NetworkSession {
             return Ok(());
         }
         let now = unix_now();
-        let mine = identities_of(&wallet).await;
+        let Ok(mine) = identities_of(&wallet).await else {
+            return Ok(());
+        };
         let w = id.to_string();
         let rows = self
             .appdb_op(move |db| db.wallet_contest_watches(&w))
@@ -742,7 +744,7 @@ impl NetworkSession {
         {
             let locks = identity_locks(id, identity);
             let _state = locks.state.lock().await;
-            let mut state = wallet.state_mut().await;
+            let mut state = crate::wallet_read::info_mut_of(wallet).await?;
             if let Some(managed) = state.identity_manager.managed_identity_mut(&identity) {
                 DashPay::drop_contest(managed, &row.label, wallet.persister());
             }
@@ -765,7 +767,7 @@ impl NetworkSession {
         label: &str,
         normalized: &str,
     ) -> Result<ContestStatus, PlatformError> {
-        let mine = identities_of(wallet).await;
+        let mine = identities_of(wallet).await?;
         let me =
             (mine.get(&b58(&identity))).ok_or(PlatformError::Identity(IdentityError::NotFound))?;
         let poll = net.page(normalized, POLL_PAGE).await?;
@@ -898,5 +900,39 @@ impl ContestNet for SdkOrFake {
             #[cfg(test)]
             Self::Fake(net) => net.end_page(from, limit).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod gone_tests {
+    use super::super::requests::tests::Fixture;
+    use super::*;
+
+    /// #263: the identities read, for a wallet gone from the manager, fails;
+    /// no panic.
+    #[test]
+    fn contests_of_a_wallet_gone_from_the_manager_do_not_panic() {
+        let f = Fixture::new(u64::MAX / 2);
+        let w = f.detach();
+        let r = f.engine.block_on(identities_of(&w));
+        assert!(matches!(r, Err(PlatformError::WalletNotFound)));
+    }
+
+    /// #263: a watch's end, for a wallet gone from the manager, fails; no
+    /// panic.
+    #[test]
+    fn a_watch_end_of_a_wallet_gone_from_the_manager_does_not_panic() {
+        let f = Fixture::new(u64::MAX / 2);
+        let w = f.engine.block_on(f.s.wallet(&f.wallet)).unwrap();
+        let fence = f.engine.block_on(f.s.write_fence(f.wallet, &w)).unwrap();
+        let w = f.detach();
+        let row = ContestWatch {
+            identity: b58(&super::super::journal_tests::id(1)),
+            label: "carol".into(),
+            ends_at: 0,
+            last_state: None,
+        };
+        let r = f.engine.block_on(f.s.end_watch(&w, f.wallet, &fence, &row));
+        assert!(matches!(r, Err(PlatformError::WalletNotFound)), "{r:?}");
     }
 }

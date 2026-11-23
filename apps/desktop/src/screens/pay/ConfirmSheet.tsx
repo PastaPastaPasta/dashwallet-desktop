@@ -11,12 +11,12 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
-import { isAppError } from "../../api/backend";
+import { hasCode, isAppError } from "../../api/backend";
 import { refusedWhileLocked } from "../../api/lockGate";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy, useWallets } from "../../api/queries";
+import { keys, useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy, useUtxos, useWallets } from "../../api/queries";
 import { navigate, useUi } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
@@ -39,7 +39,10 @@ import {
   failureText,
   isContact,
   keepsPromise,
+  paysWithUnmixed,
+  settleNotSent,
   subtractsFee,
+  UNRECORDED,
   unsignedKeepsPromise,
   type Advanced,
   type Confirmed,
@@ -153,6 +156,10 @@ export function ConfirmSheet({
   // The fee against what the payee gets (after a subtract-fee share; the change is not in it).
   const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
   const toast = useActionToast(walletId);
+  const normal = coins.coins !== "mixed";
+  const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: normal });
+  const utxos = useUtxos(walletId, coins.coins === "selected");
+  const unmixed = normal && paysWithUnmixed(coins, utxos.data, mixing.data);
 
   // A failed read of the policy counts as "on" (U-03 D3). With the signing window, an unread
   // window also asks: the prompt waits until that read settles. A sheet that sends nothing
@@ -298,14 +305,14 @@ export function ConfirmSheet({
       const { txid } = await draft.broadcast(d, prepared.handle);
       attempt.outcome({ kind: "sent", txid, ...sent });
     } catch (e) {
-      // "Not sent" only when the engine released it, held a contact payment back before its
-      // hand-off, or the window locked before it was asked (then it is abandoned here); nothing
-      // else is abandoned after a broadcast.
+      // "Not sent" only when the engine released it, held it back before its hand-off, or the
+      // window locked before it was asked (then it is abandoned here); nothing else is abandoned
+      // after a broadcast.
       const never = refusedWhileLocked(e);
       const o = never ? ({ kind: "failed", text: t("pay.error.lockedBeforeSend") } as const) : broadcastFailure(e, chain, { txid: prepared.summary.txid, draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
       if (o.kind === "failed") {
-        if (toContact || never) await draft.abandon(d, prepared.handle);
-        notSent(o.text);
+        const engineHolds = toContact || never || hasCode(e, UNRECORDED);
+        await settleNotSent(engineHolds ? () => draft.abandon(d, prepared.handle) : null, () => notSent(o.text));
       } else attempt.outcome(accepted && o.kind === "unknown" ? { ...o, text: `${accepted} ${o.text}` } : o);
     } finally {
       // The lease ends with the first broadcast (dwcli's point): a retry needs none.
@@ -427,6 +434,11 @@ export function ConfirmSheet({
         )}
         {subtractsFee(recipient) && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
         {changeAddress !== null && <p className="placeholder-note">{t("pay.confirm.changeNote")}</p>}
+        {unmixed && (
+          <p className="placeholder-note" data-testid="pay-confirm-unmixed">
+            {t("pay.confirm.unmixed")}
+          </p>
+        )}
         {!policyKnown ? (
           <LoadingState testId="pay-confirm-policy" text={t("pay.confirm.checkingPolicy")} />
         ) : (

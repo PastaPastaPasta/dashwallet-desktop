@@ -505,6 +505,9 @@ pub(crate) struct SessionHub {
     pub tracker: Mutex<SyncTracker>,
     pub pump: EventPump,
     pub history: HistoryStore,
+    /// The session's app database, once the session is open and until it
+    /// closes: a sweep drops the sent marks of the payments it removed.
+    pub appdb: std::sync::OnceLock<std::sync::Weak<dw_appdb::AppDb>>,
     pub wallets: RwLock<BTreeMap<WalletId, WalletState>>,
     pub names: RwLock<HashMap<WalletId, WalletName>>,
     /// The rescan the engine started, until it finishes or is cancelled.
@@ -590,6 +593,20 @@ pub(crate) struct SessionHub {
     pub(crate) unreadable_record: Mutex<(Option<dashcore::Txid>, Option<dashcore::Txid>)>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next abandon after its marks are written, before
+    /// its sweep.
+    #[cfg(test)]
+    pub(crate) pause_abandon_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next abandon's write of its abandoned marks fails.
+    #[cfg(test)]
+    pub(crate) fail_abandon_mark: std::sync::atomic::AtomicBool,
+    /// Tests: the next abandon's store of its sweep fails.
+    #[cfg(test)]
+    pub(crate) fail_abandon_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: Remove unconfirmed transactions reads this wallet's sent marks
+    /// as not read.
+    #[cfg(test)]
+    pub(crate) fail_sent_read: Mutex<Option<WalletId>>,
     /// Tests: holds the next payment's metadata write after its wallet read.
     #[cfg(test)]
     pub(crate) pause_metadata: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -697,6 +714,7 @@ impl SessionHub {
             tracker: Mutex::new(SyncTracker::default()),
             pump: EventPump::default(),
             history: HistoryStore::default(),
+            appdb: std::sync::OnceLock::new(),
             wallets: RwLock::new(BTreeMap::new()),
             names: RwLock::new(HashMap::new()),
             rescan: Mutex::new(None),
@@ -738,6 +756,14 @@ impl SessionHub {
             unreadable_record: Mutex::default(),
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
+            #[cfg(test)]
+            pause_abandon_sweep: Mutex::new(None),
+            #[cfg(test)]
+            fail_abandon_mark: Default::default(),
+            #[cfg(test)]
+            fail_abandon_sweep: Default::default(),
+            #[cfg(test)]
+            fail_sent_read: Mutex::new(None),
             #[cfg(test)]
             pause_metadata: Mutex::new(None),
             #[cfg(test)]
@@ -1052,7 +1078,10 @@ impl SessionHub {
     pub(crate) fn admit(&self, id: WalletId) -> bool {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         let was = unloaded.remove(&id);
-        self.history.with_wallet(id, |h| h.session_held.clear());
+        self.history.with_wallet(id, |h| {
+            h.session_held.clear();
+            h.held_here.clear();
+        });
         was
     }
 
@@ -1064,7 +1093,10 @@ impl SessionHub {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         for id in ids {
             if unloaded.remove(&id) {
-                self.history.with_wallet(id, |h| h.session_held.clear());
+                self.history.with_wallet(id, |h| {
+                    h.session_held.clear();
+                    h.held_here.clear();
+                });
             }
         }
     }
@@ -1390,7 +1422,11 @@ impl SessionHub {
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
-                if self.update_balance(id, balance, account_balances) {
+                // Queued before an Abandon this session took it: its balance
+                // is older.
+                let queued = matches!(record.context, TransactionContext::Mempool)
+                    && (self.history).read_wallet(&id, |h| h.abandoned_here.contains(&record.txid));
+                if !queued && self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
                 }
                 // First seen through its InstantSend lock: evidence. In
@@ -1439,12 +1475,21 @@ impl SessionHub {
                     },
                 );
                 // Upstream deleted these records (provably beaten spends);
-                // the history drops them too.
+                // the history drops them too, and their sent marks go.
                 self.history.with_wallet(id, |h| {
                     for t in txids {
                         h.forget(t);
+                        h.swept.insert(*t);
                     }
                 });
+                if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
+                    match crate::tx_actions::forget_sent(&appdb, id, txids) {
+                        Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
+                        Err(e) => {
+                            tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
+                        }
+                    }
+                }
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
@@ -1786,7 +1831,9 @@ impl PumpTarget for SessionPump {
                 let marked: Vec<Txid> = (txids.into_iter())
                     .filter(|t| sent.contains_key(t))
                     .collect();
-                crate::tx_actions::forget_sent(&appdb, wallet_id, &marked);
+                if let Err(e) = crate::tx_actions::forget_sent(&appdb, wallet_id, &marked) {
+                    tracing::warn!(wallet = %wallet_id, error = %e, "could not drop the marks of settled payments");
+                }
             }
         };
         #[cfg(test)]

@@ -266,7 +266,7 @@ impl Ledger {
         wallet: WalletId,
         lib: &L,
     ) -> Result<Self, PlatformError> {
-        let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
+        let (locks, identities) = (lib.tracked_locks().await, lib.identities().await?);
         let leases = std::sync::Arc::clone(&session.leases);
         ledger_op(session, wallet, move |db, flows| {
             Self::read(db, flows, &leases, wallet, locks, identities)

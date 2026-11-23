@@ -56,6 +56,8 @@ export const pay = {
     rejectedReason: "The network rejected the transaction: {reason}. The payment was not sent.",
     broadcastUnknown: "The payment may have been sent: the network did not answer in time.",
     cancelled: "The payment was cancelled before anything was sent.",
+    heldUntilRestart:
+      "The payment was not sent, but its coins stay reserved until you restart Dash Wallet. After the restart it's listed as pending in Activity; abandon it there to get the coins back.",
     contactLocked: "Another payment to this contact is still being sent or may have been sent. Pay again once it is settled.",
     pendingIncoming: "Accept the contact request first, or use Accept and pay.",
     ineligible: "This contact cannot be paid now.",
@@ -166,6 +168,7 @@ export const pay = {
     total: "Total",
     subtractNote: "The fee is subtracted from the amount: the payee receives the amount above.",
     changeNote: "The total includes the change: the custom change address may not belong to this wallet.",
+    unmixed: "This payment uses coins that aren't mixed, so it can be traced back to where they came from. To pay privately, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).",
     checkingPolicy: "Checking the payment settings",
     passphrase: "Passphrase",
     wait: "Too many attempts. Try again in {secs} s.",

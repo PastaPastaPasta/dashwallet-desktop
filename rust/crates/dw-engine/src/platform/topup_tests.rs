@@ -654,8 +654,8 @@ fn credited(duffs: u64) -> u64 {
 }
 
 impl TopUpLib for Fake {
-    async fn identities(&self) -> Vec<(u32, String)> {
-        self.w().identities.clone()
+    async fn identities(&self) -> Result<Vec<(u32, String)>, PlatformError> {
+        Ok(self.w().identities.clone())
     }
 
     async fn top_up_locks(&self) -> Vec<LockInfo> {

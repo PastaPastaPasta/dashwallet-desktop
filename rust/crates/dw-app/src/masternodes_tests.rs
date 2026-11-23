@@ -319,6 +319,67 @@ fn a_reveal_needs_its_own_unspent_grant_and_an_unlocked_vault() {
     );
 }
 
+/// The registrar update (MG-10 S3) takes the renderer's request shape and
+/// refuses before anything is signed while the list is not synced.
+#[test]
+fn a_registrar_update_is_refused_before_the_list_is_synced() {
+    let (demo, wallet) = demo_with_wallet();
+    let request = |operator: Value, voting: Value, payout: Value| json!({ "proTxHash": hash("ab"), "operator": operator, "voting": voting, "payout": payout });
+    let requests = [
+        request(
+            json!({ "kind": "keep" }),
+            json!({ "kind": "keep" }),
+            json!({ "kind": "new_address" }),
+        ),
+        request(
+            json!({ "kind": "keychain", "index": 1 }),
+            json!({ "kind": "next_unused" }),
+            json!({ "kind": "new_address" }),
+        ),
+    ];
+    for r in &requests {
+        demo.err(
+            "mn_preview_update_registrar",
+            json!({ "walletId": wallet, "request": r }),
+            "masternodes.list_unavailable",
+        );
+        let g = grant(
+            &demo,
+            &wallet,
+            json!({ "kind": "masternodeOp", "maxDuffs": 10_000 }),
+        );
+        demo.err(
+            "mn_update_registrar",
+            json!({ "walletId": wallet, "request": r, "grant": g }),
+            "masternodes.list_unavailable",
+        );
+    }
+    let unknown_kind = request(
+        json!({ "kind": "operator_secret" }),
+        json!({ "kind": "keep" }),
+        json!({ "kind": "new_address" }),
+    );
+    demo.call(
+        "mn_preview_update_registrar",
+        json!({ "walletId": wallet, "request": unknown_kind }),
+    )
+    .unwrap_err();
+    assert_eq!(
+        demo.ok("mn_operations", json!({ "walletId": wallet })),
+        json!([])
+    );
+    demo.err(
+        "mn_discard_operation",
+        json!({ "walletId": wallet, "operation": "no-such-operation" }),
+        "invalid_argument",
+    );
+    demo.err(
+        "mn_preview_update_registrar",
+        json!({ "walletId": hash("ef"), "request": requests[0] }),
+        "wallet_not_found",
+    );
+}
+
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 static CAPTURED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 

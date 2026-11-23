@@ -19,8 +19,12 @@ use crate::history::{HistoryFilter, HistoryQuery, HistorySort, TxStatusKind};
 use crate::session::NetworkSession;
 use crate::{DashNetwork, Engine, WalletBalances, WalletId};
 
+#[path = "crash_send_tests.rs"]
+mod crash_send_tests;
 #[path = "dismissed_spend_disk_tests.rs"]
 mod dismissed_spend_disk_tests;
+#[path = "h03_kill9_core_tests.rs"]
+mod h03_kill9_core_tests;
 #[path = "own_spend_balance_tests.rs"]
 mod own_spend_balance_tests;
 #[path = "own_spend_disk_tests.rs"]
@@ -31,6 +35,8 @@ mod signed_coin_pin_tests;
 const PHRASE: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const BIRTH: u32 = 500;
+/// How long [`reopen`]'s close waits for a wallet load in flight (#399).
+const LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
 const PAID: u64 = 25 * 100_000_000;
 const CHANGE: u64 = 10 * 100_000_000;
 
@@ -128,8 +134,11 @@ fn engine_wallet() -> (tempfile::TempDir, Engine, Arc<NetworkSession>, WalletId)
 }
 
 /// Closes the network and opens it again: the wallet comes back from its
-/// store.
+/// store. The close waits out a wallet load in flight as the app's does,
+/// and longer: once SPV runs, the Platform start opens the shielded store
+/// as a load, which takes up to minutes under load (#399).
 fn reopen(engine: &Engine, session: Arc<NetworkSession>) -> Arc<NetworkSession> {
+    *session.close_load_wait.lock().unwrap() = Some(LOAD_WAIT);
     drop(session);
     assert!(
         engine

@@ -57,6 +57,9 @@ struct FakeLibrary {
     sent: Mutex<Vec<Transaction>>,
     saved_first: Mutex<Vec<bool>>,
     db: Mutex<Option<(Arc<dw_appdb::AppDb>, String)>>,
+    /// The app database whose next sent-mark write fails once a hand-off
+    /// is made: the mark of a refused hand-off cannot be dropped.
+    break_marks: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl FakeLibrary {
@@ -66,6 +69,7 @@ impl FakeLibrary {
             sent: Mutex::default(),
             saved_first: Mutex::default(),
             db: Mutex::default(),
+            break_marks: Mutex::default(),
         })
     }
 
@@ -98,6 +102,10 @@ impl TestBroadcaster for FakeLibrary {
             self.saved_first.lock().unwrap().push(saved);
         }
         self.sent.lock().unwrap().push(tx.clone());
+        if let Some(path) = self.break_marks.lock().unwrap().take() {
+            let stage = dw_appdb::fault::Stage::Before;
+            dw_appdb::fault::arm(&path, crate::send::SENT_MARK_FAULT, stage);
+        }
         let mode = *self.mode.lock().unwrap();
         Box::pin(async move {
             match mode {
@@ -216,8 +224,11 @@ impl Fx {
     /// Closes the session and opens it again on the same data, as a crash
     /// and restart would leave it: memory (reservations, leases, in-flight
     /// marks) gone, app.sqlite kept. The coins are credited again, as the
-    /// wallet's sync would restore them.
+    /// wallet's sync would restore them. The close waits out a wallet load
+    /// in flight: after [`Self::run_spv`] the bring-up opens the shielded
+    /// store as one, which takes up to minutes under load (#399).
     fn restart(&mut self, coins: &[(u8, u64)]) {
+        *self.session.close_load_wait.lock().unwrap() = Some(std::time::Duration::from_secs(180));
         assert!(
             self.engine
                 .block_on(self.engine.close_network(DashNetwork::Regtest))
@@ -747,6 +758,21 @@ fn mg04_maybe_sent_stays_sent_and_is_never_discarded() {
 }
 
 impl Fx {
+    /// Whether this session's load of the wallet claimed `txid`'s coins.
+    fn claimed_at_load(&self, txid: Txid) -> bool {
+        (self.session.hub.history).read_wallet(&self.wallet, |h| h.claimed_at_load.contains(&txid))
+    }
+
+    /// Starts SPV and waits until it runs.
+    fn run_spv(&self) {
+        self.engine.block_on(self.session.start_spv()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        while self.session.spv_state().unwrap() != crate::SpvState::Running {
+            assert!(std::time::Instant::now() < deadline, "SPV never ran");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     /// Fails the next sent-mark write, before the hand-off.
     fn fail_sent_mark(&self) {
         let path = self.session.data_dir().join(dw_appdb::APP_DB_FILE);
@@ -757,6 +783,56 @@ impl Fx {
     fn reserved(&self) -> HashSet<OutPoint> {
         let nobody = SpendOwner::Tx(Txid::from_byte_array([0xee; 32]));
         self.session.spends.held_by_others(&self.wallet, nobody)
+    }
+
+    /// Writes the wallet's coin `outpoint` to the wallet store, unspent.
+    fn store_coin(&self, outpoint: OutPoint) {
+        use platform_wallet::changeset::{
+            CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+        };
+        let session = Arc::clone(&self.session);
+        let (inner, id) = (Arc::clone(&session), self.wallet);
+        let utxo = self
+            .engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                let state = wallet.state_mut().await;
+                let account = state.core_wallet.accounts.standard_bip44_accounts.get(&0);
+                Ok::<_, crate::EngineError>(account.and_then(|a| a.utxos.get(&outpoint).cloned()))
+            }))
+            .unwrap()
+            .expect("the coin");
+        let persister = Arc::clone(&self.session.live().unwrap().persister);
+        let changeset = PlatformWalletChangeSet {
+            core: Some(CoreChangeSet {
+                new_utxos: vec![utxo],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        persister.store(self.wallet.0, changeset).unwrap();
+        persister.flush(self.wallet.0).unwrap();
+    }
+
+    /// Whether the wallet store holds `outpoint` spent (`None`: no row).
+    fn stored_spent(&self, outpoint: OutPoint) -> Option<bool> {
+        use rusqlite::OptionalExtension;
+        assert!(outpoint.vout < 251);
+        let key: Vec<u8> = (std::iter::once(32))
+            .chain(outpoint.txid.to_byte_array())
+            .chain([outpoint.vout as u8])
+            .collect();
+        let path = self.session.data_dir().join(crate::session::WALLET_DB_FILE);
+        let conn =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        conn.query_row(
+            "SELECT spent FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
+            rusqlite::params![&self.wallet.0[..], key],
+            |r| r.get::<_, bool>(0),
+        )
+        .optional()
+        .unwrap()
     }
 }
 
@@ -817,6 +893,571 @@ fn mg10_a_failed_sent_mark_on_a_resend_keeps_the_row_sent() {
         .block_on(f.mn().discard_operation(f.wallet, op.id))
         .unwrap_err();
     assert_eq!(refused.code(), "masternodes.operation_state");
+}
+
+/// A resend whose summary lacks an input spent since (no longer among the
+/// wallet's coins) keeps that coin and its details in the sent mark.
+#[test]
+fn mg10_a_resend_keeps_the_sent_mark_of_an_input_spent_since() {
+    let f = fx(Library::Unconfirmed);
+    let funding = f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    assert_eq!(op.state, ProTxOperationState::Sent);
+    let txid = f.lib.sent()[0].txid();
+    let mark = |f: &Fx| crate::tx_actions::load_sent(&f.db(), f.wallet).0[&txid].clone();
+    let before = mark(&f);
+    assert!(before.coins.contains(&funding) && before.inputs.contains_key(&funding));
+    f.spend(funding);
+    f.engine
+        .block_on(
+            f.mn()
+                .resend_operation(f.wallet, op.id.clone(), f.grant(op.fee)),
+        )
+        .unwrap();
+    let after = mark(&f);
+    assert!(
+        after.coins.contains(&funding),
+        "the coin is gone: {after:?}"
+    );
+    assert!(
+        after.inputs.contains_key(&funding),
+        "its details are gone: {after:?}"
+    );
+}
+
+/// A first hand-off refused for want of peers whose sent mark can't be
+/// dropped never left: the row reads `not_sent`, and Discard drops the
+/// mark with the row and releases what it locked. After a restart the
+/// discarded registration isn't listed, and Resend can't send it.
+#[test]
+fn mg10_a_refused_hand_off_whose_mark_stays_reads_not_sent_and_can_be_discarded() {
+    for existing in [false, true] {
+        let (f, op, txid) = held_hand_off_of(false, existing);
+        let outside = f.locked().iter().filter(|o| o.txid != txid).count();
+        assert_eq!(
+            outside,
+            1 + existing as usize,
+            "{existing}: {:?}",
+            f.locked()
+        );
+        f.engine
+            .block_on(f.mn().discard_operation(f.wallet, op.id.clone()))
+            .unwrap();
+        assert!(
+            f.locked().is_empty(),
+            "{existing}: still locked: {:?}",
+            f.locked()
+        );
+        assert!(
+            !crate::tx_actions::load_sent(&f.db(), f.wallet)
+                .0
+                .contains_key(&txid),
+            "{existing}: the mark stays"
+        );
+
+        let mut f = f;
+        f.restart(&[]);
+        assert!(
+            f.locked().is_empty(),
+            "{existing}: locked again: {:?}",
+            f.locked()
+        );
+        let sent = f.lib.sent().len();
+        let extras = f
+            .engine
+            .block_on(f.session.tx_detail_extras(f.wallet, txid));
+        assert!(
+            matches!(extras, Err(crate::EngineError::TxNotFound(_))),
+            "{existing}: {extras:?}"
+        );
+        let resent = f
+            .engine
+            .block_on(f.session.resend_transaction(f.wallet, txid));
+        assert!(
+            matches!(resent, Err(crate::EngineError::TxNotFound(_))),
+            "{existing}: {resent:?}"
+        );
+        assert_eq!(f.lib.sent().len(), sent, "{existing}: handed off again");
+    }
+}
+
+/// The same hand-off, whose sent mark still can't be deleted at Discard:
+/// Discard is refused with `storage`, saying to restart and discard again,
+/// and the row, its locks and the mark stay. Once the mark deletes,
+/// Discard goes through.
+#[test]
+fn mg10_a_discard_that_cannot_drop_the_mark_is_refused() {
+    let (f, op, txid) = refused_hand_off_with_its_mark();
+    let locked = f.locked();
+    assert!(!locked.is_empty());
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    dw_appdb::fault::arm(
+        &path,
+        crate::tx_actions::FORGET_SENT_FAULT,
+        dw_appdb::fault::Stage::Before,
+    );
+    let refused = f
+        .engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id.clone()));
+    dw_appdb::fault::disarm(&path);
+    match &refused {
+        Err(MasternodesError::Engine(crate::EngineError::Storage(m))) => {
+            assert!(
+                m.contains("restart Dash Wallet, then discard it again"),
+                "{m}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.rows().len(), 1, "the row went");
+    assert_eq!(f.locked(), locked, "the locks went");
+    assert!(
+        crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the mark went"
+    );
+
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id))
+        .unwrap();
+    assert!(f.rows().is_empty());
+    assert!(f.locked().is_empty());
+}
+
+/// After a restart the held hand-off's payment is listed pending from its
+/// mark, its coin claimed: Discard is refused until the payment is
+/// abandoned, then goes through, and after another restart the coin is
+/// free.
+#[test]
+fn mg10_a_held_hand_off_listed_after_a_restart_is_abandoned_before_its_discard() {
+    let (mut f, op, txid) = held_hand_off(true);
+    let funding = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    f.restart(&[]);
+    assert_eq!(
+        f.stored_spent(funding),
+        Some(true),
+        "the load didn't claim it"
+    );
+    assert_discard_waits_for_the_abandon(&f, &op, txid);
+    let (s, id) = (Arc::clone(&f.session), f.wallet);
+    f.engine
+        .block_on(f.session.on_runtime(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, id, txid).await
+        }))
+        .unwrap();
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id))
+        .unwrap();
+    assert!(f.rows().is_empty());
+
+    f.restart(&[]);
+    assert_eq!(f.stored_spent(funding), Some(false), "stored spent");
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    assert!(
+        f.held().contains(&(funding, false, false)),
+        "the coin is held: {:?}",
+        f.held()
+    );
+}
+
+/// The same payment after a Resend from History that can't reach the
+/// network here (SPV isn't running): Discard is still refused and its marks
+/// stay.
+#[test]
+fn mg10_a_held_hand_off_listed_after_a_restart_refuses_discard_after_a_failed_resend() {
+    let (mut f, op, txid) = refused_hand_off_with_its_mark();
+    f.restart(&[]);
+    let resent = f
+        .engine
+        .block_on(f.session.resend_transaction(f.wallet, txid));
+    assert!(resent.is_err(), "{resent:?}");
+    assert_discard_waits_for_the_abandon(&f, &op, txid);
+}
+
+/// Discard while the wallet loads again in the session, its coin already
+/// claimed from the held hand-off's mark but its payment not listed yet: it
+/// is refused, and the row and marks stay. Then the refusal's steps: a
+/// restart with a complete load lists the payment, Abandon, Discard, and
+/// after another restart the coin is stored unspent and offered once its
+/// funding is scanned.
+#[test]
+fn mg10_a_discard_while_the_wallet_loads_is_refused_and_its_steps_free_the_coin() {
+    let (mut f, op, txid) = held_hand_off(true);
+    let funding = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    let id = f.wallet;
+    f.engine.block_on(f.session.unload_wallet(id)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_load.lock().unwrap() = Some(Arc::clone(&pause));
+    let loading = {
+        let s = Arc::clone(&f.session);
+        f.session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !pause.reached.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the load never paused"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        f.session.hub.history.get(&id, &txid).is_none(),
+        "listed already"
+    );
+    assert_eq!(
+        f.stored_spent(funding),
+        Some(true),
+        "the load didn't claim it"
+    );
+    assert_discard_waits_for_a_restart(&f, &op, txid);
+    pause.release.notify_one();
+    f.engine.block_on(loading).unwrap().unwrap();
+
+    f.restart(&[]);
+    assert!(
+        (f.session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned()),
+        "not listed pending"
+    );
+    let s = Arc::clone(&f.session);
+    f.engine
+        .block_on(f.session.on_runtime(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, id, txid).await
+        }))
+        .unwrap();
+    f.engine
+        .block_on(f.mn().discard_operation(id, op.id))
+        .unwrap();
+    f.restart(&[]);
+    assert_eq!(f.stored_spent(funding), Some(false), "stored spent");
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    assert!(
+        f.held().contains(&(funding, false, false)),
+        "the coin is held: {:?}",
+        f.held()
+    );
+}
+
+/// After a restart whose read of the saved copies fails, the held hand-off's
+/// payment isn't listed but its mark still claims its coin: Discard is
+/// refused, and the row and marks stay.
+#[test]
+fn mg10_a_discard_after_a_load_whose_copies_did_not_read_is_refused() {
+    let (mut f, op, txid) = held_hand_off(true);
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    for _ in 0..2 {
+        dw_appdb::fault::arm(
+            &path,
+            "settings.read_senttx:",
+            dw_appdb::fault::Stage::Before,
+        );
+    }
+    f.restart(&[]);
+    dw_appdb::fault::disarm(&path);
+    assert!(
+        f.session.hub.history.get(&f.wallet, &txid).is_none(),
+        "listed"
+    );
+    let funding = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    assert_eq!(
+        f.stored_spent(funding),
+        Some(true),
+        "the load didn't claim it"
+    );
+    assert_discard_waits_for_a_restart(&f, &op, txid);
+}
+
+/// After that load, a resend of the row isn't sent, with its marks again
+/// unable to be dropped: the payment isn't held this session, since its
+/// marks stay on purpose (a load claimed its coin from them), and Discard
+/// still waits.
+#[test]
+fn mg10_discard_still_waits_after_a_not_sent_resend_of_a_payment_claimed_at_the_load() {
+    let (mut f, op, txid) = held_hand_off(true);
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    for _ in 0..2 {
+        dw_appdb::fault::arm(
+            &path,
+            "settings.read_senttx:",
+            dw_appdb::fault::Stage::Before,
+        );
+    }
+    f.restart(&[]);
+    dw_appdb::fault::disarm(&path);
+    *f.lib.break_marks.lock().unwrap() = Some(path.clone());
+    let resent = f.engine.block_on(
+        f.mn()
+            .resend_operation(f.wallet, op.id.clone(), f.grant(COIN)),
+    );
+    dw_appdb::fault::disarm(&path);
+    assert_eq!(
+        resent.as_ref().map(|r| r.state).ok(),
+        Some(ProTxOperationState::NotSent),
+        "{resent:?}"
+    );
+    assert!(
+        !(f.session.hub.history).read_wallet(&f.wallet, |h| h.held_here.contains(&txid)),
+        "held this session"
+    );
+    assert_discard_waits_for_a_restart(&f, &op, txid);
+}
+
+/// A load claimed the held hand-off's coin from its marks, after which a
+/// resend of the row is definitely not sent: its marks stay (they're all
+/// that holds the coin), and after a restart the payment is listed pending
+/// and abandoning it brings the coin back. Both after a complete load,
+/// which lists the payment, and after one whose saved copies didn't read.
+#[test]
+fn mg10_a_resend_not_sent_after_a_load_claimed_its_coin_keeps_the_marks() {
+    for copies_read in [true, false] {
+        let (mut f, op, txid) = held_hand_off(true);
+        let funding = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+        let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+        if !copies_read {
+            for _ in 0..2 {
+                dw_appdb::fault::arm(
+                    &path,
+                    "settings.read_senttx:",
+                    dw_appdb::fault::Stage::Before,
+                );
+            }
+        }
+        f.restart(&[]);
+        dw_appdb::fault::disarm(&path);
+        assert_eq!(
+            f.stored_spent(funding),
+            Some(true),
+            "{copies_read}: not claimed"
+        );
+        let resent = f.engine.block_on(f.mn().resend_operation(
+            f.wallet,
+            op.id.clone(),
+            f.grant(COIN),
+        ));
+        assert_eq!(
+            resent.as_ref().map(|r| r.state).ok(),
+            Some(ProTxOperationState::NotSent),
+            "{copies_read}: {resent:?}"
+        );
+        assert!(
+            crate::tx_actions::load_sent(&f.db(), f.wallet)
+                .0
+                .contains_key(&txid),
+            "{copies_read}: the marks went"
+        );
+
+        f.restart(&[]);
+        let id = f.wallet;
+        assert!(
+            (f.session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned()),
+            "{copies_read}: not listed pending"
+        );
+        let s = Arc::clone(&f.session);
+        f.engine
+            .block_on(f.session.on_runtime(async move {
+                let manager = s.manager()?;
+                s.abandon_inner(&manager, id, txid).await
+            }))
+            .unwrap();
+        f.restart(&[]);
+        assert_eq!(
+            f.stored_spent(funding),
+            Some(false),
+            "{copies_read}: stored spent"
+        );
+    }
+}
+
+/// A load claimed the held hand-off's coin from its marks, and the
+/// resend's own write of its marks fails before it leaves: the marks stay,
+/// and the payment isn't held this session.
+#[test]
+fn mg10_a_resend_whose_mark_write_fails_after_a_load_claimed_its_coin_keeps_the_marks() {
+    let (mut f, op, txid) = held_hand_off(true);
+    f.restart(&[]);
+    assert!(f.claimed_at_load(txid), "not claimed");
+    f.fail_sent_mark();
+    let resent = f.engine.block_on(
+        f.mn()
+            .resend_operation(f.wallet, op.id.clone(), f.grant(COIN)),
+    );
+    assert_eq!(
+        resent.as_ref().map(|r| r.state).ok(),
+        Some(ProTxOperationState::NotSent),
+        "{resent:?}"
+    );
+    assert!(
+        crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the marks went"
+    );
+    assert!(
+        !(f.session.hub.history).read_wallet(&f.wallet, |h| h.held_here.contains(&txid)),
+        "held this session"
+    );
+    assert_eq!(f.lib.sent().len(), 1, "handed off");
+}
+
+/// A load claimed a held hand-off's coin from its damaged copy, and Remove
+/// unconfirmed transactions retired the payment and its marks. A resend
+/// then writes fresh marks and isn't sent: they're dropped, as for any
+/// payment no load claimed, so a restart lists nothing and Discard goes
+/// through.
+#[test]
+fn mg10_a_resend_after_remove_unconfirmed_retired_a_claimed_payment_drops_its_new_marks() {
+    let (mut f, op, txid) = held_hand_off(true);
+    (f.db())
+        .set_setting(&f.wallet.to_string(), &format!("senttx:{txid}"), Some("zz"))
+        .unwrap();
+    f.restart(&[]);
+    assert!(f.claimed_at_load(txid), "not claimed");
+    f.run_spv();
+    let removed = f
+        .engine
+        .block_on(f.session.drop_unconfirmed(Some(f.wallet)));
+    assert_eq!(removed.ok(), Some(1), "Remove unconfirmed");
+    let resent = f.engine.block_on(
+        f.mn()
+            .resend_operation(f.wallet, op.id.clone(), f.grant(COIN)),
+    );
+    assert_eq!(
+        resent.as_ref().map(|r| r.state).ok(),
+        Some(ProTxOperationState::NotSent),
+        "{resent:?}"
+    );
+    assert_eq!(f.lib.sent().len(), 2, "not resent");
+    assert!(
+        !crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the new marks stay"
+    );
+    assert!(!f.claimed_at_load(txid), "still claimed");
+    f.restart(&[]);
+    assert!(
+        f.session.hub.history.get(&f.wallet, &txid).is_none(),
+        "listed again"
+    );
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id))
+        .unwrap();
+    assert!(f.rows().is_empty(), "the row stays");
+}
+
+/// A held hand-off whose saved copy is damaged is listed nowhere after a
+/// restart, and Discard refuses it while its mark holds its coin. Tools ▸
+/// Repair ▸ Remove unconfirmed transactions retires the payment and its
+/// marks; Discard then removes the row and releases its locks.
+#[test]
+fn mg10_a_held_hand_off_with_a_damaged_copy_is_discarded_after_remove_unconfirmed() {
+    let (mut f, op, txid) = held_hand_off(true);
+    (f.db())
+        .set_setting(&f.wallet.to_string(), &format!("senttx:{txid}"), Some("zz"))
+        .unwrap();
+    f.restart(&[]);
+    assert!(
+        f.session.hub.history.get(&f.wallet, &txid).is_none(),
+        "listed"
+    );
+    assert!(!f.locked().is_empty(), "nothing locked");
+    assert_discard_waits_for_a_restart(&f, &op, txid);
+    f.run_spv();
+    let removed = f
+        .engine
+        .block_on(f.session.drop_unconfirmed(Some(f.wallet)));
+    assert_eq!(removed.ok(), Some(1), "Remove unconfirmed");
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id))
+        .unwrap();
+    assert!(f.rows().is_empty(), "the row stays");
+    assert!(f.locked().is_empty(), "still locked: {:?}", f.locked());
+}
+
+fn assert_discard_waits_for_a_restart(f: &Fx, op: &ProTxOperation, txid: Txid) {
+    let refused = f
+        .engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id.clone()));
+    match &refused {
+        Err(MasternodesError::Engine(crate::EngineError::Wallet(m))) => assert_eq!(
+            m,
+            "discarding the operation: its payment may still be on its way; restart Dash Wallet, abandon the payment in History, then discard again; if History doesn't list it, run Tools ▸ Repair ▸ Remove unconfirmed transactions, then discard again"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.rows().len(), 1, "the row went");
+    assert!(
+        crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the marks went"
+    );
+}
+
+fn assert_discard_waits_for_the_abandon(f: &Fx, op: &ProTxOperation, txid: Txid) {
+    let refused = f
+        .engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id.clone()));
+    match &refused {
+        Err(MasternodesError::Engine(crate::EngineError::Wallet(m))) => assert_eq!(
+            m,
+            "discarding the operation: its payment is still listed in History; abandon it there first, then discard again"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.rows().len(), 1, "the row went");
+    assert!(
+        crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the marks went"
+    );
+}
+
+/// A registration whose first hand-off was refused for want of peers and
+/// whose sent mark could not be dropped: the fixture, the row and its txid.
+fn refused_hand_off_with_its_mark() -> (Fx, ProTxOperation, Txid) {
+    held_hand_off(false)
+}
+
+/// [`refused_hand_off_with_its_mark`], its funding coin (seed 1) also in
+/// the wallet store when `stored`, so a load claims it there.
+fn held_hand_off(stored: bool) -> (Fx, ProTxOperation, Txid) {
+    held_hand_off_of(stored, false)
+}
+
+/// [`held_hand_off`], its collateral an existing 1000 DASH coin of the
+/// wallet (seed 2) when `existing`, else a new one.
+fn held_hand_off_of(stored: bool, existing: bool) -> (Fx, ProTxOperation, Txid) {
+    let f = fx(Library::NoPeers);
+    let funding = f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    if stored {
+        f.store_coin(funding);
+    }
+    let collateral = match existing {
+        true => CollateralChoice::ExistingUtxo {
+            outpoint: format!("{}-0", f.credit(2, MASTERNODE_COLLATERAL).txid),
+        },
+        false => CollateralChoice::FundNew,
+    };
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    *f.lib.break_marks.lock().unwrap() = Some(path.clone());
+    let op = f.register(request(collateral), f.grant(COIN)).unwrap();
+    dw_appdb::fault::disarm(&path);
+    assert_eq!(op.state, ProTxOperationState::NotSent, "{op:?}");
+    assert!(op.sent_at.is_none());
+    let txid = f.lib.sent()[0].txid();
+    assert!(
+        crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the mark was dropped"
+    );
+    (f, op, txid)
 }
 
 /// Control: the sent mark written, a hand-off without a verdict stays
@@ -4544,4 +5185,26 @@ fn ep_r4_overdue_uses_resend_time_instead_of_signing_time() {
         assert_eq!(read.state, ProTxOperationState::Sent);
         assert_eq!(read.overdue, expected, "elapsed since resend {elapsed}");
     }
+}
+
+/// #263: the collateral follower of a wallet gone from the manager, with a
+/// collateral to lock (a contact's ProRegTx kept out of sight), fails that
+/// wallet's step, logged; no panic.
+#[test]
+fn the_collateral_follower_of_a_wallet_gone_from_the_manager_does_not_panic() {
+    let f = fx(Library::Accept);
+    let (tx, _) = f.foreign_registration(true, 2);
+    f.load_contact_with(tx, 700);
+    assert!(!f.hidden_registrations().is_empty());
+    crate::wallet_read::gone_tests::detach(&f.engine, &f.session, f.wallet);
+    f.session.hub.history.take_collateral_pending();
+    f.follow();
+    assert!(
+        !f.session
+            .hub
+            .history
+            .take_collateral_pending()
+            .contains(&f.wallet),
+        "a step that failed with wallet_not_found is not re-armed"
+    );
 }

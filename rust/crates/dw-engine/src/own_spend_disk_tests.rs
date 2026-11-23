@@ -268,12 +268,23 @@ pub(super) fn spendable(
     id: WalletId,
     coin: OutPoint,
 ) -> bool {
+    spendable_for(engine, session, id, coin, COIN / 2)
+}
+
+/// [`spendable`] for a payment of `amount`.
+pub(super) fn spendable_for(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    coin: OutPoint,
+    amount: u64,
+) -> bool {
     let (_draft, prepared) = prepare(
         engine,
         session,
         id,
         CoinSource::Outpoints(vec![coin]),
-        COIN / 2,
+        amount,
         false,
         &Arc::new(Accept::default()),
     );
@@ -281,8 +292,13 @@ pub(super) fn spendable(
 }
 
 /// Waits up to 20 s for `done`.
-pub(super) fn eventually(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+pub(super) fn eventually(what: &str, done: impl FnMut() -> bool) {
+    eventually_within(what, std::time::Duration::from_secs(20), done);
+}
+
+/// Waits up to `limit` for `done`.
+fn eventually_within(what: &str, limit: std::time::Duration, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + limit;
     while std::time::Instant::now() < deadline {
         if done() {
             return;
@@ -290,6 +306,25 @@ pub(super) fn eventually(what: &str, mut done: impl FnMut() -> bool) {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     panic!("never: {what}");
+}
+
+/// Starts SPV and waits up to 300 s for it to run: `Running` waits for the
+/// wallets' DashPay bring-up and then dash-spv's own start, which take
+/// minutes on a loaded machine. A start that failed takes its supervisor
+/// back, so the state reads `Stopped` again: that fails at once. The
+/// shielded store opens after `Running`, as a wallet load (#399), which
+/// [`super::reopen`]'s close waits out.
+pub(super) fn start_offline_spv(engine: &Engine, session: &Arc<NetworkSession>) {
+    engine.block_on(session.start_spv()).unwrap();
+    eventually_within(
+        "SPV runs",
+        std::time::Duration::from_secs(300),
+        || match session.spv_state().unwrap() {
+            crate::SpvState::Running => true,
+            crate::SpvState::Starting => false,
+            crate::SpvState::Stopped => panic!("SPV did not start: Notice SpvError says why"),
+        },
+    );
 }
 
 pub(super) fn synced(engine: &Engine, session: &NetworkSession, id: WalletId) -> u32 {
@@ -476,10 +511,7 @@ fn a_payment_locked_apart_from_its_record_is_not_abandoned_after_a_restart() {
     );
     let spent: BTreeSet<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
     assert!(held(&engine, &session, id).is_disjoint(&spent));
-    engine.block_on(session.start_spv()).unwrap();
-    eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
+    start_offline_spv(&engine, &session);
 
     let abandoned = engine.block_on(session.abandon_transaction(id, tx.txid()));
     assert!(
