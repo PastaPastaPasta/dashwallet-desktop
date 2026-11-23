@@ -30,6 +30,7 @@ import {
   recipientOf,
   mixedFeeText,
   sendErrorText,
+  settleNotSent,
   withSubtractFee,
 } from "./model";
 
@@ -172,8 +173,37 @@ describe("the engine's refusals", () => {
     });
     for (const code of ["send.no_peers", "send.prepared_tx_spent", "send.cancelled", "app.unknown_handle"] as const)
       expect(broadcastFailure(err(code), "test", held, true).kind).toBe("failed");
+    // Its record not written: refused before the hand-off, and a retry would be refused too.
+    expect(broadcastFailure(err("storage"), "test", held, true)).toEqual({
+      kind: "failed",
+      text: "The payment could not be recorded in this wallet.",
+    });
+    expect(broadcastFailure(err("storage"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
     // A code the renderer does not know may come after the bytes left: unknown, never abandoned.
     expect(broadcastFailure(err("internal"), "test", held, true)).toMatchObject({ kind: "unknown", retry: true });
+  });
+
+  it("reports a payment not sent even when its abandon is refused", async () => {
+    const shown: string[] = [];
+    await settleNotSent(() => Promise.reject(err("send.held_until_restart")), () => shown.push("refused"));
+    let abandoned = false;
+    await settleNotSent(
+      async () => {
+        abandoned = true;
+      },
+      () => shown.push("abandoned"),
+    );
+    await settleNotSent(null, () => shown.push("released"));
+    expect(shown).toEqual(["refused", "abandoned", "released"]);
+    expect(abandoned).toBe(true);
+  });
+
+  it("says a payment not sent whose coins stay reserved needs a restart, with no retry", () => {
+    const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 5, fee: 1 };
+    const text =
+      "The payment was not sent, but its coins stay reserved until you restart Dash Wallet. After the restart it's listed as pending in Activity; abandon it there to get the coins back.";
+    expect(sendErrorText(err("send.held_until_restart"), "test")).toEqual({ text, field: null });
+    for (const first of [true, false]) expect(broadcastFailure(err("send.held_until_restart"), "test", held, first)).toEqual({ kind: "failed", text });
   });
 
   it("never turns an unknown payment into not sent on a retry", () => {

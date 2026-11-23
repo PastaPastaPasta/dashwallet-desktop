@@ -93,63 +93,230 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// block, or at load by the SPV header chain.
 pub(crate) const SENT_PREFIX: &str = "sent:";
 
-/// The marks of `wallet` under `prefix` that `parse` reads from their txid
-/// and value, and whether every one was read (each failure is logged).
-fn load_marks<T>(
-    appdb: &AppDb,
-    wallet: WalletId,
-    prefix: &str,
-    parse: impl Fn(Txid, String) -> Option<T>,
-) -> (Vec<T>, bool) {
-    let rows = match appdb.settings_with_prefix(&wallet.to_string(), prefix) {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(%wallet, prefix, error = %e, "could not read the marks");
-            return (Vec::new(), false);
-        }
-    };
-    let mut read = true;
-    let marks = (rows.into_iter())
-        .filter_map(|(key, value)| {
-            let mark = (Txid::from_str(&key[prefix.len()..]).ok()).and_then(|t| parse(t, value));
-            if mark.is_none() {
-                tracing::warn!(%wallet, %key, "unreadable mark");
-                read = false;
-            }
-            mark
-        })
-        .collect();
-    (marks, read)
+/// Tests: the next abandon sweep of a session's wallet store stops right
+/// after it is stored, as if the process stopped there.
+#[cfg(test)]
+pub(crate) mod sweep_stop {
+    use std::sync::Mutex;
+
+    static ARMED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+    fn key<T>(store: &T) -> usize {
+        std::ptr::from_ref(store) as usize
+    }
+
+    pub(crate) fn arm<T>(store: &T) {
+        ARMED.lock().unwrap().push(key(store));
+    }
+
+    /// Whether a stop is still armed for `store`.
+    pub(crate) fn armed<T>(store: &T) -> bool {
+        ARMED.lock().unwrap().contains(&key(store))
+    }
+
+    pub(crate) fn take<T>(store: &T) -> bool {
+        let mut armed = ARMED.lock().unwrap();
+        let found = armed.iter().position(|k| *k == key(store));
+        found.map(|i| armed.remove(i)).is_some()
+    }
 }
+
+/// Tests: the load's step fails once for a wallet with marks, in the
+/// session of `db_path`.
+#[cfg(test)]
+pub(crate) mod finish_fault {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static ARMED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    pub(crate) fn arm(db_path: &Path) {
+        ARMED.lock().unwrap().push(db_path.to_path_buf());
+    }
+
+    pub(crate) fn take(db_path: &Path) -> bool {
+        let mut armed = ARMED.lock().unwrap();
+        let found = armed.iter().position(|p| p == db_path);
+        found.map(|i| armed.remove(i)).is_some()
+    }
+}
+
+/// Settings key prefix (wallet scope) of the signed transaction of a sent
+/// mark, its consensus hex, written and dropped with the mark (#170 case
+/// 1). Apart from the mark, so a build that knows no such key still reads
+/// the mark; one an earlier build wrote has none.
+pub(crate) const SENT_TX_PREFIX: &str = "senttx:";
+
+/// Settings key prefix of a sent mark's inputs: each signed coin's
+/// outpoint, value and address, so it is listed when its funding is not.
+pub(crate) const SENT_IN_PREFIX: &str = "sentin:";
 
 /// The payments of `wallet` this app sent, each with the wallet's coins it
-/// signed ([`SENT_PREFIX`]), and whether every mark was read.
+/// signed and its transaction when the mark holds it ([`SENT_PREFIX`]),
+/// and whether every mark was read.
 pub(crate) fn load_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, bool) {
-    let (marks, read) = load_marks(appdb, wallet, SENT_PREFIX, |txid, coins| {
-        let coins = (coins.split(',').filter(|c| !c.is_empty()))
-            .map(OutPoint::from_str)
-            .collect::<Result<BTreeSet<_>, _>>()
-            .ok()?;
-        Some((txid, coins))
-    });
-    (marks.into_iter().collect(), read)
+    match read_sent(appdb, wallet) {
+        (sent, SentRead::Complete) => (sent, true),
+        _ => (Sent::new(), false),
+    }
 }
 
-/// The payments this app sent, each with the wallet's coins it signed.
-pub(crate) type Sent = BTreeMap<Txid, BTreeSet<OutPoint>>;
+/// How much of a wallet's sent marks [`read_sent`] read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SentRead {
+    Complete,
+    /// The marks read but their saved copies' query failed: a mark written
+    /// with its copy is kept with no copy, so its coins stay claimed as a
+    /// damaged copy's.
+    CoinsOnly,
+    Failed,
+}
+
+/// The sent marks for a history load: [`load_sent`], except that a failed
+/// query of the saved copies keeps the marks that read ([`SentRead::CoinsOnly`]).
+pub(crate) fn read_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, SentRead) {
+    let scope = wallet.to_string();
+    let rows = |prefix: &str| match appdb.settings_with_prefix_lossy(&scope, prefix) {
+        Ok(rows) => Some(
+            (rows.into_iter())
+                .filter_map(|(key, value)| {
+                    Some((Txid::from_str(key.get(prefix.len()..)?).ok()?, value))
+                })
+                .collect::<BTreeMap<_, _>>(),
+        ),
+        Err(e) => {
+            tracing::warn!(%wallet, prefix, error = %e, "could not read the sent marks");
+            None
+        }
+    };
+    let Some(marks) = rows(SENT_PREFIX) else {
+        return (Sent::new(), SentRead::Failed);
+    };
+    let txs = rows(SENT_TX_PREFIX);
+    let read = match txs {
+        Some(_) => SentRead::Complete,
+        None => SentRead::CoinsOnly,
+    };
+    let txs = txs.unwrap_or_default();
+    let mut inputs = rows(SENT_IN_PREFIX).unwrap_or_default();
+    let sent = (marks.into_iter())
+        .filter_map(|(txid, coins)| {
+            let inputs = (inputs.remove(&txid).flatten())
+                .map(|v| parse_inputs(&v))
+                .unwrap_or_default();
+            // Unread copies: only a mark written with its copy (one with its
+            // coins' values, which an earlier build's lacks) counts as kept.
+            // When the values' query failed too, no mark does, and only a
+            // payment the history lists keeps its coins claimed (each failed
+            // query is logged).
+            let kept = match read {
+                SentRead::CoinsOnly => !inputs.is_empty(),
+                _ => txs.contains_key(&txid),
+            };
+            let tx = (txs.get(&txid).cloned().flatten())
+                .and_then(|hex| hex::decode(hex).ok())
+                .and_then(|b| deserialize::<Transaction>(&b).ok())
+                .filter(|tx| tx.txid() == txid);
+            if kept && tx.is_none() && read == SentRead::Complete {
+                tracing::warn!(%wallet, "a sent payment's stored transaction does not read back");
+            }
+            let read = coins.and_then(|coins| {
+                (coins.split(',').filter(|c| !c.is_empty()))
+                    .map(OutPoint::from_str)
+                    .collect::<Result<BTreeSet<_>, _>>()
+                    .ok()
+            });
+            let coins = match read {
+                Some(coins) => coins,
+                None => {
+                    tracing::warn!(%wallet, "a sent mark does not read back");
+                    let mut coins: BTreeSet<OutPoint> = inputs.keys().copied().collect();
+                    if coins.is_empty() {
+                        coins.extend(
+                            tx.iter()
+                                .flat_map(|tx| tx.input.iter().map(|i| i.previous_output)),
+                        );
+                    }
+                    if coins.is_empty() {
+                        return None;
+                    }
+                    coins
+                }
+            };
+            let mark = SentMark {
+                coins,
+                tx,
+                kept,
+                inputs,
+            };
+            Some((txid, mark))
+        })
+        .collect();
+    (sent, read)
+}
+
+/// A `sentin:` value: each coin's outpoint, value and address.
+fn parse_inputs(value: &str) -> BTreeMap<OutPoint, (u64, String)> {
+    (value.split(','))
+        .filter_map(|e| match e.split(' ').collect::<Vec<_>>()[..] {
+            [o, v, a] => Some((OutPoint::from_str(o).ok()?, (v.parse().ok()?, a.to_owned()))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What a sent mark holds: the wallet's coins the app signed, and the
+/// signed transaction ([`SENT_TX_PREFIX`]), which a mark an earlier build
+/// wrote lacks. `kept`: a transaction is stored for it, read or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SentMark {
+    pub coins: BTreeSet<OutPoint>,
+    pub tx: Option<Transaction>,
+    pub kept: bool,
+    /// The coins' values and addresses ([`SENT_IN_PREFIX`]).
+    pub inputs: BTreeMap<OutPoint, (u64, String)>,
+}
+
+/// The payments this app sent.
+pub(crate) type Sent = BTreeMap<Txid, SentMark>;
 
 /// Drops the marks of the payments of `wallet` (`gone`) gone from the
 /// history or ChainLocked.
-pub(crate) fn forget_sent(appdb: &AppDb, wallet: WalletId, gone: &[Txid]) {
+pub(crate) fn forget_sent(
+    appdb: &AppDb,
+    wallet: WalletId,
+    gone: &[Txid],
+) -> Result<(), dw_appdb::AppDbError> {
     if gone.is_empty() {
-        return;
+        return Ok(());
     }
-    let keys: Vec<String> = gone.iter().map(|t| format!("{SENT_PREFIX}{t}")).collect();
+    let keys: Vec<String> = (gone.iter())
+        .flat_map(|t| [SENT_PREFIX, SENT_TX_PREFIX, SENT_IN_PREFIX].map(|p| format!("{p}{t}")))
+        .collect();
     let writes: Vec<(&str, Option<&str>)> = keys.iter().map(|k| (k.as_str(), None)).collect();
-    if let Err(e) = appdb.set_settings_durable(&wallet.to_string(), &writes) {
-        tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments");
-    }
+    #[cfg(all(test, debug_assertions))]
+    appdb.fault_point(FORGET_SENT_FAULT, dw_appdb::fault::Stage::Before)?;
+    appdb.set_settings_durable(&wallet.to_string(), &writes)
 }
+
+/// Whether `wallet` keeps a sent mark of `txid` (its coins or its copy).
+pub(crate) fn has_sent_mark(
+    appdb: &AppDb,
+    wallet: WalletId,
+    txid: Txid,
+) -> Result<bool, dw_appdb::AppDbError> {
+    let scope = wallet.to_string();
+    Ok(appdb
+        .setting_lossy(&scope, &format!("{SENT_PREFIX}{txid}"))?
+        .is_some()
+        || appdb
+            .setting_lossy(&scope, &format!("{SENT_TX_PREFIX}{txid}"))?
+            .is_some())
+}
+
+/// A test's fault point on [`forget_sent`]'s delete.
+#[cfg(all(test, debug_assertions))]
+pub(crate) const FORGET_SENT_FAULT: &str = "tx_actions.forget_sent";
 
 /// dash-qt hides popups for these unless "show CoinJoin popups" is on
 /// (`WalletView::processNewTransaction`).
@@ -163,13 +330,189 @@ pub fn is_coinjoin_internal(t: TxType) -> bool {
     )
 }
 
-/// The abandoned transactions of `wallet` recorded in the app database, and
-/// whether every one was read.
-pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Vec<(Txid, Transaction)>, bool) {
-    load_marks(appdb, wallet, ABANDONED_PREFIX, |txid, hex| {
-        let tx: Transaction = deserialize(&hex::decode(hex).ok()?).ok()?;
-        (tx.txid() == txid).then_some((txid, tx))
-    })
+/// The abandoned marks of `wallet`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct Abandoned {
+    /// Each payment's copy.
+    pub copies: Vec<(Txid, Transaction)>,
+    /// The payments known by their mark's key whose copy does not read
+    /// back: abandoned, so they claim nothing.
+    pub unread: BTreeSet<Txid>,
+}
+
+/// The abandoned marks of `wallet` recorded in the app database, and false
+/// only when they cannot be read at all. A damaged mark affects only its
+/// own payment: a row whose key is not text or names no txid is left out,
+/// and one whose copy does not read back is in `unread`.
+pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Abandoned, bool) {
+    let rows = match appdb.settings_with_prefix_lossy(&wallet.to_string(), ABANDONED_PREFIX) {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(%wallet, error = %e, "could not read the abandoned marks");
+            return (Abandoned::default(), false);
+        }
+    };
+    let mut out = Abandoned::default();
+    for (key, value) in rows {
+        let Ok(txid) = Txid::from_str(&key[ABANDONED_PREFIX.len()..]) else {
+            tracing::warn!(%wallet, "an abandoned mark names no transaction");
+            continue;
+        };
+        let copy = (value.and_then(|v| hex::decode(v).ok()))
+            .and_then(|b| deserialize::<Transaction>(&b).ok())
+            .filter(|tx| tx.txid() == txid);
+        match copy {
+            Some(tx) => out.copies.push((txid, tx)),
+            None => {
+                tracing::warn!(%wallet, "an abandoned payment's copy does not read back");
+                out.unread.insert(txid);
+            }
+        }
+    }
+    (out, true)
+}
+
+/// Finishes in the wallet store the abandons whose marks are stored but
+/// whose sweeps are not (the mark is the commit point): of `wallets`, each
+/// payment marked abandoned that is still stored out of a block and
+/// unlocked (its record in the mempool, or only its outputs) is swept, and
+/// the coins it spent that no other stored record spends are released.
+/// Only marked payments are swept; one mined or InstantSend-locked since
+/// (a height-only row, a record in a block or locked, a stored lock) counts
+/// again and is left. Run before the wallets load, so a swept payment's
+/// change is never credited. A mark is known by its key, so one whose copy
+/// does not read back still counts, its coins then taken from its sent
+/// mark. A read that fails (the marks, a stored record, the sent marks)
+/// or a sweep that cannot be stored fails the load.
+pub(crate) fn finish_marked_abandons(
+    persister: &platform_wallet_storage::SqlitePersister,
+    appdb: &AppDb,
+    db_path: &std::path::Path,
+    wallets: &[WalletId],
+) -> Result<(), EngineError> {
+    let storage = |e: &dyn std::fmt::Display| {
+        EngineError::Storage(format!("finishing an abandoned payment: {e}"))
+    };
+    let mut listed = None;
+    for &wallet in wallets {
+        // Each mark by its key: one whose copy does not read back still
+        // names its payment.
+        let rows = (appdb.settings_with_prefix_lossy(&wallet.to_string(), ABANDONED_PREFIX))
+            .map_err(|e| storage(&e))?;
+        let marks: BTreeMap<Txid, Option<Transaction>> = (rows.into_iter())
+            .filter_map(|(key, value)| {
+                let txid = Txid::from_str(&key[ABANDONED_PREFIX.len()..]).ok()?;
+                let copy = (value.and_then(|v| hex::decode(v).ok()))
+                    .and_then(|b| deserialize::<Transaction>(&b).ok())
+                    .filter(|tx| tx.txid() == txid);
+                Some((txid, copy))
+            })
+            .collect();
+        if marks.is_empty() {
+            continue;
+        }
+        #[cfg(test)]
+        if finish_fault::take(db_path) {
+            return Err(EngineError::Storage("test: the load's step fails".into()));
+        }
+        let all = match &mut listed {
+            Some(all) => all,
+            None => listed
+                .insert(crate::history_ops::persisted_txids(db_path).map_err(|e| storage(&e))?),
+        };
+        let persisted = all.get(&wallet.0).cloned().unwrap_or_default();
+        let (outputs, locked) = crate::history_ops::txids_with_outputs_and_locks(
+            db_path,
+            wallet,
+            marks.keys().copied(),
+        )
+        .map_err(|e| storage(&e))?;
+        let mut pending: BTreeMap<Txid, Option<Transaction>> = BTreeMap::new();
+        for (t, copy) in marks {
+            let mined = persisted.recordless.contains(&t) && !persisted.unconfirmed.contains(&t);
+            if mined || locked.contains(&t) {
+                continue;
+            }
+            if !persisted.records.contains(&t) {
+                if outputs.contains(&t) {
+                    pending.insert(t, copy);
+                }
+                continue;
+            }
+            match persister
+                .get_core_tx_record(wallet.0, &t)
+                .map_err(|e| storage(&e))?
+            {
+                Some(r) => {
+                    if matches!(
+                        r.context,
+                        key_wallet::transaction_checking::TransactionContext::Mempool
+                    ) {
+                        pending.insert(t, Some(r.transaction));
+                    }
+                }
+                None if outputs.contains(&t) => {
+                    pending.insert(t, copy);
+                }
+                None => {}
+            }
+        }
+        let Some(&root) = pending.keys().next() else {
+            continue;
+        };
+        let mut spent_by_others = HashSet::new();
+        for t in persisted
+            .records
+            .iter()
+            .filter(|t| !pending.contains_key(*t))
+        {
+            if let Some(r) = persister
+                .get_core_tx_record(wallet.0, t)
+                .map_err(|e| storage(&e))?
+            {
+                spent_by_others.extend(r.transaction.input.iter().map(|i| i.previous_output));
+            }
+        }
+        let mut sent = None;
+        let mut spent = BTreeSet::new();
+        for (t, copy) in &pending {
+            match copy {
+                Some(tx) => spent.extend(tx.input.iter().map(|i| i.previous_output)),
+                None => {
+                    if sent.is_none() {
+                        let (read, complete) = load_sent(appdb, wallet);
+                        if !complete {
+                            return Err(storage(&"the sent marks do not read"));
+                        }
+                        sent = Some(read);
+                    }
+                    let coins = (sent.iter()).filter_map(|s| s.get(t));
+                    spent.extend(coins.flat_map(|m| m.coins.iter().copied()));
+                }
+            }
+        }
+        let released: BTreeSet<OutPoint> = (spent.into_iter())
+            .filter(|o| !pending.contains_key(&o.txid) && !spent_by_others.contains(o))
+            .collect();
+        tracing::info!(%wallet, payments = pending.len(), "finishing abandoned payments the wallet store still holds");
+        let changeset = PlatformWalletChangeSet {
+            core: Some(CoreChangeSet {
+                sweeps: vec![SweepBatch {
+                    txids: pending.keys().copied().collect(),
+                    superseded_by: root,
+                    winner_mined_height: None,
+                    released_outpoints: released.into_iter().collect(),
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        persister
+            .store(wallet.0, changeset)
+            .and_then(|()| persister.flush(wallet.0))
+            .map_err(|e| storage(&e))?;
+    }
+    Ok(())
 }
 
 /// What decides a transaction's actions.
@@ -184,6 +527,9 @@ struct Facts {
     credit: u64,
     debit: u64,
     matures_in: Option<u32>,
+    /// An Abandon of it committed its mark (its sweep may not be stored
+    /// yet): never resent.
+    abandon_marked: bool,
 }
 
 /// Abandons `root`, then each of `descendants` key-wallet's own walk did
@@ -223,6 +569,7 @@ fn facts(entry: &TxEntry, view: &ChainView<'_>) -> Facts {
         credit,
         debit,
         matures_in: status.matures_in,
+        abandon_marked: false,
     }
 }
 
@@ -245,7 +592,7 @@ impl Facts {
 
     /// dash-qt Resend enablement.
     fn resend_refusal(&self) -> Option<TxActionRefusal> {
-        if self.abandoned {
+        if self.abandoned || self.abandon_marked {
             Some(TxActionRefusal::AlreadyAbandoned)
         } else if self.depth > 0 || self.chain_locked {
             Some(TxActionRefusal::Confirmed)
@@ -269,13 +616,24 @@ impl NetworkSession {
         wallet: WalletId,
         txid: Txid,
     ) -> Result<(TxEntry, Facts), EngineError> {
-        self.with_view(manager, wallet, |view| {
-            view.history
-                .get(&txid)
-                .map(|entry| (entry.clone(), facts(entry, view)))
-        })
-        .await?
-        .ok_or_else(|| EngineError::TxNotFound(txid.to_string()))
+        let (entry, mut f) = self
+            .with_view(manager, wallet, |view| {
+                view.history
+                    .get(&txid)
+                    .map(|entry| (entry.clone(), facts(entry, view)))
+            })
+            .await?
+            .ok_or_else(|| EngineError::TxNotFound(txid.to_string()))?;
+        // Read after the history: an Abandon writes its mark under the
+        // manager's lock the view waits on, and flags the entry only once
+        // its sweep is stored. A mark that cannot be read counts.
+        let (scope, key) = (wallet.to_string(), format!("{ABANDONED_PREFIX}{txid}"));
+        f.abandon_marked = (self.appdb_op(move |db| {
+            Ok((db.settings_with_prefix_lossy(&scope, &key)?.into_iter()).any(|(k, _)| k == key))
+        }))
+        .await
+        .unwrap_or(true);
+        Ok((entry, f))
     }
 
     /// dash-qt detail fields and action enablement for one transaction.
@@ -374,7 +732,7 @@ impl NetworkSession {
         // Planned on a copy under the lock that applies it, so the replay
         // record stored before it covers what is abandoned.
         let descendants = self.unmined_descendants(wallet, root);
-        let (abandoned, checkpoint, released) = {
+        let (abandoned, checkpoint, released, copies) = {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let info = wm
@@ -392,6 +750,13 @@ impl NetworkSession {
             if let Some(checkpoint) = checkpoint {
                 self.record_rewind_locked(wallet, info, checkpoint).await?;
             }
+            // Durable before anything is applied: a later load must never
+            // see the payment live with its coins released.
+            let copies = self.abandoned_copies(wallet, &planned, &info.core_wallet);
+            let marks = (copies.iter())
+                .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
+                .collect();
+            self.write_abandoned_marks(wallet, marks).await?;
             let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
             if !abandoned.is_empty() {
                 info.core_wallet.update_balance();
@@ -401,18 +766,22 @@ impl NetworkSession {
                 &abandoned,
                 info.core_wallet.observed_spent_outpoints(),
             );
-            (abandoned, checkpoint, released)
+            (abandoned, checkpoint, released, copies)
         };
+        #[cfg(test)]
+        let pause = self.hub.pause_abandon_sweep.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause
+                .reached
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            pause.release.notified().await;
+        }
         // key-wallet refuses (returns nothing) when it holds the root as
         // settled.
         if abandoned.is_empty() {
             return Err(EngineError::TxActionRefused(TxActionRefusal::Confirmed));
         }
-        let txs: Vec<(Txid, Transaction)> = abandoned
-            .iter()
-            .filter_map(|t| self.hub.history.get(&wallet, t).map(|e| (*t, e.tx)))
-            .collect();
-
         let live = self.live()?;
         let persister = Arc::clone(&live.persister);
         let sweep = SweepBatch {
@@ -423,6 +792,10 @@ impl NetworkSession {
             winner_mined_height: None,
             released_outpoints: released.clone(),
         };
+        #[cfg(test)]
+        if (self.hub.fail_abandon_sweep).swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Storage("abandon: test sweep failure".into()));
+        }
         tokio::task::spawn_blocking(move || {
             let changeset = PlatformWalletChangeSet {
                 core: Some(CoreChangeSet {
@@ -432,31 +805,24 @@ impl NetworkSession {
                 ..Default::default()
             };
             persister.store(wallet.0, changeset)?;
-            persister.flush(wallet.0)
+            persister.flush(wallet.0)?;
+            #[cfg(test)]
+            if sweep_stop::take(&*persister) {
+                return Err(platform_wallet::changeset::PersistenceError::LockPoisoned);
+            }
+            Ok::<_, platform_wallet::changeset::PersistenceError>(())
         })
         .await?
         .map_err(|e| EngineError::Storage(format!("abandon: {e}")))?;
 
-        let rows: Vec<(String, String)> = txs
-            .iter()
-            .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
+        let copies: Vec<(Txid, Transaction)> = (copies.into_iter())
+            .filter(|(t, _)| abandoned.contains(t))
             .collect();
-        let scope = wallet.to_string();
-        self.appdb_op(move |db| {
-            for (key, hex) in &rows {
-                db.set_setting(&scope, key, Some(hex))?;
-            }
-            Ok(())
-        })
-        .await?;
-
         self.hub.history.with_wallet(wallet, |h| {
-            for t in &abandoned {
-                if let Some(e) = h.txs.get_mut(t) {
-                    e.abandoned = true;
-                }
-            }
+            h.mark_abandoned(&copies);
+            h.abandoned_here.extend(abandoned.iter().copied());
         });
+        (self.hub.history).drop_claims(&wallet, abandoned.iter().copied());
         // Each abandoned transaction's own claim (DEC-179); a coin another
         // owner holds stays reserved.
         for t in &abandoned {
@@ -474,6 +840,49 @@ impl NetworkSession {
         self.hub.pump.mark_history(wallet, Some(&changed));
         self.hub.pump.mark_balances(wallet);
         Ok(abandoned)
+    }
+
+    /// Each of `txids` with its transaction, from the history or else from
+    /// key-wallet's record: key-wallet can hold a record whose event has not
+    /// reached the history yet.
+    fn abandoned_copies(
+        &self,
+        wallet: WalletId,
+        txids: &BTreeSet<Txid>,
+        info: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    ) -> Vec<(Txid, Transaction)> {
+        (txids.iter())
+            .filter_map(|t| {
+                let tx = (self.hub.history.get(&wallet, t).map(|e| e.tx)).or_else(|| {
+                    (info.accounts.all_accounts().into_iter())
+                        .find_map(|a| a.transactions().get(t).map(|r| r.transaction.clone()))
+                })?;
+                Some((*t, tx))
+            })
+            .collect()
+    }
+
+    /// Writes `rows` (abandoned marks) in one durable write.
+    async fn write_abandoned_marks(
+        &self,
+        wallet: WalletId,
+        rows: Vec<(String, String)>,
+    ) -> Result<(), EngineError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if (self.hub.fail_abandon_mark).swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Storage("abandon: test mark failure".into()));
+        }
+        let scope = wallet.to_string();
+        self.appdb_op(move |db| {
+            let writes: Vec<(&str, Option<&str>)> = (rows.iter())
+                .map(|(k, v)| (k.as_str(), Some(v.as_str())))
+                .collect();
+            db.set_settings_durable(&scope, &writes)
+        })
+        .await
     }
 
     /// The history's transactions out of a block that descend from `root`,
@@ -556,6 +965,7 @@ impl NetworkSession {
                 .filter_map(|a| a.transactions().get(t))
                 .collect();
             let entry = self.hub.history.get(&wallet, t);
+            let marked = (self.hub.history).read_wallet(&wallet, |h| h.marked.get(t).cloned());
             if records.is_empty() && entry.is_none() {
                 return Some(birth);
             }
@@ -565,6 +975,7 @@ impl NetworkSession {
             released.extend(
                 recorded
                     .chain(held)
+                    .chain(marked.into_iter().flatten())
                     .filter(|o| !abandoned.contains(&o.txid)),
             );
         }
@@ -665,8 +1076,22 @@ impl NetworkSession {
                     .map(WalletId)
                     .collect(),
             };
-            let mut dropped = 0u32;
+            // Every wallet's marks are read before anything is abandoned:
+            // when one doesn't read, no wallet is touched.
+            let mut marked = Vec::with_capacity(wallets.len());
             for id in wallets {
+                let (sent, complete) = this.appdb_op(move |db| Ok(load_sent(db, id))).await?;
+                #[cfg(test)]
+                let complete = complete && *this.hub.fail_sent_read.lock().unwrap() != Some(id);
+                if !complete {
+                    return Err(EngineError::Storage(
+                        "removing unconfirmed transactions: the sent marks do not read".into(),
+                    ));
+                }
+                marked.push((id, sent));
+            }
+            let mut dropped = 0u32;
+            for (id, sent) in marked {
                 let candidates: Vec<Txid> = this
                     .with_view(&manager, id, |view| {
                         view.history
@@ -687,6 +1112,36 @@ impl NetworkSession {
                             done.extend(set);
                         }
                         // Settled meanwhile: nothing to drop.
+                        Err(EngineError::TxActionRefused(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                // A payment whose saved copy does not read back is listed
+                // nowhere but keeps its coins out: retired here, unless a
+                // payment under way holds one of them.
+                let damaged: Vec<Txid> = (sent.into_iter())
+                    .filter(|(t, m)| {
+                        m.kept && m.tx.is_none() && this.hub.history.get(&id, t).is_none()
+                    })
+                    .filter(|(t, m)| {
+                        (this
+                            .spends
+                            .held_by_others(&id, crate::send::SpendOwner::Tx(*t)))
+                        .is_disjoint(&m.coins.iter().copied().collect())
+                    })
+                    .map(|(t, _)| t)
+                    .collect();
+                for txid in damaged {
+                    match this.abandon_inner(&manager, id, txid).await {
+                        Ok(set) => {
+                            // Counted only once its marks are gone: a mark
+                            // left behind claims its coins again at the next
+                            // load.
+                            this.appdb_op(move |db| forget_sent(db, id, &[txid]))
+                                .await?;
+                            this.hub.history.drop_claims(&id, [txid]);
+                            dropped += set.len() as u32;
+                        }
                         Err(EngineError::TxActionRefused(_)) => {}
                         Err(e) => return Err(e),
                     }
@@ -785,13 +1240,105 @@ mod tests {
             credit: 0,
             debit: 0,
             matures_in: None,
+            abandon_marked: false,
         }
     }
 
-    /// A mark whose txid suffix or value does not parse is skipped and
-    /// makes the read incomplete; the other marks are still read.
+    /// A mark with its signed transaction stored apart (#170 case 1) reads
+    /// back with it; one an earlier build wrote reads without it; and one
+    /// whose stored transaction does not decode reads without it but kept,
+    /// the read of the others whole.
     #[test]
-    fn a_malformed_mark_makes_the_marks_unread() {
+    fn a_sent_mark_reads_back_its_transaction() {
+        use dashcore::hashes::Hash;
+        let db = AppDb::open_in_memory().unwrap();
+        let wallet = WalletId([7; 32]);
+        let scope = wallet.to_string();
+        let coin = OutPoint::new(Txid::from_byte_array([3; 32]), 1);
+        let tx = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: coin,
+                ..Default::default()
+            }],
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        let (old, bad) = (
+            Txid::from_byte_array([4; 32]),
+            Txid::from_byte_array([5; 32]),
+        );
+        let set = |key: &str, value: &str| db.set_setting(&scope, key, Some(value)).unwrap();
+        for t in [tx.txid(), old, bad] {
+            set(&format!("{SENT_PREFIX}{t}"), &coin.to_string());
+        }
+        set(
+            &format!("{SENT_TX_PREFIX}{}", tx.txid()),
+            &serialize_hex(&tx),
+        );
+        set(&format!("{SENT_TX_PREFIX}{bad}"), "zz");
+        let mark = |tx, kept| SentMark {
+            inputs: Default::default(),
+            coins: BTreeSet::from([coin]),
+            tx,
+            kept,
+        };
+        let want = Sent::from([
+            (tx.txid(), mark(Some(tx.clone()), true)),
+            (old, mark(None, false)),
+            (bad, mark(None, true)),
+        ]);
+        assert_eq!(load_sent(&db, wallet), (want, true));
+    }
+
+    /// The saved copies' query fails: the marks still read, a mark written
+    /// with its copy (it has its coins' values) is kept with no copy, and an
+    /// earlier build's mark, which has neither, is not.
+    #[test]
+    fn a_failed_read_of_the_copies_keeps_only_marks_written_with_them() {
+        use dashcore::hashes::Hash;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(dw_appdb::APP_DB_FILE);
+        let db = AppDb::open(&path).unwrap();
+        let wallet = WalletId([7; 32]);
+        let scope = wallet.to_string();
+        let coin = OutPoint::new(Txid::from_byte_array([3; 32]), 1);
+        let (new, old) = (
+            Txid::from_byte_array([4; 32]),
+            Txid::from_byte_array([5; 32]),
+        );
+        let set = |key: &str, value: &str| db.set_setting(&scope, key, Some(value)).unwrap();
+        for t in [new, old] {
+            set(&format!("{SENT_PREFIX}{t}"), &coin.to_string());
+        }
+        set(&format!("{SENT_TX_PREFIX}{new}"), "00");
+        set(
+            &format!("{SENT_IN_PREFIX}{new}"),
+            &format!("{coin} 1000 yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd"),
+        );
+        dw_appdb::fault::arm(
+            &path,
+            "settings.read_senttx:",
+            dw_appdb::fault::Stage::Before,
+        );
+        let (sent, read) = read_sent(&db, wallet);
+        dw_appdb::fault::disarm(&path);
+        assert_eq!(read, SentRead::CoinsOnly);
+        let kept = |t: &Txid| {
+            sent.get(t)
+                .map(|m| (m.kept, m.tx.is_some(), m.coins.clone()))
+        };
+        assert_eq!(kept(&new), Some((true, false, BTreeSet::from([coin]))));
+        assert_eq!(kept(&old), Some((false, false, BTreeSet::from([coin]))));
+        assert!(load_sent(&db, wallet).1, "read again");
+    }
+
+    /// A mark whose txid suffix or value does not parse is skipped and the
+    /// other marks are still read; a malformed abandoned mark also makes
+    /// that read incomplete, a malformed sent mark does not.
+    #[test]
+    fn a_malformed_mark_is_skipped() {
         use dashcore::hashes::Hash;
         let db = AppDb::open_in_memory().unwrap();
         let wallet = WalletId([7; 32]);
@@ -811,11 +1358,26 @@ mod tests {
             &format!("{ABANDONED_PREFIX}{txid}"),
             Some(&serialize_hex(&tx)),
         );
-        let sent = Sent::from([(txid, BTreeSet::from([coin]))]);
+        let sent = Sent::from([(
+            txid,
+            SentMark {
+                inputs: Default::default(),
+                coins: BTreeSet::from([coin]),
+                tx: None,
+                kept: false,
+            },
+        )]);
         assert_eq!(load_sent(&db, wallet), (sent.clone(), true));
+        let copies = vec![(txid, tx.clone())];
         assert_eq!(
             load_abandoned(&db, wallet),
-            (vec![(txid, tx.clone())], true)
+            (
+                Abandoned {
+                    copies: copies.clone(),
+                    unread: BTreeSet::new(),
+                },
+                true
+            )
         );
 
         let other = Txid::all_zeros();
@@ -827,17 +1389,35 @@ mod tests {
             ),
         ] {
             set(&key, Some(&value));
-            assert_eq!(load_sent(&db, wallet), (sent.clone(), false), "{key}");
+            assert_eq!(load_sent(&db, wallet), (sent.clone(), true), "{key}");
             set(&key, None);
         }
-        for (key, value) in [
-            (format!("{ABANDONED_PREFIX}not-a-txid"), serialize_hex(&tx)),
-            (format!("{ABANDONED_PREFIX}{other}"), "zz".to_owned()),
-            (format!("{ABANDONED_PREFIX}{other}"), serialize_hex(&tx)),
+        // A damaged mark affects only its own payment: one naming no txid
+        // is left out, one whose copy does not read back (or names another
+        // transaction) is known by its key.
+        for (key, value, unread) in [
+            (
+                format!("{ABANDONED_PREFIX}not-a-txid"),
+                serialize_hex(&tx),
+                BTreeSet::new(),
+            ),
+            (
+                format!("{ABANDONED_PREFIX}{other}"),
+                "zz".to_owned(),
+                BTreeSet::from([other]),
+            ),
+            (
+                format!("{ABANDONED_PREFIX}{other}"),
+                serialize_hex(&tx),
+                BTreeSet::from([other]),
+            ),
         ] {
             set(&key, Some(&value));
-            let abandoned = vec![(txid, tx.clone())];
-            assert_eq!(load_abandoned(&db, wallet), (abandoned, false), "{key}");
+            let want = Abandoned {
+                copies: copies.clone(),
+                unread,
+            };
+            assert_eq!(load_abandoned(&db, wallet), (want, true), "{key}");
             set(&key, None);
         }
     }

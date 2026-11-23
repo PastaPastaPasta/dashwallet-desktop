@@ -504,7 +504,7 @@ pub fn run(
                             println!("rebroadcast {repeats}");
                         }
                         Err(err) => {
-                            let outcome = failed_broadcast_outcome(&err, || {
+                            let outcome = failed_broadcast_outcome(&err, repeats == 0, || {
                                 engine
                                     .block_on(draft.abandon(Arc::clone(&prepared)))
                                     .is_ok()
@@ -583,12 +583,23 @@ pub fn run(
     Ok(())
 }
 
-/// A failed broadcast's outcome word. `not_sent` only when the prepared
-/// transaction was abandoned. A panicked broadcast task may have sent the
-/// payment and the engine may not answer again, so it is never abandoned
-/// and stays `unknown`.
-fn failed_broadcast_outcome(err: &EngineError, abandon: impl FnOnce() -> bool) -> &'static str {
-    if !err.is_task_panic() && abandon() {
+/// A failed broadcast's outcome word. `not_sent` when the prepared
+/// transaction was abandoned, or when the engine refused it before the
+/// hand-off and holds its coins until a restart (`held_until_restart`, or a
+/// first attempt's `storage`), which no abandon releases. A panicked
+/// broadcast task may have sent the payment and the engine may not answer
+/// again, so it is never abandoned and stays `unknown`.
+fn failed_broadcast_outcome(
+    err: &EngineError,
+    first: bool,
+    abandon: impl FnOnce() -> bool,
+) -> &'static str {
+    let refused = matches!(err, EngineError::Send(SendFailure::HeldUntilRestart))
+        || (first && matches!(err, EngineError::Storage(_)));
+    if refused {
+        abandon();
+        "not_sent"
+    } else if !err.is_task_panic() && abandon() {
         "not_sent"
     } else {
         "unknown"
@@ -606,10 +617,34 @@ mod tests {
     #[test]
     fn a_broadcast_panic_stays_unknown_without_an_abandon() {
         let panicked = EngineError::Internal(dw_engine::TASK_PANICKED.into());
-        let outcome = failed_broadcast_outcome(&panicked, || panic!("abandon after a panic"));
+        let outcome = failed_broadcast_outcome(&panicked, true, || panic!("abandon after a panic"));
         assert_eq!(outcome, "unknown");
         let no_peers = EngineError::Send(SendFailure::NoPeers);
-        assert_eq!(failed_broadcast_outcome(&no_peers, || true), "not_sent");
-        assert_eq!(failed_broadcast_outcome(&no_peers, || false), "unknown");
+        assert_eq!(
+            failed_broadcast_outcome(&no_peers, true, || true),
+            "not_sent"
+        );
+        assert_eq!(
+            failed_broadcast_outcome(&no_peers, true, || false),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn a_broadcast_refused_before_its_hand_off_reads_not_sent_though_its_coins_stay_held() {
+        let held = EngineError::Send(SendFailure::HeldUntilRestart);
+        for first in [true, false] {
+            assert_eq!(failed_broadcast_outcome(&held, first, || false), "not_sent");
+        }
+        let storage = EngineError::Storage("the sent mark".into());
+        assert_eq!(
+            failed_broadcast_outcome(&storage, true, || false),
+            "not_sent"
+        );
+        assert_eq!(
+            failed_broadcast_outcome(&storage, false, || false),
+            "unknown",
+            "a repeat's earlier attempt may have left"
+        );
     }
 }
