@@ -145,6 +145,16 @@ export function newSettingsWorld(): SettingsWorld {
   };
 }
 
+/** The backup a first run restores from (onboarding's Restore from a file). */
+export const FIXTURE_RESTORE_BACKUP = "/home/user/Documents/Main and Savings.dwbackup";
+export const FIXTURE_RESTORE_BACKUP_PASSPHRASE = "backup-pass";
+
+/** A manual backup of `wallets` at FIXTURE_RESTORE_BACKUP. */
+export function withRestoreBackup(s: SettingsWorld, wallets: NonNullable<FixtureFile["wallets"]>): SettingsWorld {
+  s.files[FIXTURE_RESTORE_BACKUP] = backupFile(wallets, FIXTURE_RESTORE_BACKUP_PASSPHRASE, secs(FIXTURE_NOW) - 30 * 86_400, false);
+  return s;
+}
+
 /** Two automatic backups of the first wallet, newest first (Backups tab). */
 export function withAutomaticBackups(s: SettingsWorld, walletId: string, phrase: string, passphrase: string): SettingsWorld {
   for (const [i, minutes] of [0, 1440].entries()) {

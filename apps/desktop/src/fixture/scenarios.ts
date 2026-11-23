@@ -35,7 +35,7 @@ import type { Utxo } from "../api/generated/Utxo";
 import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
-import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
+import { newSettingsWorld, withAutomaticBackups, withRestoreBackup, type SettingsWorld } from "./settings";
 import { restoredFundLock, restoredLock } from "./recovery";
 import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
@@ -973,6 +973,21 @@ const SCENARIOS = {
     w.wallets = [];
     w.phrases = {};
     w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    return w;
+  },
+  /** No wallet and no vault, and a backup of two wallets on disk that Choose File… picks
+   * (passphrase FIXTURE_RESTORE_BACKUP_PASSPHRASE): onboarding's Restore from a file. */
+  "no-wallet-backup-file": (t) => {
+    const w = base(t);
+    const backedUp = [
+      { walletId: FIXTURE_WALLET_ID, name: "Main", phrase: MAIN_PHRASE },
+      { walletId: SECOND_WALLET_ID, name: "Savings", phrase: SECOND_PHRASE },
+    ];
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    withRestoreBackup(w.settings, backedUp);
+    w.tools.files.open = { name: "Main and Savings.dwbackup", data: "" };
     return w;
   },
   /** A vault (passphrase `demo`) that holds no wallet yet: onboarding without a passphrase step. */
