@@ -166,70 +166,108 @@ impl AppDb {
     pub fn import_wallet_rows(&self, wallet_id: &str, tables: &[TableRows]) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let mut inserted = 0;
-        let known = scoped_tables(&tx)?;
-        for t in tables {
-            let Some((_, scope)) = known.iter().find(|(name, _)| *name == t.table) else {
-                continue;
-            };
-            let here: Vec<String> = columns(&tx, &t.table)?
-                .into_iter()
-                .filter(|(_, alias)| !alias)
-                .map(|(c, _)| c)
-                .collect();
-            let keep: Vec<usize> = (0..t.columns.len())
-                .filter(|i| here.contains(&t.columns[*i]))
-                .collect();
-            let Some(scope_pos) = keep.iter().position(|i| t.columns[*i] == *scope) else {
-                continue;
-            };
-            let names = keep
-                .iter()
-                .map(|i| format!("\"{}\"", t.columns[*i]))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let marks = (1..=keep.len())
-                .map(|n| format!("?{n}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let mut stmt = tx.prepare(&format!(
-                "INSERT OR IGNORE INTO \"{}\" ({names}) VALUES ({marks})",
-                t.table
-            ))?;
-            // Tables numbered by a rowid alias have no other key, so an
-            // identical row is looked up before inserting it again.
-            let same = keep
-                .iter()
-                .enumerate()
-                .map(|(n, i)| format!("\"{}\" IS ?{}", t.columns[*i], n + 1))
-                .collect::<Vec<_>>()
-                .join(" AND ");
-            let mut exists = tx.prepare(&format!(
-                "SELECT 1 FROM \"{}\" WHERE {same} LIMIT 1",
-                t.table
-            ))?;
-            for row in &t.rows {
-                let values: Vec<&SqlValue> = keep
-                    .iter()
-                    .map(|i| row.get(*i).unwrap_or(&SqlValue::Null))
-                    .collect();
-                if !matches!(values.get(scope_pos), Some(SqlValue::Text(s)) if s == wallet_id) {
-                    continue;
-                }
-                if exists.exists(rusqlite::params_from_iter(values.iter()))? {
-                    continue;
-                }
-                inserted += stmt.execute(rusqlite::params_from_iter(values.iter()))?;
-            }
-        }
+        let inserted = insert_rows(&tx, wallet_id, tables)?;
         tx.commit()?;
         Ok(inserted)
     }
 }
 
+/// [`AppDb::import_wallet_rows`] in the caller's transaction.
+pub(crate) fn insert_rows(
+    tx: &rusqlite::Transaction<'_>,
+    wallet_id: &str,
+    tables: &[TableRows],
+) -> Result<usize> {
+    let mut inserted = 0;
+    let known = scoped_tables(tx)?;
+    for t in tables {
+        let Some((_, scope)) = known.iter().find(|(name, _)| *name == t.table) else {
+            continue;
+        };
+        let here: Vec<String> = columns(tx, &t.table)?
+            .into_iter()
+            .filter(|(_, alias)| !alias)
+            .map(|(c, _)| c)
+            .collect();
+        let keep: Vec<usize> = (0..t.columns.len())
+            .filter(|i| here.contains(&t.columns[*i]))
+            .collect();
+        let Some(scope_pos) = keep.iter().position(|i| t.columns[*i] == *scope) else {
+            continue;
+        };
+        let names = keep
+            .iter()
+            .map(|i| format!("\"{}\"", t.columns[*i]))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let marks = (1..=keep.len())
+            .map(|n| format!("?{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = tx.prepare(&format!(
+            "INSERT OR IGNORE INTO \"{}\" ({names}) VALUES ({marks})",
+            t.table
+        ))?;
+        // Tables numbered by a rowid alias have no other key, so an
+        // identical row is looked up before inserting it again.
+        let same = keep
+            .iter()
+            .enumerate()
+            .map(|(n, i)| format!("\"{}\" IS ?{}", t.columns[*i], n + 1))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let mut exists = tx.prepare(&format!(
+            "SELECT 1 FROM \"{}\" WHERE {same} LIMIT 1",
+            t.table
+        ))?;
+        for row in &t.rows {
+            let values: Vec<&SqlValue> = keep
+                .iter()
+                .map(|i| row.get(*i).unwrap_or(&SqlValue::Null))
+                .collect();
+            if !matches!(values.get(scope_pos), Some(SqlValue::Text(s)) if s == wallet_id) {
+                continue;
+            }
+            if exists.exists(rusqlite::params_from_iter(values.iter()))? {
+                continue;
+            }
+            inserted += stmt.execute(rusqlite::params_from_iter(values.iter()))?;
+        }
+    }
+    Ok(inserted)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{AppDb, BookPurpose, LabelKind, SqlValue, TableRows};
+
+    /// A restore's retry deletes a wallet's rows from `WALLET_TABLES`
+    /// (#359): none of them refuses a delete, and no table that does is a
+    /// wallet's rows.
+    #[test]
+    fn no_wallet_table_refuses_a_delete() {
+        let db = AppDb::open_in_memory().unwrap();
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger'")
+            .unwrap();
+        let refusing: Vec<String> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|(_, sql)| sql.to_uppercase().contains("BEFORE DELETE"))
+            .map(|(table, _)| table)
+            .collect();
+        assert!(
+            refusing.contains(&"mn_withdrawals".to_owned()),
+            "{refusing:?}"
+        );
+        let scoped = super::scoped_tables(&conn).unwrap();
+        for table in &refusing {
+            assert!(!crate::WALLET_TABLES.contains(&table.as_str()), "{table}");
+            assert!(scoped.iter().all(|(t, _)| t != table), "{table}");
+        }
+    }
 
     #[test]
     fn wallet_rows_round_trip_into_another_database() {
