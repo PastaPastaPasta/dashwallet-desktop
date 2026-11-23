@@ -172,6 +172,41 @@ fn block_backups(session: &NetworkSession) {
     std::fs::write(&backups, b"not a folder").unwrap();
 }
 
+/// A version 2 backup of `a` (with the damaged row) and `b`, both with
+/// passphrase `bk`: restored into a vault that has `b`'s keys, it attaches
+/// `a`'s and then fails `AlreadyExists(b)`, rolling `a` back.
+fn write_two_wallet_backup(session: &NetworkSession, a: WalletId, b: WalletId, file: &Path) {
+    let b64 = |v: &[u8]| base64::engine::general_purpose::STANDARD.encode(v);
+    let header = serde_json::json!({
+        "format": "dwbackup", "format_version": 2, "network": "regtest", "created_at": 1,
+        "wallet_ids": [a.to_string(), b.to_string()], "automatic": false, "app_version": "test",
+    });
+    let header_line = serde_json::to_vec(&header).unwrap();
+    let bundles: Vec<_> = [(a, true), (b, false)]
+        .into_iter()
+        .map(|(id, damaged)| {
+            let rows: Vec<_> = damaged
+                .then(|| serde_json::json!([{ "t": id.to_string() }, { "tb": b64(KEY) }, { "tb": b64(VALUE) }]))
+                .into_iter()
+                .collect();
+            let payload = serde_json::json!({
+                "name": "A", "birth_height": 0, "created_at": null,
+                "app_rows": [{ "table": "settings_kv", "columns": ["scope", "key", "value"], "rows": rows }],
+            });
+            session
+                .vault()
+                .backup_bundle(&id.0, Some(b"bk"), &serde_json::to_vec(&payload).unwrap(), &header_line)
+                .unwrap()
+        })
+        .collect();
+    let mut out = b"DWBACKUP 2\n".to_vec();
+    out.extend_from_slice(&header_line);
+    out.push(b'\n');
+    out.extend(serde_json::to_vec(&serde_json::json!({ "bundles": bundles })).unwrap());
+    out.push(b'\n');
+    std::fs::write(file, out).unwrap();
+}
+
 fn import(engine: &Engine, session: &Arc<NetworkSession>, phrase: &[u8]) -> WalletId {
     engine
         .block_on(session.import_wallet(
@@ -336,35 +371,7 @@ fn a_damaged_row_a_rolled_back_restore_leaves_does_not_break_a_backup() {
     let a = import(&engine, &session, PHRASE);
     let b = import(&engine, &session, OTHER_PHRASE);
     let file = dir.path().join("two.dwbackup");
-    let b64 = |v: &[u8]| base64::engine::general_purpose::STANDARD.encode(v);
-    let header = serde_json::json!({
-        "format": "dwbackup", "format_version": 2, "network": "regtest", "created_at": 1,
-        "wallet_ids": [a.to_string(), b.to_string()], "automatic": false, "app_version": "test",
-    });
-    let header_line = serde_json::to_vec(&header).unwrap();
-    let bundles: Vec<_> = [(a, true), (b, false)]
-        .into_iter()
-        .map(|(id, damaged)| {
-            let rows: Vec<_> = damaged
-                .then(|| serde_json::json!([{ "t": id.to_string() }, { "tb": b64(KEY) }, { "tb": b64(VALUE) }]))
-                .into_iter()
-                .collect();
-            let payload = serde_json::json!({
-                "name": "A", "birth_height": 0, "created_at": null,
-                "app_rows": [{ "table": "settings_kv", "columns": ["scope", "key", "value"], "rows": rows }],
-            });
-            session
-                .vault()
-                .backup_bundle(&id.0, Some(b"bk"), &serde_json::to_vec(&payload).unwrap(), &header_line)
-                .unwrap()
-        })
-        .collect();
-    let mut out = b"DWBACKUP 2\n".to_vec();
-    out.extend_from_slice(&header_line);
-    out.push(b'\n');
-    out.extend(serde_json::to_vec(&serde_json::json!({ "bundles": bundles })).unwrap());
-    out.push(b'\n');
-    std::fs::write(&file, out).unwrap();
+    write_two_wallet_backup(&session, a, b, &file);
     assert!(session.vault().delete_wallet_secret(&a.0).unwrap());
 
     let restored =
@@ -781,7 +788,9 @@ fn a_failed_backup_after_the_first_unlock_is_recorded_and_announced() {
     assert_eq!(notices.written(), 0);
 }
 
-/// The unlock returns while its automatic backup is still held.
+/// The unlock returns while its automatic backup is still held: run on the
+/// runtime with a bounded wait, so an unlock that waited for its backups
+/// fails here instead of hanging.
 #[test]
 fn unlock_returns_before_its_backups_finish() {
     let dir = dw_testutil::private_tempdir();
@@ -790,8 +799,16 @@ fn unlock_returns_before_its_backups_finish() {
     let pause = Arc::new(TestPause::default());
     *session.backups.pause.lock().unwrap() = Some(pause.clone());
 
-    unlock(&engine, &session);
+    let (sent, unlocked) = std::sync::mpsc::channel();
+    let s = Arc::clone(&session);
+    session.rt.spawn(async move {
+        let out = s
+            .vault_op(|v| v.unlock(VAULT_PASSPHRASE, UnlockScope::Full))
+            .await;
+        sent.send(out.is_ok()).unwrap();
+    });
 
+    assert_eq!(unlocked.recv_timeout(Duration::from_secs(60)), Ok(true));
     assert!(pause.wait_reached(Duration::from_secs(60)));
     assert_eq!(notices.written(), 0);
     pause.release.notify_one();
@@ -800,4 +817,318 @@ fn unlock_returns_before_its_backups_finish() {
         .block_on(session.automatic_backups(Some(ids[0])))
         .unwrap();
     assert_eq!(listed.len(), 2, "{listed:?}");
+}
+
+fn wipe_grant(session: &NetworkSession, id: WalletId) -> String {
+    session
+        .vault()
+        .authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&id.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id
+}
+
+/// Waits until `task` ended or someone waits for the wallet lifecycle lock.
+fn wait_finished_or_held<T>(session: &NetworkSession, task: &tokio::task::JoinHandle<T>) {
+    wait_until("the call ends or waits for the lifecycle lock", || {
+        task.is_finished() || session.wallet_lifecycle.waiting() > 0
+    });
+}
+
+/// "Backups to keep" None set while an automatic backup is being written
+/// waits for it, then deletes what it wrote, or the failure it recorded.
+#[test]
+fn turning_backups_off_during_an_automatic_backup_leaves_no_backup_and_no_record() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session) = open(dir.path().join("a"), notices.clone());
+    let id = import(&engine, &session, PHRASE);
+    wait_for_listed(&engine, &session, 1);
+    for b in engine.block_on(session.automatic_backups(None)).unwrap() {
+        std::fs::remove_file(b.path).unwrap();
+    }
+    let during_a_backup = |block: bool| {
+        let pause = Arc::new(TestPause::default());
+        *session.backups.pause.lock().unwrap() = Some(pause.clone());
+        let s = Arc::clone(&session);
+        let backup = session.rt.spawn(async move {
+            s.automatic_backup(id).await;
+        });
+        assert!(pause.wait_reached(Duration::from_secs(60)));
+        if block {
+            set_mode(&session.backup_directory(), 0o500);
+        }
+        let s = Arc::clone(&session);
+        let off = session
+            .rt
+            .spawn(async move { s.set_backup_policy(0).await });
+        wait_until("turning off ends or waits for the policy lock", || {
+            off.is_finished() || session.backups.policy_waiting() > 0
+        });
+        pause.release.notify_one();
+        engine.block_on(backup).unwrap();
+        engine.block_on(off).unwrap().unwrap();
+    };
+
+    during_a_backup(false);
+
+    assert_eq!(session.backup_policy().unwrap().keep, 0);
+    assert_eq!(
+        engine.block_on(session.automatic_backups(None)).unwrap(),
+        []
+    );
+    assert_eq!(failures(&engine, &session), []);
+
+    engine.block_on(session.set_backup_policy(3)).unwrap();
+    during_a_backup(true);
+
+    set_mode(&session.backup_directory(), 0o700);
+    assert_eq!(notices.backup_failed(), 1);
+    assert_eq!(failures(&engine, &session), []);
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// With "Backups to keep" None, a user backup deletes a failure record that
+/// is still there: the Settings row it shows says to make one.
+#[test]
+fn a_backup_with_automatic_backups_off_clears_a_stale_failure_record() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session) = open(dir.path().join("a"), Arc::new(Notices::default()));
+    let id = import(&engine, &session, PHRASE);
+    wait_for_listed(&engine, &session, 1);
+    engine.block_on(session.set_backup_policy(0)).unwrap();
+    record_failure_at(&session, id, "1000");
+
+    backup(&engine, &session, id, &dir.path().join("1.dwbackup"));
+
+    assert_eq!(failures(&engine, &session), []);
+}
+
+/// A recovery ("Forgot passphrase") of a vault locked at launch backs every
+/// wallet up under the new passphrase, and so does a passphrase change
+/// later in the same session.
+#[test]
+fn a_credential_change_backs_every_wallet_up_again() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session, ids) = relaunched_locked(dir.path(), &[PHRASE], 10, notices.clone());
+
+    engine
+        .block_on(session.recover_vault(
+            ids[0].0,
+            Zeroizing::new(PHRASE.to_vec()),
+            Zeroizing::new(Vec::new()),
+            Zeroizing::new(b"new pw".to_vec()),
+        ))
+        .unwrap();
+    notices.wait_for_written(1);
+
+    let listed = || {
+        engine
+            .block_on(session.automatic_backups(Some(ids[0])))
+            .unwrap()
+    };
+    let newest = || {
+        listed()
+            .into_iter()
+            .find(|b| {
+                let name = b.path.to_string_lossy();
+                !name.contains(".2020-") && !name.contains(".2021-")
+            })
+            .unwrap()
+            .path
+    };
+    let sealed_with = |file: PathBuf, folder: &str, old: &[u8], new: &[u8]| {
+        let (engine_b, session_b) = open(dir.path().join(folder), Arc::new(Notices::default()));
+        let restore = |pw: &[u8]| {
+            engine_b
+                .block_on(session_b.restore_backup(file.clone(), Some(Zeroizing::new(pw.to_vec()))))
+        };
+        assert!(
+            matches!(
+                restore(old),
+                Err(EngineError::Backup(BackupFailure::WrongPassphrase))
+            ),
+            "{folder}: the old passphrase"
+        );
+        assert_eq!(
+            restore(new).unwrap(),
+            [ids[0]],
+            "{folder}: the new passphrase"
+        );
+    };
+    assert_eq!(listed().len(), 2);
+    sealed_with(newest(), "b", VAULT_PASSPHRASE, b"new pw");
+    let backups = session.backup_directory();
+    std::fs::rename(
+        newest(),
+        backups.join(format!("{}.2021-01-01-00-00.{EXTENSION}", ids[0])),
+    )
+    .unwrap();
+
+    engine
+        .block_on(session.change_passphrase(
+            Zeroizing::new(b"new pw".to_vec()),
+            Zeroizing::new(b"newer pw".to_vec()),
+        ))
+        .unwrap();
+    notices.wait_for_written(2);
+
+    assert_eq!(listed().len(), 3);
+    sealed_with(newest(), "c", b"new pw", b"newer pw");
+    assert_eq!(notices.backup_failed(), 0);
+}
+
+/// A wallet removed while its automatic backup waits gets nothing written,
+/// recorded or announced after the removal returned.
+#[test]
+fn a_wallet_removed_during_its_automatic_backup_gets_nothing_after_the_removal() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session) = open(dir.path().join("a"), notices.clone());
+    let id = import(&engine, &session, PHRASE);
+    wait_for_listed(&engine, &session, 1);
+    for b in engine.block_on(session.automatic_backups(None)).unwrap() {
+        std::fs::remove_file(b.path).unwrap();
+    }
+    let pause = Arc::new(TestPause::default());
+    *session.backups.pause.lock().unwrap() = Some(pause.clone());
+    let s = Arc::clone(&session);
+    let backup = session.rt.spawn(async move {
+        s.automatic_backup(id).await;
+    });
+    assert!(pause.wait_reached(Duration::from_secs(60)));
+    let wipe = wipe_grant(&session, id);
+    let (s, n, backups) = (
+        Arc::clone(&session),
+        notices.clone(),
+        session.backup_directory(),
+    );
+    let removal = session.rt.spawn(async move {
+        s.remove_wallet(id, wipe).await.unwrap();
+        let files = list_automatic(&backups, None).unwrap().len();
+        (files, n.written(), n.backup_failed())
+    });
+    wait_finished_or_held(&session, &removal);
+
+    pause.release.notify_one();
+    engine.block_on(backup).unwrap();
+    let (files, written, failed) = engine.block_on(removal).unwrap();
+
+    assert_eq!(
+        list_automatic(&session.backup_directory(), None)
+            .unwrap()
+            .len(),
+        files
+    );
+    assert_eq!(notices.written(), written);
+    assert_eq!((failed, notices.backup_failed()), (0, 0));
+    assert_eq!(failures(&engine, &session), []);
+}
+
+/// An automatic backup of a wallet whose keys a restore attached and then
+/// rolled back writes nothing: it waits for the restore to end.
+#[test]
+fn a_restore_rolled_back_during_an_automatic_backup_leaves_none() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session) = open(dir.path().join("a"), notices.clone());
+    let a = import(&engine, &session, PHRASE);
+    let b = import(&engine, &session, OTHER_PHRASE);
+    wait_for_listed(&engine, &session, 2);
+    for f in engine.block_on(session.automatic_backups(None)).unwrap() {
+        std::fs::remove_file(f.path).unwrap();
+    }
+    let file = dir.path().join("two.dwbackup");
+    write_two_wallet_backup(&session, a, b, &file);
+    assert!(session.vault().delete_wallet_secret(&a.0).unwrap());
+    let pause = Arc::new(TestPause::default());
+    *session.backups.pause_restore.lock().unwrap() = Some(pause.clone());
+    let s = Arc::clone(&session);
+    let restore = session.rt.spawn(async move {
+        s.restore_backup(file, Some(Zeroizing::new(b"bk".to_vec())))
+            .await
+    });
+    assert!(pause.wait_reached(Duration::from_secs(60)));
+    assert!(session.vault().has_wallet_secret(&a.0), "attached");
+    let s = Arc::clone(&session);
+    let backup = session.rt.spawn(async move {
+        s.automatic_backup(a).await;
+    });
+    wait_finished_or_held(&session, &backup);
+
+    pause.release.notify_one();
+    let restored = engine.block_on(restore).unwrap();
+    engine.block_on(backup).unwrap();
+
+    assert!(
+        matches!(restored, Err(EngineError::Backup(BackupFailure::AlreadyExists(id))) if id == b),
+        "{restored:?}"
+    );
+    assert!(!session.vault().has_wallet_secret(&a.0), "rolled back");
+    assert_eq!(
+        engine.block_on(session.automatic_backups(None)).unwrap(),
+        []
+    );
+    assert_eq!(notices.backup_failed(), 0);
+    assert_eq!(failures(&engine, &session), []);
+}
+
+/// A lock while the first unlock's backups run ends them; the next unlock
+/// starts them over and backs every wallet up.
+#[test]
+fn a_lock_during_the_first_unlocks_backups_lets_the_next_unlock_finish_them() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session, _) =
+        relaunched_locked(dir.path(), &[PHRASE, OTHER_PHRASE], 10, notices.clone());
+    let pause = Arc::new(TestPause::default());
+    *session.backups.pause.lock().unwrap() = Some(pause.clone());
+    unlock(&engine, &session);
+    assert!(pause.wait_reached(Duration::from_secs(60)));
+
+    session.lock_vault_sync().unwrap();
+    pause.release.notify_one();
+    wait_until("the first run ends", || {
+        session.backups.runs_done.load(Ordering::SeqCst) == 1
+    });
+    assert_eq!(notices.written(), 0);
+    unlock(&engine, &session);
+
+    notices.wait_for_written(2);
+    assert_eq!(session.backups.runs.load(Ordering::SeqCst), 2);
+    assert_eq!(notices.backup_failed(), 0);
+}
+
+/// An unlock that comes while a run that found the vault locked is ending
+/// still gets every wallet backed up.
+#[test]
+fn an_unlock_while_a_locked_run_ends_backs_every_wallet_up() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session, _) =
+        relaunched_locked(dir.path(), &[PHRASE, OTHER_PHRASE], 10, notices.clone());
+    let pause = Arc::new(TestPause::default());
+    *session.backups.pause.lock().unwrap() = Some(pause.clone());
+    let ending = Arc::new(TestPause::default());
+    *session.backups.pause_locked.lock().unwrap() = Some(ending.clone());
+    unlock(&engine, &session);
+    assert!(pause.wait_reached(Duration::from_secs(60)));
+    session.lock_vault_sync().unwrap();
+    pause.release.notify_one();
+    assert!(ending.wait_reached(Duration::from_secs(60)));
+
+    unlock(&engine, &session);
+    ending.release.notify_one();
+
+    notices.wait_for_written(2);
+    assert_eq!(session.backups.runs.load(Ordering::SeqCst), 2);
+    assert_eq!(notices.backup_failed(), 0);
 }

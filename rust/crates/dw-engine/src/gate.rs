@@ -157,14 +157,18 @@ pub(crate) enum PauseRefused<B> {
 
 /// Serialises, per session, every operation that registers or removes a
 /// wallet: seed and watch-only imports, restores and their rollback, the
-/// removal, and dash-qt's open and close of a wallet (DEC-210 (3b)). A
+/// removal, and dash-qt's open and close of a wallet (DEC-210 (3b)), and
+/// each automatic backup, so none is written of a wallet a removal or a
+/// rolled-back restore took away. A
 /// removal and an import of the same wallet run one after the other, so
 /// app.sqlite records it as removed exactly when it is not registered.
 /// These operations are rare, so one lock covers every wallet.
 ///
 /// Lock order: an [`OpGuard`], then this lock, then the wallet's barrier
 /// (`revoke_wallet`), the end of its discoveries, and its write fence
-/// (private details, the bell's `mark_read`) and identity locks (`remove_from_manager`). It is taken
+/// (private details, the bell's `mark_read`) and identity locks (`remove_from_manager`),
+/// or the backup policy lock (`backups.policy`), which is taken after this
+/// lock and never held while this lock is taken. It is taken
 /// only by an operation that holds its `OpGuard` and nothing later in the
 /// order, and its holder never asks the gate again: a nested admission
 /// waits behind a pending close, which waits for the holder's guard.

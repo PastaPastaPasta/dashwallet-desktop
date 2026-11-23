@@ -154,11 +154,7 @@ impl Pure {
     }
 
     fn own(&mut self, a: Address, chain: AddressChain) {
-        let owned = Owned {
-            address: a.clone(),
-            chain,
-            coinjoin: false,
-        };
+        let owned = Owned::new(a.clone(), chain, false);
         self.owned.insert(a.script_pubkey(), owned);
     }
 

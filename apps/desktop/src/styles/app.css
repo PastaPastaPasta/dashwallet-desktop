@@ -550,6 +550,11 @@ input[type="radio"]:disabled {
   overflow-wrap: anywhere;
 }
 
+/* A banned masternode's notice is a long run in some languages: it wraps rather than widening the pane. */
+.mn-banned-notice {
+  overflow-wrap: anywhere;
+}
+
 .share-who {
   display: flex;
   align-items: center;

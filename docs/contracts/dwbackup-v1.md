@@ -183,7 +183,10 @@ the asset lock is the inviter's.
 - File: `<network dir>/backups/<wallet id>.YYYY-MM-DD-HH-MM.dwbackup` (UTC), mode 0600.
 - Written when a wallet is added (create, import, restore, keys attached), and for every wallet
   once per session: when it opens, or for an encrypted vault that is locked then, in the background
-  after its first unlock. Written only if the policy keeps any and the DEK is available (vault
+  after its first unlock. A wallet that finds the vault locked again ends that run, and the next
+  unlock starts it over. A call that changes the vault's credential (encrypt, recover, passphrase
+  change) starts it again, now or at the next unlock: the backups before it are sealed under the
+  credential it replaced. Written only if the policy keeps any and the DEK is available (vault
   unlocked or unencrypted); otherwise skipped silently, as dash-qt backs up only what it can. A
   DashPay registration that reaches `FundingSent` also triggers one (§3.1), so the newest backup
   carries its asset-lock outpoint. A user backup that succeeds triggers one for a wallet whose
@@ -191,6 +194,9 @@ the asset lock is the inviter's.
 - A file of the same name (an automatic backup of the same minute) is left as it is and the
   backup is skipped, whether it was there before or appears while the backup is built. A written
   backup sends `EngineEvent::Backups`.
+- Each automatic backup runs under the wallet lifecycle lock, after checking that the wallet is
+  still registered with its keys: none is written for a wallet removed, or a restore rolled back,
+  before it. `set_backup_policy` waits for one being written, so `keep` 0 leaves none behind.
 - Encrypted vault: slot `vault_passphrase`; unencrypted: `vault_key`. A user backup and an
   automatic backup of the same wallet can run at the same time: neither writes anything but its
   own destination file (created with `O_EXCL`, mode 0600).
