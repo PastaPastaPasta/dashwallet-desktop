@@ -544,6 +544,12 @@ input[type="radio"]:disabled {
   overflow-wrap: anywhere;
 }
 
+/* The wipe's warning and its sentence are long runs in some languages: they wrap rather than widening the sheet. */
+.settings-wipe-warning,
+.settings-wipe-label {
+  overflow-wrap: anywhere;
+}
+
 .share-who {
   display: flex;
   align-items: center;
