@@ -1006,6 +1006,9 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
  * `rescanFirst` instead when all of that holds and the only inputs
  * missing are held by its own spend claim restored at load: a restart
  * and a rescan give that evidence.
+ * Any transaction is refused (`instantLocked`, or `confirmed`) when
+ * abandoning it would also take one the history holds as InstantSend-
+ * locked (or in a block).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });

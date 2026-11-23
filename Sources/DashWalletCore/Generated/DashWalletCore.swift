@@ -2144,6 +2144,9 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * `RescanFirst` instead when all of that holds and the only inputs
      * missing are held by its own spend claim restored at load: a restart
      * and a rescan give that evidence.
+     * Any transaction is refused (`InstantLocked`, or `Confirmed`) when
+     * abandoning it would also take one the history holds as InstantSend-
+     * locked (or in a block).
      * Emits `HistoryChanged` and `Balances`.
      */
     func abandonTransaction(walletId: String, txid: String) async throws 
@@ -3751,6 +3754,9 @@ open func warnings()throws  -> [EngineWarning]  {
      * `RescanFirst` instead when all of that holds and the only inputs
      * missing are held by its own spend claim restored at load: a restart
      * and a rescan give that evidence.
+     * Any transaction is refused (`InstantLocked`, or `Confirmed`) when
+     * abandoning it would also take one the history holds as InstantSend-
+     * locked (or in a block).
      * Emits `HistoryChanged` and `Balances`.
      */
 open func abandonTransaction(walletId: String, txid: String)async throws   {
@@ -24365,7 +24371,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_warnings() != 33150) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 56595) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 38946) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_drop_unconfirmed() != 40118) {

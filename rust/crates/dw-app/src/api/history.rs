@@ -167,6 +167,9 @@ commands! {
     /// `rescanFirst` instead when all of that holds and the only inputs
     /// missing are held by its own spend claim restored at load: a restart
     /// and a rescan give that evidence.
+    /// Any transaction is refused (`instantLocked`, or `confirmed`) when
+    /// abandoning it would also take one the history holds as InstantSend-
+    /// locked (or in a block).
     #[facade("NetworkSession::abandon_transaction")]
     fn abandon_transaction(state, wallet_id: String, txid: String) -> () {
         let id = parse_wallet_id(&wallet_id)?;

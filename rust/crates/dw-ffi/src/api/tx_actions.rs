@@ -213,6 +213,9 @@ impl NetworkSession {
     /// `RescanFirst` instead when all of that holds and the only inputs
     /// missing are held by its own spend claim restored at load: a restart
     /// and a rescan give that evidence.
+    /// Any transaction is refused (`InstantLocked`, or `Confirmed`) when
+    /// abandoning it would also take one the history holds as InstantSend-
+    /// locked (or in a block).
     /// Emits `HistoryChanged` and `Balances`.
     pub async fn abandon_transaction(
         &self,
