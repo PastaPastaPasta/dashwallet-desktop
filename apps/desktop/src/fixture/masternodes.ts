@@ -18,9 +18,13 @@ import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleNa
 import type { MasternodeListState } from "../api/generated/MasternodeListState";
 import type { MasternodePayout } from "../api/generated/MasternodePayout";
 import type { MasternodeRow } from "../api/generated/MasternodeRow";
+import type { ProTxOperation } from "../api/generated/ProTxOperation";
+import type { ProTxTerms } from "../api/generated/ProTxTerms";
 import type { RegistrarCapabilityName } from "../api/generated/RegistrarCapabilityName";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
+import type { UpdateRegistrarPreview } from "../api/generated/UpdateRegistrarPreview";
+import type { UpdateRegistrarRequest } from "../api/generated/UpdateRegistrarRequest";
 import type { Ctx, Handlers } from "./handlers";
 import { FIXTURE_WALLET_ID, type FixtureWallet, type World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
@@ -106,6 +110,10 @@ export interface MasternodesWorld {
   ownerKeys: Record<string, number>;
   /** A held registration's operator reward in hundredths of a percent; absent: 0. */
   operatorRewards: Record<string, number>;
+  /** The registrar updates saved (ProUpRegTx), newest last; an unsettled one blocks the next (MG-04 D49). */
+  updates: ProTxOperation[];
+  /** The next update's one hand-off finds no peers: it is saved `not_sent`. */
+  nextUpdateNotSent: boolean;
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -214,6 +222,8 @@ export function newMasternodesWorld(): MasternodesWorld {
     trackedAt: { [CLUB]: NOW - 12 * DAY },
     ownerKeys: { [HOME]: 0, [OFFICE]: 1 },
     operatorRewards: {},
+    updates: [],
+    nextUpdateNotSent: false,
   };
 }
 
@@ -283,9 +293,94 @@ function checkKey(world: World, r: MasternodeRow, role: AttachedKeyRoleName, key
   return "matched";
 }
 
+export const UPDATE_FEE = 452;
+const BLS_HEX = /^[0-9a-fA-F]{96}$/;
+const TEST_ADDRESS = /^[yz8][1-9A-HJ-NP-Za-km-z]{33}$/;
+/** The lowest keychain index no fixture masternode uses (D13). */
+const NEXT_UNUSED = 3;
+
+/** An operator key in the basic serialization: a legacy keychain key re-encoded (D39). */
+function basicKey(key: string): string {
+  for (let i = 0; i < POOL.operator; i++) if (keyInfo("operator", i).legacyPublicKeyHex === key) return keyInfo("operator", i).publicKeyHex;
+  return key;
+}
+
+function checkAddress(address: string, what: string) {
+  if (!TEST_ADDRESS.test(address)) throw fail("invalid_argument", `${what} is not a test-network address`);
+}
+
+/** `preview_update_registrar`'s checks and plan, in the engine's order: the request, the list, the masternode, the
+ * owner key, an update still pending (D49), then what changes. */
+function planUpdate(world: World, walletId: string, request: UpdateRegistrarRequest): UpdateRegistrarPreview {
+  const hash = checkHash(request.proTxHash);
+  if (request.operator.kind === "given" && !BLS_HEX.test(request.operator.publicKey)) throw fail("invalid_argument", "the operator key is not 96 hex digits");
+  if (request.voting.kind === "address") checkAddress(request.voting.address, "the voting address");
+  if (request.payout.kind === "address") checkAddress(request.payout.address, "the payout address");
+  const m = world.masternodes;
+  if (!m.listState.synced) throw fail("masternodes.list_unavailable", "the masternode list is not synced");
+  const r = withAttached(world, rowOf(world, walletId, hash));
+  const listed = listedOf(m, hash);
+  if (!listed) throw fail("masternodes.not_found", "masternode not found");
+  const cap = registrar(world, r);
+  if (cap.kind === "shared") throw fail("masternodes.unsupported", "shared masternodes are not supported", { kind: "unsupported", feature: "shared_masternodes", field: null });
+  if (cap.kind === "vault_locked") throw fail("vault.locked", "vault locked");
+  if (cap.kind !== "available") throw fail("masternodes.no_owner_key", "this wallet holds no owner key of this masternode");
+  const pending = m.updates.find((u) => u.proTxHash === hash && (u.state.kind === "sent" || u.state.kind === "signed" || u.state.kind === "not_sent"));
+  if (pending) throw fail("masternodes.update_pending", `operation ${pending.id} on this masternode is not in the list yet`);
+  const listedOperator = basicKey(listed.facts.operatorPublicKey);
+  const operatorKey = request.operator.kind === "keep" ? listedOperator : request.operator.kind === "given" ? request.operator.publicKey.toLowerCase() : keyInfo("operator", request.operator.kind === "keychain" ? request.operator.index : NEXT_UNUSED).publicKeyHex;
+  const operatorIndex = request.operator.kind === "keychain" ? request.operator.index : request.operator.kind === "next_unused" ? NEXT_UNUSED : null;
+  const operatorChanges = operatorKey !== listedOperator;
+  const votingAddress = request.voting.kind === "keep" ? listed.facts.votingAddress : request.voting.kind === "address" ? request.voting.address : keyInfo("voting", request.voting.kind === "keychain" ? request.voting.index : NEXT_UNUSED).address!;
+  const votingIndex = request.voting.kind === "keychain" ? request.voting.index : request.voting.kind === "next_unused" ? NEXT_UNUSED : null;
+  const payoutAddress = request.payout.kind === "address" ? request.payout.address : "";
+  const ownerAddress = hash in m.ownerKeys ? keyInfo("owner", m.ownerKeys[hash]).address! : addr(`ow${hash.slice(0, 4)}`);
+  if (operatorChanges && m.listed.some((l) => l.proTxHash !== hash && basicKey(l.facts.operatorPublicKey) === operatorKey))
+    throw fail("masternodes.protx_refused", "bad-protx-dup-key", { kind: "reason", reason: "bad-protx-dup-key" });
+  if (payoutAddress && (payoutAddress === ownerAddress || payoutAddress === votingAddress))
+    throw fail("masternodes.protx_refused", "bad-protx-payee-reuse", { kind: "reason", reason: "bad-protx-payee-reuse" });
+  const terms: ProTxTerms = {
+    masternodeType: listed.facts.kind,
+    version: 2,
+    service: listed.facts.service ?? "",
+    ownerAddress,
+    ownerIndex: m.ownerKeys[hash] ?? null,
+    votingAddress,
+    votingIndex,
+    operatorPublicKey: operatorKey,
+    operatorIndex,
+    operatorReward: m.operatorRewards[hash] ?? 0,
+    payoutAddress,
+    collateral: null,
+    collateralOutpoint: null,
+    collateralAddress: null,
+    platform: null,
+    platformNodeIndex: null,
+  };
+  return {
+    terms,
+    version: 2,
+    fee: UPDATE_FEE,
+    totalDebit: UPDATE_FEE,
+    ownerKey: cap.signer === "keychain" ? { kind: "keychain", index: m.ownerKeys[hash] ?? 0 } : { kind: "attached" },
+    operatorChanges,
+    votingChanges: votingAddress !== listed.facts.votingAddress,
+    payoutChanges: r.payoutAddress === null ? null : request.payout.kind === "new_address" || request.payout.address !== r.payoutAddress,
+    poseBans: operatorChanges,
+  };
+}
+
 const changed = ({ world, emit }: Ctx) => emit({ kind: "masternodes", network: world.launch.network.dirName });
 
 export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, walletId: string) => FixtureWallet; useGrant: (w: World, id: string) => void }): Handlers {
+  /** `begin_lease` then the fee check: a vault grant of the wallet for a masternode operation, covering `debit`. */
+  const masternodeGrant = (world: World, walletId: string, grantId: string, debit: number) => {
+    const g = world.grants.find((x) => x.grant.id === grantId && !x.used && x.grant.walletId === walletId);
+    if (!g || g.grant.purpose.kind !== "masternodeOp") throw fail("platform.grant_invalid", "grant invalid");
+    if (g.grant.purpose.maxDuffs < debit)
+      throw fail("send.grant_exceeded", "grant exceeded", { kind: "spendCap", maxDuffs: g.grant.purpose.maxDuffs, outflow: debit });
+    useGrant(world, grantId);
+  };
   return {
     mn_list_state: (_, { world }) => copy(world.masternodes.listState),
     mn_list: ({ walletId }, { world }) => {
@@ -435,6 +530,65 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
       const end = Math.min(start + count, POOL[role]);
       return Array.from({ length: Math.max(0, end - start) }, (_, i) => keyInfo(role, start + i));
     },
+    mn_preview_update_registrar: ({ walletId, request }, { world }) => {
+      wallet(world, walletId);
+      return planUpdate(world, walletId, request);
+    },
+    mn_update_registrar: ({ walletId, request, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      const plan = planUpdate(world, walletId, request);
+      masternodeGrant(world, walletId, grantId, plan.totalDebit);
+      const m = world.masternodes;
+      const n = m.updates.length + 1;
+      const notSent = m.nextUpdateNotSent;
+      m.nextUpdateNotSent = false;
+      const op: ProTxOperation = {
+        id: `op-${fake(String(n), 8)}`,
+        kind: "update_registrar",
+        proTxHash: request.proTxHash.toLowerCase(),
+        txid: h(`u${n}`),
+        state: { kind: notSent ? "not_sent" : "sent" },
+        signRequest: null,
+        fee: plan.fee,
+        debit: plan.totalDebit,
+        overdue: false,
+        createdAt: NOW,
+        signedAt: NOW,
+        sentAt: notSent ? null : NOW,
+        lastError: notSent ? "send.no_peers" : null,
+        terms: { ...plan.terms, payoutAddress: plan.terms.payoutAddress || addr(`nP${n}`) },
+      };
+      m.updates.push(op);
+      changed(ctx);
+      return copy(op);
+    },
+    mn_operations: ({ walletId }, { world }) => {
+      wallet(world, walletId);
+      return walletId === FIXTURE_WALLET_ID ? copy(world.masternodes.updates) : [];
+    },
+    mn_resend_operation: ({ walletId, operation, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      const op = world.masternodes.updates.find((u) => u.id === operation);
+      if (!op || walletId !== FIXTURE_WALLET_ID) throw fail("masternodes.operation_not_found", "operation not found");
+      if (op.state.kind !== "not_sent" && op.state.kind !== "signed") throw fail("masternodes.operation_state", `operation is ${op.state.kind}`);
+      masternodeGrant(world, walletId, grantId, op.debit);
+      Object.assign(op, { state: { kind: "sent" }, sentAt: NOW, lastError: null });
+      changed(ctx);
+      return copy(op);
+    },
+    mn_discard_operation: ({ walletId, operation }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      const m = world.masternodes;
+      const op = m.updates.find((u) => u.id === operation);
+      if (!op || walletId !== FIXTURE_WALLET_ID) throw fail("masternodes.operation_not_found", "operation not found");
+      if (op.state.kind === "sent" || op.state.kind === "confirmed") throw fail("masternodes.operation_state", `operation is ${op.state.kind}`);
+      m.updates = m.updates.filter((u) => u !== op);
+      changed(ctx);
+      return null;
+    },
     mn_reveal_key: ({ walletId, role, index, grant: grantId }, { world }) => {
       // dw-vault vault/masternode.rs:97-102: the grant is redeemed, then the key (its own, else the vault's) is
       // needed, then the seed (none: watch-only).
@@ -562,6 +716,8 @@ export function masternodesScenarios(base: Base) {
         trackOnly(m);
         w.lock = { ...w.lock, state: "locked" };
       }),
+    /** `mn-list`, where the next registrar update finds no peers and is saved `not_sent`. */
+    "mn-update-not-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.nextUpdateNotSent = true)),
     /** The keychain: Home's operator key matched in the basic form, Office's in the legacy form, Lab evonode's platform node id. */
     "mn-keys": (t: ThemeName | null) =>
       mnBase(base, t, (m) => {

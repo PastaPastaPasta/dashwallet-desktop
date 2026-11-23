@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "masternodes",
-  "description": "My masternodes: the masternode list's state, the wallet's masternodes and their payouts, tracking and attached keys, evonode credits, and the masternode keychain with its reveal (MG-10 S1). Granted to the main window only.",
+  "description": "My masternodes: the masternode list's state, the wallet's masternodes and their payouts, tracking and attached keys, evonode credits, and the masternode keychain with its reveal (MG-10 S1), and the owner's registrar update with its operations, resend and discard (MG-10 S3). Granted to the main window only.",
   "windows": [
     "main"
   ],
@@ -19,6 +19,11 @@
     "allow-mn-attach-key",
     "allow-mn-detach-key",
     "allow-mn-keys",
-    "allow-mn-reveal-key"
+    "allow-mn-reveal-key",
+    "allow-mn-preview-update-registrar",
+    "allow-mn-update-registrar",
+    "allow-mn-operations",
+    "allow-mn-resend-operation",
+    "allow-mn-discard-operation"
   ]
 }
