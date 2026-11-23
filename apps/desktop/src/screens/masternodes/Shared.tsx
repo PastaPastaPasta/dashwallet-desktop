@@ -634,7 +634,8 @@ function FeeSheet({ wallet, network, session, onDone }: { wallet: WalletSummary;
         <div className="form-field">
           <label htmlFor={id}>{t(`${P}.feeSheet.label`)}</label>
           <input id={id} inputMode="numeric" data-testid="sh-fee-input" value={fee} onChange={(e) => setFee(e.target.value)} />
-          <span className="mg-field-help">{duffs !== null ? dash(duffs) : t(`${P}.feeSheet.range`, { max: MAX_SHARED_FEE.toLocaleString(), maxDash: dash(MAX_SHARED_FEE) })}</span>
+          {typed !== null && <span className="mg-field-help" data-testid="sh-fee-dash">{dash(typed)}</span>}
+          {duffs === null && <span className="mg-field-help">{t(`${P}.feeSheet.range`, { max: MAX_SHARED_FEE.toLocaleString(), maxDash: dash(MAX_SHARED_FEE) })}</span>}
         </div>
         <p className="form-problem" role="alert">
           {error}
