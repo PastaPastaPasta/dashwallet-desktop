@@ -64,7 +64,23 @@ export function own(values: Values, name: string): unknown {
 export function pluralForm(message: Message, count: unknown, language: string): string {
   if (typeof message === "string") return message;
   if (typeof count !== "number") return message.other;
-  return message[new Intl.PluralRules(language).select(count)] ?? message.other;
+  return message[pluralRules(language).select(count)] ?? message.other;
+}
+
+const pluralRuleCache = new Map<string, Intl.PluralRules>();
+const numberFormatCache = new Map<string | undefined, Intl.NumberFormat>();
+
+function pluralRules(language: string): Intl.PluralRules {
+  let rules = pluralRuleCache.get(language);
+  if (!rules) pluralRuleCache.set(language, (rules = new Intl.PluralRules(language)));
+  return rules;
+}
+
+/** A number formatter for `locale`, built once: building one is slow in WebKit. */
+export function numberFormat(locale: string | undefined): Intl.NumberFormat {
+  let format = numberFormatCache.get(locale);
+  if (!format) numberFormatCache.set(locale, (format = new Intl.NumberFormat(locale)));
+  return format;
 }
 
 /** A message split into literal text, `{placeholder}`s and `<tag>`/`</tag>`s. */
@@ -110,7 +126,7 @@ export function fill(message: string, values: Values, how: Fill): string {
 }
 
 export function show(value: unknown, { locale, isolate }: Fill): string {
-  const text = typeof value === "number" ? new Intl.NumberFormat(locale).format(value) : String(value ?? "");
+  const text = typeof value === "number" ? numberFormat(locale).format(value) : String(value ?? "");
   return isolate || hasRtl(text) ? isolated(text) : text;
 }
 

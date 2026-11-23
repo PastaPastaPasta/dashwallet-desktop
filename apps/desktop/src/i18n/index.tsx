@@ -39,13 +39,19 @@ export const LANGUAGES: Language[] = [
 export const byTag = (tag: string) => LANGUAGES.find((l) => l.tag.toLowerCase() === tag.toLowerCase());
 const primary = (tag: string) => tag.split("-")[0].toLowerCase();
 
+const scripts = new Map<string, string | undefined>();
+
 /** The script a tag is written in, given or implied (`zh-TW` is Hant), if the runtime knows it. */
 function script(tag: string): string | undefined {
+  if (scripts.has(tag)) return scripts.get(tag);
+  let found: string | undefined;
   try {
-    return new Intl.Locale(tag).maximize().script;
+    found = new Intl.Locale(tag).maximize().script;
   } catch {
-    return undefined;
+    found = undefined;
   }
+  scripts.set(tag, found);
+  return found;
 }
 
 /** The same language in a script that does not conflict: `pt-PT` takes `pt`, `zh-Hans-CN` takes
@@ -58,8 +64,15 @@ function sameLanguage(catalog: string, wanted: string): boolean {
 
 export const isLanguage = (tag: string) => byTag(tag) !== undefined;
 
-/** A catalog with every English key. */
-export const isComplete = (l: Language) => [...english.keys()].every((k) => l.messages.has(k));
+const completeness = new WeakMap<Map<string, Message>, boolean>();
+
+/** A catalog with every English key. A catalog does not change once built, so each is checked once:
+ * `t` asks on every call. */
+export function isComplete(l: Language): boolean {
+  let complete = completeness.get(l.messages);
+  if (complete === undefined) completeness.set(l.messages, (complete = [...english.keys()].every((k) => l.messages.has(k))));
+  return complete;
+}
 
 /** The system's languages, most preferred first. */
 export function systemLanguages(): readonly string[] {
