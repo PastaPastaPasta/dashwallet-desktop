@@ -58,8 +58,9 @@ const MANY =
 
 /** 1.05 from 0.100001 coins: eleven of them, and what they hold beyond it and the fee is fee too. */
 async function expectElevenCoins(page: Page) {
-  await expect(page.getByTestId("pay-confirm-mixed-warning")).toHaveText(MANY);
-  await expect(page.getByTestId("pay-confirm-mixed-warning")).toHaveAttribute("role", "alert");
+  const warning = page.getByTestId("pay-confirm-mixed-warning");
+  await expect(warning).toHaveText(MANY);
+  await expect(warning).toHaveAttribute("role", "alert");
   await expect(page.getByTestId("pay-confirm-mixed-coins")).toHaveText("This payment spends 11 mixed coins.");
   // 11 inputs, 1 output: 1672 bytes at 1000 duffs/kB. The rest of 1.10001100 is the left-over.
   const leftOver = ((11 * DENOM - 105_000_000 - 1672) / 1e8).toFixed(8);

@@ -129,7 +129,7 @@ const STATES: State[] = [
     },
   },
   {
-    // U-06b: eleven fully mixed coins, so the confirm sheet shows the count, the warning and the left-over.
+    // U-06b: twelve fully mixed coins, of which paying 1.05 spends eleven, so the confirm sheet shows the count, the warning and the left-over.
     name: "pay-confirm-mixed",
     roots: ["pay-confirm"],
     data: ADDRESSES,
