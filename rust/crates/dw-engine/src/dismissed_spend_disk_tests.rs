@@ -1017,19 +1017,58 @@ fn known_gap_money_an_overturned_payment_sent_stays_offered_after_a_restart_when
 const OTHER_PHRASE: &[u8] =
     b"legal winner thank year wave sausage worth useful legal winner thank yellow";
 
+/// Whom C2 pays.
+#[derive(Clone, Copy, PartialEq)]
+enum Payee {
+    /// Another wallet B open in Dash Wallet.
+    AnotherWallet,
+    /// The same wallet's CoinJoin account.
+    CoinJoinAccount,
+}
+
+/// The wallet's first CoinJoin receive address.
+fn coinjoin_address(engine: &Engine, session: &NetworkSession, id: WalletId) -> Address {
+    use key_wallet::account::AccountType;
+    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        let account = (info.accounts)
+            .funds_account(&AccountType::CoinJoin { index: 0 })
+            .unwrap();
+        account.managed_account_type().address_pools()[0]
+            .address_at_index(0)
+            .unwrap()
+    })
+}
+
 /// Pins a known gap. L, locked, spends the wallet's coins A0 and A1 with
-/// change; C2, locked, spends that change and pays another wallet B open in
-/// Dash Wallet. D, mined and then ChainLocked, spends A1. The wallet drops L
-/// and C2 together, but B records only C2, whose input D does not spend, so
-/// B keeps C2 pending and its money available. Quitting and reopening Dash
-/// Wallet, then removing B and restoring it from its recovery phrase, takes
-/// that money away for good.
-#[test]
-fn known_gap_money_a_locked_payment_built_on_an_overturned_one_sent_another_wallet_stays_until_it_is_restored()
- {
+/// change; C2, locked, spends that change and pays `payee`. D, mined and
+/// then ChainLocked, spends A1. The wallet's standard account drops L and C2
+/// together, but the account C2 pays records only C2, whose input D does
+/// not spend, so it keeps C2:0.
+///
+/// Another wallet keeps C2 pending and C2:0 offered, also after a restart.
+/// The same wallet's CoinJoin account counts C2:0 in the balance until a
+/// restart; the wallet's store already dropped C2, so no payment is offered
+/// C2:0, history shows no C2, and a restart clears it. Either way, quitting
+/// and reopening Dash Wallet, then removing that wallet and restoring it
+/// from its recovery phrase, leaves C2:0 gone for good.
+fn built_on_an_overturned_payment(payee: Payee) {
     let (_dir, engine, session, id) = engine_wallet();
-    let other = restore(&engine, &session, OTHER_PHRASE);
-    let both = [id, other];
+    let (holder, phrase) = match payee {
+        Payee::AnotherWallet => (restore(&engine, &session, OTHER_PHRASE), OTHER_PHRASE),
+        Payee::CoinJoinAccount => (id, super::PHRASE),
+    };
+    let wallets = |id: WalletId, holder: WalletId| -> Vec<WalletId> {
+        if id == holder {
+            vec![id]
+        } else {
+            vec![id, holder]
+        }
+    };
     let to: Vec<Address> = (0..COINS)
         .map(|_| fresh_address(&engine, &session, id))
         .collect();
@@ -1038,18 +1077,19 @@ fn known_gap_money_a_locked_payment_built_on_an_overturned_one_sent_another_wall
         OutPoint::new(funded.txid(), 0),
         OutPoint::new(funded.txid(), 1),
     );
-    let blocks = |session: &NetworkSession, wallets: &[WalletId]| {
+    let blocks = |session: &NetworkSession, wallets: &[WalletId], fetcher: WalletId| {
         block_for(
             &engine,
             session,
             wallets,
-            &[id],
+            &[fetcher],
             FUNDED_AT,
             vec![funded.clone()],
         );
         block_for(&engine, session, wallets, &[], TIP, vec![foreign()]);
     };
-    blocks(&session, &both);
+    let all = wallets(id, holder);
+    blocks(&session, &all, id);
     let change_to = fresh_address(&engine, &session, id);
     let mut l = super::spend_of(
         a0,
@@ -1060,15 +1100,18 @@ fn known_gap_money_a_locked_payment_built_on_an_overturned_one_sent_another_wall
         ..Default::default()
     });
     let l = super::signed_by_wallet(&engine, &session, id, &to[0], l);
-    let to_other = fresh_address(&engine, &session, other);
+    let to_holder = match payee {
+        Payee::AnotherWallet => fresh_address(&engine, &session, holder),
+        Payee::CoinJoinAccount => coinjoin_address(&engine, &session, holder),
+    };
     let c2 = super::spend_of(
         OutPoint::new(l.txid(), 0),
-        vec![(to_other.script_pubkey(), COIN - 1_000)],
+        vec![(to_holder.script_pubkey(), COIN - 1_000)],
     );
     let c2 = super::signed_by_wallet(&engine, &session, id, &change_to, c2);
     let paid = OutPoint::new(c2.txid(), 0);
     let (first, second) = (l.clone(), c2.clone());
-    deliver_all(&engine, &session, &both, move |wm| {
+    deliver_all(&engine, &session, &all, move |wm| {
         Box::pin(async move {
             wm.process_mempool_transaction(&first, Some(lock_for(&first)))
                 .await;
@@ -1077,8 +1120,8 @@ fn known_gap_money_a_locked_payment_built_on_an_overturned_one_sent_another_wall
         })
     });
     wait_stored(&session, id, &[l.txid(), c2.txid()]);
-    wait_stored(&session, other, &[c2.txid()]);
-    assert!(held(&engine, &session, other).contains(&paid));
+    wait_stored(&session, holder, &[c2.txid()]);
+    assert!(held(&engine, &session, holder).contains(&paid));
 
     let d = super::spend_of(a1, vec![(elsewhere(), COIN - 1_000)]);
     let height = TIP + 2;
@@ -1087,48 +1130,107 @@ fn known_gap_money_a_locked_payment_built_on_an_overturned_one_sent_another_wall
         block_hash: block_with(vec![d.clone()]).block_hash(),
         signature: BLSSignature::from([0; 96]),
     };
-    block_for(&engine, &session, &both, &[id], height, vec![d.clone()]);
-    deliver_all(&engine, &session, &both, move |wm| {
+    block_for(&engine, &session, &all, &[id], height, vec![d.clone()]);
+    deliver_all(&engine, &session, &all, move |wm| {
         Box::pin(async move {
             wm.apply_chain_lock(chain_lock);
         })
     });
-    super::own_spend_disk_tests::eventually("D beats L, and C2 with it", || {
-        !records(&session, id, l.txid()) && !records(&session, id, c2.txid())
-    });
+    super::own_spend_disk_tests::eventually("D beats L", || !records(&session, id, l.txid()));
+    if payee == Payee::AnotherWallet {
+        super::own_spend_disk_tests::eventually("C2 goes with L", || {
+            !records(&session, id, c2.txid())
+        });
+    }
     assert!(held(&engine, &session, id).contains(&a0));
 
-    let offered = |session: &Arc<NetworkSession>| {
-        assert!(
-            held(&engine, session, other).contains(&paid),
-            "known gap: C2:0 shows"
-        );
-        assert!(
-            spendable(&engine, session, other, paid),
-            "known gap: C2:0 is offered"
-        );
-        assert!(records(session, other, c2.txid()), "C2 stays pending");
+    let left = (COINS as u64 - 1) * COIN;
+    let session = match payee {
+        Payee::AnotherWallet => {
+            let offered = |session: &Arc<NetworkSession>| {
+                assert!(
+                    held(&engine, session, holder).contains(&paid),
+                    "known gap: C2:0 shows"
+                );
+                assert!(
+                    spendable(&engine, session, holder, paid),
+                    "known gap: C2:0 is offered"
+                );
+                assert!(records(session, holder, c2.txid()), "C2 stays pending");
+            };
+            offered(&session);
+            let session = reopen(&engine, session);
+            offered(&session);
+            session
+        }
+        Payee::CoinJoinAccount => {
+            assert!(
+                held(&engine, &session, holder).contains(&paid),
+                "known gap: the CoinJoin account keeps C2:0"
+            );
+            let b = super::balances(&session, holder);
+            assert_eq!(
+                (b.total, b.coinjoin),
+                (left + COIN - 1_000, COIN - 1_000),
+                "known gap: C2:0 counts in the balance and the CoinJoin balance"
+            );
+            assert!(
+                !spendable(&engine, &session, holder, paid),
+                "no payment is offered C2:0"
+            );
+            super::own_spend_disk_tests::eventually("no history row for C2", || {
+                !records(&session, holder, c2.txid())
+                    && !(super::rows(&engine, &session, holder).iter())
+                        .any(|row| row.0 == c2.txid().to_string())
+            });
+            let session = reopen(&engine, session);
+            assert!(
+                !held(&engine, &session, holder).contains(&paid),
+                "a restart drops C2:0"
+            );
+            let b = super::balances(&session, holder);
+            assert_eq!((b.total, b.coinjoin), (left, 0));
+            session
+        }
     };
-    offered(&session);
-    let session = reopen(&engine, session);
-    offered(&session);
 
-    remove(&engine, &session, other);
-    let other = restore(&engine, &session, OTHER_PHRASE);
-    let both = [id, other];
-    blocks(&session, &both);
-    block_for(&engine, &session, &both, &[id], height, vec![d]);
+    remove(&engine, &session, holder);
+    let restored = restore(&engine, &session, phrase);
+    let id = if payee == Payee::CoinJoinAccount {
+        restored
+    } else {
+        id
+    };
+    let all = wallets(id, restored);
+    blocks(&session, &all, id);
+    block_for(&engine, &session, &all, &[id], height, vec![d]);
+    let left = match payee {
+        Payee::AnotherWallet => 0,
+        Payee::CoinJoinAccount => left,
+    };
     let gone = |session: &Arc<NetworkSession>| {
         assert!(
-            !held(&engine, session, other).contains(&paid),
+            !held(&engine, session, restored).contains(&paid),
             "the restore takes C2:0 away"
         );
-        assert!(!records(session, other, c2.txid()), "and C2");
-        assert_eq!(total(&engine, session, other), 0);
+        assert!(!records(session, restored, c2.txid()), "and C2");
+        assert_eq!(total(&engine, session, restored), left);
     };
     gone(&session);
     let session = reopen(&engine, session);
     gone(&session);
+}
+
+#[test]
+fn known_gap_money_a_locked_payment_built_on_an_overturned_one_sent_another_wallet_stays_until_it_is_restored()
+ {
+    built_on_an_overturned_payment(Payee::AnotherWallet);
+}
+
+#[test]
+fn known_gap_money_a_locked_payment_built_on_an_overturned_one_sent_the_wallets_coinjoin_account_counts_until_a_restart()
+ {
+    built_on_an_overturned_payment(Payee::CoinJoinAccount);
 }
 
 /// D, which beats C, is mined but its ChainLock has not landed when the
