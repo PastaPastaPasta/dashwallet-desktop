@@ -148,7 +148,7 @@ fn relaunched_locked(
     (engine, session, ids)
 }
 
-/// Waits until `n` automatic backups are listed.
+/// Waits until `n` automatic backups are listed and none is being written.
 fn wait_for_listed(engine: &Engine, session: &Arc<NetworkSession>, n: usize) {
     wait_until(&format!("{n} automatic backups"), || {
         engine
@@ -156,6 +156,7 @@ fn wait_for_listed(engine: &Engine, session: &Arc<NetworkSession>, n: usize) {
             .unwrap()
             .len()
             >= n
+            && session.backups.in_flight().is_empty()
     });
 }
 
@@ -609,7 +610,9 @@ fn an_automatic_backup_of_a_minute_already_written_is_skipped() {
     let id = import(&engine, &session, PHRASE);
     wait_for_listed(&engine, &session, 1);
     let backups = session.backup_directory();
+    let mut complete = Vec::new();
     for b in engine.block_on(session.automatic_backups(None)).unwrap() {
+        complete = std::fs::read(&b.path).unwrap();
         std::fs::remove_file(b.path).unwrap();
     }
     let pause = Arc::new(TestPause::default());
@@ -625,7 +628,7 @@ fn an_automatic_backup_of_a_minute_already_written_is_skipped() {
         .map(|t| backups.join(automatic_name(&id, t)))
         .collect();
     for path in &taken {
-        std::fs::write(path, b"taken").unwrap();
+        std::fs::write(path, &complete).unwrap();
     }
 
     pause.release.notify_one();
@@ -636,7 +639,7 @@ fn an_automatic_backup_of_a_minute_already_written_is_skipped() {
     notices.wait_for_written(1);
     assert_eq!(notices.written(), 1);
     for path in &taken {
-        assert_eq!(std::fs::read(path).unwrap(), b"taken");
+        assert_eq!(std::fs::read(path).unwrap(), complete);
     }
 }
 
@@ -1131,4 +1134,436 @@ fn an_unlock_while_a_locked_run_ends_backs_every_wallet_up() {
     notices.wait_for_written(2);
     assert_eq!(session.backups.runs.load(Ordering::SeqCst), 2);
     assert_eq!(notices.backup_failed(), 0);
+}
+
+// Issue 357: a backup appears under its name only once complete, and a file
+// that is not a complete backup is never listed, counted or taken for one.
+
+/// The bytes of a complete automatic backup of a new wallet, its id and the
+/// session, its automatic backups deleted.
+fn automatic_bytes(dir: &Path, phrase: &[u8]) -> (Engine, Arc<NetworkSession>, WalletId, Vec<u8>) {
+    let (engine, session) = open(dir.join("a"), Arc::new(Notices::default()));
+    let id = import(&engine, &session, phrase);
+    wait_for_listed(&engine, &session, 1);
+    let listed = list_automatic(&session.backup_directory(), None).unwrap();
+    let bytes = std::fs::read(&listed[0].path).unwrap();
+    for b in listed {
+        std::fs::remove_file(b.path).unwrap();
+    }
+    (engine, session, id, bytes)
+}
+
+/// The length of the magic and header lines of `bytes`.
+fn header_end(bytes: &[u8]) -> usize {
+    let first = bytes.iter().position(|b| *b == b'\n').unwrap();
+    first + 1 + bytes[first + 1..].iter().position(|b| *b == b'\n').unwrap() + 1
+}
+
+fn at_minute(id: WalletId, minute: u32) -> String {
+    format!("{id}.2020-01-01-00-{minute:02}.{EXTENSION}")
+}
+
+fn private_dir(path: &Path) -> PathBuf {
+    std::fs::create_dir(path).unwrap();
+    set_mode(path, 0o700);
+    path.to_path_buf()
+}
+
+/// Cut at 0, in the magic line, in the header, just after the header line,
+/// mid-body and just before the body's last `}`, a backup is not listed;
+/// without just its final newline it is.
+#[test]
+fn only_a_complete_file_is_listed_as_an_automatic_backup() {
+    let dir = dw_testutil::private_tempdir();
+    let (_engine, _session, id, bytes) = automatic_bytes(dir.path(), PHRASE);
+    let end = header_end(&bytes);
+    let cuts = [
+        ("empty", 0),
+        ("in the magic line", 4),
+        ("in the header", 20),
+        ("after the header", end),
+        ("mid-body", (end + bytes.len()) / 2),
+        ("before the last brace", bytes.len() - 2),
+    ];
+    for (i, (what, cut)) in cuts.into_iter().enumerate() {
+        let folder = private_dir(&dir.path().join(format!("cut{i}")));
+        std::fs::write(folder.join(at_minute(id, 0)), &bytes[..cut]).unwrap();
+        assert!(list_automatic(&folder, None).unwrap().is_empty(), "{what}");
+    }
+    let folder = private_dir(&dir.path().join("no-newline"));
+    std::fs::write(folder.join(at_minute(id, 0)), &bytes[..bytes.len() - 1]).unwrap();
+    assert_eq!(list_automatic(&folder, None).unwrap().len(), 1);
+}
+
+/// A file whose body is whole JSON but holds a bundle fewer than its
+/// header's wallets, or bundles of other wallets than its header names, is
+/// not a backup; the v0.3.0 release's backups and a version 2 file are.
+#[test]
+fn a_backup_must_hold_a_bundle_of_each_wallet_its_header_names() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session) = open(dir.path().join("a"), Arc::new(Notices::default()));
+    let a = import(&engine, &session, PHRASE);
+    let b = import(&engine, &session, OTHER_PHRASE);
+    let folder = private_dir(&dir.path().join("files"));
+    let two = folder.join(at_minute(a, 0));
+    write_two_wallet_backup(&session, a, b, &two);
+    let bytes = std::fs::read(&two).unwrap();
+    assert!(bytes.starts_with(b"DWBACKUP 2\n"));
+    assert_eq!(list_automatic(&folder, None).unwrap().len(), 1);
+    prune(&folder, None, 0).unwrap();
+    assert!(!two.exists(), "a version 2 backup is rotated");
+    std::fs::write(&two, &bytes).unwrap();
+
+    let end = header_end(&bytes);
+    let mut body: serde_json::Value = serde_json::from_slice(&bytes[end..]).unwrap();
+    body["bundles"].as_array_mut().unwrap().pop();
+    let mut one_short = bytes[..end].to_vec();
+    one_short.extend(serde_json::to_vec(&body).unwrap());
+    one_short.push(b'\n');
+    std::fs::write(&two, one_short).unwrap();
+    assert!(
+        list_automatic(&folder, None).unwrap().is_empty(),
+        "a bundle short"
+    );
+
+    let header = std::str::from_utf8(&bytes[..end]).unwrap();
+    let (sa, sb) = (a.to_string(), b.to_string());
+    let swapped = header
+        .replacen(&sa, "WALLET_A", 1)
+        .replacen(&sb, &sa, 1)
+        .replacen("WALLET_A", &sb, 1);
+    let mut mismatched = swapped.into_bytes();
+    mismatched.extend_from_slice(&bytes[end..]);
+    std::fs::write(&two, mismatched).unwrap();
+    assert!(
+        list_automatic(&folder, None).unwrap().is_empty(),
+        "other wallets"
+    );
+
+    let release = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../testdata/upgrade/v0.3.0/data/regtest/backups");
+    assert_eq!(list_automatic(&release, None).unwrap().len(), 2);
+}
+
+/// "Backups to keep" 2 with three cut-off backups newer than the one
+/// complete backup keeps the complete one, and deletes none of the others.
+#[test]
+fn pruning_keeps_the_newest_complete_backup_whatever_incomplete_files_there_are() {
+    let dir = dw_testutil::private_tempdir();
+    let (_engine, session, id, bytes) = automatic_bytes(dir.path(), PHRASE);
+    let backups = session.backup_directory();
+    let cut = &bytes[..(header_end(&bytes) + bytes.len()) / 2];
+    std::fs::write(backups.join(at_minute(id, 0)), &bytes).unwrap();
+    for minute in 1..=3 {
+        std::fs::write(backups.join(at_minute(id, minute)), cut).unwrap();
+    }
+
+    prune(&backups, None, 2).unwrap();
+
+    let listed = list_automatic(&backups, None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, backups.join(at_minute(id, 0)));
+    for minute in 1..=3 {
+        assert_eq!(
+            std::fs::read(backups.join(at_minute(id, minute))).unwrap(),
+            cut
+        );
+    }
+}
+
+/// Waits until the current minute has at least 15 seconds left.
+fn not_at_a_minute_end() {
+    wait_until("a minute with time left", || unix_now() % 60 < 45);
+}
+
+/// A cut-off file at this minute's name is set aside as `.incomplete`
+/// (kept) and that minute's backup is written; where it cannot be set
+/// aside, the backup's failure is recorded and announced.
+#[test]
+fn an_incomplete_file_at_this_minutes_name_neither_stops_its_backup_nor_hides_its_failure() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session) = open(dir.path().join("a"), notices.clone());
+    let id = import(&engine, &session, PHRASE);
+    wait_for_listed(&engine, &session, 1);
+    let backups = session.backup_directory();
+    let listed = list_automatic(&backups, None).unwrap();
+    let bytes = std::fs::read(&listed[0].path).unwrap();
+    std::fs::remove_file(&listed[0].path).unwrap();
+    let cut = &bytes[..(header_end(&bytes) + bytes.len()) / 2];
+    let run = || {
+        let s = Arc::clone(&session);
+        engine
+            .block_on(
+                session
+                    .rt
+                    .spawn(async move { s.automatic_backup(id).await }),
+            )
+            .unwrap();
+    };
+
+    not_at_a_minute_end();
+    let name = backups.join(automatic_name(&id, unix_now()));
+    std::fs::write(&name, cut).unwrap();
+    run();
+
+    let listed = list_automatic(&backups, None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, name);
+    let mut aside = name.clone().into_os_string();
+    aside.push(".incomplete");
+    assert_eq!(std::fs::read(&aside).unwrap(), cut);
+    assert!(failures(&engine, &session).is_empty());
+
+    not_at_a_minute_end();
+    std::fs::remove_file(&listed[0].path).unwrap();
+    let name = backups.join(automatic_name(&id, unix_now()));
+    std::fs::write(&name, cut).unwrap();
+    set_mode(&backups, 0o500);
+    run();
+    set_mode(&backups, 0o700);
+
+    assert_eq!(failures(&engine, &session).len(), 1);
+    notices.wait_for_backup_failed(1);
+    assert_eq!(std::fs::read(&name).unwrap(), cut);
+    assert_eq!(std::fs::read(&aside).unwrap(), cut);
+}
+
+/// Runs this test binary's `name` in a child with `CHILD_DIR` set to `dir`
+/// and `DW_FAULT` naming the point between a backup's sync and its publish;
+/// `Err` with its standard error unless it was stopped there.
+fn stopped_in_child(name: &str, dir: &Path) -> Result<(), String> {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(CHILD_DIR, dir)
+        .env("DW_FAULT", "backup.before_publish")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    match out.status.success() {
+        false if stderr.contains("DW_FAULT=backup.before_publish: aborting") => Ok(()),
+        _ => Err(stderr),
+    }
+}
+
+const CHILD_DIR: &str = "DW_BACKUP_CHILD_DIR";
+
+fn file_names(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+/// A user backup stopped between its sync and its publish leaves nothing
+/// at the path the user chose, only a hidden temporary file beside it.
+#[test]
+fn a_user_backup_stopped_before_its_publish_leaves_nothing_at_its_path() {
+    if let Some(root) = std::env::var_os(CHILD_DIR) {
+        let root = PathBuf::from(root);
+        let (engine, session) = open(root.join("data"), Arc::new(Notices::default()));
+        engine.block_on(session.set_backup_policy(0)).unwrap();
+        let id = import(&engine, &session, PHRASE);
+        backup(&engine, &session, id, &root.join("chosen/w.dwbackup"));
+        return;
+    }
+    let dir = dw_testutil::private_tempdir();
+    let chosen = private_dir(&dir.path().join("chosen"));
+
+    let stopped = stopped_in_child(
+        "backup::backup_tests::a_user_backup_stopped_before_its_publish_leaves_nothing_at_its_path",
+        dir.path(),
+    );
+
+    let names = file_names(&chosen);
+    assert!(!names.contains(&"w.dwbackup".to_owned()), "{names:?}");
+    stopped.unwrap();
+    assert_eq!(names.len(), 1);
+    assert!(names[0].starts_with(".w.dwbackup.tmp-"), "{names:?}");
+}
+
+/// An automatic backup stopped between its sync and its publish leaves no
+/// backup and its failure recorded: the next start shows it while the
+/// vault is locked, and the backup its unlock writes clears it.
+#[test]
+fn an_automatic_backup_stopped_before_its_publish_shows_its_failure_until_the_next_one() {
+    if let Some(root) = std::env::var_os(CHILD_DIR) {
+        let root = PathBuf::from(root);
+        let (engine, session) = launch(
+            root,
+            Arc::new(Notices::default()),
+            &Arc::new(MemoryOsStore::new()),
+        );
+        engine
+            .block_on(session.vault_op(|v| v.create(Some(VAULT_PASSPHRASE))))
+            .unwrap();
+        import(&engine, &session, PHRASE);
+        wait_for_listed(&engine, &session, 1);
+        return;
+    }
+    let dir = dw_testutil::private_tempdir();
+
+    let stopped = stopped_in_child(
+        "backup::backup_tests::an_automatic_backup_stopped_before_its_publish_shows_its_failure_until_the_next_one",
+        dir.path(),
+    );
+
+    let backups = dir.path().join("regtest").join(BACKUP_DIR);
+    let names = file_names(&backups);
+    assert!(
+        !names.iter().any(|n| n.ends_with(&format!(".{EXTENSION}"))),
+        "{names:?}"
+    );
+    stopped.unwrap();
+    let notices = Arc::new(Notices::default());
+    let (engine, session) = launch(
+        dir.path().to_path_buf(),
+        notices.clone(),
+        &Arc::new(MemoryOsStore::new()),
+    );
+    assert_eq!(session.vault().lock_state(), LockState::Locked);
+    let failed = failures(&engine, &session);
+    assert_eq!(failed.len(), 1);
+
+    unlock(&engine, &session);
+    notices.wait_for_written(1);
+
+    assert!(failures(&engine, &session).is_empty());
+    assert_eq!(
+        engine
+            .block_on(session.automatic_backups(Some(failed[0].0)))
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// While an automatic backup is being written its failure is already
+/// recorded (a stop would leave it) but not listed.
+#[test]
+fn a_backup_being_written_shows_no_failure() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session, id, _) = automatic_bytes(dir.path(), PHRASE);
+    let pause = Arc::new(TestPause::default());
+    *session.backups.pause.lock().unwrap() = Some(pause.clone());
+    let s = Arc::clone(&session);
+    let backup = session
+        .rt
+        .spawn(async move { s.automatic_backup(id).await });
+    assert!(pause.wait_reached(Duration::from_secs(60)));
+    let recorded = || {
+        session
+            .live()
+            .unwrap()
+            .appdb
+            .setting(&dw_appdb::local_scope(&id.to_string()), AUTO_FAILED_SETTING)
+            .unwrap()
+    };
+
+    assert!(recorded().is_some());
+    assert!(failures(&engine, &session).is_empty());
+
+    pause.release.notify_one();
+    engine.block_on(backup).unwrap();
+    assert_eq!(recorded(), None);
+    assert!(failures(&engine, &session).is_empty());
+    assert_eq!(
+        list_automatic(&session.backup_directory(), None)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// Sets `path`'s modification time to `ago` before now.
+fn written_ago(path: &Path, ago: Duration) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - ago)
+        .unwrap();
+}
+
+/// In the automatic backups folder, a temporary file over an hour old goes
+/// once a complete backup of its wallet is newer than it; every other
+/// temporary file is kept.
+#[test]
+fn a_stale_temporary_file_goes_only_once_a_newer_backup_of_its_wallet_is_there() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session, a, bytes) = automatic_bytes(dir.path(), PHRASE);
+    let b = import(&engine, &session, OTHER_PHRASE);
+    let backups = session.backup_directory();
+    for f in list_automatic(&backups, None).unwrap() {
+        std::fs::remove_file(f.path).unwrap();
+    }
+    let hour = Duration::from_secs(60 * 60);
+    let end = header_end(&bytes);
+    let mut header: serde_json::Value = serde_json::from_slice(
+        &bytes[bytes.iter().position(|b| *b == b'\n').unwrap() + 1..end - 1],
+    )
+    .unwrap();
+    header["created_at"] = (unix_now() - 3 * hour.as_secs()).into();
+    let mut three_hours_old = bytes[..bytes.iter().position(|b| *b == b'\n').unwrap() + 1].to_vec();
+    three_hours_old.extend(serde_json::to_vec(&header).unwrap());
+    three_hours_old.push(b'\n');
+    three_hours_old.extend_from_slice(&bytes[end..]);
+    std::fs::write(backups.join(at_minute(a, 0)), three_hours_old).unwrap();
+    assert_eq!(list_automatic(&backups, None).unwrap().len(), 1);
+    let temp = |id: WalletId, minute: u32, ago: Duration| {
+        let path = backups.join(format!(".{}.tmp-1-{minute:016x}", at_minute(id, minute)));
+        std::fs::write(&path, &bytes).unwrap();
+        written_ago(&path, ago);
+        path
+    };
+    let older = temp(a, 1, 4 * hour);
+    let newer = temp(a, 2, 2 * hour);
+    let recent = temp(a, 3, hour / 2);
+    let no_backup = temp(b, 4, 4 * hour);
+
+    prune(&backups, None, 10).unwrap();
+
+    assert!(!older.exists());
+    assert!(newer.exists() && recent.exists() && no_backup.exists());
+}
+
+/// Restoring a cut-off backup fails `backup.corrupt` before anything is
+/// imported.
+#[test]
+fn restoring_a_cut_off_backup_fails_corrupt_and_imports_nothing() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session) = open(dir.path().join("a"), Arc::new(Notices::default()));
+    let id = import(&engine, &session, PHRASE);
+    let file = dir.path().join("w.dwbackup");
+    backup(&engine, &session, id, &file);
+    let bytes = std::fs::read(&file).unwrap();
+    std::fs::write(&file, &bytes[..(header_end(&bytes) + bytes.len()) / 2]).unwrap();
+
+    let (engine_b, session_b) = open(dir.path().join("b"), Arc::new(Notices::default()));
+    let restored =
+        engine_b.block_on(session_b.restore_backup(file, Some(Zeroizing::new(b"bk".to_vec()))));
+
+    assert!(
+        matches!(
+            restored,
+            Err(EngineError::Backup(BackupFailure::Corrupt(_)))
+        ),
+        "{restored:?}"
+    );
+    assert!(
+        session_b
+            .manager()
+            .unwrap()
+            .list_wallet_ids_blocking()
+            .is_empty()
+    );
+    assert!(
+        engine_b
+            .block_on(session_b.automatic_backups(None))
+            .unwrap()
+            .is_empty()
+    );
 }

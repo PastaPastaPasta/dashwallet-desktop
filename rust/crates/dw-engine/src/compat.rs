@@ -1168,6 +1168,89 @@ pub(crate) fn write_new_private_io(dest: &Path, bytes: &[u8]) -> std::io::Result
     Ok(())
 }
 
+/// Writes `bytes` to a hidden temporary file beside `dest` (mode 0600),
+/// syncs it and only then gives it the name `dest`, failing `AlreadyExists`
+/// if that exists: a stop mid-write leaves nothing at `dest`.
+pub(crate) fn publish_new_private(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    publish_new_private_with(dest, bytes, |from, to| std::fs::hard_link(from, to))
+}
+
+fn publish_new_private_with(
+    dest: &Path,
+    bytes: &[u8],
+    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+    let name = dest
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no file name"))?;
+    let dir = dest
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let nonce = NONCE.fetch_add(1, Ordering::Relaxed) ^ rand::random::<u64>();
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!("{TEMP_MARK}{}-{nonce:016x}", std::process::id()));
+    let tmp = dir.join(tmp_name);
+    write_new_private_io(&tmp, bytes)?;
+    let published = publish_fault(dir).and_then(|()| move_new_with(&tmp, dest, &link));
+    if published.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    published?;
+    #[cfg(unix)]
+    let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    Ok(())
+}
+
+/// What a temporary file of [`publish_new_private`] has in its name, after
+/// the name it is published under.
+pub(crate) const TEMP_MARK: &str = ".tmp-";
+
+/// Gives `from` the name `to`, failing `AlreadyExists` if that exists: a
+/// hard link, then `from` removed. Where the file system has no hard links
+/// (FAT, exFAT), a rename once `to` is found missing.
+pub(crate) fn move_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    move_new_with(from, to, &|from: &Path, to: &Path| {
+        std::fs::hard_link(from, to)
+    })
+}
+
+fn move_new_with(
+    from: &Path,
+    to: &Path,
+    link: &impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match link(from, to) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(from);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) if to.symlink_metadata().is_ok() => {
+            Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+        }
+        Err(_) => std::fs::rename(from, to),
+    }
+}
+
+/// The fault point `backup.publish` between a backup's sync and its
+/// publish, armed for its directory; `DW_FAULT=backup.before_publish`
+/// aborts there.
+#[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+fn publish_fault(dir: &Path) -> std::io::Result<()> {
+    dw_appdb::fault::hit(dir, "backup.publish", dw_appdb::fault::Stage::Before)
+        .map_err(std::io::Error::other)
+}
+
+#[cfg(not(all(debug_assertions, any(test, feature = "fault-inject"))))]
+#[inline(always)]
+fn publish_fault(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Dash Core's dumpwallet of the wallet's BIP44 account 0 keys: the HD
 /// header (phrase, passphrase, seed, master keys, chain counters) and one
 /// line per derived key, labelled as Core labels them (address-book entry →
@@ -1712,5 +1795,63 @@ mod tests {
             let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn a_publish_replaces_no_file_and_leaves_no_temporary_file() {
+        let dir = dw_testutil::private_tempdir();
+        let f = dir.path().join("out.dwbackup");
+        publish_new_private(&f, b"x").unwrap();
+        assert_eq!(
+            publish_new_private(&f, b"y").unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(dir.path()), ["out.dwbackup"]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn without_hard_links_a_publish_renames_and_still_replaces_no_file() {
+        let dir = dw_testutil::private_tempdir();
+        let f = dir.path().join("out.dwbackup");
+        let unsupported =
+            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        publish_new_private_with(&f, b"x", unsupported).unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(dir.path()), ["out.dwbackup"]);
+        assert_eq!(
+            publish_new_private_with(&f, b"y", unsupported)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(dir.path()), ["out.dwbackup"]);
+    }
+
+    #[test]
+    fn a_publish_stopped_before_it_names_the_file_leaves_nothing_at_the_name() {
+        let dir = dw_testutil::private_tempdir();
+        let f = dir.path().join("out.dwbackup");
+        dw_appdb::fault::arm(dir.path(), "backup.publish", dw_appdb::fault::Stage::Before);
+        assert!(publish_new_private(&f, b"x").is_err());
+        assert!(names(dir.path()).is_empty());
+        publish_new_private(&f, b"x").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
     }
 }

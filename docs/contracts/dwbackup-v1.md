@@ -191,21 +191,41 @@ the asset lock is the inviter's.
   DashPay registration that reaches `FundingSent` also triggers one (§3.1), so the newest backup
   carries its asset-lock outpoint. A user backup that succeeds triggers one for a wallet whose
   latest automatic backup failed, before it returns.
-- A file of the same name (an automatic backup of the same minute) is left as it is and the
-  backup is skipped, whether it was there before or appears while the backup is built. A written
-  backup sends `EngineEvent::Backups`.
+- Every backup, automatic or user, is written to a hidden temporary file beside its name
+  (`.<name>.tmp-<pid>-<nonce>`, mode 0600), synced, and only then given its name by a hard link
+  that fails if the name exists, after which the temporary file is removed and, on Unix, the
+  folder synced. Where the file system has no hard links (FAT, exFAT) the temporary file is renamed
+  once the name is found free. A stop mid-write leaves nothing at the name.
+- A file counts as a backup only if it is complete, which is checked without its passphrase: the
+  magic line, a header line of the same version, then a body that is one whole JSON object
+  (`{"bundles": [...]}`; no cut of the file leaves one, and only the final newline may be missing)
+  holding exactly one bundle per header wallet id, in its order, each of that wallet and the
+  header's network, the file at most 1 GiB. Backups written by 0.3.0 meet it. Listing, rotation
+  and the same-minute check count only complete backups.
+- A complete backup of the same name (an automatic backup of the same minute) is left as it is and
+  the backup is skipped, whether it was there before or appears while the backup is built. A file
+  of that name that is not a complete backup is renamed `<name>.incomplete` (or
+  `<name>.incomplete-<n>`) and the backup is written; if it cannot be renamed, the backup fails.
+  A written backup sends `EngineEvent::Backups`.
+- Files that are not complete backups, and `.incomplete` files, are never deleted. A temporary
+  file in the automatic backups folder is deleted at rotation once it is over an hour old and a
+  complete backup of its wallet is newer than it; every other is kept. Temporary files of user
+  backups, in the folder the user chose, are never deleted.
 - Each automatic backup runs under the wallet lifecycle lock, after checking that the wallet is
   still registered with its keys: none is written for a wallet removed, or a restore rolled back,
   before it. `set_backup_policy` waits for one being written, so `keep` 0 leaves none behind.
 - Encrypted vault: slot `vault_passphrase`; unencrypted: `vault_key`. A user backup and an
   automatic backup of the same wallet can run at the same time: neither writes anything but its
-  own destination file (created with `O_EXCL`, mode 0600).
+  own temporary file and the name it links it to.
 - The newest `keep` per wallet are kept (`backup_policy`, 0..=10, default 10, dw-appdb setting
   `backup.keep`); lowering `keep` deletes the oldest at once.
 - A failure sends `Notice{BackupFailed}` with the wallet id and cause, and records its time in the
   wallet's `local:` settings scope (`backup.auto_failed_at`, never exported); a later automatic
   backup of the wallet that succeeds deletes it, and so do `keep` 0 (in the transaction that writes
-  it) and removing the wallet. A vault locked meanwhile neither records nor deletes it.
+  it) and removing the wallet. The time is recorded before the backup is written, so a stop
+  mid-write (a crash, a kill, a power cut) leaves it for the next start to show; while the backup
+  is being written it is not listed. A vault locked meanwhile, or a complete backup of the same
+  minute found while it is built, puts back the record that was there before.
   `automatic_backup_failures` lists them, skipping a record that is not UTF-8 text.
 - Watch-only wallets have no vault records and are not backed up (`backup_wallet` returns
   `NotImplemented{call: "backup_wallet.watch_only"}`).
