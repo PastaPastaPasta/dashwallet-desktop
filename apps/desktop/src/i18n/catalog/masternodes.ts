@@ -443,6 +443,8 @@ export const masternodes = {
     banned: "This masternode is banned and earns nothing.",
     /** The operator, not this wallet, fixes a banned node: it needs the operator key. */
     bannedText: "The server stopped doing its work. Your operator fixes the server, then sends a service update from the node. The wallet can't do that: it needs the operator key.",
+    /** After the banned text, only when Change keys or payout is offered. */
+    bannedMove: "To move to another operator, use Change keys or payout.",
     bannedTextSeen:
       "This wallet first saw it banned on {date}: the server stopped doing its work. Your operator fixes the server, then sends a service update from the node. The wallet can't do that: it needs the operator key.",
     vote: "Vote on proposals",
@@ -525,6 +527,102 @@ export const masternodes = {
       hash: "ProTx hash",
     },
     activity: { payouts: "Payouts of {name}", flagged: "Payments to {name}'s payout address" },
+    /** Change keys or payout (ProUpRegTx): signed with the owner key, never the operator key. */
+    changeKeys: {
+      action: "Change keys or payout…",
+      title: "Change keys or payout",
+      intro:
+        "Sends a registrar update signed with this masternode's owner key. The masternode uses the new keys and payout address once the update is in a block.",
+      operator: {
+        legend: "Operator key",
+        keep: "Keep the current operator key",
+        /** `key`: the start of the BLS public key. */
+        keepValue: "{key}…",
+        keychain: "Use this wallet's next operator key",
+        keychainNote: "For running the node yourself. Its secret is in Masternode keys.",
+        given: "Use the operator's public key",
+        givenHelp: "The 96-character BLS public key your operator gives you.",
+        givenInvalid: "Enter the 96-character hex public key your operator gave you.",
+      },
+      voting: {
+        legend: "Voting key",
+        keep: "Keep the current voting key",
+        keychain: "Use this wallet's next voting key",
+        address: "Use another wallet's voting address",
+        addressHelp: "The wallet holding this address votes for the masternode.",
+        addressInvalid: "Enter a Dash address.",
+      },
+      payout: {
+        legend: "Payouts go to",
+        /** `address`: the payout address in this wallet's records. */
+        recorded: "{address} (the address this wallet registered)",
+        recordedNote: "If the payout was changed elsewhere, this sets it back.",
+        newAddress: "A new address in this wallet",
+        address: "Another address",
+        addressHelp: "Payouts go here once the change is in a block.",
+        addressInvalid: "Enter a Dash address.",
+        none: "This wallet has no record of this masternode's payout address. Choose where payouts go.",
+      },
+      review: {
+        title: "After the change",
+        operator: "Operator key",
+        voting: "Voting key",
+        payout: "Payout address",
+        changes: "Changes",
+        stays: "Stays the same",
+        /** The wallet holds no payout record to compare with. */
+        set: "Set",
+        newAddress: "a new address in this wallet",
+        fee: "Network fee",
+        signerKeychain: "Signed with its owner key from this wallet.",
+        signerAttached: "Signed with the owner key you added.",
+        checking: "Checking…",
+      },
+      /** MG-00 D29: dash-qt's warning, verbatim, then the plain explanation. */
+      poseWarning: "Changing the operator key immediately PoSe-bans the masternode.",
+      poseExplain: "It earns nothing until the new operator sends a service update from the node.",
+      nothing: "Nothing would change. Choose a new key or a different payout address.",
+      ask: "Enter your passphrase to sign this change.",
+      send: "Send change",
+      sending: "Sending…",
+      sent: "Change sent. It applies once it's in a block.",
+      sentEvonode: "Credit withdrawals wait until Platform sees the new payout address.",
+      done: "Done",
+      payeeReuse: "The payout address can't be the address of the owner or voting key.",
+      keyInUse: "Another of this wallet's masternode changes already uses that operator key.",
+      keyListed: "Another masternode already uses that operator key. Ask your operator for a new one.",
+      /** The grant asked for less than the fee coin selection settled on. */
+      feeChanged: "The network fee changed. Check the new fee, then send again.",
+      /** Sent, but the hand-off couldn't be confirmed. */
+      sentUnsure: "The wallet couldn't confirm it reached the network. It keeps checking; nothing more to do now.",
+      notSent: {
+        title: "This change didn't go out",
+        text: "It's signed and saved, but the wallet couldn't hand it to the network. Send it again, or discard it to make a different change.",
+        noPeers: "The wallet had no connected peers.",
+        resend: "Send again",
+        resending: "Sending…",
+        discard: "Discard",
+        discarded: "Discarded. Nothing was sent.",
+        ask: "Enter your passphrase to send this change again.",
+      },
+    },
+    /** More ▸ Service update or revoke…: operator-signed, so an explanation only (MG-00 D24). */
+    operatorSheet: {
+      menu: "Service update or revoke…",
+      title: "Service update or revoke",
+      hosted:
+        "Your operator signs these with the operator key, which stays on the server. Dash Wallet doesn't hold that key, so it can't send them.",
+      selfRun:
+        "This wallet derives your operator key, but Dash Wallet doesn't use it to sign service updates or revocations. Send those from your node; the secret is in Masternode keys.",
+      covers:
+        "A service update sets a new IP address or port (and an evonode's Platform ports), and brings a banned node back once its server is fixed. A revocation ends the operator's role.",
+      instead: "From this wallet you can:",
+      replace: "Replace the operator: Change keys or payout gives the masternode a new operator key.",
+      end: "End the masternode: spend or move its collateral.",
+      elsewhere:
+        "This wallet holds neither the owner key nor the collateral. Whoever holds the owner key can replace the operator, and whoever holds the collateral can end the masternode.",
+      close: "Close",
+    },
     errors: {
       list_unavailable: "The masternode list isn't loaded yet. Try again once the wallet has synced.",
       not_found: "This masternode isn't in the masternode list.",

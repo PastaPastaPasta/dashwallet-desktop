@@ -262,7 +262,9 @@ fn matches(baseline: Option<&ProfileBaseline>, shown: Option<&Profile>) -> bool 
 /// signals `Platform{Identities}`. Nothing when it already says so.
 async fn remember(wallet: &PlatformWallet, identity: Identifier, properties: &ProfileProperties) {
     let profile = library_profile(properties);
-    let mut state = wallet.state_mut().await;
+    let Ok(mut state) = crate::wallet_read::info_mut_of(wallet).await else {
+        return;
+    };
     let Some(m) = state.identity_manager.managed_identity_mut(&identity) else {
         return;
     };
@@ -303,7 +305,7 @@ pub(super) async fn update(
     let locks = identity_locks(wallet_id, identity);
     let _write = locks.write.lock().await;
     let (index, me) = {
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(wallet).await?;
         let m = (state.identity_manager.managed_identity(&identity))
             .filter(|m| m.wallet_id == Some(wallet.wallet_id()))
             .ok_or_else(not_found)?;
@@ -445,7 +447,9 @@ impl NetworkSession {
         let Some(wallet) = manager.get_wallet(&id.0).await else {
             return;
         };
-        let mut state = wallet.state_mut().await;
+        let Ok(mut state) = crate::wallet_read::info_mut_of(&wallet).await else {
+            return;
+        };
         let owners: Vec<Identifier> = (state.identity_manager.wallet_managed_identities(&id.0))
             .map(|m| m.identity.id())
             .collect();
@@ -468,5 +472,49 @@ impl NetworkSession {
             this.expire_contact_profiles(&manager, id).await;
         };
         self.platform.contacts.spawn(&self.rt, task);
+    }
+}
+
+#[cfg(test)]
+mod gone_tests {
+    use super::super::journal_tests::id;
+    use super::super::registration_flow::b58;
+    use super::super::requests::tests::Fixture;
+    use super::*;
+
+    /// #263: a profile update, for a wallet gone from the manager, fails; no
+    /// panic.
+    #[test]
+    fn a_profile_update_of_a_wallet_gone_from_the_manager_does_not_panic() {
+        let f = Fixture::new(u64::MAX / 2);
+        let w = f.detach();
+        let edit = ProfileEdit {
+            display_name: Some("Me".into()),
+            public_message: None,
+            avatar: AvatarChange::Keep,
+            baseline: None,
+        };
+        let me = (f.wallet, b58(&id(1)));
+        let r = (f.engine).block_on(update(&*f.net, &f.s, &w, (me.0, &me.1), edit, "g".into()));
+        assert!(matches!(r, Err(PlatformError::WalletNotFound)), "{r:?}");
+    }
+
+    /// #263: the cached own profile's record, for a wallet gone from the
+    /// manager, is skipped; no panic.
+    #[test]
+    fn the_profile_of_a_wallet_gone_from_the_manager_is_not_remembered() {
+        let f = Fixture::new(u64::MAX / 2);
+        let w = f.detach();
+        (f.engine).block_on(remember(&w, id(1), &ProfileProperties::new()));
+    }
+
+    /// #263: the contact profiles' expiry, for a wallet gone from the
+    /// manager, is skipped; no panic.
+    #[test]
+    fn contact_profiles_of_a_wallet_gone_from_the_manager_do_not_expire() {
+        let f = Fixture::new(u64::MAX / 2);
+        f.detach();
+        let manager = f.s.manager().unwrap();
+        (f.engine).block_on(f.s.expire_contact_profiles(&manager, f.wallet));
     }
 }

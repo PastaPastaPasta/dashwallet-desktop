@@ -9,8 +9,9 @@ use zeroize::Zeroizing;
 use crate::dto::masternodes::{
     AttachedKeyRoleName, EvonodeCredits, JoinSharedRequest, KeyCheckName, ListedMasternode,
     MasternodeDetail, MasternodeKeyInfo, MasternodeKeyRoleName, MasternodeListState,
-    MasternodeOverview, MasternodePayout, RevealedMasternodeKey, SharedCapability, SharedImport,
-    SharedMessage, SharedOutcome, SharedSession, StartSharedRequest, UntrackOutcome,
+    MasternodeOverview, MasternodePayout, ProTxOperation, RevealedMasternodeKey,
+    SharedCapability, SharedImport, SharedMessage, SharedOutcome, SharedSession,
+    StartSharedRequest, UntrackOutcome, UpdateRegistrarPreview, UpdateRegistrarRequest,
 };
 use crate::error::AppError;
 use crate::ipc::commands;
@@ -28,22 +29,16 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     ("Masternodes::approve_maintenance", "deferred (MG-10 S6)"),
     ("Masternodes::create_standby", "deferred (MG-10 S6)"),
-    ("Masternodes::discard_operation", "deferred (MG-10 S2)"),
     ("Masternodes::dissolve", "deferred (MG-10 S6)"),
     ("Masternodes::export_standby", "deferred (MG-10 S6)"),
     ("Masternodes::lock_collateral", "deferred (MG-10 S2)"),
     ("Masternodes::mark_withdrawal", "deferred (MG-10 S4)"),
-    ("Masternodes::operations", "deferred (MG-10 S1)"),
     (
         "Masternodes::prepare_external_registration",
         "deferred (MG-10 S2)",
     ),
     ("Masternodes::preview_dissolve", "deferred (MG-10 S6)"),
     ("Masternodes::preview_registration", "deferred (MG-10 S2)"),
-    (
-        "Masternodes::preview_update_registrar",
-        "deferred (MG-10 S3)",
-    ),
     ("Masternodes::preview_update_share", "deferred (MG-10 S6)"),
     ("Masternodes::recheck_withdrawal", "deferred (MG-10 S4)"),
     (
@@ -53,7 +48,6 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("Masternodes::register", "deferred (MG-10 S2)"),
     ("Masternodes::registration_keys", "deferred (MG-10 S2)"),
     ("Masternodes::release_collateral", "deferred (MG-10 S2)"),
-    ("Masternodes::resend_operation", "deferred (MG-10 S2)"),
     (
         "Masternodes::resolve_collateral",
         "not bound: always refuses collateral_lookup (MG-03 D11)",
@@ -80,7 +74,6 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "Masternodes::submit_external_registration",
         "deferred (MG-10 S2)",
     ),
-    ("Masternodes::update_registrar", "deferred (MG-10 S3)"),
     ("Masternodes::update_share", "deferred (MG-10 S6)"),
     ("Masternodes::withdraw_credits", "deferred (MG-10 S4)"),
     ("Masternodes::withdrawal_quote", "deferred (MG-10 S4)"),
@@ -216,6 +209,82 @@ commands! {
             .reveal_masternode_key(wallet, role.into(), index, grant)
             .await?;
         RevealedMasternodeKey::try_from(revealed)
+    }
+
+    /// Plans a ProUpRegTx (owner-signed: the voting key, the operator's
+    /// public key and the payout) against the synced list: its fee, the
+    /// owner key that would sign and what changes. Signs and locks nothing.
+    #[facade("Masternodes::preview_update_registrar")]
+    fn mn_preview_update_registrar(
+        state,
+        wallet_id: String,
+        request: UpdateRegistrarRequest,
+    ) -> UpdateRegistrarPreview {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let preview = state
+            .masternodes()
+            .await?
+            .preview_update_registrar(wallet, request.into())
+            .await?;
+        Ok(preview.into())
+    }
+
+    /// Signs the ProUpRegTx with the masternode's owner key and sends it,
+    /// under a `masternodeOp` grant covering the preview's `totalDebit`
+    /// (a `key_change` lease). Never signs with an operator key.
+    #[facade("Masternodes::update_registrar")]
+    fn mn_update_registrar(
+        state,
+        wallet_id: String,
+        request: UpdateRegistrarRequest,
+        grant: String,
+    ) -> ProTxOperation {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let operation = state
+            .masternodes()
+            .await?
+            .update_registrar(wallet, request.into(), grant)
+            .await?;
+        Ok(operation.into())
+    }
+
+    /// The wallet's ProTx operations (registrations and registrar
+    /// updates), each with its state derived on this read.
+    #[facade("Masternodes::operations")]
+    fn mn_operations(state, wallet_id: String) -> Vec<ProTxOperation> {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let ops = state.masternodes().await?.operations(wallet).await?;
+        Ok(ops.into_iter().map(Into::into).collect())
+    }
+
+    /// Hands a signed operation that didn't go out to the network again,
+    /// under a `masternodeOp` grant covering its `debit`.
+    #[facade("Masternodes::resend_operation")]
+    fn mn_resend_operation(
+        state,
+        wallet_id: String,
+        operation: String,
+        grant: String,
+    ) -> ProTxOperation {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let op = state
+            .masternodes()
+            .await?
+            .resend_operation(wallet, operation, grant)
+            .await?;
+        Ok(op.into())
+    }
+
+    /// Deletes an operation that was never handed to the network and
+    /// releases its coins.
+    #[facade("Masternodes::discard_operation")]
+    fn mn_discard_operation(state, wallet_id: String, operation: String) -> () {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        Ok(state
+            .masternodes()
+            .await?
+            .discard_operation(wallet, operation)
+            .await?)
     }
 
     /// What the wallet can do with shared masternodes: v24 as far as it can

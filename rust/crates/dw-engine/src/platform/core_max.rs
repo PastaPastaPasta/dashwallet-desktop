@@ -252,20 +252,25 @@ pub(crate) async fn credit_script(
             }));
         }
     };
-    let state = pw.wallet.state().await;
-    let (keys, managed) = (&state.wallet().accounts, &state.core_wallet.accounts);
-    let (xpub, account) = match shielded {
-        true => (
-            keys.asset_lock_shielded_address_topup.as_ref(),
-            managed.asset_lock_shielded_address_topup.clone(),
-        ),
-        false => (
-            keys.asset_lock_address_topup.as_ref(),
-            managed.asset_lock_address_topup.clone(),
-        ),
+    let (xpub, account) = {
+        let id = pw.wallet.wallet_id();
+        let wm = pw.wallet.wallet_manager().read().await;
+        let (Some(wallet), Some(info)) = (wm.get_wallet(&id), wm.get_wallet_info(&id)) else {
+            return Err(FundError::Refused(PlatformError::WalletNotFound));
+        };
+        let (keys, managed) = (&wallet.accounts, &info.core_wallet.accounts);
+        let (xpub, account) = match shielded {
+            true => (
+                keys.asset_lock_shielded_address_topup.as_ref(),
+                managed.asset_lock_shielded_address_topup.clone(),
+            ),
+            false => (
+                keys.asset_lock_address_topup.as_ref(),
+                managed.asset_lock_address_topup.clone(),
+            ),
+        };
+        (xpub.map(|a| a.account_xpub), account)
     };
-    let xpub = xpub.map(|a| a.account_xpub);
-    drop(state);
     let unavailable = |detail: &str| {
         FundError::Refused(PlatformError::Internal {
             detail: format!("the {funding_type:?} funding key: {detail}"),

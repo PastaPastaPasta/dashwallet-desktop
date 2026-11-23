@@ -2013,7 +2013,7 @@ impl NetworkSession {
     pub(crate) async fn fee_bound_worst(&self, wallet_id: WalletId) -> Result<u64, PlatformError> {
         let wallet = self.wallet(&wallet_id).await?;
         Ok(crate::fees::asset_lock_fee_bound(
-            crate::coins::funding_coin_count(&wallet).await,
+            crate::coins::funding_coin_count(&wallet).await?,
         ))
     }
 

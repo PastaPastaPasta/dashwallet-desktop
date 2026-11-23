@@ -16,7 +16,7 @@ import { refusedWhileLocked } from "../../api/lockGate";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy, useWallets } from "../../api/queries";
+import { keys, useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy, useUtxos, useWallets } from "../../api/queries";
 import { navigate, useUi } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
@@ -39,6 +39,7 @@ import {
   failureText,
   isContact,
   keepsPromise,
+  paysWithUnmixed,
   settleNotSent,
   subtractsFee,
   UNRECORDED,
@@ -155,6 +156,10 @@ export function ConfirmSheet({
   // The fee against what the payee gets (after a subtract-fee share; the change is not in it).
   const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
   const toast = useActionToast(walletId);
+  const normal = coins.coins !== "mixed";
+  const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: normal });
+  const utxos = useUtxos(walletId, coins.coins === "selected");
+  const unmixed = normal && paysWithUnmixed(coins, utxos.data, mixing.data);
 
   // A failed read of the policy counts as "on" (U-03 D3). With the signing window, an unread
   // window also asks: the prompt waits until that read settles. A sheet that sends nothing
@@ -429,6 +434,11 @@ export function ConfirmSheet({
         )}
         {subtractsFee(recipient) && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
         {changeAddress !== null && <p className="placeholder-note">{t("pay.confirm.changeNote")}</p>}
+        {unmixed && (
+          <p className="placeholder-note" data-testid="pay-confirm-unmixed">
+            {t("pay.confirm.unmixed")}
+          </p>
+        )}
         {!policyKnown ? (
           <LoadingState testId="pay-confirm-policy" text={t("pay.confirm.checkingPolicy")} />
         ) : (

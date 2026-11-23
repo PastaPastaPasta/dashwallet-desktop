@@ -353,6 +353,11 @@ export class IpcBackend implements Backend {
   mnDetachKey = cmd.mnDetachKey;
   mnKeys = cmd.mnKeys;
   mnRevealKey = cmd.mnRevealKey;
+  mnPreviewUpdateRegistrar = cmd.mnPreviewUpdateRegistrar;
+  mnUpdateRegistrar = cmd.mnUpdateRegistrar;
+  mnOperations = cmd.mnOperations;
+  mnResendOperation = cmd.mnResendOperation;
+  mnDiscardOperation = cmd.mnDiscardOperation;
   mnSharedCapability = cmd.mnSharedCapability;
   mnSharedSessions = cmd.mnSharedSessions;
   mnSharedSession = cmd.mnSharedSession;

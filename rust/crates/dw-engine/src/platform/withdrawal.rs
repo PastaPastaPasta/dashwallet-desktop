@@ -732,7 +732,7 @@ pub(super) async fn own(
     wallet: &PlatformWallet,
     id: Identifier,
 ) -> Result<(u32, Identity), PlatformError> {
-    let state = wallet.state().await;
+    let state = crate::wallet_read::info_of(wallet).await?;
     let m = (state.identity_manager.managed_identity(&id))
         .filter(|m| m.wallet_id == Some(wallet.wallet_id()))
         .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
@@ -929,9 +929,13 @@ pub(crate) async fn recent(
     identity: &str,
 ) -> Result<Vec<Withdrawal>, CreditsError> {
     let id = parse_identity(identity)?;
-    (wallet.state().await.identity_manager.managed_identity(&id))
-        .filter(|m| m.wallet_id == Some(wallet.wallet_id()))
-        .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
+    (crate::wallet_read::info_of(wallet)
+        .await
+        .map_err(PlatformError::from)?
+        .identity_manager
+        .managed_identity(&id))
+    .filter(|m| m.wallet_id == Some(wallet.wallet_id()))
+    .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
     let mut documents = net.withdrawals(id, RECENT_WITHDRAWALS).await?;
     let version = net.version();
     documents.retain(|d| d.owner_id() == id);
