@@ -614,6 +614,131 @@ test("keyboard only: while the wedge's OK runs after its passphrase, focus stays
   expect(errors).toEqual([]);
 });
 
+/** Registers "alice-77" with the keyboard from `dashpay-no-identity`: the progress screen, its
+ * Home button focused, and the welcome's status region recorded. */
+async function toProgressHome(page: Page) {
+  await goTo(page, "joinDashPay");
+  await tabTo(page, page.getByTestId("join-create"));
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("registration-name-field")).toBeFocused();
+  await page.keyboard.type("alice-77");
+  await expect(page.getByTestId("registration-availability")).toHaveText("Username available");
+  await page.keyboard.press("Enter");
+  await tabTo(page, page.getByTestId("registration-pay"));
+  await page.keyboard.press("Enter");
+  const grant = page.getByTestId("grant-sheet");
+  await expect(grant.locator("input[type=password]")).toBeFocused();
+  await page.keyboard.type("demo");
+  await page.keyboard.press("Enter");
+  await expect(grant).toHaveCount(0);
+  const screen = page.getByTestId("registration-screen");
+  await expect(screen).toHaveAttribute("data-kind", "progress");
+  const home = page.getByTestId("registration-home");
+  await tabTo(page, home);
+  const announced = await liveRegion(page, '[data-testid="registration-announced"]');
+  return { screen, home, announced, title: screen.getByRole("heading", { level: 2 }) };
+}
+
+const finishRegistration = (page: Page) =>
+  page.evaluate(() => {
+    const d = window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft;
+    while (window.__dwFixture!.advanceRegistration(d));
+  });
+
+const WELCOME = "Welcome to DashPay, @alice-77. Your username is ready. Friends can now find you and pay you by name.";
+
+test("a registration that finishes behind a sheet is welcomed once the sheet closes: focus at the title (#317)", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  const { screen, home, announced, title } = await toProgressHome(page);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+  const about = page.getByTestId("about");
+  await expect.poll(() => holdsFocus(about)).toBe(true);
+  await finishRegistration(page);
+  await expect(screen).toHaveAttribute("data-kind", "done");
+  await expect(home).toHaveCount(0);
+  await rendered(page);
+  expect(await heardBy(announced)).toEqual([]);
+  // Its opener, Home, went with the progress screen, so the sheet cannot give focus back.
+  await page.keyboard.press("Escape");
+  await expect(about).toHaveCount(0);
+  await rendered(page);
+  await expect.poll(() => focusName(page)).toBe('h2 "Welcome to DashPay, @alice-77"');
+  await expect(title).toBeFocused();
+  // The focused title says it: the status does not say it again.
+  await rendered(page);
+  expect(await heardBy(announced)).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test("a registration that finishes behind a sheet is said by the status once the sheet closes onto other focus (#317)", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  const { screen, announced, title } = await toProgressHome(page);
+  const other = page.getByTestId("toolbar-discreet");
+  await tabTo(page, other, { back: true });
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+  const about = page.getByTestId("about");
+  await expect.poll(() => holdsFocus(about)).toBe(true);
+  await finishRegistration(page);
+  await expect(screen).toHaveAttribute("data-kind", "done");
+  await rendered(page);
+  expect(await heardBy(announced)).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(about).toHaveCount(0);
+  await expect(other).toBeFocused();
+  await expectSaid(announced, "polite", WELCOME);
+  await rendered(page);
+  expect(await heardBy(announced)).toEqual([`polite: ${WELCOME}`]);
+  await expect(title).not.toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("a sheet reopened in the frame the welcome is said still lets it be heard, once (#317)", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  const { screen, announced } = await toProgressHome(page);
+  await tabTo(page, page.getByTestId("toolbar-discreet"), { back: true });
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+  const about = page.getByTestId("about");
+  await expect.poll(() => holdsFocus(about)).toBe(true);
+  await finishRegistration(page);
+  await expect(screen).toHaveAttribute("data-kind", "done");
+  await rendered(page);
+  // Escape, then About again in the frame that announces the welcome (after its callback).
+  await page.evaluate(async () => {
+    document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise<void>((r) =>
+      requestAnimationFrame(() => {
+        window.__dwFixture!.shellCommand({ kind: "about" });
+        r();
+      }),
+    );
+  });
+  await expect.poll(() => holdsFocus(about)).toBe(true);
+  await rendered(page);
+  await page.keyboard.press("Escape");
+  await expect(about).toHaveCount(0);
+  await rendered(page);
+  await rendered(page);
+  expect(await heardBy(announced)).toEqual([`polite: ${WELCOME}`]);
+  expect(errors).toEqual([]);
+});
+
+test("with no sheet open the welcome is announced once (#317)", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  const { screen, announced, title } = await toProgressHome(page);
+  await title.focus();
+  await expect(title).toBeFocused();
+  await finishRegistration(page);
+  await expect(screen).toHaveAttribute("data-kind", "done");
+  await expectSaid(announced, "polite", WELCOME);
+  await rendered(page);
+  await rendered(page);
+  expect(await heardBy(announced)).toEqual([`polite: ${WELCOME}`]);
+  await expect(title).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
 /** The bell popover now, read in one go: "closed" (absent or not rendered), "focus kept" (it
  * holds focus), else where focus went while it stays open. */
 const bellState = (page: Page) =>
