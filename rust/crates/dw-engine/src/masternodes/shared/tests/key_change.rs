@@ -1200,3 +1200,24 @@ fn test_QT_127_a_quiet_key_change_hints_abandon() {
     let approver = serde_json::to_string(&f.session_of(1, &id).warnings).unwrap();
     assert!(!approver.contains("abandon_hint"), "{approver}");
 }
+
+/// A funder's unsent key change reads `discardable`, and Discard releases
+/// every fee coin it locked: a new key change selects them again.
+#[test]
+fn test_a_discarded_key_change_frees_its_fee_coins() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let a = start(&f, 0, rotate(txid), 0).unwrap();
+    let id = a.session.id.clone();
+    let reserved = reserved_of(&f.row(0, &id));
+    assert!(!reserved.is_empty());
+    assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
+    assert!(a.session.discardable, "started");
+    assert!(f.session_of(0, &id).discardable, "unsent");
+    f.run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
+        .unwrap();
+    assert!(f.locked(0).is_empty());
+    assert!(f.net.sent().is_empty());
+    let b = start(&f, 0, rotate(txid), 0).unwrap();
+    assert_eq!(reserved_of(&f.row(0, &b.session.id)), reserved);
+}
