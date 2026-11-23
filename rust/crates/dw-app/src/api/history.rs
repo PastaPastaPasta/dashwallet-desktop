@@ -186,10 +186,10 @@ commands! {
 
     /// "Remove unconfirmed": abandons every unconfirmed transaction of the
     /// wallet (every wallet when `walletId` is `null`) that Abandon would,
-    /// InstantSend-locked ones only under its ChainLock exception, and
-    /// rescans from the lowest funding height; that rescan holds back the
-    /// next exception, which a later run takes. One the exception refuses
-    /// (`instantLocked` or `rescanFirst`, as Abandon says) is skipped.
+    /// InstantSend-locked ones only under its ChainLock exception, then
+    /// rescans once, from the lowest funding height of them all. One the
+    /// exception refuses (`instantLocked` or `rescanFirst`, as Abandon says)
+    /// is skipped.
     /// Needs a running SPV client. Returns how many were dropped.
     #[facade("NetworkSession::drop_unconfirmed")]
     fn drop_unconfirmed(state, wallet_id: Option<String>) -> u32 {

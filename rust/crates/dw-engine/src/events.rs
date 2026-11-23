@@ -579,6 +579,10 @@ pub(crate) struct SessionHub {
     /// Tests: the next abandon quits before its sweep, as at an exit.
     #[cfg(test)]
     pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: fails the abandoned marks of the next abandon of this root,
+    /// after its sweep.
+    #[cfg(test)]
+    pub(crate) fail_marks_of: Mutex<Option<dashcore::Txid>>,
     /// Tests: the coins the last abandon's sweep released.
     #[cfg(test)]
     pub(crate) last_release: Mutex<Option<Vec<dashcore::OutPoint>>>,
@@ -734,6 +738,8 @@ impl SessionHub {
             quit_before_sweep: Default::default(),
             #[cfg(test)]
             last_release: Mutex::new(None),
+            #[cfg(test)]
+            fail_marks_of: Mutex::new(None),
             #[cfg(test)]
             pause_metadata: Mutex::new(None),
             #[cfg(test)]

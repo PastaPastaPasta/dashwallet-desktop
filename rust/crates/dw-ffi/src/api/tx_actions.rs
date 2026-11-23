@@ -236,12 +236,11 @@ impl NetworkSession {
     /// unconfirmed, not yet abandoned transaction of `wallet_id` (all
     /// wallets when `None`) that `abandon_transaction` would: not
     /// InstantSend-locked, unless under its ChainLock exception, which
-    /// releases only the inputs proven unspent. Then it rescans from the
-    /// lowest funding height of the coins they spent; one rescan holds back
-    /// further exceptions until it ends, so a second run takes the next.
-    /// One the exception refuses (`InstantLocked` or `RescanFirst`, as
-    /// `abandon_transaction` says) is skipped. Needs a running SPV client. Returns how many transactions were
-    /// dropped.
+    /// releases only the inputs proven unspent. Then it rescans once, from
+    /// the lowest funding height of the coins they all spent. One the
+    /// exception refuses (`InstantLocked` or `RescanFirst`, as
+    /// `abandon_transaction` says) is skipped. Needs a running SPV client.
+    /// Returns how many transactions were dropped.
     pub async fn drop_unconfirmed(&self, wallet_id: Option<String>) -> Result<u32, TxActionError> {
         let id = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         Ok(self.inner.drop_unconfirmed(id).await?)

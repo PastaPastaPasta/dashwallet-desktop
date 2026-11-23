@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { abandonQuestion, confirmationDetail, statusText } from "./TxDetailSheet";
+import { abandonQuestion, actionProblem, confirmationDetail, statusText } from "./TxDetailSheet";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -67,5 +67,17 @@ describe("the abandon confirmation", () => {
 
   it("takes the spending text when the debit is unknown", () => {
     expect(abandonQuestion({ totalDebit: null })).toBe(OUTGOING);
+  });
+});
+
+describe("a refused abandon", () => {
+  const refused = (refusal: string, message: string) => ({ code: "tx_action_refused", message, data: { kind: "txAction", refusal } });
+
+  it("gives a rescanFirst refusal's steps from the catalog, not the engine's text", () => {
+    expect(actionProblem(refused("rescanFirst", "engine text"))).toBe("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
+  });
+
+  it("gives any other refusal the engine's message", () => {
+    expect(actionProblem(refused("instantLocked", "transaction action refused: InstantLocked"))).toBe("transaction action refused: InstantLocked");
   });
 });

@@ -1021,10 +1021,10 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
 /**
  * "Remove unconfirmed": abandons every unconfirmed transaction of the
  * wallet (every wallet when `walletId` is `null`) that Abandon would,
- * InstantSend-locked ones only under its ChainLock exception, and
- * rescans from the lowest funding height; that rescan holds back the
- * next exception, which a later run takes. One the exception refuses
- * (`instantLocked` or `rescanFirst`, as Abandon says) is skipped.
+ * InstantSend-locked ones only under its ChainLock exception, then
+ * rescans once, from the lowest funding height of them all. One the
+ * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says)
+ * is skipped.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {

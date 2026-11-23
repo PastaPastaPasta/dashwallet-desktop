@@ -4,7 +4,7 @@
 
 import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { errorMessage } from "../api/backend";
+import { errorMessage, isAppError } from "../api/backend";
 import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
@@ -166,6 +166,12 @@ export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit">): stri
   return x.totalDebit === 0 ? t("activity.abandon.notSpending") : t("activity.abandon.spending");
 }
 
+/** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`
+ * refusal from the catalog. */
+export function actionProblem(e: unknown): string {
+  return isAppError(e) && e.data?.kind === "txAction" && e.data.refusal === "rescanFirst" ? t("activity.abandon.rescanFirst") : errorMessage(e);
+}
+
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
 function Actions({ walletId, txid }: { walletId: string; txid: string }) {
   const b = useBackend();
@@ -189,7 +195,7 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       await client.invalidateQueries({ queryKey: keys.txDetailAll(walletId) });
       await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
     } catch (e) {
-      setNote({ text: errorMessage(e), problem: true });
+      setNote({ text: actionProblem(e), problem: true });
     } finally {
       setBusy(false);
     }
