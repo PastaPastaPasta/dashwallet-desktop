@@ -582,6 +582,9 @@ pub(crate) struct SessionHub {
     /// Tests: the next abandon returns after its sweep, without its rescan.
     #[cfg(test)]
     pub(crate) quit_before_rescan: std::sync::atomic::AtomicBool,
+    /// Tests: holds the next abandon after its sweep, before its rescan.
+    #[cfg(test)]
+    pub(crate) pause_before_rescan: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: how many abandons pass before [`Self::pause_abandon`] holds one.
     #[cfg(test)]
     pub(crate) pause_abandon_skip: std::sync::atomic::AtomicUsize,
@@ -770,6 +773,8 @@ impl SessionHub {
             quit_before_sweep: Default::default(),
             #[cfg(test)]
             quit_before_rescan: Default::default(),
+            #[cfg(test)]
+            pause_before_rescan: Mutex::new(None),
             #[cfg(test)]
             last_release: Mutex::new(None),
             #[cfg(test)]
@@ -1056,9 +1061,10 @@ impl SessionHub {
             .unwrap_or(0)
     }
 
-    /// Marks a Remove Unconfirmed batch of `wallet` in progress until the
-    /// returned guard drops: its abandons store rewind records it makes
-    /// only at its end, which a sync commit must leave stored meanwhile.
+    /// Marks a Remove Unconfirmed batch, or a single Abandon, of `wallet` in
+    /// progress until the returned guard drops: its abandons store rewind
+    /// records it makes only after their sweeps, which a sync commit must
+    /// leave stored meanwhile.
     pub(crate) fn abandon_batch(&self, wallet: WalletId) -> AbandonBatch<'_> {
         *(self
             .abandon_batches
@@ -1455,7 +1461,17 @@ impl SessionHub {
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
-                if self.update_balance(id, balance, account_balances) {
+                // An event computed before an abandon swept its transaction
+                // carries the balance from before the sweep: read the
+                // manager's instead.
+                let swept = (self.history).read(&id, |txs| {
+                    txs.get(&record.txid).is_some_and(|e| e.is_abandoned())
+                });
+                if swept {
+                    if let Some(reread) = self.balance_reread.get() {
+                        reread(id);
+                    }
+                } else if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
                 }
                 // First seen through its InstantSend lock: evidence. In

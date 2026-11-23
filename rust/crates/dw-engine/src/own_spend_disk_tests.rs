@@ -2386,6 +2386,12 @@ fn abandoning_an_unlocked_payment_takes_a_grandchild_the_history_has_not_heard()
     for event in &late {
         session.hub.apply_wallet_event(event);
     }
+    // The late event's balance is from before the sweep: the shown balance
+    // is the manager's, without the grandchild's output.
+    eventually("the shown balance is the manager's", || {
+        let held_sum: u64 = coins(&engine, &session, id).iter().map(|(_, v)| v).sum();
+        balances(&session, id).total == held_sum
+    });
     let mut session = session;
     for state in ["the abandon and the late event", "a restart after"] {
         if state != "the abandon and the late event" {
@@ -3270,6 +3276,74 @@ fn a_coin_a_pending_payment_from_elsewhere_spends_is_never_offered_after_a_resca
         );
         assert!(!counted(&session), "{tag}, in a block: U is counted");
     }
+}
+
+/// A sync commit above a single Abandon's rewind target, landing after its
+/// sweep and before its rescan starts, leaves its rewind record stored, as
+/// it does for Remove Unconfirmed: a stop there still rescans at the next
+/// start.
+#[test]
+fn a_sync_commit_during_a_single_abandon_keeps_its_rewind_record() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    start_spv(&engine, &session);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_before_rescan.lock().unwrap() = Some(Arc::clone(&pause));
+    let abandoning = {
+        let s = Arc::clone(&session);
+        let txid = payment.txid();
+        session
+            .rt
+            .spawn(async move { s.abandon_transaction(id, txid).await })
+    };
+    assert!(pause.wait_reached(std::time::Duration::from_secs(60)));
+    let replay = Arc::clone(&session.live().unwrap().replay);
+    let height = synced(&engine, &session, id) + 1;
+    let (before, after) = engine.block_on(async {
+        let before = replay.get(id).await.unwrap();
+        replay.note(crate::replay_record::ReplayNote::Committed { wallet: id, height });
+        replay.settled().await;
+        (before, replay.get(id).await.unwrap())
+    });
+    pause.release.notify_one();
+    engine.block_on(abandoning).unwrap().unwrap();
+    assert!(before.is_some(), "the abandon stored no rewind record");
+    assert_eq!(
+        after, before,
+        "a sync commit during the abandon deleted its rewind record before its rescan"
+    );
+}
+
+/// A late event for a transaction no abandon took writes its balance as
+/// before: the shown balance follows it at once.
+#[test]
+fn a_late_event_for_a_live_transaction_writes_its_balance() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    let incoming = funding(91, &[fresh_address(&engine, &session, id)], COIN);
+    let late = credited_with_late_events(&engine, &session, id, &incoming);
+    wait_stored(&session, id, &[incoming.txid()]);
+    let held_sum: u64 = coins(&engine, &session, id).iter().map(|(_, v)| v).sum();
+    assert_ne!(
+        balances(&session, id).total,
+        held_sum,
+        "the history heard it already"
+    );
+    for event in &late {
+        session.hub.apply_wallet_event(event);
+    }
+    assert_eq!(balances(&session, id).total, held_sum);
 }
 
 /// A single Abandon of a locked payment a ChainLock beat, stopped after

@@ -563,6 +563,10 @@ impl NetworkSession {
             if let Some(r) = f.abandon_refusal() {
                 return Err(EngineError::TxActionRefused(r));
             }
+            // Its rewind record stays stored until its rescan starts, as a
+            // Remove Unconfirmed batch's does: a sync commit meanwhile
+            // would otherwise delete it, and a stop then lose the scan.
+            let _batch = this.hub.abandon_batch(wallet);
             this.abandon_inner(&manager, wallet, txid).await?;
             Ok(())
         })
@@ -587,6 +591,13 @@ impl NetworkSession {
         #[cfg(test)]
         if (self.hub.quit_before_rescan).swap(false, std::sync::atomic::Ordering::SeqCst) {
             return Err(EngineError::Internal("quit before the rescan".into()));
+        }
+        #[cfg(test)]
+        let pause = self.hub.pause_before_rescan.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause.mark_reached();
+            pause.release.notified().await;
         }
         if result.is_ok() || recorded.is_some() {
             self.finish_abandons(manager, wallet, &abandoned, recorded)
