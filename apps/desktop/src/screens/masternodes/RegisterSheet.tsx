@@ -10,7 +10,7 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "rea
 import { isAppError } from "../../api/backend";
 import { lockGeneration, refusedWhileLocked, walletGateClosed } from "../../api/lockGate";
 import type { CollateralCoin } from "../../api/generated/CollateralCoin";
-import type { MasternodeRegistrationPreview } from "../../api/generated/MasternodeRegistrationPreview";
+import type { MnRegistrationPreview } from "../../api/generated/MnRegistrationPreview";
 import type { MasternodeTypeName } from "../../api/generated/MasternodeTypeName";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { NetworkKind } from "../../api/generated/NetworkKind";
@@ -83,7 +83,7 @@ export function RegisterSheet({
   const [busy, setBusy] = useState(false);
   const [askDiscard, setAskDiscard] = useState(false);
   /** The figures the review shows: the first read, then only Register's own re-read moves them (D5). */
-  const [reviewed, setReviewed] = useState<{ key: string; p: MasternodeRegistrationPreview } | null>(null);
+  const [reviewed, setReviewed] = useState<{ key: string; p: MnRegistrationPreview } | null>(null);
   const [changed, setChanged] = useState(false);
   /** The saved operation: External from Prepare (or `resume`), or what Register returned. */
   const [op, setOp] = useState<ProTxOperation | null>(resume ?? null);
@@ -679,7 +679,7 @@ function stepHeading(step: Step, kind: MasternodeTypeName, self: boolean, t: Ret
   }
 }
 
-function Review({ d, p, amount, changed }: { d: RegDraft; p: MasternodeRegistrationPreview; amount: (duffs: number) => ReactNode; changed: boolean }) {
+function Review({ d, p, amount, changed }: { d: RegDraft; p: MnRegistrationPreview; amount: (duffs: number) => ReactNode; changed: boolean }) {
   const t = useT();
   const terms = p.terms;
   const self = d.runner === "self";

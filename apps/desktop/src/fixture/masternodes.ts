@@ -18,8 +18,8 @@ import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleNa
 import type { MasternodeListState } from "../api/generated/MasternodeListState";
 import type { KeyPick } from "../api/generated/KeyPick";
 import type { MasternodePayout } from "../api/generated/MasternodePayout";
-import type { MasternodeRegistrationPreview } from "../api/generated/MasternodeRegistrationPreview";
-import type { MasternodeRegistrationRequest } from "../api/generated/MasternodeRegistrationRequest";
+import type { MnRegistrationPreview } from "../api/generated/MnRegistrationPreview";
+import type { MnRegistrationRequest } from "../api/generated/MnRegistrationRequest";
 import type { MasternodeTypeName } from "../api/generated/MasternodeTypeName";
 import type { ProTxKeys } from "../api/generated/ProTxKeys";
 import type { ProTxOperation } from "../api/generated/ProTxOperation";
@@ -440,7 +440,7 @@ function keychainIndex(m: MasternodesWorld, role: MasternodeKeyRoleName, given: 
 const outpointOf = (u: { outpoint: { txid: string; vout: number } }) => `${u.outpoint.txid}-${u.outpoint.vout}`;
 
 /** `build::check_request`: what the request's text alone refuses, before the list is read. */
-function checkRequest(world: World, r: MasternodeRegistrationRequest) {
+function checkRequest(world: World, r: MnRegistrationRequest) {
   if ((r.kind === "evonode") !== (r.evonode !== null)) throw fail("invalid_argument", "evonode terms are given exactly for an evonode");
   if (r.operatorReward > MAX_OPERATOR_REWARD) throw fail("invalid_argument", "the operator reward is at most 10000 basis points");
   serviceOf(world, r.service);
@@ -493,7 +493,7 @@ const usedCollaterals = (m: MasternodesWorld) => [
 
 /** `resolve_registration`: the terms, refused in the engine's order. `commit` issues the payout (and a FundNew
  * collateral) address, as register and prepare do. */
-function resolve(world: World, r: MasternodeRegistrationRequest, commit: boolean): ProTxTerms {
+function resolve(world: World, r: MnRegistrationRequest, commit: boolean): ProTxTerms {
   const m = world.masternodes;
   const service = serviceOf(world, r.service);
   const c = r.collateral;
@@ -539,7 +539,7 @@ function resolve(world: World, r: MasternodeRegistrationRequest, commit: boolean
 }
 
 /** `existing_coin`: one of the wallet's coins of exactly the type's amount (a user-locked one too: it stays locked). */
-function checkCollateral(m: MasternodesWorld, r: MasternodeRegistrationRequest) {
+function checkCollateral(m: MasternodesWorld, r: MnRegistrationRequest) {
   if (r.collateral.kind !== "existing_utxo") return;
   const outpoint = r.collateral.outpoint.trim().toLowerCase();
   const coin = m.collateralCoins.find((x) => x.outpoint === outpoint);
@@ -551,7 +551,7 @@ const collateralOf = (kind: MasternodeTypeName) => (kind === "evonode" ? 4_000 :
 const feeNow = (m: MasternodesWorld, kind: MasternodeTypeName) => REG_FEE[kind] + (m.previewDrift && m.previewReads > 1 ? REG_FEE_DRIFT : 0);
 
 /** `plan_funding`: the fee, and a FundNew collateral, from the wallet's standard coins. */
-function fund(world: World, r: MasternodeRegistrationRequest): number {
+function fund(world: World, r: MnRegistrationRequest): number {
   const m = world.masternodes;
   const fee = feeNow(m, r.kind);
   const needed = fee + (r.collateral.kind === "fund_new" ? collateralOf(r.kind) : 0);
@@ -619,7 +619,7 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
     if (!world.masternodes.listState.synced) throw listUnavailable();
   };
   /** wallet → the request's text → the list → its terms. */
-  const terms = (world: World, walletId: string, request: MasternodeRegistrationRequest, commit: boolean) => {
+  const terms = (world: World, walletId: string, request: MnRegistrationRequest, commit: boolean) => {
     wallet(world, walletId);
     checkRequest(world, request);
     list(world);
@@ -648,7 +648,7 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
       checkCollateral(m, request);
       m.previewReads += 1;
       const fee = fund(world, request);
-      const preview: MasternodeRegistrationPreview = { terms: t, fee, totalDebit: fee, collateralAmount: collateralOf(request.kind) };
+      const preview: MnRegistrationPreview = { terms: t, fee, totalDebit: fee, collateralAmount: collateralOf(request.kind) };
       return preview;
     },
     mn_register: ({ walletId, request, grant }, ctx) => {

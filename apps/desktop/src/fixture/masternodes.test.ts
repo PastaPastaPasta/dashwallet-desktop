@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as cmd from "../api/generated/commands";
 import type { AppEvent } from "../api/generated/commands";
 import { installFixture } from "./index";
-import type { MasternodeRegistrationRequest } from "../api/generated/MasternodeRegistrationRequest";
+import type { MnRegistrationRequest } from "../api/generated/MnRegistrationRequest";
 import {
   CLUB,
   DISSOLVE_PENALTY,
@@ -412,7 +412,7 @@ describe("fixture masternodes: the keychain", () => {
   });
 });
 
-const request = (patch: Partial<MasternodeRegistrationRequest> = {}): MasternodeRegistrationRequest => ({
+const request = (patch: Partial<MnRegistrationRequest> = {}): MnRegistrationRequest => ({
   kind: "regular",
   collateral: { kind: "fund_new" },
   service: "198.51.100.90:19999",
@@ -424,8 +424,8 @@ const request = (patch: Partial<MasternodeRegistrationRequest> = {}): Masternode
   evonode: null,
   ...patch,
 });
-const evonode = (patch: Partial<MasternodeRegistrationRequest> = {}) => request({ kind: "evonode", evonode: { node: { kind: "next_unused" }, p2pPort: null, httpPort: null }, ...patch });
-const external = (patch: Partial<MasternodeRegistrationRequest> = {}) => request({ collateral: { kind: "external", outpoint: `${"e7".repeat(32)}-0`, address: EXTERNAL_ADDRESS }, ...patch });
+const evonode = (patch: Partial<MnRegistrationRequest> = {}) => request({ kind: "evonode", evonode: { node: { kind: "next_unused" }, p2pPort: null, httpPort: null }, ...patch });
+const external = (patch: Partial<MnRegistrationRequest> = {}) => request({ collateral: { kind: "external", outpoint: `${"e7".repeat(32)}-0`, address: EXTERNAL_ADDRESS }, ...patch });
 const mnGrant = async (maxDuffs: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs }, W, PASS)).id;
 const code = (p: Promise<unknown>) => p.then(() => "ok", (e: { code: string }) => e.code);
 
@@ -459,7 +459,7 @@ describe("fixture masternodes: registration", () => {
   it("previews: the fee is the debit, FundNew's collateral stays in the wallet, the addresses are issued later", async () => {
     install("reg");
     const p = await cmd.mnPreviewRegistration(W, request());
-    expectShape("MasternodeRegistrationPreview", p);
+    expectShape("MnRegistrationPreview", p);
     expect(p).toMatchObject({ fee: REG_FEE.regular, totalDebit: REG_FEE.regular, collateralAmount: 1_000 * 100_000_000 });
     expect(p.terms).toMatchObject({ payoutAddress: "", collateral: "fund_new", collateralOutpoint: null, collateralAddress: null, ownerIndex: 0, votingIndex: 1, operatorIndex: 2 });
     const evo = await cmd.mnPreviewRegistration(W, evonode({ collateral: { kind: "existing_utxo", outpoint: REG_COIN_EVO } }));
@@ -503,7 +503,7 @@ describe("fixture masternodes: registration", () => {
 
   it("refuses keyed inputs as Core would", async () => {
     install("reg");
-    const refused = async (r: MasternodeRegistrationRequest) => {
+    const refused = async (r: MnRegistrationRequest) => {
       const e = await cmd.mnPreviewRegistration(W, r).catch((x: { code: string; data: { reason: string; operation: string | null } }) => x);
       expect(e).toMatchObject({ code: "masternodes.protx_refused" });
       return (e as { data: { reason: string; operation: string | null } }).data;

@@ -4,8 +4,8 @@
 import { isAppError } from "../api/backend";
 import type { AppError } from "../api/generated/commands";
 import type { CollateralCoin } from "../api/generated/CollateralCoin";
-import type { MasternodeRegistrationPreview } from "../api/generated/MasternodeRegistrationPreview";
-import type { MasternodeRegistrationRequest } from "../api/generated/MasternodeRegistrationRequest";
+import type { MnRegistrationPreview } from "../api/generated/MnRegistrationPreview";
+import type { MnRegistrationRequest } from "../api/generated/MnRegistrationRequest";
 import type { MasternodeTypeName } from "../api/generated/MasternodeTypeName";
 import type { ProTxKeys } from "../api/generated/ProTxKeys";
 import { t } from "../i18n";
@@ -92,7 +92,7 @@ export const normalOutpoint = (s: string) => s.trim().replace(/:(\d+)$/, "-$1").
 const port = (s: string) => (s.trim() === "" ? null : Number(s.trim()));
 
 /** The engine's request for what the wizard holds; `keys` gives the keychain indices shown. */
-export function buildRequest(d: RegDraft, keys: ProTxKeys | undefined): MasternodeRegistrationRequest {
+export function buildRequest(d: RegDraft, keys: ProTxKeys | undefined): MnRegistrationRequest {
   const evo = d.kind === "evonode";
   return {
     kind: d.kind,
@@ -195,10 +195,10 @@ export function stepErrors(step: Step, d: RegDraft, ports: Ports, coins: readonl
 const REGISTER_MARGIN = 10_000;
 
 /** D5: the confirmed `total_debit` plus max(fee, 10,000 duffs). Never from a figure not shown. */
-export const registerCap = (p: Pick<MasternodeRegistrationPreview, "fee" | "totalDebit">): number => p.totalDebit + Math.max(p.fee, REGISTER_MARGIN);
+export const registerCap = (p: Pick<MnRegistrationPreview, "fee" | "totalDebit">): number => p.totalDebit + Math.max(p.fee, REGISTER_MARGIN);
 
 /** Whether the re-read preview shows what the review showed (D5, D4). */
-export const samePreview = (a: MasternodeRegistrationPreview, b: MasternodeRegistrationPreview): boolean =>
+export const samePreview = (a: MnRegistrationPreview, b: MnRegistrationPreview): boolean =>
   a.fee === b.fee && a.totalDebit === b.totalDebit && a.collateralAmount === b.collateralAmount && JSON.stringify(a.terms) === JSON.stringify(b.terms);
 
 // ---------------------------------------------------------------- refusals, by the step they belong to

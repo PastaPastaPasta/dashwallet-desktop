@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { AppError } from "../api/generated/commands";
 import type { CollateralCoin } from "../api/generated/CollateralCoin";
-import type { MasternodeRegistrationPreview } from "../api/generated/MasternodeRegistrationPreview";
+import type { MnRegistrationPreview } from "../api/generated/MnRegistrationPreview";
 import type { ProTxKeys } from "../api/generated/ProTxKeys";
 import { t } from "../i18n";
 import { buildRequest, coinsFor, newDraft, normalOutpoint, refusalOf, registerCap, samePreview, serviceError, shareBasisPoints, stepErrors, type Ports, type RegDraft } from "./registration";
@@ -20,7 +20,7 @@ const keys: ProTxKeys = {
 };
 const draft = (patch: Partial<RegDraft> = {}): RegDraft => ({ ...newDraft(), service: "203.0.113.7:19999", operatorKey: "8".repeat(96), ...patch });
 const coin = (outpoint: string, patch: Partial<CollateralCoin> = {}): CollateralCoin => ({ outpoint, address: "yCoin", amount: 1000 * COIN, kind: "regular", confirmations: 10, userLocked: false, ...patch });
-const preview = (patch: Partial<MasternodeRegistrationPreview> = {}): MasternodeRegistrationPreview => ({
+const preview = (patch: Partial<MnRegistrationPreview> = {}): MnRegistrationPreview => ({
   terms: {
     masternodeType: "regular",
     version: 2,
