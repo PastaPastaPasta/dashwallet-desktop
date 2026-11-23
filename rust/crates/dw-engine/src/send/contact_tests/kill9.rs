@@ -35,7 +35,7 @@ fn fixture_at(dir: tempfile::TempDir, root: &std::path::Path, first: bool) -> Fi
         wallets[0].wallet_id
     };
     let f = Fixture {
-        _dir: dir,
+        _dir: Some(dir),
         engine,
         session,
         wallet,
