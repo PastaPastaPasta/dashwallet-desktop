@@ -77,6 +77,9 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "sessionOpened", network: "testnet" })).toBe("all");
     // Every governance read, whichever changed (BL-232); every engine-local masternode read (MG-10 §3.5).
     expect(invalidationsFor({ kind: "governance", network: "testnet" })).toEqual([keys.governanceAll]);
+    // Issue 340: a failed automatic backup rereads Settings ▸ Backups; other notices read nothing.
+    expect(invalidationsFor({ kind: "notice", network: "testnet", code: "backupFailed", detail: "" })).toEqual([keys.backupsAll]);
+    expect(invalidationsFor({ kind: "notice", network: "testnet", code: "spvError", detail: "" })).toEqual([]);
     expect(invalidationsFor({ kind: "masternodes", network: "testnet" })).toEqual([["masternodes"]]);
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);

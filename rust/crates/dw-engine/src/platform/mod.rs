@@ -12,7 +12,7 @@ mod avatar_dhash;
 mod avatar_fetch;
 mod avatar_image;
 #[cfg(test)]
-mod avatar_tests;
+pub(crate) mod avatar_tests;
 mod balances;
 mod banner;
 #[cfg(test)]

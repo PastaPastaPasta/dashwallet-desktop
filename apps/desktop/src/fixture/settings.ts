@@ -8,6 +8,7 @@
 // closed or removed wallet, which the engine revokes.
 
 import type { AppError } from "../api/generated/AppError";
+import type { AutomaticBackupFailure } from "../api/generated/AutomaticBackupFailure";
 import type { BackupFileHeader } from "../api/generated/BackupFileHeader";
 import type { BackupSummary } from "../api/generated/BackupSummary";
 import type { CoreExportWarningName } from "../api/generated/CoreExportWarningName";
@@ -93,6 +94,8 @@ export interface SettingsWorld {
   /** Wallets left out of the load-on-startup list. */
   notAtStartup: string[];
   backups: BackupSummary[];
+  /** Wallets whose latest automatic backup failed (`automatic_backup_failures`). */
+  backupFailures: AutomaticBackupFailure[];
   keep: number;
   /** Dust protection in duffs; null: off (QT-075). */
   dust: number | null;
@@ -119,6 +122,7 @@ export function newSettingsWorld(): SettingsWorld {
     unloadRefusal: null,
     notAtStartup: [],
     backups: [],
+    backupFailures: [],
     keep: 5,
     dust: 100,
     coreIncompatible: [],
@@ -343,12 +347,15 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     },
     automatic_backups: ({ walletId }, { world }) =>
       world.settings.backups.filter((b) => b.automatic && (walletId === null || b.walletId === walletId)).toSorted((a, b) => b.createdAt - a.createdAt),
+    automatic_backup_failures: (_, { world }) =>
+      world.settings.backupFailures.filter((f) => world.wallets.some((w) => w.summary.walletId === f.walletId)),
     backup_directory: () => FIXTURE_BACKUP_DIR,
     backup_policy: (_, { world }) => ({ keep: world.settings.keep, directory: FIXTURE_BACKUP_DIR }),
     set_backup_policy: ({ keep }, { world }) => {
       if (!Number.isInteger(keep) || keep < 0 || keep > MAX_KEEP) throw fail("invalid_argument", "keep 0 to 10 backups");
       const s = world.settings;
       s.keep = keep;
+      if (keep === 0) s.backupFailures = [];
       // Deletes the oldest automatic backups of each wallet beyond `keep`.
       const kept = new Map<string, number>();
       s.backups = s.backups

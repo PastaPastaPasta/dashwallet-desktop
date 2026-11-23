@@ -1451,6 +1451,17 @@ impl AppDb {
             .optional()?)
     }
 
+    /// Every `(scope, value)` of `key`, in scope order.
+    pub fn settings_of_key(&self, key: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT scope, value FROM settings_kv WHERE key = ?1 ORDER BY scope")?;
+        let rows = stmt
+            .query_map([key], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
     /// Sets a value, or deletes the key for `None`.
     pub fn set_setting(&self, scope: &str, key: &str, value: Option<&str>) -> Result<()> {
         Self::put_setting(&self.conn(), scope, key, value)
