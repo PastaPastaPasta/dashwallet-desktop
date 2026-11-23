@@ -248,6 +248,13 @@ impl TxDraft {
         self.session
             .on_runtime(async move {
                 let _op = this.session.enter().await?;
+                // A contact's address is reserved only when the payment is
+                // signed: the plan pays a stand-in.
+                if this.state().contact.is_some() {
+                    return Err(EngineError::InvalidArgument(
+                        "a payment to a contact has no unsigned transaction".into(),
+                    ));
+                }
                 let session = &this.session;
                 // Held to the end: building reserves nothing, but the plan
                 // reads the coins (and dust locks them) under it.

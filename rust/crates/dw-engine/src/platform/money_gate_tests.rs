@@ -237,6 +237,15 @@ impl World {
         })
     }
 
+    /// Another identity's subject on the same installation's store.
+    fn sharing(held: Vec<Held>, provenance: &Arc<Provenance>) -> Arc<Self> {
+        Arc::new(Self {
+            provenance: Arc::clone(provenance),
+            held: Mutex::new(Some(held)),
+            open: AtomicBool::new(true),
+        })
+    }
+
     fn unverified(&self) -> Option<Vec<Held>> {
         let held = guard(&self.held).clone()?;
         Some(
@@ -692,4 +701,37 @@ async fn an_identity_verifies_by_its_keys() {
     );
     platform.answer(&held);
     assert_eq!(gate(&world, &platform, Rule5::Enforce).await, Ok(()));
+}
+
+/// H-09: one installation holds both identities of a contact, 1 and 2. 1's
+/// payment to 2 verifies and records its sent copy of 1→2 and its received
+/// copy of 2→1; 2's payment to 1 rests on the same two documents the other
+/// way round, and none of those records vouches for it through the gate.
+#[tokio::test(start_paused = true)]
+async fn a_sent_copys_record_never_vouches_through_the_gate() {
+    let (one_to_two, two_to_one) = (request(1, 2, 1_000), request(2, 1, 2_000));
+    let first = World::new(
+        vec![
+            Held::SentRequest(one_to_two.clone()),
+            Held::ContactRequest(two_to_one.clone()),
+        ],
+        true,
+    );
+    let verified = platform_holding(&guard(&first.held).clone().unwrap(), Proof::Verified);
+    assert_eq!(gate(&first, &verified, Rule5::Enforce).await, Ok(()));
+    assert!(first.verified());
+    let second = World::sharing(
+        vec![
+            Held::SentRequest(two_to_one),
+            Held::ContactRequest(one_to_two),
+        ],
+        &first.provenance,
+    );
+    assert_eq!(second.unverified().map(|u| u.len()), Some(2));
+    let unverified = platform_holding(&guard(&second.held).clone().unwrap(), Proof::Unverified);
+    assert_eq!(
+        gate(&second, &unverified, Rule5::Enforce).await,
+        Err(Refusal::Unverified)
+    );
+    assert!(unverified.fetches() > 0, "the second payment had to fetch");
 }
