@@ -722,12 +722,34 @@ impl NetworkSession {
     }
 
     /// Runs `f` with the wallet's chain view, over the history store's own
-    /// entries under its read lock, with no copy (H-06); `f` must not touch
-    /// the history store. `WalletNotFound` for an unknown wallet.
+    /// entries under its read lock, with no copy (H-06). `f` must be a pure
+    /// function of the view: no lock, task or store a history writer may
+    /// wait on. `WalletNotFound` for an unknown wallet.
     pub(crate) async fn with_view<R>(
         &self,
         manager: &Manager,
         wallet: WalletId,
+        f: impl FnOnce(&ChainView<'_>) -> R,
+    ) -> Result<R, EngineError> {
+        self.view_of(manager, wallet, false, f).await
+    }
+
+    /// [`Self::with_view`] for a read that shows payees: their names are
+    /// fetched first, outside the history store's lock.
+    pub(crate) async fn with_view_naming_payees<R>(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        f: impl FnOnce(&ChainView<'_>) -> R,
+    ) -> Result<R, EngineError> {
+        self.view_of(manager, wallet, true, f).await
+    }
+
+    async fn view_of<R>(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        name_payees: bool,
         f: impl FnOnce(&ChainView<'_>) -> R,
     ) -> Result<R, EngineError> {
         let wm = manager.wallet_manager_arc();
@@ -737,6 +759,9 @@ impl NetworkSession {
             .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
         let parts = self.view_parts(info, &wallet);
         drop(wm);
+        if name_payees {
+            self.fetch_payee_names(wallet, &parts.payees);
+        }
         let network = self.network.core_network();
         Ok(self
             .hub
@@ -771,8 +796,7 @@ impl NetworkSession {
         let labels = Self::labels(&live.appdb, wallet).await?;
         let watch_only = !self.vault.has_wallet_secret(&wallet.0);
         let mut records = self
-            .with_view(&live.manager, wallet, |view| {
-                self.fetch_payee_names(wallet, view.payees);
+            .with_view_naming_payees(&live.manager, wallet, |view| {
                 view.history
                     .iter()
                     .flat_map(|(txid, entry)| records_of(txid, entry, view, &labels).0)
@@ -808,8 +832,7 @@ impl NetworkSession {
             .map_err(|e| EngineError::Storage(e.to_string()))?;
             let watch_only = !this.vault.has_wallet_secret(&wallet.0);
             let mut detail = this
-                .with_view(&live.manager, wallet, |view| {
-                    this.fetch_payee_names(wallet, view.payees);
+                .with_view_naming_payees(&live.manager, wallet, |view| {
                     view.history
                         .get(&parsed)
                         .map(|entry| detail_of(&parsed, entry, view, &labels, message))
