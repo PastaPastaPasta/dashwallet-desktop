@@ -2026,6 +2026,25 @@ fn a_request_held_under_the_payee_naming_another_identity_refuses() {
         "platform.context_unavailable"
     );
     assert!(f.reserved(BOB).is_none());
+    assert_eq!(
+        platform.fetches(),
+        0,
+        "refused by the party check, not a wait"
+    );
+}
+
+/// A contact payment's plan pays a stand-in address until it is signed, so
+/// "Create Unsigned" refuses it rather than return a PSBT paying that.
+#[test]
+fn a_contact_draft_creates_no_unsigned_psbt() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    let refused = f.engine.block_on(d.create_unsigned());
+    assert!(
+        matches!(refused, Err(EngineError::InvalidArgument(_))),
+        "{refused:?}"
+    );
+    assert!(f.reserved(BOB).is_none());
 }
 
 /// H-09: the party check is where the money goes, so a developer build's
@@ -2319,7 +2338,6 @@ fn an_unstamped_account_is_not_paid_in_any_setting() {
             } else {
                 f.bobs_account_built_from(None);
             }
-            // Everything is verified: the refusal is the destination's.
             assert_eq!(
                 platform_error(f.prepare(&f.draft(BOB))),
                 "platform.context_unavailable",
