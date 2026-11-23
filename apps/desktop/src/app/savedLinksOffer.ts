@@ -22,7 +22,7 @@ export function useSavedLinksOffer(backend: Backend, s: { hasWallet: boolean; lo
   const wasLocked = useRef(s.locked);
   useEffect(() => {
     // An unlock with the offer still unanswered (a launch while locked) keeps its count: a live
-    // link applied while locked opened its page behind the lock screen and wins.
+    // link applied while locked chose the page the unlock lands on, and wins.
     if (wasLocked.current && !s.locked) arm(pending);
     wasLocked.current = s.locked;
   }, [s.locked, pending, arm]);

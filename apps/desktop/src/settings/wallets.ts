@@ -1,31 +1,40 @@
 // Settings ▸ Wallets (UX-SPEC §4.17, QT-101, QT-114, IOS-110): the Swift
 // `WalletManagementViewModel`, ported. The list is every registered wallet from
 // `walletLoadStates` (D17); Open and Close also set the load-on-startup list, as dash-qt's File
-// menu does, and the last open wallet cannot be closed.
+// menu does, the last open wallet cannot be closed, and the last wallet on the startup list stays
+// on it (issue 113).
 
 import type { Backend } from "../api/backend";
+import { withTable } from "../dashpay/status";
+import { messageTable, t } from "../i18n";
 import { LockModel } from "../onboarding/lock";
 import { failureText, Model } from "../onboarding/model";
 import { vaultCredential } from "./security";
 
-export const WalletsText = {
-  openAnotherFirst: "Open another wallet first.",
-  openAnotherToClose: "Open another wallet first to close this one.",
-  openAnotherToRemove: "Open another wallet first to remove this one: closed wallets cannot be reached with no wallet open.",
-  openAnotherToCloseOrRemove: "Open another wallet first to close or remove this one.",
-  noLoadStates: "Closed wallets are not shown: this engine does not list them yet.",
-  nameRule: "A wallet name is 1 to 64 characters.",
-  /** IOS-110; the shielded line is E1 r2 R2-4 (removal purges unresolved shielded spends, m4 §2.13). */
-  removeQuestion: (name: string, watchOnly: boolean) =>
-    watchOnly
-      ? `Remove the watch-only wallet ${name} from this computer? Its history and settings are deleted. Its extended public key adds it again.`
-      : `Remove the wallet ${name} from this computer? Its keys, history and settings are deleted. Its recovery phrase, or a backup or export you kept, brings it back. A shielded payment it already sent may still go through, and its pending record is deleted with the wallet.`,
-  removed: (name: string) => `${name} was removed.`,
-  watchOnlyHint: "Paste the account's extended public key (tpub or xpub). The wallet shows its balance and history; it cannot spend.",
-  watchOnlyAdded: (name: string) => `${name} was added as a watch-only wallet.`,
-  xpubTitle: "Extended public key",
-  xpubHint: "Anyone with this key can see every address and payment of this account, but cannot spend.",
-};
+export const WalletsText = withTable(
+  messageTable("settings.wallets", [
+    "openAnotherFirst",
+    "openAnotherToClose",
+    "openAnotherToRemove",
+    "openAnotherToCloseOrRemove",
+    "noLoadStates",
+    "nameRule",
+    "watchOnlyHint",
+    "xpubTitle",
+    "xpubHint",
+    "watchOnlyEmpty",
+    "unnamed",
+  ]),
+  {
+    get oneOpensAtStart() {
+      return t("onboarding.failure.last_startup_wallet");
+    },
+    /** IOS-110; the shielded line is E1 r2 R2-4 (removal purges unresolved shielded spends, m4 §2.13). */
+    removeQuestion: (name: string, watchOnly: boolean) => t(watchOnly ? "settings.wallets.removeWatchOnlyQuestion" : "settings.wallets.removeQuestion", { name }),
+    removed: (name: string) => t("settings.wallets.removed", { name }),
+    watchOnlyAdded: (name: string) => t("settings.wallets.watchOnlyAdded", { name }),
+  },
+);
 
 export interface WalletRow {
   walletId: string;
@@ -105,6 +114,11 @@ export class WalletsModel extends Model {
     return row.loaded && !(this.openCount === 1 && this.rows.some((r) => !r.loaded));
   }
 
+  /** The last wallet on the load-on-startup list stays on it: with no wallet open at start, closed ones cannot be reached. */
+  canUntickStartup(row: WalletRow): boolean {
+    return !row.loadOnStartup || this.rows.some((r) => r.walletId !== row.walletId && r.loadOnStartup);
+  }
+
   open(walletId: string) {
     return this.#run(walletId, async () => {
       await this.api.loadWallet(walletId);
@@ -120,8 +134,11 @@ export class WalletsModel extends Model {
       this.changed();
       return false;
     }
+    // The last wallet on the startup list hands it to the wallet the app shows next.
+    const next = this.canUntickStartup(row) ? null : this.rows.find((r) => r.walletId !== walletId && r.loaded);
     return this.#run(walletId, async () => {
       await this.api.unloadWallet(walletId);
+      if (next) await this.api.setLoadOnStartup(next.walletId, true);
       await this.api.setLoadOnStartup(walletId, false);
     });
   }
@@ -268,13 +285,13 @@ export class WatchOnlyModel extends Model {
     if (this.working) return;
     const name = optionalName(nameText);
     if (name === undefined) return this.#fail(WalletsText.nameRule);
-    if (xpub.trim() === "") return this.#fail("Paste an extended public key.");
+    if (xpub.trim() === "") return this.#fail(WalletsText.watchOnlyEmpty);
     this.working = true;
     this.error = null;
     this.changed();
     try {
       const walletId = await this.api.importWatchOnly(xpub.trim(), { name, birthHeight: null, lookahead: null });
-      this.added = { walletId, name: name ?? "The wallet" };
+      this.added = { walletId, name: name ?? WalletsText.unnamed };
     } catch (e) {
       this.error = failureText(e);
     }

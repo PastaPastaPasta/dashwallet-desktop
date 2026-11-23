@@ -3,28 +3,27 @@
 
 import { useEffect, useId, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useLockStatus } from "../../api/queries";
+import { useWalletGateClosed } from "../../api/lockGate";
+import { useBackend } from "../../api/queries";
 import { useUi } from "../../app/ui";
-import { dismissPrivateToast, showToast } from "../../components/toast";
+import { showToast } from "../../components/toast";
 import { useDisplay, type Display } from "../../format/display";
 import { detailDate } from "../../format/tx";
+import { t, useT } from "../../i18n";
 import { exposedNow, markReceivedRead, onReceived, useReceived, type ReceivedPayment } from "../../payments/received";
 
 /** "Received 0.01 DASH"; discreet mode does not say how much. */
 export function receivedText(duffs: number, shown: Display, discreet: boolean): string {
-  return discreet ? "Received a payment" : `Received ${shown.compact(duffs)} ${shown.name}`;
+  return discreet ? t("notifications.received.discreet") : t("notifications.received.amount", { amount: `${shown.compact(duffs)} ${shown.name}` });
 }
 
 /** The toast for every payment that arrives, wherever the window is (one per batch, its total). It holds
- * both texts, so Discreet mode masks it while it is up; locking takes it down, and none comes while locked. */
+ * both texts, so Discreet mode masks it while it is up; locking takes it down (App), and none comes while locked. */
 export function ReceivedToaster({ network }: { network: NetworkInfo }) {
   const shown = useDisplay(network);
-  const locked = useLockStatus().data?.state === "locked";
+  const locked = useWalletGateClosed();
   useEffect(() => {
-    if (locked) {
-      dismissPrivateToast();
-      return;
-    }
+    if (locked) return;
     return onReceived((batch) => {
       const total = batch.reduce((n, p) => n + p.duffs, 0);
       showToast(receivedText(total, shown, false), undefined, receivedText(total, shown, true));
@@ -34,7 +33,7 @@ export function ReceivedToaster({ network }: { network: NetworkInfo }) {
 }
 
 /** Whether `el` is on screen for someone: connected, and with no `inert` ancestor (the shell is inert
- * behind a sheet, a dialog, the lock screen, onboarding). It follows the attribute as it changes. */
+ * behind a sheet, a dialog, onboarding; a lock unmounts it). It follows the attribute as it changes. */
 function useExposed(el: HTMLElement | null): boolean {
   const [exposed, setExposed] = useState(false);
   useEffect(() => {
@@ -54,17 +53,19 @@ function useExposed(el: HTMLElement | null): boolean {
 /** The bell's "Payments": what arrived since the app opened, the ones not seen before marked new.
  * Opening it marks them seen. Nothing shows while none came. */
 export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId: string; network: NetworkInfo; limit?: number; onOpen: (txid: string) => void }) {
+  const t = useT();
   const payments = useReceived(walletId);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   const titleId = useId();
+  const { locale } = useBackend();
   // The payments seen before the view opened: any other, including one that arrives while it is
   // open, is marked new until the view closes.
   const [seen] = useState<ReadonlySet<string>>(() => new Set(payments.filter((p) => p.read).map((p) => p.id)));
   const rows: readonly ReceivedPayment[] = limit ? payments.slice(0, limit) : payments;
-  // Seen means shown, to someone: the rows on screen, with the wallet unlocked and nothing over the
-  // view (a page can stay mounted behind the lock screen or a transaction's sheet).
-  const locked = useLockStatus().data?.state === "locked";
+  // Seen means shown, to someone: the rows on screen, with the wallet unlocked and no inert ancestor
+  // (a transaction's sheet, a dialog). A locked window has no pages: the lock screen replaces them.
+  const locked = useWalletGateClosed();
   const [section, setSection] = useState<HTMLElement | null>(null);
   const exposed = useExposed(section);
   const shownIds = rows.map((p) => p.id).join(",");
@@ -84,7 +85,7 @@ export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId
   return (
     <section ref={setSection} className="bell-section" aria-labelledby={titleId} data-testid="bell-payments">
       <h3 className="bell-section-title" id={titleId}>
-        Payments
+        {t("notifications.section.payments")}
       </h3>
       <ul className="bell-rows">
         {rows.map((p) => {
@@ -95,7 +96,7 @@ export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId
                 {fresh && <span className="bell-dot" aria-hidden="true" />}
                 <span className="bell-row-text">
                   <span className="bell-row-title">{receivedText(p.duffs, shown, discreet)}</span>
-                  <span className="bell-row-sub">{detailDate(new Date(p.at))}</span>
+                  <span className="bell-row-sub">{detailDate(new Date(p.at), locale)}</span>
                 </span>
               </button>
             </li>

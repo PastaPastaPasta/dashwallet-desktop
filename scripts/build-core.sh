@@ -78,7 +78,8 @@ if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
     export CARGO_TARGET_DIR="$RUST_DIR/target"
   fi
 fi
-[[ "$CARGO_TARGET_DIR" == /* ]] || export CARGO_TARGET_DIR="$PWD/$CARGO_TARGET_DIR"
+# A Windows path (D:\a\…, as .github/actions/pinned-sources exports it) is absolute too.
+[[ "$CARGO_TARGET_DIR" == /* || "$CARGO_TARGET_DIR" =~ ^[A-Za-z]:[\\/] ]] || export CARGO_TARGET_DIR="$PWD/$CARGO_TARGET_DIR"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 
 "$ROOT/scripts/disk-guard.sh"
@@ -149,7 +150,7 @@ if (( bindings )); then
 elif (( check_bindings )); then
   if ! diff -q "${swift_files[0]}" "$GEN_DIR/DashWalletCore.swift" >/dev/null; then
     echo "build-core: committed bindings differ from the generated ones; run scripts/build-core.sh and commit" >&2
-    diff -u "$GEN_DIR/DashWalletCore.swift" "${swift_files[0]}" | head -40 >&2 || true
+    diff -u "$GEN_DIR/DashWalletCore.swift" "${swift_files[0]}" | head -400 >&2 || true
     exit 1
   fi
   echo "build-core: committed bindings match"

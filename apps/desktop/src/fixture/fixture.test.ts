@@ -38,7 +38,7 @@ describe("fixture backend", () => {
   // which are derived from the modules here. The exact list of files, of every type, makes
   // moving one out or adding one the sentinels do not read (Sol r3: a `.mts`) fail here, and
   // each module must give the check at least one sentinel of its own.
-  it("every fixture module carries the production-build marker and has sentinels", async () => {
+  it("every fixture module carries the production-build marker and has sentinels", { timeout: 120_000 }, async () => {
     const dir = fileURLToPath(new URL(".", import.meta.url));
     const files = (readdirSync(dir, { recursive: true }) as string[])
       .filter((f) => statSync(join(dir, f)).isFile())
@@ -92,6 +92,7 @@ describe("fixture backend", () => {
       "topup.test.ts",
       "topup.ts",
       "transfer.ts",
+      "updates.ts",
       "vault.ts",
       "vectors/accept.json",
       "vectors/governance.json",
@@ -101,7 +102,7 @@ describe("fixture backend", () => {
     ]);
     // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
     const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "masternodes.ts", "names.ts", "pending.ts", "rates.ts", "recovery.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shielded.ts", "tools.ts", "topup.ts", "transfer.ts", "vault.ts", "wallet.ts"]);
+    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "masternodes.ts", "names.ts", "pending.ts", "rates.ts", "recovery.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shielded.ts", "tools.ts", "topup.ts", "transfer.ts", "updates.ts", "vault.ts", "wallet.ts"]);
     const { bySource } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
       expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);

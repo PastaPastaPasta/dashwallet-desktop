@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
 import { orAbsent, orUnavailable } from "./pending";
+import { formatLocale, systemRegionLocale } from "../i18n";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
 import type { AddressPurposeName } from "./generated/AddressPurposeName";
@@ -51,8 +52,18 @@ export class IpcBackend implements Backend {
     readonly kind: Backend["kind"],
     /** The fixture's fixed clock; the system's otherwise. */
     private readonly clock: () => Date = () => new Date(),
-    readonly locale: string | undefined = undefined,
+    /** The fixture's fixed locale; the system's (`undefined`) otherwise. */
+    private readonly baseLocale: string | undefined = undefined,
   ) {}
+
+  /** The base locale, or the language chosen in Settings when it is not the system's (MP-14). */
+  get locale(): string | undefined {
+    return formatLocale(this.baseLocale);
+  }
+
+  get regionLocale(): string | undefined {
+    return this.baseLocale ?? systemRegionLocale();
+  }
 
   launchInfo = () => cmd.launchInfo();
   openNetwork = () => cmd.openNetwork(null, null);
@@ -151,6 +162,11 @@ export class IpcBackend implements Backend {
   setQuickUnlockSpendLimit = cmd.setQuickUnlockSpendLimit;
   uiSettings = () => cmd.uiSettings();
   setUiSettings = cmd.setUiSettings;
+  updateStatus = () => cmd.updateStatus();
+  checkForUpdate = () => cmd.checkForUpdate();
+  installUpdate = cmd.installUpdate;
+  restartToUpdate = () => cmd.restartToUpdate();
+  openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();
   setRatesSettings = cmd.setRatesSettings;
@@ -170,6 +186,7 @@ export class IpcBackend implements Backend {
   backupWallet = cmd.backupWallet;
   restoreBackup = cmd.restoreBackup;
   automaticBackups = cmd.automaticBackups;
+  automaticBackupFailures = () => cmd.automaticBackupFailures();
   backupDirectory = () => cmd.backupDirectory();
   backupPolicy = () => cmd.backupPolicy();
   setBackupPolicy = cmd.setBackupPolicy;
@@ -288,6 +305,8 @@ export class IpcBackend implements Backend {
   creditsResolveTopUp = cmd.creditsResolveTopUp;
   creditsWithdrawQuote = cmd.creditsWithdrawQuote;
   creditsWithdraw = cmd.creditsWithdraw;
+  creditsWithdrawToPlatformQuote = cmd.creditsWithdrawToPlatformQuote;
+  creditsWithdrawToPlatform = cmd.creditsWithdrawToPlatform;
   creditsWithdrawals = cmd.creditsWithdrawals;
   // The search is the renderer's (U-05 D13): dash-qt's wildcards over label and address.
   addressBook = (walletId: string, purpose: AddressPurposeName | null) => cmd.addressBook(walletId, purpose, null);

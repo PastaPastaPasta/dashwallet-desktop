@@ -24,6 +24,9 @@ test-mix-shield = []
 # Debug builds only: the engine's masternode-withdrawal fault points and
 # `DW_FAULT=<point>` (MG-13 §3 fault sweep, T2 (4)), with dw-appdb's.
 fault-inject = ["dw-appdb/fault-inject"]
+# `platform::fuzzing`: the avatar decoder and the invitation parser for
+# dw-fuzz's libFuzzer targets (H-02), enabled only by its `engine` feature.
+fuzzing = []
 
 [dependencies]
 platform-wallet = { workspace = true }
@@ -91,6 +94,8 @@ md-5 = "0.10"
 rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
 
 [dev-dependencies]
+# `test-utils`: signs a test's own spend of a held coin, as a send does.
+key-wallet = { workspace = true, features = ["test-utils"] }
 dw-appdb = { workspace = true, features = ["test-mutations", "durability-sim", "fault-inject"] }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
 dw-vault = { workspace = true, features = ["insecure-test-kdf", "fault-inject"] }

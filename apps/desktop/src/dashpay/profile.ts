@@ -13,88 +13,83 @@ import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
+import { formatLocale, messageTable, t } from "../i18n";
 import { REG_COPY } from "./registration";
-import { COPY, homeCard, namesState, type CardModel, type NamesState, type StatusInputs } from "./status";
+import { COPY, homeCard, namesState, withTable, type CardModel, type NamesState, type StatusInputs } from "./status";
 
-export const PROFILE_COPY = {
-  loading: "Loading your profile…",
-  noProfile: "You have no DashPay profile yet",
-  editProfile: "Edit Profile",
-  share: "Share Username",
-  usernames: "Usernames",
-  identity: "Identity",
-  noUsername: "No username",
-  /** The requested name while its vote runs and no other name is held (as the chip says it). */
-  contested: (label: string) => `@${label} · Pending`,
-  updating: "Updating…",
-  notLoaded: "Username not loaded",
-  chooseName: "Choose a username",
-  credits: {
-    title: "Credit balance",
-    unknown: "Credit balance unknown",
-    unknownLine: "Dash Wallet reads it from the network.",
-    updating: "Updating…",
-    /** m3: the balance while the cost table, which turns it into Dash, is not read. */
-    creditsOnly: (credits: string) => `${credits} credits`,
-    estimate: (requests: string, updates: string) => `≈ ${requests} contact requests · ${updates} profile updates`,
-    low: {
-      title: "Your credit balance is low",
-      text: "Top-up your credits to continue making changes to your profile and adding contacts",
+const pr = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(prefix ? `dashpay.profile.${prefix}` : "dashpay.profile", keys);
+const cr = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(prefix ? `dashpay.credits.${prefix}` : "dashpay.credits", keys);
+/** A username as the copy takes it: with its "@", one value, so it keeps its order in any direction. */
+const at = (label: string) => `@${label}`;
+
+export const PROFILE_COPY = withTable(
+  pr("", ["loading", "noProfile", "editProfile", "share", "usernames", "identity", "copyIdentityId", "noUsername", "updating", "notLoaded", "chooseName"]),
+  {
+    /** The requested name while its vote runs and no other name is held (as the chip says it). */
+    contested: (label: string) => t("dashpay.profile.contested", { username: at(label) }),
+    credits: withTable(cr("", ["title", "unknown", "unknownLine", "updating", "topUp", "toppingUp", "pendingFirst", "unseen", "showResult"]), {
+      /** m3: the balance while the cost table, which turns it into Dash, is not read. */
+      creditsOnly: (credits: string) => t("dashpay.credits.only", { credits }),
+      estimate: (requests: string, updates: string) => t("dashpay.credits.estimate", { requests, updates }),
+      low: cr("low", ["title", "text"]),
+      empty: cr("empty", ["title", "text"]),
+    }),
+    pending: withTable(pr("pending", ["unproved", "proved", "unknown", "finish", "arrived"]), {
+      title: (amount: string) => t("dashpay.profile.pending.title", { amount }),
+    }),
+    stuck: withTable(pr("stuck", ["willBeSent", "text"]), {
+      get maybeSent() {
+        return COPY.repair.unknown;
+      },
+      get action() {
+        return COPY.repair.action;
+      },
+    }),
+    request: withTable(pr("request", ["instantLine", "readFailed", "retry", "votingLink", "votesFor", "others", "block", "abstain"]), {
+      title: (label: string) => COPY.voting.title(label),
+      get deciding() {
+        return COPY.voting.deciding;
+      },
+      endsOn: (date: string) => COPY.voting.endsOn(date),
+      get notify() {
+        return COPY.voting.notify;
+      },
+      temporary: (name: string) => COPY.voting.temporary(name),
+      get instant() {
+        return REG_COPY.name.instantTitle;
+      },
+      won: withTable(pr("request.won", ["text"]), { title: (label: string) => t("dashpay.profile.request.won.title", { username: at(label) }) }),
+      lost: (label: string) => t("dashpay.profile.request.lost", { username: at(label) }),
+      lostNoWinner: (label: string) => t("dashpay.profile.request.lostNoWinner", { username: at(label) }),
+      locked: withTable(pr("request.locked", ["text"]), { title: (label: string) => t("dashpay.profile.request.locked.title", { username: at(label) }) }),
+      /** `votes`: `null` when unknown. */
+      othersValue: (k: number, votes: number | null) =>
+        votes === null ? t("dashpay.profile.request.othersUnknown", { others: k }) : t("dashpay.profile.request.othersValue", { others: k, count: votes }),
+    }),
+    settings: {
+      get title() {
+        return t("settings.dashpay.title");
+      },
+      get joined() {
+        return t("settings.dashpay.joined");
+      },
+      get notJoined() {
+        return t("settings.dashpay.notJoined");
+      },
+      get profile() {
+        return t("settings.dashpay.profile");
+      },
+      get join() {
+        return t("settings.dashpay.join");
+      },
     },
-    empty: {
-      title: "Your credit balance is fully depleted",
-      text: "You can continue to use DashPay for payments but you cannot update your profile or add more contacts until you top up your credit balance",
-    },
-    topUp: "Top up",
-    toppingUp: "Topping up…",
-    pendingFirst: "Finish the pending top-up first.",
-    /** D14: a top-up that ended while the sheet was hidden. */
-    unseen: "Your top-up has an update.",
-    showResult: "Show",
+    outcomes: withTable(pr("outcomes", ["title"]), {
+      won: (label: string) => t("dashpay.profile.outcomes.won", { username: at(label) }),
+      lost: (label: string) => t("dashpay.profile.outcomes.lost", { username: at(label) }),
+      locked: (label: string) => t("dashpay.profile.outcomes.locked", { username: at(label) }),
+    }),
   },
-  pending: {
-    title: (amount: string) => `Top-up of ${amount} pending`,
-    unproved: "Waiting for the network to confirm the payment.",
-    proved: "Ready to add.",
-    unknown: "The network says this payment was already used. Check your balance.",
-    finish: "Finish",
-    arrived: "Credits arrived",
-  },
-  stuck: {
-    maybeSent: COPY.repair.unknown,
-    willBeSent: "The payment is being sent",
-    text: "Whether this top-up's payment reached the network is unknown. Tools ▸ Repair settles it; you can top up again once it has.",
-    action: COPY.repair.action,
-  },
-  request: {
-    title: COPY.voting.title,
-    deciding: COPY.voting.deciding,
-    endsOn: COPY.voting.endsOn,
-    notify: COPY.voting.notify,
-    temporary: COPY.voting.temporary,
-    instant: REG_COPY.name.instantTitle,
-    instantLine: "Register a second username now and use it until the vote ends.",
-    won: { title: (label: string) => `@${label} is yours`, text: "The network approved your username." },
-    lost: (label: string) => `@${label} went to another user`,
-    lostNoWinner: (label: string) => `Voting on @${label} ended with no winner`,
-    locked: { title: (label: string) => `@${label} was blocked`, text: "The network voted to block this username." },
-    readFailed: "Could not read the votes.",
-    retry: "Try again",
-    votingLink: "What is username voting?",
-    votesFor: "Votes for you",
-    others: "Other requests",
-    othersValue: (k: number, votes: string) => `${k}, ${votes} votes`,
-    block: "Votes to block",
-    abstain: "Abstained",
-  },
-  settings: { joined: "Your DashPay identity", notJoined: "Not joined", profile: "My Profile", join: "Join DashPay" },
-  outcomes: {
-    title: "Username voting results",
-    won: (label: string) => `@${label} — yours`,
-    lost: (label: string) => `@${label} — went to another user`,
-    locked: (label: string) => `@${label} — blocked`,
-  },
-} as const;
+);
 
 /** The own contest the status reports while one runs. */
 export interface ContestRef {
@@ -149,11 +144,14 @@ export function headerModel(main: IdentitySummary, contest: string | null = null
 /** Credits as duffs (D6): what they would buy back, rounded down. */
 export const creditsToDuffs = (credits: string | bigint, costs: Pick<CostTable, "creditsPerDuff">) => Number(BigInt(credits) / BigInt(costs.creditsPerDuff));
 
+/** A count of credits, grouped as the formatting locale groups it. */
+export const creditCount = (credits: string | bigint) => new Intl.NumberFormat(formatLocale(undefined)).format(BigInt(credits));
+
 /** Android's `buy_credits_estimated_items` (D6): how many contact requests and profile updates
  * `credits` pay for. */
 export function estimateText(credits: string | bigint, costs: CostTable): string {
   const c = BigInt(credits);
-  const n = (cost: string) => (BigInt(cost) > 0n ? (c / BigInt(cost)).toLocaleString("en-US") : "—");
+  const n = (cost: string) => (BigInt(cost) > 0n ? creditCount(c / BigInt(cost)) : "—");
   return PROFILE_COPY.credits.estimate(n(costs.contactRequest), n(costs.profileUpdate));
 }
 
@@ -216,7 +214,7 @@ export const holdsTopUp = (main: IdentitySummary, pending: PendingTopUp[], stuck
 /** A credit balance as shown (D29, D30): the amount once the cost table is read, raw credits until then; masked only in Discreet Mode. */
 export function creditBalance(credits: string, costs: CostTable | undefined, discreet: boolean, amount: (duffs: number) => string, masked: string): string {
   if (discreet) return masked;
-  return costs ? amount(creditsToDuffs(credits, costs)) : PROFILE_COPY.credits.creditsOnly(BigInt(credits).toLocaleString("en-US"));
+  return costs ? amount(creditsToDuffs(credits, costs)) : PROFILE_COPY.credits.creditsOnly(creditCount(credits));
 }
 
 /** The credits block (C1–C8). */
@@ -283,7 +281,7 @@ export interface RequestModel {
   readFailed: boolean;
 }
 
-const votes = (n: number | null) => (n === null ? "—" : n.toLocaleString("en-US"));
+const votes = (n: number | null) => (n === null ? "—" : new Intl.NumberFormat(formatLocale(undefined)).format(n));
 
 /** D11: the tally; the other contenders summed, as none of them owns a username yet. */
 export function tallyRows(c: ContestStatus): TallyRow[] {
@@ -293,7 +291,7 @@ export function tallyRows(c: ContestStatus): TallyRow[] {
   const C = PROFILE_COPY.request;
   return [
     { label: C.votesFor, value: votes(self?.votes ?? null) },
-    { label: C.others, value: C.othersValue(others.length, votes(otherVotes)) },
+    { label: C.others, value: C.othersValue(others.length, otherVotes) },
     { label: C.block, value: votes(c.lockVotes) },
     { label: C.abstain, value: votes(c.abstainVotes) },
   ];

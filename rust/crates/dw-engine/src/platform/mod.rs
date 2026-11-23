@@ -12,7 +12,7 @@ mod avatar_dhash;
 mod avatar_fetch;
 mod avatar_image;
 #[cfg(test)]
-mod avatar_tests;
+pub(crate) mod avatar_tests;
 mod balances;
 mod banner;
 #[cfg(test)]
@@ -21,16 +21,22 @@ mod bringup;
 mod contact_names;
 mod contacts;
 pub(crate) mod contacts_model;
+#[cfg(all(test, target_os = "linux"))]
+mod contacts_perf_tests;
 #[cfg(test)]
 mod contacts_tests;
 pub(crate) mod contest_watch;
 #[cfg(test)]
 mod contest_watch_tests;
+pub(crate) mod core_max;
 mod credit_costs;
+mod credit_transfer;
 mod credits;
 mod dashpay;
 mod errors;
 mod flows;
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;
 mod identity;
 mod identity_reads;
 mod identity_writes;
@@ -115,14 +121,16 @@ pub(crate) mod withdrawal;
 
 pub(crate) use avatar::{Locks, keyed_lock};
 pub use bringup::CREATED_HERE_BUDGET;
+pub(crate) use bringup::CREATED_HERE_KEY;
 pub use contacts::{
     ChannelState, ContactDetail, ContactQuery, ContactSection, ContactSectionPage, ContactSort,
     ContactSummary, ContactsPage, Eligibility, PrivateDetails, PublishState, Relation,
     RequestOutcome, ScannedCode, ScannedContact,
 };
 pub use credits::{
-    CostTable, CreditLevel, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, TopUpState,
-    WithdrawAmount, WithdrawOutcome, WithdrawQuote, Withdrawal, WithdrawalStatus,
+    CoreMax, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding, TopUpOutcome,
+    TopUpQuote, TopUpState, WithdrawAmount, WithdrawOutcome, WithdrawQuote,
+    WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal, WithdrawalStatus,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
@@ -163,7 +171,7 @@ pub use profile::{
 pub use registration::{
     FaucetLockKey, FinishReport, InitialProfile, RegistrationFailure, RegistrationFunding,
     RegistrationInvitation, RegistrationPhase, RegistrationQuote, RegistrationRequest,
-    RegistrationStatus, RegistrationWait,
+    RegistrationStatus, RegistrationWait, ShieldedCheck, ShieldedCheckState, ShieldedReadiness,
 };
 pub use shielded::{
     MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote,

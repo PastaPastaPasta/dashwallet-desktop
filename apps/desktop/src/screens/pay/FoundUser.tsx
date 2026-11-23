@@ -8,7 +8,9 @@ import type { UserHit } from "../../api/generated/UserHit";
 import { ui } from "../../app/ui";
 import { Chip, DashButton } from "../../components/basics";
 import type { ActionOutcome } from "../../contacts/actions";
+import { unverifiedWarning } from "../../contacts/model";
 import { useContactActions, useEligibility } from "../../contacts/queries";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet, Outcome } from "../tools/common";
 import { useActionToast, useRefocus } from "../contacts/afterAction";
@@ -29,6 +31,7 @@ export function FoundUser({
   onPay: (payee: Payee) => void;
   onBack: () => void;
 }) {
+  const t = useT();
   const actions = useModel(useContactActions(walletId, identity));
   const eligibility = useEligibility(walletId, identity, hit.identity);
   const toast = useActionToast(walletId);
@@ -58,6 +61,7 @@ export function FoundUser({
     arm("send");
   };
 
+  const warning = line?.next === "send" ? unverifiedWarning("send", hit.unverified) : line?.next === "acceptAndPay" ? unverifiedWarning("accept", hit.unverified) : null;
   let button = null;
   switch (line?.next) {
     case "send":
@@ -67,7 +71,7 @@ export function FoundUser({
     case "acceptAndPay":
       button = (
         <DashButton key="pay" variant="filledBlue" size="small" data-testid="pay-found-pay" onClick={() => onPay(payee)}>
-          {line.next === "pay" ? `Pay ${payee.name}` : "Accept and pay"}
+          {line.next === "pay" ? t("pay.contact.pay", { name: payee.name }) : t("pay.contact.acceptAndPay")}
         </DashButton>
       );
       break;
@@ -77,7 +81,7 @@ export function FoundUser({
     case "retry":
       button = (
         <DashButton key="retry" variant="plainBlue" size="small" onClick={() => void eligibility.refetch()}>
-          Try again
+          {t("pay.contact.retry")}
         </DashButton>
       );
       break;
@@ -94,21 +98,26 @@ export function FoundUser({
             </h2>
             {payee.sub && <span className="contact-row-username">{payee.sub}</span>}
           </span>
-          {hit.unverified && <Chip tone="warning">Unverified</Chip>}
+          {hit.unverified && <Chip tone="warning">{t("pay.contact.unverified")}</Chip>}
         </span>
         <DashButton variant="tintedBlue" size="small" data-testid="pay-found-back" onClick={onBack}>
-          Change
+          {t("pay.contact.change")}
         </DashButton>
       </section>
       <div className="contacts-hint card-l1 pay-banner" role="status" ref={status} data-testid="pay-found-status">
-        <span data-testid="pay-found-line">{line === undefined ? "Checking…" : line.text}</span>
+        <span data-testid="pay-found-line">{line === undefined ? t("pay.contact.checking") : line.text}</span>
         {button}
       </div>
+      {warning && (
+        <p className="sheet-warning" role="note" data-testid="pay-found-unverified">
+          {warning}
+        </p>
+      )}
       <Outcome ok={false} text={failed?.text ?? null} testId="pay-found-outcome" />
       <EnableFailure actions={actions} testId="pay-found-enable-outcome" />
       <p className="placeholder-note pay-found-address">
         <DashButton variant="plainBlue" size="small" data-testid="pay-contact-to-address" onClick={() => ui.set({ payTab: "address" })}>
-          Pay to an address instead
+          {t("pay.contact.toAddressInstead")}
         </DashButton>
       </p>
       <GrantSheet grants={actions.grants} />

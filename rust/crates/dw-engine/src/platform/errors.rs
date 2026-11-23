@@ -13,6 +13,7 @@ use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
 use super::names::UsernameRule;
 use super::profile::{Profile, ProfileField};
+use super::registration::ShieldedCheck;
 pub use super::shielded::ShieldedSyncWait;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -246,6 +247,18 @@ pub enum RegistrationError {
         draft: String,
         wait_secs: Option<u64>,
     },
+    /// A Shielded-funded start whose readiness `reason` does not hold
+    /// (C-funding F16, F17): nothing was written or signed. `ready_at` is
+    /// when the notes have rested, for `Rested`.
+    #[error("the shielded balance cannot pay yet: {reason:?}")]
+    ShieldedNotReady {
+        reason: ShieldedCheck,
+        ready_at: Option<u64>,
+    },
+    /// The start's cost is not the one the quote showed (C-funding F4):
+    /// nothing was written or signed; quote again.
+    #[error("the cost changed since the quote")]
+    QuoteChanged,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -268,6 +281,8 @@ impl RegistrationError {
             Self::FundingCancelled => "registration.funding_cancelled",
             Self::NotSynced => "registration.not_synced",
             Self::FundingUnknownRecent { .. } => "registration.funding_unknown_recent",
+            Self::ShieldedNotReady { .. } => "registration.shielded_not_ready",
+            Self::QuoteChanged => "registration.quote_changed",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Platform(e) => e.code(),
@@ -538,6 +553,19 @@ pub enum CreditsError {
     /// first.
     #[error("the asset lock would spend {inputs} coins, at most {max}")]
     TooManyInputs { inputs: u64, max: u64 },
+    /// A Core Max's build is not its plan (a coin came, went or changed
+    /// since the quote): refused unsigned, nothing tracked or sent. Quote
+    /// it again.
+    #[error("the Dash wallet changed since this was quoted")]
+    CoinsChanged,
+    /// A Core Max while the wallet mixes: it would take coins the mixer
+    /// spends. Stop mixing first, or enter an amount.
+    #[error("the wallet is mixing")]
+    MixingActive,
+    /// A Core Max while another move of the wallet's coins runs (a sweep,
+    /// a consolidation, a drain).
+    #[error("another move of the wallet's coins is running")]
+    MoveRunning,
     /// A move between the Platform addresses and Shielded refused by the
     /// pool's side (its gate, its key state), with the pool's code.
     #[error(transparent)]
@@ -572,6 +600,9 @@ impl CreditsError {
             Self::QuoteChanged => "credits.quote_changed",
             Self::FundPending { .. } => "credits.fund_pending",
             Self::TooManyInputs { .. } => "credits.too_many_inputs",
+            Self::CoinsChanged => "credits.coins_changed",
+            Self::MixingActive => "credits.mixing_active",
+            Self::MoveRunning => "credits.move_running",
             Self::Shielded(e) => e.code(),
             Self::Platform(e) => e.code(),
         }

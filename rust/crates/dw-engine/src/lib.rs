@@ -47,10 +47,14 @@ pub mod rates;
 mod receive;
 mod replay_record;
 mod restore;
+#[cfg(all(test, unix))]
+mod restore_order_tests;
 #[cfg(test)]
 mod restore_tests;
 pub(crate) mod send;
 mod session;
+#[cfg(test)]
+mod startup_list_tests;
 mod store;
 pub mod sync;
 // Present only with the `test-support` feature, which dwcli's
@@ -74,6 +78,7 @@ pub struct TestSupportProbe;
 
 mod tools;
 mod tx_actions;
+mod wallet_read;
 mod wallets;
 
 pub use backup::{BackupFailure, BackupInfo, BackupPolicy};

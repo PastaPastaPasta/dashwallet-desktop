@@ -4,7 +4,8 @@
 //! rows scoped to the wallet, so tables added by later migrations are
 //! carried without changes here, except the ones in [`NOT_EXPORTED`].
 
-use rusqlite::types::Value;
+use rusqlite::ToSql;
+use rusqlite::types::{ToSqlOutput, ValueRef};
 
 use crate::{AppDb, Result};
 
@@ -15,30 +16,36 @@ pub enum SqlValue {
     Integer(i64),
     Real(f64),
     Text(String),
+    /// A TEXT value whose bytes are not valid UTF-8, kept as stored.
+    NonUtf8Text(Vec<u8>),
     Blob(Vec<u8>),
 }
 
-impl From<Value> for SqlValue {
-    fn from(v: Value) -> Self {
+impl From<ValueRef<'_>> for SqlValue {
+    fn from(v: ValueRef<'_>) -> Self {
         match v {
-            Value::Null => SqlValue::Null,
-            Value::Integer(i) => SqlValue::Integer(i),
-            Value::Real(r) => SqlValue::Real(r),
-            Value::Text(t) => SqlValue::Text(t),
-            Value::Blob(b) => SqlValue::Blob(b),
+            ValueRef::Null => SqlValue::Null,
+            ValueRef::Integer(i) => SqlValue::Integer(i),
+            ValueRef::Real(r) => SqlValue::Real(r),
+            ValueRef::Text(t) => match std::str::from_utf8(t) {
+                Ok(s) => SqlValue::Text(s.to_owned()),
+                Err(_) => SqlValue::NonUtf8Text(t.to_vec()),
+            },
+            ValueRef::Blob(b) => SqlValue::Blob(b.to_vec()),
         }
     }
 }
 
-impl From<&SqlValue> for Value {
-    fn from(v: &SqlValue) -> Self {
-        match v {
-            SqlValue::Null => Value::Null,
-            SqlValue::Integer(i) => Value::Integer(*i),
-            SqlValue::Real(r) => Value::Real(*r),
-            SqlValue::Text(t) => Value::Text(t.clone()),
-            SqlValue::Blob(b) => Value::Blob(b.clone()),
-        }
+impl ToSql for SqlValue {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::Borrowed(match self {
+            SqlValue::Null => ValueRef::Null,
+            SqlValue::Integer(i) => ValueRef::Integer(*i),
+            SqlValue::Real(r) => ValueRef::Real(*r),
+            SqlValue::Text(t) => ValueRef::Text(t.as_bytes()),
+            SqlValue::NonUtf8Text(t) => ValueRef::Text(t),
+            SqlValue::Blob(b) => ValueRef::Blob(b),
+        }))
     }
 }
 
@@ -137,7 +144,7 @@ impl AppDb {
             let rows: Vec<Vec<SqlValue>> = stmt
                 .query_map([wallet_id], |r| {
                     (0..cols.len())
-                        .map(|i| r.get::<_, Value>(i).map(SqlValue::from))
+                        .map(|i| r.get_ref(i).map(SqlValue::from))
                         .collect()
                 })?
                 .collect::<rusqlite::Result<_>>()?;
@@ -159,70 +166,108 @@ impl AppDb {
     pub fn import_wallet_rows(&self, wallet_id: &str, tables: &[TableRows]) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let mut inserted = 0;
-        let known = scoped_tables(&tx)?;
-        for t in tables {
-            let Some((_, scope)) = known.iter().find(|(name, _)| *name == t.table) else {
-                continue;
-            };
-            let here: Vec<String> = columns(&tx, &t.table)?
-                .into_iter()
-                .filter(|(_, alias)| !alias)
-                .map(|(c, _)| c)
-                .collect();
-            let keep: Vec<usize> = (0..t.columns.len())
-                .filter(|i| here.contains(&t.columns[*i]))
-                .collect();
-            let Some(scope_pos) = keep.iter().position(|i| t.columns[*i] == *scope) else {
-                continue;
-            };
-            let names = keep
-                .iter()
-                .map(|i| format!("\"{}\"", t.columns[*i]))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let marks = (1..=keep.len())
-                .map(|n| format!("?{n}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let mut stmt = tx.prepare(&format!(
-                "INSERT OR IGNORE INTO \"{}\" ({names}) VALUES ({marks})",
-                t.table
-            ))?;
-            // Tables numbered by a rowid alias have no other key, so an
-            // identical row is looked up before inserting it again.
-            let same = keep
-                .iter()
-                .enumerate()
-                .map(|(n, i)| format!("\"{}\" IS ?{}", t.columns[*i], n + 1))
-                .collect::<Vec<_>>()
-                .join(" AND ");
-            let mut exists = tx.prepare(&format!(
-                "SELECT 1 FROM \"{}\" WHERE {same} LIMIT 1",
-                t.table
-            ))?;
-            for row in &t.rows {
-                let values: Vec<Value> = keep
-                    .iter()
-                    .map(|i| row.get(*i).map(Value::from).unwrap_or(Value::Null))
-                    .collect();
-                if values.get(scope_pos) != Some(&Value::Text(wallet_id.to_owned())) {
-                    continue;
-                }
-                if exists.exists(rusqlite::params_from_iter(values.iter()))? {
-                    continue;
-                }
-                inserted += stmt.execute(rusqlite::params_from_iter(values.iter()))?;
-            }
-        }
+        let inserted = insert_rows(&tx, wallet_id, tables)?;
         tx.commit()?;
         Ok(inserted)
     }
 }
 
+/// [`AppDb::import_wallet_rows`] in the caller's transaction.
+pub(crate) fn insert_rows(
+    tx: &rusqlite::Transaction<'_>,
+    wallet_id: &str,
+    tables: &[TableRows],
+) -> Result<usize> {
+    let mut inserted = 0;
+    let known = scoped_tables(tx)?;
+    for t in tables {
+        let Some((_, scope)) = known.iter().find(|(name, _)| *name == t.table) else {
+            continue;
+        };
+        let here: Vec<String> = columns(tx, &t.table)?
+            .into_iter()
+            .filter(|(_, alias)| !alias)
+            .map(|(c, _)| c)
+            .collect();
+        let keep: Vec<usize> = (0..t.columns.len())
+            .filter(|i| here.contains(&t.columns[*i]))
+            .collect();
+        let Some(scope_pos) = keep.iter().position(|i| t.columns[*i] == *scope) else {
+            continue;
+        };
+        let names = keep
+            .iter()
+            .map(|i| format!("\"{}\"", t.columns[*i]))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let marks = (1..=keep.len())
+            .map(|n| format!("?{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = tx.prepare(&format!(
+            "INSERT OR IGNORE INTO \"{}\" ({names}) VALUES ({marks})",
+            t.table
+        ))?;
+        // Tables numbered by a rowid alias have no other key, so an
+        // identical row is looked up before inserting it again.
+        let same = keep
+            .iter()
+            .enumerate()
+            .map(|(n, i)| format!("\"{}\" IS ?{}", t.columns[*i], n + 1))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let mut exists = tx.prepare(&format!(
+            "SELECT 1 FROM \"{}\" WHERE {same} LIMIT 1",
+            t.table
+        ))?;
+        for row in &t.rows {
+            let values: Vec<&SqlValue> = keep
+                .iter()
+                .map(|i| row.get(*i).unwrap_or(&SqlValue::Null))
+                .collect();
+            if !matches!(values.get(scope_pos), Some(SqlValue::Text(s)) if s == wallet_id) {
+                continue;
+            }
+            if exists.exists(rusqlite::params_from_iter(values.iter()))? {
+                continue;
+            }
+            inserted += stmt.execute(rusqlite::params_from_iter(values.iter()))?;
+        }
+    }
+    Ok(inserted)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{AppDb, BookPurpose, LabelKind, SqlValue, TableRows};
+
+    /// A restore's retry deletes a wallet's rows from `WALLET_TABLES`
+    /// (#359): none of them refuses a delete, and no table that does is a
+    /// wallet's rows.
+    #[test]
+    fn no_wallet_table_refuses_a_delete() {
+        let db = AppDb::open_in_memory().unwrap();
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger'")
+            .unwrap();
+        let refusing: Vec<String> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|(_, sql)| sql.to_uppercase().contains("BEFORE DELETE"))
+            .map(|(table, _)| table)
+            .collect();
+        assert!(
+            refusing.contains(&"mn_withdrawals".to_owned()),
+            "{refusing:?}"
+        );
+        let scoped = super::scoped_tables(&conn).unwrap();
+        for table in &refusing {
+            assert!(!crate::WALLET_TABLES.contains(&table.as_str()), "{table}");
+            assert!(scoped.iter().all(|(t, _)| t != table), "{table}");
+        }
+    }
 
     #[test]
     fn wallet_rows_round_trip_into_another_database() {
@@ -264,6 +309,51 @@ mod tests {
         // Importing again inserts nothing; rows of another wallet are refused.
         assert_eq!(b.import_wallet_rows(&w, &rows).unwrap(), 0);
         assert_eq!(b.import_wallet_rows(&other, &rows).unwrap(), 0);
+    }
+
+    /// Issue 340: a TEXT value that is not valid UTF-8 is exported as its
+    /// bytes and imported as the same TEXT bytes, not a panic.
+    #[test]
+    fn a_text_value_that_is_not_utf8_exports_as_its_bytes_and_imports_byte_identical() {
+        let key = b"abandoned:\xff".to_vec();
+        let value = b"v\xfe1".to_vec();
+        let a = AppDb::open_in_memory().unwrap();
+        let w = "ab".repeat(32);
+        a.set_wallet_name(&w, "Savings", 10).unwrap();
+        a.set_setting(&w, "dust", Some("1")).unwrap();
+        a.conn()
+            .execute(
+                "INSERT INTO settings_kv (scope, key, value) \
+                 VALUES (?1, CAST(?2 AS TEXT), CAST(?3 AS TEXT))",
+                rusqlite::params![w, key, value],
+            )
+            .unwrap();
+        let rows = a.export_wallet_rows(&w).unwrap();
+        let settings = rows.iter().find(|t| t.table == "settings_kv").unwrap();
+        assert!(settings.rows.contains(&vec![
+            SqlValue::Text(w.clone()),
+            SqlValue::NonUtf8Text(key.clone()),
+            SqlValue::NonUtf8Text(value.clone()),
+        ]));
+
+        let b = AppDb::open_in_memory().unwrap();
+        let n = b.import_wallet_rows(&w, &rows).unwrap();
+        assert_eq!(n, rows.iter().map(|t| t.rows.len()).sum::<usize>());
+        let stored: Vec<(String, Vec<u8>, String, Vec<u8>)> = b
+            .conn()
+            .prepare(
+                "SELECT typeof(key), CAST(key AS BLOB), typeof(value), CAST(value AS BLOB) \
+                 FROM settings_kv WHERE scope = ?1 AND key <> 'dust'",
+            )
+            .unwrap()
+            .query_map([&w], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(stored, [("text".into(), key, "text".into(), value)]);
+        assert_eq!(b.setting(&w, "dust").unwrap().as_deref(), Some("1"));
+        assert_eq!(b.import_wallet_rows(&w, &rows).unwrap(), 0, "already there");
+        assert_eq!(b.export_wallet_rows(&w).unwrap(), rows);
     }
 
     /// `dp_contact_info` stays on its machine, out and in (DP2-04): a

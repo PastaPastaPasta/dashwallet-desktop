@@ -46,7 +46,7 @@ small amounts only.
 The [`continuous` release](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/tag/continuous) says which
 commit it holds. Each merge also keeps its own build, `v<version>-dev.<run>+<commit>`, on the
 [releases page](https://github.com/PastaPastaPasta/dashwallet-desktop/releases), next to the tagged releases
-(`v0.1.0`). Check a download with [`docs/release/verifying.md`](docs/release/verifying.md).
+(`v0.1.0` to `v0.3.0`). Check a download with [`docs/release/verifying.md`](docs/release/verifying.md).
 
 ## Install
 

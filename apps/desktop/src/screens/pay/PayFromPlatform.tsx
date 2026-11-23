@@ -15,6 +15,7 @@ import { navigate, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { hasUnansweredOp } from "../../platform/move";
 import { canRetry, heldSend, retryAsks, sendAmount, sendCanRetry, sendErrorText, sendFor, sendRefusalText, settledBy, staleConfirm, SEND_COPY as C, type PlatformSendFlow, type Settled } from "../../platform/send";
@@ -69,7 +70,7 @@ function ConfirmRows({ q, credits }: { q: PlatformSendQuote; credits: (c: string
           {q.to}
         </Row>
         <Row label={C.rows.amount} testId="platform-send-confirm-amount">
-          {q.feeFromAmount ? `${credits(q.amountCredits)}, ${C.rows.everything}` : credits(q.amountCredits)}
+          {q.feeFromAmount ? C.rows.amountEverything(credits(q.amountCredits)) : <bdi dir="ltr">{credits(q.amountCredits)}</bdi>}
         </Row>
         <Row label={C.rows.fee} testId="platform-send-confirm-fee">
           {C.feeValue(credits(q.feeCredits))}
@@ -81,11 +82,11 @@ function ConfirmRows({ q, credits }: { q: PlatformSendQuote; credits: (c: string
         )}
         {q.feeFromAmount && (
           <Row label={C.rows.recipientGets} testId="platform-send-confirm-recipient">
-            {credits(recipientGets)}
+            <bdi dir="ltr">{credits(recipientGets)}</bdi>
           </Row>
         )}
         <Row label={q.feeFromAmount ? C.rows.totalExact : C.rows.total} testId="platform-send-confirm-total" total>
-          {credits(taken)}
+          <bdi dir="ltr">{credits(taken)}</bdi>
         </Row>
       </dl>
       <p className="field-hint" data-testid={q.feeFromAmount ? "platform-send-fee-from-amount" : "platform-send-fee-source"}>
@@ -200,14 +201,45 @@ function SendSheet({
   );
 }
 
+function useCredits(network: NetworkInfo) {
+  const shown = useDisplay(network);
+  const discreet = useUi((s) => s.discreet);
+  return { shown, credits: (c: string) => (discreet ? shown.masked() : `${shown.full(creditsToDuffs(c))} ${shown.name}`) };
+}
+
+/** The wallet's send when the form holds no Platform address to show it under (a lock took the page
+ * down while it ran, and the form came back empty): its sheet, until it is closed. */
+export function HeldPlatformSend({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const b = useBackend();
+  const flow = useModel(sendFor(b, walletId));
+  const { credits } = useCredits(network);
+  const activity = usePlatformActivity(walletId);
+  const [confirmed, setConfirmed] = useState<Confirmed | null>(null);
+  if (confirmed === null && !flow.running && flow.step === "confirm") return <GrantSheet grants={flow.grants} />;
+  const retry = async () => {
+    const got = await flow.retry("");
+    if (got) setConfirmed({ ...got, seen: activity.data });
+  };
+  const close = () => {
+    setConfirmed(null);
+    flow.reset();
+  };
+  const settled = flow.step === "done" ? settledBy(flow.outcome, activity.data) : null;
+  return (
+    <>
+      <SendSheet flow={flow} confirmed={confirmed} credits={credits} settled={settled} activity={activity.data} onClose={close} onRetry={() => void retry()} />
+      <GrantSheet grants={flow.grants} />
+    </>
+  );
+}
+
 /** The Platform half of the address form: shown below "Pay to" once it holds a Platform address.
  * `amount` is the form's own field, so what was typed before the address was recognised stays. */
 export function PayFromPlatform({ walletId, network, to, amount, onSent }: { walletId: string; network: NetworkInfo; to: string; amount: ReturnType<typeof useAmountField>; onSent: () => void }) {
+  const t = useT();
   const b = useBackend();
   const flow = useModel(sendFor(b, walletId));
-  const shown = useDisplay(network);
-  const discreet = useUi((s) => s.discreet);
-  const credits = (c: string) => (discreet ? shown.masked() : `${shown.full(creditsToDuffs(c))} ${shown.name}`);
+  const { shown, credits } = useCredits(network);
   const [max, setMax] = useState(false);
   const [confirmed, setConfirmed] = useState<Confirmed | null>(null);
   const balance = usePlatformAddresses(walletId);
@@ -295,7 +327,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
       <p className="placeholder-note" data-testid="platform-send-intro">
         {C.intro}
       </p>
-      <FormField label={`Amount (${shown.name})`} error={amount.error} hint={max ? C.max : balance.data ? C.from(credits(balance.data.credits)) : null}>
+      <FormField label={t("pay.form.amount", { unit: shown.name })} error={amount.error} hint={max ? C.max : balance.data ? C.from(credits(balance.data.credits)) : null}>
         {(p) => (
           <span className="amount-entry">
             <input
@@ -304,7 +336,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
               value={max ? "" : amount.text}
               inputMode="decimal"
               autoComplete="off"
-              placeholder={max ? "Max" : shown.placeholder}
+              placeholder={max ? t("pay.form.max") : shown.placeholder}
               onChange={(e) => {
                 setNotice(null);
                 setMax(false);
@@ -315,7 +347,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
                 setNotice(null);
                 setMax(!max);
               }}>
-              Max
+              {t("pay.form.max")}
             </DashButton>
           </span>
         )}
@@ -358,7 +390,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
             </span>
           ) : (
             <span className="field-hint" id="pay-reason" data-testid="pay-incomplete">
-              {asked === null ? "Enter an amount first." : C.quoting}
+              {asked === null ? t("pay.platform.enterAmount") : C.quoting}
             </span>
           )}
         </div>
@@ -376,7 +408,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
             setConfirmed({ quote: q, amount: asked, seen: activity.data });
           }}
         >
-          Review
+          {t("pay.form.review")}
         </DashButton>
       </div>
       {sheet}

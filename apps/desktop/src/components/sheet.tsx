@@ -9,6 +9,7 @@
 
 import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "../i18n";
 import { DashButton } from "./basics";
 
 /** App's layer for sheets opened inside the shell; `null` renders a sheet in place. */
@@ -34,9 +35,17 @@ export function useLayeredSheet(): boolean {
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
 
+function tabbable(el: HTMLElement): boolean {
+  if (el.matches(":disabled") || el.closest("[inert]") || getComputedStyle(el).visibility !== "visible") return false;
+  const ownDetails = el.tagName === "SUMMARY" && el.parentElement?.tagName === "DETAILS" ? el.parentElement.parentElement : el;
+  if (ownDetails?.closest("details:not([open])")) return false;
+  return el.checkVisibility ? el.checkVisibility({ checkVisibilityCSS: true }) : el.getClientRects().length > 0;
+}
+
 function focusStart(panel: HTMLElement | null) {
-  // A disabled field takes no focus: the first control that can does.
-  (panel?.querySelector<HTMLElement>("[data-autofocus]:not(:disabled)") ?? panel?.querySelector<HTMLElement>(FOCUSABLE))?.focus();
+  // A disabled field takes no focus: the first control that can does, else the dialog itself, so a
+  // screen reader says its title (a payment being sent has nothing to press).
+  (panel?.querySelector<HTMLElement>("[data-autofocus]:not(:disabled)") ?? panel?.querySelector<HTMLElement>(FOCUSABLE) ?? panel)?.focus();
 }
 
 export function Sheet({
@@ -60,6 +69,7 @@ export function Sheet({
   returnFocus?: () => HTMLElement | null;
   children: ReactNode;
 }) {
+  const t = useT();
   const panel = useRef<HTMLDivElement>(null);
   const layer = useContext(SheetLayer);
   useEffect(() => {
@@ -92,18 +102,17 @@ export function Sheet({
       if (closable) onClose();
       return;
     }
-    if (e.key !== "Tab" || !panel.current) return;
-    const items = [...panel.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
-    if (items.length === 0) return;
-    const first = items[0];
-    const last = items[items.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
+    // A sheet opened from inside this one handles its own Tab: React bubbles it here through the portal.
+    if (e.key !== "Tab" || e.defaultPrevented || !panel.current || (e.target as Element).closest('[aria-modal="true"]') !== panel.current) return;
+    const items = [...panel.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(tabbable);
+    const active = document.activeElement;
+    const at = items.indexOf(active as HTMLElement);
+    if (at >= 0 && at !== (e.shiftKey ? 0 : items.length - 1)) return;
+    e.preventDefault();
+    if (items.length === 0) return panel.current.focus();
+    if (at >= 0) return void items.at(e.shiftKey ? -1 : 0)?.focus();
+    const after = (el: HTMLElement) => active !== null && (active.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    (e.shiftKey ? items.findLast((el) => !after(el)) ?? items.at(-1) : items.find(after) ?? items[0])?.focus();
   };
 
   const sheet = (
@@ -114,6 +123,7 @@ export function Sheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby={`${testId}-title`}
+        tabIndex={-1}
         data-testid={testId}
         onKeyDown={onKeyDown}
       >
@@ -123,7 +133,7 @@ export function Sheet({
             {title}
           </h2>
           <span className="sheet-header-side">
-            <button type="button" className="sheet-close" aria-label="Close" disabled={!closable} onClick={onClose}>
+            <button type="button" className="sheet-close" aria-label={t("components.sheet.close")} disabled={!closable} onClick={onClose}>
               <svg viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M5 5l10 10M15 5 5 15" />
               </svg>
@@ -155,12 +165,13 @@ export function QuestionSheet({
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const t = useT();
   return (
     <Sheet title={title} width="small" testId={testId} onClose={onClose}>
       <p className="sheet-text">{text}</p>
       <div className="sheet-actions">
         <DashButton variant="tintedGray" data-autofocus onClick={onClose}>
-          Cancel
+          {t("common.cancel")}
         </DashButton>
         <DashButton
           variant="filledBlue"

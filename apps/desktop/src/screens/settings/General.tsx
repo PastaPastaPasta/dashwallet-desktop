@@ -1,6 +1,7 @@
 // Settings ▸ General (QT-135…141, QT-075, IOS-104…106): the display settings (saved as they
 // change, D2), dust protection, the username in payment requests (DP3-03b), the window's network
-// (D6), local currency (MP-01), the rows that come later (D7) and Reset Options (D8).
+// (D6), local currency (MP-01), the language (MP-14), the rows that come later (D7) and Reset
+// Options (D8).
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
@@ -12,8 +13,10 @@ import { DEFAULT_PREFS, useUi } from "../../app/ui";
 import { useTurnOnGovernance } from "../../governance/queries";
 import { DashButton } from "../../components/basics";
 import { NetworkPicker, useNetworkPicker } from "../../components/networkPicker";
+import { networkName } from "../../network/choice";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { QuestionSheet, Sheet } from "../../components/sheet";
+import { byTag, LANGUAGES, systemLanguage, systemLanguages, useT } from "../../i18n";
 import { failureText } from "../../onboarding/model";
 import { DEFAULT_DUST, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
 import { savePrefs, settledPending } from "../../settings/prefs";
@@ -22,10 +25,10 @@ import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./par
 import { LocalCurrencyCard } from "./LocalCurrency";
 import { PrivacyCard } from "./Privacy";
 
-const THEMES: { theme: ThemeName | null; label: string; id: string }[] = [
-  { theme: null, label: "System", id: "system" },
-  { theme: "light", label: "Light", id: "light" },
-  { theme: "dark", label: "Dark", id: "dark" },
+const THEMES: { theme: ThemeName | null; label: "themeSystem" | "themeLight" | "themeDark"; id: string }[] = [
+  { theme: null, label: "themeSystem", id: "system" },
+  { theme: "light", label: "themeLight", id: "light" },
+  { theme: "dark", label: "themeDark", id: "dark" },
 ];
 
 /** The display settings as the controls show them, and their save; the problem says when dw-app
@@ -57,6 +60,7 @@ export function useSavePrefs() {
 }
 
 export function GeneralTab() {
+  const t = useT();
   const launch = useLaunch();
   const { prefs, save, problem } = useSavePrefs();
   const [resetting, setResetting] = useState(false);
@@ -64,33 +68,33 @@ export function GeneralTab() {
   const id = useId();
   return (
     <>
-      <SettingsCard title="Display" testId="settings-display">
+      <SettingsCard title={t("settings.general.display")} testId="settings-display">
         <Problem text={problem} testId="settings-not-saved" />
         <div className="settings-row">
           <span className="settings-row-title" id={`${id}-theme`}>
-            Appearance
+            {t("settings.general.appearance")}
           </span>
           <div className="segmented" role="group" aria-labelledby={`${id}-theme`}>
-            {THEMES.map((t) => (
+            {THEMES.map((theme) => (
               <button
-                key={t.id}
+                key={theme.id}
                 type="button"
                 className="segment"
-                data-testid={`settings-theme-${t.id}`}
-                aria-pressed={prefs.theme === t.theme}
-                onClick={() => void save({ theme: t.theme })}
+                data-testid={`settings-theme-${theme.id}`}
+                aria-pressed={prefs.theme === theme.theme}
+                onClick={() => void save({ theme: theme.theme })}
               >
-                {t.label}
+                {t(`settings.general.${theme.label}`)}
               </button>
             ))}
           </div>
         </div>
         {launch.theme !== null && (
-          <Hint>{launch.theme[0].toUpperCase() + launch.theme.slice(1)} is in use for this session. Your choice below applies the next time Dash Wallet starts normally.</Hint>
+          <Hint>{t(launch.theme === "dark" ? "settings.general.themeForced.dark" : "settings.general.themeForced.light")}</Hint>
         )}
         <div className="settings-row">
           <span className="settings-row-title" id={`${id}-unit`}>
-            Unit to show amounts in
+            {t("settings.general.unit")}
           </span>
           <div className="segmented" role="group" aria-labelledby={`${id}-unit`}>
             {UNIT_CHOICES.map((u) => (
@@ -114,8 +118,9 @@ export function GeneralTab() {
             checked={prefs.subtractFeeByDefault}
             onChange={(e) => void save({ subtractFeeByDefault: e.target.checked })}
           />
-          Subtract the fee from the amount by default
+          {t("settings.general.subtractFee")}
         </label>
+        <LanguageRow choice={prefs.language} save={save} />
         <ShowMasternodesRow checked={prefs.showMasternodes} save={save} />
       </SettingsCard>
       <LocalCurrencyCard />
@@ -123,16 +128,15 @@ export function GeneralTab() {
       <PrivacyCard />
       <NetworkCard />
       <SettingsDashPayCard />
-      <SettingsCard title="Coming soon" testId="settings-not-yet">
-        <NotYetRow testId="settings-language" title="User interface language" why="Translations are coming soon." />
-        <NotYetRow testId="settings-notifications" title="Notifications" why="System and DashPay notifications are coming soon." />
-        <NotYetRow testId="settings-start-on-login" title="Start Dash Wallet on system login" why="Starting on login is coming soon." />
-        <NotYetRow testId="settings-proxy" title="Connect through a SOCKS5 proxy or Tor" why="Tor and SOCKS5 proxy support are coming soon." />
+      <SettingsCard title={t("settings.general.comingSoon")} testId="settings-not-yet">
+        <NotYetRow testId="settings-notifications" title={t("settings.general.notifications")} why={t("settings.general.notificationsWhy")} />
+        <NotYetRow testId="settings-start-on-login" title={t("settings.general.startOnLogin")} why={t("settings.general.startOnLoginWhy")} />
+        <NotYetRow testId="settings-proxy" title={t("settings.general.proxy")} why={t("settings.general.proxyWhy")} />
       </SettingsCard>
-      <SettingsCard title="Reset" testId="settings-reset-card">
+      <SettingsCard title={t("settings.general.resetCard")} testId="settings-reset-card">
         <Done text={resetDone ? OptionsText.resetDone : null} testId="settings-reset-done" />
         <DashButton variant="plainRed" data-testid="settings-reset" onClick={() => setResetting(true)}>
-          Reset options…
+          {t("settings.general.resetOptions")}
         </DashButton>
       </SettingsCard>
       {resetting && (
@@ -141,7 +145,7 @@ export function GeneralTab() {
           <Problem text={problem} testId="settings-reset-error" />
           <div className="sheet-actions">
             <DashButton variant="tintedGray" data-autofocus onClick={() => setResetting(false)}>
-              Cancel
+              {t("common.cancel")}
             </DashButton>
             <DashButton
               variant="filledBlue"
@@ -156,7 +160,7 @@ export function GeneralTab() {
                 })
               }
             >
-              Reset
+              {t("settings.general.reset")}
             </DashButton>
           </div>
         </Sheet>
@@ -167,6 +171,7 @@ export function GeneralTab() {
 
 /** Dust attack protection (QT-075): the engine's, saved with its own button. */
 function DustCard() {
+  const t = useT();
   const backend = useBackend();
   const client = useQueryClient();
   const dust = useDustProtection();
@@ -190,7 +195,7 @@ function DustCard() {
     }
   };
   return (
-    <SettingsCard title="Dust attack protection" testId="settings-dust">
+    <SettingsCard title={t("settings.general.dust")} testId="settings-dust">
       {dust.isError && <Problem text={failureText(dust.error)} testId="settings-dust-error" />}
       <label className="checkbox-row">
         <input
@@ -206,7 +211,7 @@ function DustCard() {
             void apply(want ? (typeof t === "number" ? t : DEFAULT_DUST) : null).finally(() => setTurning(null));
           }}
         />
-        Hide received coins at or under a threshold
+        {t("settings.general.dustOn")}
       </label>
       <form
         className="settings-inline-form"
@@ -218,7 +223,7 @@ function DustCard() {
         }}
       >
         <div className="form-field">
-          <label htmlFor={`${id}-dust`}>Threshold (duffs)</label>
+          <label htmlFor={`${id}-dust`}>{t("settings.general.dustThreshold")}</label>
           <input
             id={`${id}-dust`}
             data-testid="settings-dust-threshold"
@@ -234,7 +239,7 @@ function DustCard() {
           />
         </div>
         <DashButton type="submit" variant="tintedBlue" data-testid="settings-dust-save" disabled={!on || text === null}>
-          Save
+          {t("common.save")}
         </DashButton>
       </form>
       <Problem text={problem} testId="settings-dust-problem" />
@@ -245,17 +250,18 @@ function DustCard() {
 /** The window's network and data directory, and the switch to the other one (the 0.1 release
  * plan; D6's switch without a restart, row 74). */
 function NetworkCard() {
+  const t = useT();
   const { network } = useLaunch();
   const node = useNodeInfo();
   const picker = useNetworkPicker();
   return (
-    <SettingsCard title="Network" testId="settings-network">
+    <SettingsCard title={t("settings.general.network")} testId="settings-network">
       <dl className="detail-list settings-details">
-        <DetailRow label="Network" testId="settings-network-name">
-          {network.kind === "devnet" ? network.dirName : network.kind[0].toUpperCase() + network.kind.slice(1)}
+        <DetailRow label={t("settings.general.network")} testId="settings-network-name">
+          {network.kind === "devnet" ? network.dirName : networkName(network.kind)}
         </DetailRow>
-        <DetailRow label="Data directory" testId="settings-data-dir">
-          {node.data ? <CopyValue value={node.data.dataDir} label="data directory" mono /> : pendingText(node)}
+        <DetailRow label={t("settings.general.dataDirectory")} testId="settings-data-dir">
+          {node.data ? <CopyValue value={node.data.dataDir} action={t("settings.general.dataDirectoryCopy")} mono /> : pendingText(node)}
         </DetailRow>
       </dl>
       <NetworkPicker state={picker} testId="settings-network-choice" />
@@ -265,7 +271,46 @@ function NetworkCard() {
 
 /** Show Masternodes (MG-00 D2): the sidebar item whatever the wallet holds. Turning it on while
  * governance data is off asks once to load it too (MG-09 D6). */
+/** The language of the app's own screens (MP-14): the system's, or one this build ships, each
+ * named in its own language. */
+function LanguageRow({ choice, save }: { choice: string | null; save: (patch: Partial<UiSettings>) => Promise<boolean> }) {
+  const t = useT();
+  const id = useId();
+  const system = systemLanguage(systemLanguages());
+  // A saved tag is bound to its option whatever its case; one this build does not ship gets a row
+  // of its own, so it shows and choosing System default clears it.
+  const shipped = choice === null ? undefined : byTag(choice);
+  const value = choice === null ? "" : (shipped?.tag ?? choice);
+  return (
+    <>
+      <div className="settings-row">
+        <label className="settings-row-title" htmlFor={`${id}-language`}>
+          {t("settings.general.language")}
+        </label>
+        <select
+          id={`${id}-language`}
+          className="settings-select"
+          data-testid="settings-language"
+          aria-describedby={`${id}-language-hint`}
+          value={value}
+          onChange={(e) => void save({ language: e.target.value || null })}
+        >
+          <option value="">{t("settings.general.languageSystem", { language: system.name })}</option>
+          {choice !== null && !shipped && <option value={choice}>{t("settings.general.languageUnavailable", { tag: choice })}</option>}
+          {LANGUAGES.map((l) => (
+            <option key={l.tag} value={l.tag} lang={l.tag} dir={l.dir}>
+              {l.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <Hint id={`${id}-language-hint`}>{t("settings.general.languageHint")}</Hint>
+    </>
+  );
+}
+
 function ShowMasternodesRow({ checked, save }: { checked: boolean; save: (patch: Partial<UiSettings>) => Promise<boolean> }) {
+  const t = useT();
   const backend = useBackend();
   const { turnOn } = useTurnOnGovernance();
   const [ask, setAsk] = useState(false);
@@ -277,14 +322,14 @@ function ShowMasternodesRow({ checked, save }: { checked: boolean; save: (patch:
     <>
       <label className="checkbox-row">
         <input type="checkbox" data-testid="settings-show-masternodes" checked={checked} onChange={(e) => void change(e.target.checked)} />
-        Show Masternodes
+        {t("settings.general.showMasternodes")}
       </label>
-      <Hint>Shows Masternodes in the sidebar: to read and vote on proposals and to vote on usernames. It is off until you turn it on.</Hint>
+      <Hint>{t("settings.general.showMasternodesHint")}</Hint>
       {ask && (
         <QuestionSheet
-          title="Load governance data?"
-          text="Also load proposals and votes from the network? Governance data is off for this network."
-          confirm="Turn on"
+          title={t("settings.general.governanceAskTitle")}
+          text={t("settings.general.governanceAskText")}
+          confirm={t("settings.general.governanceTurnOn")}
           testId="settings-governance-ask"
           confirmTestId="settings-governance-turn-on"
           onConfirm={turnOn}

@@ -2,7 +2,7 @@
 //! cadence. The end-to-end behaviour is in `tests/e0_05_bringup.rs`.
 
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use dw_vault::{KdfParams, KdfPolicy, LockState, MemoryOsStore, VaultConfig};
@@ -338,6 +338,93 @@ fn session_with(
     urls: Vec<String>,
     encrypted: bool,
 ) -> (Engine, Arc<NetworkSession>) {
+    session_with_timeout(engine, urls, encrypted, None)
+}
+
+/// As [`session_on`], with DAPI attempt timeouts disabled: a request to
+/// `hole` stays open until the hole is released.
+fn session_held(dir: &std::path::Path, hole: &HeldHole) -> (Engine, Arc<NetworkSession>) {
+    session_with_timeout(
+        engine(dir, 4),
+        hole.urls.clone(),
+        false,
+        Some(Duration::ZERO),
+    )
+}
+
+/// Four DAPI addresses that accept every connection and never answer.
+/// Released, each held connection is shut down and each later one is shut
+/// down as it arrives, so a request on it fails at once on every OS: a
+/// closed listener's unaccepted connections and a refused connect end at
+/// an OS's own pace (#182: Windows outlived the test's wait). Dropped, it
+/// releases first, so a test that fails cannot leave a pass waiting.
+struct HeldHole {
+    urls: Vec<String>,
+    held: Arc<Mutex<(bool, Vec<std::net::TcpStream>)>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl HeldHole {
+    fn new() -> Self {
+        let held = Arc::new(Mutex::new((false, Vec::new())));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut urls = Vec::new();
+        let mut threads = Vec::new();
+        for _ in 0..4 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            urls.push(format!("http://{}", listener.local_addr().unwrap()));
+            let (held, stop) = (Arc::clone(&held), Arc::clone(&stop));
+            threads.push(std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            let mut held = guard(&held);
+                            if held.0 {
+                                let _ = stream.shutdown(std::net::Shutdown::Both);
+                            } else {
+                                held.1.push(stream);
+                            }
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                    }
+                }
+            }));
+        }
+        Self {
+            urls,
+            held,
+            stop,
+            threads,
+        }
+    }
+
+    fn release(&self) {
+        let mut held = guard(&self.held);
+        held.0 = true;
+        for stream in held.1.drain(..) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+impl Drop for HeldHole {
+    fn drop(&mut self) {
+        self.release();
+        self.stop.store(true, Ordering::SeqCst);
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn session_with_timeout(
+    engine: Engine,
+    urls: Vec<String>,
+    encrypted: bool,
+    dapi_request_timeout: Option<Duration>,
+) -> (Engine, Arc<NetworkSession>) {
     let s = engine
         .block_on(engine.open_network(
             DashNetwork::Regtest,
@@ -345,6 +432,7 @@ fn session_with(
                 quorum_url: Some(urls[0].clone()),
                 dapi_addresses: urls,
                 spv_peers: vec!["127.0.0.1:1".into()],
+                dapi_request_timeout,
                 ..Default::default()
             },
         ))
@@ -352,6 +440,7 @@ fn session_with(
     engine
         .block_on(s.vault_op(move |v| v.create(encrypted.then_some(PASSPHRASE))))
         .unwrap();
+    engine.block_on(s.adopt_signing_window_default()).unwrap();
     (engine, s)
 }
 
@@ -403,7 +492,7 @@ const BLACKHOLED_LOOPS: [&str; 5] = [
 /// Whether `stopped` is the stop's refusal naming the loops still in flight
 /// at its deadline (`bringup.rs` `stop_platform`): at least one, and only
 /// [`BLACKHOLED_LOOPS`]. Which of them are still in flight depends on timing.
-fn names_only_stuck_loops(stopped: &Result<(), EngineError>) -> bool {
+pub(super) fn names_only_stuck_loops(stopped: &Result<(), EngineError>) -> bool {
     let Err(EngineError::Sdk(detail)) = stopped else {
         return false;
     };
@@ -453,12 +542,27 @@ fn the_stop_check_takes_whichever_blackholed_loops_are_stuck() {
 /// `start_spv` does not wait for that pass: the drain is retried inside the
 /// start task. Before the fix the stop returned `Ok`, and the start waited
 /// another full drain budget (10 s).
+///
+/// The pass and that budget are the same length. A DAPI attempt ends at
+/// 10 s (rs-dapi-client `request_settings.rs:9`, applied in
+/// `dapi_client.rs:1198`) and `quiesce` waits
+/// `COORDINATOR_DRAIN_BUDGET`, also 10 s (rs-platform-wallet
+/// `manager/mod.rs:95`, `dashpay_sync.rs:287`). On a loaded runner the
+/// attempt finishes as the budget runs out, the stop finds nothing left,
+/// and it returns `Ok(())`. This session disables the attempt deadline
+/// (`dapi_request_timeout: Some(0)`) and holds the passes' connections
+/// until after the stop and the next start, then releases them
+/// ([`HeldHole`]).
 #[test]
 fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     let _serial = serial();
     let dir = dw_testutil::private_tempdir();
-    let hole = blackhole();
-    let (engine, s) = session_on(dir.path(), &hole, false);
+    let hole = HeldHole::new();
+    let (engine, s) = session_held(dir.path(), &hole);
+    // After the engine, so a panic — the stop, restart, and shutdown
+    // bounds below included — drops this first and releases the passes
+    // before the engine's drop thread joins them.
+    let release = hole;
     let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
     give_identity(&engine, &s, id);
     engine.block_on(s.start_spv()).unwrap();
@@ -471,7 +575,12 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     });
 
     let stopping = Instant::now();
-    let stopped = engine.block_on(s.stop_spv());
+    // `block_on` drives this on the engine's tokio runtime. The outer
+    // bound fails the test if a stop stops draining, instead of hanging
+    // the job. With no attempt deadline the pass does not end on its own.
+    let stopped = engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), s.stop_spv()).await })
+        .expect("the stop returned within 60 s");
     eprintln!(
         "stop with a stuck pass took {:?}: {stopped:?}",
         stopping.elapsed()
@@ -479,12 +588,79 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     assert!(names_only_stuck_loops(&stopped), "{stopped:?}");
     assert_eq!(s.spv_state().unwrap(), SpvState::Stopped);
 
-    let starting = Instant::now();
+    // Allow scheduler delay, but not a full 10 s coordinator drain. A
+    // restart that waits for the held pass hits this bound and drops
+    // `release` on the way out, so the test fails instead of hanging.
+    engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(5), s.start_spv()).await })
+        .expect("restart returned before the drain budget")
+        .unwrap();
+    assert!(
+        manager.dashpay_sync().is_syncing(),
+        "restart returned while the DashPay pass was still in flight"
+    );
+    assert_ne!(s.spv_state().unwrap(), SpvState::Stopped);
+    release.release();
+    wait_until("the held passes end", Duration::from_secs(10), || {
+        !manager.dashpay_sync().is_syncing()
+            && !manager.identity_sync().is_syncing()
+            && !manager.dpns_sync().is_syncing()
+            && !manager.platform_address_sync().is_syncing()
+            && !manager.shielded_sync().is_syncing()
+    });
+    engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), engine.shutdown()).await })
+        .expect("the shutdown returned within 60 s")
+        .unwrap();
+}
+
+/// Reads `spv_state` as each `SpvStateChanged{running: true}` is emitted.
+#[derive(Default)]
+struct StateAtRunning {
+    session: OnceLock<Weak<NetworkSession>>,
+    seen: Mutex<Vec<SpvState>>,
+}
+
+impl EventSink for StateAtRunning {
+    fn emit(&self, event: EngineEvent) {
+        if let EngineEvent::SpvStateChanged { running: true, .. } = event
+            && let Some(s) = self.session.get().and_then(Weak::upgrade)
+        {
+            guard(&self.seen).push(s.spv_state().unwrap());
+        }
+    }
+}
+
+/// #231: a renderer that refreshes on `SpvStateChanged{running: true}` must
+/// read `Running`, from the bring-up's start and from `rotate_peers`'
+/// restart. Before the fix the supervisor announced the start before
+/// marking itself running, so the read was `Starting` and no later event
+/// corrected it. The pause holds the supervisor between the two.
+#[test]
+fn spv_reads_running_when_its_running_event_arrives() {
+    let _serial = serial();
+    let dir = dw_testutil::private_tempdir();
+    let rec = Arc::new(StateAtRunning::default());
+    let (engine, s) = session_with(
+        engine_with(dir.path(), 4, Arc::clone(&rec) as Arc<dyn EventSink>),
+        vec!["http://127.0.0.1:1".into()],
+        false,
+    );
+    rec.session.set(Arc::downgrade(&s)).unwrap();
+    let pause = Arc::new(TestPause::default());
+    *guard(&s.platform.pause_before_running) = Some(Arc::clone(&pause));
     engine.block_on(s.start_spv()).unwrap();
-    let took = starting.elapsed();
-    eprintln!("the next start_spv took {took:?}");
-    assert!(took < Duration::from_millis(100), "{took:?}");
-    assert_eq!(s.spv_state().unwrap(), SpvState::Starting);
+    wait_until("the start, held", Duration::from_secs(5), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    pause.release.notify_one();
+    wait_until("the running event", Duration::from_secs(5), || {
+        !guard(&rec.seen).is_empty()
+    });
+    assert_eq!(*guard(&rec.seen), [SpvState::Running]);
+
+    engine.block_on(s.rotate_peers()).unwrap();
+    assert_eq!(*guard(&rec.seen), [SpvState::Running, SpvState::Running]);
     engine.block_on(engine.shutdown()).unwrap();
 }
 
@@ -500,6 +676,9 @@ fn the_close_ends_the_shielded_passes_that_redrive_spends() {
     let dir = dw_testutil::private_tempdir();
     let hole = blackhole();
     let (engine, s) = session_on(dir.path(), &hole, false);
+    // The pool's count unread at once: the pass goes on to the silent nodes
+    // before the other bring-up calls give up on them.
+    *s.platform.notes_count.lock().unwrap() = Some(None);
     let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
     give_identity(&engine, &s, id);
     engine.block_on(s.start_spv()).unwrap();

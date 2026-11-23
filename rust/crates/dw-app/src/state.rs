@@ -42,6 +42,26 @@ pub(crate) fn take_engine_start_hook() -> Option<Box<dyn FnOnce() + Send>> {
     ENGINE_START_HOOK.with(|slot| slot.borrow_mut().take())
 }
 
+#[cfg(test)]
+thread_local! {
+    static UPDATES_SEAM: std::cell::RefCell<Option<crate::updates::Updates>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The next `AppState` on this thread uses `updates` instead of the app's.
+#[cfg(test)]
+pub(crate) fn set_updates(updates: crate::updates::Updates) {
+    UPDATES_SEAM.with(|slot| *slot.borrow_mut() = Some(updates));
+}
+
+fn updates_for<R: Runtime>(app: &AppHandle<R>) -> crate::updates::Updates {
+    #[cfg(test)]
+    if let Some(updates) = UPDATES_SEAM.with(|slot| slot.borrow_mut().take()) {
+        return updates;
+    }
+    crate::updates::Updates::for_app(app)
+}
+
 /// Builds the engine. Called again when a build failed and the user retries:
 /// the splash's Retry must not repeat a consumed closure.
 type EngineBuild = std::sync::Arc<dyn Fn() -> Result<Engine, AppError> + Send + Sync>;
@@ -94,6 +114,9 @@ pub struct AppState {
     /// Deep links and the native menus' state (U-01). The same `Arc` is
     /// Tauri-managed, for the callbacks that run before this state exists.
     pub shell: Arc<Shell>,
+    /// Updates (PK-03): unavailable unless the build, the install and the
+    /// user allow them.
+    pub updates: crate::updates::Updates,
     /// The data root's instance lock, when `run` did not take it already
     /// (it does, before any window exists, and keeps it Tauri-managed; the
     /// mock-runtime builders do not). Declared after `engine`, so it is
@@ -603,6 +626,7 @@ impl AppState {
             memory,
             payment_policy: Arc::default(),
             shell,
+            updates: updates_for(app),
             _instance: instance,
             #[cfg(test)]
             payment_seam: StdMutex::default(),
@@ -749,6 +773,12 @@ impl AppState {
         {
             seam.pass().await;
         }
+    }
+
+    /// The active session, unless an open or a close holds it right now;
+    /// never waits.
+    pub(crate) fn session_now(&self) -> Option<Arc<NetworkSession>> {
+        self.session.try_lock().ok().and_then(|slot| slot.clone())
     }
 
     /// The active session; `network_not_open` before `open_network`.

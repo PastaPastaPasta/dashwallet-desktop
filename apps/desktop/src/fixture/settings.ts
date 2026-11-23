@@ -8,6 +8,7 @@
 // closed or removed wallet, which the engine revokes.
 
 import type { AppError } from "../api/generated/AppError";
+import type { AutomaticBackupFailure } from "../api/generated/AutomaticBackupFailure";
 import type { BackupFileHeader } from "../api/generated/BackupFileHeader";
 import type { BackupSummary } from "../api/generated/BackupSummary";
 import type { CoreExportWarningName } from "../api/generated/CoreExportWarningName";
@@ -33,8 +34,23 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   // dw-app's default is false (the first-run notice); the fixture starts past it so a scenario
   // opens on its screen, and `pre-release-notice` is the one that shows it.
   preReleaseNoticeDismissed: true,
+  language: null,
+  checkUpdatesAutomatically: false,
 };
 const MAX_AUTO_LOCK_SECS = 86_400;
+/** The language tags `settings.rs` accepts: narrower than BCP 47. A 2–3 letter language, subtags of
+ * 1–8 letters or digits, and each single-character subtag followed by a longer one. */
+export function isLanguageTag(tag: string): boolean {
+  if (tag.length > 35) return false;
+  const [lang, ...subtags] = tag.split("-");
+  if (!/^[A-Za-z]{2,3}$/.test(lang)) return false;
+  let openSingleton = false;
+  for (const p of subtags) {
+    if (!/^[A-Za-z0-9]{1,8}$/.test(p) || (p.length === 1 && openSingleton)) return false;
+    openSingleton = p.length === 1;
+  }
+  return !openSingleton;
+}
 const MAX_KEEP = 10;
 const MAX_DUST = 1_000_000;
 
@@ -78,6 +94,8 @@ export interface SettingsWorld {
   /** Wallets left out of the load-on-startup list. */
   notAtStartup: string[];
   backups: BackupSummary[];
+  /** Wallets whose latest automatic backup failed (`automatic_backup_failures`). */
+  backupFailures: AutomaticBackupFailure[];
   keep: number;
   /** Dust protection in duffs; null: off (QT-075). */
   dust: number | null;
@@ -104,6 +122,7 @@ export function newSettingsWorld(): SettingsWorld {
     unloadRefusal: null,
     notAtStartup: [],
     backups: [],
+    backupFailures: [],
     keep: 5,
     dust: 100,
     coreIncompatible: [],
@@ -219,6 +238,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       if (settings.decimalDigits < 2 || settings.decimalDigits > 8) throw fail("invalid_argument", "decimal digits must be 2 to 8");
       if (settings.autoLockSecs !== null && (settings.autoLockSecs < 1 || settings.autoLockSecs > MAX_AUTO_LOCK_SECS))
         throw fail("invalid_argument", "auto lock must be 1 s to 24 hours");
+      if (settings.language !== null && !isLanguageTag(settings.language)) throw fail("invalid_argument", "language must be a BCP 47 tag");
       world.settings.ui = { ...settings };
       return world.settings.ui;
     },
@@ -254,7 +274,9 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     set_load_on_startup: ({ walletId, loadOnStartup }, { world }) => {
       if (!world.wallets.some((x) => x.summary.walletId === walletId)) throw fail("wallet_not_found", `wallet not found: ${walletId}`);
       const rest = world.settings.notAtStartup.filter((id) => id !== walletId);
-      world.settings.notAtStartup = loadOnStartup ? rest : [...rest, walletId];
+      const notAtStartup = loadOnStartup ? rest : [...rest, walletId];
+      if (world.wallets.every((x) => notAtStartup.includes(x.summary.walletId))) throw fail("last_startup_wallet", "at least one wallet opens at start");
+      world.settings.notAtStartup = notAtStartup;
       return null;
     },
     rename_wallet: ({ walletId, name }, { world }) => {
@@ -272,6 +294,12 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       world.lock = { ...world.lock, walletsWithSecrets: world.lock.walletsWithSecrets.filter((id) => id !== walletId) };
       world.settings.closed = world.settings.closed.filter((id) => id !== walletId);
       world.settings.notAtStartup = world.settings.notAtStartup.filter((id) => id !== walletId);
+      // As the engine: the only wallet on the startup list hands it to the first open one.
+      const left = world.wallets.map((x) => x.summary.walletId);
+      if (left.length > 0 && left.every((id) => world.settings.notAtStartup.includes(id))) {
+        const next = left.find((id) => !world.settings.closed.includes(id)) ?? left[0];
+        world.settings.notAtStartup = world.settings.notAtStartup.filter((id) => id !== next);
+      }
       ctx.emit({ kind: "walletRemoved", network: network(world), walletId });
       return null;
     },
@@ -319,12 +347,15 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     },
     automatic_backups: ({ walletId }, { world }) =>
       world.settings.backups.filter((b) => b.automatic && (walletId === null || b.walletId === walletId)).toSorted((a, b) => b.createdAt - a.createdAt),
+    automatic_backup_failures: (_, { world }) =>
+      world.settings.backupFailures.filter((f) => world.wallets.some((w) => w.summary.walletId === f.walletId)),
     backup_directory: () => FIXTURE_BACKUP_DIR,
     backup_policy: (_, { world }) => ({ keep: world.settings.keep, directory: FIXTURE_BACKUP_DIR }),
     set_backup_policy: ({ keep }, { world }) => {
       if (!Number.isInteger(keep) || keep < 0 || keep > MAX_KEEP) throw fail("invalid_argument", "keep 0 to 10 backups");
       const s = world.settings;
       s.keep = keep;
+      if (keep === 0) s.backupFailures = [];
       // Deletes the oldest automatic backups of each wallet beyond `keep`.
       const kept = new Map<string, number>();
       s.backups = s.backups

@@ -1,4 +1,5 @@
 import type { SyncStatus } from "../api/generated/SyncStatus";
+import { formatLocale, t } from "../i18n";
 
 /** Overall sync progress, 0–100, as the mean of the phases that report a target. `null`
  * before any phase reports one. Raw: the engine does not damp, and neither does this. */
@@ -8,6 +9,9 @@ export function syncPercent(s: SyncStatus): number | null {
   // Never "100%" while the engine says it is not caught up: that reads as a bug.
   return raw === null ? null : Math.min(raw, MAX_SYNCING_PERCENT);
 }
+
+/** A sync percentage with one decimal, as `toFixed(1)` rounds it, in the formatting locale. */
+export const oneDecimal = (percent: number) => new Intl.NumberFormat(formatLocale(undefined), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(Number(percent.toFixed(1)));
 
 /** The mean of the phases that report a target, as the engine has them (up to 100). */
 function phasePercent(s: SyncStatus): number | null {
@@ -67,7 +71,7 @@ export const isSyncing = (s: SyncStatus) => s.running && !s.caughtUp;
 /** The status bar's state text (dash-qt strings). The percentage is not part of it: a live
  * region that changed with every percent would make screen readers repeat it. */
 export function syncState(s: SyncStatus | undefined): string {
-  if (!s) return "Connecting…";
-  if (!s.running) return "Not syncing";
-  return s.caughtUp ? "Up to date" : "Synchronizing with network…";
+  if (!s) return t("shell.status.connecting");
+  if (!s.running) return t("shell.status.notSyncing");
+  return s.caughtUp ? t("shell.status.upToDate") : t("shell.status.synchronizing");
 }

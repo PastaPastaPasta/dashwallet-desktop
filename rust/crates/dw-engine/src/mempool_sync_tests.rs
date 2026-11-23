@@ -19,6 +19,19 @@ use crate::history::{HistoryFilter, HistoryQuery, HistorySort, TxStatusKind};
 use crate::session::NetworkSession;
 use crate::{DashNetwork, Engine, WalletBalances, WalletId};
 
+#[path = "crash_send_tests.rs"]
+mod crash_send_tests;
+#[path = "dismissed_spend_disk_tests.rs"]
+mod dismissed_spend_disk_tests;
+#[path = "h03_kill9_core_tests.rs"]
+mod h03_kill9_core_tests;
+#[path = "own_spend_balance_tests.rs"]
+mod own_spend_balance_tests;
+#[path = "own_spend_disk_tests.rs"]
+mod own_spend_disk_tests;
+#[path = "signed_coin_pin_tests.rs"]
+mod signed_coin_pin_tests;
+
 const PHRASE: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const BIRTH: u32 = 500;
@@ -119,8 +132,10 @@ fn engine_wallet() -> (tempfile::TempDir, Engine, Arc<NetworkSession>, WalletId)
 }
 
 /// Closes the network and opens it again: the wallet comes back from its
-/// store.
+/// store. What holds the load fence (a wallet load, the shielded start) can
+/// outlast the close's 30 s wait on a loaded machine.
 fn reopen(engine: &Engine, session: Arc<NetworkSession>) -> Arc<NetworkSession> {
+    *session.close_load_wait.lock().unwrap() = Some(std::time::Duration::from_secs(180));
     drop(session);
     assert!(
         engine
@@ -503,7 +518,13 @@ fn a_conflicting_spend_seen_mid_sync_is_dropped_when_its_rival_is_mined() {
     mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
     let coin = OutPoint::new(funding.txid(), 0);
     let next = receive_address(&engine, &session, id);
-    let loser = spend_of(coin, vec![(next.script_pubkey(), PAID - 1_000)]);
+    let loser = signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &to,
+        spend_of(coin, vec![(next.script_pubkey(), PAID - 1_000)]),
+    );
     mempool(&engine, &session, id, &loser);
     assert!(balances(&session, id).catching_up);
     assert_eq!(rows(&engine, &session, id).len(), 2);
@@ -631,4 +652,24 @@ fn a_rescan_from_the_birth_height_marks_the_balance_catching_up() {
         )),
         "Balances is sent when the rescan rewinds below the birth block"
     );
+}
+
+/// A chain view (`history_page`, `tx_detail`, the notices) reads the history
+/// store's own entries, not a copy of the wallet's whole history per read
+/// (H-06: on a 40k wallet the copy cost more than the page).
+#[test]
+fn a_chain_view_reads_the_history_store_in_place() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let manager = session.manager().unwrap();
+    session.hub.history.with_wallet(id, |_| ());
+    let store = session
+        .hub
+        .history
+        .read(&id, |txs| std::ptr::from_ref(txs) as usize);
+    let viewed = engine
+        .block_on(session.with_view(&manager, id, |view| {
+            std::ptr::from_ref(view.history) as usize
+        }))
+        .unwrap();
+    assert_eq!(viewed, store);
 }

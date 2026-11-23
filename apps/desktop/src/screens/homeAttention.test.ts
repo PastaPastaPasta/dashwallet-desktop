@@ -34,7 +34,7 @@ vi.mock("../api/queries", async (original) => ({
 }));
 vi.mock("../app/ui", async (original) => ({
   ...await original<typeof import("../app/ui")>(),
-  useUi: (select: (state: unknown) => unknown) => select({ discreet: false, prefs: { unit: "dash", decimalDigits: 8 } }),
+  useUi: (select: (state: unknown) => unknown) => select({ discreet: false, prefs: { unit: "dash", decimalDigits: 8, language: null } }),
 }));
 vi.mock("../onboarding/model", async (original) => ({
   ...await original<typeof import("../onboarding/model")>(),

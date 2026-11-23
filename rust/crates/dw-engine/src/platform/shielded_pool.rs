@@ -109,13 +109,15 @@
 //!   aborts, under no engine timeout; the library's own waits are bounded
 //!   by its arguments.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, Weak};
 use std::time::Duration;
 
+use dash_sdk::platform::Fetch;
+use dash_sdk::query_types::{NoParamQuery, ShieldedNotesCount};
 use dashcore::{Address, Network, OutPoint, Txid};
 use dpp::address_funds::{OrchardAddress, PlatformAddress};
 use dpp::balances::credits::CREDITS_PER_DUFF;
@@ -126,27 +128,30 @@ use dw_appdb::dispatch::{
     TopUpSettled,
 };
 use dw_vault::{SHIELDED_ACCOUNT, VaultError, VaultSigner};
-use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+use key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingAccount;
 use platform_wallet::changeset::{
     PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
 };
+use platform_wallet::manager::shielded_sync::WalletShieldedOutcome;
 use platform_wallet::wallet::asset_lock::AssetLockFunding;
 use platform_wallet::wallet::shielded::note_selection::{ShieldedFeeKind, select_notes_with_fee};
 use platform_wallet::wallet::shielded::store::StalePendingSpend;
 use platform_wallet::wallet::shielded::{
     CachedOrchardProver, DispatchRefused, FileShieldedStoreError, NetworkShieldedCoordinator,
     ShieldedActivityEntry, ShieldedActivityKind as Kind, ShieldedActivityStatus as Status,
-    ShieldedDirection as Direction, ShieldedDispatch, ShieldedDispatchKind,
+    ShieldedBalanceSource, ShieldedDirection as Direction, ShieldedDispatch, ShieldedDispatchKind,
     ShieldedDispatchPayload, ShieldedDispositionRefusal, ShieldedLocalBalanceState, ShieldedNote,
     ShieldedSpendDisposition, ShieldedStore, SubwalletId, UnresolvedReason,
 };
 use platform_wallet::{AssetLockFundingType, PlatformWalletError};
 use sha2::{Digest, Sha256};
 
+use super::core_max::{self, CoreCoins, MaxPlan};
+use super::credits::FundAmount;
 use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait as Wait};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
-use super::registration::{RegistrationWait, funding_cap, grant_cap};
+use super::registration::{RegistrationWait, ShieldedFacts, funding_cap, grant_cap};
 use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable,
 };
@@ -170,7 +175,7 @@ const MAX_HISTORY: u32 = 500;
 const MEMO_BYTES: usize = 36;
 /// The fewest actions a spend's bundle carries (Orchard pads a one-note
 /// spend to two), which the library's selection and fee assume.
-const MIN_ACTIONS: usize = 2;
+pub(crate) const MIN_ACTIONS: usize = 2;
 /// The Core fee rate an unshield asks for, Platform's minimum.
 const CORE_FEE_PER_BYTE: u32 =
     dpp::state_transition::identity_credit_withdrawal_transition::MIN_CORE_FEE_PER_BYTE;
@@ -281,6 +286,15 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// outcome and whose notes it holds until that is acknowledged, each by
     /// Platform's hash of its transition.
     fn held_spends(&self) -> impl Future<Output = Result<HashSet<[u8; 32]>, PlatformError>> + Send;
+    /// The wallet's [`RestClock`], kept in `app.sqlite`.
+    fn rest_clock(&self) -> impl Future<Output = Result<RestClock, PlatformError>> + Send;
+    /// [`write_rest_clock`] on the wallet's `app.sqlite`.
+    fn record_rest(
+        &self,
+        seen: Vec<[u8; 32]>,
+        at: (u64, u64),
+        scanned: bool,
+    ) -> impl Future<Output = Result<(), PlatformError>> + Send;
     /// The account's spends the library could not confirm and keeps to
     /// re-send.
     fn unresolved(
@@ -362,6 +376,20 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// and waited for its proof. A built lock below `minimum_lock_duffs`
     /// is dropped before it is tracked or sent.
     fn fund_drain(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> impl Future<Output = Result<OutPoint, FundError>> + Send;
+    /// A Core Max: BIP44 account 0 read under `fence` (`core_max.rs`).
+    fn core_coins(
+        &self,
+        fence: &crate::coins::CoinFence,
+    ) -> impl Future<Output = Result<CoreCoins, PlatformError>> + Send;
+    /// Drains BIP44 account 0 into one shield lock, as [`Self::fund_drain`]
+    /// does CoinJoin account 0 (`core_max::fund`).
+    fn fund_core_max(
         &self,
         coins: &[DrainCoin],
         total_duffs: u64,
@@ -600,6 +628,151 @@ async fn confirm_unrecorded(
     } else {
         Err(ShieldedError::UnrecordedSpend)
     }
+}
+
+/// What a Shielded-funded registration's readiness reads of the account
+/// (C-funding F16, F17), into `facts`. A held spend counts as unsettled:
+/// only the user's acknowledgement releases its notes. A rest clock that
+/// cannot be read leaves the rest unknown (not rested).
+pub(crate) async fn registration_facts(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    facts: &mut ShieldedFacts,
+) -> Result<(), PlatformError> {
+    facts.unsettled = !session.leases.journal_ready()
+        || !(session.leases.unrecorded_spends(wallet).await)
+            .map_err(|detail| PlatformError::Storage { detail })?
+            .is_empty();
+    if !lib.bind().await? {
+        return Ok(());
+    }
+    facts.synced = (lib.ledger().await?).is_some_and(|l| l.synced_index.is_some());
+    facts.notes = lib.unspent().await?;
+    facts.unsettled = facts.unsettled
+        || !lib.unresolved().await?.is_empty()
+        || !lib.held_spends().await?.is_empty();
+    match observe_rest(lib, false, crate::events::unix_now()).await {
+        Ok(latest) => {
+            (facts.rest_known, facts.latest_incoming) = (latest.is_some(), latest.flatten())
+        }
+        Err(e) => {
+            tracing::warn!(wallet_id = %wallet, error = %e, "the shielded rest clock is unreadable")
+        }
+    }
+    Ok(())
+}
+
+/// C-funding F17's clock (ruling M2a), in the wallet's local scope of
+/// `app.sqlite`: whether its first shielded scan in this install has
+/// completed, and when the engine first saw each incoming note, by its
+/// commitment (`0`: in that first scan, restored).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct RestClock {
+    pub(crate) scanned: bool,
+    pub(crate) seen: HashMap<[u8; 32], u64>,
+}
+
+const REST_PREFIX: &str = "shielded.rest.";
+const REST_SCANNED: &str = "shielded.rest.scanned";
+
+/// `wallet`'s [`RestClock`]; a row that does not read is corrupt.
+pub(crate) fn read_rest_clock(
+    db: &dw_appdb::AppDb,
+    wallet: WalletId,
+) -> Result<RestClock, dw_appdb::AppDbError> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let mut clock = RestClock::default();
+    for (key, value) in db.settings_with_prefix(&scope, REST_PREFIX)? {
+        let seen = (hex::decode(&key[REST_PREFIX.len()..]).ok())
+            .and_then(|cmx| <[u8; 32]>::try_from(cmx).ok())
+            .zip(value.parse().ok());
+        match seen {
+            _ if key == REST_SCANNED => clock.scanned = true,
+            Some((cmx, at)) => _ = clock.seen.insert(cmx, at),
+            None => return Err(dw_appdb::AppDbError::Corrupt(key)),
+        }
+    }
+    Ok(clock)
+}
+
+/// Adds each of `seen` the clock lacks to `wallet`'s [`RestClock`] at `at`
+/// (at `now` once the first scan is marked), and with `scanned` marks that
+/// scan complete: durably in one transaction, never moving a recorded time.
+pub(crate) fn write_rest_clock(
+    db: &dw_appdb::AppDb,
+    wallet: WalletId,
+    seen: &[[u8; 32]],
+    (at, now): (u64, u64),
+    scanned: bool,
+) -> Result<(), dw_appdb::AppDbError> {
+    let keys: Vec<String> = (seen.iter())
+        .map(|cmx| format!("{REST_PREFIX}{}", hex::encode(cmx)))
+        .collect();
+    let (at, now) = (at.to_string(), now.to_string());
+    let writes: Vec<_> = (keys.iter())
+        .map(|k| (k.as_str(), at.as_str(), now.as_str()))
+        .chain(scanned.then_some((REST_SCANNED, "1", "1")))
+        .collect();
+    db.add_settings_durable(
+        &dw_appdb::local_scope(&wallet.to_string()),
+        REST_SCANNED,
+        &writes,
+    )
+}
+
+/// Records each unspent own note, and each incoming row's note, the clock
+/// has not seen, at `now` (restored until the first scan completes; ruling
+/// M2b), and with `scanned` marks that scan complete. The newest time of
+/// those notes, the earlier of its first sight and any row's `created_at`;
+/// `None` until the first scan has completed.
+pub(crate) async fn observe_rest(
+    lib: &impl ShieldedLib,
+    scanned: bool,
+    now: u64,
+) -> Result<Option<Option<u64>>, PlatformError> {
+    let mut clock = lib.rest_clock().await?;
+    let mut keys: HashSet<[u8; 32]> = (lib.unspent().await?.iter()).map(|n| n.cmx).collect();
+    let mut created: HashMap<[u8; 32], u64> = HashMap::new();
+    let mut offset = 0;
+    loop {
+        let page = lib.activity(offset, MAX_HISTORY).await?;
+        for row in &page {
+            let cmxs = if row.note_cmxs.is_empty() {
+                vec![row.id]
+            } else {
+                row.note_cmxs.clone()
+            };
+            if row.created_at_ms / 1000 != 0 {
+                for cmx in &cmxs {
+                    let at = created.entry(*cmx).or_insert(u64::MAX);
+                    *at = (*at).min(row.created_at_ms / 1000);
+                }
+            }
+            if matches!(row.direction, Direction::In) {
+                keys.extend(cmxs);
+            }
+        }
+        if page.len() < MAX_HISTORY as usize {
+            break;
+        }
+        offset += MAX_HISTORY;
+    }
+    let new: Vec<_> = (keys.iter())
+        .filter(|k| !clock.seen.contains_key(*k))
+        .copied()
+        .collect();
+    if !new.is_empty() || (scanned && !clock.scanned) {
+        let at = if clock.scanned { now } else { 0 };
+        lib.record_rest(new, (at, now), scanned).await?;
+        clock = lib.rest_clock().await?;
+    }
+    let time = |k: &[u8; 32]| {
+        let seen = clock.seen.get(k).copied().unwrap_or(now);
+        let times = [created.get(k).copied(), Some(seen)].into_iter().flatten();
+        times.filter(|&t| t != 0).min()
+    };
+    Ok(clock.scanned.then(|| keys.iter().filter_map(time).max()))
 }
 
 pub(crate) async fn receive_address(
@@ -1299,16 +1472,7 @@ async fn shield_plan(
     if duffs < min {
         return Err(ShieldedError::BelowMinimum { min });
     }
-    // A lock whose consumption is unknown may never settle (only a proved
-    // apply does, and Platform answers a consumed lock "already consumed",
-    // unproved): it stays listed, resumable, and blocks nothing. The new
-    // shield funds a new lock from the wallet's coins; that outpoint is no
-    // coin of the wallet's.
-    if let Some(open) = (open_shields(lib).await?.iter()).find(|o| !o.consumption_unknown) {
-        return Err(ShieldedError::ShieldPending {
-            txid: open.lock.outpoint.txid.to_string(),
-        });
-    }
+    no_open_shield(lib).await?;
     let fee_duffs = lib.fee_bound().await?;
     let spendable = lib.spendable().await?;
     let total_duffs = duffs.saturating_add(fee_duffs);
@@ -1340,7 +1504,63 @@ async fn shield_plan(
             max_duffs: total_duffs,
             max_credits: 0,
         },
+        max: None,
     })
+}
+
+/// Refused while a shield lock that can still settle is open.
+async fn no_open_shield(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
+    // A lock whose consumption is unknown may never settle (only a proved
+    // apply does, and Platform answers a consumed lock "already consumed",
+    // unproved): it stays listed, resumable, and blocks nothing. The new
+    // shield funds a new lock from the wallet's coins; that outpoint is no
+    // coin of the wallet's.
+    match (open_shields(lib).await?.iter()).find(|o| !o.consumption_unknown) {
+        Some(open) => Err(ShieldedError::ShieldPending {
+            txid: open.lock.outpoint.txid.to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// A Core Max's checks before it takes the wallet's CoinJoin claim and coin
+/// fence, as the CoinJoin drain's (`shield_drain::quote`): the pool's gate,
+/// the journal, an open shield. The pool's fee.
+async fn shield_max_gate(
+    session: &NetworkSession,
+    lib: &impl ShieldedLib,
+) -> Result<u64, ShieldedError> {
+    let version = priced_gate(lib).await?;
+    if !session.leases.journal_ready() {
+        return Err(journal_unread(session));
+    }
+    let pool_fee = shield_pool_fee(version)?;
+    no_open_shield(lib).await?;
+    Ok(pool_fee)
+}
+
+/// What a Core Max into the pool of `pool_fee` takes and buys, BIP44
+/// account 0 read under `fence` (`core_max.rs`).
+async fn shield_max_plan(
+    lib: &impl ShieldedLib,
+    pool_fee: u64,
+    fence: &crate::coins::CoinFence,
+) -> Result<(ShieldQuote, MaxPlan), ShieldedError> {
+    let floor = super::shield_drain::drain_floor(pool_fee);
+    let plan = core_max::plan(lib.core_coins(fence).await?, floor)?;
+    let quote = ShieldQuote {
+        duffs: plan.duffs,
+        fee_duffs: plan.fee_duffs,
+        total_duffs: plan.total_duffs,
+        pool_fee_credits: pool_fee,
+        credits: (plan.duffs.saturating_mul(CREDITS_PER_DUFF)).saturating_sub(pool_fee),
+        grant: GrantRequest {
+            max_duffs: plan.total_duffs,
+            max_credits: 0,
+        },
+        max: Some(plan.max),
+    };
+    Ok((quote, plan))
 }
 
 pub(crate) async fn shield_quote(
@@ -1349,6 +1569,19 @@ pub(crate) async fn shield_quote(
     duffs: u64,
 ) -> Result<ShieldQuote, ShieldedError> {
     shield_plan(session, lib, duffs).await
+}
+
+/// The quote of a Core Max into the pool: the wallet's claim and its coin
+/// fence held for the read only.
+pub(crate) async fn shield_max_quote(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+) -> Result<ShieldQuote, ShieldedError> {
+    let pool_fee = shield_max_gate(session, lib).await?;
+    let _claim = core_max::claim(session, wallet)?;
+    let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
+    Ok(shield_max_plan(lib, pool_fee, &fence).await?.0)
 }
 
 /// What holds a shield's funding back, as the code the host sees: as a
@@ -1406,17 +1639,35 @@ pub(crate) async fn shield(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     lib: &impl ShieldedLib,
-    duffs: u64,
+    amount: FundAmount,
     grant: &str,
 ) -> Result<ShieldOutcome, ShieldedError> {
     open_for_funding(session, wallet, lib).await?;
     let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;
-    let plan = shield_plan(session, lib, duffs).await?;
+    // The amount's plan, or a Core Max's pool fee: it holds the wallet's
+    // CoinJoin claim through its funding.
+    let (claim, quoted) = match amount {
+        FundAmount::All => {
+            let pool_fee = shield_max_gate(session, lib).await?;
+            (Some(core_max::claim(session, wallet)?), Err(pool_fee))
+        }
+        FundAmount::Duffs { duffs } => (None, Ok(shield_plan(session, lib, duffs).await?)),
+    };
     if !session.leases.refresh_funding(wallet).await {
         return Err(PlatformError::Unavailable.into());
     }
     let step = next_step(session, wallet)?;
+    // Held from the coin read to the permit, which keeps it until the
+    // library tracks the lock.
+    let (plan, max) = match quoted {
+        Ok(plan) => (plan, None),
+        Err(pool_fee) => {
+            let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
+            let (plan, max) = shield_max_plan(lib, pool_fee, &fence).await?;
+            (plan, Some((max, fence)))
+        }
+    };
     let remaining = funding_cap(session, wallet, grant).await?;
     if plan.total_duffs > remaining {
         return Err(PlatformError::GrantExceeded {
@@ -1426,6 +1677,11 @@ pub(crate) async fn shield(
         }
         .into());
     }
+    // A Max's grant is its quote's coins' sum: coins read again to another
+    // sum are not the quote's.
+    if max.is_some() && plan.total_duffs != remaining {
+        return Err(ShieldedError::CoinsChanged);
+    }
     let lease = authority(session, wallet, grant, FlowKind::Shield).await?;
     // Before the funding charges the budget (`topup.rs`).
     let signer = lease
@@ -1433,12 +1689,35 @@ pub(crate) async fn shield(
         .map_err(PlatformError::from)?;
     let funded = lease
         .scope_step(Some(step.clone()), async {
-            let permit = (lib.funding_permit(&lease, step.clone(), SHIELD_KEY, duffs)).await?;
-            let funded = lib.fund(duffs, &permit).await;
+            let (permit, funded) = match max {
+                None => {
+                    let permit =
+                        (lib.funding_permit(&lease, step.clone(), SHIELD_KEY, plan.duffs)).await?;
+                    let funded = lib.fund(plan.duffs, &permit).await;
+                    (permit, funded)
+                }
+                Some((max, fence)) => {
+                    let total = max.total_duffs;
+                    let permit = (session.drain_call_permit(
+                        &lease,
+                        step.clone(),
+                        total,
+                        step.clone(),
+                        SHIELD_KEY,
+                        fence,
+                    ))
+                    .await
+                    .map_err(FundError::Refused)?;
+                    let floor = super::shield_drain::drain_floor(plan.pool_fee_credits);
+                    let funded = lib.fund_core_max(&max.coins, total, floor, &permit).await;
+                    (permit, funded)
+                }
+            };
             permit.finish(funded.is_ok());
             funded
         })
         .await;
+    drop(claim);
     finish_lock(session, wallet, lib, &lease, &signer, step, funded).await
 }
 
@@ -1741,29 +2020,11 @@ impl PwShielded {
     /// the build, which holds the wallet's lock while it signs; the
     /// shielding lock the drain holds keeps any other shield lock out.
     pub(super) async fn shield_credit_script(&self) -> Result<dashcore::ScriptBuf, FundError> {
-        let state = self.pw.wallet.state().await;
-        let xpub = (state
-            .wallet()
-            .accounts
-            .asset_lock_shielded_address_topup
-            .as_ref())
-        .map(|a| a.account_xpub);
-        let account = state
-            .core_wallet
-            .accounts
-            .asset_lock_shielded_address_topup
-            .clone();
-        drop(state);
-        let unavailable = |detail: &str| {
-            FundError::Refused(PlatformError::Internal {
-                detail: format!("the shield funding key: {detail}"),
-            })
-        };
-        let mut account = account.ok_or_else(|| unavailable("no funding account"))?;
-        let address = account
-            .next_address(xpub.as_ref(), false)
-            .map_err(unavailable)?;
-        Ok(address.script_pubkey())
+        super::core_max::credit_script(
+            &self.pw,
+            AssetLockFundingType::AssetLockShieldedAddressTopUp,
+        )
+        .await
     }
 }
 
@@ -2254,11 +2515,14 @@ impl ShieldedLib for PwShielded {
         guarded_pass(&self.pw.session, &self.manager, true).await
     }
 
+    /// `last_sync_at`: the last pass's end, or a later skip's proof that
+    /// the pool is unchanged ([`periodic_pass`]).
     fn sync_state(&self) -> SyncState {
         let sync = self.manager.shielded_sync();
+        let checked = (self.pw.session.platform.shielded_checked_at).load(Ordering::Acquire);
         SyncState {
             syncing: sync.is_syncing(),
-            last_sync_at: sync.last_sync_unix_seconds(),
+            last_sync_at: (sync.last_sync_unix_seconds()).max((checked != 0).then_some(checked)),
         }
     }
 
@@ -2375,6 +2639,21 @@ impl ShieldedLib for PwShielded {
 
     async fn hooked(&self) -> bool {
         hooked(&self.coordinator).await
+    }
+
+    async fn rest_clock(&self) -> Result<RestClock, PlatformError> {
+        let wallet = self.pw.wallet_id;
+        self.on_appdb(move |db| read_rest_clock(db, wallet)).await
+    }
+
+    async fn record_rest(
+        &self,
+        seen: Vec<[u8; 32]>,
+        at: (u64, u64),
+        scanned: bool,
+    ) -> Result<(), PlatformError> {
+        let wallet = self.pw.wallet_id;
+        (self.on_appdb(move |db| write_rest_clock(db, wallet, &seen, at, scanned))).await
     }
 
     async fn held_spends(&self) -> Result<HashSet<[u8; 32]>, PlatformError> {
@@ -2567,8 +2846,12 @@ impl ShieldedLib for PwShielded {
             total_duffs,
             minimum_lock_duffs,
             credit_script,
+            false,
         )?;
-        let funded = self.pw.fund_drain_with(minimum_lock_duffs, &signer).await;
+        let account = AssetLockFundingAccount::CoinJoin { account_index: 0 };
+        let funded = (self.pw)
+            .fund_drain_with(account, SHIELD_KEY, minimum_lock_duffs, &signer)
+            .await;
         // A build that is not the plan's, a coin outside it or past the
         // grant: the signer refused before the transaction was complete, so
         // nothing can be out.
@@ -2584,6 +2867,33 @@ impl ShieldedLib for PwShielded {
             }),
             Err(e) => Err(e),
         }
+    }
+
+    async fn core_coins(
+        &self,
+        fence: &crate::coins::CoinFence,
+    ) -> Result<CoreCoins, PlatformError> {
+        core_max::read(&self.pw.session, fence).await
+    }
+
+    async fn fund_core_max(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        let credit_script = self.shield_credit_script().await?;
+        let plan = (coins, total_duffs);
+        core_max::fund(
+            &self.pw,
+            permit,
+            plan,
+            minimum_lock_duffs,
+            SHIELD_KEY,
+            credit_script,
+        )
+        .await
     }
 }
 
@@ -3086,16 +3396,93 @@ async fn hold_passes(
 
 /// One shielded sync pass, the only way the engine runs one: after
 /// [`admit_pass`], started only while the session is open (the facade's
-/// calls in [`on_pool`], the supervisor's `kick_shielded_pass`), and
+/// calls in [`on_pool`], the supervisor's [`periodic_pass`]), and
 /// holding the session's pass lock from the admission to its end, so a
 /// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
 /// before the lock outlives it. Its tail reads the library's spend
 /// outcomes into the journal ([`consume_dispositions`]). `false` when it
 /// was held back.
-pub(crate) async fn guarded_pass(session: &NetworkSession, manager: &Manager, force: bool) -> bool {
+pub(crate) async fn guarded_pass(
+    session: &Arc<NetworkSession>,
+    manager: &Manager,
+    force: bool,
+) -> bool {
+    pass(session, manager, force, None, &|_| true).await
+}
+
+/// The supervisor's periodic pass (#178): Platform's note count is read
+/// first, by a task holding only the SDK, so neither a close nor a stop
+/// waits for it. Then, while the session is open and `runs` says the loops
+/// that kicked it still do (checked again under the pass's locks),
+/// [`guarded_pass`]'s pass, which skips the library's pass while
+/// [`pool_is_idle`]. `false` when it did not run or was held back.
+pub(crate) async fn periodic_pass(
+    session: Arc<NetworkSession>,
+    manager: Arc<Manager>,
+    runs: impl Fn(&NetworkSession) -> bool + Sync,
+) -> bool {
+    #[cfg(test)]
+    let (injected, pause, block) = (
+        *session.platform.notes_count.lock().unwrap(),
+        session.platform.probe_pause.lock().unwrap().take(),
+        session.platform.probe_block.lock().unwrap().take(),
+    );
+    let sdk = manager.sdk_arc();
+    let (weak_session, weak_manager) = (Arc::downgrade(&session), Arc::downgrade(&manager));
+    drop((session, manager));
+    // Its own task: verification can block its thread past any timer.
+    let probe = tokio::spawn(async move {
+        #[cfg(test)]
+        if let Some(block) = block {
+            tokio::task::block_in_place(|| block.recv().ok());
+        }
+        #[cfg(test)]
+        if let Some(count) = injected {
+            return count.map(|c| (c, crate::events::unix_now()));
+        }
+        notes_count(&sdk).await
+    });
+    let count = tokio::time::timeout(NOTES_COUNT_BUDGET, probe).await;
+    let count = count.ok().and_then(Result::ok).flatten();
+    #[cfg(test)]
+    if let Some(pause) = pause {
+        let _ = pause.reached.send(());
+        let _ = pause.resume.await;
+    }
+    let (Some(session), Some(manager)) = (weak_session.upgrade(), weak_manager.upgrade()) else {
+        return false;
+    };
+    if !runs(&session) || session.enter().await.is_err() {
+        return false;
+    }
+    let runs = |s: &NetworkSession| runs(s) && s.try_enter().is_ok();
+    pass(&session, &manager, false, count, &runs).await
+}
+
+/// [`guarded_pass`]'s pass, held back unless it still `runs` once its locks
+/// are taken and again as the library's pass starts; a periodic one's proved
+/// note `count`, with the time it was proved at, may skip it.
+async fn pass(
+    session: &Arc<NetworkSession>,
+    manager: &Manager,
+    force: bool,
+    count: Option<(u64, u64)>,
+    runs: &(dyn Fn(&NetworkSession) -> bool + Sync),
+) -> bool {
+    #[cfg(test)]
+    if let Some(queued) = session.platform.spends_queued.lock().unwrap().take() {
+        let _ = queued.send(());
+    }
     // A spend's hold first, then the drain's lock (always in this order).
     let _spends = session.platform.shielded_spends.read().await;
     let _pass = session.platform.shielded_passes.read().await;
+    if !runs(session) {
+        return false;
+    }
+    #[cfg(test)]
+    if let Some(admitting) = session.platform.admitting.lock().unwrap().take() {
+        let _ = admitting.send(());
+    }
     let coordinator = match admit_pass(session, manager).await {
         Ok(coordinator) => coordinator,
         Err(held) => {
@@ -3113,6 +3500,25 @@ pub(crate) async fn guarded_pass(session: &NetworkSession, manager: &Manager, fo
             let _ = pause.resume.await;
         }
     }
+    if let Some((count, proved_at)) = count
+        && pool_is_idle(session, manager, &coordinator, count)
+            .await
+            .is_some()
+    {
+        tracing::debug!(
+            count,
+            "the shielded pool is unchanged; the periodic pass is skipped"
+        );
+        (session.platform.shielded_checked_at).fetch_max(proved_at, Ordering::AcqRel);
+        return true;
+    }
+    // Again with no await until `sync_now` takes its slot: a stop moves the
+    // epoch before its quiesce, which waits for a pass in the slot.
+    if !runs(session) {
+        return false;
+    }
+    #[cfg(test)]
+    session.platform.passes_run.fetch_add(1, Ordering::SeqCst);
     let summary = manager.shielded_sync().sync_now(force).await;
     if summary.error_count() > 0 {
         tracing::info!(
@@ -3123,8 +3529,106 @@ pub(crate) async fn guarded_pass(session: &NetworkSession, manager: &Manager, fo
     for wallet in pass_wallets(manager, &coordinator).await {
         consume_dispositions(session, &coordinator, WalletId(wallet)).await;
     }
+    for (&id, outcome) in &summary.wallet_results {
+        let WalletShieldedOutcome::Ok(scan) = outcome else {
+            continue;
+        };
+        let wallet = WalletId(id);
+        let lib = PwShielded::open(session, wallet).await;
+        let now = crate::events::unix_now();
+        if let Err(e) = async { observe_rest(&lib?, !scan.is_cooldown_skip, now).await }.await {
+            tracing::warn!(wallet_id = %wallet, error = %e, "the shielded rest clock was not recorded");
+        }
+    }
     true
 }
+
+/// Whether a periodic pass would find nothing (#178): Platform's proved
+/// note `count` is the local tree's size, every bound account has scanned
+/// the whole tree in this session and its rest clock's first scan is
+/// marked, and no spend waits on a pass (stored, reserved, with an outcome
+/// or marked). `None` when any of it does not hold or cannot be read, so
+/// the pass runs.
+async fn pool_is_idle(
+    session: &NetworkSession,
+    manager: &Manager,
+    coordinator: &NetworkShieldedCoordinator,
+    count: u64,
+) -> Option<()> {
+    let tree = coordinator.store().read().await.tree_size().ok()?;
+    if count != tree {
+        return None;
+    }
+    let wallets = pass_wallets(manager, coordinator).await;
+    for &wallet in &wallets {
+        let scanned = match coordinator.local_balance_snapshot(wallet).await.ok()? {
+            ShieldedLocalBalanceState::Unbound => true,
+            ShieldedLocalBalanceState::RestoreIncomplete => false,
+            ShieldedLocalBalanceState::Ready(snapshot) => {
+                let appdb = session.live().ok()?.appdb;
+                let clock =
+                    tokio::task::spawn_blocking(move || read_rest_clock(&appdb, WalletId(wallet)));
+                clock.await.ok()?.ok()?.scanned
+                    && snapshot.accounts.values().all(|a| {
+                        a.source == ShieldedBalanceSource::ScannedThisSession
+                            && a.last_scanned_index >= Some(tree)
+                    })
+            }
+        };
+        let settled = coordinator
+            .spend_dispositions(wallet)
+            .await
+            .ok()?
+            .is_empty()
+            && !session.leases.marks_unrecorded(WalletId(wallet)).await;
+        if !scanned || !settled {
+            return None;
+        }
+    }
+    let subwallets = coordinator.registered_subwallets().await;
+    let store = coordinator.store().read().await;
+    let idle = wallets
+        .iter()
+        .all(|&w| (store.pending_redrives_for_wallet(w)).is_ok_and(|r| r.is_empty()))
+        && (subwallets.iter()).all(|&s| store.stale_pending_spends(s).is_ok_and(|r| r.is_empty()));
+    idle.then_some(())
+}
+
+/// The proved number of notes in Platform's shielded pool, and the proof's
+/// time (Unix seconds, no later than now); `None` if the read fails.
+/// [`NOTES_COUNT_TIMEOUT`] bounds each transport attempt, not the proof's
+/// verification, which can block for a quorum: [`periodic_pass`] gives up on
+/// it all after [`NOTES_COUNT_BUDGET`].
+async fn notes_count(sdk: &dash_sdk::Sdk) -> Option<(u64, u64)> {
+    if !sdk.prove() {
+        return None;
+    }
+    let settings = dash_sdk::RequestSettings {
+        timeout: Some(NOTES_COUNT_TIMEOUT),
+        retries: Some(1),
+        ban_failed_address: Some(false),
+        ..Default::default()
+    };
+    match ShieldedNotesCount::fetch_with_metadata(sdk, NoParamQuery {}, Some(settings)).await {
+        Ok((count, metadata)) => {
+            let proved_at = (metadata.time_ms / 1000).min(crate::events::unix_now());
+            count.map(|c| (c.0, proved_at))
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "the shielded note count was not read");
+            None
+        }
+    }
+}
+
+/// How long one transport attempt of the note count's read waits.
+const NOTES_COUNT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a periodic pass waits for the note count, its two attempts and
+/// the proof's verification included, before it runs as if the read failed
+/// and ignores a later answer: a sixth of the 60 s pass interval. The read's
+/// task, holding only the SDK, may block on past it for a quorum.
+const NOTES_COUNT_BUDGET: Duration = Duration::from_secs(10);
 
 // MARK: the Platform side's start
 

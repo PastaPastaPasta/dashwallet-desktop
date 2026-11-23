@@ -21,6 +21,7 @@ const quote = (label: string): RegistrationQuote => ({
   remainingCredits: "1000000000",
   availableDuffs: 10e8,
   grant: { maxDuffs: 3_002_261, maxCredits: "2000000000" },
+  readiness: null,
 });
 
 const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({

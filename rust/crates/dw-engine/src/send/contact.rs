@@ -174,13 +174,13 @@ impl TxDraft {
                 "the draft's recipient changed during prepare".into(),
             ));
         }
+        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await?;
         let lease = match given {
             Some(lease) => lease,
             None => (session.begin_lease(wallet_id, FlowKind::ContactPayment, &[grant_id]))
                 .await
                 .map_err(|e| lease_failure(e, 0))?,
         };
-        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
         let outflow = external_sent.saturating_add(r.plan.fee);
         let purpose = BudgetPurpose::Spend;
         let (charge, signer) =
@@ -228,7 +228,7 @@ impl TxDraft {
         let (session, payments) = (&self.session, &self.session.platform.payments);
         #[cfg(test)]
         session.platform.money_gate.reached(Point::Planned).await;
-        let rule = session.trust.rule_5();
+        let rule = session.trust.strict_rule_5();
         let (address, fresh) = match payments.reserved_checked(self.wallet_id, pair) {
             // Kept while rule 5 did not apply: not paid once it does.
             Some((address, false)) if rule == Rule5::Enforce => {
@@ -330,8 +330,7 @@ impl TxDraft {
             (self.session)
                 .clear_payment_lock(self.wallet_id, *pair, &prepared.summary.txid)
                 .await;
-            // Unchecked: under rule 5 the next `prepare` reserves anew.
-            (self.session.platform.payments).keep(self.wallet_id, *pair, address.clone(), false);
+            (self.session.platform.payments).give_back(self.wallet_id, *pair, address.clone());
             *prepared.phase() = Phase::Pending;
         }
         recorded
@@ -363,12 +362,7 @@ impl TxDraft {
         let txid = &prepared.summary.txid;
         match next {
             Phase::Pending | Phase::Released if first => {
-                (self.session.platform.payments).keep(
-                    self.wallet_id,
-                    *pair,
-                    address.clone(),
-                    false,
-                );
+                (self.session.platform.payments).give_back(self.wallet_id, *pair, address.clone());
                 (self.session)
                     .clear_payment_lock(self.wallet_id, *pair, txid)
                     .await;

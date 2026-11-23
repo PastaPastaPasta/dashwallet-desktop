@@ -3,6 +3,8 @@
 // MG-06 D24, the sidebar rule and the create wizard's helpers.
 
 import { describe, expect, it } from "vitest";
+import { DEFAULT_PREFS, ui } from "../app/ui";
+import { LANGUAGES, type Language } from "../i18n";
 import type { GovernanceInfo } from "../api/generated/GovernanceInfo";
 import type { MyProposal } from "../api/generated/MyProposal";
 import type { MyProposalState } from "../api/generated/MyProposalState";
@@ -27,6 +29,7 @@ import {
   FIELD_STEP,
   fieldText,
   governanceErrorText,
+  inProgressRefusal,
   inProgress,
   lastPaymentText,
   lastVoteLine,
@@ -39,6 +42,7 @@ import {
   nodeName,
   numbersRows,
   paneNote,
+  paymentsSuffix,
   presetOutcome,
   rejectedText,
   sameFee,
@@ -46,6 +50,7 @@ import {
   shortAddress,
   sortRows,
   spanLong,
+  shortDate,
   spanShort,
   statusChip,
   voteBar,
@@ -87,6 +92,41 @@ describe("times", () => {
     expect(ago(NOW - 30, NOW)).toBe("just now");
     expect(ago(NOW - 40 * 60, NOW)).toBe("40 min ago");
     expect(ago(NOW - 2 * 3600, NOW)).toBe("2 hours ago");
+  });
+
+  it("keeps the short and long spans' English from the catalog, up to a whole mainnet cycle", () => {
+    /** A mainnet superblock cycle, 16,616 blocks of 2.625 minutes: the longest span the clock shows. */
+    const cycle = 16_616 * 157.5;
+    const spans: [number, string, string][] = [
+      [0, "1 min", "1 minute"],
+      [60, "1 min", "1 minute"],
+      [59 * 60, "59 min", "59 minutes"],
+      [3600, "1 h", "1 hour"],
+      [86_400 + 6 * 3600, "1 d 6 h", "1 day 6 hours"],
+      [cycle, "30 d 6 h", "30 days 6 hours"],
+    ];
+    for (const [secs, short, long] of spans) {
+      expect(spanShort(secs), `${secs} s`).toBe(short);
+      expect(spanLong(secs), `${secs} s`).toBe(long);
+    }
+  });
+
+  it("formats counts and dates for each language in turn, with no formatter kept from the last one", () => {
+    const de: Language = { tag: "de-x-dwtest", name: "Deutsch", dir: "ltr", messages: new Map() };
+    const day = secs(new Date("2026-11-04T15:00:00Z"));
+    LANGUAGES.push(de);
+    try {
+      const english = [paymentsSuffix(1234), shortDate(day, "en-US"), shortDate(day, "de-DE")];
+      expect(english[0]).toBe("× 1,234 payments");
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: "de-x-dwtest" } });
+      expect(paymentsSuffix(1234)).toBe("× 1.234 payments");
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
+      expect([paymentsSuffix(1234), shortDate(day, "en-US"), shortDate(day, "de-DE")]).toEqual(english);
+      expect(english[1]).not.toBe(english[2]);
+    } finally {
+      LANGUAGES.pop();
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
+    }
   });
 });
 
@@ -257,6 +297,9 @@ describe("error sentences", () => {
     expect(governanceErrorText(err("governance.submit_refused", { kind: "reason", reason: "?" }))).toBe("This proposal can't be submitted now.");
     for (const code of ["sync_disabled", "not_synced", "proposal_not_found", "no_peers", "list_unavailable", "invalid_proposal", "not_implemented"])
       expect(governanceErrorText(err(`governance.${code}`)), code).toMatch(/\.$/);
+    expect(governanceErrorText(err("governance.proposal_in_progress", { kind: "proposalHash", hash: "ab".repeat(32) }))).toBe(
+      "A proposal with this name is already in progress, and its fee may have gone out. Don't pay again: Mine shows it.",
+    );
     expect(governanceErrorText(err("send.grant_exceeded"))).toBeNull();
     expect(governanceErrorText(new Error("x"))).toBeNull();
   });
@@ -369,6 +412,15 @@ describe("the fee (D29, D33, D34)", () => {
     // One Mine held before Pay is an older proposal, not this call's.
     expect(createdFrom([made], draft, new Set([made.hash]))).toBeUndefined();
   });
+  it("reads the engine's refusal of a draft named as a proposal in progress (issue #148)", () => {
+    const err = (code: string, data: unknown = null) => ({ code, message: code, data });
+    const hash = "ab".repeat(32);
+    expect(inProgressRefusal(err("governance.proposal_in_progress", { kind: "proposalHash", hash }))).toBe(hash);
+    // A call still out has saved nothing yet: the refusal names no proposal.
+    expect(inProgressRefusal(err("governance.proposal_in_progress"))).toBeNull();
+    expect(inProgressRefusal(err("governance.submit_refused", { kind: "reason", reason: "in_flight" }))).toBeUndefined();
+    expect(inProgressRefusal(new Error("x"))).toBeUndefined();
+  });
 });
 
 describe("Create proposal", () => {
@@ -430,3 +482,24 @@ describe("Governance numbers", () => {
 // The row type is the engine's; keep the fixture's sample rows honest about it.
 const _rows: ProposalRow[] = ROWS;
 void _rows;
+
+describe("counts and weights in the vote sheet", () => {
+  it("are grouped for the display language at 1,234", () => {
+    const big = node({ proTxHash: "a".repeat(64), weight: 1234 });
+    const casts = Array.from({ length: 1234 }, (_, i) => ({ proTxHash: i === 0 ? big.proTxHash : `${i}`.padStart(64, "c"), hash: "f".repeat(64), peers: 8, rejected: null }));
+    const read = () => {
+      const v = voteResult(casts, [big], "yes");
+      return [selectionNote([{ weight: 1234 }]), v.title, v.line, v.rows[0].sub];
+    };
+    expect(read()).toEqual(["1 masternode · weight 1,234 · no fee", "1,234 of 1,234 votes sent", "Yes · weight 2,467 of 2,467", "weight 1,234 · to 8 peers"]);
+    const de: Language = { tag: "de-x-dwtest", name: "Deutsch", dir: "ltr", messages: new Map() };
+    LANGUAGES.push(de);
+    try {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: "de-x-dwtest" } });
+      expect(read()).toEqual(["1 masternode · weight 1.234 · no fee", "1.234 of 1.234 votes sent", "Yes · weight 2.467 of 2.467", "weight 1.234 · to 8 peers"]);
+    } finally {
+      LANGUAGES.pop();
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
+    }
+  });
+});

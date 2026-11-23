@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { confirmationDetail, statusText } from "./TxDetailSheet";
+import { abandonQuestion, confirmationDetail, statusText } from "./TxDetailSheet";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -45,5 +45,27 @@ describe("transaction detail status", () => {
     expect(statusText(status({ kind: "abandoned" }))).toBe("Abandoned");
     expect(statusText(status({ kind: "notAccepted" }))).toBe("Not accepted");
     expect(statusText(status({ kind: "immature", confirmations: 1, maturesIn: 99 }))).toBe("Maturing");
+  });
+});
+
+describe("the abandon confirmation", () => {
+  const OUTGOING = "Abandon this transaction? Its coins come back to the balance. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.";
+  const INCOMING = "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.";
+
+  it("warns about paying twice when the wallet spent inputs", () => {
+    expect(abandonQuestion({ totalDebit: 50_000_226 })).toBe(OUTGOING);
+  });
+
+  it("treats a payment to yourself as outgoing: it nets only the fee but spends this wallet's coins", () => {
+    // Inputs 1.00000226 DASH of ours, 1 DASH back to an address of ours: net -226, the fee.
+    expect(abandonQuestion({ totalDebit: 100_000_226 })).toBe(OUTGOING);
+  });
+
+  it("uses the recipient's text when the wallet spent nothing", () => {
+    expect(abandonQuestion({ totalDebit: 0 })).toBe(INCOMING);
+  });
+
+  it("takes the spending text when the debit is unknown", () => {
+    expect(abandonQuestion({ totalDebit: null })).toBe(OUTGOING);
   });
 });

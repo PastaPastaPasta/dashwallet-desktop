@@ -55,14 +55,14 @@ use dw_vault::{
 use zeroize::Zeroizing;
 
 use super::background::{Background, Job};
-use super::check::{Destination, gated, identity_of, look, quote};
+use super::check::{Destination, gated, identity_of, look, quote, unpaid_changes};
 use super::drive::{Window, candidates, identity_key, matches, window};
 use super::net::{Answer, MnWithdrawNet, Proved, classify};
 use super::recheck::{Outcome, mark, recheck_all, recheck_group, recheck_record};
 use super::sign::{Request, WithdrawalKeyChoice, retry, shown, withdraw};
 use super::{
-    Alarm, Authorize, Chain, Env, HeldKey, Hold, UNLOCKED, Waits, WalletKeys, WithdrawalError,
-    identity_lock, points,
+    Alarm, Authorize, Chain, Env, HeldKey, Hold, PayoutChange, UNLOCKED, Waits, WalletKeys,
+    WithdrawalError, identity_lock, points,
 };
 use crate::EngineError;
 use crate::masternodes::WithdrawalCheckingReason as CheckingReason;
@@ -678,6 +678,10 @@ impl Env for Scene {
             .cloned())
     }
 
+    fn payout_changes(&self, _: &[u8; 32]) -> Vec<PayoutChange> {
+        Vec::new()
+    }
+
     fn waits(&self) -> Waits {
         WAITS
     }
@@ -1102,6 +1106,41 @@ fn drives_window_pays_the_highest_transfer_key_or_the_highest_enabled_of_the_nex
             refused.script().unwrap_err().code(),
             "masternodes.withdrawal_no_payout_key"
         );
+    }
+}
+
+/// #361: with no window (no identity, or no TRANSFER key Drive would pay),
+/// no payout change is the paid one, so each counts.
+#[test]
+fn with_no_window_every_payout_change_counts() {
+    let proved = |value: Option<Identity>| Proved {
+        value,
+        height: 1,
+        core_height: 100,
+        time_ms: 0,
+        verified: true,
+    };
+    let paid = Some(payout_script().as_bytes().to_vec());
+    let changes = |height: Option<u32>| {
+        vec![PayoutChange {
+            script: paid.clone(),
+            height,
+        }]
+    };
+    let paying = proved(Some(masternode_identity(&PRO_TX, vec![payout_key(0)])));
+    assert_eq!(unpaid_changes(&changes(None), &paying), (false, false));
+    assert_eq!(unpaid_changes(&changes(Some(101)), &paying), (false, false));
+    for read in [
+        proved(None),
+        proved(Some(masternode_identity(&PRO_TX, vec![owner_key()]))),
+        proved(Some(masternode_identity(
+            &PRO_TX,
+            vec![disabled(payout_key(0))],
+        ))),
+    ] {
+        assert_eq!(unpaid_changes(&changes(None), &read), (true, false));
+        assert_eq!(unpaid_changes(&changes(Some(101)), &read), (false, true));
+        assert_eq!(unpaid_changes(&changes(Some(100)), &read), (false, false));
     }
 }
 
@@ -1646,6 +1685,53 @@ async fn an_unverified_read_with_a_huge_height_raises_no_floor_in_any_mode() {
         f.plat.block();
         assert_eq!(f.recheck(3).await, Outcome::Done, "{rule:?}");
     }
+}
+
+/// H-09 (Astra H1): under rule 5, an open record whose hand-off was lost
+/// is not sent again on an unverified nonce read, though that read says
+/// Drive still takes the nonce: the pass is undecided. A verified read
+/// later sends it.
+#[tokio::test]
+async fn an_unverified_nonce_read_hands_nothing_off() {
+    let rule = Rule5::Enforce;
+    let f = fx();
+    f.scene.rule(rule);
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    let row = f.withdraw(Owner, AMOUNT).await.unwrap();
+    let sent = f.plat.sent().len();
+    f.plat.deviate(Read::Nonce, Dev::Unverified, ALWAYS);
+    let outcome = f.recheck(3).await;
+    assert!(
+        !matches!(outcome, Outcome::Done | Outcome::NotExecuted),
+        "{rule:?}: {outcome:?}"
+    );
+    assert_eq!(
+        f.plat.sent().len(),
+        sent,
+        "{rule:?}: sent on an unverified read"
+    );
+    assert!(f.row(&row.signed.id).state.is_open(), "{rule:?}");
+    f.plat.calm();
+    f.recheck(3).await;
+    assert!(f.plat.sent().len() > sent, "{rule:?}: sent once verified");
+}
+
+/// H-09 (Astra re-check H3): an owner-key record's candidate scripts come
+/// from the identity's keys, so a matching document decides nothing while
+/// the identity read is unverified. Once it verifies, the same document
+/// makes the record done.
+#[tokio::test]
+async fn an_unverified_identity_names_no_candidate_for_a_match() {
+    let f = fx();
+    f.scene.rule(Rule5::Enforce);
+    let row = f.withdraw(Owner, AMOUNT).await.unwrap();
+    f.plat.block();
+    f.plat.deviate(Read::Identity, Dev::Unverified, ALWAYS);
+    let outcome = f.recheck(3).await;
+    assert!(matches!(outcome, Outcome::Unanswered(_)), "{outcome:?}");
+    assert!(f.row(&row.signed.id).state.is_open());
+    f.plat.calm();
+    assert_eq!(f.recheck(3).await, Outcome::Done);
 }
 
 #[tokio::test]
@@ -2720,7 +2806,7 @@ async fn the_quote_waits_while_platform_catches_up_and_stops_at_its_bound() {
     ));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn the_pre_sign_wait_runs_outside_the_identity_lock_and_before_the_grant() {
     // A masternode of its own: no other test holds its lock.
     let f = Fx::new(pro_tx(0x90));

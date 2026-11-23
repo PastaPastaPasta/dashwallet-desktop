@@ -13,6 +13,7 @@ import { keys, useBackend, useLockStatus, useNetworkChoice, useWallets } from ".
 import { ui, useUi } from "../app/ui";
 import { NETWORK_CHOICES, NetworkText } from "../network/choice";
 import { bootAgain, hasPendingLocks, switchOutcome } from "../network/switch";
+import { useT } from "../i18n";
 import { DashButton } from "./basics";
 import { Sheet } from "./sheet";
 
@@ -129,6 +130,7 @@ export function SwitchingCard() {
 export type NetworkPickerState = ReturnType<typeof useNetworkPicker>;
 
 export function NetworkPicker({ state, testId }: { state: NetworkPickerState; testId: string }) {
+  const t = useT();
   const id = useId();
   const { choice, available, loading, switching, confirming } = state;
   return (
@@ -184,7 +186,7 @@ export function NetworkPicker({ state, testId }: { state: NetworkPickerState; te
           )}
           <div className="sheet-actions">
             <DashButton variant="tintedGray" data-autofocus onClick={state.cancel}>
-              Cancel
+              {t("common.cancel")}
             </DashButton>
             <DashButton variant="filledBlue" data-testid="network-switch-confirm" disabled={confirming.checking} onClick={state.confirm}>
               {NetworkText.confirm}

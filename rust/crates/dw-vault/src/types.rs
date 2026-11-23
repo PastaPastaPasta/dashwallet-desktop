@@ -255,7 +255,9 @@ pub struct AuthGrant {
 /// vault, so holding one means the authorization check passed. Bound to
 /// the vault that redeemed it: another vault, or the same vault file
 /// opened again, refuses it (review DW-E0-03 r2 M1). Valid until that
-/// vault locks, changes unlock scope or changes its passphrase.
+/// vault locks, changes unlock scope or changes its passphrase; a token
+/// from a signing-window grant also ends with its window. A signer it
+/// issued before then runs to its own limits.
 pub struct GrantToken {
     pub(crate) purpose: GrantPurpose,
     pub(crate) wallet: Option<WalletId>,
@@ -263,6 +265,8 @@ pub struct GrantToken {
     pub(crate) vault_instance: [u8; 32],
     /// That vault's epoch at redemption.
     pub(crate) epoch: u64,
+    /// The signing window a credential-free grant came from.
+    pub(crate) window: Option<u64>,
     /// Which data key the token acts with.
     pub(crate) key: KeySource,
     /// Set when the token first issues a signer and never cleared: such a
@@ -512,6 +516,12 @@ pub trait Clock: Send + Sync {
     fn monotonic(&self) -> Instant {
         Instant::now()
     }
+
+    /// The wall clock, compared with [`Self::monotonic`] to notice a sleep
+    /// or a clock step. The default is the system clock.
+    fn wall(&self) -> SystemTime {
+        SystemTime::now()
+    }
 }
 
 /// [`Clock`] backed by `SystemTime`.
@@ -558,6 +568,19 @@ impl std::fmt::Debug for VaultConfig {
             .field("grant_ttl_secs", &self.grant_ttl_secs)
             .finish_non_exhaustive()
     }
+}
+
+/// Where the host keeps, outside the vault file, the generation at which
+/// each vault last sealed its spending limit
+/// ([`crate::Vault::attach_policy_commitments`]). A file whose policy is
+/// older than the commitment counts as having limit 0, and so does every
+/// policy while the commitment cannot be read. `commit` raises the stored
+/// value to at least `generation` in one durable step, never lowers it, and
+/// returns what is stored.
+pub trait PolicyCommitments: Send + Sync {
+    fn committed(&self, vault_id: &[u8]) -> Result<Option<u64>, String>;
+    fn commit(&self, vault_id: &[u8], generation: u64) -> Result<u64, String>;
+    fn forget(&self, vault_id: &[u8]) -> Result<(), String>;
 }
 
 /// Default grant lifetime: long enough for one confirm-and-sign round.

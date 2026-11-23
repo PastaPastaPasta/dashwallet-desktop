@@ -13,6 +13,7 @@ import type { AppError } from "./AppError";
 import type { AppEvent } from "./AppEvent";
 import type { AttachedKeyRoleName } from "./AttachedKeyRoleName";
 import type { AuthGrant } from "./AuthGrant";
+import type { AutomaticBackupFailure } from "./AutomaticBackupFailure";
 import type { AvatarCandidateInfo } from "./AvatarCandidateInfo";
 import type { AvatarSizeName } from "./AvatarSizeName";
 import type { AvatarSourceArgs } from "./AvatarSourceArgs";
@@ -69,6 +70,7 @@ import type { FilePurpose } from "./FilePurpose";
 import type { FinishReport } from "./FinishReport";
 import type { FlowKindName } from "./FlowKindName";
 import type { FoundIdentity } from "./FoundIdentity";
+import type { FundAmount } from "./FundAmount";
 import type { GovernanceClock } from "./GovernanceClock";
 import type { GovernanceInfo } from "./GovernanceInfo";
 import type { GovernanceSyncState } from "./GovernanceSyncState";
@@ -199,6 +201,7 @@ import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
 import type { UntrackOutcome } from "./UntrackOutcome";
+import type { UpdateStatus } from "./UpdateStatus";
 import type { UriParse } from "./UriParse";
 import type { UserHit } from "./UserHit";
 import type { UsernameCheck } from "./UsernameCheck";
@@ -216,6 +219,8 @@ import type { WatchOnlyOptions } from "./WatchOnlyOptions";
 import type { WithdrawAmount } from "./WithdrawAmount";
 import type { WithdrawOutcome } from "./WithdrawOutcome";
 import type { WithdrawQuote } from "./WithdrawQuote";
+import type { WithdrawToPlatformOutcome } from "./WithdrawToPlatformOutcome";
+import type { WithdrawToPlatformQuote } from "./WithdrawToPlatformQuote";
 import type { Withdrawal } from "./Withdrawal";
 
 export type { AppError, AppEvent, ErrorCode, ShellEvent };
@@ -267,7 +272,8 @@ export function uiSettings(): Promise<UiSettings> {
 
 /**
  * Checks and saves the display settings (decimal digits 2-8, auto lock
- * 1 s to 24 hours; `invalid_argument` otherwise), and gives the main
+ * 1 s to 24 hours, a BCP 47 language tag; `invalid_argument`
+ * otherwise), and gives the main
  * window the chosen appearance unless `--theme` forced one (U-04 D3).
  */
 export function setUiSettings(settings: UiSettings): Promise<UiSettings> {
@@ -1084,6 +1090,15 @@ export function automaticBackups(walletId: string | null): Promise<Array<BackupS
 }
 
 /**
+ * Wallets whose latest automatic backup failed, and when. A wallet's
+ * entry goes when one succeeds, when automatic backups are turned off
+ * and with the wallet.
+ */
+export function automaticBackupFailures(): Promise<Array<AutomaticBackupFailure>> {
+  return invoke<Array<AutomaticBackupFailure>>("automatic_backup_failures");
+}
+
+/**
  * The directory of the network's automatic backups.
  */
 export function backupDirectory(): Promise<string> {
@@ -1798,6 +1813,21 @@ export function creditsWithdraw(walletId: string, identity: string, to: string, 
 }
 
 /**
+ * What moving credits to the wallet's own Platform address takes.
+ */
+export function creditsWithdrawToPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawToPlatformQuote> {
+  return invoke<WithdrawToPlatformQuote>("credits_withdraw_to_platform_quote", { walletId, identity, amount });
+}
+
+/**
+ * Moves credits to `to`, one of the wallet's own Platform addresses,
+ * under `grant`.
+ */
+export function creditsWithdrawToPlatform(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawToPlatformOutcome> {
+  return invoke<WithdrawToPlatformOutcome>("credits_withdraw_to_platform", { walletId, identity, to, amount, grant });
+}
+
+/**
  * The identity's recent withdrawals on Platform, the most recently
  * updated first (at most 20).
  */
@@ -1873,19 +1903,19 @@ export function platformSend(walletId: string, operation: string, grant: string)
 }
 
 /**
- * What adding `duffs` of the Core balance to the wallet's Platform
+ * What adding `amount` of the Core balance to the wallet's Platform
  * address costs and adds.
  */
-export function platformFundQuote(walletId: string, duffs: number): Promise<PlatformFundQuote> {
-  return invoke<PlatformFundQuote>("platform_fund_quote", { walletId, duffs });
+export function platformFundQuote(walletId: string, amount: FundAmount): Promise<PlatformFundQuote> {
+  return invoke<PlatformFundQuote>("platform_fund_quote", { walletId, amount });
 }
 
 /**
- * "Add from Dash wallet": adds `duffs` of the Core balance to the
+ * "Add from Dash wallet": adds `amount` of the Core balance to the
  * wallet's Platform address under `grant`.
  */
-export function platformFund(walletId: string, duffs: number, grant: string): Promise<PlatformFundOutcome> {
-  return invoke<PlatformFundOutcome>("platform_fund", { walletId, duffs, grant });
+export function platformFund(walletId: string, amount: FundAmount, grant: string): Promise<PlatformFundOutcome> {
+  return invoke<PlatformFundOutcome>("platform_fund", { walletId, amount, grant });
 }
 
 /**
@@ -2064,18 +2094,19 @@ export function shieldedReceiveAddress(walletId: string): Promise<ShieldedAddres
 }
 
 /**
- * What moving `duffs` of the Core balance into the pool costs and buys.
+ * What moving `amount` of the Core balance into the pool costs and
+ * buys.
  */
-export function shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote> {
-  return invoke<ShieldQuote>("shield_quote", { walletId, duffs });
+export function shieldQuote(walletId: string, amount: FundAmount): Promise<ShieldQuote> {
+  return invoke<ShieldQuote>("shield_quote", { walletId, amount });
 }
 
 /**
- * Core → Shielded: moves `duffs` of the Core balance into the pool
+ * Core → Shielded: moves `amount` of the Core balance into the pool
  * under `grant`.
  */
-export function shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome> {
-  return invoke<ShieldOutcome>("shield_from_core", { walletId, duffs, grant });
+export function shieldFromCore(walletId: string, amount: FundAmount, grant: string): Promise<ShieldOutcome> {
+  return invoke<ShieldOutcome>("shield_from_core", { walletId, amount, grant });
 }
 
 /**
@@ -2847,6 +2878,67 @@ export function refreshRates(): Promise<RatesView> {
 }
 
 /**
+ * Whether this copy can update itself, and where this run is in
+ * finding and installing an update. Fetches nothing.
+ */
+export function updateStatus(): Promise<UpdateStatus> {
+  return invoke<UpdateStatus>("update_status");
+}
+
+/**
+ * Asks the stable feed for a newer release, for at most 30 s: the
+ * user's "Check for updates", or the automatic check they turned on.
+ * The request carries no wallet data and no identifier.
+ * `app.updates_unavailable` when this copy cannot update itself,
+ * `app.update_not_published` when the Latest release has no feed,
+ * `app.update_check` when the feed cannot be reached or read (the
+ * status stays as it was). While an install is under way it fetches
+ * nothing.
+ */
+export function checkForUpdate(): Promise<UpdateStatus> {
+  return invoke<UpdateStatus>("check_for_update");
+}
+
+/**
+ * Downloads the offered `version`, checks its signature and puts it in
+ * place; the app runs it after `restart_to_update`. On Windows the
+ * installer replaces the running app: the engine is shut down as on
+ * quit, the app closes and the installer opens the new one; if the
+ * installer then fails, the window is shown again and the phase is
+ * `restartRequired`. Where installing closes the engine (Windows),
+ * `app.update_busy` while something runs that it would cut
+ * ([`refuse_while_busy`]), at the click and again once the download is
+ * done: then the download is kept and the phase is `downloaded`.
+ * `app.update_state` when `version` is not the one on offer;
+ * `app.update_signature` when the signature does not verify (nothing
+ * is installed); `app.update_download` or `app.update_install`
+ * otherwise.
+ */
+export function installUpdate(version: string): Promise<UpdateStatus> {
+  return invoke<UpdateStatus>("install_update", { version });
+}
+
+/**
+ * Quits through the normal exit path (the engine flushes and closes)
+ * and starts the installed update, or restarts after a failed Windows
+ * install (`restartRequired`, when the engine is already closed).
+ * `app.update_busy` otherwise while something runs that closing the
+ * engine would cut; `app.update_state` before an update is installed.
+ */
+export function restartToUpdate(): Promise<null> {
+  return invoke<null>("restart_to_update");
+}
+
+/**
+ * Opens the page of the release on offer (`…/releases/tag/vX.Y.Z` on
+ * this repository) in the system browser: its notes and downloads.
+ * `app.update_state` when no release is on offer.
+ */
+export function openUpdateNotes(): Promise<null> {
+  return invoke<null>("open_update_notes");
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -3003,6 +3095,7 @@ export type CommandArgs = {
   backup_wallet: { walletId: string; destPath: string; backupPassphrase: string | null };
   restore_backup: { path: string; passphrase: string | null };
   automatic_backups: { walletId: string | null };
+  automatic_backup_failures: {  };
   backup_directory: {  };
   backup_policy: {  };
   set_backup_policy: { keep: number };
@@ -3092,6 +3185,8 @@ export type CommandArgs = {
   credits_resolve_top_up: { walletId: string; txid: string };
   credits_withdraw_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
+  credits_withdraw_to_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
+  credits_withdraw_to_platform: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
   platform_addresses: { walletId: string };
   platform_activity: { walletId: string };
@@ -3102,8 +3197,8 @@ export type CommandArgs = {
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
   platform_send: { walletId: string; operation: string; grant: string };
-  platform_fund_quote: { walletId: string; duffs: number };
-  platform_fund: { walletId: string; duffs: number; grant: string };
+  platform_fund_quote: { walletId: string; amount: FundAmount };
+  platform_fund: { walletId: string; amount: FundAmount; grant: string };
   pending_platform_funds: { walletId: string };
   resume_platform_fund: { walletId: string; txid: string; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
@@ -3126,8 +3221,8 @@ export type CommandArgs = {
   shielded_status: { walletId: string };
   shielded_sync: { walletId: string };
   shielded_receive_address: { walletId: string };
-  shield_quote: { walletId: string; duffs: number };
-  shield_from_core: { walletId: string; duffs: number; grant: string };
+  shield_quote: { walletId: string; amount: FundAmount };
+  shield_from_core: { walletId: string; amount: FundAmount; grant: string };
   shield_mixed_quote: { walletId: string };
   stuck_shield_fundings: { walletId: string };
   shield_mixed_coins: { walletId: string; grant: string };
@@ -3222,6 +3317,11 @@ export type CommandArgs = {
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
   refresh_rates: {  };
+  update_status: {  };
+  check_for_update: {  };
+  install_update: { version: string };
+  restart_to_update: {  };
+  open_update_notes: {  };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -3333,6 +3433,7 @@ export type CommandResults = {
   backup_wallet: BackupSummary;
   restore_backup: Array<string>;
   automatic_backups: Array<BackupSummary>;
+  automatic_backup_failures: Array<AutomaticBackupFailure>;
   backup_directory: string;
   backup_policy: BackupPolicyInfo;
   set_backup_policy: BackupPolicyInfo;
@@ -3422,6 +3523,8 @@ export type CommandResults = {
   credits_resolve_top_up: null;
   credits_withdraw_quote: WithdrawQuote;
   credits_withdraw: WithdrawOutcome;
+  credits_withdraw_to_platform_quote: WithdrawToPlatformQuote;
+  credits_withdraw_to_platform: WithdrawToPlatformOutcome;
   credits_withdrawals: Array<Withdrawal>;
   platform_addresses: PlatformAddressBalance;
   platform_activity: Array<PlatformActivity>;
@@ -3552,6 +3655,11 @@ export type CommandResults = {
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
   refresh_rates: RatesView;
+  update_status: UpdateStatus;
+  check_for_update: UpdateStatus;
+  install_update: UpdateStatus;
+  restart_to_update: null;
+  open_update_notes: null;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -3665,6 +3773,7 @@ export const COMMANDS: Record<CommandName, string> = {
   backup_wallet: "backup",
   restore_backup: "backup",
   automatic_backups: "backup",
+  automatic_backup_failures: "backup",
   backup_directory: "backup",
   backup_policy: "backup",
   set_backup_policy: "backup",
@@ -3754,6 +3863,8 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_resolve_top_up: "identity",
   credits_withdraw_quote: "identity",
   credits_withdraw: "identity",
+  credits_withdraw_to_platform_quote: "identity",
+  credits_withdraw_to_platform: "identity",
   credits_withdrawals: "identity",
   platform_addresses: "identity",
   platform_activity: "identity",
@@ -3884,6 +3995,11 @@ export const COMMANDS: Record<CommandName, string> = {
   rates_currencies: "rates",
   set_rates_settings: "rates",
   refresh_rates: "rates",
+  update_status: "updates",
+  check_for_update: "updates",
+  install_update: "updates",
+  restart_to_update: "updates",
+  open_update_notes: "updates",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -3915,6 +4031,14 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.network_switch_failed",
   "app.explorer_open",
   "app.browser_open",
+  "app.updates_unavailable",
+  "app.update_check",
+  "app.update_not_published",
+  "app.update_download",
+  "app.update_signature",
+  "app.update_install",
+  "app.update_state",
+  "app.update_busy",
   "invalid_config",
   "invalid_argument",
   "network_not_open",
@@ -3951,6 +4075,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "outpoint_not_found",
   "stuck_funding",
   "shielded_spend_unresolved",
+  "last_startup_wallet",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",
@@ -4001,6 +4126,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "send.broadcast_rejected",
   "send.broadcast_unknown",
   "send.cancelled",
+  "send.held_until_restart",
   "labels.invalid_address",
   "labels.duplicate_address",
   "labels.own_address",
@@ -4091,6 +4217,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "registration.funding_cancelled",
   "registration.not_synced",
   "registration.funding_unknown_recent",
+  "registration.shielded_not_ready",
+  "registration.quote_changed",
   "name.invalid",
   "name.taken",
   "name.contest_open",
@@ -4127,6 +4255,9 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.quote_changed",
   "credits.fund_pending",
   "credits.too_many_inputs",
+  "credits.coins_changed",
+  "credits.mixing_active",
+  "credits.move_running",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",
@@ -4150,6 +4281,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "governance.vote_rejected",
   "governance.invalid_proposal",
   "governance.submit_refused",
+  "governance.proposal_in_progress",
   "governance.no_peers",
   "governance.list_unavailable",
   "governance.contest_not_found",

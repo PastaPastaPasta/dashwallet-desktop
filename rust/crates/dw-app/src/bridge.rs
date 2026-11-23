@@ -159,6 +159,10 @@ pub enum AppEvent {
         wallet_id: String,
         /// The first [`MAX_TXIDS`] of the batch.
         txids: Vec<String>,
+        /// One per `txids`: whether the engine learned of it live (the
+        /// mempool, an InstantSend lock or a block near the network tip)
+        /// rather than by the catch-up scan.
+        live: Vec<bool>,
         /// The batch's size.
         count: u32,
         catch_up: bool,
@@ -216,6 +220,11 @@ pub enum AppEvent {
     /// expiring, mainnet opened or closed): re-read `ratesStatus`. Prices
     /// are the app's, not a network's.
     Rates,
+    /// An automatic backup was written: re-read the automatic backups and
+    /// their failures.
+    Backups {
+        network: String,
+    },
 }
 
 /// The domain of a `platform` event. Identities are Base58.
@@ -388,11 +397,15 @@ impl From<EngineEvent> for AppEvent {
                 network,
                 wallet_id,
                 txids,
+                live,
                 catch_up,
             } => AppEvent::NewTransactions {
                 network: net(network),
                 wallet_id: wallet_id.to_string(),
                 count: u32::try_from(txids.len()).unwrap_or(u32::MAX),
+                live: (txids.iter().take(MAX_TXIDS))
+                    .map(|t| live.contains(t))
+                    .collect(),
                 txids: hex(txids),
                 catch_up,
             },
@@ -437,6 +450,9 @@ impl From<EngineEvent> for AppEvent {
                 network: net(network),
             },
             EngineEvent::Rates => AppEvent::Rates,
+            EngineEvent::Backups { network } => AppEvent::Backups {
+                network: net(network),
+            },
             EngineEvent::DashPayNews {
                 network,
                 wallet_id,
@@ -870,6 +886,7 @@ mod tests {
                 EngineEvent::NewTransactions {
                     network: network(),
                     wallet_id,
+                    live: txids.clone(),
                     txids: txids.clone(),
                     catch_up: true,
                 },
@@ -936,6 +953,7 @@ mod tests {
                 EngineEvent::Masternodes { network: network() },
                 EngineEvent::Governance { network: network() },
                 EngineEvent::Rates,
+                EngineEvent::Backups { network: network() },
                 // More than the engine sends: the bridge cuts too.
                 EngineEvent::DashPayNews {
                     network: network(),
@@ -987,9 +1005,10 @@ mod tests {
                 AppEvent::Masternodes { .. } => 19,
                 AppEvent::Governance { .. } => 20,
                 AppEvent::Rates => 21,
+                AppEvent::Backups { .. } => 22,
             };
             let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
-            assert_eq!(seen, (0..22).collect());
+            assert_eq!(seen, (0..23).collect());
 
             let mut largest = (0, None);
             for event in &events {
@@ -1110,14 +1129,22 @@ mod tests {
             MAX_TXIDS
         );
         assert_eq!(history(MAX_TXIDS + 1)["txids"], serde_json::json!([]));
+        let all = txids(1000);
         let new = json(EngineEvent::NewTransactions {
             network: DashNetwork::Regtest,
             wallet_id,
-            txids: txids(1000),
+            live: vec![all[MAX_TXIDS + 1], all[1]],
+            txids: all,
             catch_up: true,
         });
         assert_eq!(new["count"], 1000);
         assert_eq!(new["txids"].as_array().unwrap().len(), MAX_TXIDS);
+        let live = new["live"].as_array().unwrap();
+        assert_eq!(live.len(), MAX_TXIDS);
+        let flagged: Vec<usize> = (0..MAX_TXIDS)
+            .filter(|&i| live[i].as_bool() == Some(true))
+            .collect();
+        assert_eq!(flagged, [1], "one flag per forwarded txid, in its place");
     }
 
     #[test]

@@ -18,7 +18,9 @@ import type { PayTab } from "../../app/ui";
 import { actionError } from "../../contacts/actions";
 import { cardLine } from "../../contacts/add";
 import { avatarLetters, networkHits, shownName, subtitle, type ContactsOwner } from "../../contacts/model";
-import { BROKEN, ENABLE_FIRST, payNote } from "../../contacts/pane";
+import { payNote } from "../../contacts/pane";
+import { messageTable, t } from "../../i18n";
+import { en } from "../../i18n/en";
 
 type Named = Pick<ContactSummaryInfo, "contact" | "alias" | "displayName" | "username">;
 
@@ -42,18 +44,16 @@ export interface NoOwner {
   next: "join" | "retry" | null;
 }
 
-export const WATCH_ONLY = "A watch-only wallet cannot pay contacts.";
-
 export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "starting" }>): NoOwner {
   switch (owner.kind) {
     case "error":
-      return { title: "Could not read DashPay's state", message: null, next: "retry" };
+      return { title: t("pay.contact.noOwner.error"), message: null, next: "retry" };
     case "registering":
-      return { title: "Your username is being registered", message: "You can pay your contacts once Dash Platform confirms it.", next: null };
+      return { title: t("pay.contact.noOwner.registering"), message: t("pay.contact.noOwner.registeringText"), next: null };
     case "join":
-      if (owner.reason === "watchOnly") return { title: "No DashPay contacts", message: WATCH_ONLY, next: null };
-      if (owner.reason === "waitingForSync") return { title: "Join DashPay", message: "You can join DashPay once the wallet has synced.", next: null };
-      return { title: "Join DashPay", message: "Create a username to add contacts and pay them by name.", next: "join" };
+      if (owner.reason === "watchOnly") return { title: t("pay.contact.noOwner.watchOnly"), message: t("pay.contact.watchOnly"), next: null };
+      if (owner.reason === "waitingForSync") return { title: t("pay.contact.noOwner.join"), message: t("pay.contact.noOwner.waitingForSync"), next: null };
+      return { title: t("pay.contact.noOwner.join"), message: t("pay.contact.noOwner.createUsername"), next: "join" };
   }
 }
 
@@ -85,7 +85,7 @@ export interface PickerGroup {
   rows: PickerRow[];
 }
 
-const GROUP_TITLES = { contacts: "My Contacts", requests: "Contact Requests" } as const;
+const GROUP_TITLES = messageTable("pay.contact.groups", ["contacts", "requests"]);
 
 /** The picker's groups from the engine's `contacts` and `requests` sections, in its order; the
  * other sections are not payable here. An empty group is left out. */
@@ -148,16 +148,16 @@ export function pickerNetworkState(i: { listReady: boolean; caughtUp: boolean; p
 
 /** What the picker's live region says once the username search answered; `null` before. */
 export function searchAnnouncement(i: { network: boolean; networkState: "loading" | "error" | "done"; hits: number; none: ReturnType<typeof pickerView>["none"] }): string | null {
-  if (i.none === "anyone") return "No one found";
+  if (i.none === "anyone") return t("pay.contact.noOneFound");
   if (!i.network || i.networkState === "loading") return null;
-  if (i.networkState === "error") return "Could not search";
+  if (i.networkState === "error") return t("pay.contact.searchFailed");
   if (i.hits === 0) return null;
-  return i.hits === 1 ? "1 person found on DashPay" : `${i.hits} people found on DashPay`;
+  return t("pay.contact.peopleFound", { count: i.hits });
 }
 
 function rowReason(c: Pick<ContactSummaryInfo, "relation" | "channel">): string | null {
-  if (c.relation === "pendingIncoming") return "Accept and pay";
-  return c.channel === "broken" ? "Payments cannot be sent right now" : null;
+  if (c.relation === "pendingIncoming") return t("pay.contact.rowAcceptAndPay");
+  return c.channel === "broken" ? t("pay.contact.rowBroken") : null;
 }
 
 // ---------------------------------------------------------------- a user found by username
@@ -178,13 +178,13 @@ export function foundLine(name: string, relation: UserRelation, eligibility: { d
   if (!line) return undefined;
   switch (line.next) {
     case "send":
-      return { text: `You can pay ${name} once they accept your contact request.`, next: "send" };
+      return { text: t("pay.contact.foundSend", { name }), next: "send" };
     case "showContact":
       return { text: line.text, next: "pay" };
     case "showRequest":
       return eligibility.data === "pendingIncoming"
         ? { text: line.text, next: "acceptAndPay" }
-        : { text: `Contact request sent. You can pay ${name} once they accept.`, next: null };
+        : { text: t("pay.contact.foundRequested", { name }), next: null };
     case "enable":
     case "retry":
       return { text: line.text, next: line.next };
@@ -221,21 +221,21 @@ export interface BannerInput {
   accepted: boolean;
 }
 
-export const PAYMENT_LOCK_TEXT = "A payment to this contact may have been sent. Check it again before you pay again.";
+export const PAYMENT_LOCK_TEXT = en.pay.contact.banner.paymentLock;
 
-/** First match wins (D6). A locked vault never reaches the tab: the lock screen covers it. */
+/** First match wins (D6). A locked vault never reaches the tab: the lock screen replaces the pages. */
 export function payBanner(i: BannerInput): Banner | null {
-  if (i.detail === undefined) return i.readError ? { kind: "readFailed", text: `Could not read this contact: ${i.readError}` } : { kind: "loading" };
-  if (i.detail === null) return { kind: "gone", text: "This user is no longer in your contacts." };
+  if (i.detail === undefined) return i.readError ? { kind: "readFailed", text: t("pay.contact.banner.readFailed", { error: i.readError }) } : { kind: "loading" };
+  if (i.detail === null) return { kind: "gone", text: t("pay.contact.banner.gone") };
   const { relation, channel } = i.detail.summary;
   const request = acceptsToo(i.detail, i.accepted);
-  if (relation !== "contact" && !request && !i.accepted) return { kind: "gone", text: "You can pay this user once you are contacts." };
-  if (i.watchOnly) return { kind: "watchOnly", text: WATCH_ONLY };
-  if (request && i.hasKeys === false) return { kind: "enable", text: `${ENABLE_FIRST} Then you can accept and pay.` };
-  if (i.detail.paymentLock) return { kind: "paymentLock", text: PAYMENT_LOCK_TEXT, txid: i.detail.paymentLock.txid };
-  if (channel === "broken") return { kind: "broken", text: BROKEN };
-  if (i.lock === "unlockedMixingOnly") return { kind: "mixingOnly", text: "The wallet is unlocked for mixing only. Unlock it fully to pay." };
-  if (request) return { kind: "note", text: "This user sent you a contact request. Accept and pay accepts it and pays in one step." };
+  if (relation !== "contact" && !request && !i.accepted) return { kind: "gone", text: t("pay.contact.banner.notContacts") };
+  if (i.watchOnly) return { kind: "watchOnly", text: t("pay.contact.watchOnly") };
+  if (request && i.hasKeys === false) return { kind: "enable", text: t("pay.contact.banner.enableThenAccept") };
+  if (i.detail.paymentLock) return { kind: "paymentLock", text: t("pay.contact.banner.paymentLock"), txid: i.detail.paymentLock.txid };
+  if (channel === "broken") return { kind: "broken", text: t("contacts.pane.broken") };
+  if (i.lock === "unlockedMixingOnly") return { kind: "mixingOnly", text: t("pay.contact.banner.mixingOnly") };
+  if (request) return { kind: "note", text: t("pay.contact.banner.request") };
   const note = payNote(channel);
   return note ? { kind: "note", text: note } : null;
 }
@@ -251,11 +251,11 @@ export function acceptsToo(detail: ContactDetailInfo | null | undefined, accepte
 export function resolveText(r: LockResolutionName): { text: string; resolved: boolean } {
   switch (r) {
     case "sent":
-      return { text: "The payment was sent. You can pay this contact again.", resolved: true };
+      return { text: t("pay.contact.resolve.sent"), resolved: true };
     case "notSent":
-      return { text: "The payment was not sent. You can pay this contact again.", resolved: true };
+      return { text: t("pay.contact.resolve.notSent"), resolved: true };
     case "unknown":
-      return { text: "Still not known. Check again once the wallet has synced.", resolved: false };
+      return { text: t("pay.contact.resolve.unknown"), resolved: false };
   }
 }
 
@@ -320,7 +320,7 @@ export async function acceptUnderLease(
 }
 
 /** The result's words for an accept that went through (D12, E0-04 C8). */
-export const acceptedText = (name: string) => `You and ${name} are now contacts.`;
+export const acceptedText = (name: string) => t("pay.contact.accepted", { name });
 
 /** An accept's refusal: DP2-09's wording; nothing was paid. */
-export const acceptFailedText = (e: unknown) => `${actionError(e)} Nothing was paid.`;
+export const acceptFailedText = (e: unknown) => `${actionError(e)} ${t("pay.contact.nothingPaid")}`;

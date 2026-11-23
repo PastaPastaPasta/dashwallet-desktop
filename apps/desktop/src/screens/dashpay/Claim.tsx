@@ -22,6 +22,7 @@ import { useModel } from "../../onboarding/model";
 import { SAVED_LINKS_KEY } from "../SavedLinks";
 import { GrantSheet } from "../tools/common";
 import { Avatar } from "../contacts/Avatar";
+import { useT } from "../../i18n";
 import { ErrorLine, StepHeader } from "./Registration";
 
 /** Leaves the claim screen (D3): welcome goes Home, Join stays on the Join page. */
@@ -32,6 +33,7 @@ function leaveClaim(entry: ClaimEntry) {
 
 /** D4: the DPNS-checked "@username" leads; the display name, the inviter's own words, follows. */
 function Inviter({ card }: { card: InviterCard }) {
+  useT();
   const shown = card.username ? `@${card.username}` : card.name;
   return (
     <div className="claim-inviter" data-testid="claim-inviter">
@@ -67,6 +69,7 @@ export function ClaimScreen({
   /** The wallet's registrations, read before the status (D5, F7). */
   rows: { data: unknown; isError: boolean; error: unknown; refetch: () => unknown };
 }) {
+  useT();
   const id = useId();
   const b = useBackend();
   const client = useQueryClient();
@@ -138,6 +141,7 @@ export function ClaimScreen({
 /** C11: step 2 of a claim: the name, what pays (the invitation), who the request goes to and
  * what it carries (D6), its opt-out (D7), then Claim under the claim quote's grant (D9). */
 export function ClaimConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
+  const tr = useT();
   useModel(wiz);
   const id = useId();
   const [accepted, setAccepted] = useState(false);
@@ -171,7 +175,7 @@ export function ClaimConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationW
               </p>
               <p className="registration-line claim-recipient-id">
                 <span className="claim-label">{CLAIM_COPY.confirm.recipientId}</span>{" "}
-                <CopyValue value={recipient.identity} label="identity id" mono />
+                <CopyValue value={recipient.identity} action={tr("dashpay.claim.confirm.copyIdentityId")} mono />
               </p>
             </>
           )}
@@ -201,6 +205,7 @@ export function ClaimConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationW
 /** D14: Join's "Have an invitation?": the pasted link goes into the stash at once, and the claim
  * screen opens on its id; the field is cleared. */
 export function InvitationPasteSheet({ onClose }: { onClose: () => void }) {
+  useT();
   const b = useBackend();
   const client = useQueryClient();
   const [text, setText] = useState("");

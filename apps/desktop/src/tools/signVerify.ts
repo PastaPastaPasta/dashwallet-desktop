@@ -6,18 +6,19 @@
 
 import { isAppError, type Backend } from "../api/backend";
 import type { VerifyMessageResult } from "../api/generated/VerifyMessageResult";
+import { messageTable } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import type { GrantModel } from "./grant";
 
-export const SignVerifyText = {
-  invalidAddress: "The entered address is invalid. Please check the address and try again.",
-  addressNoKey: "The entered address does not refer to a key. Please check the address and try again.",
-  privateKeyUnavailable: "Private key for the entered address is not available.",
-  signingFailed: "Message signing failed.",
-  signed: "Message signed.",
-  unlockCancelled: "Wallet unlock was cancelled.",
-  changedWhileSigning: "The address or message changed while signing. Sign the message again.",
-};
+export const SignVerifyText = messageTable("tools.signVerify", [
+  "invalidAddress",
+  "addressNoKey",
+  "privateKeyUnavailable",
+  "signingFailed",
+  "signed",
+  "unlockCancelled",
+  "changedWhileSigning",
+]);
 
 /** dash-qt's text for a failed signature. */
 export function signErrorText(e: unknown): string {

@@ -41,6 +41,7 @@ import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from ".
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
+import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { transferScenarios } from "./transfer";
@@ -152,6 +153,8 @@ export interface World {
   masternodes: MasternodesWorld;
   /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
   rates: RatesWorld;
+  /** Updates: what this copy can do, the feed and the install (updates.ts, PK-03). */
+  updates: UpdatesWorld;
   /** The commands dw-app does not have yet: network choice, shielded and Platform balances (pending.ts). */
   pending: PendingWorld;
 }
@@ -177,6 +180,7 @@ const unlocked = (walletIds: string[]): LockStatus => ({
 });
 
 function wallet(variant: HistoryVariant, plainWords: boolean): FixtureWallet {
+  const rows = buildRows(variant, plainWords);
   return {
     summary: {
       walletId: FIXTURE_WALLET_ID,
@@ -188,8 +192,8 @@ function wallet(variant: HistoryVariant, plainWords: boolean): FixtureWallet {
       createdAt: null,
       balances: variant === "empty" ? ZERO_BALANCES : FUNDED_BALANCES,
     },
-    rows: buildRows(variant, plainWords),
-    coins: buildCoins(variant),
+    rows,
+    coins: buildCoins(variant, rows.find((r) => r.amount > 0 && r.status.kind === "unconfirmed" && !r.status.instantLocked)?.txid),
     receive: newReceiveWorld(),
   };
 }
@@ -253,6 +257,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     governance: newGovernanceWorld(),
     masternodes: newMasternodesWorld(),
     rates: newRatesWorld(),
+    updates: newUpdatesWorld(),
     pending: newPendingWorld(),
   };
 }
@@ -595,6 +600,48 @@ function withInvitation(w: World, status?: InvitationStatus): World {
 function quietOptionalHistory(w: World): World {
   if (w.pending.platform) w.pending.platform.activity = [];
   if (w.pending.shielded) w.pending.shielded.activity = [];
+  return w;
+}
+
+/** A new wallet still catching up when a 25 DASH payment arrives, InstantSend-locked or only seen. */
+function catchingUpPayment(t: ThemeName | null, locked: boolean): World {
+  const w = base(t, "empty");
+  const paid = 25 * COIN;
+  const main = w.wallets[0];
+  const arrived = locked ? { confirmed: paid } : { unconfirmed: paid };
+  main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, ...arrived, total: paid, catchingUp: true } };
+  main.rows = [
+    {
+      txid: "5f0c2a6e9d4b4a3c8e7f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
+      recordIndex: 0,
+      txType: "recvWithAddress",
+      category: "received",
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: locked, chainLocked: false, maturesIn: null },
+      timestamp: secs(FIXTURE_NOW),
+      blockHeight: null,
+      amount: paid,
+      fee: null,
+      address: "yXbH3JxbVWgEzq6aZDyEbNQx5PtUfZvvXZ",
+      label: null,
+      countsTowardBalance: locked,
+      involvesWatchOnly: false,
+    },
+  ];
+  w.sync = syncing();
+  return w;
+}
+
+/** A wallet whose own scan trails the tip by 2,000 blocks: SPV stopped short, or the network caught
+ * up while this wallet still scans. `empty`: nothing found so far, no Shielded or Platform pool. */
+function walletBehind(t: ThemeName | null, stopped: boolean, empty: boolean): World {
+  const w = empty ? base(t, "empty") : base(t);
+  if (empty) {
+    w.pending.shielded = null;
+    w.pending.platform = null;
+  }
+  const tip = w.sync.tipHeight!;
+  w.wallets[0].scanHeight = tip - 2000;
+  if (stopped) w.sync = { ...syncing(), running: false, connectedPeers: 0 };
   return w;
 }
 
@@ -1057,31 +1104,24 @@ const SCENARIOS = {
   // DP1-08: the Home card's other banner states (the status read failing is `fail=dashpay_status:none`).
   /** A new wallet still catching up when a 25 DASH payment arrives: the engine reports it at once,
    * InstantSend-locked and unconfirmed, in a balance flagged `catchingUp` (PRODUCT backlog 1). */
-  "catching-up-payment": (t) => {
-    const w = base(t, "empty");
-    const paid = 25 * COIN;
+  "catching-up-payment": (t) => catchingUpPayment(t, true),
+  /** The same payment seen but not InstantSend-locked yet: unconfirmed, Pending. */
+  "catching-up-pending-payment": (t) => catchingUpPayment(t, false),
+  /** The same new wallet before anything has arrived: Home shows 0 while it syncs. */
+  "catching-up-nothing-yet": (t) => {
+    const w = catchingUpPayment(t, true);
     const main = w.wallets[0];
-    main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, confirmed: paid, total: paid, catchingUp: true } };
-    main.rows = [
-      {
-        txid: "5f0c2a6e9d4b4a3c8e7f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
-        recordIndex: 0,
-        txType: "recvWithAddress",
-        category: "received",
-        status: { kind: "unconfirmed", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
-        timestamp: secs(FIXTURE_NOW),
-        blockHeight: null,
-        amount: paid,
-        fee: null,
-        address: "yXbH3JxbVWgEzq6aZDyEbNQx5PtUfZvvXZ",
-        label: null,
-        countsTowardBalance: true,
-        involvesWatchOnly: false,
-      },
-    ];
-    w.sync = syncing();
+    main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, catchingUp: true } };
+    main.rows = [];
     return w;
   },
+  /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */
+  "wallet-behind-stopped": (t) => walletBehind(t, true, false),
+  /** The same with nothing found yet: Home shows 0. */
+  "wallet-behind-stopped-empty": (t) => walletBehind(t, true, true),
+  /** The network caught up while this wallet's own scan is still 2,000 blocks short. */
+  "wallet-behind-at-tip": (t) => walletBehind(t, false, false),
+  "wallet-behind-at-tip-empty": (t) => walletBehind(t, false, true),
   /** No identity while the wallet syncs: Join DashPay disabled, "Available after sync finishes". */
   "dashpay-waiting-for-sync": (t) => {
     const w = withStatus(base(t), { kind: "noIdentity", reason: "waitingForSync" });
@@ -1329,6 +1369,26 @@ const SCENARIOS = {
     const w = base(t);
     w.dashpay = registered();
     w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, hasDashpayKeys: false }));
+    return w;
+  },
+  /** H-09: a payment to Erin, whose data is unverified, waits in `prepare` and is refused with
+   * `platform.context_unavailable` (`hold=draft_prepare` shows the wait). */
+  "dashpay-contact-unchecked": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), unverifiedPrepare: "contextUnavailable" };
+    return w;
+  },
+  /** H-09: a payment to Erin is refused with `platform.trust_mismatch`. */
+  "dashpay-contact-mismatch": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), unverifiedPrepare: "trustMismatch" };
+    return w;
+  },
+  /** H-09: Grace's request comes from a profile not yet verified: Accept warns and stays on. */
+  "dashpay-unverified-request": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    w.dashpay.contacts = w.dashpay.contacts.map((c) => (c.summary.username === "grace" ? { ...c, summary: { ...c.summary, unverified: true } } : c));
     return w;
   },
   /** "alice" with fewer credits than one contact request: Accept is refused (DP2-09 D4). */

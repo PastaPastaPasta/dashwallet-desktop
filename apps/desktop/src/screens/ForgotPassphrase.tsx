@@ -2,18 +2,30 @@
 // vault, so the sheet stays over the shell to say what happened; closing it drops the phrase.
 
 import { useEffect, useState } from "react";
+import { walletNamesForRecovery } from "../api/lockGate";
 import { useBackend } from "../api/queries";
 import { useSecretScreen } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { NewPassphraseForm } from "../components/passphrase";
 import { Bip39Field, PhraseInput, ProtectionPending, WalletChoiceList } from "../components/phrase";
 import { Sheet } from "../components/sheet";
+import { useT } from "../i18n";
 import { ForgotPassphraseModel, ForgotText } from "../onboarding/forgot";
 import { useModel } from "../onboarding/model";
 
 export function ForgotPassphraseSheet({ onClose }: { onClose: () => void }) {
+  const t = useT();
   const backend = useBackend();
-  const [model] = useState(() => new ForgotPassphraseModel(backend));
+  // The locked window's one wallet read: their names, through `walletNamesForRecovery`.
+  const [model] = useState(
+    () =>
+      new ForgotPassphraseModel({
+        lockStatus: () => backend.lockStatus(),
+        checkMnemonic: (phrase) => backend.checkMnemonic(phrase),
+        recoverWithMnemonic: (...args) => backend.recoverWithMnemonic(...args),
+        listWallets: () => walletNamesForRecovery(backend),
+      }),
+  );
   useModel(model);
   useEffect(() => {
     void model.load();
@@ -33,7 +45,7 @@ export function ForgotPassphraseSheet({ onClose }: { onClose: () => void }) {
   const protection = useSecretScreen();
   return (
     <Sheet
-      title={ForgotText.title}
+      title={t("onboarding.forgot.title")}
       width="medium"
       testId="forgot-passphrase"
       focusKey={`${model.step} ${protection}`}
@@ -65,20 +77,21 @@ function ForgotStep({
   setBip39: (text: string) => void;
   onClose: () => void;
 }) {
+  const t = useT();
   switch (model.step) {
     case "loading":
     case "working":
       return (
         <p className="sheet-text" role="status">
-          {model.step === "loading" ? "Loading…" : "Resetting the passphrase…"}
+          {model.step === "loading" ? t("onboarding.loading") : t("onboarding.forgot.resetting")}
         </p>
       );
     case "unavailable":
-      return <p className="sheet-text">No wallet's keys are in this vault, so there is nothing to recover.</p>;
+      return <p className="sheet-text">{t("onboarding.forgot.unavailable")}</p>;
     case "wallet":
       return (
         <>
-          <p className="sheet-text">Which wallet's recovery phrase do you have?</p>
+          <p className="sheet-text">{t("onboarding.forgot.whichWallet")}</p>
           <WalletChoiceList wallets={model.wallets} testId="forgot-wallet" onChoose={(id) => model.chooseWallet(id)} />
         </>
       );
@@ -90,10 +103,10 @@ function ForgotStep({
           </p>
           <div className="sheet-actions">
             <DashButton variant="plainBlue" data-testid="forgot-back" onClick={() => model.back()}>
-              Back
+              {t("onboarding.back")}
             </DashButton>
             <DashButton variant="filledBlue" data-autofocus data-testid="forgot-accept" onClick={() => model.acceptConsequences()}>
-              Continue
+              {t("onboarding.continue")}
             </DashButton>
           </div>
         </>
@@ -127,11 +140,11 @@ function ForgotStep({
           <div className="sheet-actions">
             {model.wallets.length > 1 && (
               <DashButton variant="plainBlue" data-testid="forgot-back" onClick={() => model.back()}>
-                Back
+                {t("onboarding.back")}
               </DashButton>
             )}
             <DashButton variant="filledBlue" disabled={!model.entry.valid} data-testid="forgot-continue" onClick={() => model.continuePhrase()}>
-              Continue
+              {t("onboarding.continue")}
             </DashButton>
           </div>
         </>
@@ -142,12 +155,12 @@ function ForgotStep({
           <NewPassphraseForm
             testId="forgot-new"
             error={model.error}
-            submitLabel="Reset passphrase"
+            submitLabel={t("onboarding.forgot.submit")}
             onEdit={() => model.passphraseEdited()}
             onSubmit={(text, confirmation) => model.submitNewPassphrase(text, confirmation)}
           />
           <DashButton variant="plainBlue" data-testid="forgot-back" onClick={() => model.back()}>
-            Back
+            {t("onboarding.back")}
           </DashButton>
         </>
       );
@@ -163,7 +176,7 @@ function ForgotStep({
             </p>
           )}
           <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid="forgot-close" onClick={onClose}>
-            Done
+            {t("onboarding.done")}
           </DashButton>
         </>
       );
@@ -174,7 +187,7 @@ function ForgotStep({
             {model.error}
           </p>
           <DashButton variant="filledBlue" data-autofocus data-testid="forgot-retry" onClick={() => model.back()}>
-            Back
+            {t("onboarding.back")}
           </DashButton>
         </>
       );

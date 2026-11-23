@@ -355,6 +355,36 @@ pub fn deliver_links<R: Runtime>(
 mod tests {
     use super::*;
 
+    /// A forwarded launch carries links only: its `--` options, in either
+    /// form, are dropped, so a second launch cannot move the running app to
+    /// another data root or network.
+    #[test]
+    fn a_forwarded_launch_acts_on_its_links_only() {
+        let shell = Shell::new(None);
+        let args = [
+            "C:\\dw\\dash-wallet.exe",
+            "--datadir=C:\\elsewhere",
+            "--network=mainnet",
+            "--datadir",
+            "C:\\elsewhere",
+            "--network",
+            "mainnet",
+            "--theme=dark",
+        ]
+        .map(String::from);
+        for windows_shell in [false, true] {
+            assert_eq!(
+                shell.queue_from(args.clone(), LinkSource::Forwarded, windows_shell),
+                0
+            );
+        }
+        assert!(shell.inbox.is_empty());
+        let mut with_link = args.to_vec();
+        with_link.push("pay:yPlanted?label=--network=mainnet".into());
+        assert_eq!(shell.queue_from(with_link, LinkSource::Forwarded, false), 1);
+        assert_eq!(shell.inbox.len(), 1);
+    }
+
     #[tokio::test]
     async fn a_second_file_dialog_is_refused_while_one_is_open() {
         let shell = Arc::new(Shell::new(None));

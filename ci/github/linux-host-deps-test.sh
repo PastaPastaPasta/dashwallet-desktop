@@ -25,11 +25,24 @@ case " $* " in
   *" --download-only "*)
     echo "download ${first%%[[:space:]]*}" >> "$FAKE_LOG"
     [[ "$first" == "$FAKE_GOOD_MIRROR"* ]] ;;
+  *" Dir::Etc::SourceList=/dev/null "*) echo "install-cache" >> "$FAKE_LOG" ;;
   *" --no-download "*) echo "install" >> "$FAKE_LOG" ;;
   *) : ;;
 esac
 EOF
-chmod +x "$work/bin/sudo" "$work/bin/timeout" "$work/bin/apt-get"
+# Every requested package installed, as after a good install from the cache.
+cat > "$work/bin/dpkg-query" <<'FAKE'
+#!/usr/bin/env bash
+shift 3
+for _ in "$@"; do echo "install ok installed"; done
+FAKE
+# ci/github/apt-cache.sh, through DW_APT_CACHE_TOOL: verify passes unless FAKE_VERIFY=fail.
+cat > "$work/apt-cache" <<'FAKE'
+#!/usr/bin/env bash
+echo "$1" >> "$FAKE_LOG"
+[[ "$1" != verify || "${FAKE_VERIFY:-}" != fail ]]
+FAKE
+chmod +x "$work/bin/sudo" "$work/bin/timeout" "$work/bin/apt-get" "$work/bin/dpkg-query" "$work/apt-cache"
 
 regional=$'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1'
 main=$'https://archive.ubuntu.com/ubuntu/\tpriority:2'
@@ -130,3 +143,80 @@ if run nowhere; then fail "no mirror list: the script passed"; fi
 [ ! -e "$work/mirrors" ] || fail "no mirror list: the script created one"
 
 echo "linux-host-deps: mirror fallback ok"
+
+# The Actions cache (.github/actions/linux-host-deps): a hit installs from it; live-first tries once.
+mkdir -p "$work/cache/archives"
+touch "$work/cache/archives/a.deb"
+run_cached() {
+  : > "$work/log"
+  : > "$work/summary"
+  PATH="$work/bin:$PATH" DW_APT_MIRRORS="$work/mirrors" DW_APT_SOURCES="$work/sources" FAKE_LOG="$work/log" \
+    FAKE_GOOD_MIRROR="$1" DW_APT_CACHE="$work/cache" DW_APT_CACHE_TOOL="$work/apt-cache" \
+    GITHUB_STEP_SUMMARY="$work/summary" "${@:2}" "$here/linux-host-deps.sh" rust > /dev/null 2> "$work/err"
+}
+no_summary() {
+  [ ! -s "$work/summary" ] || fail "$1: the summary was: $(cat "$work/summary")"
+}
+images_mirrors() {
+  write_sources
+  printf '%s\n%s\n%s\n' "$regional" "$main" "$security" > "$work/mirrors"
+}
+
+images_mirrors
+run_cached nowhere env || fail "a cache hit: the script failed"
+expect_log "verify install-cache " "a cache hit"
+no_summary "a cache hit"
+
+images_mirrors
+run_cached http://us-east-2.ec2. env DW_APT_LIVE_FIRST=1 || fail "live-first, live works: the script failed"
+expect_log "download http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ install " "live-first, live works"
+no_summary "live-first, live works"
+
+images_mirrors
+run_cached nowhere env DW_APT_LIVE_FIRST=1 || fail "live-first, live fails: the script failed"
+expect_log "download http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ verify install-cache " "live-first, live fails"
+expect_mirrors "$(printf '%s\n%s\n%s' "$regional" "$main" "$security")" "live-first, live fails"
+expect_security http://security.ubuntu.com/ubuntu/ "live-first, live fails"
+grep -q "^apt: cache fallback used: " "$work/summary" || fail "live-first, live fails: the summary was: $(cat "$work/summary")"
+
+images_mirrors
+if run_cached nowhere env DW_APT_LIVE_FIRST=1 FAKE_VERIFY=fail; then
+  fail "live-first, live fails, the cache does not verify: the script passed"
+fi
+expect_log "download http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ verify " "live-first, live fails, the cache does not verify"
+no_summary "live-first, live fails, the cache does not verify"
+
+rm "$work/cache/archives/a.deb"
+images_mirrors
+run_cached http://us-east-2.ec2. env || fail "a cache miss: the script failed"
+expect_log "download http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ save install " "a cache miss"
+no_summary "a cache miss"
+images_mirrors
+run_cached http://us-east-2.ec2. env DW_APT_SAVE=0 || fail "a cache miss on a pull request: the script failed"
+expect_log "download http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ install " "a cache miss on a pull request"
+
+echo "linux-host-deps: cache, live-first and fallback ok"
+
+# The pockets apt-cache.sh accepts, from ubuntu.sources read as libapt reads deb822.
+expect_suites() {
+  local got
+  got=$("$here/apt-cache.sh" suites "$work/deb822" | tr '\n' ' ')
+  [ "$got" == "$1 " ] || fail "$2: suites were '$got', not '$1 '"
+}
+printf '%s\n' '# Suites: commented' 'Types: deb' 'Suites: noble noble-updates' ' noble-backports' '' \
+  'Types: deb' $'suites:\tnoble-security' > "$work/deb822"
+expect_suites "noble noble-updates noble-backports noble-security" "comments, folding and case"
+for off in 'Enabled: no' 'Enabled: false' 'enabled: Off' 'Enabled:' ; do
+  printf '%s\n' 'Suites: noble' '' 'Suites: noble-proposed' "$off" > "$work/deb822"
+  [ "$off" != 'Enabled:' ] || printf '%s\n' 'Suites: noble' '' 'Suites: noble-proposed' 'Enabled:' ' no' > "$work/deb822"
+  expect_suites "noble" "a stanza with '$off'"
+done
+printf '%s\n' 'Suites: noble' '' 'Suites: noble-proposed' 'Enabled: 0' '' 'Suites : noble-updates' '' \
+  'Suites: noble-backports' 'Enabled : no' '' 'Suites: noble-security' 'Enabled: fal se' > "$work/deb822"
+expect_suites "noble noble-updates noble-security" "Enabled: 0, spaces before a colon, and an unknown Enabled value"
+printf '%s\n' 'Suites: noble-proposed' ' ' 'Enabled: no' '' 'Suites: noble' > "$work/deb822"
+expect_suites "noble" "a line of spaces inside a disabled stanza"
+printf 'Suites: noble noble-updates\r\nEnabled: yes\r\n\r\nSuites: noble-proposed\r\nEnabled: no\r\n' > "$work/deb822"
+expect_suites "noble noble-updates" "CRLF line ends"
+
+echo "linux-host-deps: deb822 suites ok"

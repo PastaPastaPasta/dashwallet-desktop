@@ -123,6 +123,9 @@ pub(crate) fn fixture(encrypted: bool) -> Fixture {
     engine
         .block_on(session.vault_op(move |v| v.create(pass)))
         .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
+        .unwrap();
     let wallet = engine
         .block_on(session.import_wallet(
             Zeroizing::new(PHRASE.as_bytes().to_vec()),
@@ -702,10 +705,9 @@ fn the_facade_lease_handle_begins_ends_and_checks_its_grants() {
     ));
 }
 
-/// The signing window caps the grants a lease composes, not only each
-/// `authorize`: two credential-free grants, each within the sealed limit
-/// but from two windows, do not make one "Accept and pay" above it. A
-/// passphrase grant is not counted.
+/// Two credential-free grants issued under a higher limit do not make one
+/// "Accept and pay" above a lower one: lowering the limit ends the window
+/// and its grants. In a new window, a passphrase grant is not counted.
 #[test]
 fn a_lease_does_not_compose_window_grants_past_the_spend_limit() {
     const PART: u64 = 6_000_000;
@@ -725,15 +727,235 @@ fn a_lease_does_not_compose_window_grants_past_the_spend_limit() {
         }))
         .unwrap();
     assert_eq!(
-        f.lease(FlowKind::AcceptAndPay, &[platform.clone(), spend])
+        f.lease(FlowKind::AcceptAndPay, &[platform, spend])
             .unwrap_err(),
         LeaseError::Invalid
     );
+    f.engine
+        .block_on(
+            f.session
+                .vault_op(|v| v.unlock(PASS, UnlockScope::Full).map(drop)),
+        )
+        .unwrap();
+    let platform = f.platform_op(0, PART * 1_000);
     let typed = f.grant(
         GrantPurpose::Spend { max_duffs: PART },
         Credential::Passphrase(PASS),
     );
     f.lease(FlowKind::AcceptAndPay, &[platform, typed]).unwrap();
+}
+
+/// A lease made from signing-window grants keeps the signers it issued
+/// when the window ends: they run to the lease's own caps and lifetime.
+/// Window grants not yet in a lease end with the window.
+#[test]
+fn a_lease_from_window_grants_outlives_the_window() {
+    let f = fixture(true);
+    f.credit(1, COIN);
+    let spend = |max_duffs| f.grant(GrantPurpose::Spend { max_duffs }, Credential::None);
+    let grants = [f.platform_op(0, 1_000), spend(5_000_000)];
+    let unused = [f.platform_op(0, 1_000), spend(1_000_000)];
+    let l = f.lease(FlowKind::AcceptAndPay, &grants).unwrap();
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            v.end_signing_window();
+            Ok(())
+        }))
+        .unwrap();
+
+    let d = f.draft(1_000_000);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    assert!(spend_of(&l).unwrap() > 1_000_000);
+    f.engine.block_on(d.abandon(p)).unwrap();
+    assert_eq!(
+        f.lease(FlowKind::AcceptAndPay, &unused).unwrap_err(),
+        LeaseError::Invalid
+    );
+}
+
+/// A lease begun while other window grants are being issued: the window
+/// charges every grant as it is issued, so the lease's grants and those
+/// issued beside it add up to the sealed limit at most, in any order.
+#[test]
+fn a_lease_racing_window_grants_stays_within_the_limit() {
+    const LIMIT: u64 = 10_000_000;
+    const PART: u64 = 2_000_000;
+    let f = fixture(true);
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            let change = v.authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(PASS),
+            )?;
+            v.set_quick_unlock_spend_limit(&change.id, LIMIT)?;
+            v.unlock(PASS, UnlockScope::Full).map(drop)
+        }))
+        .unwrap();
+    let grants = [
+        f.platform_op(0, PART * 1_000),
+        f.grant(GrantPurpose::Spend { max_duffs: PART }, Credential::None),
+    ];
+    let wallet = f.wallet;
+    let beside = std::thread::scope(|scope| {
+        let issuing = scope.spawn(|| {
+            (0..10)
+                .filter(|_| {
+                    f.session
+                        .vault()
+                        .authorize(
+                            GrantPurpose::Spend { max_duffs: PART },
+                            Some(&wallet.0),
+                            Credential::None,
+                        )
+                        .is_ok()
+                })
+                .count() as u64
+        });
+        f.lease(FlowKind::AcceptAndPay, &grants).unwrap();
+        issuing.join().unwrap()
+    });
+    assert_eq!(beside, (LIMIT - 2 * PART) / PART);
+    assert_eq!(f.session.vault().signing_window_remaining(), Some(0));
+}
+
+/// A whole older vault file put back while the app is closed counts as
+/// limit 0 at the next open: the commitment is in the app database.
+#[test]
+fn an_older_vault_file_put_back_between_runs_has_limit_0() {
+    let mut f = fixture(true);
+    let set = |f: &Fixture, limit: u64| {
+        f.engine
+            .block_on(f.session.vault_op(move |v| {
+                let change = v.authorize(
+                    GrantPurpose::ChangeCredential,
+                    None,
+                    Credential::Passphrase(PASS),
+                )?;
+                v.set_quick_unlock_spend_limit(&change.id, limit).map(drop)
+            }))
+            .unwrap();
+    };
+    set(&f, 500_000_000);
+    let file = f
+        .session
+        .data_dir()
+        .join(dw_vault::VAULT_DIR)
+        .join("vault.dwv");
+    let older = std::fs::read(&file).unwrap();
+    set(&f, 0);
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    std::fs::write(&file, &older).unwrap();
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    f.session.vault().unlock(PASS, UnlockScope::Full).unwrap();
+    assert_eq!(f.session.vault().quick_unlock_policy().spend_limit_duffs, 0);
+}
+
+/// A recovery reads the replaced vault's payment choice under the same
+/// lock as a change of it: a change that holds the lock when the recovery
+/// starts lands first, and the new vault keeps it rather than the value
+/// stored before the change.
+#[test]
+fn a_recovery_keeps_a_payment_choice_changed_while_it_waited() {
+    let f = fixture(true);
+    let old = f.session.vault().vault_id().unwrap();
+    assert!(f.session.vault().signing_window_allowed());
+    let setter = f.engine.block_on(f.session.payment_auth.lock());
+    std::thread::scope(|scope| {
+        let recovery = scope.spawn(|| {
+            f.engine.block_on(f.session.recover_vault(
+                f.wallet.0,
+                Zeroizing::new(PHRASE.as_bytes().to_vec()),
+                Zeroizing::new(Vec::new()),
+                Zeroizing::new(b"another pass phrase".to_vec()),
+            ))
+        });
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(f.session.vault().vault_id(), Some(old.clone()));
+        f.engine
+            .block_on(f.session.write_payment_auth(&old, true))
+            .unwrap();
+        drop(setter);
+        recovery.join().unwrap().unwrap();
+    });
+    assert_ne!(f.session.vault().vault_id(), Some(old));
+    assert!(
+        f.engine
+            .block_on(f.session.payment_authentication())
+            .unwrap()
+            .on
+    );
+    assert!(!f.session.vault().signing_window_allowed());
+}
+
+/// A closed session its host still holds keeps no app database: the close
+/// released it, so the file can be replaced (issue #190).
+#[test]
+fn a_closed_session_still_held_keeps_no_app_database() {
+    let f = fixture(true);
+    let appdb = Arc::downgrade(&f.session.live().unwrap().appdb);
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    assert!(
+        appdb.upgrade().is_none(),
+        "the closed session still holds the app database"
+    );
+}
+
+/// "Ask every payment" is stored durably: once turning it on returns, a
+/// power loss does not bring back the window.
+#[test]
+fn an_acknowledged_ask_every_payment_survives_a_power_loss() {
+    use dw_appdb::durability_sim::{arm, power_loss};
+    let mut f = fixture(true);
+    let appdb = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let reopen = |f: &mut Fixture| {
+        f.engine
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+    };
+    reopen(&mut f);
+    arm(&appdb, false);
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    assert!(
+        !f.engine
+            .block_on(f.session.payment_authentication())
+            .unwrap()
+            .on
+    );
+    let grant = f
+        .session
+        .vault()
+        .authorize(
+            GrantPurpose::ChangeCredential,
+            None,
+            Credential::Passphrase(PASS),
+        )
+        .unwrap();
+    f.engine
+        .block_on(f.session.set_payment_authentication(true, grant.id))
+        .unwrap();
+    reopen(&mut f);
+    power_loss(&appdb);
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    assert!(
+        f.engine
+            .block_on(f.session.payment_authentication())
+            .unwrap()
+            .on
+    );
 }
 
 #[test]
@@ -1987,8 +2209,9 @@ fn repair_of_a_stuck_drain_is_refused_while_mixing_or_a_move_runs() {
 }
 
 /// E0-04 §6.5 (C9), commit 7, on a real session: Repair's "Resolve stuck
-/// funding" spends every coin of the funding accounts, the inputs of a
-/// tracked `Built` lock included, to a fresh address of the wallet. Its
+/// funding" spends every coin of the funding accounts of a wallet holding
+/// no denomination, the inputs of a tracked `Built` lock included, to a
+/// fresh address of the wallet. Its
 /// txid is in the journal before the library sees the transaction, and the
 /// step stays `MaybeSent` (no ChainLock yet). The exemption is the
 /// repair's alone: plain coin control still refuses the lock's input, a
@@ -2386,6 +2609,90 @@ fn repair_refuses_a_trusted_row_no_call_of_the_step_signed() {
         Err(EngineError::StuckFunding(r)) => assert_eq!(r, StuckFundingRefusal::NoKnownLock),
         other => panic!("{other:?}"),
     }
+}
+
+/// Repair leaves a mixed denomination of a restored wallet's send account
+/// out of its self-spend: it never joins mixed coins to unmixed ones.
+#[test]
+fn repair_leaves_a_counted_denomination_out_of_the_self_spend() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let b = f.credit(2, COIN / 2);
+    let denomination = f.credit(3, dw_coinjoin::denoms::DENOMINATIONS[2]);
+    f.stuck_signing(STEP, 51, &[a]);
+    f.track_lock(51, 0, &[a], platform_wallet::AssetLockStatus::Built);
+
+    let tx = f.repair(STEP);
+
+    let inputs: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(inputs, std::collections::HashSet::from([a, b]));
+    assert!(!inputs.contains(&denomination));
+}
+
+/// A stuck lock that spent only a denomination is repaired with that
+/// denomination alone: it conflicts with the lock, and no unmixed coin is
+/// joined to it.
+#[test]
+fn repair_of_a_lock_of_a_denomination_spends_that_denomination_alone() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let denomination = f.credit(3, dw_coinjoin::denoms::DENOMINATIONS[2]);
+    f.stuck_signing(STEP, 51, &[denomination]);
+    f.track_lock(
+        51,
+        0,
+        &[denomination],
+        platform_wallet::AssetLockStatus::Built,
+    );
+
+    let tx = f.repair(STEP);
+
+    let inputs: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(inputs, std::collections::HashSet::from([denomination]));
+}
+
+/// A denomination another step's tracked lock spends is that lock's input,
+/// not this step's: the repair leaves it out.
+#[test]
+fn repair_leaves_out_a_denomination_another_steps_lock_spends() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let other = f.credit(3, dw_coinjoin::denoms::DENOMINATIONS[2]);
+    f.stuck_signing(STEP, 51, &[a]);
+    f.track_lock(51, 0, &[a], platform_wallet::AssetLockStatus::Built);
+    f.track_lock(52, 5, &[other], platform_wallet::AssetLockStatus::Built);
+
+    let tx = f.repair(STEP);
+
+    let inputs: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(inputs, std::collections::HashSet::from([a]));
+}
+
+/// An ordinary coin another step's tracked lock spends stays out of the
+/// repair, and is not exempt from that lock: the self-spend takes the step's
+/// own locked coin and the free ones.
+#[test]
+fn repair_leaves_out_an_ordinary_coin_another_steps_lock_spends() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let free = f.credit(2, COIN / 4);
+    let other = f.credit(3, COIN / 2);
+    f.stuck_signing(STEP, 51, &[a]);
+    f.track_lock(51, 0, &[a], platform_wallet::AssetLockStatus::Built);
+    f.track_lock(52, 5, &[other], platform_wallet::AssetLockStatus::Built);
+
+    let tx = f.repair(STEP);
+
+    let inputs: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(inputs, std::collections::HashSet::from([a, free]));
 }
 
 /// E0-04 §6.5 (C9): a self-spend the journal fails to record is released
@@ -4118,4 +4425,34 @@ fn a_shield_drain_lease_signs_coinjoin_inputs_and_its_credit_key_only_while_it_h
         sign("m/9'/1'/4'/0'/0/0"),
         Err(dw_vault::SignerError::Locked)
     ));
+}
+
+/// Round 4, 8: a user-locked denomination no lock of the step spent stops
+/// Repair, with main's refusal, as it stopped main's draft of every coin,
+/// though the lock's own denomination alone would repair it.
+#[test]
+fn repair_refuses_while_an_unrelated_coin_is_locked_as_main_did() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let denomination = f.credit(3, dw_coinjoin::denoms::DENOMINATIONS[2]);
+    let locked = f.credit(4, dw_coinjoin::denoms::DENOMINATIONS[1]);
+    f.stuck_signing(STEP, 51, &[denomination]);
+    f.track_lock(
+        51,
+        0,
+        &[denomination],
+        platform_wallet::AssetLockStatus::Built,
+    );
+    (f.engine)
+        .block_on(f.session.lock_outpoints(f.wallet, vec![locked]))
+        .unwrap();
+
+    let draft = (f.engine)
+        .block_on(f.session.stuck_funding_draft(f.wallet, STEP))
+        .unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(draft.estimate())),
+        crate::send::SendFailure::OutpointUnavailable(locked)
+    );
 }

@@ -120,6 +120,26 @@ impl WalletStore {
     }
 }
 
+/// platform-wallet hands the store every `Received` / `Change` output of a
+/// record as a new coin and names in `utxo_credit_verdicts` the ones
+/// key-wallet did not credit; the SQLite persister writes them unspent all
+/// the same, so the next load gives back a coin the wallet does not hold
+/// (#88: one a payment this app sent claims, scanned in a later process).
+/// They are left out of the batch's new coins: no row is written for them,
+/// and a row already stored stays as it was. A later credit of the coin
+/// stores it as any other.
+fn drop_uncredited(changeset: &mut PlatformWalletChangeSet) {
+    let Some(core) = changeset.core.as_mut() else {
+        return;
+    };
+    if core.utxo_credit_verdicts.is_empty() {
+        return;
+    }
+    let verdicts = &core.utxo_credit_verdicts;
+    core.new_utxos
+        .retain(|u| !verdicts.contains_key(&u.outpoint));
+}
+
 impl PlatformWalletPersistence for WalletStore {
     fn store_commits_inline(&self) -> bool {
         self.inner.store_commits_inline()
@@ -181,6 +201,8 @@ impl PlatformWalletPersistence for WalletStore {
                     .collect()
             })
             .unwrap_or_default();
+        let mut changeset = changeset;
+        drop_uncredited(&mut changeset);
         if let Err(e) = self.inner.store(wallet_id, changeset) {
             if core && let Some(replay) = replay() {
                 replay.note_store_failed(WalletId(wallet_id));
@@ -243,6 +265,7 @@ impl PlatformWalletPersistence for WalletStore {
             .platform_addresses
             .retain(|id, _| !unloaded.contains(id));
         let mut loaded_at = self.loaded_at.lock().unwrap_or_else(|p| p.into_inner());
+        loaded_at.retain(|id, _| state.wallets.contains_key(id));
         for (id, wallet) in &state.wallets {
             loaded_at.insert(*id, wallet.wallet_info.metadata.synced_height);
         }
@@ -275,6 +298,101 @@ impl PlatformWalletPersistence for WalletStore {
     }
 }
 
+/// Wallet `id`'s filter checkpoint and birth height as `wallet.sqlite`
+/// holds them (read-only); `None` for one it has none of.
+pub(crate) fn stored_heights(
+    db_path: &std::path::Path,
+    id: &RawWalletId,
+) -> Result<(Option<u32>, Option<u32>), rusqlite::Error> {
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let (synced, birth): (Option<i64>, Option<i64>) = conn.query_row(
+        "SELECT (SELECT synced_height FROM core_sync_state WHERE wallet_id = ?1), \
+                (SELECT birth_height FROM wallets WHERE wallet_id = ?1)",
+        [&id[..]],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let height = |h: Option<i64>| h.and_then(|h| u32::try_from(h).ok());
+    Ok((height(synced), height(birth)))
+}
+
+/// Whether `wallet.sqlite` (read-only) shows wallet `id`'s CoinJoin
+/// accounts used, or cannot rule it out. Use is positive evidence only: a
+/// CoinJoin pool row, live or retired, of either chain and any account
+/// index, marked used; a stored coin, spent or not, paying a CoinJoin pool
+/// address; a stored transaction record of a CoinJoin account. A coin whose
+/// script no stored pool row owns, a record that cannot be read, and a
+/// transaction stored without a record and without a coin it funds cannot be
+/// classified and count as use.
+/// Releases 0.1.0 and 0.2.0 stored no `used` flags, but kept every confirmed
+/// coin's row and each transaction's record.
+pub(crate) fn coinjoin_used(
+    db_path: &std::path::Path,
+    id: &RawWalletId,
+    persister: &SqlitePersister,
+) -> Result<bool, rusqlite::Error> {
+    use dashcore::hashes::Hash as _;
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let pooled_or_unowned: bool = conn.query_row(
+        "WITH pool AS ( \
+             SELECT account_type, script, used FROM core_address_pool WHERE wallet_id = ?1 \
+             UNION ALL \
+             SELECT account_type, script, used FROM core_address_pool_retired WHERE wallet_id = ?1) \
+         SELECT EXISTS (SELECT 1 FROM pool WHERE account_type = 'coinjoin' AND used = 1) \
+             OR EXISTS (SELECT 1 FROM core_utxos u \
+                        WHERE u.wallet_id = ?1 AND u.is_sweep_placeholder = 0 AND ( \
+                            u.script IN (SELECT script FROM pool WHERE account_type = 'coinjoin') \
+                            OR u.script NOT IN (SELECT script FROM pool)))",
+        [&id[..]],
+        |r| r.get(0),
+    )?;
+    if pooled_or_unowned {
+        return Ok(true);
+    }
+    // The store writes a coin's funding transaction without a record beside
+    // the coin; that coin, classified above, is its evidence.
+    let mut stmt = conn.prepare(
+        "SELECT t.txid, t.record_blob IS NULL, EXISTS (SELECT 1 FROM core_utxos u \
+             WHERE u.wallet_id = ?1 AND u.is_sweep_placeholder = 0 \
+             AND substr(u.outpoint, 2, 32) = t.txid) \
+         FROM core_transactions t WHERE t.wallet_id = ?1",
+    )?;
+    let mut rows = stmt.query([&id[..]])?;
+    while let Some(row) = rows.next()? {
+        let (txid, recordless, funds_coin) = (
+            row.get::<_, Vec<u8>>(0)?,
+            row.get::<_, bool>(1)?,
+            row.get::<_, bool>(2)?,
+        );
+        if recordless {
+            if funds_coin {
+                continue;
+            }
+            return Ok(true);
+        }
+        let Ok(txid) = Txid::from_slice(&txid) else {
+            return Ok(true);
+        };
+        match persister.get_core_tx_record(*id, &txid) {
+            Ok(Some(r))
+                if r.txid == txid
+                    && !matches!(
+                        r.account_type,
+                        key_wallet::account::AccountType::CoinJoin { .. }
+                    ) => {}
+            _ => return Ok(true),
+        }
+    }
+    Ok(false)
+}
+
 /// Ids of every wallet registered in `wallet.sqlite` (read-only).
 pub(crate) fn registered_wallet_ids(
     db_path: &std::path::Path,
@@ -296,4 +414,81 @@ pub(crate) fn registered_wallet_ids(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use dashcore::hashes::Hash;
+    use dashcore::{OutPoint, TxOut, Txid};
+    use platform_wallet::changeset::changeset::UtxoCreditVerdict;
+    use platform_wallet::changeset::{CoreChangeSet, PlatformWalletChangeSet};
+
+    use super::drop_uncredited;
+
+    fn coin(vout: u32) -> key_wallet::Utxo {
+        let script =
+            dashcore::ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array([7; 20]));
+        key_wallet::Utxo::new(
+            OutPoint::new(Txid::from_byte_array([1; 32]), vout),
+            TxOut {
+                value: 1_000 + u64::from(vout),
+                script_pubkey: script.clone(),
+            },
+            dashcore::Address::from_script(&script, dashcore::Network::Regtest).unwrap(),
+            10,
+            false,
+        )
+    }
+
+    fn outpoints(utxos: &[key_wallet::Utxo]) -> Vec<OutPoint> {
+        utxos.iter().map(|u| u.outpoint).collect()
+    }
+
+    /// Every output with a verdict leaves the new coins, whatever the
+    /// verdict; the others stay; the spent coins are untouched.
+    #[test]
+    fn outputs_the_wallet_did_not_credit_are_not_stored() {
+        let mut changeset = PlatformWalletChangeSet {
+            core: Some(CoreChangeSet {
+                new_utxos: (0..4).map(coin).collect(),
+                spent_utxos: vec![coin(9)],
+                utxo_credit_verdicts: [
+                    (coin(1).outpoint, UtxoCreditVerdict::Uncredited),
+                    (
+                        coin(2).outpoint,
+                        UtxoCreditVerdict::ObservedSpent { height: 9 },
+                    ),
+                    (coin(3).outpoint, UtxoCreditVerdict::Doomed),
+                    (coin(5).outpoint, UtxoCreditVerdict::Uncredited),
+                ]
+                .into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        drop_uncredited(&mut changeset);
+        let core = changeset.core.unwrap();
+        assert_eq!(outpoints(&core.new_utxos), [coin(0).outpoint]);
+        assert_eq!(outpoints(&core.spent_utxos), [coin(9).outpoint]);
+    }
+
+    /// Without verdicts, or without a core part, nothing changes.
+    #[test]
+    fn a_batch_without_verdicts_is_stored_as_given() {
+        let mut changeset = PlatformWalletChangeSet {
+            core: Some(CoreChangeSet {
+                new_utxos: (0..2).map(coin).collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        drop_uncredited(&mut changeset);
+        let core = changeset.core.unwrap();
+        assert_eq!(outpoints(&core.new_utxos), [0, 1].map(|v| coin(v).outpoint));
+        assert!(core.spent_utxos.is_empty());
+
+        let mut empty = PlatformWalletChangeSet::default();
+        drop_uncredited(&mut empty);
+        assert!(empty.core.is_none());
+    }
 }

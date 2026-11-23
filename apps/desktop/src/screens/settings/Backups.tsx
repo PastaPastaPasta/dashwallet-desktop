@@ -6,13 +6,17 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 import type { CoreExportFormatName } from "../../api/generated/CoreExportFormatName";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
-import { keys, useAutomaticBackups, useBackend, useBackupDirectory, useBackupPolicy, useLockStatus, useWallets } from "../../api/queries";
+import { keys, useAutomaticBackupFailures, useAutomaticBackups, useBackend, useBackupDirectory, useBackupPolicy, useLockStatus, useWallets } from "../../api/queries";
 import { useLaunch } from "../../app/App";
+import { keptAcrossLock, useAcrossLock } from "../../app/acrossLock";
+import { useSecretScreen } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { NewPassphraseForm, PassphrasePrompt } from "../../components/passphrase";
+import { ProtectionPending, ProtectionText } from "../../components/phrase";
 import { Sheet } from "../../components/sheet";
 import { detailDate } from "../../format/tx";
+import { useT } from "../../i18n";
 import { failureText, useModel } from "../../onboarding/model";
 import { BackupModel, deletedByKeep, ExportModel, FilesText, ImportFileModel, ImportKeysModel, keepAsks, KEY_KINDS, type ImportDone, type KeyKind } from "../../settings/files";
 import { useLockTimer } from "../LockScreen";
@@ -20,11 +24,21 @@ import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./par
 
 type BackupsSheet = { kind: "backup" | "export"; wallet: WalletSummary } | { kind: "importFile" | "importKeys" } | null;
 
+/** A sheet whose file was being written or read, or whose result was up, when the vault locked:
+ * it opens again with the same model after the unlock, so where the file went, or why it failed,
+ * is still said (app/acrossLock.ts). */
+type Kept<M> = { sheet: NonNullable<BackupsSheet>; model: M };
+const SLOT = "settings-backups";
+
+function useKeptSheet<M>(sheet: NonNullable<BackupsSheet>, make: () => M, holds: (m: M) => boolean, end?: (m: M) => void): M {
+  return useAcrossLock<Kept<M>>(SLOT, () => ({ sheet, model: make() }), (k) => holds(k.model), end && ((k) => end(k.model))).model;
+}
+
 const KEEP_CHOICES = Array.from({ length: 11 }, (_, i) => i);
 
 export function BackupsTab() {
   const wallets = useWallets();
-  const [sheet, setSheet] = useState<BackupsSheet>(null);
+  const [sheet, setSheet] = useState<BackupsSheet>(() => keptAcrossLock<Kept<unknown>>(SLOT)?.sheet ?? null);
   const [walletId, setWalletId] = useState<string | null>(null);
   const id = useId();
   const own = (wallets.data ?? []).filter((w) => !w.watchOnly);
@@ -59,7 +73,7 @@ export function BackupsTab() {
           </>
         )}
       </SettingsCard>
-      <AutomaticBackupsCard names={new Map((wallets.data ?? []).map((w) => [w.walletId, w.name]))} />
+      <AutomaticBackupsCard names={new Map((wallets.data ?? []).map((w) => [w.walletId, w.name]))} own={own} onBackUp={(wallet) => setSheet({ kind: "backup", wallet })} />
       <SettingsCard title="Import" testId="settings-import-card">
         <Hint>A Dash Wallet backup, a Dash Core dumpwallet file or wallet.dat, or raw keys.</Hint>
         <DashButton variant="plainBlue" data-testid="settings-import-file" onClick={() => setSheet({ kind: "importFile" })}>
@@ -77,7 +91,7 @@ export function BackupsTab() {
   );
 }
 
-function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
+function AutomaticBackupsCard({ names, own, onBackUp }: { names: Map<string, string>; own: WalletSummary[]; onBackUp: (wallet: WalletSummary) => void }) {
   const backend = useBackend();
   const client = useQueryClient();
   const policy = useBackupPolicy();
@@ -108,6 +122,7 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
   };
   return (
     <SettingsCard title="Automatic backups" testId="settings-automatic-backups">
+      <AutomaticBackupFailures own={own} onBackUp={onBackUp} />
       <div className="settings-row">
         <label className="settings-row-title" htmlFor={`${id}-keep`}>
           Backups to keep for each wallet
@@ -155,7 +170,7 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
           {backups.data.map((b) => (
             <li key={b.path} className="settings-backup">
               <span>
-                {names.get(b.walletId) ?? `${b.walletId.slice(0, 8)}…`} · {detailDate(new Date(b.createdAt * 1000))}
+                {names.get(b.walletId) ?? `${b.walletId.slice(0, 8)}…`} · {detailDate(new Date(b.createdAt * 1000), backend.locale)}
               </span>
               <CopyValue value={b.path} label="backup path" mono />
             </li>
@@ -167,11 +182,32 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
   );
 }
 
+/** Each wallet whose latest automatic backup failed, until one succeeds (issue 340). */
+function AutomaticBackupFailures({ own, onBackUp }: { own: WalletSummary[]; onBackUp: (wallet: WalletSummary) => void }) {
+  const t = useT();
+  const backend = useBackend();
+  const failures = useAutomaticBackupFailures();
+  return (failures.data ?? []).map(({ walletId, failedAt }) => {
+    const wallet = own.find((w) => w.walletId === walletId);
+    if (!wallet) return null;
+    const date = detailDate(new Date(failedAt * 1000), backend.locale);
+    return (
+      <div key={walletId} className="settings-backup-failed" data-testid="settings-backup-failed">
+        <p className="settings-backup-failed-title">{t("settings.backups.automaticFailed.title")}</p>
+        <p>{t("settings.backups.automaticFailed.body", { wallet: wallet.name, date })}</p>
+        <DashButton variant="plainBlue" data-testid="settings-backup-failed-back-up" onClick={() => onBackUp(wallet)}>
+          {t("settings.backups.backUp")}
+        </DashButton>
+      </div>
+    );
+  });
+}
+
 function BackupSheet({ wallet, onClose }: { wallet: WalletSummary; onClose: () => void }) {
   const backend = useBackend();
   const client = useQueryClient();
   const lock = useLockStatus();
-  const [model] = useState(() => new BackupModel(backend, () => backend.now()));
+  const model = useKeptSheet({ kind: "backup", wallet }, () => new BackupModel(backend, () => backend.now()), (m) => m.working || m.done !== null);
   useModel(model);
   const encrypted = lock.data?.encrypted !== false;
   useEffect(() => {
@@ -239,7 +275,7 @@ function DoneLines({ done, onClose }: { done: ImportDone; onClose: () => void })
 function ImportFileSheet({ onClose }: { onClose: () => void }) {
   const backend = useBackend();
   const { network } = useLaunch();
-  const [model] = useState(() => new ImportFileModel(backend, network.dirName));
+  const model = useKeptSheet({ kind: "importFile" }, () => new ImportFileModel(backend, network.dirName), (m) => m.step === "working" || m.step === "done");
   useModel(model);
   const [path, setPath] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -329,15 +365,19 @@ function ImportFileSheet({ onClose }: { onClose: () => void }) {
 
 function ImportKeysSheet({ onClose }: { onClose: () => void }) {
   const backend = useBackend();
-  const [model] = useState(() => new ImportKeysModel(backend));
+  const model = useKeptSheet({ kind: "importKeys" }, () => new ImportKeysModel(backend), (m) => m.working || m.done !== null);
   useModel(model);
   const [kind, setKind] = useState<KeyKind>("hdSeed");
   const [text, setText] = useState("");
   const [name, setName] = useState("");
   const id = useId();
+  // A seed or a private key: the sheet stays empty until the window is kept out of screen captures (D15, D27).
+  const protection = useSecretScreen();
   return (
-    <Sheet title="Import keys" width="medium" testId="settings-import-keys-sheet" focusKey={String(!!model.done)} closable={!model.working} onClose={onClose}>
-      {model.done ? (
+    <Sheet title="Import keys" width="medium" testId="settings-import-keys-sheet" focusKey={`${!!model.done} ${protection}`} closable={!model.working} onClose={onClose}>
+      {protection !== "on" ? (
+        <ProtectionPending protection={protection} failedText={ProtectionText.failedKeys} />
+      ) : model.done ? (
         <DoneLines done={model.done} onClose={onClose} />
       ) : (
         <form
@@ -386,12 +426,16 @@ function ImportKeysSheet({ onClose }: { onClose: () => void }) {
 
 function ExportSheet({ wallet, onClose }: { wallet: WalletSummary; onClose: () => void }) {
   const backend = useBackend();
-  const [model] = useState(() => new ExportModel(backend, () => backend.now(), wallet.walletId, wallet.name));
+  const model = useKeptSheet(
+    { kind: "export", wallet },
+    () => new ExportModel(backend, () => backend.now(), wallet.walletId, wallet.name),
+    (m) => m.step === "working" || m.step === "done",
+    (m) => m.cancel(),
+  );
   useModel(model);
   useLockTimer(model.lock);
   useEffect(() => {
-    void model.load();
-    return () => model.cancel();
+    if (model.step === "loading") void model.load();
   }, [model]);
   const [format, setFormat] = useState<CoreExportFormatName>("dumpWallet");
   return (

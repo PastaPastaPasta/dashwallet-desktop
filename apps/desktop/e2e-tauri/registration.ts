@@ -3,7 +3,7 @@
 // dwcli funds it from fixture wallet A's Core coins, then the wizard registers a non-contested
 // username. Once the row has its asset lock's txid (fundingSent or proofWaiting: before the
 // identity is confirmed) the app is closed. The relaunch opens locked; Home says the registration
-// is paused (nothing resumes alone, D12); Continue under the passphrase resumes the same row and
+// is paused (nothing resumes alone, D12); Continue (the passphrase sheet only when the payment rule asks) resumes the same row and
 // the same lock, and the run ends on Welcome to DashPay, @name. The engine's rows say one registration, one
 // txid; E's balance fell by one lock, not two. Writes: one payment A→E, one asset lock, one
 // identity and its name.
@@ -20,7 +20,7 @@
 // binaries and runs this file under a private session bus, on the private X display in $DISPLAY.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { randomBytes, randomInt } from "node:crypto";
+import { randomInt } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { DashPayStatus } from "../src/api/generated/DashPayStatus";
@@ -28,7 +28,8 @@ import type { RegistrationQuote } from "../src/api/generated/RegistrationQuote";
 import type { RegistrationStatus } from "../src/api/generated/RegistrationStatus";
 import type { SyncStatus } from "../src/api/generated/SyncStatus";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
-import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
+import { APP, driverGone, DWCLI, env, fillSecret, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
+import { keepSecretAt, noteSecretAt, randomPassphrase } from "./flow-secrets.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const STATE = resolve(env("DW_REG_STATE"));
@@ -117,16 +118,16 @@ function app(wd: WebDriver) {
     wd.start({ alwaysMatch: { "tauri:options": { application: APP, args: ["--datadir", ROOT, ...NETWORK, "--sync", "--theme", "light"] } } });
   const texts = (css: string) => wd.script<string[]>(`return [...document.querySelectorAll(arguments[0])].map((e) => e.textContent.trim())`, [css]);
   const attr = (css: string, name: string) => wd.script<string | null>(`return document.querySelector(arguments[0])?.getAttribute(arguments[1]) ?? null`, [css, name]);
+  const CLEAR = `${CONTROL}a${CONTROL}${BACKSPACE}`;
   const retype = async (id: string, text: string) => {
     const el = await wd.waitFor(tid(id));
-    await wd.type(el, `${CONTROL}a${CONTROL}${BACKSPACE}${text}`);
+    await wd.type(el, `${CLEAR}${text}`);
   };
-  /** Types into a field and checks by length that it took every key (onboarding.ts). */
-  const enter = async (id: string, text: string) => {
+  /** Types a secret into a masked field (fillSecret) and checks by length that it took every key (onboarding.ts). */
+  const enterSecret = async (id: string, text: string) => {
     const lengths: number[] = [];
     for (let i = 0; i < 3; i++) {
-      if (i === 0) await wd.fill(tid(id), text);
-      else await retype(id, text);
+      await fillSecret(wd, tid(id), text, i === 0 ? "" : CLEAR);
       const length = await wd.script<number>(`return document.querySelector(arguments[0])?.value.length ?? -1`, [tid(id)]);
       if (length === text.length) return;
       lengths.push(length);
@@ -147,7 +148,7 @@ function app(wd: WebDriver) {
     if (r.err !== undefined) throw new Error(`${command}: ${r.err}`);
     return r.ok as T;
   };
-  return { launch, texts, attr, retype, enter, clickText, invoke };
+  return { launch, texts, attr, retype, enterSecret, clickText, invoke };
 }
 
 type App = ReturnType<typeof app>;
@@ -158,15 +159,15 @@ async function createWallet(wd: WebDriver, a: App, passphrase: string): Promise<
   await wd.waitFor(tid("onboarding-welcome"), "Welcome on a fresh data root");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
   await wd.press(tid("onboarding-create"));
-  await a.enter("onboarding-passphrase-new", passphrase);
-  await a.enter("onboarding-passphrase-repeat", passphrase);
+  await a.enterSecret("onboarding-passphrase-new", passphrase);
+  await a.enterSecret("onboarding-passphrase-repeat", passphrase);
   await wd.press(tid("onboarding-passphrase-submit"));
   await wd.waitFor(tid("onboarding-phrase-words"), "the recovery phrase");
   const words = await a.texts(`${tid("onboarding-phrase-words")} .phrase-word`);
   if (words.length !== 12) throw new Error(`the phrase step shows ${words.length} words`);
   addPhrase(words.join(" "));
   // Exclusive: never over another wallet's phrase.
-  writeFileSync(MNEMONIC, `${words.join(" ")}\n`, { flag: "wx", mode: 0o600 });
+  keepSecretAt("E-mnemonic", words.join(" "), MNEMONIC);
   await wd.press(tid("onboarding-written-down"));
   await wd.press(tid("onboarding-phrase-continue"));
   await wd.waitFor(tid("onboarding-verifyPhrase"), "the verify step");
@@ -182,14 +183,14 @@ async function createWallet(wd: WebDriver, a: App, passphrase: string): Promise<
 
 /** The passphrase sheet a grant asks with. */
 async function grantPassphrase(wd: WebDriver, a: App, passphrase: string) {
-  await a.enter("grant-sheet-field", passphrase);
+  await a.enterSecret("grant-sheet-field", passphrase);
   await wd.press(tid("grant-sheet-submit"));
 }
 
 async function unlock(wd: WebDriver, a: App, passphrase: string) {
   await wd.waitFor(tid("lock-field"), "the lock screen");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
-  await a.enter("lock-field", passphrase);
+  await a.enterSecret("lock-field", passphrase);
   await wd.press(tid("lock-submit"));
   await wd.waitGone(tid("lock-screen"), "the lock screen");
 }
@@ -294,7 +295,7 @@ async function registerAndClose(wd: WebDriver, a: App, walletId: string, passphr
   if (kind !== "progress" || !row.running) throw new Error(`the running registration showed ${kind} (running ${row.running}, waiting ${row.waiting}); a rerun goes on from closed without this check, so fix this first`);
 }
 
-/** The relaunch: locked, Home's card paused, Continue under the passphrase, Welcome to DashPay, @name. */
+/** The relaunch: locked, Home's card paused, Continue (a sheet if asked), Welcome to DashPay, @name. */
 async function resume(wd: WebDriver, a: App, walletId: string, passphrase: string) {
   const { draft, lockTxid, label } = ledger!;
   await unlock(wd, a, passphrase);
@@ -316,9 +317,17 @@ async function resume(wd: WebDriver, a: App, walletId: string, passphrase: strin
   await poll(TIMEOUT_MS, "the paused screen", async () => ((await a.attr(tid("registration-screen"), "data-kind")) === "paused" ? true : undefined));
   await wd.screenshot("5-paused");
   await wd.press(tid("registration-continue"));
-  await grantPassphrase(wd, a, passphrase);
-  await wd.waitGone(tid("grant-sheet"), "the passphrase sheet");
-  step("Continue: passphrase given");
+  // The sheet asks only when "Ask for my passphrase for every payment" is on; off (the default)
+  // the unlock just made opens the signing window and Continue resumes at once.
+  const asked = await poll(PAUSED_AFTER_CONTINUE_MS, "the passphrase sheet or the resumed run", async () => {
+    if (await wd.find(tid("grant-sheet-field"))) return "sheet";
+    return (await a.attr(tid("registration-screen"), "data-kind")) !== "paused" ? "resumed" : undefined;
+  });
+  if (asked === "sheet") {
+    await grantPassphrase(wd, a, passphrase);
+    await wd.waitGone(tid("grant-sheet"), "the passphrase sheet");
+  }
+  step(asked === "sheet" ? "Continue: passphrase given" : "Continue: resumed inside the unlock's signing window, no sheet");
   // Continue's run shows progress: a paused screen that outlasts a few polls is the D26 bug.
   let pausedSince: number | null = null;
   const end = await poll(REGISTRATION_TIMEOUT_MS, "the registration to end", async () => {
@@ -354,8 +363,9 @@ async function main() {
     // Checked before the ledger is written, so a leftover never leaves a ledger that blocks reruns.
     for (const left of [ROOT, FUNDER_ROOT, PASS_FILE]) if (existsSync(left)) throw new Error(`${left} exists without a ledger: move it aside`);
     save({ state: "creating" }, true);
-    writeFileSync(PASS_FILE, `${randomBytes(18).toString("base64url")}\n`, { flag: "wx", mode: 0o600 });
+    keepSecretAt("E-passphrase", randomPassphrase(), PASS_FILE);
   }
+  if (ledger!.state !== "creating") for (const f of [PASS_FILE, MNEMONIC]) noteSecretAt(f);
   const passphrase = readFileSync(PASS_FILE, "utf8").trim();
   secrets.push(passphrase);
   addPhrase(readFileSync(join(FIXTURE, `${FUNDER}.mnemonic`), "utf8").trim());

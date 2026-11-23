@@ -12,6 +12,7 @@ import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
 import { platformOp } from "../dashpay/topup";
+import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { moveErrorText, onMoveSettledNotify } from "./move";
@@ -25,68 +26,160 @@ export type FundRequest = { kind: "add"; duffs: number } | { kind: "resume"; txi
 
 export const FUND_COPY = {
   card: {
-    unfinished: (amount: string) => `${amount} was locked to add to Platform and is not applied yet.`,
+    unfinished: (amount: string) => t("transfer.fund.card.unfinished", { amount }),
     stuck: {
-      tooSmall: (amount: string) => `${amount} was locked to add to Platform, but it's worth less than the Platform fee, so it can't be added.`,
-      unsupported: (amount: string) => `${amount} was locked to add to Platform, and this version can't finish it.`,
+      tooSmall: (amount: string) => t("transfer.fund.card.stuck.tooSmall", { amount }),
+      unsupported: (amount: string) => t("transfer.fund.card.stuck.unsupported", { amount }),
     },
-    finish: "Finish",
-    checkAgain: "Check again",
-    busy: "Another add to Platform is running.",
+    get finish() {
+      return t("transfer.fund.card.finish");
+    },
+    get checkAgain() {
+      return t("transfer.fund.card.checkAgain");
+    },
+    get busy() {
+      return t("transfer.fund.card.busy");
+    },
   },
   form: {
-    intro: "Move Dash from your wallet to your Platform addresses. It is locked first, then Dash Platform adds it to your Platform balance.",
-    amount: "Amount",
-    invalidAmount: "Enter an amount.",
-    why: { amount: "Enter an amount first." },
-    next: "Continue",
-    cancel: "Cancel",
+    get intro() {
+      return t("transfer.fund.form.intro");
+    },
+    get invalidAmount() {
+      return t("transfer.fund.form.invalidAmount");
+    },
+    why: {
+      get amount() {
+        return t("transfer.fund.form.why.amount");
+      },
+    },
+    get next() {
+      return t("transfer.fund.form.next");
+    },
+    get cancel() {
+      return t("common.cancel");
+    },
   },
   confirm: {
-    quoting: "Working out the fee…",
-    quoteFailed: "The fee could not be worked out.",
-    rows: {
-      from: "From",
-      fromValue: "Your Dash wallet",
-      to: "To",
-      toValue: "Your Platform address",
-      amount: "Amount",
-      fee: "Network fee",
-      total: "Total from your wallet",
-      platformFee: "Platform fee",
-      receive: "You receive about",
+    get quoting() {
+      return t("transfer.fund.confirm.quoting");
     },
-    back: "Back",
-    go: "Confirm & move",
+    get quoteFailed() {
+      return t("transfer.fund.confirm.quoteFailed");
+    },
+    rows: {
+      get from() {
+        return t("transfer.fund.confirm.rows.from");
+      },
+      get fromValue() {
+        return t("transfer.fund.confirm.rows.fromValue");
+      },
+      get to() {
+        return t("transfer.fund.confirm.rows.to");
+      },
+      get toValue() {
+        return t("transfer.fund.confirm.rows.toValue");
+      },
+      get amount() {
+        return t("transfer.fund.confirm.rows.amount");
+      },
+      get fee() {
+        return t("transfer.fund.confirm.rows.fee");
+      },
+      get total() {
+        return t("transfer.fund.confirm.rows.total");
+      },
+      get platformFee() {
+        return t("transfer.fund.confirm.rows.platformFee");
+      },
+      get receive() {
+        return t("transfer.fund.confirm.rows.receive");
+      },
+    },
+    get back() {
+      return t("transfer.fund.confirm.back");
+    },
+    get go() {
+      return t("transfer.fund.confirm.go");
+    },
   },
   running: {
-    title: "Working…",
-    steps: ["Locking funds", "Waiting for the lock to confirm", "Adding to Platform"],
-    text: "You can close this: Activity shows it.",
+    get title() {
+      return t("transfer.fund.running.title");
+    },
+    get steps() {
+      return [t("transfer.fund.running.steps.lock"), t("transfer.fund.running.steps.wait"), t("transfer.fund.running.steps.add")];
+    },
+    get text() {
+      return t("transfer.fund.running.text");
+    },
   },
   done: {
-    applied: { title: "Added to Platform", text: (amount: string) => `About ${amount} was added to your Platform balance.` },
-    waiting: { title: "Locked, not applied yet", text: "Your Dash is locked and waiting for the network's confirmation. Finish it from Unfinished transfers on Home: nothing is lost." },
-    checking: { title: "Checking", text: "This amount may already be on your Platform addresses; we can't confirm it yet." },
-    notApplied: { title: "Locked, not applied", text: (why: string) => `Your Dash is locked but Dash Platform did not add it yet (${why}). Finish it from Unfinished transfers on Home: nothing is lost.` },
+    applied: {
+      get title() {
+        return t("transfer.fund.done.applied.title");
+      },
+      text: (amount: string) => t("transfer.fund.done.applied.text", { amount }),
+    },
+    waiting: {
+      get title() {
+        return t("transfer.fund.done.waiting.title");
+      },
+      get text() {
+        return t("transfer.fund.done.waiting.text");
+      },
+    },
+    checking: {
+      get title() {
+        return t("transfer.fund.done.checking.title");
+      },
+      get text() {
+        return t("transfer.fund.done.checking.text");
+      },
+    },
+    notApplied: {
+      get title() {
+        return t("transfer.fund.done.notApplied.title");
+      },
+      text: (why: string) => t("transfer.fund.done.notApplied.text", { why }),
+    },
   },
   approvalEnded: {
-    pending: (amount: string) =>
-      `Your ${amount} is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.`,
-    checking: "Checking that add stopped before Platform answered. Choose Check again: it checks the same lock and adds no more Dash.",
-    unknown: "Adding to Platform stopped before it finished. If Unfinished transfers on Home shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.",
-    finish: "Finish",
-    checkAgain: "Check again",
+    pending: (amount: string) => t("transfer.fund.approvalEnded.pending", { amount }),
+    get checking() {
+      return t("transfer.fund.approvalEnded.checking");
+    },
+    get unknown() {
+      return t("transfer.fund.approvalEnded.unknown");
+    },
+    get finish() {
+      return t("transfer.fund.approvalEnded.finish");
+    },
+    get checkAgain() {
+      return t("transfer.fund.approvalEnded.checkAgain");
+    },
   },
   grantInvalid: {
-    add: "The approval was not accepted, so nothing was locked. Try again.",
-    resume: "The approval was not accepted. Your locked Dash is still waiting: choose Finish again.",
+    get add() {
+      return t("transfer.fund.grantInvalid.add");
+    },
+    get resume() {
+      return t("transfer.fund.grantInvalid.resume");
+    },
   },
-  unseen: "Your add to Platform has an update.",
-  show: "Show",
-  close: "Close",
-  back: "Back",
-} as const;
+  get unseen() {
+    return t("transfer.fund.unseen");
+  },
+  get show() {
+    return t("transfer.fund.show");
+  },
+  get close() {
+    return t("transfer.fund.close");
+  },
+  get back() {
+    return t("transfer.fund.back");
+  },
+};
 
 export interface FundRowView {
   kind: "stuck" | "checking" | "unfinished";
@@ -145,27 +238,27 @@ export function fundErrorText(e: unknown, credits: (c: string) => string, duffs:
     case "platform.grant_invalid":
       return ctx.request?.kind === "resume" ? FUND_COPY.grantInvalid.resume : FUND_COPY.grantInvalid.add;
     case "credits.below_minimum":
-      return d?.kind === "limit" ? `Too small to add: the smallest amount is ${duffs(d.duffs)}.` : "Too small to add.";
+      return d?.kind === "limit" ? t("transfer.fund.error.belowMinimum", { amount: duffs(d.duffs) }) : t("transfer.fund.error.tooSmall");
     case "credits.funding_insufficient":
       return d?.kind === "duffs" && d.needed !== null
-        ? `Not enough Dash in your wallet: ${duffs(d.needed)} needed with the fee, ${duffs(d.available)} available.`
-        : "Not enough Dash in your wallet.";
+        ? t("transfer.fund.error.insufficient", { needed: duffs(d.needed), available: duffs(d.available) })
+        : t("transfer.fund.error.insufficientShort");
     case "credits.coins_locked":
-      return "Your Dash is reserved right now. Pause mixing or wait for pending payments to finish, then try again.";
+      return t("transfer.fund.error.coinsLocked");
     case "credits.too_many_inputs":
-      return "That takes too many separate coins at once. Consolidate your coins first, then try again.";
+      return t("transfer.fund.error.tooManyInputs");
     case "credits.fund_pending":
-      return "An earlier add to Platform is not finished. Finish it from Unfinished transfers on Home first.";
+      return t("transfer.fund.error.pending");
     case "platform.feature_off":
-      return "Platform addresses are not active on this network yet.";
+      return t("transfer.fund.error.featureOff");
     case "platform.broadcast_unknown":
-      return "The lock may have been sent. Check Activity before trying again.";
+      return t("transfer.fund.error.broadcastUnknown");
     case "platform.will_be_sent":
-      return "The payment is still being sent. Try again in a minute.";
+      return t("transfer.fund.error.willBeSent");
     case "platform.signer_unavailable":
-      return "Unlock the wallet fully and try again.";
+      return t("transfer.fund.error.signerUnavailable");
     case "platform.context_unavailable":
-      return "Waiting for the network to sync before Platform can be used. Try again shortly.";
+      return t("transfer.fund.error.contextUnavailable");
     default:
       return moveErrorText(e, credits);
   }
@@ -271,7 +364,7 @@ export class PlatformFundFlow extends Model {
         ran = true;
         this.step = "running";
         this.changed();
-        return request.kind === "add" ? this.api.platformFund(this.walletId, request.duffs, g.id) : this.api.resumePlatformFund(this.walletId, request.txid, g.id);
+        return request.kind === "add" ? this.api.platformFund(this.walletId, { kind: "duffs", duffs: request.duffs }, g.id) : this.api.resumePlatformFund(this.walletId, request.txid, g.id);
       });
       if (got) {
         this.outcome = got.value;

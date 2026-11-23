@@ -34,6 +34,7 @@ import {
   type TxIcon,
   type MixingGroup,
 } from "../format/tx";
+import { t as tNow, useT } from "../i18n";
 import { AmountText, Chip, Icon, VisuallyHidden } from "./basics";
 import { EmptyArt, type EmptyArtId } from "./emptyArt";
 import type { UsedIcon } from "./icons";
@@ -131,6 +132,7 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
 }
 
 function MixingGroupView({ group, ctx, onOpen, decorate }: { group: MixingGroup; ctx: RowContext; onOpen: (row: TxRow) => void; decorate?: (row: TxRow) => RowDecor }) {
+  const t = useT();
   const [expanded, setExpanded] = useState(false);
   const membersId = useId();
   const first = group.rows[0];
@@ -152,7 +154,7 @@ function MixingGroupView({ group, ctx, onOpen, decorate }: { group: MixingGroup;
         >
           <Icon id={TX_ICON.mixing} size={30} className="tx-row-icon" />
           <span className="tx-row-text">
-            <span className="tx-row-title">Mixing · {group.rows.length} transactions</span>
+            <span className="tx-row-title">{t("components.history.mixingGroup", { count: group.rows.length })}</span>
             <span className="tx-row-subtitle">
               {date && <span className="tx-row-time">{timeOfDay(date, ctx.locale)}</span>}
               {chip && <Chip tone="info">{chip}</Chip>}
@@ -227,8 +229,9 @@ function TxGroup({
   decorate?: (row: TxRow) => RowDecor;
   testId: string;
 }) {
+  const t = useT();
   const titleId = useId();
-  const title = day ? dayTitle(day, ctx.now, ctx.locale) : "Undated";
+  const title = day ? dayTitle(day, ctx.now, ctx.locale) : t("components.history.undated");
   const grouped = groupConsecutiveMixing(rows);
   return (
     <div className="tx-group card-l1" role="group" aria-labelledby={titleId} data-testid={testId}>
@@ -255,9 +258,9 @@ function TxGroup({
 export function tableStatus(status: TxRow["status"]): string {
   const chip = txChip(status);
   if (chip) return chip;
-  if (status.kind === "immature") return `Immature, ${status.maturesIn ?? "?"} blocks left`;
-  if (status.chainLocked) return "ChainLocked";
-  return status.confirmations === 1 ? "1 confirmation" : `${status.confirmations} confirmations`;
+  if (status.kind === "immature") return tNow("components.history.immature", { blocks: status.maturesIn ?? "?" });
+  if (status.chainLocked) return tNow("components.history.chainLocked");
+  return tNow("components.history.confirmations", { count: status.confirmations });
 }
 
 const SORTS: Record<"date" | "amount", [HistorySortName, HistorySortName]> = {
@@ -296,21 +299,22 @@ export function TxTable({
   sort: HistorySortName;
   onSort: (s: HistorySortName) => void;
 }) {
+  const t = useT();
   const value = ctx.fiat.shown && !ctx.discreet ? ctx.fiat.view?.rate?.currency : undefined;
   return (
     <div className="card-l1 table-card" data-testid="tx-table">
       <table className="data-table tx-table">
-        <caption className="sr-only">Transactions</caption>
+        <caption className="sr-only">{t("components.history.caption")}</caption>
         <thead>
           <tr>
-            <th scope="col">Status</th>
-            <SortHeader column="date" title="Date" sort={sort} onSort={onSort} />
-            <th scope="col">Type</th>
-            <th scope="col">Address / Label</th>
-            <SortHeader column="amount" title={`Amount (${ctx.display.name})`} sort={sort} onSort={onSort} className="num" />
+            <th scope="col">{t("components.history.status")}</th>
+            <SortHeader column="date" title={t("components.history.date")} sort={sort} onSort={onSort} />
+            <th scope="col">{t("components.history.type")}</th>
+            <th scope="col">{t("components.history.party")}</th>
+            <SortHeader column="amount" title={t("components.history.amount", { unit: ctx.display.name })} sort={sort} onSort={onSort} className="num" />
             {value && (
               <th scope="col" className="num" data-testid="tx-table-value">
-                Value ({value})
+                {t("components.history.value", { currency: value })}
               </th>
             )}
           </tr>
@@ -327,14 +331,16 @@ export function TxTable({
                     e.stopPropagation();
                     onOpen(row);
                   }}>
-                    {date ? detailDate(date, ctx.locale) : "Undated"}
+                    {date ? detailDate(date, ctx.locale) : t("components.history.undated")}
                   </button>
                 </td>
                 <td>{tableTypeTitle(row.txType)}</td>
                 <td className="tx-table-party" title={row.address ?? undefined}>
                   {rowParty(row)}
                 </td>
-                <td className="num">{ctx.display.full(shown.duffs, shown.signed)}</td>
+                <td className="num">
+                  <bdi dir="ltr">{ctx.display.full(shown.duffs, shown.signed)}</bdi>
+                </td>
                 {value && (
                   <td className={`num${ctx.fiat.stale ? " is-stale" : ""}`} title={ctx.fiat.staleTitle} data-testid={`table-${rowTestId(row)}-fiat`}>
                     {ctx.fiat.text(shown.duffs)}

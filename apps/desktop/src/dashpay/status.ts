@@ -14,7 +14,10 @@ import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RegistrationWaitName } from "../api/generated/RegistrationWaitName";
 import type { StartupStatus } from "../api/generated/StartupStatus";
-import { RESCAN_INTERRUPTED } from "../app/rescan";
+import { RESCAN_TEXT } from "../app/rescan";
+import { oneDecimal } from "../format/sync";
+import { messageTable, t } from "../i18n";
+
 
 /** Each rendered state of the Home card (the design's state inventory, S2–S17; DP1-10's S19, S20). */
 export type CardState =
@@ -88,83 +91,105 @@ export interface StatusInputs {
   discreet: boolean;
 }
 
+/** `table` with `rest`'s members, its getters kept (a spread would read them once). */
+export const withTable = <A extends object, B extends object>(table: A, rest: B): A & B => Object.defineProperties(rest, Object.getOwnPropertyDescriptors(table)) as A & B;
+
+const at = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(`dashpay.card.${prefix}`, keys);
+
 export const COPY = {
-  error: { title: "Could not read DashPay's state", message: "Your wallet works as usual.", action: "Try again" },
-  looking: { title: "Looking for your DashPay identity…" },
-  notStarted: { title: "DashPay has not started", message: "It starts when the wallet connects to the Dash network." },
-  unlockToLook: { title: "Unlock to look for your DashPay identity", message: "DashPay looks for your identity once the wallet is fully unlocked." },
-  lookFailed: { title: "Could not finish looking for your DashPay identity", message: "Dash Wallet looks again the next time it starts." },
-  unverified: { title: "Could not confirm your DashPay identity", message: "Its keys could not be checked against this wallet's recovery phrase." },
-  join: { title: "Get a DashPay username", message: "Pay friends by name instead of an address.", action: "Join DashPay" },
-  joinWaiting: { note: "Available after sync finishes" },
-  watchOnly: { title: "DashPay needs this wallet's keys", message: "A watch-only wallet cannot join DashPay." },
-  registering: { title: "Creating your username", message: "Your username is being created on the Dash network. It may take some time." },
-  creating: (label: string) => `Creating – @${label}`,
-  paused: "Registration paused",
-  repair: {
-    unknown: "The payment may have been sent",
-    finish: "Funds locked — finishing",
-    message: "Open Tools ▸ Repair to finish the transfer.",
-    action: "Open Repair",
+  error: at("error", ["title", "message", "action"]),
+  looking: at("looking", ["title"]),
+  notStarted: at("notStarted", ["title", "message"]),
+  unlockToLook: at("unlockToLook", ["title", "message"]),
+  lookFailed: at("lookFailed", ["title", "message"]),
+  unverified: at("unverified", ["title", "message"]),
+  join: at("join", ["title", "message", "action"]),
+  joinWaiting: at("joinWaiting", ["note"]),
+  watchOnly: at("watchOnly", ["title", "message"]),
+  registering: at("registering", ["title", "message"]),
+  creating: (label: string) => t("dashpay.card.creating", { username: `@${label}` }),
+  get paused() {
+    return t("dashpay.card.paused");
   },
+  repair: at("repair", ["unknown", "finish", "message", "action"]),
   voting: {
-    title: (label: string) => `Voting – @${label}`,
-    deciding: "Masternode owners are deciding whether you get this username.",
-    endsOn: (date: string) => `Results on ${date}.`,
-    notify: "We will notify you when voting ends.",
-    temporary: (name: string) => `Until then you are @${name}.`,
-    action: "What is username voting?",
+    title: (label: string) => t("dashpay.card.voting.title", { username: `@${label}` }),
+    get deciding() {
+      return t("dashpay.card.voting.deciding");
+    },
+    endsOn: (date: string) => t("dashpay.card.voting.endsOn", { date }),
+    get notify() {
+      return t("dashpay.card.voting.notify");
+    },
+    temporary: (name: string) => t("dashpay.card.voting.temporary", { username: `@${name}` }),
+    get action() {
+      return t("dashpay.card.voting.action");
+    },
   },
-  noUsername: { title: "Finish username registration", message: "Your identity is ready. Use its existing credits to register a username.", action: "Choose a username" },
+  noUsername: at("noUsername", ["title", "message", "action"]),
   // DP1-10 D8: m4 item 44's copy (Android's, its swapped titles corrected).
-  lowCredits: {
-    title: "Your credit balance is low",
-    message: "Top-up your credits to continue making changes to your profile and adding contacts",
+  lowCredits: at("lowCredits", ["title", "message"]),
+  emptyCredits: at("emptyCredits", ["title", "message"]),
+  get buyCredits() {
+    return t("dashpay.card.buyCredits");
   },
-  emptyCredits: {
-    title: "Your credit balance is fully depleted",
-    message: "You can continue to use DashPay for payments but you cannot update your profile or add more contacts until you top up your credit balance",
+  get unlock() {
+    return t("dashpay.card.unlock");
   },
-  buyCredits: "Buy credits",
-  unlock: "Unlock",
-  continue: "Continue",
-} as const;
+  get continue() {
+    return t("dashpay.card.continue");
+  },
+};
 
 /** D4: the step a phase is in. `failed` counts as the phase it stopped in. An invitation's claim
  * (`claim`) pays nothing: its first steps are the check and the claim (DP5-03 D10). */
 export function stepOf(phase: RegistrationPhaseName, failure: RegistrationFailure | null, claim = false): CardStep {
   const at = phase === "failed" && failure ? failure.phase : phase;
   if (claim) {
-    if (at === "draft") return { n: 1, text: "Checking the invitation" };
-    if (at === "keysPrepared") return { n: 2, text: "Creating identity" };
-    return { n: 3, text: "Registering username" };
+    if (at === "draft") return { n: 1, text: t("dashpay.step.checkingInvitation") };
+    if (at === "keysPrepared") return { n: 2, text: t("dashpay.step.identity") };
+    return { n: 3, text: t("dashpay.step.username") };
   }
   switch (at) {
     case "draft":
     case "keysPrepared":
     case "fundingSent":
-      return { n: 1, text: "Processing payment" };
+      return { n: 1, text: t("dashpay.step.payment") };
     case "proofWaiting":
-      return { n: 2, text: "Creating identity" };
+      return { n: 2, text: t("dashpay.step.identity") };
     default:
-      return { n: 3, text: "Registering username" };
+      return { n: 3, text: t("dashpay.step.username") };
   }
 }
 
 /** What a running registration waits for, as a line under its step (the wizard's progress
  * screen shows the same lines, DP1-09 D11). */
 export const WAITS = {
-  instantSend: "Waiting for the network to confirm the payment.",
-  chainLock: "Waiting for the network to confirm the payment.",
-  network: "Waiting for the Dash network. It tries again on its own.",
-  sync: "Waiting for the wallet to sync.",
-  startup: "Waiting for DashPay to start.",
-  unlock: "Unlock the wallet to continue.",
-  authorize: "Waiting for your approval to continue.",
+  get instantSend() {
+    return t("dashpay.wait.payment");
+  },
+  get chainLock() {
+    return t("dashpay.wait.payment");
+  },
+  get network() {
+    return t("dashpay.wait.network");
+  },
+  get sync() {
+    return t("dashpay.wait.sync");
+  },
+  get startup() {
+    return t("dashpay.wait.startup");
+  },
+  get unlock() {
+    return t("dashpay.wait.unlock");
+  },
+  get authorize() {
+    return t("dashpay.wait.authorize");
+  },
   // These two have their own card (S14).
   fundingUnknown: null,
   needsFinish: null,
-} as const satisfies Record<RegistrationWaitName, string | null>;
+} satisfies Record<RegistrationWaitName, string | null>;
 
 /** DP1-09 D21/D26: the row waits for Continue's grant. It says `authorize`, or nothing runs it
  * (`running`) and it waits for a proof or the network: the engine reports an idle row's first
@@ -180,47 +205,51 @@ export function awaitsContinue(r: RegistrationStatus): boolean {
 /** DP5-03: an invitation claim's refusals, on its row (`failureText`) and on the claim screen
  * (claim.ts's `CLAIM_COPY`). */
 export const CLAIM_REFUSAL = {
-  hasIdentity: "This wallet already has a DashPay identity. An invitation creates a first identity; it can be used with another wallet.",
-  claimed: { title: "This invitation has already been used", text: "Each invitation creates one identity. Ask for a new one." },
-  expired: { title: "This invitation is no longer saved", text: "Open the invitation link again." },
-  invalid: "This invitation link is not valid",
-} as const;
+  get hasIdentity() {
+    return t("dashpay.refusal.hasIdentity");
+  },
+  claimed: messageTable("dashpay.refusal.claimed", ["title", "text"]),
+  expired: messageTable("dashpay.refusal.expired", ["title", "text"]),
+  get invalid() {
+    return t("dashpay.refusal.invalid");
+  },
+};
 
 /** D5: why a registration stopped, by its failure's code. */
 export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false): string {
   switch (failure.code) {
     case "registration.funding_insufficient":
-      if (failure.needed === null) return "Not enough Dash to pay for the username.";
+      if (failure.needed === null) return t("dashpay.failure.fundingShort");
       // What the wallet holds stays hidden in discreet mode.
       return failure.available === null || discreet
-        ? `Not enough Dash to pay for the username: ${amount(Number(failure.needed))} needed.`
-        : `Not enough Dash to pay for the username: ${amount(Number(failure.needed))} needed, ${amount(Number(failure.available))} available.`;
+        ? t("dashpay.failure.fundingNeeded", { needed: amount(Number(failure.needed)) })
+        : t("dashpay.failure.fundingNeededAvailable", { needed: amount(Number(failure.needed)), available: amount(Number(failure.available)) });
     case "registration.coins_locked":
-      return "The coins to pay with are held by another payment.";
+      return t("dashpay.failure.coinsLocked");
     case "registration.islock_timeout":
-      return "The network did not confirm the payment in time.";
+      return t("dashpay.failure.islockTimeout");
     case "registration.not_synced":
-      return "The wallet had not finished syncing.";
+      return t("dashpay.failure.notSynced");
     case "rescan_interrupted":
-      return RESCAN_INTERRUPTED;
+      return RESCAN_TEXT.interrupted;
     // A funding budget below the lock and its fee; Continue asks for a new approval.
     case "platform.grant_exceeded":
-      return "The cost went above what you approved.";
+      return t("dashpay.failure.grantExceeded");
     case "platform.insufficient_credits":
-      return "The identity's credits do not cover the username.";
+      return t("dashpay.failure.insufficientCredits");
     case "platform.unavailable":
     case "platform.timeout":
-      return "The Dash network did not answer.";
+      return t("dashpay.failure.unavailable");
     case "invitation.already_has_identity":
       return CLAIM_REFUSAL.hasIdentity;
     case "invitation.claimed":
-      return `${CLAIM_REFUSAL.claimed.title}. ${CLAIM_REFUSAL.claimed.text}`;
+      return t("dashpay.refusal.claimedSentence");
     case "invitation.expired":
-      return `${CLAIM_REFUSAL.expired.title}. ${CLAIM_REFUSAL.expired.text}`;
+      return t("dashpay.refusal.expiredSentence");
     case "invitation.invalid":
       return CLAIM_REFUSAL.invalid;
     default:
-      return `It stopped with ${failure.code}.`;
+      return t("dashpay.failure.stoppedWith", { code: failure.code });
   }
 }
 
@@ -238,7 +267,7 @@ const card = (state: CardState, tone: CardTone, title: string, lines: string[] =
 
 const action = (kind: CardActionKind, label: string, disabled = false): CardAction => ({ kind, label, disabled });
 
-/** Unlock, only while unlocked for mixing only: fully locked, the lock screen covers the shell. */
+/** Unlock, only while unlocked for mixing only: fully locked, the lock screen replaces the shell. */
 const unlockAction = (lock: LockStateName | undefined): CardAction | null => (lock === "unlockedMixingOnly" ? action("unlock", COPY.unlock) : null);
 
 /** S3–S6: DashPay has not said whether the wallet has an identity (BL-153 D2, D16). */
@@ -311,9 +340,8 @@ export function homeCard(i: StatusInputs): CardModel | null {
     case "noIdentity":
       if (s.reason === "watchOnly") return card("watchOnly", "quiet", COPY.watchOnly.title, [COPY.watchOnly.message]);
       if (s.reason === "waitingForSync") {
-        const percent = i.syncPercent === null ? "" : ` · ${i.syncPercent.toFixed(1)}%`;
         return card("joinWaiting", "quiet", COPY.join.title, [COPY.join.message], {
-          note: COPY.joinWaiting.note + percent,
+          note: i.syncPercent === null ? COPY.joinWaiting.note : t("dashpay.card.joinWaiting.notePercent", { percent: oneDecimal(i.syncPercent) }),
           action: action("join", COPY.join.action, true),
         });
       }
@@ -356,24 +384,19 @@ export const QUOTE_REQUEST: RegistrationRequest = {
 /** The quote's figure: its total rounded up to 0.001 Dash, so "about" never undersells it. */
 export const roundedCost = (totalDuffs: number) => Math.ceil(totalDuffs / 100_000) * 100_000;
 
-export const JOIN_COPY = {
-  headline: "Create username",
-  pitch: "Forget about long crypto addresses, create the username, find friends and add them to your contacts",
-  features: [
-    { title: "Pay to usernames", text: "No more alphanumeric addresses" },
-    { title: "Add your friends & family", text: "Invite your family, find your friends by searching their usernames" },
-    { title: "Personalize profile", text: "Upload your picture, personalize your identity" },
-  ],
-  cost: (amount: string) => `A username costs about ${amount}. Usernames the network votes on cost more; the exact cost is shown before you pay.`,
-  costUnknown: "Usernames the network votes on cost more than others. The exact cost is shown before you pay.",
-  shortfall: (amount: string) => `You need at least ${amount} to create a username.`,
-  create: "Create username",
-  waiting: COPY.joinWaiting.note,
-  watchOnly: "A watch-only wallet cannot join DashPay. Restore the wallet from its recovery phrase to join.",
-  joined: (name: string | null) => (name ? `You have joined DashPay as @${name}.` : "You have joined DashPay."),
-  votingLink: "What is username voting?",
-  faqLink: "About DashPay",
-} as const;
+const JOIN_FEATURES = ["usernames", "friends", "profile"] as const;
+
+export const JOIN_COPY = withTable(messageTable("dashpay.join", ["headline", "pitch", "costUnknown", "create", "watchOnly", "votingLink", "faqLink"]), {
+  get features() {
+    return JOIN_FEATURES.map((k) => ({ title: t(`dashpay.join.features.${k}.title`), text: t(`dashpay.join.features.${k}.text`) }));
+  },
+  cost: (amount: string) => t("dashpay.join.cost", { amount }),
+  shortfall: (amount: string) => t("dashpay.join.shortfall", { amount }),
+  get waiting() {
+    return COPY.joinWaiting.note;
+  },
+  joined: (name: string | null) => (name ? t("dashpay.join.joinedAs", { username: `@${name}` }) : t("dashpay.join.joined")),
+});
 
 /** What the Join page shows under its intro (J1–J7). */
 export type JoinModel =
@@ -420,69 +443,18 @@ export function joinModel(
 // ---------------------------------------------------------------------------------------------
 // Voting info (IOS-134, AND-071) and the FAQ (IOS-129)
 
-export const VOTING_INFO = {
-  title: "What is username voting?",
-  intro: "The Dash network has to vote to approve some usernames before they are created",
-  items: [
-    { title: "Voting is only required in some cases", text: "Any username that has a number 2–9 or 20 or more characters will be automatically approved" },
-    { title: "Some usernames can be blocked", text: "If enough of the network determines that a username is inappropriate, they can block it" },
-    {
-      title: "A second username to use meanwhile",
-      text: "While the network votes you can register an instant username too, and use it until the vote ends",
-    },
-    { title: "You will be notified", text: "When the voting ends, Dash Wallet tells you whether you got the username" },
-    { title: "Keep your recovery phrase safe", text: "In case you lose your recovery phrase you will lose your right to your requested username" },
-    {
-      title: "Masternode owners vote",
-      text: "Each masternode can vote to approve or block a requested username. Voting from this wallet comes in a later release",
-    },
-  ],
-} as const;
+const VOTING_ITEMS = ["someCases", "blocked", "second", "notified", "phrase", "masternodes"] as const;
 
-export const FAQ = {
-  title: "About DashPay",
-  headline: "Pay people, not addresses",
-  pitch: "DashPay replaces long cryptic addresses with usernames. Add friends as contacts, send money to a name, and keep every payment organized by person.",
-  items: [
-    {
-      question: "What is DashPay?",
-      answer:
-        "DashPay is Dash's social payments experience, built on Dash Platform. You register a username, add other users as contacts, and pay them by name — no more copying addresses.",
-    },
-    {
-      question: "What does it cost?",
-      answer:
-        "Creating a username is a one-time payment from your Dash balance; usernames the network votes on cost more. The exact cost is shown before you pay. Part of it becomes credits that pay for contact requests and profile changes. Payments to contacts cost the usual network fees.",
-    },
-    {
-      question: "How private is DashPay?",
-      answer:
-        "Payments are private: the addresses you exchange with a contact travel inside an encrypted payload only the two of you can read, and are never published — so your payments aren't trivially linkable to your username. They are still regular transparent-chain payments, though: sophisticated chain analysis might leak information. Contact requests themselves are currently not private: anyone can see that two identities are connected. Your username and profile are also public on Dash Platform.",
-    },
-    {
-      question: "When will contact requests become private?",
-      answer:
-        "Private contact requests are in development. Today the request itself is public — anyone can see that two identities are connected, even though the payment details inside it are encrypted. Once private contact requests ship, you will have the choice of having your friendship be public or private.",
-    },
-    {
-      question: "How does this compare to Bitcoin in terms of privacy?",
-      answer:
-        "On Bitcoin there is no name layer, so people share and reuse addresses out in the open — once an address is known, everything it ever received is linkable to its owner. With DashPay your username is public, but it never points at a payment address: addresses are exchanged privately per contact and rotate, so paying by name doesn't publish where your money goes. Both are transparent chains, so chain analysis still applies to the coins themselves.",
-    },
-    {
-      question: "How does this compare to Ethereum accounts in terms of privacy?",
-      answer:
-        "An Ethereum account is one reusable address: your entire balance and payment history sit publicly under it, and a name (like an ENS domain) typically points straight at that address for anyone to resolve. DashPay is the opposite shape — the name resolves to an identity, not a payment address, and actual payment addresses stay inside encrypted contact exchanges, fresh for each contact.",
-    },
-    {
-      question: "What about Unstoppable Domains and similar name services?",
-      answer:
-        "Name services like Unstoppable Domains map a human-readable name to a fixed public address on-chain. Anyone can resolve the name and see every payment ever made to it. A DashPay username never publicly resolves to a payment address — addresses are revealed only inside the encrypted exchange with each contact, so your name and your money stay unlinked to outside observers.",
-    },
-    {
-      question: "What if I lose my recovery phrase?",
-      answer:
-        "Your username belongs to the identity your recovery phrase creates. Restoring the wallet from the phrase brings the username, your contacts and your payments back. Without the phrase nobody, Dash Wallet included, can recover them.",
-    },
-  ],
-} as const;
+export const VOTING_INFO = withTable(messageTable("dashpay.votingInfo", ["title", "intro"]), {
+  get items() {
+    return VOTING_ITEMS.map((k) => ({ title: t(`dashpay.votingInfo.items.${k}.title`), text: t(`dashpay.votingInfo.items.${k}.text`) }));
+  },
+});
+
+const FAQ_ITEMS = ["what", "cost", "privacy", "privateRequests", "bitcoin", "ethereum", "nameServices", "lostPhrase"] as const;
+
+export const FAQ = withTable(messageTable("dashpay.faq", ["title", "headline", "pitch"]), {
+  get items() {
+    return FAQ_ITEMS.map((k) => ({ question: t(`dashpay.faq.items.${k}.question`), answer: t(`dashpay.faq.items.${k}.answer`) }));
+  },
+});

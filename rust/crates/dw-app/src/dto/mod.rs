@@ -276,7 +276,9 @@ pub struct LaunchInfo {
 }
 
 impl LaunchInfo {
-    pub fn new(opts: &LaunchOptions, network: &DashNetwork) -> Self {
+    /// `app_version`: the app's own (tauri.conf.json), which the update
+    /// feed is compared with.
+    pub fn new(opts: &LaunchOptions, network: &DashNetwork, app_version: &str) -> Self {
         LaunchInfo {
             selftest: opts.selftest.is_some(),
             selftest_pause_ms: opts.selftest_pause_ms,
@@ -284,7 +286,7 @@ impl LaunchInfo {
             selftest_link_trace: opts.selftest_link_trace.is_some(),
             theme: opts.theme,
             network: NetworkInfo::from(network),
-            app_version: env!("CARGO_PKG_VERSION").into(),
+            app_version: app_version.into(),
             engine_version: dw_engine::ENGINE_VERSION.into(),
         }
     }

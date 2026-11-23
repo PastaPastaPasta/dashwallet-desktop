@@ -9,8 +9,9 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { RatesSettings } from "../api/generated/RatesSettings";
 import { keys, useBackend } from "../api/queries";
 import { DashButton } from "../components/basics";
-import { currencyName, localeCurrency } from "../format/fiat";
-import { RATES_DISCLOSURE, useRates } from "./rates";
+import { currencyName, firstCurrency } from "../format/fiat";
+import { useT } from "../i18n";
+import { useRates } from "./rates";
 
 /** The disclosure is still owed: Mainnet, prices on, and never seen. */
 export function useRatesConsent(network: NetworkInfo) {
@@ -19,7 +20,7 @@ export function useRatesConsent(network: NetworkInfo) {
   const view = useRates().data;
   const settings = view?.settings;
   const needed = network.kind === "mainnet" && !!settings && settings.enabled && !settings.disclosed;
-  const currency = settings?.currency ?? localeCurrency(b.locale);
+  const currency = firstCurrency(settings?.currency, b.regionLocale);
   /** Saves the answer; a failed save leaves prices off (nothing was disclosed), so it is not shown. */
   const answer = async (on: boolean) => {
     if (!settings) return;
@@ -34,19 +35,21 @@ export type RatesConsent = ReturnType<typeof useRatesConsent>;
 
 /** Onboarding's last step: the switch, on, with the disclosure under it; "Open wallet" saves it. */
 export function OnboardingRatesChoice({ consent, on, setOn }: { consent: RatesConsent; on: boolean; setOn: (on: boolean) => void }) {
+  const t = useT();
   return (
     <div className="onboarding-rates" data-testid="onboarding-rates">
       <label className="checkbox-row">
         <input type="checkbox" data-testid="onboarding-rates-on" checked={on} onChange={(e) => setOn(e.target.checked)} />
-        Show values in {consent.name} ({consent.currency})
+        {t("rates.consent.onboardingOn", { name: consent.name, currency: consent.currency })}
       </label>
-      <p className="field-hint">{RATES_DISCLOSURE} You can change this in Settings ▸ General.</p>
+      <p className="field-hint">{t("rates.consent.onboardingHint", { disclosure: t("rates.disclosure") })}</p>
     </div>
   );
 }
 
 /** Home's one-time card for a 0.1 install on Mainnet. */
 export function RatesConsentCard({ network }: { network: NetworkInfo }) {
+  const t = useT();
   const consent = useRatesConsent(network);
   const [busy, setBusy] = useState(false);
   if (!consent.needed) return null;
@@ -55,19 +58,19 @@ export function RatesConsentCard({ network }: { network: NetworkInfo }) {
     void consent.answer(on).finally(() => setBusy(false));
   };
   return (
-    <section className="rates-consent-card card-l1" data-testid="rates-consent-card" aria-label="Prices in local currency">
+    <section className="rates-consent-card card-l1" data-testid="rates-consent-card" aria-label={t("rates.consent.cardLabel")}>
       <div className="platform-card-body">
-        <h2 className="platform-card-title">Show prices in {consent.name}?</h2>
+        <h2 className="platform-card-title">{t("rates.consent.cardTitle", { name: consent.name })}</h2>
         <p className="platform-card-text">
-          The wallet fetches exchange rates from CTX to show what amounts are worth in {consent.currency}. {RATES_DISCLOSURE}
+          {t("rates.consent.cardText", { currency: consent.currency, disclosure: t("rates.disclosure") })}
         </p>
       </div>
       <div className="shielded-card-actions">
         <DashButton variant="tintedGray" size="small" data-testid="rates-consent-off" disabled={busy} onClick={() => answer(false)}>
-          Turn off
+          {t("rates.consent.turnOff")}
         </DashButton>
         <DashButton variant="filledBlue" size="small" data-testid="rates-consent-ok" disabled={busy} onClick={() => answer(true)}>
-          OK
+          {t("rates.consent.ok")}
         </DashButton>
       </div>
     </section>

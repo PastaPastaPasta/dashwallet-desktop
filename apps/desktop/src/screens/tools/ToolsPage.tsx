@@ -10,6 +10,7 @@ import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useBackend } from "../../api/queries";
 import { navigate, useUi, type ToolsTab } from "../../app/ui";
+import { useT } from "../../i18n";
 import { ConsoleModel, IS_MAC } from "../../tools/console";
 import { GrantModel } from "../../tools/grant";
 import { Page, Tabs, type Tab } from "../Routes";
@@ -23,16 +24,7 @@ import { PsbtTab } from "./Psbt";
 import { RepairTab } from "./Repair";
 import { SignVerifyTab } from "./SignVerify";
 
-const TOOLS_TABS: Tab<ToolsTab>[] = [
-  { id: "information", title: "Information" },
-  { id: "console", title: "Console" },
-  { id: "peers", title: "Peers" },
-  { id: "repair", title: "Repair" },
-  { id: "addressBook", title: "Address Book" },
-  { id: "signVerify", title: "Sign/Verify" },
-  { id: "psbt", title: "PSBT" },
-  { id: "coinSelection", title: "Coin Selection" },
-];
+const TOOLS_TABS: ToolsTab[] = ["information", "console", "peers", "repair", "addressBook", "signVerify", "psbt", "coinSelection"];
 
 /** A value made once per `key`: kept while the key stays, made again when it changes. */
 function useKeyed<T>(key: string, make: () => T): T {
@@ -45,9 +37,11 @@ function useKeyed<T>(key: string, make: () => T): T {
 
 /** `noWallet` stands in for a wallet tool while the wallet list is loading or failed: no offer to create one then. */
 export function ToolsPage({ wallet, wallets, network, noWallet = null }: { wallet: WalletSummary | null; wallets: WalletSummary[]; network: NetworkInfo; noWallet?: ReactNode }) {
+  const t = useT();
   const b = useBackend();
   const client = useQueryClient();
   const tab = useUi((s) => s.toolsTab);
+  const tabs: Tab<ToolsTab>[] = TOOLS_TABS.map((id) => ({ id, title: t(`tools.tabs.${id}`) }));
   const [grants] = useState(() => new GrantModel(b));
   // The console and Coin Selection belong to the window's wallet, not to a tab (D1, D8).
   const walletKey = wallet?.walletId ?? "";
@@ -70,7 +64,7 @@ export function ToolsPage({ wallet, wallets, network, noWallet = null }: { walle
   return (
     // Coin Selection's and Peers' tables have dash-qt's columns (D22).
     <Page route="tools" wide={tab === "coinSelection" || tab === "peers"}>
-      <Tabs label="Tools" tabs={TOOLS_TABS} current={tab} onSelect={(toolsTab) => navigate("tools", { toolsTab })} testId="tools-tabs">
+      <Tabs label={t("routes.tools")} tabs={tabs} current={tab} onSelect={(toolsTab) => navigate("tools", { toolsTab })} testId="tools-tabs">
         {content}
       </Tabs>
       <GrantSheet grants={grants} />

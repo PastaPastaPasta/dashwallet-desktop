@@ -67,6 +67,9 @@ fn fixture(encrypted: bool) -> Fixture {
     engine
         .block_on(session.vault_op(move |v| v.create(pass)))
         .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
+        .unwrap();
     let wallet = engine
         .block_on(session.import_wallet(
             Zeroizing::new(PHRASE.as_bytes().to_vec()),
@@ -1146,6 +1149,161 @@ fn send_metadata_is_written_only_for_a_sent_payment_and_never_relabels() {
         .block_on(f.session.record_send_metadata(f.wallet, &p))
         .unwrap();
     assert_eq!(book(), want);
+}
+
+/// #263: the payment's metadata is written after the hand-off; a wallet
+/// closed by then skips it, and the payment stays sent.
+#[test]
+fn a_wallet_closed_before_the_payment_metadata_keeps_the_payment_sent() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let recorded = f
+        .engine
+        .block_on(f.session.record_send_metadata(f.wallet, &p));
+    assert!(recorded.is_ok(), "{recorded:?}");
+}
+
+#[test]
+fn a_wallet_closed_inside_an_accepted_broadcast_keeps_the_payment_sent() {
+    struct CloseOnAccept {
+        session: Arc<NetworkSession>,
+        wallet: WalletId,
+        pause: Arc<crate::coins::TestPause>,
+        unloaded: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+    }
+    impl super::TestBroadcaster for CloseOnAccept {
+        fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            Box::pin(async {})
+        }
+        fn broadcast(
+            &self,
+            tx: &Transaction,
+            _first: bool,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<dashcore::Txid, platform_wallet::PlatformWalletError>,
+                    > + Send,
+            >,
+        > {
+            *self.session.hub.pause_metadata.lock().unwrap() = Some(Arc::clone(&self.pause));
+            let (session, wallet, pause, unloaded) = (
+                Arc::clone(&self.session),
+                self.wallet,
+                Arc::clone(&self.pause),
+                Arc::clone(&self.unloaded),
+            );
+            tokio::spawn(async move {
+                let unload = async {
+                    while !pause.reached.load(std::sync::atomic::Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    session.unload_wallet(wallet).await
+                };
+                let result = tokio::time::timeout(Duration::from_secs(60), unload).await;
+                *unloaded.lock().unwrap() = Some(match result {
+                    Ok(r) => r.map_err(|e| e.to_string()),
+                    Err(_) => Err("the unload timed out".into()),
+                });
+                pause.release.notify_one();
+            });
+            let txid = tx.txid();
+            Box::pin(async move { Ok(txid) })
+        }
+    }
+
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![Recipient {
+        label: Some("Bob".into()),
+        message: Some("rent".into()),
+        ..pay(FOREIGN, 10_000_000)
+    }]);
+    let unloaded = Arc::new(std::sync::Mutex::new(None));
+    *draft.broadcaster.lock().unwrap() = Some(Arc::new(CloseOnAccept {
+        session: Arc::clone(&f.session),
+        wallet: f.wallet,
+        pause: Arc::new(crate::coins::TestPause::default()),
+        unloaded: Arc::clone(&unloaded),
+    }));
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = p.summary.txid.clone();
+    let sent = f.engine.block_on(draft.broadcast(p)).unwrap();
+    assert_eq!(sent.txid, txid);
+    assert_eq!(*unloaded.lock().unwrap(), Some(Ok(())));
+    assert!(matches!(
+        f.engine.block_on(f.session.wallet(&f.wallet)),
+        Err(EngineError::WalletNotFound(_))
+    ));
+    let appdb = Arc::clone(&f.session.live().unwrap().appdb);
+    let marks = crate::tx_actions::load_sent(&appdb, f.wallet).0;
+    assert!(
+        marks.keys().any(|t| t.to_string() == txid),
+        "the sent mark survives"
+    );
+    let w = f.wallet.to_string();
+    assert_eq!(appdb.tx_message(&w, &txid).unwrap(), None);
+    assert!(appdb.book_entry(&w, FOREIGN).unwrap().is_none());
+}
+
+/// A wallet closed between a PSBT broadcast's lookup of it and its
+/// ownership read refuses the broadcast with `WalletNotFound`: nothing is
+/// sent, and offline it is not mistaken for `NoPeers`.
+#[test]
+fn a_wallet_closed_after_its_psbt_broadcast_lookup_refuses_it() {
+    use std::str::FromStr;
+    let f = fixture(false);
+    let prev = f.credit_with_prev(108, COIN);
+    let unsigned = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(prev.txid(), 0),
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: COIN - 1_000,
+            script_pubkey: dashcore::Address::from_str(FOREIGN)
+                .unwrap()
+                .assume_checked()
+                .script_pubkey(),
+        }],
+        special_transaction_payload: None,
+    };
+    let mut psbt = dw_psbt::PartiallySignedTransaction::from_unsigned_tx(unsigned).unwrap();
+    psbt.inputs[0].non_witness_utxo = Some(prev);
+    let signed = f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.coin_fences.pause_ownership.lock().unwrap() = Some(Arc::clone(&pause));
+    let s = Arc::clone(&f.session);
+    let broadcast = f
+        .session
+        .rt
+        .spawn(async move { s.broadcast_psbt(signed).await });
+    assert!(pause.wait_reached(Duration::from_secs(60)), "the lookup");
+    f.engine
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(60), f.session.unload_wallet(f.wallet)).await
+        })
+        .expect("the unload waited for the broadcast")
+        .unwrap();
+    pause.release.notify_one();
+    let sent = f.engine.block_on(broadcast).unwrap();
+    assert!(
+        matches!(sent, Err(EngineError::WalletNotFound(_))),
+        "{sent:?}"
+    );
 }
 
 // ---- PSBT signing caps (review H1) ----
@@ -2229,6 +2387,21 @@ fn a_replay_refuses_spends_until_it_reaches_its_target() {
     // (The unsigned PSBT then wants the coin's funding transaction.)
     assert!(!replaying(f.engine.block_on(draft.create_unsigned())));
     f.engine.block_on(draft.prepare(grant())).unwrap();
+}
+
+/// Signing a PSBT is refused during a replay, as building one is, and
+/// signs once the replay is back at its target.
+#[test]
+fn a_replay_refuses_psbt_signing_until_it_reaches_its_target() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(1, COIN);
+    f.advance(1_000);
+    let change = f.own_address();
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN / 2), (&change, 45_000_000)]);
+    f.checkpoint(500);
+    assert!(replaying(f.sign_psbt(&psbt, f.spend_grant(55_000_000))));
+    f.advance(1_000);
+    f.sign_psbt(&psbt, f.spend_grant(55_000_000)).unwrap();
 }
 
 /// The prepare of `draft` on the runtime, for a test to interleave with.
@@ -3708,19 +3881,22 @@ fn an_abandon_whose_replay_is_not_stored_does_not_happen() {
             },
         )
     });
-    let spend = dashcore::Transaction {
-        version: 2,
-        lock_time: 0,
-        input: vec![dashcore::TxIn {
-            previous_output: coin,
-            ..Default::default()
-        }],
-        output: vec![TxOut {
-            value: COIN / 2,
-            script_pubkey: script_of(FOREIGN),
-        }],
-        special_transaction_payload: None,
-    };
+    let spend = f.signed(
+        dashcore::Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: coin,
+                ..Default::default()
+            }],
+            output: vec![TxOut {
+                value: COIN / 2,
+                script_pubkey: script_of(FOREIGN),
+            }],
+            special_transaction_payload: None,
+        },
+        &[],
+    );
     let txid = spend.txid();
     f.session.hub.history.with_wallet(f.wallet, |h| {
         h.txs.insert(
@@ -3859,6 +4035,31 @@ impl Fixture {
                 },
             )
         });
+    }
+
+    /// `tx` with each input that spends a coin of the wallet signed by the
+    /// key of the fixture's seed, as its own send signs with the vault's:
+    /// key-wallet ignores an unconfirmed spend of a coin it holds that the
+    /// coin's owner did not sign, and the manager's wallet holds no keys.
+    fn signed(
+        &self,
+        tx: dashcore::Transaction,
+        fundings: &[&dashcore::Transaction],
+    ) -> dashcore::Transaction {
+        let manager = Arc::clone(&self.session.live().unwrap().manager);
+        let id = self.wallet;
+        let device = key_wallet::Wallet::from_mnemonic(
+            key_wallet::Mnemonic::from_phrase(PHRASE).unwrap(),
+            key_wallet::Network::Regtest,
+            key_wallet::wallet::initialization::WalletAccountCreationOptions::Default,
+        )
+        .unwrap();
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+            key_wallet::test_utils::sign_owned_inputs(&device, info, tx, fundings).await
+        })
     }
 
     /// The wallet sees `tx` unconfirmed: key-wallet records it and the
@@ -4149,6 +4350,7 @@ fn abandon_fixture(older: OlderFunding) -> (Fixture, Txid, dashcore::Transaction
         ],
         special_transaction_payload: None,
     };
+    let root = f.signed(root, &[]);
     f.see_tx(&root);
     let descendant = dashcore::Transaction {
         version: 2,
@@ -4169,6 +4371,7 @@ fn abandon_fixture(older: OlderFunding) -> (Fixture, Txid, dashcore::Transaction
         }],
         special_transaction_payload: None,
     };
+    let descendant = f.signed(descendant, &[&root]);
     let root_id = root.txid();
     (f, root_id, descendant)
 }
@@ -6790,7 +6993,7 @@ impl Fixture {
         let (manager, id, tx) = (
             Arc::clone(&self.session.live().unwrap().manager),
             self.wallet,
-            self.spend_of(7, &[coin]),
+            self.signed(self.spend_of(7, &[coin]), &[]),
         );
         self.engine.block_on(async move {
             let wm = manager.wallet_manager_arc();
@@ -7154,4 +7357,124 @@ fn a_found_fork_drops_a_hidden_registration_key_wallet_no_longer_holds() {
     );
     assert_eq!(guard.unwrap(), 905);
     assert_eq!(after, HashSet::from([kept.txid(), stored.txid()]));
+}
+
+/// #377 (a), a co-signed payment: a coin this wallet signed into a PSBT
+/// is offered again before the PSBT's transaction is seen, with no fault.
+/// Signing reserves nothing, so coin control lists it free and a payment
+/// with automatic selection builds and signs a second spend of it.
+#[test]
+fn pin_377_a_coin_signed_into_a_psbt_is_offered_before_its_transaction_is_seen() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(109, COIN);
+    let coin = OutPoint::new(prev.txid(), 0);
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN - 1_000)]);
+    let signed = f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
+    assert!(
+        dw_psbt::finalize(&mut signed.clone()),
+        "this wallet's signature completes it"
+    );
+
+    let listed = f
+        .engine
+        .block_on(f.session.utxos(f.wallet, CoinFilter::default()))
+        .unwrap();
+    let row = listed.iter().find(|c| c.outpoint == coin);
+    assert!(
+        row.is_some_and(|c| !c.reserved && !c.user_locked),
+        "coin control offers the signed coin: {row:?}"
+    );
+    assert!(f.reserved().is_empty());
+
+    let draft = f.draft(vec![pay(&other_foreign(), 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let inputs: Vec<OutPoint> = prepared
+        .summary()
+        .inputs
+        .iter()
+        .map(|i| i.outpoint)
+        .collect();
+    assert_eq!(inputs, vec![coin], "automatic selection spends it again");
+    let tx: Transaction = dashcore::consensus::deserialize(&prepared.raw().unwrap()).unwrap();
+    assert_ne!(tx.txid(), signed.unsigned_tx.txid(), "a conflicting spend");
+
+    let picked = f.draft(vec![pay(&other_foreign(), 10_000_000)]);
+    f.engine.block_on(draft.abandon(prepared)).unwrap();
+    picked
+        .set_source(CoinSource::Outpoints(vec![coin]))
+        .unwrap();
+    let chosen = f
+        .engine
+        .block_on(picked.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    assert_eq!(
+        chosen.summary().inputs[0].outpoint,
+        coin,
+        "and so does coin control"
+    );
+}
+
+/// #377 / #380, the disclosed way to keep a signed PSBT's coin: Lock
+/// unspent after signing. Neither automatic selection nor coin control
+/// takes the locked coin, and broadcasting the same PSBT passes every
+/// check of its own (a user lock is none of them) up to the network,
+/// which this fixture has none of: it ends at `NoPeers`, nothing sent.
+#[test]
+fn pin_377_a_signed_psbts_coin_locked_by_hand_is_not_spent_and_the_psbt_still_broadcasts() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(110, COIN);
+    let coin = OutPoint::new(prev.txid(), 0);
+    let other = f.credit(111, COIN / 2);
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN - 1_000)]);
+    let signed = f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
+    f.engine
+        .block_on(f.session.lock_outpoints(f.wallet, vec![coin]))
+        .unwrap();
+
+    let listed = f
+        .engine
+        .block_on(f.session.utxos(f.wallet, CoinFilter::default()))
+        .unwrap();
+    assert!(listed.iter().all(|c| c.outpoint != coin), "not offered");
+    let draft = f.draft(vec![pay(&other_foreign(), 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let inputs: Vec<OutPoint> = prepared
+        .summary()
+        .inputs
+        .iter()
+        .map(|i| i.outpoint)
+        .collect();
+    assert_eq!(
+        inputs,
+        vec![other],
+        "automatic selection skips the locked coin"
+    );
+    f.engine.block_on(draft.abandon(prepared)).unwrap();
+    let picked = f.draft(vec![pay(&other_foreign(), 10_000_000)]);
+    picked
+        .set_source(CoinSource::Outpoints(vec![coin]))
+        .unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(picked.estimate())),
+        SendFailure::OutpointUnavailable(coin),
+        "coin control refuses it"
+    );
+
+    assert_eq!(
+        psbt_failure(f.engine.block_on(f.session.broadcast_psbt(signed))),
+        PsbtFailure::NoPeers,
+        "past every check, the lock included: only the missing network stops it"
+    );
+    assert_eq!(
+        f.engine
+            .block_on(f.session.locked_outpoints(f.wallet))
+            .unwrap(),
+        vec![coin]
+    );
 }

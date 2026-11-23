@@ -7,19 +7,21 @@ import { useBackend } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { DetailRow } from "../../components/detail";
 import { LoadingState } from "../../components/history";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { informationSections, InformationModel } from "../../tools/information";
 import { NotYet, Outcome, ToolCard, useReloadOnSync } from "./common";
 import { DashPayInfoCard } from "./DashPayInfo";
 
 export function InformationTab() {
+  const t = useT();
   const b = useBackend();
   const launch = useLaunch();
   const [model] = useState(() => new InformationModel(b));
   useModel(model);
   useReloadOnSync(() => void model.load());
   if (model.error && !model.info) return <Outcome ok={false} text={model.error} testId="information-error" />;
-  if (!model.info) return <LoadingState testId="information-loading" text="Reading the node information" />;
+  if (!model.info) return <LoadingState testId="information-loading" text={t("tools.information.loading")} />;
   return (
     <div className="tool-stack" data-testid="tools-information">
       {model.banner && (
@@ -28,7 +30,7 @@ export function InformationTab() {
         </p>
       )}
       {informationSections(launch, model.info).map((section) => (
-        <ToolCard key={section.title} title={section.title} testId={`information-${section.title.toLowerCase().replace(/\W+/g, "-")}`}>
+        <ToolCard key={section.id} title={section.title} testId={`information-${section.id}`}>
           <dl className="detail-list">
             {section.rows.map((r) => (
               <DetailRow key={r.title} label={r.title}>
@@ -40,8 +42,8 @@ export function InformationTab() {
         </ToolCard>
       ))}
       <DashPayInfoCard />
-      <NotYet title="Network traffic" testId="information-traffic-not-yet">
-        Network traffic details are coming soon.
+      <NotYet title={t("tools.information.networkTraffic")} testId="information-traffic-not-yet">
+        {t("tools.information.networkTrafficSoon")}
       </NotYet>
     </div>
   );

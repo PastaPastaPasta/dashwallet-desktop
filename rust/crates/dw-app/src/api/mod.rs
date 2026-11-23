@@ -68,6 +68,7 @@ domains!(
     governance,
     masternodes,
     rates,
+    updates,
     selftest,
 );
 

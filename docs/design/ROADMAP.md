@@ -169,7 +169,7 @@ UB-0, UB-1 and UB-2 (not taken) would have taken the slots of U-01…U-06 in the
 | DP2-03 | User search with relation; user links (build, parse, verify); the `dapk` scan path | DP2-01 | M | engine | T0, T2 | Y | An iOS-made link verifies (fixture); an expired `dapk` is refused; a valid one sends the request with the proof. |
 | DP2-04 | Private details (alias, note, hidden), deferred until ≥ 2 contacts | DP2-02 | S | engine | T2 | Y | A restored wallet gets the alias back. |
 | DP2-05 | Notifications engine: feed, unread count, OS-notification signal, catch-up silence | E0-06 | M | engine | T0, T2 | Y | One event per request received or accepted; no notification storm after a restore. |
-| DP2-06 | Suites: round trip, ignore and unignore, hidden, restore with contact accounts before SPV; the one-way contact case once the pin has #5256 (E0-14's v5.1 move) | E0-09, T-01, DP2-02, DP2-04 | M | infra | T2, T3 | Y | Green. |
+| DP2-06 | Suites: round trip, ignore and unignore, hidden, restore with contact accounts before SPV; the one-way contact case once the pin has platform #4740 (E0-14's v5.1 move), which builds the receiving account for a sent-only request again after a restore | E0-09, T-01, DP2-02, DP2-04 | M | infra | T2, T3 | Y | Green. |
 | DP2-07 | UI: Contacts split view (groups, sort, local and network search, hidden, pending-setup hint) | DP2-01, U-01 | L | UI | T0, GL | N | — |
 | DP2-08 | UI: Add Contact (search, My QR, scan from a file, drop, clipboard or screen region) | DP2-03, DP2-07 | M | UI | T0, GL | N | — |
 | DP2-09 | UI: contact pane (actions, activity, private details, Enable DashPay banner), notifications popover and page | DP2-02, DP2-05, DP2-07 | L | UI | T0, GL on T2 | N | Accept a request from the bell on T2. |
@@ -290,7 +290,7 @@ Service and Revoke, the Unban parts of IOS-081/082) are marked "node/CLI, out of
 | H-02 | Fuzzing: `dw-uri` (payment URIs, user and invitation links, `dapk`), QR payloads, PSBT, avatar decoding | DP2-03, DP5-01 | M | Y | 24 h without a crash; 10 min nightly. |
 | H-03 | Kill -9 equivalence (DESIGN G5) across registration, request, payment and profile | DP3-01, DP4-01 | M | Y | Equal state ≤ 60 s after restart. |
 | H-04 | Real-node GUI flows: Linux (T2/T3), Windows and macOS (CI runners) | U-01…U-07, the DP UI tasks | L | N | Every DP story passes on all three OSes. |
-| H-05 | Accessibility: Orca, Narrator (CI or T-04), VoiceOver checks in the B4 session; keyboard-only DashPay flows | H-04 | M | N | No blockers. |
+| H-05 | Accessibility: Orca, Narrator (CI or T-04), VoiceOver checks in the B4 session (VoiceOver and Narrator by hand: `docs/qa/H-08-macos-windows.md` section 8); keyboard-only DashPay flows | H-04 | M | N | No blockers. |
 | H-06 | Performance: a large wallet with 500 contacts; a 10k-row history; cold restore with DashPay; contacts query < 100 ms at 1k contacts | DP3-02 | M | Y | The U5 budgets still hold. |
 | H-07 | Mainnet canary (T4): a non-contested name, a contact round trip **with an iOS user**, payments both ways, one faucet invitation claim | DP5-02, **B3** | M | Y | Interoperability confirmed. |
 | H-08 | `agentic-qa` full pass with evidence | H-04 | L | N | Report published; no open blocker or critical defect. |

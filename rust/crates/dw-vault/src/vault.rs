@@ -107,10 +107,10 @@ use crate::file::{
 use crate::mnemonic;
 use crate::signer::{SignerScope, VaultSigner};
 use crate::types::{
-    AuthGrant, Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, GrantToken,
-    KeyHold, KeySource, LockState, PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS,
-    QuickUnlockPolicy, RevealedMnemonic, SIGNING_WINDOW_SECS, SeedDerivation, SignerLife,
-    UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
+    AuthGrant, Clock, Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose,
+    GrantToken, KeyHold, KeySource, LockState, PASSPHRASE_MAX_AGE_SECS, PolicyCommitments,
+    QUICK_UNLOCK_SPEND_LIMITS, QuickUnlockPolicy, RevealedMnemonic, SIGNING_WINDOW_SECS,
+    SeedDerivation, SignerLife, UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
 };
 use crate::vote::VoteSigner;
 use crate::{SignerError, VaultError};
@@ -303,6 +303,9 @@ fn decode_seed(payload: &[u8]) -> Result<(Zeroizing<[u8; 64]>, SeedDerivation), 
 struct PolicyPayload {
     spend_limit_duffs: u64,
     last_passphrase_at: Option<u64>,
+    /// The manifest's `policy` when this was sealed ([`put_policy`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generation: Option<u64>,
 }
 
 impl Default for PolicyPayload {
@@ -310,6 +313,20 @@ impl Default for PolicyPayload {
         Self {
             spend_limit_duffs: DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
             last_passphrase_at: None,
+            generation: None,
+        }
+    }
+}
+
+impl PolicyPayload {
+    /// What a policy the manifest names but the file no longer holds, or
+    /// holds only in an older copy, counts as: no spending without the
+    /// passphrase, and no recent passphrase entry.
+    fn withdrawn() -> Self {
+        Self {
+            spend_limit_duffs: 0,
+            last_passphrase_at: None,
+            generation: None,
         }
     }
 }
@@ -333,11 +350,61 @@ fn seal_policy(
     })
 }
 
-/// The authenticated policy of `f`; `None` when the file has none. A plain
-/// copy that differs from the sealed one is `Corrupt`.
-fn open_policy(f: &VaultFile, dek: &[u8; 32]) -> Result<Option<PolicyPayload>, VaultError> {
+/// Seals `payload` as the policy of `next` at a new manifest generation,
+/// which the manifest records as the policy's, so the sealed policy it
+/// replaces is refused if it is put back. Returns that generation; the
+/// caller raises `high_water` to it once the file is written.
+fn put_policy(
+    next: &mut VaultFile,
+    dek: &[u8; 32],
+    high_water: u64,
+    floor: Option<u64>,
+    payload: PolicyPayload,
+) -> Result<u64, VaultError> {
+    let mut manifest = verify_manifest(next, dek, high_water)?;
+    manifest.generation = manifest
+        .generation
+        .max(floor.unwrap_or(0))
+        .checked_add(1)
+        .ok_or_else(|| VaultError::Storage("the policy commitment cannot be read".into()))?;
+    manifest.policy = Some(manifest.generation);
+    next.manifest = seal_manifest(dek, &next.vault_id, &next.network, &manifest)?;
+    next.quick_unlock = Some(seal_policy(
+        dek,
+        &next.vault_id,
+        &next.network,
+        PolicyPayload {
+            generation: manifest.policy,
+            ..payload
+        },
+    )?);
+    Ok(manifest.generation)
+}
+
+/// The floor while the commitment cannot be read: no policy passes it.
+const UNREAD: u64 = u64::MAX;
+
+fn raise(floor: &mut Option<u64>, generation: u64) {
+    *floor = Some(floor.unwrap_or(0).max(generation));
+}
+
+/// The authenticated policy of `f`; `None` when the file has none and never
+/// had one this build wrote. A plain copy that differs from the sealed one,
+/// or a manifest that does not authenticate, is `Corrupt`. Once the
+/// manifest names a policy generation, a missing policy or one sealed at
+/// another generation is [`PolicyPayload::withdrawn`], and so is one older
+/// than `floor`, the host's commitment, or none where one is committed.
+fn open_policy(
+    f: &VaultFile,
+    dek: &[u8; 32],
+    floor: Option<u64>,
+) -> Result<Option<PolicyPayload>, VaultError> {
+    let manifest = verify_manifest(f, dek, 0)?;
+    if floor.is_some_and(|floor| manifest.policy.is_none_or(|p| p < floor)) {
+        return Ok(Some(PolicyPayload::withdrawn()));
+    }
     let Some(settings) = &f.quick_unlock else {
-        return Ok(None);
+        return Ok(manifest.policy.map(|_| PolicyPayload::withdrawn()));
     };
     let plain = crypto::open(
         dek,
@@ -354,7 +421,31 @@ fn open_policy(f: &VaultFile, dek: &[u8; 32]) -> Result<Option<PolicyPayload>, V
             "quick-unlock policy differs from its sealed copy".into(),
         ));
     }
-    Ok(Some(payload))
+    match manifest.policy {
+        Some(generation) if payload.generation != Some(generation) => {
+            Ok(Some(PolicyPayload::withdrawn()))
+        }
+        _ => Ok(Some(payload)),
+    }
+}
+
+#[cfg(test)]
+type PersistHook = Box<dyn FnMut(&Vault)>;
+
+#[cfg(test)]
+thread_local! {
+    static PERSIST_HOOK: std::cell::RefCell<Option<PersistHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Tests: runs this thread's hook while a passphrase check is about to
+/// write the file it changed.
+#[cfg(test)]
+fn test_persist_hook(vault: &Vault) {
+    let hook = PERSIST_HOOK.with(|h| h.borrow_mut().take());
+    if let Some(mut hook) = hook {
+        hook(vault);
+    }
 }
 
 /// How a grant token relates to the vault it is presented to
@@ -366,12 +457,16 @@ enum TokenBinding {
     OtherVault,
     /// Redeemed by this vault before its epoch last changed.
     EndedEpoch,
+    /// Redeemed from a signing window that has ended since.
+    EndedWindow,
 }
 
 /// Wall and monotonic clocks at one look. A suspend that freezes the
-/// monotonic clock moves only the wall clock; one that advances both shows
-/// up as a long gap since the last look. Either ends the signing window.
-/// The OS suspend notification is the real signal; this is the backstop.
+/// monotonic clock moves only the wall clock, and a wall-clock step moves
+/// it either way; when the two disagree the signing window ends. A suspend
+/// that advances both is caught by the host's heartbeat
+/// ([`Vault::signing_window_heartbeat`]). The OS suspend notification is
+/// the real signal; these are the backstop.
 struct SleepSample {
     wall: SystemTime,
     mono: Instant,
@@ -380,6 +475,21 @@ struct SleepSample {
 /// How far a clock may jump before this process treats the gap as a sleep.
 /// Larger than a normal NTP step.
 const SLEEP_GAP: Duration = Duration::from_secs(2);
+
+/// How old the host's last heartbeat may be while the window admits
+/// grants: its one-second tick plus [`SLEEP_GAP`].
+const HEARTBEAT_MAX: Duration = Duration::from_secs(3);
+
+/// The wall and monotonic clocks moved apart by more than [`SLEEP_GAP`]
+/// since `from`, in either direction.
+fn clocks_disagree(from: &SleepSample, wall: SystemTime, mono: Instant) -> bool {
+    let mono_dt = mono.saturating_duration_since(from.mono);
+    let apart = match wall.duration_since(from.wall) {
+        Ok(wall_dt) => wall_dt.abs_diff(mono_dt),
+        Err(back) => back.duration().saturating_add(mono_dt),
+    };
+    apart > SLEEP_GAP
+}
 
 /// The payments the signing window may issue without a passphrase.
 fn window_purpose(purpose: &GrantPurpose) -> bool {
@@ -392,38 +502,59 @@ fn window_purpose(purpose: &GrantPurpose) -> bool {
 }
 
 /// Opens a new window. The previous one ends first, with its grants and
-/// its charge, so two windows never add up past the limit.
-fn arm_signing_window(inner: &mut Inner, now: Instant) {
+/// its charge, so two windows never add up past the limit. It admits
+/// grants only while the user's setting allows it for this vault
+/// ([`Vault::set_signing_window_allowed`]).
+fn arm_signing_window(inner: &mut Inner, clock: &dyn Clock) {
     clear_signing_window(inner);
-    inner.signing_deadline = Some(now + Duration::from_secs(SIGNING_WINDOW_SECS));
+    let mono = clock.monotonic();
+    inner.signing_deadline = Some(mono + Duration::from_secs(SIGNING_WINDOW_SECS));
     inner.window_charged = 0;
     inner.sleep_sample = Some(SleepSample {
-        wall: SystemTime::now(),
-        mono: Instant::now(),
+        wall: clock.wall(),
+        mono,
     });
 }
 
+/// The user chose the signing window, not "ask every payment", for the
+/// vault in memory now.
+fn window_allowed(inner: &Inner) -> bool {
+    match (&inner.window_vault, &inner.file) {
+        (Some(id), Some(f)) => bool::from(id.ct_eq(&f.vault_id)),
+        _ => false,
+    }
+}
+
+/// The window is open, the user chose it, and, where the host must beat,
+/// it has beaten at least once.
+fn window_admits(inner: &Inner) -> bool {
+    window_allowed(inner)
+        && inner.signing_deadline.is_some()
+        && (!inner.heartbeat_required || inner.heartbeat.is_some())
+}
+
 fn clear_signing_window(inner: &mut Inner) {
+    inner.window_generation = inner.window_generation.wrapping_add(1);
     inner.signing_deadline = None;
     inner.window_charged = 0;
     inner.sleep_sample = None;
     inner.grants.retain(|_, grant| !grant.from_window);
 }
 
-/// Ends the window when the machine slept since the last look. A backward
-/// wall-clock step does not extend it.
-fn observe_sleep(inner: &mut Inner) {
+/// Ends the window when the wall and monotonic clocks disagree since the
+/// last look (a suspend the monotonic clock did not count, or a wall-clock
+/// step either way), or when the host's heartbeat is older than
+/// [`HEARTBEAT_MAX`] (a suspend that both clocks counted, or a host that
+/// stopped watching). A long gap in both clocks with a fresh heartbeat is a
+/// normal wait between looks.
+fn observe_sleep(inner: &mut Inner, wall: SystemTime, mono: Instant) {
     let Some(sample) = &inner.sleep_sample else {
         return;
     };
-    let wall = SystemTime::now();
-    let mono = Instant::now();
-    let wall_dt = wall.duration_since(sample.wall).unwrap_or_default();
-    let mono_dt = mono.saturating_duration_since(sample.mono);
-    // Only a wall clock that ran ahead of the monotonic clock. A long gap
-    // in both is a normal wait between looks, not a sleep; the process
-    // watcher measures its own one-second tick for that case.
-    if wall_dt > mono_dt.saturating_add(SLEEP_GAP) {
+    let stale_beat = inner
+        .heartbeat
+        .is_some_and(|beat| mono.saturating_duration_since(beat) > HEARTBEAT_MAX);
+    if clocks_disagree(sample, wall, mono) || stale_beat {
         clear_signing_window(inner);
         return;
     }
@@ -432,8 +563,13 @@ fn observe_sleep(inner: &mut Inner) {
     }
 }
 
-fn settle_window(inner: &mut Inner, now: Instant) {
-    observe_sleep(inner);
+fn settle_window(inner: &mut Inner, clock: &dyn Clock) {
+    let now = clock.monotonic();
+    settle_window_at(inner, clock.wall(), now);
+}
+
+fn settle_window_at(inner: &mut Inner, wall: SystemTime, now: Instant) {
+    observe_sleep(inner, wall, now);
     if inner
         .signing_deadline
         .is_some_and(|deadline| now >= deadline)
@@ -450,7 +586,7 @@ fn sealed_spend_limit(inner: &Inner) -> Result<u64, VaultError> {
     let (Some(file), Some(dek)) = (inner.file.as_ref(), inner.dek.as_ref()) else {
         return Err(VaultError::CredentialRequired);
     };
-    match open_policy(file, dek) {
+    match open_policy(file, dek, inner.policy_floor) {
         Ok(Some(policy)) => Ok(policy.spend_limit_duffs),
         Ok(None) => Ok(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT),
         Err(_) => Err(VaultError::CredentialRequired),
@@ -499,6 +635,21 @@ struct Inner {
     window_charged: u64,
     /// Clocks at the last look, for [`observe_sleep`].
     sleep_sample: Option<SleepSample>,
+    /// The vault id the host said uses the signing window. Any other vault,
+    /// one made by a recovery included, has none until the host says so.
+    window_vault: Option<Vec<u8>>,
+    /// Which signing window is open: changes whenever one ends or opens,
+    /// so a token redeemed from an earlier one is refused.
+    window_generation: u64,
+    /// The host's last [`Vault::signing_window_heartbeat`]; none until the
+    /// first.
+    heartbeat: Option<Instant>,
+    /// [`Vault::require_signing_window_heartbeat`] was called.
+    heartbeat_required: bool,
+    /// [`Vault::attach_policy_commitments`]; none in tests and tools.
+    commitments: Option<Arc<dyn PolicyCommitments>>,
+    /// The policy generation committed there for the vault in memory.
+    policy_floor: Option<u64>,
     #[cfg(test)]
     gate_log: Option<Vec<GateEvent>>,
 }
@@ -648,6 +799,12 @@ impl Vault {
                     signing_deadline: None,
                     window_charged: 0,
                     sleep_sample: None,
+                    window_vault: None,
+                    window_generation: 0,
+                    heartbeat: None,
+                    heartbeat_required: false,
+                    commitments: None,
+                    policy_floor: None,
                     #[cfg(test)]
                     gate_log: None,
                 }),
@@ -768,6 +925,86 @@ impl Vault {
         Ok(())
     }
 
+    /// [`Self::persist`] of a file whose manifest is at `generation`: the
+    /// file and the high-water mark are published together, so no reader
+    /// checks the old file against the new mark. The policy generation is
+    /// committed first ([`Self::commit_policy`]); a failed commit writes
+    /// nothing, except for a lower policy (`end_window`), which is written
+    /// anyway, as without a store. With `end_window`, the signing window
+    /// ends in the same step, so no window grant issued under the old policy
+    /// signs under the new one; it ends when the write fails too.
+    fn persist_at(
+        &self,
+        _writer: &WriteGuard<'_>,
+        next: VaultFile,
+        generation: u64,
+        end_window: bool,
+    ) -> Result<(), VaultError> {
+        let committed = match self.commit_policy(&next.vault_id, generation) {
+            Err(e) if !end_window => return Err(e),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not commit a lower spending limit; writing it anyway");
+                None
+            }
+            Ok(stored) => stored,
+        };
+        let written = file::write(&self.shared.dir, &next);
+        let mut inner = self.inner();
+        if let Some(stored) = committed {
+            raise(&mut inner.policy_floor, stored);
+        }
+        if end_window {
+            clear_signing_window(&mut inner);
+        }
+        written?;
+        inner.file = Some(next);
+        inner.high_water = inner.high_water.max(generation);
+        Ok(())
+    }
+
+    /// Commits `generation` as the policy's, durably, before the file that
+    /// seals it is written: a crash between the two leaves the commitment
+    /// ahead, so the file's policy counts as withdrawn (limit 0) until the
+    /// limit is set again, and an older, higher limit never counts.
+    /// Returns what the store holds afterwards; `None` without a store.
+    fn commit_policy(&self, vault_id: &[u8], generation: u64) -> Result<Option<u64>, VaultError> {
+        let Some(store) = self.inner().commitments.clone() else {
+            return Ok(None);
+        };
+        store
+            .commit(vault_id, generation)
+            .map(Some)
+            .map_err(VaultError::Storage)
+    }
+
+    /// The floor read from `store` for the vault in memory; [`UNREAD`]
+    /// when the read fails, until a later one succeeds.
+    fn read_floor(&self, store: &dyn PolicyCommitments) -> Option<u64> {
+        let id = self.vault_id()?;
+        store.committed(&id).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read the policy commitment; the spending limit is 0 until it is read");
+            Some(UNREAD)
+        })
+    }
+
+    /// The host's store for policy commitments, kept outside the vault
+    /// file. The commitment of the vault in memory is read now. A file
+    /// that names a newer policy than the store holds (after an upgrade, a
+    /// recovery, or a passphrase check that re-sealed the passphrase time)
+    /// has it recorded at the next passphrase check; a new limit is
+    /// committed before it is written. A recovery keeps the replaced
+    /// vault's commitment and a destroy drops it. A commitment that cannot
+    /// be read counts every policy as withdrawn (limit 0) and is read again
+    /// at each passphrase check. Without a store the vault has only its
+    /// file's own check.
+    pub fn attach_policy_commitments(&self, store: Arc<dyn PolicyCommitments>) {
+        let _writer = self.writer();
+        let floor = self.read_floor(&*store);
+        let mut inner = self.inner();
+        inner.policy_floor = floor;
+        inner.commitments = Some(store);
+    }
+
     fn now(&self) -> u64 {
         self.shared.config.clock.now_secs()
     }
@@ -851,7 +1088,8 @@ impl Vault {
 
     /// Creates the vault. `Some(passphrase)` = encrypted (slot P);
     /// `None` = unencrypted (data key in the OS store, slot O). Leaves the
-    /// vault unlocked.
+    /// vault unlocked. The new vault's signing window admits nothing until
+    /// the host allows it ([`Self::set_signing_window_allowed`]).
     pub fn create(&self, passphrase: Option<&[u8]>) -> Result<VaultStatus, VaultError> {
         let writer = self.writer();
         if self.inner().file.is_some() || file::read(&self.shared.dir)?.is_some() {
@@ -901,6 +1139,7 @@ impl Vault {
         let manifest = Manifest {
             generation: 1,
             records: BTreeMap::new(),
+            policy: None,
         };
         let vault_file = VaultFile {
             format: file::FORMAT,
@@ -932,11 +1171,12 @@ impl Vault {
         let mut inner = self.inner();
         inner.file = Some(vault_file);
         inner.high_water = 1;
+        inner.policy_floor = None;
         inner.install_key(dek, UnlockScope::Full, &ops);
         inner.backup_kek = backup_kek;
         if encrypted {
             inner.last_passphrase_at = Some(now);
-            arm_signing_window(&mut inner, self.clock_mono());
+            arm_signing_window(&mut inner, self.clock());
         }
         let mut status = self.status_of(&inner);
         drop(inner);
@@ -1024,7 +1264,7 @@ impl Vault {
             inner.install_key(dek, scope, &ops);
             inner.backup_kek = Some(backup_kek);
             if scope == UnlockScope::Full {
-                arm_signing_window(&mut inner, self.clock_mono());
+                arm_signing_window(&mut inner, self.clock());
             } else {
                 clear_signing_window(&mut inner);
             }
@@ -1187,45 +1427,77 @@ impl Vault {
         );
 
         let now = self.now();
-        let (had_failures, policy) = {
+        let unread = {
+            let inner = self.inner();
+            let unread = inner.policy_floor == Some(UNREAD);
+            inner.commitments.clone().filter(|_| unread)
+        };
+        if let Some(store) = unread {
+            let floor = self.read_floor(&*store);
+            self.inner().policy_floor = floor;
+        }
+        let (had_failures, policy, record) = {
             let mut inner = self.inner();
             let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
             let manifest = verify_manifest(f, &dek, inner.high_water)?;
             let had_failures = f.throttle != Throttle::default();
             // With slot B enrolled the passphrase time is enforced from the
             // file, so it is persisted (sealed) on every successful check.
-            let policy = if f.slot_b.is_some() {
-                Some(open_policy(f, &dek)?.unwrap_or_default())
+            let policy = if f.slot_b.is_some() && inner.policy_floor != Some(UNREAD) {
+                Some(open_policy(f, &dek, inner.policy_floor)?.unwrap_or_default())
             } else {
                 None
             };
+            let floor = inner.policy_floor.unwrap_or(0);
+            let record = manifest
+                .policy
+                .filter(|&named| named > floor)
+                .zip(inner.commitments.clone())
+                .map(|(named, store)| (named, store, f.vault_id.clone()));
             inner.high_water = inner.high_water.max(manifest.generation);
             inner.last_passphrase_at = Some(now);
-            (had_failures, policy)
+            (had_failures, policy, record)
         };
+        if let Some((named, store, vault_id)) = record {
+            match store.commit(&vault_id, named) {
+                Ok(stored) => raise(&mut self.inner().policy_floor, stored),
+                Err(e) => tracing::warn!(error = %e, "could not record the policy commitment"),
+            }
+        }
         if had_failures || policy.is_some() {
             let mut next = self.file_copy(writer)?;
             next.throttle = Throttle::default();
+            let mut generation = 0;
             if let Some(policy) = policy {
-                next.quick_unlock = Some(seal_policy(
+                let (high_water, floor) = {
+                    let inner = self.inner();
+                    (inner.high_water, inner.policy_floor)
+                };
+                generation = put_policy(
+                    &mut next,
                     &dek,
-                    &next.vault_id,
-                    &next.network,
+                    high_water,
+                    floor,
                     PolicyPayload {
                         last_passphrase_at: Some(now),
                         ..policy
                     },
-                )?);
+                )?;
             }
+            #[cfg(test)]
+            test_persist_hook(self);
             // The passphrase is already proven: a failed write of the reset
             // counter (or the sealed passphrase time) must not refuse it (a
             // full disk would otherwise lock the user out). The new file is
             // kept in memory and the write is retried by the next file
-            // change, which starts from memory.
+            // change, which starts from memory. The file and its high-water
+            // mark are published together, after the write.
             if let Err(e) = file::write(&self.shared.dir, &next) {
                 tracing::warn!(error = %e, "could not persist the reset failed-attempt counter");
             }
-            self.inner().file = Some(next);
+            let mut inner = self.inner();
+            inner.file = Some(next);
+            inner.high_water = inner.high_water.max(generation);
         }
         Ok((dek, BackupKek::of(slot.kdf, &slot.salt, &kek)))
     }
@@ -1402,8 +1674,8 @@ impl Vault {
         inner: &mut Inner,
         purposes: &[GrantPurpose],
     ) -> Result<u64, VaultError> {
-        settle_window(inner, self.clock_mono());
-        if inner.signing_deadline.is_none() {
+        settle_window(inner, self.clock());
+        if !window_admits(inner) {
             return Err(VaultError::CredentialRequired);
         }
         let limit = sealed_spend_limit(inner)?;
@@ -1428,6 +1700,10 @@ impl Vault {
 
     fn clock_mono(&self) -> Instant {
         self.shared.config.clock.monotonic()
+    }
+
+    fn clock(&self) -> &dyn Clock {
+        &*self.shared.config.clock
     }
 
     /// The `QuickUnlock` arm of [`Self::authorize_set`].
@@ -1467,7 +1743,7 @@ impl Vault {
                 .map_err(|_| VaultError::Corrupt("data key length".into()))?,
         );
         let manifest = verify_manifest(f, &dek, inner.high_water)?;
-        let policy = open_policy(f, &dek)?.unwrap_or_default();
+        let policy = open_policy(f, &dek, inner.policy_floor)?.unwrap_or_default();
         inner.high_water = inner.high_water.max(manifest.generation);
 
         // A clock set back gives age 0 (fresh); one set forward only stales.
@@ -1547,9 +1823,9 @@ impl Vault {
         expected: GrantKind,
         wallet: Option<&WalletId>,
         now: u64,
-        mono: Instant,
+        clock: &dyn Clock,
     ) -> Result<&'a IssuedGrant, VaultError> {
-        settle_window(inner, mono);
+        settle_window(inner, clock);
         inner.drop_expired_grants(now);
         let issued = inner.grants.get(grant_id).ok_or(VaultError::GrantInvalid)?;
         if issued.grant.purpose.kind() != expected || issued.grant.wallet.as_ref() != wallet {
@@ -1583,15 +1859,8 @@ impl Vault {
         let now = self.now();
         let mut inner = self.inner();
         let state = Self::state_of(&inner);
-        let found = Self::valid_grant(
-            &mut inner,
-            grant_id,
-            expected,
-            wallet,
-            now,
-            self.clock_mono(),
-        )
-        .map(|issued| (issued.key.is_some(), issued.grant.purpose));
+        let found = Self::valid_grant(&mut inner, grant_id, expected, wallet, now, self.clock())
+            .map(|issued| (issued.key.is_some(), issued.grant.purpose));
         match found {
             Ok((true, purpose)) => return Ok(purpose),
             // A missing grant on a locked vault was most likely revoked by
@@ -1619,14 +1888,7 @@ impl Vault {
     ) -> Result<GrantToken, VaultError> {
         let now = self.now();
         let mut inner = self.inner();
-        Self::valid_grant(
-            &mut inner,
-            grant_id,
-            expected,
-            wallet,
-            now,
-            self.clock_mono(),
-        )?;
+        Self::valid_grant(&mut inner, grant_id, expected, wallet, now, self.clock())?;
         let issued = inner
             .grants
             .remove(grant_id)
@@ -1636,6 +1898,7 @@ impl Vault {
             wallet: issued.grant.wallet,
             vault_instance: self.shared.instance,
             epoch: inner.epoch,
+            window: issued.from_window.then_some(inner.window_generation),
             key: issued
                 .key
                 .map_or(KeySource::Vault, |key| KeySource::Own(Arc::new(key))),
@@ -1725,7 +1988,7 @@ impl Vault {
                 GrantKind::PlatformOp,
                 Some(wallet),
                 self.now(),
-                self.clock_mono(),
+                self.clock(),
             )
             .map(|issued| issued.key.as_ref().map(|key| Zeroizing::new(**key)))
         };
@@ -1779,26 +2042,36 @@ impl Vault {
     /// vault (even one with the same wallet id and epoch number) and of an
     /// earlier opening of this vault's file; the epoch refuses a token
     /// redeemed before a lock, unlock, scope or passphrase change of this one.
+    /// A token from the signing window is refused once that window has
+    /// ended (its deadline passed, or it was closed).
     fn token_binding(&self, inner: &Inner, token: &GrantToken) -> TokenBinding {
         let same_vault = self.shared.instance.ct_eq(&token.vault_instance);
         let same_epoch = inner.epoch.ct_eq(&token.epoch);
+        let window_ended = token.window.is_some_and(|window| {
+            window != inner.window_generation
+                || inner
+                    .signing_deadline
+                    .is_none_or(|deadline| self.clock_mono() >= deadline)
+        });
         if !bool::from(same_vault) {
             TokenBinding::OtherVault
         } else if !bool::from(same_epoch) {
             TokenBinding::EndedEpoch
+        } else if window_ended {
+            TokenBinding::EndedWindow
         } else {
             TokenBinding::Current
         }
     }
 
     /// `token`'s binding as the error its use is refused with:
-    /// `GrantInvalid` for a token of another vault, `Locked` for one whose
-    /// epoch has ended (a lock, unlock, scope change or passphrase change
-    /// since redemption).
+    /// `GrantInvalid` for a token of another vault or of an ended signing
+    /// window, `Locked` for one whose epoch has ended (a lock, unlock, scope
+    /// change or passphrase change since redemption).
     fn token_current(&self, inner: &Inner, token: &GrantToken) -> Result<(), VaultError> {
         match self.token_binding(inner, token) {
             TokenBinding::Current => Ok(()),
-            TokenBinding::OtherVault => Err(VaultError::GrantInvalid),
+            TokenBinding::OtherVault | TokenBinding::EndedWindow => Err(VaultError::GrantInvalid),
             TokenBinding::EndedEpoch => Err(VaultError::Locked),
         }
     }
@@ -2623,7 +2896,8 @@ impl Vault {
         if matches!(token.key, KeySource::Vault) {
             self.full_dek()?;
         }
-        let inner = self.inner();
+        let mut inner = self.inner();
+        settle_window(&mut inner, self.clock());
         if self.token_binding(&inner, token) != TokenBinding::Current {
             return Err(VaultError::GrantInvalid);
         }
@@ -2788,7 +3062,8 @@ impl Vault {
         // and released in one gated operation.
         self.gated(VaultError::Locked, |op| {
             let dek = self.key_for(op, &token)?;
-            let policy = open_policy(&next, &dek)?.unwrap_or_default();
+            let floor = self.inner().policy_floor;
+            let policy = open_policy(&next, &dek, floor)?.unwrap_or_default();
             let last_passphrase_at = policy
                 .last_passphrase_at
                 .max(self.inner().last_passphrase_at);
@@ -2800,16 +3075,18 @@ impl Vault {
                 )?,
                 enrolled_at,
             });
-            next.quick_unlock = Some(seal_policy(
+            let high_water = self.inner().high_water;
+            let generation = put_policy(
+                &mut next,
                 &dek,
-                &next.vault_id,
-                &next.network,
+                high_water,
+                floor,
                 PolicyPayload {
                     last_passphrase_at,
                     ..policy
                 },
-            )?);
-            self.persist(&writer, next)?;
+            )?;
+            self.persist_at(&writer, next, generation, false)?;
             Ok(Zeroizing::new(wrap_key.to_vec()))
         })
     }
@@ -2826,12 +3103,13 @@ impl Vault {
         Ok(self.status())
     }
 
-    /// The post-unlock signing window is open. Expiry clears it, so a later
-    /// clock change cannot open it again. A fresh open is closed.
+    /// The post-unlock signing window is open and the user's setting
+    /// allows it. Expiry clears it, so a later clock change cannot open it
+    /// again. A fresh open is closed.
     pub fn signing_window_open(&self) -> bool {
         let mut inner = self.inner();
-        settle_window(&mut inner, self.clock_mono());
-        inner.signing_deadline.is_some()
+        settle_window(&mut inner, self.clock());
+        window_admits(&inner)
     }
 
     /// Duff still authorizable from the open window, against the sealed
@@ -2839,8 +3117,10 @@ impl Vault {
     /// not authenticate.
     pub fn signing_window_remaining(&self) -> Option<u64> {
         let mut inner = self.inner();
-        settle_window(&mut inner, self.clock_mono());
-        inner.signing_deadline?;
+        settle_window(&mut inner, self.clock());
+        if !window_admits(&inner) {
+            return None;
+        }
         let limit = sealed_spend_limit(&inner).ok()?;
         Some(limit.saturating_sub(inner.window_charged))
     }
@@ -2851,13 +3131,63 @@ impl Vault {
         clear_signing_window(&mut self.inner());
     }
 
+    /// The host's sleep watcher is running and saw no sleep in its last
+    /// tick. Once it has called this, a window whose last heartbeat is
+    /// older than three seconds ends at the next look, so a suspend that
+    /// the monotonic clock counted (as on Windows) ends the window even
+    /// before the watcher's next tick notices it.
+    pub fn signing_window_heartbeat(&self) {
+        let clock = self.clock();
+        let now = clock.monotonic();
+        let wall = clock.wall();
+        let mut inner = self.inner();
+        settle_window_at(&mut inner, wall, now);
+        inner.heartbeat = Some(now);
+    }
+
+    /// The host runs a sleep watcher that beats
+    /// ([`Self::signing_window_heartbeat`]): from now on the window admits
+    /// nothing until the first beat, and nothing once the last beat is older
+    /// than three seconds. The desktop app calls this for every vault it
+    /// opens, so a watcher that never started leaves the window closed. A
+    /// host without a watcher (the CLI, tests) does not, and has only the
+    /// clock check.
+    pub fn require_signing_window_heartbeat(&self) {
+        self.inner().heartbeat_required = true;
+    }
+
+    /// The user's "ask for my passphrase for every payment" for the vault
+    /// `vault_id`, which the host stores: `allowed` is the signing window.
+    /// The window admits grants only for the vault id allowed last, so a
+    /// caller that never read the setting gets none, and a new vault (a
+    /// recovery's, or one made after a destroy) admits none until the host
+    /// allows it. Refusing it ends the open window and drops its grants.
+    pub fn set_signing_window_allowed(&self, vault_id: &[u8], allowed: bool) {
+        let mut inner = self.inner();
+        if allowed {
+            inner.window_vault = Some(vault_id.to_vec());
+        } else if inner
+            .window_vault
+            .as_ref()
+            .is_some_and(|id| bool::from(id.ct_eq(vault_id)))
+        {
+            inner.window_vault = None;
+            clear_signing_window(&mut inner);
+        }
+    }
+
+    /// Whether the host allowed the signing window for the vault in memory.
+    pub fn signing_window_allowed(&self) -> bool {
+        window_allowed(&self.inner())
+    }
+
     /// A lease may redeem `ids` together only when the ones the window
     /// issued do not add up past the sealed spend limit. A passphrase grant
     /// is not counted. An id the vault no longer holds, a window grant whose
     /// window has ended included, is `GrantInvalid`.
     pub fn window_lease_allowed(&self, ids: &[String]) -> Result<(), VaultError> {
         let mut inner = self.inner();
-        settle_window(&mut inner, self.clock_mono());
+        settle_window(&mut inner, self.clock());
         let mut total = 0u64;
         let mut any = false;
         for id in ids {
@@ -2899,23 +3229,32 @@ impl Vault {
     pub(crate) fn test_backdate_sleep_sample(&self, ago: Duration) {
         let mut inner = self.inner();
         inner.sleep_sample = Some(SleepSample {
-            wall: SystemTime::now()
+            wall: self
+                .clock()
+                .wall()
                 .checked_sub(ago)
                 .unwrap_or(SystemTime::UNIX_EPOCH),
-            mono: Instant::now(),
+            mono: self.clock_mono(),
         });
     }
 
-    /// The quick-unlock rules (IOS-016). In-memory read of the plain copy,
-    /// so it works while locked; `authorize` enforces the sealed copy.
+    /// The quick-unlock rules (IOS-016). While locked the limit is the plain
+    /// copy; with the data key in memory it is the sealed one, which is what
+    /// `authorize` enforces.
     pub fn quick_unlock_policy(&self) -> QuickUnlockPolicy {
         let inner = self.inner();
         let file = inner.file.as_ref();
         let settings = file.and_then(|f| f.quick_unlock.as_ref());
+        let shown = settings.map_or(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, |s| s.spend_limit_duffs);
         QuickUnlockPolicy {
             enrolled: file.is_some_and(|f| f.slot_b.is_some()),
-            spend_limit_duffs: settings
-                .map_or(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, |s| s.spend_limit_duffs),
+            spend_limit_duffs: match (file, inner.dek.as_ref()) {
+                (Some(f), Some(dek)) => match open_policy(f, dek, inner.policy_floor) {
+                    Ok(Some(policy)) => policy.spend_limit_duffs,
+                    _ => shown,
+                },
+                _ => shown,
+            },
             passphrase_max_age_secs: PASSPHRASE_MAX_AGE_SECS,
             last_passphrase_at: settings
                 .and_then(|s| s.last_passphrase_at)
@@ -2925,7 +3264,11 @@ impl Vault {
 
     /// Sets the quick-unlock spending limit to one of
     /// [`QUICK_UNLOCK_SPEND_LIMITS`] (`InvalidArgument` otherwise). Needs an
-    /// encrypted vault (`NotEncrypted`) and a `ChangeCredential` grant.
+    /// encrypted vault (`NotEncrypted`) and a `ChangeCredential` grant. A
+    /// lower limit ends the signing window, with its grants and the tokens
+    /// redeemed from it, in the step that publishes the new limit; a higher
+    /// or equal one ends nothing. A failed commitment or write keeps the
+    /// limit in memory and still ends the window.
     pub fn set_quick_unlock_spend_limit(
         &self,
         grant_id: &str,
@@ -2946,19 +3289,24 @@ impl Vault {
         crate::signer::test_hook::checked();
         self.gated(VaultError::Locked, |op| {
             let dek = self.key_for(op, &token)?;
-            let policy = open_policy(&next, &dek)?.unwrap_or_default();
-            next.quick_unlock = Some(seal_policy(
+            let floor = self.inner().policy_floor;
+            let policy = open_policy(&next, &dek, floor)?.unwrap_or_default();
+            let lowered = spend_limit_duffs < policy.spend_limit_duffs;
+            let high_water = self.inner().high_water;
+            let generation = put_policy(
+                &mut next,
                 &dek,
-                &next.vault_id,
-                &next.network,
+                high_water,
+                floor,
                 PolicyPayload {
                     spend_limit_duffs,
                     last_passphrase_at: policy
                         .last_passphrase_at
                         .max(self.inner().last_passphrase_at),
+                    generation: None,
                 },
-            )?);
-            self.persist(&writer, next)
+            )?;
+            self.persist_at(&writer, next, generation, lowered)
         })?;
         drop(writer);
         Ok(self.quick_unlock_policy())
@@ -3007,6 +3355,7 @@ impl Vault {
             .filter_map(|k| seed_record_wallet(k))
             .filter(|w| w != wallet)
             .collect();
+        let spend_limit_duffs = self.carried_spend_limit(&old);
 
         let now = self.now();
         let tag = &self.shared.tag;
@@ -3042,6 +3391,7 @@ impl Vault {
         let mut manifest = Manifest {
             generation: 1,
             records: BTreeMap::new(),
+            policy: Some(1),
         };
         for (id, payload) in &payloads {
             let sealed = crypto::seal(&dek, payload, &file::record_aad(&vault_id, tag, id))?;
@@ -3066,8 +3416,9 @@ impl Vault {
                 &vault_id,
                 tag,
                 PolicyPayload {
+                    spend_limit_duffs,
                     last_passphrase_at: Some(now),
-                    ..PolicyPayload::default()
+                    generation: manifest.policy,
                 },
             )?),
         };
@@ -3088,7 +3439,8 @@ impl Vault {
             inner.install_key(Zeroizing::new(*dek), UnlockScope::Full, &ops);
             inner.backup_kek = Some(backup_kek);
             inner.last_passphrase_at = Some(now);
-            arm_signing_window(&mut inner, self.clock_mono());
+            arm_signing_window(&mut inner, self.clock());
+            inner.policy_floor = None;
         }
         drop(ops);
         let disk = file::read(&self.shared.dir)?
@@ -3109,6 +3461,23 @@ impl Vault {
         self.sync_links_after_key(&dek, &vault_id);
         drop(writer);
         Ok(lost)
+    }
+
+    /// The spending limit a recovery keeps from the vault it replaces. With
+    /// the data key in memory it is the sealed limit (the default for a
+    /// vault that never had one, 0 if it does not authenticate). Without
+    /// the key nothing authenticates the old limit, so it is 0 until the
+    /// user sets one again.
+    fn carried_spend_limit(&self, old: &VaultFile) -> u64 {
+        let inner = self.inner();
+        let Some(dek) = &inner.dek else {
+            return 0;
+        };
+        match open_policy(old, dek, inner.policy_floor) {
+            Ok(Some(policy)) => policy.spend_limit_duffs,
+            Ok(None) => DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
+            Err(_) => 0,
+        }
     }
 
     /// Deletes the vault (IOS-009 "Delete All", IOS-109 wipe): the vault
@@ -3152,7 +3521,14 @@ impl Vault {
             inner.file = None;
             inner.high_water = 0;
             inner.last_passphrase_at = None;
+            inner.policy_floor = None;
             inner.forget_key(&ops);
+        }
+        let store = self.inner().commitments.clone();
+        if let Some(store) = store
+            && let Err(e) = store.forget(&current.vault_id)
+        {
+            tracing::warn!(error = %e, "could not drop the policy commitment");
         }
         drop(links);
         drop(writer);
@@ -3302,10 +3678,309 @@ mod tests {
         )
         .unwrap();
         v.create(Some(b"correct horse")).unwrap();
+        v.set_signing_window_allowed(&v.vault_id().unwrap(), true);
         assert!(v.signing_window_open());
         v.test_backdate_sleep_sample(Duration::from_secs(30));
         assert!(!v.signing_window_open());
         assert_eq!(v.status().state, LockState::Unlocked);
+    }
+
+    /// A passphrase check that re-seals the policy publishes the file and
+    /// its high-water mark together: a quick-unlock authorization made
+    /// while the file is being written checks a consistent pair.
+    #[test]
+    fn a_quick_unlock_during_a_passphrase_check_sees_a_consistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw: &[u8] = b"correct horse";
+        let v = vault_with_wallet(dir.path(), Some(pw), 3);
+        let change = v
+            .authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(pw),
+            )
+            .unwrap();
+        let key = v.enroll_quick_unlock(&change.id).unwrap();
+        v.lock();
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let out = std::rc::Rc::clone(&seen);
+        PERSIST_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |v: &Vault| {
+                let answer = v.authorize(
+                    GrantPurpose::Spend { max_duffs: 1 },
+                    Some(&[1; 32]),
+                    Credential::QuickUnlock(&key),
+                );
+                *out.borrow_mut() = Some(answer.map(drop));
+            }))
+        });
+        v.unlock(pw, UnlockScope::Full).unwrap();
+        assert_eq!(*seen.borrow(), Some(Ok(())));
+    }
+
+    /// A lower limit whose write fails (here after the new file reached the
+    /// disk) keeps the limit in memory and still ends the window.
+    #[test]
+    fn a_failed_write_of_a_lower_limit_still_ends_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw: &[u8] = b"correct horse";
+        let v = vault_with_wallet(dir.path(), Some(pw), 3);
+        let spend = GrantPurpose::Spend { max_duffs: 1 };
+        let grant = v
+            .authorize(spend, Some(&[1; 32]), Credential::None)
+            .unwrap();
+        let change = v
+            .authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(pw),
+            )
+            .unwrap();
+        crate::fault::arm(&dir.path().join("vault"), crate::fault::Fault::DirSync);
+        assert!(v.set_quick_unlock_spend_limit(&change.id, 0).is_err());
+        assert_eq!(
+            v.quick_unlock_policy().spend_limit_duffs,
+            DEFAULT_QUICK_UNLOCK_SPEND_LIMIT
+        );
+        assert!(!v.signing_window_open());
+        assert_eq!(
+            v.redeem_grant(&grant.id, GrantKind::Spend, Some(&[1; 32]))
+                .map(drop),
+            Err(VaultError::GrantInvalid)
+        );
+    }
+
+    #[derive(Default)]
+    struct Rows(Mutex<std::collections::HashMap<Vec<u8>, u64>>);
+
+    impl PolicyCommitments for Rows {
+        fn committed(&self, vault_id: &[u8]) -> Result<Option<u64>, String> {
+            Ok(self.0.lock().unwrap().get(vault_id).copied())
+        }
+
+        fn commit(&self, vault_id: &[u8], generation: u64) -> Result<u64, String> {
+            let mut rows = self.0.lock().unwrap();
+            let row = rows.entry(vault_id.to_vec()).or_default();
+            *row = (*row).max(generation);
+            Ok(*row)
+        }
+
+        fn forget(&self, vault_id: &[u8]) -> Result<(), String> {
+            self.0.lock().unwrap().remove(vault_id);
+            Ok(())
+        }
+    }
+
+    fn set_limit(v: &Vault, pw: &[u8], limit: u64) -> Result<(), VaultError> {
+        let change = v
+            .authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(pw),
+            )
+            .unwrap();
+        v.set_quick_unlock_spend_limit(&change.id, limit).map(drop)
+    }
+
+    /// A higher limit whose write failed after the file reached the disk
+    /// was committed; the lowering after it is sealed above that, so the
+    /// higher file put back counts as 0.
+    #[test]
+    fn a_higher_limit_whose_write_failed_cannot_be_put_back_after_a_lowering() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw: &[u8] = b"correct horse";
+        let os = Arc::new(crate::MemoryOsStore::new());
+        let rows = Arc::new(Rows::default());
+        let v = vault_with_wallet_in(dir.path(), &os, Some(pw), 3);
+        v.attach_policy_commitments(rows.clone());
+        crate::fault::arm(&dir.path().join("vault"), crate::fault::Fault::DirSync);
+        assert!(set_limit(&v, pw, 500_000_000).is_err());
+        let higher = std::fs::read(dir.path().join("vault").join("vault.dwv")).unwrap();
+        set_limit(&v, pw, 0).unwrap();
+        drop(v);
+        std::fs::write(dir.path().join("vault").join("vault.dwv"), higher).unwrap();
+        let v = open_in(dir.path(), &os);
+        v.attach_policy_commitments(rows);
+        v.unlock(pw, UnlockScope::Full).unwrap();
+        assert_eq!(v.quick_unlock_policy().spend_limit_duffs, 0);
+    }
+
+    /// With a store, a lower limit whose write fails after its commitment
+    /// leaves limit 0 in memory, and the window ends.
+    #[test]
+    fn a_failed_write_of_a_lower_limit_with_a_store_leaves_limit_0() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw: &[u8] = b"correct horse";
+        let v = vault_with_wallet(dir.path(), Some(pw), 3);
+        v.attach_policy_commitments(Arc::new(Rows::default()));
+        crate::fault::arm(&dir.path().join("vault"), crate::fault::Fault::DirSync);
+        assert!(set_limit(&v, pw, 10_000_000).is_err());
+        assert_eq!(v.quick_unlock_policy().spend_limit_duffs, 0);
+        assert!(!v.signing_window_open());
+    }
+
+    /// A clock whose monotonic reading jumps (with the wall clock) at a
+    /// chosen call: a suspend between two reads.
+    struct JumpClock {
+        origin: Instant,
+        secs: std::sync::atomic::AtomicU64,
+        calls: std::sync::atomic::AtomicU64,
+        jump_at: std::sync::atomic::AtomicU64,
+    }
+
+    impl crate::types::Clock for JumpClock {
+        fn now_secs(&self) -> u64 {
+            1_800_000_000 + self.secs.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn monotonic(&self) -> Instant {
+            use std::sync::atomic::Ordering::SeqCst;
+            if self.calls.fetch_add(1, SeqCst) + 1 == self.jump_at.load(SeqCst) {
+                self.secs.fetch_add(60, SeqCst);
+            }
+            self.origin + Duration::from_secs(self.secs.load(SeqCst))
+        }
+
+        fn wall(&self) -> SystemTime {
+            SystemTime::UNIX_EPOCH + Duration::from_secs(self.now_secs())
+        }
+    }
+
+    /// The heartbeat records the reading it checked the last beat against:
+    /// a suspend right after that reading leaves the beat at the reading,
+    /// and the next look finds it stale.
+    #[test]
+    fn a_heartbeat_publishes_the_instant_it_checked() {
+        use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(JumpClock {
+            origin: Instant::now(),
+            secs: AtomicU64::new(0),
+            calls: AtomicU64::new(0),
+            jump_at: AtomicU64::new(u64::MAX),
+        });
+        let v = Vault::open(
+            dir.path().join("vault"),
+            Network::Regtest,
+            "regtest",
+            VaultConfig {
+                kdf: crate::KdfPolicy::Fixed(crate::KdfParams::TEST),
+                os_store: Arc::new(crate::MemoryOsStore::new()),
+                clock: clock.clone(),
+                grant_ttl_secs: 120,
+            },
+        )
+        .unwrap();
+        v.create(Some(b"correct horse")).unwrap();
+        v.set_signing_window_allowed(&v.vault_id().unwrap(), true);
+        v.signing_window_heartbeat();
+        assert!(v.signing_window_open());
+        clock.jump_at.store(clock.calls.load(SeqCst) + 2, SeqCst);
+        v.signing_window_heartbeat();
+        assert!(!v.signing_window_open());
+    }
+
+    /// The decision behind the sleep backstop, on given clock readings: a
+    /// wall clock that moved more than two seconds away from the monotonic
+    /// clock, forward or back, is a disagreement; a long wait in both is not.
+    #[test]
+    fn the_clocks_disagree_either_way_past_the_gap() {
+        let mono = Instant::now();
+        let wall = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let from = SleepSample { wall, mono };
+        let secs = Duration::from_secs;
+        let at = |wall_dt: i64, mono_dt: u64| {
+            let wall = if wall_dt >= 0 {
+                wall + secs(wall_dt as u64)
+            } else {
+                wall - secs(wall_dt.unsigned_abs())
+            };
+            clocks_disagree(&from, wall, mono + secs(mono_dt))
+        };
+        assert!(!at(0, 0));
+        assert!(!at(600, 600));
+        assert!(!at(2, 0));
+        assert!(!at(-2, 0));
+        assert!(!at(0, 2));
+        assert!(at(3, 0));
+        assert!(at(-3, 0));
+        assert!(at(0, 3));
+        assert!(at(600, 0));
+        assert!(at(-3000, 0));
+        assert!(at(-1, 2));
+    }
+
+    /// What each mix of an older and a newer build leaves in the file: a
+    /// manifest without the policy generation keeps the old rule (any
+    /// authentic policy), and a policy sealed without it under a manifest
+    /// that names one counts as withdrawn.
+    #[test]
+    fn the_policy_generation_across_older_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(
+            dir.path().join("vault"),
+            Network::Regtest,
+            "regtest",
+            test_config(step_clock()),
+        )
+        .unwrap();
+        v.create(Some(b"correct horse")).unwrap();
+        let dek = *v.inner().dek.clone().unwrap();
+        let payload = |limit, generation| PolicyPayload {
+            spend_limit_duffs: limit,
+            last_passphrase_at: None,
+            generation,
+        };
+        let with = |edit: &dyn Fn(&mut VaultFile)| {
+            let mut inner = v.inner();
+            edit(inner.file.as_mut().unwrap());
+            sealed_spend_limit(&inner).unwrap()
+        };
+        let reseal_manifest = |f: &mut VaultFile, policy: Option<u64>| {
+            let mut manifest = verify_manifest(f, &dek, 0).unwrap();
+            manifest.policy = policy;
+            f.manifest = seal_manifest(&dek, &f.vault_id, &f.network, &manifest).unwrap();
+        };
+
+        assert_eq!(with(&|_| {}), DEFAULT_QUICK_UNLOCK_SPEND_LIMIT);
+        assert_eq!(
+            with(&|f| {
+                f.quick_unlock = Some(
+                    seal_policy(&dek, &f.vault_id, &f.network, payload(10_000_000, None)).unwrap(),
+                );
+            }),
+            10_000_000
+        );
+        assert_eq!(
+            with(&|f| {
+                put_policy(f, &dek, 0, None, payload(20_000_000, None)).unwrap();
+            }),
+            20_000_000
+        );
+        assert_eq!(
+            with(&|f| {
+                f.quick_unlock = Some(
+                    seal_policy(&dek, &f.vault_id, &f.network, payload(30_000_000, None)).unwrap(),
+                );
+            }),
+            0
+        );
+        assert_eq!(
+            with(&|f| {
+                let generation = verify_manifest(f, &dek, 0).unwrap().policy;
+                f.quick_unlock = Some(
+                    seal_policy(
+                        &dek,
+                        &f.vault_id,
+                        &f.network,
+                        payload(40_000_000, generation),
+                    )
+                    .unwrap(),
+                );
+                reseal_manifest(f, None);
+            }),
+            40_000_000
+        );
     }
 
     /// Opens the vault in `dir` with the shared `os_store`.
@@ -3335,6 +4010,7 @@ mod tests {
     ) -> Vault {
         let v = open_in(dir, os_store);
         v.create(passphrase).unwrap();
+        v.set_signing_window_allowed(&v.vault_id().unwrap(), true);
         let secret = WalletSecret {
             mnemonic: Zeroizing::new(b"unused".to_vec()),
             mnemonic_passphrase: Zeroizing::new(Vec::new()),

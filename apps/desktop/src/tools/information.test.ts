@@ -5,7 +5,7 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { NodeSummary } from "../api/generated/NodeSummary";
 import type { PeerSummary } from "../api/generated/PeerSummary";
 import { appError } from "../onboarding/testWorld";
-import { bannerText, dateText, informationSections, InformationModel, NONE, REQUIRES_FULL_NODE } from "./information";
+import { bannerText, dateText, informationSections, InformationModel, NONE } from "./information";
 import { formatBytes, formatDuration, peerRow, PeersModel, PeersText } from "./peers";
 
 const testnet = { kind: "testnet", dirName: "testnet", unitName: "tDASH" } as const;
@@ -47,8 +47,8 @@ describe("Information (QT-143, QT-144, QT-040)", () => {
   it("QT143_unknownAndFullNodeOnlyRowsShowADash", () => {
     expect(row(NODE, "Number of connections")?.value).toBe("8 (In: 0 / Out: 8)");
     expect(row(NODE, "Name")?.value).toBe("test");
-    expect(row(NODE, "Current number of transactions")).toEqual({ title: "Current number of transactions", value: NONE, note: REQUIRES_FULL_NODE });
-    expect(row(NODE, "Memory usage")?.note).toBe(REQUIRES_FULL_NODE);
+    expect(row(NODE, "Current number of transactions")).toEqual({ title: "Current number of transactions", value: NONE, note: "Requires full-node data source" });
+    expect(row(NODE, "Memory usage")?.note).toBe("Requires full-node data source");
     expect(row(NODE, "Masternodes")?.value).toBe("Total: 3000 (Enabled: 2900)");
     expect(row(NODE, "EvoNodes")?.value).toBe(NONE);
     expect(row(NODE, "Local Addresses")?.value).toBe(NONE);

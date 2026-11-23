@@ -1,12 +1,13 @@
-//! Repair's "Resolve stuck funding: send all coins to yourself" (E0-04
-//! §6.5, §2a.5, §16.10 C9): Mode B's way out of a funding that stays
-//! `MaybeSent` (or `WillBeSent` with no proof) with no time bound, such as
-//! a lock whose row a power loss lost and that a peer withholds.
+//! Repair's "Resolve stuck funding" (E0-04 §6.5, §2a.5, §16.10 C9; the
+//! renderer's label still reads "send all coins to yourself"): Mode B's way
+//! out of a funding that stays `MaybeSent` (or `WillBeSent` with no proof)
+//! with no time bound, such as a lock whose row a power loss lost and that
+//! a peer withholds.
 //!
-//! The self-spend is an engine `TxDraft` that spends every coin of the
-//! funding accounts (BIP44, BIP32, DashPay receiving: the accounts the
-//! library's asset-lock builds fund from), the inputs of every tracked
-//! `Built` and `Broadcast` asset lock of the wallet among them, to one
+//! The self-spend is an engine `TxDraft` that spends coins of the funding
+//! accounts (BIP44, BIP32, DashPay receiving: the accounts the library's
+//! asset-lock builds fund from), "Which coins" below, among them an input
+//! of every tracked `Built` and `Broadcast` asset lock of the step, to one
 //! fresh receive address of the wallet, under the caller's `Spend` grant or
 //! lease as any `TxDraft`. A lost lock spent some of those coins, so once
 //! the self-spend is ChainLocked the lock can no longer confirm, and the
@@ -28,12 +29,31 @@
 //! written, and the step's marker keeps standing (a new funding needs a
 //! new draft, as for any resolved marker).
 //!
-//! **Which coins.** Every coin of the funding accounts that consensus lets
-//! the self-spend spend (mature, not frozen by key-wallet). The inputs of
+//! **Which coins.** Coins of the funding accounts that consensus lets the
+//! self-spend spend (mature, not frozen by key-wallet), picked by the
+//! step's own lock rows:
+//! - While one of them spent an unmixed coin: every unmixed coin, and no
+//!   counted denomination (the mixed coins a restored wallet holds there).
+//!   No funding of this app selects one, and joining one to unmixed coins
+//!   would link them. A lock that also spent a denomination is conflicted
+//!   through its unmixed input.
+//! - When every one of them spent only denominations: one denomination of
+//!   each lock, none for a lock another's already conflicts, and no unmixed
+//!   coin. One input conflicts with a lock, and the smallest denomination
+//!   pays the fee; the self-spend links the denominations it spends (one per
+//!   lock at most) and turns them into one ordinary coin.
+//! - A step with locks of both kinds, which only an older build leaves:
+//!   the live inputs of its locks.
+//!   The one transaction links the mixed coins to the unmixed ones;
+//!   refusing would hold them for good. A repair with only denominations
+//!   left is refused.
+//!
+//! The inputs of
 //! tracked `Built`/`Broadcast` locks are reserved for every other build
 //! (`coins.rs`); this draft names exactly them as exempt. A coin the user
 //! locked, or one a pending payment of the engine reserves, is not
-//! exempt: the draft refuses it (`send.outpoint_unavailable`), since the
+//! exempt: the draft refuses it (`send.outpoint_unavailable`), picked or
+//! not, as main's draft of every coin did, since the
 //! library saw neither lock nor reservation, so a lost lock may have spent
 //! it, and a self-spend without it might not conflict with that lock. The
 //! user unlocks it (or waits for the payment) and repairs again.
@@ -84,8 +104,7 @@ impl From<StuckFundingRefusal> for EngineError {
 }
 
 impl NetworkSession {
-    /// Repair's "Resolve stuck funding: send all coins to yourself" for
-    /// the Mode B funding `step` of `wallet_id` (`registration/<draft>/funding`,
+    /// Repair's "Resolve stuck funding" for the Mode B funding `step` of `wallet_id` (`registration/<draft>/funding`,
     /// `topup/<id>/funding` or `shield/<k>/funding`; module doc).
     /// `grant_id` is a `Spend` grant or a lease with a Spend budget, as for
     /// [`TxDraft::prepare`]: the self-spend's outflow is its fee.
@@ -113,9 +132,9 @@ impl NetworkSession {
         self.send_self_spend(&draft, &step, grant_id).await
     }
 
-    /// The self-spend's draft (module doc): every spendable coin of the
-    /// funding accounts to a fresh receive address, the fee subtracted,
-    /// with the tracked locks' inputs exempt.
+    /// The self-spend's draft (module doc): the funding accounts' coins
+    /// [`funding_repair_coins`] picks to a fresh receive address, the fee
+    /// subtracted, with the tracked locks' inputs exempt.
     pub(crate) async fn stuck_funding_draft(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -139,7 +158,9 @@ impl NetworkSession {
             // them again under its own, so a coin locked in between is
             // refused there (`send.outpoint_unavailable`).
             let fence = this.coin_fence(wallet_id).await?;
-            if let Some(txid) = crate::coins::unsettled_spend(&wallet.state().await.core_wallet) {
+            if let Some(txid) = crate::coins::unsettled_spend(
+                &crate::wallet_read::info_of(&wallet).await?.core_wallet,
+            ) {
                 return Err(StuckFundingRefusal::SpendUnsettled(txid).into());
             }
             let snapshot = this.coin_snapshot(&fence, &wallet).await?;
@@ -157,18 +178,33 @@ impl NetworkSession {
             if coinjoin && this.mixing(wallet_id) {
                 return Err(CoinJoinFailure::MixingActive.into());
             }
-            let coins: Vec<_> = snapshot
-                .coins
-                .iter()
-                .filter(|c| c.utxo.is_spendable(snapshot.height))
-                .filter(|c| {
-                    if coinjoin {
-                        c.coinjoin_account && recorded.contains(&c.utxo.outpoint)
-                    } else {
+            // A coin another step's lock spends stays out: the self-spend
+            // would conflict with that funding too.
+            let spendable = (snapshot.coins.iter()).filter(|c| {
+                c.utxo.is_spendable(snapshot.height)
+                    && (!c.lock_input || recorded.contains(&c.utxo.outpoint))
+            });
+            let coins: Vec<_> = if coinjoin {
+                spendable
+                    .filter(|c| c.coinjoin_account && recorded.contains(&c.utxo.outpoint))
+                    .collect()
+            } else {
+                let mut coins =
+                    funding_repair_coins(spendable.filter(|c| c.send_account).collect(), &rows)?;
+                // A coin that stopped main's all-coin draft (locked, or
+                // reserved other than as a lock's input) is in this one,
+                // so its prepare refuses it as main's did.
+                let stops: Vec<_> = (snapshot.coins.iter())
+                    .filter(|c| {
                         c.send_account
-                    }
-                })
-                .collect();
+                            && c.utxo.is_spendable(snapshot.height)
+                            && (c.user_locked || (c.reserved && !c.lock_input))
+                            && !coins.iter().any(|p| p.utxo.outpoint == c.utxo.outpoint)
+                    })
+                    .collect();
+                coins.extend(stops);
+                coins
+            };
             if coins.is_empty() {
                 return Err(EngineError::InvalidArgument(
                     "the wallet holds no coin to spend to itself".into(),
@@ -176,7 +212,7 @@ impl NetworkSession {
             }
             let exempt: HashSet<OutPoint> = coins
                 .iter()
-                .filter(|c| c.lock_input)
+                .filter(|c| c.lock_input && recorded.contains(&c.utxo.outpoint))
                 .map(|c| c.utxo.outpoint)
                 .collect();
             let outpoints: HashSet<OutPoint> = coins.iter().map(|c| c.utxo.outpoint).collect();
@@ -252,5 +288,204 @@ impl NetworkSession {
             return Err(e);
         }
         draft.broadcast(prepared).await
+    }
+}
+
+/// The funding accounts' coins (`send`, spendable) a self-spend takes for
+/// the step's locks `rows` (module doc, "Which coins"): every coin but the
+/// counted denominations while a lock spends an unmixed coin, else one
+/// denomination of each lock not already conflicted, or every live input
+/// of a step whose locks are of both kinds. A lock none of whose inputs is
+/// left is refused.
+fn funding_repair_coins<'a>(
+    send: Vec<&'a crate::coins::WalletCoin>,
+    rows: &[(dashcore::Txid, Vec<OutPoint>)],
+) -> Result<Vec<&'a crate::coins::WalletCoin>, EngineError> {
+    let coin = |o: &OutPoint| send.iter().find(|c| c.utxo.outpoint == *o);
+    let mut unmixed_lock = false;
+    let mut denominations = HashSet::new();
+    for (txid, inputs) in rows {
+        let live: Vec<_> = inputs.iter().filter_map(coin).collect();
+        if live.is_empty() {
+            return Err(StuckFundingRefusal::LockInputsSpent(*txid).into());
+        }
+        if live.iter().any(|c| !c.counted_denomination) {
+            unmixed_lock = true;
+        } else if !live
+            .iter()
+            .any(|c| denominations.contains(&c.utxo.outpoint))
+        {
+            denominations.insert(live[0].utxo.outpoint);
+        }
+    }
+    if denominations.is_empty() {
+        let unmixed: Vec<_> = (send.iter().copied())
+            .filter(|c| !c.counted_denomination)
+            .collect();
+        if unmixed.is_empty() && !send.is_empty() {
+            return Err(EngineError::InvalidArgument(
+                "the wallet holds only mixed coins here, and the repair does not spend them".into(),
+            ));
+        }
+        return Ok(unmixed);
+    }
+    // Locks of both kinds (an older build's): the step's locks' live
+    // inputs, linking the mixed coins to the others.
+    if unmixed_lock {
+        let inputs: HashSet<&OutPoint> = rows.iter().flat_map(|(_, i)| i).collect();
+        return Ok((send.into_iter())
+            .filter(|c| inputs.contains(&c.utxo.outpoint) && !c.user_locked)
+            .collect());
+    }
+    Ok(send
+        .into_iter()
+        .filter(|c| denominations.contains(&c.utxo.outpoint))
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use dashcore::hashes::Hash;
+    use dashcore::{Address, OutPoint, TxOut, Txid};
+
+    use super::funding_repair_coins;
+    use crate::EngineError;
+    use crate::coins::WalletCoin;
+    use crate::platform::lease::mode_b::StuckFundingRefusal;
+
+    fn coin(seed: u8, denomination: bool) -> WalletCoin {
+        let address = Address::new(
+            dashcore::Network::Regtest,
+            dashcore::address::Payload::PubkeyHash(dashcore::PubkeyHash::from_byte_array(
+                [seed; 20],
+            )),
+        );
+        let txout = TxOut {
+            value: if denomination {
+                100_001_000
+            } else {
+                50_000_000
+            },
+            script_pubkey: address.script_pubkey(),
+        };
+        let outpoint = OutPoint::new(Txid::from_byte_array([seed; 32]), 0);
+        WalletCoin {
+            utxo: key_wallet::Utxo::new(outpoint, txout, address, 1, false),
+            send_account: true,
+            coinjoin_account: false,
+            counted_denomination: denomination,
+            is_change: false,
+            block_time: None,
+            chain_locked: false,
+            foreign_incoming: false,
+            user_locked: false,
+            dust_locked: false,
+            reserved: false,
+            lock_input: false,
+            unresolved_lock: false,
+            awaiting_history: false,
+        }
+    }
+
+    fn op(seed: u8) -> OutPoint {
+        OutPoint::new(Txid::from_byte_array([seed; 32]), 0)
+    }
+
+    fn row(seed: u8, inputs: &[u8]) -> (Txid, Vec<OutPoint>) {
+        (
+            Txid::from_byte_array([seed + 100; 32]),
+            inputs.iter().map(|s| op(*s)).collect(),
+        )
+    }
+
+    fn picked(
+        coins: &[WalletCoin],
+        rows: &[(Txid, Vec<OutPoint>)],
+    ) -> Result<Vec<u8>, EngineError> {
+        let picked = funding_repair_coins(coins.iter().collect(), rows)?;
+        Ok(picked.iter().map(|c| c.utxo.outpoint.txid[0]).collect())
+    }
+
+    /// A, B unmixed; D, E counted denominations.
+    fn wallet() -> Vec<WalletCoin> {
+        vec![coin(1, false), coin(2, false), coin(4, true), coin(5, true)]
+    }
+
+    #[test]
+    fn a_lock_of_unmixed_coins_takes_every_unmixed_coin_and_no_denomination() {
+        assert_eq!(picked(&wallet(), &[row(1, &[1])]).unwrap(), [1, 2]);
+    }
+
+    #[test]
+    fn a_lock_that_spent_an_unmixed_coin_and_a_denomination_conflicts_through_the_unmixed_one() {
+        assert_eq!(picked(&wallet(), &[row(1, &[1, 4])]).unwrap(), [1, 2]);
+    }
+
+    #[test]
+    fn a_lock_of_denominations_alone_takes_those_denominations_alone() {
+        assert_eq!(picked(&wallet(), &[row(1, &[4])]).unwrap(), [4]);
+    }
+
+    /// One denomination is enough to conflict with a lock and pay the fee:
+    /// the other is not spent with it, which would link the two.
+    #[test]
+    fn a_lock_of_two_denominations_takes_one_of_them() {
+        assert_eq!(picked(&wallet(), &[row(1, &[4, 5])]).unwrap(), [4]);
+    }
+
+    /// A lock already conflicted through a denomination another lock's
+    /// repair spends adds none of its own.
+    #[test]
+    fn locks_sharing_a_denomination_take_it_alone() {
+        assert_eq!(
+            picked(&wallet(), &[row(1, &[4]), row(2, &[5, 4])]).unwrap(),
+            [4]
+        );
+    }
+
+    /// F-D: an older build's locks of both kinds are repaired through the
+    /// live inputs of the step's locks, in either row order.
+    #[test]
+    fn locks_of_both_kinds_take_their_inputs() {
+        for rows in [
+            [row(1, &[1, 4]), row(2, &[4])],
+            [row(2, &[4]), row(1, &[1, 4])],
+            [row(1, &[1]), row(2, &[4])],
+            [row(2, &[4]), row(1, &[1])],
+        ] {
+            assert_eq!(picked(&wallet(), &rows).unwrap(), [1, 4], "{rows:?}");
+        }
+    }
+
+    /// F-D: the fallback takes no spent and no user-locked input.
+    #[test]
+    fn locks_of_both_kinds_take_no_spent_or_user_locked_input() {
+        let mut coins = wallet();
+        coins[0].user_locked = true;
+        let rows = [row(1, &[1, 2, 9]), row(2, &[4])];
+        assert_eq!(picked(&coins, &rows).unwrap(), [2, 4]);
+    }
+
+    #[test]
+    fn a_lock_with_no_input_left_is_refused() {
+        let refused = picked(&wallet(), &[row(1, &[9])]);
+        assert!(
+            matches!(
+                refused,
+                Err(EngineError::StuckFunding(
+                    StuckFundingRefusal::LockInputsSpent(_)
+                ))
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn only_denominations_left_says_so() {
+        let refused = picked(&[coin(4, true)], &[]);
+        assert!(
+            matches!(&refused, Err(EngineError::InvalidArgument(m)) if m.contains("only mixed coins")),
+            "{refused:?}"
+        );
     }
 }

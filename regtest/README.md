@@ -165,6 +165,131 @@ datadir (through `docker compose exec` for the tmpfs datadir of the Docker backe
 The harness has no dependency beyond pytest: `dwd_regtest/rpc.py` is a small stdlib JSON-RPC client
 that decodes amounts as `Decimal` and sends them as strings.
 
+## DashPay suites (T2, T3)
+
+`harness/tests/test_dp*.py` drive DashPay through `dwcli` only (ROADMAP E0-09) on a network with
+Platform: testnet (DASHPAY §6 T3) or a dashmate devnet (T2). `dwd_regtest/dashpay.py` holds the
+harness: one fresh wallet on its own fresh data root per member (its own device), JSON commands,
+`dwcli dashpay session --spv` for everything that needs SPV running, and a funder wallet restored
+from a phrase file outside the repository.
+
+**Secrets.** Phrases and passphrases never go on a command line or into a file the harness
+writes: `dwcli import` reads the phrase from a pipe; of `dwcli create`'s stdout only the
+validated public fields are kept (one `wallet_id`, one well-formed `mnemonic` line, whose phrase
+is registered before stderr is masked), and when its output is malformed or only partly matches,
+both streams are withheld; a session's answers are decoded and then masked before the harness
+sees them, and its stderr is masked across lines (a phrase split over several lines is masked
+before any of it is written); every other dwcli output is masked before it is written or raised.
+Secret files are read by a bounded first line, checked on the descriptor they are read from; one
+that is not UTF-8 is an error that quotes none of it. Their `repr` is a mask, so a traceback
+with locals (`-l --tb=long`) shows none. The harness sets its core-dump limit to zero (dwcli
+inherits it), so a crash dumps no secret. After pytest has written its junit file and summary, a
+scan reads the logs directory, the junit file and the files `DW_DP_SCAN` names for any secret of
+the run (the whole value, or four phrase words in a row, in any case, whatever non-letters or
+JSON escapes separate them, also after decoding JSON escapes; the masking hides the same); a hit,
+or a file it cannot read (a symlink or anything but a regular file counts as unreadable), fails
+the run, and only a clean scan writes `secret-scan.ok` into the logs directory. The paths it
+prints are masked too. With `DW_DP_NET` set the scan runs whichever tests ran, even when none of
+them used the harness, and even when the harness could not be set up (it then scans the junit
+file and `DW_DP_SCAN`'s files for the secrets it had read, and the run fails).
+`tests/test_dp_harness.py` checks all of this, and the configuration rules below, without a
+network.
+
+| Suite | ROADMAP | What |
+|---|---|---|
+| `test_dp1_identity.py` | DP1-07 | availability, offline name rules, a registration from the Core balance to `done`, its funding transaction's debit and the wallet's balance change equal, above the lock and within the grant; the identity, its name and keys, the name taken and resolved, the main name after a sync pass and a restart, a restore that finds the identity |
+| `test_dp2_contacts.py` | DP2-06 | the request and accept round trip between two members (A's channel turning ready while its session stays open), the contact in a new process, ignore and unignore (hidden as `ignored` through a pass and a restart; back as a request on the next sweep), hide and show, a restore whose contact (ready) is listed while SPV can reach no peer, before any block is scanned, then the first scan attributing a payment to it; the one-way contact is skipped until a pin bump (E0-14) brings platform #4740: the pinned platform-wallet registers a receiving account when a request is sent, but discovery builds one again only for established contacts, so a restore loses a sent-only request's |
+| `test_dp3_payments.py` | DP3-05 | contact payments both ways, a payment with no peer (reported as `send.no_peers`, definitely not sent: no lock; the next payment is made only after exactly that), an unknown outcome through a relay that holds the transaction (the contact locked to its txid, the held bytes hashing to it, a second payment refused, `resolve-lock` settling it `Sent` once the relay passed them on), 25 cancelled confirms past the 20-address gap, each naming the same address, then a payment the recipient sees, whose output in the recipient's `dwcli history` is that address (also when it settled through its lock) |
+
+| Variable | Meaning |
+|---|---|
+| `DW_DP_NET` | `testnet` or `devnet` (a dashmate local network; the harness passes `--network regtest`); the suites are skipped when unset, and any other value is an error |
+| `DW_DP_NET_ARGS` | extra network options, only `--dapi`, `--ca-cert`, `--quorum-url` and `--peer` (devnet: `--dapi … --ca-cert … --quorum-url … --peer …`); `--network` and anything naming mainnet are refused |
+| `DW_DP_STATE` | absolute directory outside the checkout, owned by you, mode 0700 (created so; refused when open to group or others): the funder's data root, the vault passphrase `pass` (0600, refused otherwise), `runs/` and `logs/` |
+| `DW_DP_FUNDER`, `DW_DP_FUNDER_BIRTH` | the funder's phrase file (owner-only, 0600 or 0400; refused otherwise) and birth height; on agentbox the phrase is the secret store's `dashwallet-desktop/dashpay-suites-funder`. A funder wallet already in `DW_DP_STATE` must be this phrase's (its wallet id is compared with the phrase's, imported into a scratch root of the run); another phrase is refused: use a new `DW_DP_STATE` |
+| `DW_DP_LOGS` | absolute directory for the dwcli logs, 0700 (default `DW_DP_STATE/logs/<run>`) |
+| `DW_DP_SCAN` | colon-separated extra files for the end-of-run secret scan |
+| `DW_DP_STRICT` | `1`: the unknown-outcome case fails instead of skipping when the relay is not configured |
+| `DWCLI` | the dwcli binary |
+| `DW_DP_NOTIFY` | nightly only: the absolute path of the site's notifier, an executable that delivers its one argument (a failure message, or `<unit>: result=success` after a run that passed) |
+| `DW_DP_ISSUE_REPO` | nightly only, for the issue notifier `scripts/dashpay-nightly-issue.sh`: the repository (`owner/name`) its issue lives in. That notifier also needs `gh`, signed in with issue access to that repository, and `jq` |
+| `DW_DP_HOLD_UPSTREAM` | `ip:port` of a testnet peer serving BIP157 filters, for the unknown-outcome relay (DP3); that case is skipped when unset (fails with `DW_DP_STRICT=1`) |
+
+The harness assumes `DW_DP_STATE` is private to it: mode 0700, owned by the user that runs the
+suites, on one filesystem, and with no other process of that user working in it while a run
+does. It refuses a state root that is a symlink, open to group or others, owned by someone
+else, or a git checkout or inside one; it does not defend against a process of the same user changing the tree under a run.
+
+Each run's member data roots live in `DW_DP_STATE/runs/<run>`, which holds a `.dw-dp-run` marker
+naming the run. A run deletes the marked run directories older than three days; it refuses a
+symlinked `runs`, never follows a symlink, and leaves any directory without its marker alone.
+
+```sh
+(cd ../../rust && cargo build -p dwcli)
+DW_DP_NET=testnet DW_DP_STATE=/work/scratch/dw-suites/t3 \
+  DW_DP_FUNDER=~/.config/dashwallet-desktop/dashpay-suites-funder.mnemonic DW_DP_FUNDER_BIRTH=1594390 \
+  DWCLI=$DW_TARGET/debug/dwcli .venv/bin/python -m pytest -v tests/test_dp*.py
+```
+
+The funder keeps a dozen mined coins of 0.5 tDASH and splits its balance again when fewer than
+four are left: a restarted dwcli no longer knows its own change's InstantSend lock, so change is
+spendable only once mined. It asks again only when `dwcli send`'s last line reports
+`outcome=not_sent` for want of a mined coin or a peer; a send whose outcome is unknown keeps its
+txid and is waited for, never paid again; each attempt syncs to the current tip first. Its
+result is the one complete terminal record on the last line (`broadcast <txid>` or
+`failed …`), whose txid must be the prepared one; anything else stops the run without sending
+again. The split waits for that transaction's own outputs to be mined. A payment
+to a member counts once the member's wallet holds that txid with one confirmation (`dwcli sync --txid … --confirmations 1`) and credits it with the amount. A contact payment's failure is read from dwcli's JSON:
+an error whose code is `send.<kind>` (one per `SendFailure` variant) and whose `params.kind`
+names the same kind; `pay-contact` asks again only for `no_peers` with `params.outcome` `not_sent`
+(or while the wallet rescans), and pays again after an unknown outcome only once
+`contact resolve-lock` answers `not_sent`, two payments at most; every unknown outcome is resolved
+through its lock before anything fails. Top it up with the `dash-faucet` skill when its balance
+runs low. A run costs about 0.1 tDASH per registered member.
+
+**Nightly (T3).** `scripts/dashpay-nightly.sh` builds dwcli at `origin/main` in its own checkout
+under `DW_DP_STATE` (with `umask 077`, under a `flock` on `DW_DP_STATE/nightly.lock`, with
+`CARGO_TARGET_DIR` unset and the binary path taken from that build) and runs every
+`tests/test_dp*.py` on testnet with `DW_DP_STRICT=1`. It needs `DW_DP_HOLD_UPSTREAM` and
+`DW_DP_NOTIFY`, fails when no suite matches, refuses any `DW_DP_NET` but `testnet`, and dumps no
+core. Before it writes anything in the state root it checks it at its canonical path: absolute,
+not a symlink, the user's own, 0700, no git checkout and inside none, and not where the script
+itself is installed; the lock, the run directory and the checkout must not be symlinks. The
+fetch, the build and the dependency install run code of the fetched revision, so they run before
+the funder's variables are exported to anything and through `scripts/dashpay-unfunded.sh`: in a
+bubblewrap mount namespace where the state root holds only the checkout and the funder's phrase
+file reads empty. The launcher checks that at every run and fails without it; there is no
+fallback. It refuses a funder file named by a relative path or with a second hard link,
+which the sandbox could not hide. The sandbox hides files. It does not confine a build that asks this user's service
+manager or a container daemon to run something outside it, and the suites then run the fetched
+revision with the funder: the funder must be a dedicated testnet wallet with a small capped
+balance, never one holding anything else.
+pytest's output goes to `pytest.log` only; the script's log and the journal get its summary lines
+once the secret scan has passed. Everything stays in `DW_DP_STATE/nightly/<date>`.
+
+On agentbox it runs from the systemd user timer in `ci/agentbox/`, with the launcher,
+`scripts/dashpay-unfunded.sh`, `scripts/dashpay-nightly-notify.sh`, `scripts/dashpay-nightly-issue.sh`
+and `ci/github/nightly-issue.sh` installed outside `DW_DP_STATE` and outside any checkout
+(`~/.local/libexec/dashwallet-desktop/`; install steps in the service file). It does not gate
+anything; it alerts. A failed run fails the unit, and its `OnFailure=` unit
+(`dw-dashpay-nightly-failed.service`) runs the site-provided notifier `DW_DP_NOTIFY` with the
+unit's result and exit status and the run's artifact directory, never test output. The install
+requires one test start of that unit, with its message seen to arrive, before the timer is
+enabled. After a run that passed, the unit runs the notifier once more with `result=success`.
+
+On agentbox the notifier is `scripts/dashpay-nightly-issue.sh`: it keeps one open issue labelled
+`nightly-failure` ("Nightly failure: DashPay suites on testnet") in `DW_DP_ISSUE_REPO` while the
+nightly is red, adds a comment for each further red night, and closes it after the next green
+one. The issue is public, so it names the artifact directory by the launcher's name for it only, and publishes nothing from a notice of any other form. The scheduled
+GitHub Actions nightly reports the same way ("Nightly failure: GitHub Actions", with links to
+the failed jobs), through the same `ci/github/nightly-issue.sh`.
+
+**T2 is blocked.** On the shared dashmate `local` devnet (3 evonodes) dash-spv never finishes
+its masternode list: the network forms no `llmq_test_dip0024` quorum, so QRInfo is never
+answered, `caught_up` never comes, and every Platform write waits on `sync` (DP6-01 D11, MG-07
+D17, BL-316). The suites run there unchanged (`DW_DP_NET=devnet`) once the devnet has rotating
+quorums.
+
 ## Dash Core functional test_framework from release binaries
 
 ### What is vendored
@@ -390,12 +515,14 @@ regtest/
 ├── Dockerfile               image: python:3.12-slim + dash_hash + Dash Core release + functional/
 ├── docker-compose.yml       services: dashd (single node), functional (profile; runs one test script)
 ├── scripts/
+│   ├── dashpay-nightly.sh   the DashPay suites on testnet, nightly (agentbox)
+│   ├── dashpay-unfunded.sh  the nightly's build sandbox: no funder file, no state root
 │   ├── fetch-dashcore.sh    download + SHA-256 verify + unpack (+ ad-hoc codesign on macOS)
 │   ├── node-entrypoint.sh   dashd regtest command line used by the image
 │   ├── regtest.sh           up/down/status/mine/fund/cli/wcli
 │   ├── selftest.sh          end-to-end check of regtest.sh
 │   └── run-functional.sh    run functional tests in the compose service, one summary line each
-├── harness/                 pytest: dwd_regtest/ (rpc.py, node.py), conftest.py,
+├── harness/                 pytest: dwd_regtest/ (rpc.py, node.py, dashpay.py), conftest.py,
 │                            tests/test_smoke.py (node), tests/test_harness.py (failure handling)
 └── functional/
     ├── run.sh               writes config.ini for release binaries, runs one test

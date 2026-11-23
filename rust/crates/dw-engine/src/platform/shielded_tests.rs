@@ -39,10 +39,13 @@ use platform_wallet::{
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+use super::credits::FundAmount;
 use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait};
 use super::flows::FlowKind;
 use super::lease::{CallPermit, FundingKey, Lease};
-use super::registration::RegistrationWait;
+use super::registration::{
+    RegistrationWait, SHIELDED_REST_SECS, ShieldedCheck, ShieldedFacts, shielded_readiness,
+};
 use super::registration_flow::{FundError, LockInfo, LockStatus, Spendable};
 use super::requests::tests::Fixture;
 use super::shield_drain::{self as drain, DrainCoin};
@@ -307,9 +310,16 @@ struct FakeShielded {
     drain_claimed: Mutex<Vec<bool>>,
     /// Per drain funding: the smallest lock it may build.
     pub(super) drain_floors: Mutex<Vec<u64>>,
+    /// BIP44 account 0 as a Core Max reads it (`core_coins`); a Core Max's
+    /// funding is a drain's over these, its build `drain_built`'s.
+    pub(super) core: Mutex<super::core_max::CoreCoins>,
     /// How the next funding (a shield's or a drain's) ends once its
     /// inputs are signed; it funds a proved lock when unset.
     pub(super) fund_end: Mutex<Option<FundEnd>>,
+    /// The rest clock as `app.sqlite` keeps it; `None` when unreadable.
+    rest: Mutex<Option<pool::RestClock>>,
+    /// The clock's writes return `Ok` and keep nothing.
+    drops_rest: AtomicBool,
 }
 
 /// A funding that fails after its signatures, as platform-wallet ends one
@@ -450,7 +460,10 @@ impl Default for FakeShielded {
             drained: Mutex::default(),
             drain_claimed: Mutex::default(),
             drain_floors: Mutex::default(),
+            core: Mutex::default(),
             fund_end: Mutex::default(),
+            rest: Mutex::new(Some(pool::RestClock::default())),
+            drops_rest: AtomicBool::new(false),
         }
     }
 }
@@ -804,6 +817,31 @@ impl ShieldedLib for FakeShielded {
         !self.unhooked.load(Ordering::SeqCst)
     }
 
+    async fn rest_clock(&self) -> Result<pool::RestClock, PlatformError> {
+        (self.rest.lock().unwrap().clone()).ok_or(PlatformError::Storage {
+            detail: "the rest clock cannot be read".into(),
+        })
+    }
+
+    async fn record_rest(
+        &self,
+        seen: Vec<[u8; 32]>,
+        (at, now): (u64, u64),
+        scanned: bool,
+    ) -> Result<(), PlatformError> {
+        let mut rest = self.rest.lock().unwrap();
+        let clock = rest.as_mut().ok_or(PlatformError::Unavailable)?;
+        if self.drops_rest.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let at = if clock.scanned { now } else { at };
+        for cmx in seen {
+            clock.seen.entry(cmx).or_insert(at);
+        }
+        clock.scanned |= scanned;
+        Ok(())
+    }
+
     async fn held_spends(&self) -> Result<HashSet<[u8; 32]>, PlatformError> {
         if self.held_unreadable.load(Ordering::SeqCst) {
             return Err(PlatformError::Internal {
@@ -1008,18 +1046,49 @@ impl ShieldedLib for FakeShielded {
         Ok(self.drain.lock().unwrap().clone())
     }
 
-    /// A new lock of the planned coins (or `drain_built`'s), shown to the
-    /// permit's drain signer as the library's builder shows it, then each
-    /// input signed through it over a sighash of the whole transaction, as
-    /// `SIGHASH_ALL` commits to every input and output and the payload,
-    /// recorded under its own txid as the step's lock, proved. A signer's
-    /// refusal fails the build, as the library's does: nothing is stored.
     async fn fund_drain(
         &self,
         coins: &[DrainCoin],
         total_duffs: u64,
         minimum_lock_duffs: u64,
         permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        self.drain_lock((coins, total_duffs), minimum_lock_duffs, permit, false)
+            .await
+    }
+
+    async fn core_coins(
+        &self,
+        _: &crate::coins::CoinFence,
+    ) -> Result<super::core_max::CoreCoins, PlatformError> {
+        Ok(self.core.lock().unwrap().clone())
+    }
+
+    async fn fund_core_max(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        self.drain_lock((coins, total_duffs), minimum_lock_duffs, permit, true)
+            .await
+    }
+}
+
+impl FakeShielded {
+    /// A new lock of the planned coins (or `drain_built`'s), shown to the
+    /// permit's drain signer as the library's builder shows it, then each
+    /// input signed through it over a sighash of the whole transaction, as
+    /// `SIGHASH_ALL` commits to every input and output and the payload,
+    /// recorded under its own txid as the step's lock, proved. A signer's
+    /// refusal fails the build, as the library's does: nothing is stored.
+    pub(super) async fn drain_lock(
+        &self,
+        (coins, total_duffs): (&[DrainCoin], u64),
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+        instant_locked: bool,
     ) -> Result<OutPoint, FundError> {
         self.drain_floors.lock().unwrap().push(minimum_lock_duffs);
         let (session, wallet) = self.funder();
@@ -1033,37 +1102,10 @@ impl ShieldedLib for FakeShielded {
             total_duffs,
             minimum_lock_duffs,
             fake_credit_script(),
+            instant_locked,
         )?;
         let built = (self.drain_built.lock().unwrap().clone()).unwrap_or_else(|| coins.to_vec());
-        let (tx, utxos) = fake_drain_build(&built);
-        if key_wallet::Signer::approve_inputs(&signer, &tx, &utxos)
-            .await
-            .is_err()
-            && let Some(refusal) = signer.drain_refusal()
-        {
-            return Err(drain::drain_refused(permit, refusal));
-        }
-        let unsigned = dashcore::consensus::serialize(&tx);
-        let mut sighashes = Vec::new();
-        for (i, coin) in built.iter().enumerate() {
-            let sighash: [u8; 32] = Sha256::new()
-                .chain_update(&unsigned)
-                .chain_update((i as u32).to_le_bytes())
-                .finalize()
-                .into();
-            if let Err(e) = key_wallet::Signer::sign_ecdsa(&signer, &coin.path, sighash).await {
-                return Err(match signer.drain_refusal() {
-                    Some(refusal) => drain::drain_refused(permit, refusal),
-                    None if signer.capped() => FundError::TooManyInputs {
-                        max: MAX_LOCK_INPUTS as u64,
-                    },
-                    None => FundError::NotSent(PlatformError::Internal {
-                        detail: format!("the drain's signer refused: {e}"),
-                    }),
-                });
-            }
-            sighashes.push(sighash);
-        }
+        let (tx, sighashes) = sign_fake_drain(&signer, permit, &built).await?;
         let n = self.funded.lock().unwrap().len() as u8 + 0x90;
         let outpoint = OutPoint::new(tx.txid(), 0);
         let inputs: Vec<OutPoint> = coins.iter().map(|c| c.outpoint).collect();
@@ -1089,8 +1131,50 @@ impl ShieldedLib for FakeShielded {
     }
 }
 
+/// The library's drain build of `built` ([`fake_drain_build`]) shown to
+/// the drain `signer` as the library's builder shows it, then each input
+/// signed through it over a sighash of the whole transaction, as
+/// `SIGHASH_ALL` commits to every input and output and the payload. A
+/// refusal fails the build, as the library's does.
+pub(super) async fn sign_fake_drain(
+    signer: &super::signers::CountingFundingSigner,
+    permit: &CallPermit,
+    built: &[DrainCoin],
+) -> Result<(dashcore::Transaction, Vec<[u8; 32]>), FundError> {
+    let (tx, utxos) = fake_drain_build(built);
+    if key_wallet::Signer::approve_inputs(signer, &tx, &utxos)
+        .await
+        .is_err()
+        && let Some(refusal) = signer.drain_refusal()
+    {
+        return Err(drain::drain_refused(permit, refusal));
+    }
+    let unsigned = dashcore::consensus::serialize(&tx);
+    let mut sighashes = Vec::new();
+    for (i, coin) in built.iter().enumerate() {
+        let sighash: [u8; 32] = Sha256::new()
+            .chain_update(&unsigned)
+            .chain_update((i as u32).to_le_bytes())
+            .finalize()
+            .into();
+        if let Err(e) = key_wallet::Signer::sign_ecdsa(signer, &coin.path, sighash).await {
+            return Err(match signer.drain_refusal() {
+                Some(refusal) => drain::drain_refused(permit, refusal),
+                None if signer.capped() => FundError::TooManyInputs {
+                    max: MAX_LOCK_INPUTS as u64,
+                },
+                None => FundError::NotSent(PlatformError::Internal {
+                    detail: format!("the drain's signer refused: {e}"),
+                }),
+            });
+        }
+        sighashes.push(sighash);
+    }
+    Ok((tx, sighashes))
+}
+
 /// The credit script of the fake's drain locks.
-fn fake_credit_script() -> dashcore::ScriptBuf {
+pub(super) fn fake_credit_script() -> dashcore::ScriptBuf {
     dashcore::ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([0x5c; 20]))
 }
 
@@ -1951,7 +2035,16 @@ fn a_refusal_while_shielded_syncs_is_not_synced_with_what_it_waits_for() {
                     "send_quote" => wait_of(pool::send_quote(lib, &payee_text(), credits).await),
                     "unshield_quote" => wait_of(pool::unshield_quote(lib, credits, None).await),
                     "shield_quote" => wait_of(pool::shield_quote(&s, lib, 100_000).await),
-                    "shield" => wait_of(pool::shield(&s, wallet, lib, 100_000, &grant).await),
+                    "shield" => wait_of(
+                        pool::shield(
+                            &s,
+                            wallet,
+                            lib,
+                            FundAmount::Duffs { duffs: 100_000 },
+                            &grant,
+                        )
+                        .await,
+                    ),
                     "resume" => wait_of(pool::resume(&s, wallet, lib, &txid, &grant).await),
                     "drain_quote" => wait_of(drain::quote(&s, wallet, lib).await),
                     "drain" => wait_of(drain::drain(&s, wallet, lib, &grant).await),
@@ -2352,7 +2445,14 @@ fn an_unknown_shield_pends_and_resume_applies_the_same_lock() {
     *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
     let (wallet, grant) = (fx.wallet, shield_grant(&fx, 2_000_000));
     let shielded = run(&fx, &lib, move |s, lib| async move {
-        pool::shield(&s, wallet, &*lib, 1_000_000, &grant).await
+        pool::shield(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &grant,
+        )
+        .await
     })
     .unwrap();
     let new = lib.funded.lock().unwrap()[0].outpoint;
@@ -2515,6 +2615,305 @@ fn unknown_shield_marks_survive_a_reopen() {
         HashSet::from([txid(1), txid(3)])
     );
     assert!(pool::read_unknown_shields(&db, b).unwrap().is_empty());
+}
+
+/// An incoming row (cmx `n`, `created_at_ms` `at_ms`) or an outgoing one.
+fn row(n: u32, direction: Direction, at_ms: u64) -> ShieldedActivityEntry {
+    let mut id = [0xEE; 32];
+    id[..4].copy_from_slice(&n.to_be_bytes());
+    ShieldedActivityEntry {
+        id,
+        direction,
+        created_at_ms: at_ms,
+        note_cmxs: vec![id],
+        ..entry(Kind::Received, 1, Status::Confirmed)
+    }
+}
+
+fn facts(fx: &Fixture, lib: &Arc<FakeShielded>) -> ShieldedFacts {
+    let wallet = fx.wallet;
+    run(fx, lib, move |s, lib| async move {
+        let mut facts = ShieldedFacts::default();
+        pool::registration_facts(&s, wallet, &*lib, &mut facts)
+            .await
+            .unwrap();
+        facts
+    })
+}
+
+fn rested(facts: &ShieldedFacts, now: u64) -> (bool, Option<u64>) {
+    let r = shielded_readiness(version(LATEST), facts, Some(NOTE), now);
+    let rested = r.checks.iter().find(|c| c.check == ShieldedCheck::Rested);
+    (rested.unwrap().ready, r.ready_at)
+}
+
+/// C-funding F16, F17: each source of an unsettled spend holds the
+/// registration alone (the journal's and the markers' also with the pool
+/// unbound), and the rest runs from the newest incoming row in seconds,
+/// past the first history page.
+#[test]
+fn registration_facts_read_each_unsettled_source_and_the_newest_incoming_row() {
+    let fx = Fixture::new(0);
+    let at = 1_700_000_000;
+    let mut activity: Vec<_> = (0..520)
+        .map(|n| row(n, Direction::Out, (at + 99) * 1000))
+        .collect();
+    activity.push(row(520, Direction::In, at * 1000 + 999));
+    let lib = Arc::new(FakeShielded {
+        notes: Vec::new(),
+        activity,
+        rest: Mutex::new(Some(pool::RestClock {
+            scanned: true,
+            ..Default::default()
+        })),
+        ..FakeShielded::default()
+    });
+    let settled = facts(&fx, &lib);
+    assert!(settled.synced && settled.rest_known && !settled.unsettled);
+    assert_eq!(settled.latest_incoming, Some(at));
+    lib.held.lock().unwrap().insert([1; 32]);
+    assert!(facts(&fx, &lib).unsettled, "held");
+    lib.held.lock().unwrap().clear();
+    lib.unresolved.lock().unwrap().push(unresolved(1));
+    assert!(facts(&fx, &lib).unsettled, "unresolved");
+    lib.unresolved.lock().unwrap().clear();
+    assert!(!facts(&fx, &lib).unsettled);
+    let unbound = Arc::new(FakeShielded {
+        bound: false,
+        ..FakeShielded::default()
+    });
+    assert!(!facts(&fx, &unbound).unsettled);
+    (fx.engine.block_on(fx.s.leases.record_unrecorded_spend(
+        fx.wallet,
+        [9; 32],
+        [7; 32],
+        vec![[8; 32]],
+    )))
+    .unwrap();
+    assert!(facts(&fx, &lib).unsettled, "marked");
+    assert!(facts(&fx, &unbound).unsettled, "marked, unbound");
+    let fx = Fixture::new(0);
+    fx.engine.block_on(fx.s.leases.close_journal());
+    assert!(!fx.s.leases.journal_ready());
+    assert!(facts(&fx, &lib).unsettled, "journal");
+    assert!(facts(&fx, &unbound).unsettled, "journal, unbound");
+}
+
+/// Ruling M2a: a note first seen in the wallet's first completed scan is
+/// restored and rested once synced; one first seen after it rests three
+/// hours from then, and a later pass does not move that; before the first
+/// scan completes the rest is unknown.
+#[test]
+fn a_note_seen_after_the_first_scan_rests_three_hours_and_the_first_scans_at_once() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        activity: vec![row(1, Direction::In, 0)],
+        ..FakeShielded::default()
+    });
+    let now = crate::events::unix_now();
+    let before = facts(&fx, &lib);
+    assert!(!before.rest_known);
+    assert_eq!(rested(&before, now), (false, None), "first scan pending");
+    let pass = |lib: &Arc<FakeShielded>| {
+        run(&fx, lib, |_, lib| async move {
+            pool::observe_rest(&*lib, true, crate::events::unix_now())
+                .await
+                .unwrap()
+        })
+    };
+    assert_eq!(pass(&lib), Some(None));
+    let restored = facts(&fx, &lib);
+    assert!(restored.rest_known);
+    assert_eq!(rested(&restored, now), (true, None), "restored, synced");
+    let unsynced = ShieldedFacts {
+        synced: false,
+        ..restored
+    };
+    assert!(!rested(&unsynced, now).0);
+
+    lib.rows.lock().unwrap().push(row(2, Direction::In, 0));
+    let first = pass(&lib).flatten().unwrap();
+    assert!(first >= now);
+    lib.rows.lock().unwrap().push(row(3, Direction::Out, 0));
+    let later = facts(&fx, &lib);
+    assert_eq!(later.latest_incoming, Some(first), "a later pass keeps it");
+    let end = first + SHIELDED_REST_SECS;
+    assert_eq!(rested(&later, end - 1), (false, Some(end)));
+    assert_eq!(rested(&later, end), (true, None));
+}
+
+/// Ruling M9: a note the clock's write dropped (a removed wallet's insert
+/// is ignored, `Ok`) is first seen now, never rested.
+#[test]
+fn a_note_the_write_dropped_rests_from_now() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        rest: Mutex::new(Some(pool::RestClock {
+            scanned: true,
+            ..Default::default()
+        })),
+        drops_rest: AtomicBool::new(true),
+        ..FakeShielded::default()
+    });
+    let now = crate::events::unix_now();
+    let facts = facts(&fx, &lib);
+    assert!(lib.rest.lock().unwrap().as_ref().unwrap().seen.is_empty());
+    let seen = facts.latest_incoming.unwrap();
+    assert!(seen >= now);
+    assert_eq!(
+        rested(&facts, now),
+        (false, Some(seen + SHIELDED_REST_SECS))
+    );
+}
+
+/// Ruling M2a: a rest clock that cannot be read is not rested, with no
+/// time to wait for, and the quote still reads.
+#[test]
+fn an_unreadable_rest_clock_is_not_rested() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        activity: vec![row(1, Direction::In, 0)],
+        ..FakeShielded::default()
+    });
+    *lib.rest.lock().unwrap() = None;
+    let facts = facts(&fx, &lib);
+    assert!(!facts.rest_known && facts.synced);
+    assert_eq!(rested(&facts, crate::events::unix_now()), (false, None));
+}
+
+/// The library's premise the clock answers (platform-wallet 72d0a3e7
+/// `activity.rs:455-473`): a scan-derived `Received` row carries no time,
+/// and its note's commitment.
+#[test]
+fn a_scanned_receive_has_no_time_but_its_commitment() {
+    let input = platform_wallet::wallet::shielded::activity::ScanDeriveInput {
+        notes: vec![ShieldedNote {
+            note_data: vec![0; 115],
+            ..note(0, NOTE)
+        }],
+        outgoing: Vec::new(),
+        own_addresses: vec![vec![1; 43]],
+    };
+    let derived = platform_wallet::wallet::shielded::derive_activity_from_scan_data(
+        &input,
+        &Default::default(),
+    );
+    let [row] = &derived.new_entries[..] else {
+        panic!("{derived:?}")
+    };
+    assert_eq!(
+        (row.kind.clone(), row.direction),
+        (Kind::Received, Direction::In)
+    );
+    assert_eq!(row.created_at_ms, 0);
+    assert_eq!(row.note_cmxs, vec![note(0, NOTE).cmx]);
+}
+
+/// Ruling M2b: an unspent own note rests whatever row the library files it
+/// under, as platform-wallet's scan derives them: a shield from another
+/// device of a wallet that has spent (a `SelfTransfer`, not incoming), and a
+/// payment in the same batch as an own operation (no row of its own). What
+/// the incoming rows name was seen in the first scan (restored).
+#[test]
+fn every_unspent_own_note_rests_whatever_row_it_has() {
+    use platform_wallet::wallet::shielded::{
+        ScanDeriveInput, ShieldedOutgoingNote, derive_activity_from_scan_data,
+    };
+    let own = vec![1u8; 43];
+    let at = |n, height| ShieldedNote {
+        block_height: height,
+        note_data: vec![0; 115],
+        ..note(n, NOTE)
+    };
+    let (spent, shield) = (
+        ShieldedNote {
+            is_spent: true,
+            ..at(1, 1)
+        },
+        at(2, 5),
+    );
+    let from_device = derive_activity_from_scan_data(
+        &ScanDeriveInput {
+            notes: vec![spent, shield.clone()],
+            outgoing: vec![ShieldedOutgoingNote {
+                cmx: shield.cmx,
+                recipient: own.clone(),
+                value: NOTE,
+                memo: vec![0; 36],
+                block_height: 5,
+            }],
+            own_addresses: vec![own.clone()],
+        },
+        &Default::default(),
+    )
+    .new_entries;
+    let filed = (from_device.iter()).find(|e| e.note_cmxs.contains(&shield.cmx));
+    assert_eq!(filed.unwrap().direction, Direction::SelfTransfer);
+    let (change, theirs) = (at(3, 7), at(4, 7));
+    let batched = derive_activity_from_scan_data(
+        &ScanDeriveInput {
+            notes: vec![change.clone(), theirs.clone()],
+            outgoing: Vec::new(),
+            own_addresses: vec![own],
+        },
+        &[(change.cmx, [0xAA; 32])].into_iter().collect(),
+    );
+    assert!(batched.new_entries.is_empty(), "{batched:?}");
+
+    let fx = Fixture::new(0);
+    for (rows, fresh) in [(from_device, shield), (batched.new_entries, theirs)] {
+        let restored = (rows.iter())
+            .filter(|e| e.direction == Direction::In)
+            .flat_map(|e| e.note_cmxs.iter().map(|cmx| (*cmx, 0)))
+            .collect();
+        let lib = Arc::new(FakeShielded {
+            notes: vec![fresh],
+            activity: rows,
+            rest: Mutex::new(Some(pool::RestClock {
+                scanned: true,
+                seen: restored,
+            })),
+            ..FakeShielded::default()
+        });
+        let now = crate::events::unix_now();
+        let facts = facts(&fx, &lib);
+        let seen = facts.latest_incoming.unwrap();
+        assert!(seen >= now);
+        assert_eq!(
+            rested(&facts, now),
+            (false, Some(seen + SHIELDED_REST_SECS))
+        );
+    }
+}
+
+/// The rest clock lives in the wallet's local scope of `app.sqlite`,
+/// across a reopen; a row that does not read fails the read.
+#[test]
+fn the_rest_clock_survives_a_reopen_never_moves_and_a_bad_row_fails_it() {
+    let dir = dw_testutil::private_tempdir();
+    let path = dir.path().join("app.sqlite");
+    let (a, b) = (crate::WalletId([1; 32]), crate::WalletId([2; 32]));
+    {
+        let db = dw_appdb::AppDb::open(&path).unwrap();
+        assert_eq!(pool::read_rest_clock(&db, a).unwrap(), Default::default());
+        pool::write_rest_clock(&db, a, &[[3; 32]], (0, 5), true).unwrap();
+        pool::write_rest_clock(&db, a, &[[4; 32]], (17, 17), false).unwrap();
+        // An observer that read the clock before the mark: it neither
+        // lowers a recorded time nor records a later note as restored.
+        pool::write_rest_clock(&db, a, &[[4; 32], [5; 32]], (0, 20), false).unwrap();
+    }
+    let db = dw_appdb::AppDb::open(&path).unwrap();
+    let clock = pool::read_rest_clock(&db, a).unwrap();
+    assert!(clock.scanned);
+    assert_eq!(
+        clock.seen,
+        [([3; 32], 0), ([4; 32], 17), ([5; 32], 20)].into()
+    );
+    assert_eq!(pool::read_rest_clock(&db, b).unwrap(), Default::default());
+    let scope = dw_appdb::local_scope(&a.to_string());
+    db.set_setting(&scope, "shielded.rest.zz", Some("1"))
+        .unwrap();
+    assert!(pool::read_rest_clock(&db, a).is_err());
 }
 
 /// A shield's lock spends at most 50 coins (its InstantSend proof stops
@@ -3376,7 +3775,14 @@ fn shield_on(fx: &Fixture, lib: &Arc<FakeShielded>) -> (OutPoint, ShieldState) {
     let (wallet, grant) = (fx.wallet, shield_grant(fx, 2_000_000));
     let funded = lib.funded.lock().unwrap().len();
     let shielded = run(fx, lib, move |s, lib| async move {
-        pool::shield(&s, wallet, &*lib, 1_000_000, &grant).await
+        pool::shield(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &grant,
+        )
+        .await
     })
     .unwrap();
     let outpoint = lib.funded.lock().unwrap()[funded].outpoint;
@@ -3633,7 +4039,14 @@ fn check_again_keeps_the_outpoint_whatever_proof_the_library_derives() {
 fn shield_with(fx: &Fixture, lib: &Arc<FakeShielded>) -> Result<ShieldState, ShieldedError> {
     let (wallet, grant) = (fx.wallet, shield_grant(fx, 2_000_000));
     run(fx, lib, move |s, lib| async move {
-        pool::shield(&s, wallet, &*lib, 1_000_000, &grant).await
+        pool::shield(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &grant,
+        )
+        .await
     })
     .map(|o| o.state)
 }
@@ -3947,3 +4360,9 @@ mod drain_tests;
 
 #[path = "shield_drain_lib_tests.rs"]
 mod drain_lib_tests;
+
+#[path = "core_max_tests.rs"]
+mod core_max_tests;
+
+#[path = "core_max_lib_tests.rs"]
+mod core_max_lib_tests;

@@ -16,6 +16,9 @@ import type { VoteCast } from "../api/generated/VoteCast";
 import type { VoteOutcomeName } from "../api/generated/VoteOutcomeName";
 import type { VoteTally } from "../api/generated/VoteTally";
 import type { VotingMasternode } from "../api/generated/VotingMasternode";
+import { formatLocale, messageTable, t } from "../i18n";
+import { numberFormat } from "../i18n/core";
+import { masternodes } from "../i18n/catalog/masternodes";
 
 /** Core's `GOVERNANCE_UPDATE_MIN`: one vote change per masternode per hour (D11). */
 const VOTE_CHANGE_SECS = 3600;
@@ -27,70 +30,82 @@ export const SUPERBLOCK_CHOICES = 12;
 /** Core's proposal name rule as MG-00 words it: 1–40 of `a-z 0-9 - _`. */
 const NAME_PATTERN = /^[a-z0-9_-]{1,40}$/;
 
-export const GovText = {
-  title: "Masternodes",
-  create: "Create proposal",
-  more: "More",
-  showEnded: "Show ended proposals",
-  hideEnded: "Hide ended proposals",
-  numbers: "Governance numbers…",
-  search: "Search proposals",
-  sortBy: "Sort by",
-  disabled: "Governance data is off for this network.",
-  disabledHelp: "Turn it on to load proposals and votes from the network.",
-  turnOn: "Turn on",
-  turnOnFailed: "Couldn't turn on governance data.",
-  superblocksFailed: "Couldn't read the next superblocks.",
-  failed: "Couldn't load proposals: no peer is serving governance data.",
-  tryAgain: "Try again",
-  syncNote: "Counts appear when the sync is complete, never partly.",
-  browsingOnly: "Browsing only.",
-  browsingOnlyText: "This wallet holds no masternode voting keys, so it can read proposals but not vote. You can still create a proposal.",
-  watchOnly: "Watch-only wallet.",
-  watchOnlyText: "It shows proposals and the votes peers sent. Voting and creating a proposal need the wallet that holds the keys.",
-  voteWatchOnly: "Voting needs the wallet that holds the voting keys",
-  createWatchOnly: "Creating a proposal needs a wallet that can sign transactions",
-  noVotingKey: "No masternode in this wallet can vote on this proposal",
-  emptyMine: "You haven't created a proposal.",
-  emptyNeedsVote: "You have voted on every open proposal.",
-  mineNote: "Proposals you create are kept with this wallet, so you can finish them after a restart; they travel in wallet backups.",
-  linkNote: "Copy the link to open it in your browser.",
-  privacy: "Voting with several masternodes together shows that one person controls them. Choose fewer to keep them unlinked.",
-  voteNote: "A new vote replaces that masternode's earlier one. The network accepts one change per masternode per hour.",
-  voteCounts: "The counts update as peers relay the votes.",
-  feeWarning: "Creating a proposal pays 1 DASH to the network. This fee is non-refundable regardless of outcome.",
-  feeAfter: "After it confirms, the wallet submits the proposal for you. You can close this window; Mine shows the progress.",
-  firstPaymentHelp: "Payments happen at superblocks, about every 29 days.",
-  nameHelp: "Lower case letters, digits, - and _",
-  linkHelp: "A page describing the proposal, such as a Dash Central or forum post",
-  submitting: "Sending…",
-} as const;
+export const GovText = messageTable("masternodes.governance", [
+  "title",
+  "create",
+  "more",
+  "showEnded",
+  "hideEnded",
+  "numbers",
+  "search",
+  "sortBy",
+  "disabled",
+  "disabledHelp",
+  "turnOn",
+  "turnOnFailed",
+  "superblocksFailed",
+  "failed",
+  "tryAgain",
+  "syncNote",
+  "browsingOnly",
+  "browsingOnlyText",
+  "watchOnly",
+  "watchOnlyText",
+  "voteWatchOnly",
+  "createWatchOnly",
+  "noVotingKey",
+  "emptyMine",
+  "emptyNeedsVote",
+  "mineNote",
+  "linkNote",
+  "privacy",
+  "voteNote",
+  "voteCounts",
+  "feeAfter",
+  "firstPaymentHelp",
+  "nameHelp",
+  "linkHelp",
+  "submitting",
+]);
 
 // ---------------------------------------------------------------- times
 
+const SHORT_DATE: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+const LONG_DATE: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
+const HOUR: Intl.DateTimeFormatOptions = { hour: "numeric" };
+const HOUR_MINUTE: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" };
+const dateFormats = new Map<Intl.DateTimeFormatOptions, Map<string | undefined, Intl.DateTimeFormat>>();
+
+/** `secs` formatted with `options` for `locale`, with one formatter per pair: a governance render
+ * formats many dates, and building a formatter is slow in WebKit. */
+function formatDate(secs: number, locale: string | undefined, options: Intl.DateTimeFormatOptions): string {
+  let byLocale = dateFormats.get(options);
+  if (!byLocale) dateFormats.set(options, (byLocale = new Map()));
+  let format = byLocale.get(locale);
+  if (!format) byLocale.set(locale, (format = new Intl.DateTimeFormat(locale, options)));
+  return format.format(secs * 1000);
+}
+
 /** "Nov 4". */
 export function shortDate(secs: number, locale?: string): string {
-  return new Date(secs * 1000).toLocaleDateString(locale, { month: "short", day: "numeric" });
+  return formatDate(secs, locale, SHORT_DATE);
 }
 
 /** "Feb 1, 2027". */
 function longDate(secs: number, locale?: string): string {
-  return new Date(secs * 1000).toLocaleDateString(locale, { month: "short", day: "numeric", year: "numeric" });
+  return formatDate(secs, locale, LONG_DATE);
 }
 
 /** "3 PM" or "3:30 PM". */
 function hourOf(secs: number, locale?: string): string {
-  const d = new Date(secs * 1000);
-  return d.toLocaleTimeString(locale, d.getMinutes() === 0 ? { hour: "numeric" } : { hour: "numeric", minute: "2-digit" });
+  return formatDate(secs, locale, new Date(secs * 1000).getMinutes() === 0 ? HOUR : HOUR_MINUTE);
 }
 
 /** "Oct 31 at 2:02 PM". */
-function dateTime(secs: number, locale?: string): string {
-  const d = new Date(secs * 1000);
-  return `${shortDate(secs, locale)} at ${d.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" })}`;
+export function dateTime(secs: number, locale?: string): string {
+  return t("masternodes.governance.dateTime", { date: shortDate(secs, locale), time: formatDate(secs, locale, HOUR_MINUTE) });
 }
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** Whole days, hours and minutes of a span, at least zero. */
 function splitSpan(secs: number) {
@@ -100,26 +115,30 @@ function splitSpan(secs: number) {
 
 /** A span the long way, "1 day 6 hours", "40 minutes", at most two parts. */
 export function spanLong(secs: number): string {
+  return span("long", secs);
+}
+
+/** A span in `style`'s units, at most two parts, at least one minute. */
+function span(style: "long" | "short", secs: number): string {
   const { days, hours, minutes } = splitSpan(secs);
-  if (days > 0) return hours > 0 ? `${plural(days, "day")} ${plural(hours, "hour")}` : plural(days, "day");
-  if (hours > 0) return minutes > 0 ? `${plural(hours, "hour")} ${plural(minutes, "minute")}` : plural(hours, "hour");
-  return plural(Math.max(1, minutes), "minute");
+  const part = (unit: "days" | "hours" | "minutes", count: number) => t(`masternodes.governance.${style}.${unit}`, { count });
+  const pair = (larger: string, smaller: string) => t(`masternodes.governance.${style}.pair`, { larger, smaller });
+  if (days > 0) return hours > 0 ? pair(part("days", days), part("hours", hours)) : part("days", days);
+  if (hours > 0) return minutes > 0 ? pair(part("hours", hours), part("minutes", minutes)) : part("hours", hours);
+  return part("minutes", Math.max(1, minutes));
 }
 
 /** The status bar's short span, "1 d 6 h", "40 min". */
 export function spanShort(secs: number): string {
-  const { days, hours, minutes } = splitSpan(secs);
-  if (days > 0) return hours > 0 ? `${days} d ${hours} h` : `${days} d`;
-  if (hours > 0) return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
-  return `${Math.max(1, minutes)} min`;
+  return span("short", secs);
 }
 
 /** "40 min ago", "2 hours ago", "Oct 31". */
 export function ago(secs: number, now: number, locale?: string): string {
   const d = Math.max(0, now - secs);
-  if (d < 60) return "just now";
-  if (d < 3600) return `${Math.floor(d / 60)} min ago`;
-  if (d < 86_400) return `${plural(Math.floor(d / 3600), "hour")} ago`;
+  if (d < 60) return t("masternodes.governance.justNow");
+  if (d < 3600) return t("masternodes.governance.minutesAgo", { count: Math.floor(d / 60) });
+  if (d < 86_400) return t("masternodes.governance.hoursAgo", { count: Math.floor(d / 3600) });
   return shortDate(secs, locale);
 }
 
@@ -138,7 +157,8 @@ export interface ClockView {
 }
 
 const clamp = (n: number) => Math.min(100, Math.max(0, n));
-const fmt = (n: number) => n.toLocaleString("en-US");
+/** A count, grouped for the display language. */
+const fmt = (n: number) => numberFormat(formatLocale(undefined)).format(n);
 
 /** §4.25.3's clock card, from `info` (its clock plus the cycle). Times are the engine's ETAs,
  * always "about" (MG-02 D9). */
@@ -150,29 +170,29 @@ export function clockView(info: GovernanceInfo, now: number, locale?: string): C
   const spacing = (c.superblockEta - now) / Math.max(1, c.blocksToSuperblock);
   const lastAt = c.superblockEta - info.superblockCycle * spacing;
   const labels: [string, string, string] = [
-    c.lastSuperblock > 0 ? `${shortDate(lastAt, locale)} · last payout` : "cycle start",
-    `estimated cutoff, ${shortDate(c.votingCutoffEstimate, locale)}`,
+    c.lastSuperblock > 0 ? t("masternodes.governance.clock.lastPayout", { date: shortDate(lastAt, locale) }) : t("masternodes.governance.clock.cycleStart"),
+    t("masternodes.governance.clock.cutoff", { date: shortDate(c.votingCutoffEstimate, locale) }),
     payout,
   ];
-  const block = `block ${fmt(c.nextSuperblock)}`;
-  const statusTooltip = `Votes cast before about block ${fmt(c.votingCutoffHeight)} (the estimated cutoff) count for the ${payout} payout at block ${fmt(c.nextSuperblock)}. Later votes still count, but may only change later payouts.`;
+  const block = t("masternodes.governance.clock.block", { height: c.nextSuperblock });
+  const statusTooltip = t("masternodes.governance.clock.tooltip", { cutoff: c.votingCutoffHeight, payout, next: c.nextSuperblock });
   const base = { done: at(c.tipHeight), cutoff: at(c.votingCutoffHeight), labels, statusTooltip };
   if (c.blocksToSuperblock === 0) {
-    return { ...base, title: `Payout due now (${block})`, sub: `The ${payout} payout is being made now.`, statusBar: null };
+    return { ...base, title: t("masternodes.governance.clock.dueTitle", { block }), sub: t("masternodes.governance.clock.dueSub", { payout }), statusBar: null };
   }
   if (c.votingOpen) {
     const left = Math.max(0, c.votingCutoffEstimate - now);
     return {
       ...base,
-      title: `About ${spanLong(left)} left to vote for the ${payout} payout`,
-      sub: `Next payout to proposals: ${payout}, around ${hourOf(c.superblockEta, locale)} · ${block}. Later votes may only count for later payouts.`,
-      statusBar: `${payout} votes: about ${spanShort(left)} left`,
+      title: t("masternodes.governance.clock.openTitle", { left: spanLong(left), payout }),
+      sub: t("masternodes.governance.clock.openSub", { payout, hour: hourOf(c.superblockEta, locale), block }),
+      statusBar: t("masternodes.governance.clock.statusBar", { payout, left: spanShort(left) }),
     };
   }
   return {
     ...base,
-    title: `Votes now may be too late for the ${payout} payout`,
-    sub: `They still count for later ones. Payout in about ${spanLong(c.superblockEta - now)} · ${block}.`,
+    title: t("masternodes.governance.clock.lateTitle", { payout }),
+    sub: t("masternodes.governance.clock.lateSub", { left: spanLong(c.superblockEta - now), block }),
     statusBar: null,
   };
 }
@@ -188,7 +208,7 @@ export interface BudgetView {
 
 /** §4.25.3's budget card: exact budget, vote-derived figures only once synced (MG-00 D21, D45). */
 export function budgetView(info: GovernanceInfo, rows: ProposalRow[] | undefined, locale?: string): BudgetView {
-  const title = `Budget for ${shortDate(info.clock.superblockEta, locale)}`;
+  const title = t("masternodes.governance.budget.title", { date: shortDate(info.clock.superblockEta, locale) });
   const counts = info.proposals;
   if (!counts || info.allocatedEstimate === null || !rows) return { title, synced: null, budget: info.budget };
   const over = rows.filter((r) => r.status === "unfunded" && !isEnded(r));
@@ -227,11 +247,11 @@ export function listState(sync: GovernanceSyncState): ListState {
     case "synced":
       return { kind: "ready" };
     case "waiting":
-      return { kind: "syncing", line: "Looking for a peer that serves governance data." };
+      return { kind: "syncing", line: t("masternodes.governance.sync.waiting") };
     case "syncingObjects":
-      return { kind: "syncing", line: `${fmt(sync.objects)} proposals and triggers so far. ${GovText.syncNote}` };
+      return { kind: "syncing", line: `${t("masternodes.governance.sync.objects", { objects: sync.objects })} ${GovText.syncNote}` };
     case "syncingVotes":
-      return { kind: "syncing", line: `${fmt(sync.objects)} proposals and ${fmt(sync.votes)} votes so far. ${GovText.syncNote}` };
+      return { kind: "syncing", line: `${t("masternodes.governance.sync.votes", { objects: sync.objects, votes: sync.votes })} ${GovText.syncNote}` };
   }
 }
 
@@ -244,17 +264,31 @@ export interface ChipView {
   tooltip: string;
 }
 
-const STATUS_CHIPS: Record<ProposalStatusName, ChipView> = {
-  passing: { text: "Passing", tone: "success", tooltip: "From the votes peers sent: enough net yes votes and fits the budget." },
-  unfunded: { text: "Over budget", tone: "warning", tooltip: "From the votes peers sent: enough votes, but proposals with more votes use up the budget." },
-  voting: { text: "Needs votes", tone: "info", tooltip: "From the votes peers sent: not enough net yes votes yet." },
-  failing: { text: "Not funded", tone: "danger", tooltip: "From the votes peers sent: more no than yes votes." },
-  funded: { text: "Funded", tone: "success", tooltip: "Paid in the last superblock." },
-  confirming: { text: "Confirming", tone: "neutral", tooltip: "Submitted after the first confirmation; fully valid after six." },
-  pending: { text: "Fee paid", tone: "neutral", tooltip: "Its fee is paid; the wallet submits it after the first confirmation." },
-  lapsed: { text: "Ended", tone: "neutral", tooltip: "All payments made or the end date passed." },
+const TONE: Record<ProposalStatusName, Tone> = {
+  passing: "success",
+  unfunded: "warning",
+  voting: "info",
+  failing: "danger",
+  funded: "success",
+  confirming: "neutral",
+  pending: "neutral",
+  lapsed: "neutral",
 };
-const CLOSE_CALL: ChipView = { text: "Too close to call", tone: "neutral", tooltip: "The vote count is an estimate, and this one is within its margin." };
+
+type ChipName = keyof typeof masternodes.governance.chip;
+
+/** A chip whose text and tooltip are the catalog's `masternodes.governance.chip.<name>`. */
+const chip = (name: ChipName, tone: Tone): ChipView => ({
+  get text() {
+    return t(`masternodes.governance.chip.${name}.text`);
+  },
+  tone,
+  get tooltip() {
+    return t(`masternodes.governance.chip.${name}.tooltip`);
+  },
+});
+const STATUS_CHIPS = Object.fromEntries(Object.entries(TONE).map(([status, tone]) => [status, chip(status as ProposalStatusName, tone)])) as Record<ProposalStatusName, ChipView>;
+const CLOSE_CALL = chip("closeCall", "neutral");
 const RANGED: ReadonlySet<ProposalStatusName> = new Set(["passing", "unfunded", "voting", "failing"]);
 
 /** MG-00 D17 with D45's Too close to call (D10). */
@@ -269,16 +303,16 @@ export function netRange(t: VoteTally): [number, number] {
   return [t.yes.min - t.no.max, t.yes.max - t.no.min];
 }
 
-const signed = (n: number) => (n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(-n)}` : "0");
+const signed = (n: number) => (n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(-n)}` : fmt(0));
 
 /** "about +414 over", "about 692 short", "about 6 short; −18 to +6" (MG-00 D45). */
 export function marginText(row: Pick<ProposalRow, "tally" | "closeCall" | "status">, threshold: number): string | null {
   if (!RANGED.has(row.status)) return null;
   const m = row.tally.netYesEstimate - threshold;
-  const base = m >= 0 ? `about ${signed(m)} over` : `about ${fmt(-m)} short`;
+  const base = m >= 0 ? t("masternodes.governance.marginOver", { margin: signed(m) }) : t("masternodes.governance.marginShort", { margin: fmt(-m) });
   if (!row.closeCall) return base;
   const [lo, hi] = netRange(row.tally);
-  return `${base}; ${signed(lo - threshold)} to ${signed(hi - threshold)}`;
+  return t("masternodes.governance.marginRange", { margin: base, low: signed(lo - threshold), high: signed(hi - threshold) });
 }
 
 /** The vote bar's widths in percent of the voting weight, and the funding line's position. */
@@ -289,44 +323,50 @@ export function voteBar(t: VoteTally, threshold: number, weight: number) {
 
 /** "1,500 Ð × 3 payments" or "… once": the part after the amount. */
 export function paymentsSuffix(count: number): string {
-  return count === 1 ? "once" : `× ${count} payments`;
+  return count === 1 ? t("masternodes.governance.once") : t("masternodes.governance.times", { count });
 }
 
 /** The detail pane's line beside the chip (§4.25.3). */
 export function paneNote(row: ProposalRow, info: GovernanceInfo | undefined, locale?: string): string {
   const payout = info ? shortDate(info.clock.superblockEta, locale) : null;
-  if (row.closeCall && RANGED.has(row.status)) return "within the margin of the votes seen";
+  if (row.closeCall && RANGED.has(row.status)) return t("masternodes.governance.note.closeCall");
   switch (row.status) {
     case "passing":
-      return payout ? `paid ${payout} if it stays above the line` : "paid at the next superblock if it stays above the line";
+      return payout ? t("masternodes.governance.note.passing", { date: payout }) : t("masternodes.governance.note.passingNext");
     case "unfunded":
-      return "passes the vote, but proposals with more votes use up the budget";
+      return t("masternodes.governance.note.unfunded");
     case "voting":
-      return info ? `needs about ${fmt(Math.max(0, info.passingThreshold - row.tally.netYesEstimate))} more net yes votes` : "needs more net yes votes";
+      return info
+        ? t("masternodes.governance.note.voting", { votes: Math.max(0, info.passingThreshold - row.tally.netYesEstimate) })
+        : t("masternodes.governance.note.votingUnknown");
     case "failing":
-      return "more no than yes votes";
+      return t("masternodes.governance.note.failing");
     case "funded":
-      return "paid in the last superblock";
+      return t("masternodes.governance.note.funded");
     case "confirming":
     case "pending":
-      return "its fee is still confirming";
+      return t("masternodes.governance.note.confirming");
     case "lapsed":
-      return "all payments made or the end date passed";
+      return t("masternodes.governance.note.lapsed");
   }
 }
 
 /** "1,500 Ð × 3 payments, Nov 4 to Jan 3": the amount is the caller's, this is the rest. */
 export function askSpan(row: Pick<ProposalRow, "paymentsRequested" | "startEpoch" | "endEpoch">, locale?: string): string {
-  return `${paymentsSuffix(row.paymentsRequested)}, ${shortDate(row.startEpoch, locale)} to ${shortDate(row.endEpoch, locale)}`;
+  return t("masternodes.governance.askSpan", { payments: paymentsSuffix(row.paymentsRequested), from: shortDate(row.startEpoch, locale), to: shortDate(row.endEpoch, locale) });
 }
 
 /** The pane's weighted votes: the headline, the legend and the range line (MG-00 D45). */
-export function votesView(t: VoteTally, threshold: number) {
-  const [lo, hi] = netRange(t);
+export function votesView(tally: VoteTally, threshold: number) {
+  const [lo, hi] = netRange(tally);
   return {
-    head: `about ${fmt(t.netYesEstimate)} net yes · needs ${fmt(threshold)}`,
-    legend: { yes: `Yes about ${fmt(t.yes.estimate)}`, no: `No about ${fmt(t.no.estimate)}`, abstain: `Abstain about ${fmt(t.abstain.estimate)}` },
-    range: lo === hi ? "From the votes peers sent. Unseen votes can change it." : `From the votes peers sent: ${fmt(lo)} to ${fmt(hi)} net yes. Unseen votes can change it.`,
+    head: t("masternodes.governance.votes.head", { net: tally.netYesEstimate, threshold }),
+    legend: {
+      yes: t("masternodes.governance.votes.yes", { votes: tally.yes.estimate }),
+      no: t("masternodes.governance.votes.no", { votes: tally.no.estimate }),
+      abstain: t("masternodes.governance.votes.abstain", { votes: tally.abstain.estimate }),
+    },
+    range: lo === hi ? t("masternodes.governance.votes.exact") : t("masternodes.governance.votes.range", { low: lo, high: hi }),
   };
 }
 
@@ -346,12 +386,12 @@ export type NodeNames = ReadonlyMap<string, { label: string | null; service: str
 /** "Home node · 203.0.113.7:19999", else "Masternode 1a2b3c4d" (D4, F3). */
 export function nodeName(n: Pick<VotingMasternode, "proTxHash" | "kind">, names?: NodeNames): string {
   const known = names?.get(n.proTxHash);
-  const name = known?.label ?? `${n.kind === "evonode" ? "Evonode" : "Masternode"} ${shortHash(n.proTxHash)}`;
-  return known?.service ? `${name} · ${known.service}` : name;
+  const name =
+    known?.label ?? t(n.kind === "evonode" ? "masternodes.governance.evonodeNamed" : "masternodes.governance.masternodeNamed", { hash: shortHash(n.proTxHash) });
+  return known?.service ? t("masternodes.governance.withService", { name, service: known.service }) : name;
 }
 
-const OUTCOME: Record<VoteOutcomeName, string> = { yes: "Yes", no: "No", abstain: "Abstain" };
-export const outcomeText = (o: VoteOutcomeName) => OUTCOME[o];
+export const outcomeText = (o: VoteOutcomeName) => t(`masternodes.governance.outcome.${o}`);
 
 /** A masternode's own vote seen, or for a shared key the key's (mg-engine §2.4, D8). */
 function seenVote(n: VotingMasternode): { outcome: VoteOutcomeName; time: number | null; shared: boolean } | null {
@@ -366,9 +406,9 @@ export function youSummary(nodes: VotingMasternode[] | undefined): string | null
   const valid = (nodes ?? []).filter((n) => n.valid);
   if (valid.length === 0) return null;
   const seen = valid.map(seenVote).filter((v) => v !== null);
-  if (seen.length === 0) return "You: no vote seen";
-  if (valid.length === 1) return `You: ${outcomeText(seen[0].outcome)} (last seen)`;
-  return `You: ${seen.length} of ${valid.length} seen voting`;
+  if (seen.length === 0) return t("masternodes.governance.you.none");
+  if (valid.length === 1) return t("masternodes.governance.you.one", { outcome: outcomeText(seen[0].outcome) });
+  return t("masternodes.governance.you.some", { seen: seen.length, total: valid.length });
 }
 
 /** Open, with a valid masternode of this wallet that has no vote seen (D8). */
@@ -380,9 +420,10 @@ export function needsMyVote(row: Pick<ProposalRow, "status">, nodes: VotingMaste
 /** The detail pane's "Your masternodes" line for one masternode. */
 export function lastVoteLine(n: VotingMasternode, now: number, locale?: string): string {
   const v = seenVote(n);
-  if (!v) return "No vote seen";
-  if (v.shared) return `Last vote seen with this shared key: ${outcomeText(v.outcome)} (${n.keyHolders} masternodes use this key)`;
-  return v.time === null ? `${outcomeText(v.outcome)} · last vote seen` : `${outcomeText(v.outcome)} · last vote seen ${ago(v.time, now, locale)}`;
+  if (!v) return t("masternodes.governance.lastVote.none");
+  const outcome = outcomeText(v.outcome);
+  if (v.shared) return t("masternodes.governance.lastVote.shared", { outcome, count: n.keyHolders });
+  return v.time === null ? t("masternodes.governance.lastVote.undated", { outcome }) : t("masternodes.governance.lastVote.dated", { outcome, ago: ago(v.time, now, locale) });
 }
 
 // ---------------------------------------------------------------- the vote sheet
@@ -401,14 +442,18 @@ export interface NodeRowView {
 export function voteRows(nodes: VotingMasternode[], now: number, locale?: string, names?: NodeNames): NodeRowView[] {
   return nodes.map((n) => {
     const v = seenVote(n);
-    const base = { proTxHash: n.proTxHash, name: nodeName(n, names), weight: n.weight, lastSeen: v ? outcomeText(v.outcome) : "None" };
-    if (!n.valid) return { ...base, sub: "PoSe banned: a banned masternode can't vote", eligible: false, lastSeen: "—" };
+    const base = { proTxHash: n.proTxHash, name: nodeName(n, names), weight: n.weight, lastSeen: v ? outcomeText(v.outcome) : t("masternodes.governance.node.none") };
+    if (!n.valid) return { ...base, sub: t("masternodes.governance.node.banned"), eligible: false, lastSeen: "—" };
     if (v && !v.shared && v.time !== null && now - v.time < VOTE_CHANGE_SECS) {
-      const after = new Date((v.time + VOTE_CHANGE_SECS) * 1000).toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
-      return { ...base, sub: `Voted ${outcomeText(v.outcome)} ${ago(v.time, now, locale)} · can change after ${after}`, eligible: false };
+      const after = formatDate(v.time + VOTE_CHANGE_SECS, locale, HOUR_MINUTE);
+      return { ...base, sub: t("masternodes.governance.node.recent", { outcome: outcomeText(v.outcome), ago: ago(v.time, now, locale), time: after }), eligible: false };
     }
-    const shared = n.keyHolders > 1 ? ` · ${n.keyHolders} masternodes use this key` : "";
-    return { ...base, sub: `key in this wallet · voting key ${n.keyIndex + 1}${shared}`, eligible: true };
+    const index = String(n.keyIndex + 1);
+    const sub =
+      n.keyHolders > 1
+        ? t("masternodes.governance.node.eligibleShared", { index, count: n.keyHolders })
+        : t("masternodes.governance.node.eligible", { index });
+    return { ...base, sub, eligible: true };
   });
 }
 
@@ -422,38 +467,17 @@ export function presetOutcome(nodes: VotingMasternode[]): VoteOutcomeName | null
 /** "2 masternodes · weight 8 · no fee", for the checked eligible rows. */
 export function selectionNote(picked: Pick<NodeRowView, "weight">[]): string {
   const weight = picked.reduce((s, r) => s + r.weight, 0);
-  return `${plural(picked.length, "masternode")} · weight ${weight} · no fee`;
+  return t("masternodes.governance.selection", { count: picked.length, weight });
 }
 
 /** The engine's refusal of a PoSe-banned masternode's vote (`VoteRejection::Banned`, Core's wording). */
 export const BANNED_REJECTION = "masternode_not_found";
 
-const REJECTED: Record<string, string> = {
-  unknown_masternode: "This masternode isn't in the current masternode list.",
-  collateral_unresolved: "Its collateral isn't found yet, so it can't vote from this wallet yet.",
-  no_voting_key: "Its voting key is not in this wallet.",
-  cancelled: "The wallet locked before this vote was signed.",
-  signer_unavailable: "The wallet couldn't read its voting key.",
-  in_flight: "The same vote is already being sent.",
-  unknown_object: "The network doesn't know this proposal yet.",
-  not_a_proposal: "This isn't a proposal.",
-  expired: "This proposal has ended.",
-  duplicate: "This vote was already sent.",
-  malformed: "The vote couldn't be built.",
-  bad_signature: "The vote's signature didn't check out.",
-  unknown_voting_key: "Its voting key changed, so the key in this wallet no longer matches.",
-  wrong_voting_key: "Its voting key changed, so the key in this wallet no longer matches.",
-  [BANNED_REJECTION]: "A banned masternode can't vote.",
-  obsolete: "A newer vote from this masternode is already known.",
-  same_timestamp: "A vote with the same time is already known. Try again in a second.",
-  too_often: "The network accepts one change per masternode per hour.",
-  too_far_ahead: "This computer's clock is ahead. Check the date and time.",
-  key_limit: "This voting key has voted too often on this proposal.",
-};
+const REJECTED = messageTable("masternodes.governance.rejected", Object.keys(masternodes.governance.rejected));
 
 /** A per-masternode or `vote_rejected` reason as a sentence (D13). */
 export function rejectedText(reason: string): string {
-  return REJECTED[reason] ?? "The network refused the vote.";
+  return Object.hasOwn(REJECTED, reason) ? REJECTED[reason] : t("masternodes.governance.refusedVote");
 }
 
 export interface VoteResultView {
@@ -470,26 +494,22 @@ export function voteResult(casts: VoteCast[], nodes: VotingMasternode[], outcome
   const total = casts.reduce((s, c) => s + weightOf(c.proTxHash), 0);
   const sentWeight = sent.reduce((s, c) => s + weightOf(c.proTxHash), 0);
   return {
-    title: `${sent.length} of ${plural(casts.length, "vote")} sent`,
-    line: `${outcomeText(outcome)} · weight ${sentWeight} of ${total}`,
+    title: t("masternodes.governance.result.title", { sent: sent.length, count: casts.length }),
+    line: t("masternodes.governance.result.line", { outcome: outcomeText(outcome), sent: sentWeight, total }),
     rows: casts.map((c) => {
       const n = byHash.get(c.proTxHash);
-      const name = n ? nodeName(n, names) : `Masternode ${shortHash(c.proTxHash)}`;
+      const name = n ? nodeName(n, names) : t("masternodes.governance.masternodeNamed", { hash: shortHash(c.proTxHash) });
       if (c.rejected !== null) return { proTxHash: c.proTxHash, name, sub: rejectedText(c.rejected), sent: false };
-      const peers = c.peers === 0 ? "sent when the wallet reconnects" : `to ${plural(c.peers, "peer")}`;
-      return { proTxHash: c.proTxHash, name, sub: `weight ${weightOf(c.proTxHash)} · ${peers}`, sent: true };
+      const peers = c.peers === 0 ? t("masternodes.governance.result.reconnects") : t("masternodes.governance.result.peers", { count: c.peers });
+      return { proTxHash: c.proTxHash, name, sub: t("masternodes.governance.result.sent", { weight: weightOf(c.proTxHash), peers }), sent: true };
     }),
   };
 }
 
 // ---------------------------------------------------------------- errors
 
-const REFUSAL: Record<string, string> = {
-  public: "This proposal is public already.",
-  expired: "This proposal has ended.",
-  fee_failed: "Its fee failed, so it can't be submitted.",
-  in_flight: "The fee is being sent. Try again in a moment.",
-};
+const REFUSAL = messageTable("masternodes.governance.refusal", Object.keys(masternodes.governance.refusal));
+const refusalText = (reason: string) => (Object.hasOwn(REFUSAL, reason) ? REFUSAL[reason] : t("masternodes.governance.errors.submitRefused"));
 
 /** A governance call's error as a sentence (D13); `null` when it is not a governance code, so
  * the caller can try the send sentences (`screens/pay/model.ts` `failureText`). */
@@ -497,26 +517,36 @@ export function governanceErrorText(e: unknown): string | null {
   if (!isAppError(e)) return null;
   switch (e.code) {
     case "governance.sync_disabled":
-      return "Governance data is off for this network. Turn it on to continue.";
+      return t("masternodes.governance.errors.syncDisabled");
     case "governance.not_synced":
-      return "Proposals are still loading. Try again once they finish.";
+      return t("masternodes.governance.errors.notSynced");
     case "governance.proposal_not_found":
-      return "The network doesn't know this proposal yet.";
+      return t("masternodes.governance.errors.proposalNotFound");
     case "governance.vote_rejected":
       return rejectedText(e.data?.kind === "reason" ? e.data.reason : "");
     case "governance.no_peers":
-      return "Not connected to the network.";
+      return t("masternodes.governance.errors.noPeers");
     case "governance.list_unavailable":
-      return "The masternode list hasn't loaded yet. Try again in a moment.";
+      return t("masternodes.governance.errors.listUnavailable");
     case "governance.invalid_proposal":
-      return "Some details of the proposal aren't valid.";
+      return t("masternodes.governance.errors.invalidProposal");
     case "governance.submit_refused":
-      return REFUSAL[e.data?.kind === "reason" ? e.data.reason : ""] ?? "This proposal can't be submitted now.";
+      return refusalText(e.data?.kind === "reason" ? e.data.reason : "");
+    case "governance.proposal_in_progress":
+      return t("masternodes.governance.errors.inProgress");
     case "governance.not_implemented":
-      return "This isn't available yet.";
+      return t("masternodes.governance.errors.notImplemented");
     default:
       return null;
   }
+}
+
+/** `governance.proposal_in_progress` (a draft named as one of the wallet's proposals in progress): the
+ *  hash of the proposal it names, `null` when it names none (that create call is still out), and
+ *  `undefined` for any other error. */
+export function inProgressRefusal(e: unknown): string | null | undefined {
+  if (!isAppError(e) || e.code !== "governance.proposal_in_progress") return undefined;
+  return e.data?.kind === "proposalHash" ? e.data.hash : null;
 }
 
 // ---------------------------------------------------------------- the fee (D29, D33, D34)
@@ -575,15 +605,15 @@ function lastErrorText(p: MyProposal): string | null {
   if (!p.lastError) return null;
   const why = p.lastError.replace(/^send: /, "");
   return why.startsWith("broadcast outcome unknown")
-    ? "The fee may not have reached the network. Submit sends it again."
-    : `The fee may not have reached the network (${why}). Submit sends the same fee again.`;
+    ? t("masternodes.governance.feeMaybeUnsent")
+    : t("masternodes.governance.feeMaybeUnsentWhy", { why });
 }
 
 /** The toast once `create_proposal` returned: paid, or kept with its fee unsent (MG-06 D10). */
 export function createdToast(p: MyProposal): string {
   return p.state.kind === "feeUnsent" || p.state.kind === "feeFailed"
-    ? `${p.name}: created, but its fee didn't go out. Mine shows why.`
-    : `${p.name}: fee paid. Mine shows its progress.`;
+    ? t("masternodes.governance.createdUnsent", { name: p.name })
+    : t("masternodes.governance.createdPaid", { name: p.name });
 }
 
 /** One Mine row (MG-00 §4.25.3 Mine, MG-06 D24, D15–D16). */
@@ -596,8 +626,8 @@ export function mineRow(p: MyProposal, locale?: string): MineRowView {
       const error = lastErrorText(p);
       return {
         ...none,
-        chip: { text: "Fee not sent", tone: "warning", tooltip: "The fee may not have reached the network." },
-        sub: `Created ${created} · its fee hasn't been seen on the network`,
+        chip: chip("feeNotSent", "warning"),
+        sub: t("masternodes.governance.mine.unsent", { date: created }),
         submit: true,
         error,
         attention: error !== null,
@@ -606,12 +636,12 @@ export function mineRow(p: MyProposal, locale?: string): MineRowView {
     case "feePaid":
       return {
         ...none,
-        chip: { text: "Fee paid", tone: "neutral", tooltip: STATUS_CHIPS.pending.tooltip },
-        meta: `${Math.min(s.confirmations, 1)} of 1`,
+        chip: STATUS_CHIPS.pending,
+        meta: t("masternodes.governance.mine.of", { done: String(Math.min(s.confirmations, 1)), total: "1" }),
         sub:
           s.confirmations === 0
-            ? `Fee paid ${created} · waiting for its first confirmation, then the wallet submits it`
-            : `Fee paid ${created} · confirmed; the wallet is submitting it`,
+            ? t("masternodes.governance.mine.paidWaiting", { date: created })
+            : t("masternodes.governance.mine.paidConfirmed", { date: created }),
         submit: s.confirmations === 0,
         error: s.confirmations === 0 ? lastErrorText(p) : null,
       };
@@ -619,40 +649,40 @@ export function mineRow(p: MyProposal, locale?: string): MineRowView {
       if (s.reason === "noPeerAccepted") {
         return {
           ...none,
-          chip: { text: "Ready to submit", tone: "warning", tooltip: "Its fee is confirmed, but no peer has taken the proposal yet." },
-          sub: `Fee paid ${created}`,
+          chip: chip("readyNoPeer", "warning"),
+          sub: t("masternodes.governance.mine.paid", { date: created }),
           submit: true,
-          error: "No peer accepted the proposal. Try again in a few minutes.",
+          error: t("masternodes.governance.mine.noPeer"),
           attention: true,
         };
       }
       return {
         ...none,
-        chip: { text: "Ready to submit", tone: "warning", tooltip: "Its fee is confirmed; the wallet submits it once governance data is loaded." },
-        sub: s.reason === "syncDisabled" ? "Governance data is off. Turn it on to submit." : "Waiting for governance data to load, then the wallet submits it",
+        chip: chip("readyWaiting", "warning"),
+        sub: s.reason === "syncDisabled" ? t("masternodes.governance.mine.syncOff") : t("masternodes.governance.mine.waitingSync"),
         turnOn: s.reason === "syncDisabled",
       };
     case "confirming":
       return {
         ...none,
         chip: STATUS_CHIPS.confirming,
-        meta: `${Math.min(s.confirmations, FULL_CONFIRMATIONS)} of ${FULL_CONFIRMATIONS}`,
-        sub: "Submitted after the first confirmation · fully valid after 6",
+        meta: t("masternodes.governance.mine.of", { done: String(Math.min(s.confirmations, FULL_CONFIRMATIONS)), total: String(FULL_CONFIRMATIONS) }),
+        sub: t("masternodes.governance.mine.confirming", { count: String(FULL_CONFIRMATIONS) }),
       };
     case "public":
       return {
         ...none,
-        chip: s.status ? statusChip(s.status) : { text: "Submitted", tone: "neutral", tooltip: "Public; its votes show once proposals are loaded." },
-        sub: p.submittedAt !== null ? `Submitted ${dateTime(p.submittedAt, locale)}` : `Created ${created}`,
+        chip: s.status ? statusChip(s.status) : chip("submitted", "neutral"),
+        sub: p.submittedAt !== null ? t("masternodes.governance.mine.submittedAt", { date: dateTime(p.submittedAt, locale) }) : t("masternodes.governance.mine.created", { date: created }),
       };
     case "feeFailed":
       return {
         ...none,
-        chip: { text: "Fee failed", tone: "danger", tooltip: "The fee transaction was rejected or replaced." },
-        sub: "The fee transaction was rejected or replaced, so this proposal can't be submitted.",
+        chip: chip("feeFailed", "danger"),
+        sub: t("masternodes.governance.mine.feeFailed"),
       };
     case "expired":
-      return { ...none, chip: STATUS_CHIPS.lapsed, sub: `Created ${created}` };
+      return { ...none, chip: STATUS_CHIPS.lapsed, sub: t("masternodes.governance.mine.created", { date: created }) };
   }
 }
 
@@ -668,12 +698,12 @@ export const inProgress = (p: MyProposal) => p.state.kind !== "expired" && p.sta
 
 export type ListFilter = "all" | "needsVote" | "mine";
 export type SortOrder = "closest" | "mostAsked" | "newest" | "name";
-export const SORTS: { id: SortOrder; title: string }[] = [
-  { id: "closest", title: "Closest to passing" },
-  { id: "mostAsked", title: "Most asked" },
-  { id: "newest", title: "Newest" },
-  { id: "name", title: "Name" },
-];
+export const SORTS: { id: SortOrder; title: string }[] = (["closest", "mostAsked", "newest", "name"] as const).map((id) => ({
+  id,
+  get title() {
+    return t(`masternodes.governance.sort.${id}`);
+  },
+}));
 
 /** §4.25.3's sorts; "closest" keeps the engine's order (status groups, then net yes). */
 export function sortRows(rows: ProposalRow[], sort: SortOrder): ProposalRow[] {
@@ -700,19 +730,19 @@ export const FIELD_STEP: Record<ProposalFieldName, 1 | 2> = {
 export function fieldText(field: ProposalFieldName, chainName: string): string {
   switch (field) {
     case "name":
-      return "Use 1 to 40 lower case letters, digits, - and _.";
+      return t("masternodes.governance.field.name");
     case "url":
-      return "Enter the page's address, starting with https://.";
+      return t("masternodes.governance.field.url");
     case "payment_address":
-      return `Enter a Dash address on ${chainName}.`;
+      return t("masternodes.governance.field.paymentAddress", { chain: chainName });
     case "payment_amount":
-      return "Enter an amount the budget can pay at one superblock.";
+      return t("masternodes.governance.field.paymentAmount");
     case "payment_count":
-      return `Choose 1 to ${MAX_PAYMENTS} payments.`;
+      return t("masternodes.governance.field.paymentCount", { max: String(MAX_PAYMENTS) });
     case "first_payment":
-      return "Choose one of the next superblocks.";
+      return t("masternodes.governance.field.firstPayment");
     case "payload":
-      return "The name and link are too long together. Shorten them.";
+      return t("masternodes.governance.field.payload");
   }
 }
 
@@ -720,7 +750,7 @@ export function fieldText(field: ProposalFieldName, chainName: string): string {
 export function detailsProblems(name: string, url: string): Partial<Record<"name" | "url", string>> {
   const out: Partial<Record<"name" | "url", string>> = {};
   if (!NAME_PATTERN.test(name)) out.name = fieldText("name", "");
-  if (url.trim() === "") out.url = "Enter a link to a page describing the proposal.";
+  if (url.trim() === "") out.url = t("masternodes.governance.field.urlEmpty");
   return out;
 }
 
@@ -733,32 +763,32 @@ export function defaultFirstPayment(superblocks: SuperblockDate[], now: number, 
   const left = spanLong(Math.max(0, first.votingCutoffEstimate - now));
   return {
     height: second.height,
-    notice: `The estimated cutoff for the ${shortDate(first.estimatedTime, locale)} payout is in about ${left}, so the first payment is ${shortDate(second.estimatedTime, locale)}. New proposals rarely gather enough votes in a day.`,
+    notice: t("masternodes.governance.cutoffSoon", { first: shortDate(first.estimatedTime, locale), left, second: shortDate(second.estimatedTime, locale) }),
   };
 }
 
 /** "Dec 4, 2026 (block 2,391,664)". */
 export function superblockOption(sb: SuperblockDate, locale?: string): string {
-  return `${longDate(sb.estimatedTime, locale)} (block ${fmt(sb.height)})`;
+  return t("masternodes.governance.superblock", { date: longDate(sb.estimatedTime, locale), height: sb.height });
 }
 
 /** "Last payment Feb 1, 2027." from the chosen superblock and count. */
 export function lastPaymentText(superblocks: SuperblockDate[], first: number | null, count: number, locale?: string): string | null {
   const i = superblocks.findIndex((s) => s.height === first);
   if (i < 0) return null;
-  if (count === 1) return "One payment.";
+  if (count === 1) return t("masternodes.governance.onePayment");
   const last = superblocks[i + count - 1];
-  if (last) return `Last payment ${longDate(last.estimatedTime, locale)}.`;
+  if (last) return t("masternodes.governance.lastPayment", { date: longDate(last.estimatedTime, locale) });
   // Past the list: one cycle per payment from the last one known.
   const known = superblocks[superblocks.length - 1];
   const cycle = superblocks.length > 1 ? superblocks[1].estimatedTime - superblocks[0].estimatedTime : 0;
-  return `Last payment about ${longDate(known.estimatedTime + cycle * (i + count - superblocks.length), locale)}.`;
+  return t("masternodes.governance.lastPaymentAbout", { date: longDate(known.estimatedTime + cycle * (i + count - superblocks.length), locale) });
 }
 
 /** The budget notice of step 2, shown once proposals are synced (§4.25.3, MG-00 D45). */
 export function budgetNotice(info: GovernanceInfo | undefined, amount: (duffs: number) => string): string | null {
   if (!info || info.allocatedEstimate === null) return null;
-  return `Up to ${amount(info.budget)} is available at each superblock. From the votes peers have sent, passing proposals already ask for about ${amount(info.allocatedEstimate)}, so yours fits only if it passes with more votes than others that don't fit.`;
+  return t("masternodes.governance.budgetNotice", { budget: amount(info.budget), allocated: amount(info.allocatedEstimate) });
 }
 
 // ---------------------------------------------------------------- Governance numbers
@@ -767,31 +797,32 @@ export function budgetNotice(info: GovernanceInfo | undefined, amount: (duffs: n
 export function numbersRows(info: GovernanceInfo, sync: GovernanceSyncState | undefined, rows: ProposalRow[] | undefined, amount: (d: number) => string, locale?: string) {
   const c = info.clock;
   const regular = info.validMasternodes - info.validEvonodes;
+  const N = "masternodes.governance.numbersSheet";
   const cycle = [
-    { label: "Last superblock", value: c.lastSuperblock > 0 ? `Block ${fmt(c.lastSuperblock)}` : "None yet" },
+    { label: t(`${N}.lastSuperblock`), value: c.lastSuperblock > 0 ? t(`${N}.block`, { height: c.lastSuperblock }) : t(`${N}.noneYet`) },
     {
-      label: "Estimated cutoff",
-      value: `Block ${fmt(c.votingCutoffHeight)} · about ${shortDate(c.votingCutoffEstimate, locale)}: votes after it may be too late for the ${shortDate(c.superblockEta, locale)} payout`,
+      label: t(`${N}.cutoff`),
+      value: t(`${N}.cutoffValue`, { height: c.votingCutoffHeight, date: shortDate(c.votingCutoffEstimate, locale), payout: shortDate(c.superblockEta, locale) }),
     },
-    { label: "Next superblock", value: `Block ${fmt(c.nextSuperblock)} · about ${shortDate(c.superblockEta, locale)}` },
-    { label: "Cycle", value: `${fmt(info.superblockCycle)} blocks; the network starts fixing a payout ${fmt(info.maturityWindow)} blocks before its superblock` },
+    { label: t(`${N}.nextSuperblock`), value: t(`${N}.nextValue`, { height: c.nextSuperblock, date: shortDate(c.superblockEta, locale) }) },
+    { label: t(`${N}.cycleLength`), value: t(`${N}.cycleValue`, { blocks: info.superblockCycle, window: info.maturityWindow }) },
   ];
   const synced = info.proposals !== null && info.allocatedEstimate !== null;
   const open = rows?.filter((r) => !isEnded(r)).length;
   const votes = [
-    { label: "Voting weight", value: `${fmt(info.validWeight)}: ${fmt(regular)} masternodes and ${fmt(info.validEvonodes)} evonodes, which count 4 each` },
-    { label: "Funding line", value: `${fmt(info.passingThreshold)} net yes votes: a tenth of the weight, and at least the minimum quorum` },
-    { label: "Budget", value: `${amount(info.budget)} per superblock` },
+    { label: t(`${N}.weight`), value: t(`${N}.weightValue`, { weight: info.validWeight, regular, evonodes: info.validEvonodes }) },
+    { label: t(`${N}.fundingLine`), value: t(`${N}.fundingLineValue`, { votes: info.passingThreshold }) },
+    { label: t(`${N}.budget`), value: t(`${N}.budgetValue`, { amount: amount(info.budget) }) },
     {
-      label: "Passing, estimated",
+      label: t(`${N}.passing`),
       value:
         synced && info.proposals
-          ? `about ${amount(info.allocatedEstimate!)} to about ${fmt(info.proposals.passing)} of ${fmt(open ?? info.proposals.total)} open · about ${fmt(info.proposals.unfunded)} more over budget`
-          : "after sync",
+          ? t(`${N}.passingValue`, { amount: amount(info.allocatedEstimate!), passing: info.proposals.passing, open: open ?? info.proposals.total, over: info.proposals.unfunded })
+          : t(`${N}.afterSync`),
     },
     {
-      label: "Data",
-      value: synced ? `Block ${fmt(c.tipHeight)} · ${plural(sync?.peers ?? 0, "peer")}; some votes may be missing` : "after sync",
+      label: t(`${N}.data`),
+      value: synced ? t(`${N}.dataValue`, { height: c.tipHeight, count: sync?.peers ?? 0 }) : t(`${N}.afterSync`),
     },
   ];
   return { cycle, votes };

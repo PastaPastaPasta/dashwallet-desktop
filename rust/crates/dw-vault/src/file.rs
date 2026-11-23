@@ -9,7 +9,8 @@
 //! throttle  failed passphrase attempts (UX throttling, IOS-012; not authenticated)
 //! records   record_id → XChaCha20-Poly1305(DEK, payload)
 //!           AAD = "dw-vault/record/v1" ‖ vault_id ‖ network ‖ schema_ver ‖ record_id
-//! manifest  XChaCha20-Poly1305(DEK, {generation, record_id → SHA-256(nonce ‖ ct)})
+//! manifest  XChaCha20-Poly1305(DEK, {generation, record_id → SHA-256(nonce ‖ ct),
+//!           policy generation})
 //!           AAD = "dw-vault/manifest/v1" ‖ vault_id ‖ network
 //! ```
 //!
@@ -18,6 +19,13 @@
 //! generation this process has seen) detects a whole-file rollback while the
 //! app runs. A whole-file rollback across restarts needs a trusted monotonic
 //! anchor outside the file and is not detected.
+//!
+//! The manifest also names the generation at which the quick-unlock policy
+//! was last written, and the sealed policy carries the same number, so an
+//! older sealed policy put back on its own is refused and a deleted one is
+//! noticed (limit 0). A file without it (v0.1.0, v0.2.0, or one an older
+//! build rewrote) keeps the old rule: any authentic policy, the default
+//! without one.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -107,6 +115,11 @@ pub(crate) struct Manifest {
     pub generation: u64,
     /// record id → hex SHA-256 of `nonce ‖ ct`.
     pub records: BTreeMap<String, String>,
+    /// The generation at which the quick-unlock policy was last written.
+    /// Absent until this build writes one; an older build ignores it and
+    /// drops it when it rewrites the manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<u64>,
 }
 
 pub(crate) fn push_field(out: &mut Vec<u8>, field: &[u8]) {

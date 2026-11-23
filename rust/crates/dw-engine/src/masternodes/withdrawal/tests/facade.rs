@@ -16,6 +16,8 @@ use crate::masternodes::{
     WithdrawalKeySource, WithdrawalMark as Mark,
 };
 use crate::platform::lease::session_tests::{Fixture, fixture};
+use dashcore::{OutPoint, Transaction};
+use key_wallet::transaction_checking::TransactionContext;
 
 /// The core tests' waits, with no background recheck during a test.
 const FACADE_WAITS: Waits = Waits {
@@ -56,10 +58,14 @@ impl Fa {
     }
 
     fn tip(&self, header_tip: Option<u32>) {
+        self.seam(header_tip, FACADE_WAITS);
+    }
+
+    fn seam(&self, header_tip: Option<u32>, waits: Waits) {
         *self.f.session.masternodes.withdrawals.seam.lock().unwrap() = Some(Seam {
             platform: Arc::clone(&self.plat),
             header_tip,
-            waits: FACADE_WAITS,
+            waits,
         });
     }
 
@@ -735,6 +741,100 @@ fn each_failing_condition_is_withdrawal_destination_checking_with_its_reason() {
     assert!(fa.plat.sent().is_empty());
 }
 
+/// H-09 (MG's 1.0 ruling): in the degraded default a masternode
+/// withdrawal holds rule 5 too. An identity read SPV did not verify, its
+/// probe unverified as well, never shows a destination as checked and
+/// sends nothing; an unverified nonce read refuses. Once the reads verify,
+/// the same grant withdraws.
+#[test]
+fn the_degraded_default_refuses_a_withdrawal_on_unverified_reads() {
+    let fa = Fa::new(true);
+    fa.f.session
+        .trust
+        .set_mode(crate::platform::trust::TrustMode::Degraded);
+    assert_eq!(fa.f.session.trust.rule_5(), Rule5::Probe);
+    let grant = fa.grant(AMOUNT + fee(), None);
+    fa.plat.deviate(Read::Identity, Dev::Unverified, ALWAYS);
+    let checking = Some(WithdrawalDestinationCheck::Checking {
+        reason: WithdrawalCheckingReason::Unverified,
+    });
+    let q = fa.quote().unwrap();
+    assert_eq!(q.owner_destination, checking);
+    assert_eq!(q.payout_destination, checking);
+    assert_eq!(
+        code(fa.withdraw_with(Key::Owner, AMOUNT, None, grant.clone())),
+        "masternodes.withdrawal_destination_checking"
+    );
+    assert!(fa.plat.sent().is_empty());
+    assert!(fa.records().is_empty());
+
+    fa.plat.calm();
+    fa.plat.deviate(Read::Nonce, Dev::Unverified, ALWAYS);
+    assert_eq!(
+        code(fa.withdraw_with(Key::Owner, AMOUNT, None, grant.clone())),
+        "masternodes.withdrawal_unverified"
+    );
+    assert!(fa.plat.sent().is_empty());
+
+    fa.plat.calm();
+    let r = fa.withdraw_with(Key::Owner, AMOUNT, None, grant);
+    assert_eq!(r.unwrap().state, State::Sent);
+}
+
+/// H-09: a quote whose destinations read `checking{unverified}` starts the
+/// ready wait, and §6's event goes out once SPV verifies the read.
+#[test]
+fn an_unverified_quote_signals_once_its_read_verifies() {
+    let fa = Fa::new(true);
+    fa.f.session
+        .trust
+        .set_mode(crate::platform::trust::TrustMode::Degraded);
+    fa.plat.deviate(Read::Identity, Dev::Unverified, ALWAYS);
+    let before = fa.generation();
+    let q = fa.quote().unwrap();
+    let checking = Some(WithdrawalDestinationCheck::Checking {
+        reason: WithdrawalCheckingReason::Unverified,
+    });
+    assert_eq!(q.owner_destination, checking);
+    assert!(until(Duration::from_millis(500), || fa
+        .plat
+        .reads(Read::Identity)
+        >= 2));
+    assert_eq!(
+        fa.generation(),
+        before,
+        "no withdrawal_ready while unverified"
+    );
+    fa.plat.calm();
+    assert!(
+        until(Duration::from_secs(3), || fa.generation() > before),
+        "withdrawal_ready"
+    );
+}
+
+/// H-09 (Astra M5): an identity read that is unverified at first, and
+/// verified a moment later, withdraws in the same call: `withdraw` waits
+/// for SPV within its bound rather than refusing on the first read. The
+/// sign wait is long here so a loaded machine cannot run it out before the
+/// verified read (#344).
+#[test]
+fn an_identity_read_verified_during_the_wait_withdraws() {
+    let fa = Fa::new(true);
+    fa.seam(
+        Some(TIP),
+        Waits {
+            sign: Duration::from_secs(10),
+            ..FACADE_WAITS
+        },
+    );
+    fa.f.session
+        .trust
+        .set_mode(crate::platform::trust::TrustMode::Degraded);
+    fa.plat.deviate(Read::Identity, Dev::Unverified, 2);
+    let r = fa.withdraw(Key::Owner, AMOUNT, None);
+    assert_eq!(r.unwrap().state, State::Sent);
+}
+
 #[test]
 fn an_open_record_is_withdrawal_pending() {
     let fa = Fa::new(true);
@@ -852,4 +952,392 @@ fn unknown_records_identities_and_malformed_arguments_are_refused() {
     fa.plat.with(|w| w.identity = None);
     assert_eq!(code(fa.quote()), "masternodes.no_identity");
     assert!(fa.plat.sent().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// #361: a payout change only the wallet's history holds (another
+// installation's, or a restore's: no barrier row).
+
+/// A ProUpRegTx of `pro_tx` changing its payout to `to`, spending the coin
+/// `spends`.
+fn payout_change(pro_tx: &[u8; 32], to: &CoreScript, spends: OutPoint) -> Transaction {
+    use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    use dashcore::blockdata::transaction::special_transaction::provider_update_registrar::ProviderUpdateRegistrarPayload;
+    Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: spends,
+            ..Default::default()
+        }],
+        output: vec![],
+        special_transaction_payload: Some(TransactionPayload::ProviderUpdateRegistrarPayloadType(
+            ProviderUpdateRegistrarPayload {
+                version: 2,
+                pro_tx_hash: dashcore::Txid::from_byte_array(*pro_tx),
+                provider_mode: 0,
+                operator_public_key: dashcore::bls_sig_utils::BLSPublicKey::from_bytes([0; 48]),
+                voting_key_hash: dashcore::PubkeyHash::all_zeros(),
+                script_payout: dashcore::ScriptBuf::from_bytes(to.as_bytes().to_vec()),
+                inputs_hash: dashcore::hash_types::InputsHash::all_zeros(),
+                payload_sig: vec![],
+                payouts: None,
+            },
+        )),
+    }
+}
+
+fn coin(n: u8) -> OutPoint {
+    OutPoint::new(dashcore::Txid::from_byte_array([n; 32]), 0)
+}
+
+fn in_block(height: u32) -> TransactionContext {
+    TransactionContext::InBlock(key_wallet::transaction_checking::BlockInfo::new(
+        height,
+        dashcore::BlockHash::all_zeros(),
+        0,
+    ))
+}
+
+/// `pro_tx`'s ProUpRegTx at version 3, paying `to` in DIP-0026 shares.
+fn payout_change_v3(pro_tx: &[u8; 32], to: &[&CoreScript], spends: OutPoint) -> Transaction {
+    use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    use dashcore::blockdata::transaction::special_transaction::provider_registration::MasternodePayoutShare;
+    let mut tx = payout_change(pro_tx, to[0], spends);
+    let Some(TransactionPayload::ProviderUpdateRegistrarPayloadType(p)) =
+        &mut tx.special_transaction_payload
+    else {
+        unreachable!()
+    };
+    p.version = 3;
+    p.script_payout = dashcore::ScriptBuf::new();
+    p.payouts = Some(
+        (to.iter())
+            .map(|s| MasternodePayoutShare {
+                script_payout: dashcore::ScriptBuf::from_bytes(s.as_bytes().to_vec()),
+                reward: (10_000 / to.len()) as u16,
+            })
+            .collect(),
+    );
+    tx
+}
+
+/// A ProUpRegTx of `pro_tx` whose payload this version does not decode
+/// (a newer payload version): its version, then the ProTx hash.
+fn undecoded_payout_change(pro_tx: &[u8; 32], spends: OutPoint) -> Transaction {
+    use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    let mut bytes = 9u16.to_le_bytes().to_vec();
+    bytes.extend_from_slice(pro_tx);
+    bytes.extend_from_slice(&[0xee; 40]);
+    let mut tx = payout_change(pro_tx, &payout_script(), spends);
+    tx.special_transaction_payload = Some(TransactionPayload::RawPayloadType(3, bytes));
+    tx
+}
+
+fn in_chain_locked_block(height: u32) -> TransactionContext {
+    TransactionContext::InChainLockedBlock(key_wallet::transaction_checking::BlockInfo::new(
+        height,
+        dashcore::BlockHash::all_zeros(),
+        0,
+    ))
+}
+
+/// A transaction spending `tx`'s inputs.
+fn rival_of(tx: &Transaction) -> Transaction {
+    Transaction {
+        version: 2,
+        lock_time: 0,
+        input: tx.input.clone(),
+        output: vec![],
+        special_transaction_payload: None,
+    }
+}
+
+/// Another wallet loaded beside the fixture's.
+const OTHER_WALLET: crate::WalletId = crate::WalletId([0x50; 32]);
+
+impl Fa {
+    /// `tx` in the wallet's history at `context`, as SPV hands it over.
+    fn seen(&self, tx: &Transaction, context: TransactionContext) {
+        self.seen_in(self.f.wallet, tx, context);
+    }
+
+    /// `tx` in `wallet`'s history at `context`.
+    fn seen_in(&self, wallet: crate::WalletId, tx: &Transaction, context: TransactionContext) {
+        let entry = crate::history::TxEntry {
+            tx: tx.clone(),
+            context,
+            instant_locked: false,
+            first_seen: None,
+            own_inputs: Default::default(),
+            abandoned: false,
+        };
+        (self.f.session.hub.history).with_wallet(wallet, |h| {
+            h.txs.insert(tx.txid(), entry);
+        });
+    }
+
+    /// What `abandon_transaction` leaves in the history for `tx`.
+    fn abandoned(&self, tx: &Transaction) {
+        (self.f.session.hub.history).with_wallet(self.f.wallet, |h| {
+            h.txs.get_mut(&tx.txid()).unwrap().abandoned = true;
+        });
+    }
+
+    /// Both keys' destinations read `checking{reason}`, and a withdrawal by
+    /// `key` is refused with it, nothing signed or sent.
+    fn held_by(&self, key: Key, reason: &str) {
+        let q = self.quote().unwrap();
+        for d in [&q.owner_destination, &q.payout_destination] {
+            match d {
+                Some(WithdrawalDestinationCheck::Checking { reason: r }) => {
+                    assert_eq!(r.as_str(), reason, "{key:?}");
+                }
+                d => panic!("{key:?}: {d:?}"),
+            }
+        }
+        match self.withdraw(key, AMOUNT, None).unwrap_err() {
+            MasternodesError::WithdrawalDestinationChecking { reason: r } => {
+                assert_eq!(r.as_str(), reason, "{key:?}");
+            }
+            e => panic!("{key:?}: {e:?}"),
+        }
+        assert!(self.plat.sent().is_empty(), "{key:?}");
+        assert!(self.records().is_empty(), "{key:?}");
+    }
+
+    /// A withdrawal by `key` is signed and sent.
+    fn released(&self, key: Key) {
+        let q = self.quote().unwrap();
+        assert!(
+            matches!(
+                q.owner_destination,
+                Some(WithdrawalDestinationCheck::Fixed { .. })
+            ),
+            "{key:?}: {q:?}"
+        );
+        let r = self.withdraw(key, AMOUNT, None).unwrap();
+        assert_eq!(r.state, State::Sent, "{key:?}");
+    }
+}
+
+const UNCONFIRMED: &str = "payout_change_unconfirmed";
+
+#[test]
+fn another_installations_unconfirmed_payout_change_holds_both_keys() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    for key in [Key::Owner, Key::Payout] {
+        let fa = Fa::new(true);
+        fa.seen(
+            &payout_change(&PRO_TX, &moved, coin(1)),
+            TransactionContext::Mempool,
+        );
+        fa.held_by(key, UNCONFIRMED);
+    }
+    // InstantSend-locked, still out of a block.
+    let fa = Fa::new(true);
+    fa.seen(
+        &payout_change(&PRO_TX, &moved, coin(1)),
+        TransactionContext::InstantSend(Default::default()),
+    );
+    fa.held_by(Key::Owner, UNCONFIRMED);
+}
+
+#[test]
+fn a_payout_change_to_the_paid_script_or_of_another_masternode_holds_nothing() {
+    let fa = Fa::new(true);
+    fa.seen(
+        &payout_change(&PRO_TX, &payout_script(), coin(1)),
+        TransactionContext::Mempool,
+    );
+    fa.seen(
+        &payout_change(&pro_tx(0x70), &CoreScript::new_p2pkh([0x22; 20]), coin(2)),
+        TransactionContext::Mempool,
+    );
+    fa.released(Key::Owner);
+}
+
+#[test]
+fn a_payout_change_holds_until_platforms_core_height_covers_its_block() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    for key in [Key::Owner, Key::Payout] {
+        let fa = Fa::new(true);
+        let change = payout_change(&PRO_TX, &moved, coin(1));
+        fa.seen(&change, TransactionContext::Mempool);
+        fa.held_by(key, UNCONFIRMED);
+        // Mined above the proved core height: Platform hasn't applied it.
+        fa.seen(&change, in_block(TIP + 1));
+        fa.held_by(key, "platform_behind");
+        // At it: Drive has applied it.
+        fa.seen(&change, in_block(TIP));
+        fa.released(key);
+    }
+}
+
+/// The way out of a change that never mines: abandoning it in History.
+#[test]
+fn an_abandoned_payout_change_holds_nothing() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    for key in [Key::Owner, Key::Payout] {
+        let fa = Fa::new(true);
+        let change = payout_change(&PRO_TX, &moved, coin(1));
+        fa.seen(&change, TransactionContext::Mempool);
+        fa.held_by(key, UNCONFIRMED);
+        fa.abandoned(&change);
+        fa.released(key);
+    }
+}
+
+#[test]
+fn a_conflicted_payout_change_holds_nothing() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    for key in [Key::Owner, Key::Payout] {
+        let fa = Fa::new(true);
+        let change = payout_change(&PRO_TX, &moved, coin(1));
+        fa.seen(&change, TransactionContext::Mempool);
+        // A rival of its input seen unconfirmed conflicts with nothing yet.
+        let rival = rival_of(&change);
+        fa.seen(&rival, TransactionContext::Mempool);
+        fa.held_by(key, UNCONFIRMED);
+        fa.seen(&rival, in_block(TIP - 3));
+        fa.released(key);
+    }
+}
+
+/// A wallet the change only pays (or names a key of) records it with
+/// nothing of its own to abandon: the paying wallet's abandon, or a block
+/// in the paying wallet's history spending its input, releases it.
+#[test]
+fn a_payout_change_in_several_wallets_is_released_by_any_wallets_abandon_or_conflict() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    for key in [Key::Owner, Key::Payout] {
+        let fa = Fa::new(true);
+        let change = payout_change(&PRO_TX, &moved, coin(1));
+        fa.seen_in(OTHER_WALLET, &change, TransactionContext::Mempool);
+        fa.held_by(key, UNCONFIRMED);
+        fa.seen(&change, TransactionContext::Mempool);
+        fa.held_by(key, UNCONFIRMED);
+        fa.abandoned(&change);
+        fa.released(key);
+
+        let fa = Fa::new(true);
+        let change = payout_change(&PRO_TX, &moved, coin(1));
+        fa.seen_in(OTHER_WALLET, &change, TransactionContext::Mempool);
+        fa.seen(&rival_of(&change), in_block(TIP - 3));
+        fa.released(key);
+    }
+    // Mined as one wallet sees it, out of a block as the other still does.
+    let fa = Fa::new(true);
+    let change = payout_change(&PRO_TX, &moved, coin(1));
+    fa.seen_in(OTHER_WALLET, &change, TransactionContext::Mempool);
+    fa.seen(&change, in_block(TIP));
+    fa.released(Key::Owner);
+}
+
+#[test]
+fn an_undecoded_payout_change_of_the_masternode_holds() {
+    for key in [Key::Owner, Key::Payout] {
+        let fa = Fa::new(true);
+        fa.seen(
+            &undecoded_payout_change(&PRO_TX, coin(1)),
+            TransactionContext::Mempool,
+        );
+        fa.held_by(key, UNCONFIRMED);
+    }
+    let fa = Fa::new(true);
+    fa.seen(
+        &undecoded_payout_change(&pro_tx(0x70), coin(1)),
+        TransactionContext::Mempool,
+    );
+    fa.released(Key::Owner);
+}
+
+/// key-wallet's finality order: only a ChainLocked block beats an
+/// InstantSend lock.
+#[test]
+fn an_instant_send_locked_payout_change_is_conflicted_only_by_a_chain_locked_block() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let fa = Fa::new(true);
+    let change = payout_change(&PRO_TX, &moved, coin(1));
+    fa.seen(&change, TransactionContext::InstantSend(Default::default()));
+    let rival = rival_of(&change);
+    fa.seen(&rival, in_block(TIP - 3));
+    fa.held_by(Key::Owner, UNCONFIRMED);
+    fa.seen(&rival, in_chain_locked_block(TIP - 3));
+    fa.released(Key::Owner);
+    // Locked as another wallet saw it: still locked.
+    let fa = Fa::new(true);
+    fa.seen_in(
+        OTHER_WALLET,
+        &change,
+        TransactionContext::InstantSend(Default::default()),
+    );
+    fa.seen(&change, TransactionContext::Mempool);
+    fa.abandoned(&change);
+    fa.seen(&rival, in_block(TIP - 3));
+    fa.held_by(Key::Owner, UNCONFIRMED);
+}
+
+/// In the wallet's own history a version-3 change makes the masternode
+/// shared (D25), refused before any hold; another loaded wallet's holds
+/// unless its one payee is the paid script.
+/// A plain block at or below the best ChainLock is ChainLocked: it beats
+/// an InstantSend-locked change.
+#[test]
+fn a_block_at_or_below_the_best_chain_lock_conflicts_an_instant_send_locked_change() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    for (chainlock, holds) in [(TIP - 4, true), (TIP - 3, false), (TIP, false)] {
+        let fa = Fa::new(true);
+        let change = payout_change(&PRO_TX, &moved, coin(1));
+        fa.seen(&change, TransactionContext::InstantSend(Default::default()));
+        fa.seen(&rival_of(&change), in_block(TIP - 3));
+        (fa.f.session.hub).note_chainlock(chainlock, dashcore::BlockHash::all_zeros());
+        match holds {
+            true => fa.held_by(Key::Owner, UNCONFIRMED),
+            false => fa.released(Key::Owner),
+        }
+    }
+}
+
+/// During a reorg one wallet may still read the change in an older, lower
+/// block: the highest block read decides, which holds longer.
+#[test]
+fn the_highest_block_any_wallet_reads_a_change_in_decides() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let fa = Fa::new(true);
+    let change = payout_change(&PRO_TX, &moved, coin(1));
+    fa.seen_in(OTHER_WALLET, &change, in_block(TIP - 3));
+    fa.seen(&change, in_block(TIP + 1));
+    fa.held_by(Key::Owner, "platform_behind");
+}
+
+#[test]
+fn a_v3_payout_change_holds_unless_its_one_payee_is_the_paid_script() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let paid = payout_script();
+    let fa = Fa::new(true);
+    fa.seen(
+        &payout_change_v3(&PRO_TX, &[&paid], coin(1)),
+        TransactionContext::Mempool,
+    );
+    assert_eq!(
+        code(fa.withdraw(Key::Owner, AMOUNT, None)),
+        "masternodes.withdrawal_shared"
+    );
+    for (to, holds) in [
+        (vec![&moved], true),
+        (vec![&paid], false),
+        (vec![&paid, &moved], true),
+    ] {
+        let fa = Fa::new(true);
+        fa.seen_in(
+            OTHER_WALLET,
+            &payout_change_v3(&PRO_TX, &to, coin(1)),
+            TransactionContext::Mempool,
+        );
+        match holds {
+            true => fa.held_by(Key::Owner, UNCONFIRMED),
+            false => fa.released(Key::Owner),
+        }
+    }
 }

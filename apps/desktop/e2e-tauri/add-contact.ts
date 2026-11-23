@@ -18,11 +18,11 @@
 // session bus, on the private X display in $DISPLAY.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { newPassphrase } from "./flow-secrets.ts";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
+import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver, fillSecret } from "./driver.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const SENDER = env("DW_ADD_SENDER", "A");
@@ -192,7 +192,7 @@ async function run(
 ): Promise<{ out: Record<string, unknown>; ledger: Ledger | null }> {
   const out: Record<string, unknown> = {};
   let ledger = ledgerIn;
-  await wd.fill(tid("lock-field"), passphrase);
+  await fillSecret(wd, tid("lock-field"), passphrase);
   await wd.press(tid("lock-submit"));
   await wd.waitGone(tid("lock-screen"), "the lock screen");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
@@ -238,7 +238,7 @@ async function run(
     writeLedger(ledger);
     try {
       await wd.press(tid("add-contact-send"));
-      await wd.fill(tid("grant-sheet-field"), passphrase);
+      await fillSecret(wd, tid("grant-sheet-field"), passphrase);
       await wd.screenshot("3-grant-sheet");
       await wd.press(tid("grant-sheet-submit"));
       await wd.waitGone(tid("grant-sheet"), "the passphrase sheet");
@@ -294,7 +294,7 @@ async function main() {
   const recipientRoot = join(work, "recipient");
   const appRoot = join(work, "app");
   const passFile = join(work, "passphrase");
-  const passphrase = randomBytes(18).toString("base64url");
+  const passphrase = newPassphrase();
   for (const w of [SENDER, RECIPIENT]) {
     const phrase = readFileSync(join(FIXTURE, `${w}.mnemonic`), "utf8").trim();
     secrets.push(phrase, phrase.split(/\s+/).join(" "));

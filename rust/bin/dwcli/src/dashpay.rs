@@ -47,7 +47,8 @@ use dw_engine::platform::{
     ShieldedError, WithdrawAmount, check_username,
 };
 use dw_engine::{
-    ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, SendFailure, TASK_PANICKED,
+    ContactRecipient, Engine, EngineError, NetworkSession, PreparedSummary, PreparedTx,
+    SendFailure, TASK_PANICKED,
 };
 use dw_vault::{GrantPurpose, VaultError};
 use serde::Serialize;
@@ -110,6 +111,10 @@ pub enum DashPayCommand {
         note: Option<String>,
         #[arg(long)]
         accept: bool,
+        /// Prepare the payment, then abandon it unsent: the confirm
+        /// sheet's Cancel.
+        #[arg(long, conflicts_with = "accept")]
+        cancel: bool,
     },
     /// The DashPay profile.
     Profile {
@@ -892,7 +897,11 @@ fn registration_params(e: &RegistrationError) -> Value {
         | R::FundedElsewhere
         | R::FundingCancelled
         | R::NotSynced
-        | R::CoinsLocked => json!({}),
+        | R::CoinsLocked
+        | R::QuoteChanged => json!({}),
+        R::ShieldedNotReady { reason, ready_at } => {
+            json!({"reason": reason, "ready_at": ready_at})
+        }
         R::FundingUnknownRecent { draft, wait_secs } => {
             json!({"draft": draft, "wait_secs": wait_secs})
         }
@@ -941,7 +950,11 @@ fn credits_params(e: &CreditsError) -> Value {
             json!({"needed": needed, "available": available})
         }
         CreditsError::BelowMinimum { min } => json!({"min": min}),
-        CreditsError::CoinsLocked | CreditsError::QuoteChanged => json!({}),
+        CreditsError::CoinsLocked
+        | CreditsError::QuoteChanged
+        | CreditsError::CoinsChanged
+        | CreditsError::MixingActive
+        | CreditsError::MoveRunning => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
         CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
@@ -1039,7 +1052,14 @@ impl From<EngineError> for CliError {
             EngineError::Vault(v) => v.into(),
             EngineError::Contact(c) => c.into(),
             e if e.is_task_panic() => panic_error("an engine task", "the call"),
-            EngineError::Send(f) => Self::new(send_code_of(&f), EngineError::Send(f), json!({})),
+            EngineError::Send(f) => {
+                let code = send_code_of(&f);
+                let mut params = json!({"kind": code.trim_start_matches("send.")});
+                if let Some(reason) = crate::pay::send_failure_reason(&f) {
+                    params["reason"] = json!(reason);
+                }
+                Self::new(code, EngineError::Send(f), params)
+            }
             e => Self::new(e.code(), &e, json!({})),
         }
     }
@@ -1656,6 +1676,7 @@ fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Valu
             subtract_fee,
             note,
             accept,
+            cancel,
             ..
         } => {
             let dp = ctx.dashpay()?;
@@ -1666,7 +1687,7 @@ fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Valu
                 subtract_fee,
                 note,
             };
-            pay_contact(ctx, &dp, recipient, accept)
+            pay_contact(ctx, &dp, recipient, accept, cancel)
         }
         DashPayCommand::Profile { cmd, .. } => profile_cmd(ctx, cmd),
         DashPayCommand::Invite { cmd, .. } => invite_cmd(ctx, cmd, stdin),
@@ -1727,12 +1748,13 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
         ShieldedCmd::Sync => out(ctx.block_on(dp.shielded_sync())?),
         ShieldedCmd::Address => out(ctx.block_on(dp.shielded_receive_address())?),
         ShieldedCmd::Shield { duffs, quote_only } => {
-            let quote = ctx.block_on(dp.shield_quote(duffs))?;
+            let amount = dw_engine::platform::FundAmount::Duffs { duffs };
+            let quote = ctx.block_on(dp.shield_quote(amount))?;
             if quote_only {
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.shield_from_core(duffs, grant))?;
+            let outcome = ctx.block_on(dp.shield_from_core(amount, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         ShieldedCmd::ShieldResume { txid } => {
@@ -2045,6 +2067,17 @@ fn action_grant(
     Ok((json!(request), ctx.platform_op(dp, request)?))
 }
 
+/// A contact payment's broadcast error with its `outcome` and
+/// `prepared_txid`: `not_sent` only when `abandon` succeeds. After a panic
+/// the engine is not entered again (the session's health probe comes
+/// first): the outcome stays `unknown`.
+fn broadcast_failure(mut e: CliError, txid: &str, abandon: impl FnOnce() -> bool) -> CliError {
+    let not_sent = !e.is_panic() && abandon();
+    e.params["outcome"] = json!(if not_sent { "not_sent" } else { "unknown" });
+    e.params["prepared_txid"] = json!(txid);
+    e
+}
+
 /// `pay-contact`. The engine refuses a locked contact itself
 /// (`contact.payment_locked`), so this does not read `payment_lock` first.
 /// The grant caps the amount and the estimated fee (only the amount with
@@ -2054,6 +2087,7 @@ fn pay_contact(
     dp: &DashPay,
     recipient: ContactRecipient,
     accept: bool,
+    cancel: bool,
 ) -> Result<Value, CliError> {
     let (identity, contact) = (recipient.identity.clone(), recipient.contact.clone());
     let (amount, subtract_fee) = (recipient.amount, recipient.subtract_fee);
@@ -2070,8 +2104,18 @@ fn pay_contact(
     if !accept {
         let grant = ctx.grant(dp, spend)?;
         let prepared = ctx.block_on(draft.prepare(grant))?;
-        let outcome = ctx.block_on(draft.broadcast(Arc::clone(&prepared)))?;
-        return Ok(paid(Value::Null, &prepared, &outcome.txid));
+        if cancel {
+            ctx.block_on(draft.abandon(Arc::clone(&prepared)))?;
+            return Ok(cancelled(prepared.summary()));
+        }
+        return match ctx.block_on(draft.broadcast(Arc::clone(&prepared))) {
+            Ok(outcome) => Ok(paid(Value::Null, &prepared, &outcome.txid)),
+            Err(e) => Err(broadcast_failure(
+                CliError::from(e),
+                &prepared.summary().txid,
+                || ctx.block_on(draft.abandon(Arc::clone(&prepared))).is_ok(),
+            )),
+        };
     }
     // "Accept and pay" (DP3-01 D14): one credential for both grants, one
     // lease; the payment's `prepare` refuses until the accept established
@@ -2160,17 +2204,34 @@ fn after_accept(grant: Value, payment: Result<Value, PaymentFailed>) -> Value {
 /// the payment.
 fn paid(grant: Value, prepared: &PreparedTx, txid: &str) -> Value {
     let s = prepared.summary();
-    let address = (s.outputs.iter())
-        .find(|o| !o.is_change)
-        .and_then(|o| o.address.clone());
     json!({
         "grant": grant,
+        "paid": true,
         "txid": txid,
-        "address": address,
+        "address": recipient_address(s),
         "sent": s.total_sent,
         "fee": s.fee,
         "debit": s.total_debit,
     })
+}
+
+/// `pay-contact --cancel`'s result: the payment prepared and abandoned
+/// unsent, with what it would have cost; nothing left the wallet.
+fn cancelled(s: &PreparedSummary) -> Value {
+    json!({
+        "grant": Value::Null,
+        "paid": false,
+        "cancelled": true,
+        "prepared_txid": s.txid,
+        "address": recipient_address(s),
+        "estimated": {"sent": s.total_sent, "fee": s.fee, "debit": s.total_debit},
+    })
+}
+
+fn recipient_address(s: &PreparedSummary) -> Option<String> {
+    (s.outputs.iter())
+        .find(|o| !o.is_change)
+        .and_then(|o| o.address.clone())
 }
 
 /// A write's result: the grant it asked for and the call's outcome.
@@ -2477,7 +2538,9 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
     use dw_engine::platform::{DashPayStatus, Eligibility, UsernameRule};
-    use dw_engine::{DashNetwork, EngineConfig, EngineEvent, EventSink, SessionOptions};
+    use dw_engine::{
+        DashNetwork, EngineConfig, EngineEvent, EventSink, PreparedOutput, SessionOptions,
+    };
     use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 
     use super::*;
@@ -3125,6 +3188,90 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_payment_reports_nothing_paid() {
+        let output = |address: &str, is_change| PreparedOutput {
+            address: Some(address.into()),
+            amount: 7,
+            is_change,
+            is_mine: is_change,
+            label: None,
+        };
+        let s = PreparedSummary {
+            txid: "t1".into(),
+            fee: 3,
+            fee_rate_per_kb: 1000,
+            size_bytes: 200,
+            inputs: vec![],
+            outputs: vec![output("change", true), output("contact", false)],
+            total_sent: 7,
+            external_sent: 7,
+            total_debit: 10,
+        };
+        let r = cancelled(&s);
+        assert_eq!(
+            r,
+            json!({
+                "grant": null,
+                "paid": false,
+                "cancelled": true,
+                "prepared_txid": "t1",
+                "address": "contact",
+                "estimated": {"sent": 7, "fee": 3, "debit": 10},
+            })
+        );
+        for key in ["txid", "sent", "debit"] {
+            assert!(r.get(key).is_none(), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_send_failure_names_its_kind_and_reason() {
+        let rejected = CliError::from(EngineError::Send(SendFailure::BroadcastRejected {
+            reason: "bad-txns-inputs-missingorspent".into(),
+        }));
+        assert_eq!(
+            rejected.params,
+            json!({"kind": "broadcast_rejected", "reason": "bad-txns-inputs-missingorspent"})
+        );
+        let no_peers = CliError::from(EngineError::Send(SendFailure::NoPeers));
+        assert_eq!(no_peers.params, json!({"kind": "no_peers"}));
+        let spent = CliError::from(EngineError::Send(SendFailure::PreparedTxSpent));
+        assert_eq!(spent.params, json!({"kind": "prepared_tx_spent"}));
+    }
+
+    #[test]
+    fn a_broadcast_panic_stays_unknown_without_entering_the_engine() {
+        let e = broadcast_failure(panic_error("an engine task", "the call"), "t1", || {
+            panic!("abandon after a panic")
+        });
+        assert!(e.is_panic());
+        assert_eq!(e.params["outcome"], "unknown");
+        assert_eq!(e.params["prepared_txid"], "t1");
+        let no_peers = || CliError::from(EngineError::Send(SendFailure::NoPeers));
+        let e = broadcast_failure(no_peers(), "t2", || true);
+        assert_eq!(
+            (
+                e.params["outcome"].as_str(),
+                e.params["prepared_txid"].as_str()
+            ),
+            (Some("not_sent"), Some("t2"))
+        );
+        let e = broadcast_failure(no_peers(), "t3", || false);
+        assert_eq!(e.params["outcome"], "unknown");
+    }
+
+    #[test]
+    fn pay_contact_cancel_is_a_flag_apart_from_accept() {
+        let line = format!("pay-contact {ID1} --amount 5 --cancel");
+        let Ok(DashPayCommand::PayContact { cancel, accept, .. }) = parse(&line) else {
+            panic!("{line:?}");
+        };
+        assert!(cancel && !accept);
+        let both = format!("pay-contact {ID1} --amount 5 --cancel --accept");
+        assert!(parse(&both).is_err(), "{both:?}");
+    }
+
+    #[test]
     fn global_options_parse_on_either_side_of_the_subcommand() {
         let w = "00".repeat(32);
         for args in [
@@ -3341,9 +3488,22 @@ mod tests {
         line: &str,
         bound: Duration,
     ) -> Result<Value, CliError> {
+        let cmd = parse(line).unwrap();
+        abandoned_after(engine, session, bound, |engine, session| {
+            super::run(engine, session, passphrase, cmd)
+        })
+    }
+
+    /// [`assert_abandoned`] for any `command`.
+    fn abandoned_after(
+        engine: Engine,
+        session: Arc<NetworkSession>,
+        bound: Duration,
+        command: impl FnOnce(&Engine, &Arc<NetworkSession>) -> Result<Value, CliError>,
+    ) -> Result<Value, CliError> {
         let _exclusive = crate::teardown::exclusive();
         let start = std::time::Instant::now();
-        let result = super::run(&engine, &session, passphrase, parse(line).unwrap());
+        let result = command(&engine, &session);
         let teardown = crate::teardown::shut_down(engine, &session, false);
         let elapsed = start.elapsed();
         let why = teardown.expect_err("the engine was shut down");
@@ -3357,9 +3517,11 @@ mod tests {
     /// r5's sketch). The engine has two workers. One task parks whichever
     /// is free, however long it takes to come free; a second is queued for
     /// the other, which is the emitting one until its task has unwound.
+    /// `wedged` is set once both are, just before the panic.
     struct WedgeOn {
         when: fn(&EngineEvent) -> bool,
         armed: AtomicBool,
+        wedged: AtomicBool,
         session: std::sync::Mutex<Option<Arc<NetworkSession>>>,
     }
 
@@ -3378,9 +3540,37 @@ mod tests {
                     .queued
                     .recv_timeout(WEDGE_WAIT)
                     .expect("the second parked task was never queued");
+                self.wedged.store(true, Ordering::SeqCst);
                 panic!("injected event callback panic");
             }
         }
+    }
+
+    /// A session's stdin that ends once its [`WedgeOn`] has wedged the
+    /// engine and the panic has marked it poisoned, so the teardown after
+    /// the session cannot run before.
+    struct EndsOnceWedged(Arc<WedgeOn>);
+
+    impl Read for EndsOnceWedged {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            self.fill_buf().map(<[u8]>::len)
+        }
+    }
+
+    impl BufRead for EndsOnceWedged {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            let start = std::time::Instant::now();
+            while !(self.0.wedged.load(Ordering::SeqCst) && dw_engine::engine_poisoned()) {
+                assert!(
+                    start.elapsed() < WEDGE_WAIT * 2,
+                    "the engine was never wedged"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(&[])
+        }
+
+        fn consume(&mut self, _: usize) {}
     }
 
     /// An open regtest session whose sink is a [`WedgeOn`], not armed yet.
@@ -3392,6 +3582,7 @@ mod tests {
         let sink = Arc::new(WedgeOn {
             when,
             armed: AtomicBool::new(false),
+            wedged: AtomicBool::new(false),
             session: std::sync::Mutex::new(None),
         });
         let engine = Engine::new(
@@ -3440,10 +3631,13 @@ mod tests {
     }
 
     /// Sol r5 finding 1: the task that actually starts SPV panics (its
-    /// `start_spv` call has returned), so `--spv` waits out its start
-    /// timeout for a state that never comes. The panic marked the engine
+    /// `start_spv` call has returned) as it announces SPV running, so
+    /// `--spv` goes on to the command. The panic marked the engine
     /// poisoned: it fails its probe before SPV is stopped or the engine is
-    /// shut down.
+    /// shut down. `spv_state` reads `Running` before the event is sent, so
+    /// the command is a session whose stdin ends only once the engine is
+    /// wedged and poisoned: a one-shot command could reach the SPV stop
+    /// first (#252).
     #[test]
     fn a_panic_in_the_spv_start_task_abandons_a_failed_engine() {
         let dir = dw_testutil::private_tempdir();
@@ -3451,13 +3645,19 @@ mod tests {
             matches!(e, EngineEvent::SpvStateChanged { running: true, .. })
         });
         sink.armed.store(true, Ordering::SeqCst);
-        let bound = SPV_START_TIMEOUT + crate::teardown::PROBE_TIMEOUT * 2;
-        let result = assert_abandoned(engine, session, None, "dashpay status --spv", bound);
-        assert!(
-            !sink.armed.load(Ordering::SeqCst),
-            "the start task never ran"
-        );
-        assert_eq!(result.unwrap_err().code, "spv");
+        let mut stdin = EndsOnceWedged(sink);
+        let cmd = parse("dashpay session --spv").unwrap();
+        let bound = crate::teardown::PROBE_TIMEOUT * 3;
+        let result = abandoned_after(engine, session, bound, |engine, session| {
+            let ctx = Ctx {
+                engine,
+                session,
+                passphrase: None,
+                wallet: None,
+            };
+            exec(&ctx, cmd, &mut stdin, &mut std::io::sink())
+        });
+        assert_eq!(result.unwrap(), json!({"requests": 0}));
     }
 
     /// Sol r5 finding 2: the SPV stop's task panics after an ordinary

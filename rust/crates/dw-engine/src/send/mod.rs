@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashcore::address::Payload;
+use dashcore::consensus::encode::serialize_hex;
 use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, PubkeyHash, ScriptBuf, ScriptHash, Transaction, TxOut};
 use dw_uri::keyio::{AddressKind, Destination, classify_address};
@@ -194,6 +195,10 @@ pub enum SendFailure {
     /// `send.cancelled`).
     #[error("cancelled before anything was sent")]
     Cancelled,
+    /// Not sent, but its saved copy could not be removed: its coins stay
+    /// reserved until a restart lists it pending, to be abandoned.
+    #[error("not sent; its coins stay reserved until a restart")]
+    HeldUntilRestart,
 }
 
 impl From<SendFailure> for EngineError {
@@ -1155,7 +1160,7 @@ impl TxDraft {
         }
         let r = self.resolve(&fence).await?;
         let wallet = session.wallet(&wallet_id).await?;
-        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
+        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await?;
 
         // What the grant caps: everything that leaves the wallet, fee
         // included (the same outflow `sign_psbt` caps).
@@ -1199,7 +1204,7 @@ impl TxDraft {
     ) -> Result<Arc<PreparedTx>, EngineError> {
         let r = self.resolve(&fence).await?;
         let wallet = self.session.wallet(&self.wallet_id).await?;
-        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
+        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await?;
         let outflow = external_sent.saturating_add(r.plan.fee);
         // One J step: a payment exactly at the cap is charged and signs.
         let (charge, signer) = lease
@@ -1227,9 +1232,13 @@ impl TxDraft {
     /// Which recipients and change stay in the wallet's funds, and what
     /// leaves it: the outputs to any other script, a provider key's
     /// address of the wallet's included (MG-04 D55).
-    async fn outflow_of(&self, r: &Resolved, wallet: &PlatformWallet) -> (Vec<bool>, bool, u64) {
+    async fn outflow_of(
+        &self,
+        r: &Resolved,
+        wallet: &PlatformWallet,
+    ) -> Result<(Vec<bool>, bool, u64), EngineError> {
         let (recipient_mine, change_mine) = {
-            let state = wallet.state().await;
+            let state = crate::wallet_read::info_of(wallet).await?;
             let owns = |a: &Address| crate::coins::wallet_funds_address(&state.core_wallet, a);
             let recipients: Vec<bool> = r.recipients.iter().map(|rc| owns(&rc.address)).collect();
             let change = match &r.change {
@@ -1253,7 +1262,7 @@ impl TxDraft {
             }
             // A data output's value leaves the wallet (MG-06 D10).
             + r.data.as_ref().map_or(0, |d| d.value);
-        (recipient_mine, change_mine, external_sent)
+        Ok((recipient_mine, change_mine, external_sent))
     }
 
     /// Signs the plan with `signer`, checks it and reserves its inputs,
@@ -1364,6 +1373,8 @@ impl TxDraft {
                 attempts: tokio::sync::Mutex::new(()),
                 lease: lease.map(|l| (l, artifact)),
                 contact,
+                own_inputs: None,
+                held: Default::default(),
             }));
         }
 
@@ -1431,6 +1442,8 @@ impl TxDraft {
             attempts: tokio::sync::Mutex::new(()),
             lease: lease.map(|l| (l, artifact)),
             contact,
+            own_inputs: None,
+            held: Default::default(),
         }))
     }
 
@@ -1441,7 +1454,7 @@ impl TxDraft {
     /// to the txid. `maybe_out`: saved bytes that may already be on the
     /// network (MG-04 D7), handled as after a `BroadcastUnknown`: every
     /// outcome but acceptance is `BroadcastUnknown`, and nothing releases
-    /// the inputs.
+    /// the inputs. `own_inputs`: see [`PreparedTx`]'s field.
     pub(crate) fn assembled(
         self: &Arc<Self>,
         tx: Transaction,
@@ -1449,6 +1462,7 @@ impl TxDraft {
         charge: SpendCharge,
         fence: CoinFence,
         maybe_out: bool,
+        own_inputs: Option<Vec<OutPoint>>,
     ) -> Arc<PreparedTx> {
         let owner = SpendOwner::Tx(tx.txid());
         self.session.spends.reserve(
@@ -1478,6 +1492,8 @@ impl TxDraft {
             attempts: tokio::sync::Mutex::new(()),
             lease: Some((lease, artifact)),
             contact: None,
+            own_inputs,
+            held: Default::default(),
         })
     }
 
@@ -1528,6 +1544,14 @@ impl TxDraft {
             .await
     }
 
+    /// Records `prepared` as held this session, by txid, for the ProTx
+    /// Discard (`WalletHistory::held_here`).
+    fn note_held(&self, prepared: &PreparedTx) {
+        if let Ok(txid) = prepared.summary.txid.parse::<dashcore::Txid>() {
+            (self.session.hub.history).with_wallet(self.wallet_id, |h| h.held_here.insert(txid));
+        }
+    }
+
     pub(crate) async fn broadcast_inner(
         &self,
         prepared: Arc<PreparedTx>,
@@ -1539,9 +1563,15 @@ impl TxDraft {
             None => None,
         };
         // A contact payment's first broadcast is under way until its
-        // outcome settled the contact (`settle_contact`).
+        // outcome settled the contact (`settle_contact`). Taken before the
+        // mark is written, so an abandon of the draft meanwhile is refused.
+        // Read under the phase guard: `held` is set before the phase leaves
+        // `Broadcasting`, so a repeat that sees `Unknown` sees it too.
         let (first, _in_flight) = {
             let mut phase = prepared.phase();
+            if let Some(e) = prepared.held_error() {
+                return Err(e);
+            }
             let first = match *phase {
                 Phase::Pending => true,
                 Phase::Unknown => false,
@@ -1560,7 +1590,27 @@ impl TxDraft {
         if first {
             self.record_contact(&prepared).await?;
         }
-        let (outcome, next) = match &prepared.lease {
+        // The evidence a later process restores this payment's spend
+        // claims from (#88), stored before it can leave; again for a send
+        // recovered with its outcome unknown, which may be its first.
+        if let Err(e) = self.mark_sent(&prepared, true).await {
+            let next = match first && self.drop_mark(&prepared).await {
+                true => Phase::Pending,
+                false => Phase::Unknown,
+            };
+            if first && next == Phase::Unknown {
+                let message = match &e {
+                    EngineError::Storage(m) => m.clone(),
+                    other => other.to_string(),
+                };
+                *prepared.held.lock().unwrap() = Some(Held::Storage(message));
+                self.note_held(&prepared);
+            }
+            self.settle_contact(&prepared, first, next).await;
+            *prepared.phase() = next;
+            return Err(e);
+        }
+        let (mut outcome, mut next) = match &prepared.lease {
             Some((lease, artifact)) => self.fenced(&prepared, lease, *artifact, first).await,
             None => {
                 let outcome = self.dispatch(&prepared, first, None).await;
@@ -1568,6 +1618,16 @@ impl TxDraft {
                 (outcome, next)
             }
         };
+        // Never handed off: no copy may stay to be resent. One that cannot
+        // be dropped keeps the payment held as maybe sent.
+        let unsent = next == Phase::Released
+            || (first && next == Phase::Pending && attempt_outcome(&outcome) == Outcome::NotSent);
+        if unsent && !self.drop_mark(&prepared).await {
+            next = Phase::Unknown;
+            *prepared.held.lock().unwrap() = Some(Held::UntilRestart);
+            self.note_held(&prepared);
+            outcome = Err(SendFailure::HeldUntilRestart.into());
+        }
         // The contact settles before the phase leaves `Broadcasting`.
         self.settle_contact(&prepared, first, next).await;
         *prepared.phase() = next;
@@ -1782,6 +1842,9 @@ impl TxDraft {
                 let _op = session.enter().await?;
                 {
                     let mut phase = prepared.phase();
+                    if let Some(e) = prepared.held_error() {
+                        return Err(e);
+                    }
                     match *phase {
                         Phase::Pending => *phase = Phase::Released,
                         Phase::Released => return Ok(()),
@@ -1852,11 +1915,14 @@ pub(crate) fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) ->
     match result {
         Ok(_) => Outcome::Sent,
         // `Cancelled`: a First past its deadline, never dispatched (L5).
+        // `HeldUntilRestart`: one of these whose sent mark could not be
+        // dropped.
         Err(EngineError::Send(
             SendFailure::NoPeers
             | SendFailure::BroadcastRejected { .. }
             | SendFailure::PreparedTxSpent
-            | SendFailure::Cancelled,
+            | SendFailure::Cancelled
+            | SendFailure::HeldUntilRestart,
         ))
         | Err(EngineError::NetworkNotOpen(_) | EngineError::WalletNotFound(_)) => Outcome::NotSent,
         Err(_) => Outcome::MaybeSent,
@@ -1865,20 +1931,28 @@ pub(crate) fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) ->
 
 /// How a stored hand-off code reads (MG-10 §4.4 rule 3): `Refused` exactly
 /// for the codes of the errors [`attempt_outcome`] calls `NotSent`
-/// (dw-appdb `INHERITED_REFUSED_CODES`); anything else, the resend marker
-/// included, may have left.
+/// (dw-appdb `INHERITED_REFUSED_CODES`, and [`REFUSED_SINCE_INHERITED`]); anything else, the
+/// resend marker included, may have left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HandoffOutcome {
     Refused,
     Unknown,
 }
 
+/// Refusal codes newer than the migration that rewrote the inherited ones.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "read by the shared recovery read (MG-10 EP 4)")
+)]
+pub(crate) const REFUSED_SINCE_INHERITED: &[&str] = &["send.held_until_restart"];
+
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "read by the shared recovery read (MG-10 EP 4)")
 )]
 pub(crate) fn outcome_of_code(code: &str) -> HandoffOutcome {
-    if dw_appdb::INHERITED_REFUSED_CODES.contains(&code) {
+    if dw_appdb::INHERITED_REFUSED_CODES.contains(&code) || REFUSED_SINCE_INHERITED.contains(&code)
+    {
         HandoffOutcome::Refused
     } else {
         HandoffOutcome::Unknown
@@ -2101,6 +2175,23 @@ pub struct PreparedTx {
     lease: Option<(Lease, ArtifactId)>,
     /// A contact payment: its pair and the reserved address it pays.
     contact: Option<(Pair, Address)>,
+    /// The wallet's inputs where the transaction spends other parties' too
+    /// (a shared registration): the only coins its sent mark names, since a
+    /// mark restores a claim on each coin it names at load (#170 case 17).
+    /// `None`: every input is the wallet's.
+    own_inputs: Option<Vec<OutPoint>>,
+    /// Never handed off, but its sent mark may stand: neither sent again
+    /// nor released until a restart.
+    held: Mutex<Option<Held>>,
+}
+
+/// Why a [`PreparedTx`] is held: its sent mark could not be dropped after
+/// a definite non-send, or the mark's first write and its drop both failed
+/// (the mark is most likely not stored, so no Activity row is promised).
+#[derive(Debug, Clone)]
+enum Held {
+    UntilRestart,
+    Storage(String),
 }
 
 impl std::fmt::Debug for PreparedTx {
@@ -2113,6 +2204,13 @@ impl std::fmt::Debug for PreparedTx {
 }
 
 impl PreparedTx {
+    fn held_error(&self) -> Option<EngineError> {
+        (self.held.lock().unwrap().clone()).map(|h| match h {
+            Held::UntilRestart => SendFailure::HeldUntilRestart.into(),
+            Held::Storage(m) => EngineError::Storage(m),
+        })
+    }
+
     pub fn summary(&self) -> &PreparedSummary {
         &self.summary
     }
@@ -2125,6 +2223,14 @@ impl PreparedTx {
             .or_else(|| self.mixed.as_ref().map(dashcore::consensus::serialize))
     }
 
+    /// The signed transaction.
+    fn transaction(&self) -> Option<Transaction> {
+        self.signed()
+            .as_ref()
+            .map(|s| s.transaction().clone())
+            .or_else(|| self.mixed.clone())
+    }
+
     fn phase(&self) -> std::sync::MutexGuard<'_, Phase> {
         self.phase.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -2133,6 +2239,12 @@ impl PreparedTx {
     /// a first broadcast that never left).
     pub(crate) fn released(&self) -> bool {
         *self.phase() == Phase::Released
+    }
+
+    /// Not handed off yet. Means nothing left only for a leased hand-off:
+    /// an unleased first broadcast can end `Pending` after a library error.
+    pub(crate) fn pending(&self) -> bool {
+        *self.phase() == Phase::Pending
     }
 
     /// Refunds a charge no admission took (a resend the fence ran as
@@ -2198,6 +2310,111 @@ impl Drop for PreparedTx {
     }
 }
 
+impl TxDraft {
+    /// Drops `prepared`'s sent mark; whether it went (a failure is logged),
+    /// or stays on purpose: a load claimed its coins from it.
+    async fn drop_mark(&self, prepared: &PreparedTx) -> bool {
+        // A load this session claimed the payment's coins from its marks:
+        // they're all that holds those coins, so they stay, and the payment
+        // stays pending (Abandon frees the coins in History, after a restart
+        // when the load couldn't read the payment).
+        let claimed = (prepared.summary.txid.parse::<dashcore::Txid>()).is_ok_and(|t| {
+            (self.session.hub.history)
+                .read_wallet(&self.wallet_id, |h| h.claimed_at_load.contains(&t))
+        });
+        if claimed {
+            return true;
+        }
+        let dropped = self.mark_sent(prepared, false).await;
+        if let Err(e) = &dropped {
+            tracing::warn!(error = %e, "could not drop a payment's sent mark: it stays held as maybe sent");
+        }
+        dropped.is_ok()
+    }
+
+    /// Marks `prepared` as a payment this app sent, naming the wallet's
+    /// coins it signed (`sent`), or removes the mark
+    /// ([`crate::tx_actions::SENT_PREFIX`]).
+    async fn mark_sent(&self, prepared: &PreparedTx, sent: bool) -> Result<(), EngineError> {
+        let txid = &prepared.summary.txid;
+        let scope = self.wallet_id.to_string();
+        let keys = [
+            format!("{}{txid}", crate::tx_actions::SENT_PREFIX),
+            format!("{}{txid}", crate::tx_actions::SENT_TX_PREFIX),
+            format!("{}{txid}", crate::tx_actions::SENT_IN_PREFIX),
+        ];
+        let all = || prepared.summary.inputs.iter().map(|i| i.outpoint).collect();
+        let own: Vec<OutPoint> = prepared.own_inputs.clone().unwrap_or_else(all);
+        let coins = sent.then(|| {
+            own.iter()
+                .map(OutPoint::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        });
+        let inputs = sent.then(|| {
+            (prepared.summary.inputs.iter())
+                .filter(|i| own.contains(&i.outpoint))
+                .filter_map(|i| {
+                    Some(format!(
+                        "{} {} {}",
+                        i.outpoint,
+                        i.amount,
+                        i.address.as_ref()?
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        });
+        // The coins an earlier write may have saved that stay: this wallet's
+        // inputs of the transaction (a shared registration's recorded
+        // contribution, not a co-party's).
+        let ours: HashSet<OutPoint> = match &prepared.own_inputs {
+            Some(own) => own.iter().copied().collect(),
+            None => (prepared.transaction().iter())
+                .flat_map(|tx| tx.input.iter().map(|i| i.previous_output))
+                .collect(),
+        };
+        let tx = (prepared.transaction())
+            .filter(|_| sent)
+            .map(|tx| serialize_hex(&tx));
+        self.session
+            .appdb_op(move |db| {
+                #[cfg(all(test, debug_assertions))]
+                db.fault_point(SENT_MARK_FAULT, dw_appdb::fault::Stage::Before)?;
+                // A repeat's summary can lack coins spent since: what an
+                // earlier write saved of `ours` stays.
+                let merged = |key: &str, new: Option<String>| {
+                    let Some(new) = new else { return Ok(None) };
+                    let old = db.setting_lossy(&scope, key)?.unwrap_or_default();
+                    let kept = (old.split(',')).filter(|e| {
+                        let outpoint = e.split(' ').next().and_then(|o| OutPoint::from_str(o).ok());
+                        outpoint.is_some_and(|o| ours.contains(&o))
+                    });
+                    let all: std::collections::BTreeSet<&str> = (new.split(',').chain(kept))
+                        .filter(|e| !e.is_empty())
+                        .collect();
+                    Ok::<_, dw_appdb::AppDbError>(Some(
+                        all.into_iter().collect::<Vec<_>>().join(","),
+                    ))
+                };
+                let coins = merged(&keys[0], coins)?;
+                let inputs = merged(&keys[2], inputs)?;
+                let writes = [
+                    (keys[0].as_str(), coins.as_deref()),
+                    (keys[1].as_str(), tx.as_deref()),
+                    (keys[2].as_str(), inputs.as_deref()),
+                ];
+                db.set_settings_durable(&scope, &writes)
+            })
+            .await
+    }
+}
+
+/// A test's fault point on the sent mark's write, failing it before the
+/// hand-off.
+#[cfg(all(test, debug_assertions))]
+pub(crate) const SENT_MARK_FAULT: &str = "send.sent_mark";
+
 impl NetworkSession {
     /// Stores the payment's messages and adds its recipients to the address
     /// book, as dash-qt's `WalletModel::sendCoins` does after a send, with
@@ -2224,9 +2441,21 @@ impl NetworkSession {
             Some(_) => &[][..],
             None => &prepared.records[..],
         };
-        let wallet = self.wallet(&wallet_id).await?;
+        // After the hand-off: a wallet closed meanwhile keeps the payment
+        // sent and skips what only it would show.
+        let skipped = || {
+            tracing::warn!(wallet = %wallet_id, "the wallet closed: a payment's message and address-book entries were not stored");
+            Ok(())
+        };
+        let Ok(wallet) = self.wallet(&wallet_id).await else {
+            return skipped();
+        };
+        #[cfg(test)]
+        crate::coins::pause_at(&self.hub.pause_metadata).await;
         let owned: Vec<bool> = {
-            let state = wallet.state().await;
+            let Ok(state) = crate::wallet_read::info_of(&wallet).await else {
+                return skipped();
+            };
             records
                 .iter()
                 .map(|(a, _, _)| {

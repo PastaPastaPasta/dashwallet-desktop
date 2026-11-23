@@ -7,6 +7,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
+import { useT } from "../i18n";
 import type { Display } from "../format/display";
 import { duffsToMinor, minorToDuffs, minorToPlain, minorUnits, parseFiat } from "../format/fiat";
 import { FiatLine, useFiat } from "./rates";
@@ -146,6 +147,7 @@ export function useFiatEntry(shown: Display, amount: AmountText): FiatEntry {
 
 /** The toggle beside an amount field: "USD" to type in fiat, the display unit to type in it again. */
 export function FiatToggle({ entry, shown, testId }: { entry: FiatEntry; shown: Display; testId: string }) {
+  const tr = useT();
   if (!entry.toggle.shown) return null;
   const to = entry.active ? shown.name : entry.currency!;
   return (
@@ -155,7 +157,7 @@ export function FiatToggle({ entry, shown, testId }: { entry: FiatEntry; shown: 
       className="amount-toggle"
       data-testid={testId}
       aria-pressed={entry.active}
-      aria-label={`Enter the amount in ${to}`}
+      aria-label={tr("app.fiat.toggle", { unit: to })}
       why={entry.toggle.why}
       whyId={entry.toggle.whyId}
       disabled={entry.toggle.disabled}
@@ -174,7 +176,7 @@ export function FiatSecondary({ entry, duffs, testId }: { entry: FiatEntry; duff
       {entry.active ? (
         entry.dash && (
           <span className="amount-secondary" data-testid={testId}>
-            {entry.dash}
+            <bdi dir="ltr">{entry.dash}</bdi>
           </span>
         )
       ) : (

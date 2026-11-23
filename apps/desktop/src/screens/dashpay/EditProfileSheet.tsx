@@ -8,6 +8,7 @@ import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { MAX_ZOOM, MIN_ZOOM, PAN_STEP, ZOOM_STEP, cropRect, panBy, placement, zoomTo } from "../../dashpay/crop";
 import { charCount, EDIT_COPY, type EditProfileModel } from "../../dashpay/editProfile";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { Avatar } from "../contacts/Avatar";
 import { GrantSheet } from "../tools/common";
@@ -42,6 +43,7 @@ function Counted({
   testId: string;
   onChange: (text: string) => void;
 }) {
+  useT();
   const id = useId();
   const props = {
     id,
@@ -59,8 +61,7 @@ function Counted({
       <label htmlFor={id}>{label}</label>
       {multiline ? <textarea rows={3} {...props} /> : <input type="text" autoComplete="off" {...props} />}
       <span className={over ? "field-hint edit-profile-count is-over" : "field-hint edit-profile-count"} id={`${id}-count`} data-testid={`${testId}-count`}>
-        {C.count(charCount(value), max)}
-        {over && `. ${C.tooLong(max)}`}
+        {over ? C.countOver(charCount(value), max) : C.count(charCount(value), max)}
       </span>
     </div>
   );
@@ -68,6 +69,7 @@ function Counted({
 
 /** A step's progress line. */
 function Progress({ text, testId }: { text: string; testId: string }) {
+  useT();
   return (
     <p className="edit-profile-saving" role="status" data-testid={testId}>
       {text}
@@ -78,6 +80,7 @@ function Progress({ text, testId }: { text: string; testId: string }) {
 
 /** The picture the save would publish: the new one's preview, none, or the current one. */
 function ChosenPicture({ m, letters }: { m: EditProfileModel; letters: string }) {
+  useT();
   const p = m.picture;
   switch (p.kind) {
     case "new":
@@ -91,6 +94,7 @@ function ChosenPicture({ m, letters }: { m: EditProfileModel; letters: string })
 
 /** The picture block of the form (E1, E2, E4, E9, E10). */
 function Picture({ m, letters }: { m: EditProfileModel; letters: string }) {
+  useT();
   const p = m.picture;
   const busy = m.saving !== null;
   const take = (file: File | null) => {
@@ -170,6 +174,7 @@ function Picture({ m, letters }: { m: EditProfileModel; letters: string }) {
 }
 
 function Form({ m, letters, username }: { m: EditProfileModel; letters: string; username: string | null }) {
+  useT();
   const busy = m.saving !== null;
   return (
     <>
@@ -218,13 +223,15 @@ function Form({ m, letters, username }: { m: EditProfileModel; letters: string; 
 }
 
 const SOURCES = {
-  url: { copy: C.url, type: "url", placeholder: "https://" },
-  gravatar: { copy: C.gravatar, type: "email", placeholder: C.gravatar.placeholder },
+  url: { copy: C.url, type: "url" },
+  gravatar: { copy: C.gravatar, type: "email" },
 } as const;
 
 /** U1–U3 and G1–G2: one field, its fetch and its refusal. */
 function SourceStep({ m, kind }: { m: EditProfileModel; kind: "url" | "gravatar" }) {
-  const { copy, type, placeholder } = SOURCES[kind];
+  useT();
+  const { copy, type } = SOURCES[kind];
+  const placeholder = kind === "url" ? "https://" : C.gravatar.placeholder;
   const value = kind === "url" ? m.url : m.email;
   const fetch = () => void (kind === "url" ? m.fetchUrl() : m.fetchGravatar());
   return (
@@ -273,6 +280,7 @@ function SourceStep({ m, kind }: { m: EditProfileModel; kind: "url" | "gravatar"
 /** K1–K2: the square frame over the picture; drag or the arrow keys move it, the slider and
  * + / − zoom (D4). */
 function CropStep({ m }: { m: EditProfileModel }) {
+  useT();
   const drag = useRef<{ x: number; y: number } | null>(null);
   const view = m.crop;
   const rect = view ? cropRect(view) : null;
@@ -362,6 +370,7 @@ function CropStep({ m }: { m: EditProfileModel }) {
 /** Q1 (D11). `back`: where Keep Editing returns focus (the opener may be gone, or none: WebKit
  * does not focus a clicked button). */
 function DiscardSheet({ m, back }: { m: EditProfileModel; back: () => HTMLElement | null }) {
+  useT();
   return (
     <Sheet title={C.discard.title} width="small" testId="edit-profile-discard" returnFocus={back} onClose={() => m.keepEditing()}>
       <p className="sheet-text">{C.discard.text}</p>
@@ -381,6 +390,7 @@ function DiscardSheet({ m, back }: { m: EditProfileModel; back: () => HTMLElemen
 const FIRST_FIELD = "input:not(:disabled), textarea:not(:disabled), [data-autofocus]";
 
 export function EditProfileSheet({ model, letters, username }: { model: EditProfileModel; letters: string; username: string | null }) {
+  useT();
   const m = useModel(model);
   const body = useRef<HTMLDivElement>(null);
   if (!m.open || m.identity === null) return <GrantSheet grants={m.grants} />;

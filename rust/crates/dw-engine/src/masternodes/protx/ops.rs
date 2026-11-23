@@ -30,6 +30,13 @@ use crate::history::TxEntry;
 use crate::send::{PreparedSummary, SpendCharge};
 use crate::{EngineError, NetworkSession, WalletId};
 
+/// Discard's refusal while the history lists its payment pending.
+const DISCARD_LISTED: &str = "discarding the operation: its payment is still listed in History; abandon it there first, then discard again";
+
+/// Discard's refusal when a sent mark may be all that claims the payment's
+/// coins (not this session's held hand-off, not listed).
+const DISCARD_UNCERTAIN: &str = "discarding the operation: its payment may still be on its way; restart Dash Wallet, abandon the payment in History, then discard again; if History doesn't list it, run Tools ▸ Repair ▸ Remove unconfirmed transactions, then discard again";
+
 /// `masternodes.collateral_released:<outpoint>`, wallet-scoped: the user
 /// released this collateral, so the follower doesn't lock it again (D9).
 pub(crate) const RELEASED: &str = "masternodes.collateral_released:";
@@ -101,6 +108,7 @@ pub(crate) fn error_code(e: &EngineError) -> String {
         F::BroadcastRejected { .. } => "broadcast_rejected",
         F::BroadcastUnknown { .. } => "broadcast_unknown",
         F::Cancelled => "cancelled",
+        F::HeldUntilRestart => "held_until_restart",
     };
     format!("send.{name}")
 }
@@ -430,8 +438,18 @@ impl NetworkSession {
         wallet: WalletId,
     ) -> Result<(HashMap<Txid, TxEntry>, HashSet<OutPoint>), MasternodesError> {
         let w = self.wallet(&wallet).await?;
+        self.op_view_of(wallet, &w).await
+    }
+
+    /// [`Self::op_view`] of the wallet `w`, already looked up: a wallet that
+    /// left since is an error.
+    pub(crate) async fn op_view_of(
+        &self,
+        wallet: WalletId,
+        w: &platform_wallet::wallet::platform_wallet::PlatformWallet,
+    ) -> Result<(HashMap<Txid, TxEntry>, HashSet<OutPoint>), MasternodesError> {
         let unspent = {
-            let state = w.state().await;
+            let state = crate::wallet_read::info_of(w).await?;
             read_coins(&state.core_wallet)
                 .coins
                 .into_iter()
@@ -522,7 +540,7 @@ impl NetworkSession {
         if let Some(seam) = self.masternodes.protx_seam() {
             *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&seam.broadcaster));
         }
-        let prepared = draft.assembled(d.tx, d.summary, d.charge, d.fence, d.maybe_out);
+        let prepared = draft.assembled(d.tx, d.summary, d.charge, d.fence, d.maybe_out, None);
         let (w, id, now) = (wallet.to_string(), d.id.clone(), now_secs());
         let begun = self
             .appdb_op(move |db| db.begin_masternode_op_attempt(&w, &id, now))
@@ -539,7 +557,15 @@ impl NetworkSession {
             prepared.refund_unadmitted();
         }
         let code = error_code;
-        let end = if prepared.released() {
+        // An error before the hand-off (the sent mark's write) leaves the
+        // transaction pending: nothing was handed off.
+        let held = matches!(
+            &outcome,
+            Err(EngineError::Send(
+                crate::send::SendFailure::HeldUntilRestart
+            ))
+        );
+        let end = if prepared.released() || (outcome.is_err() && prepared.pending()) || held {
             AttemptEnd::NotSent {
                 first: !earlier,
                 error: outcome
@@ -690,23 +716,67 @@ impl NetworkSession {
         {
             unlock.push(o);
         }
+        // A first hand-off refused before it left whose sent marks could not
+        // be dropped (`send.held_until_restart`) still has them: they go
+        // first, or a restart would list its transaction for Resend.
+        let marked = (state == ProTxOperationState::NotSent)
+            .then(|| row.txid.as_deref().and_then(|t| Txid::from_str(t).ok()))
+            .flatten();
+        // A payment listed from its mark after a restart has its coins
+        // claimed: it is abandoned first, never dropped here. Its marks go
+        // only for this session's held hand-off, whose coins no load
+        // claimed, or once it is abandoned. Elsewhere a mark may be all that
+        // claims its coins (a load still running, one whose saved copies
+        // didn't read): Discard waits.
+        let listed = marked.and_then(|t| self.hub.history.get(&wallet, &t));
+        if listed.as_ref().is_some_and(|e| !e.is_abandoned()) {
+            return Err(EngineError::Wallet(DISCARD_LISTED.into()).into());
+        }
+        let droppable = listed.is_some()
+            || marked.is_some_and(|t| {
+                (self.hub.history).read_wallet(&wallet, |h| {
+                    h.held_here.contains(&t) && !h.claimed_at_load.contains(&t)
+                })
+            });
         let (w, id) = (wallet.to_string(), id.to_string());
         let deleted = self
             .appdb_op(move |db| {
+                if let Some(txid) = marked
+                    && crate::tx_actions::has_sent_mark(db, wallet, txid)?
+                {
+                    if !droppable {
+                        return Ok(Err(None));
+                    }
+                    if let Err(e) = crate::tx_actions::forget_sent(db, wallet, &[txid]) {
+                        return Ok(Err(Some(e.to_string())));
+                    }
+                }
                 // The row and its payout-change barrier go in one
                 // transaction, only while `sent_at IS NULL` (MG-13 P16,
                 // r4 m1): a row that may be out keeps both.
                 if !db.discard_unsent_masternode_op_durable(&w, &id)? {
-                    return Ok(false);
+                    return Ok(Ok(false));
                 }
                 let now = now_secs();
                 for o in &unlock {
                     let holder = Holder::Operation(&id);
                     db.release_lock(&w, holder, &o.txid.to_string(), o.vout, now)?;
                 }
-                Ok(true)
+                Ok(Ok(true))
             })
-            .await?;
+            .await?
+            .map_err(|e| match e {
+                None => EngineError::Wallet(DISCARD_UNCERTAIN.into()),
+                Some(e) => {
+                    tracing::warn!(%wallet, error = %e, "could not drop a discarded operation's sent marks");
+                    EngineError::Storage(
+                        "discarding the operation: its payment's saved copy could not be removed; restart Dash Wallet, then discard it again".into(),
+                    )
+                }
+            })?;
+        if let Some(t) = marked {
+            self.hub.history.drop_claims(&wallet, [t]);
+        }
         if !deleted {
             // `sent_at` was set: the bytes may be out (D6).
             return Err(MasternodesError::OperationState {

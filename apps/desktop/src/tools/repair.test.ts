@@ -10,6 +10,7 @@ import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
 import type { StuckShieldFunding } from "../api/generated/StuckShieldFunding";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
+import { DEFAULT_PREFS, ui } from "../app/ui";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "./testApi";
 import { GrantModel } from "./grant";
@@ -43,6 +44,7 @@ const QUOTE: RegistrationQuote = {
   remainingCredits: "1000000000",
   availableDuffs: 10e8,
   grant: { maxDuffs: 3_002_261, maxCredits: "2000000000" },
+  readiness: null,
 };
 
 function setup(lock = {}) {
@@ -243,6 +245,12 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     api.creditsStuckTopUpFundings.mockResolvedValue([{ step, identityIndex: 0, identity: "alice-id", state: "maybeSent" }]);
     await model.refresh();
     expect(model.stuckTopUps.map((t) => [t.funding.step, RepairText.topUp(t.name)])).toEqual([[step, "A top-up of @alice's credits"]]);
+    ui.set({ prefs: { ...DEFAULT_PREFS, language: "ar-XB" } });
+    try {
+      expect(RepairText.topUp("alice")).toContain("\u2068@alice\u2069");
+    } finally {
+      ui.set({ prefs: DEFAULT_PREFS });
+    }
     model.ask("resolveStuck", model.stuckTopUps[0].funding);
     expect(model.state).toMatchObject({ kind: "confirming", what: "resolveStuck", target: { step } });
     api.creditsStuckTopUpFundings.mockResolvedValue([]);

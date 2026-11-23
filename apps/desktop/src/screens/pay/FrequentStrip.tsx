@@ -4,6 +4,7 @@
 
 import { useId } from "react";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
+import { useT } from "../../i18n";
 import { Avatar } from "../contacts/Avatar";
 import { payeeOf, type Payee } from "./contact";
 
@@ -19,12 +20,13 @@ export function FrequentStrip({
   testId: string;
   className?: string;
 }) {
+  const t = useT();
   const id = useId();
   if (contacts.length === 0) return null;
   return (
     <section className={["pay-frequent", className].filter(Boolean).join(" ")} aria-labelledby={id} data-testid={testId}>
       <h2 className="contacts-group-title" id={id}>
-        Frequent contacts
+        {t("pay.contact.frequent")}
       </h2>
       <ul className="pay-frequent-chips">
         {contacts.map((c) => {

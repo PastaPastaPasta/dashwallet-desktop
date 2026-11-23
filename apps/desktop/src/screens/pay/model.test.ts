@@ -13,8 +13,11 @@ import {
   coinSource,
   confirmActions,
   contactConfirmActions,
+  contactDataText,
+  failureText,
   PAY_CHECKING,
   PAY_INCOMPLETE,
+  PAY_INCOMPLETE_CONTACT,
   reviewBlockedReason,
   confirmedOf,
   credentialPrompt,
@@ -27,6 +30,7 @@ import {
   recipientOf,
   mixedFeeText,
   sendErrorText,
+  settleNotSent,
   withSubtractFee,
 } from "./model";
 
@@ -161,7 +165,7 @@ describe("the engine's refusals", () => {
   });
 
   it("is not sent only when the engine released a first attempt (E0-13 D8)", () => {
-    const held = { draft: 1, prepared: 2, amount: 5, fee: 1 };
+    const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 5, fee: 1 };
     expect(broadcastFailure(err("send.broadcast_unknown"), "test", held, true)).toMatchObject({ kind: "unknown", retry: true, ...held });
     expect(broadcastFailure(err("send.broadcast_rejected", { kind: "reason", reason: "bad-txns" }), "test", held, true)).toEqual({
       kind: "failed",
@@ -169,16 +173,64 @@ describe("the engine's refusals", () => {
     });
     for (const code of ["send.no_peers", "send.prepared_tx_spent", "send.cancelled", "app.unknown_handle"] as const)
       expect(broadcastFailure(err(code), "test", held, true).kind).toBe("failed");
+    // Its record not written: refused before the hand-off, and a retry would be refused too.
+    expect(broadcastFailure(err("storage"), "test", held, true)).toEqual({
+      kind: "failed",
+      text: "The payment could not be recorded in this wallet.",
+    });
+    expect(broadcastFailure(err("storage"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
     // A code the renderer does not know may come after the bytes left: unknown, never abandoned.
     expect(broadcastFailure(err("internal"), "test", held, true)).toMatchObject({ kind: "unknown", retry: true });
   });
 
+  it("reports a payment not sent even when its abandon is refused", async () => {
+    const shown: string[] = [];
+    await settleNotSent(() => Promise.reject(err("send.held_until_restart")), () => shown.push("refused"));
+    let abandoned = false;
+    await settleNotSent(
+      async () => {
+        abandoned = true;
+      },
+      () => shown.push("abandoned"),
+    );
+    await settleNotSent(null, () => shown.push("released"));
+    expect(shown).toEqual(["refused", "abandoned", "released"]);
+    expect(abandoned).toBe(true);
+  });
+
+  it("says a payment not sent whose coins stay reserved needs a restart, with no retry", () => {
+    const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 5, fee: 1 };
+    const text =
+      "The payment was not sent, but its coins stay reserved until you restart Dash Wallet. After the restart it's listed as pending in Activity; abandon it there to get the coins back.";
+    expect(sendErrorText(err("send.held_until_restart"), "test")).toEqual({ text, field: null });
+    for (const first of [true, false]) expect(broadcastFailure(err("send.held_until_restart"), "test", held, first)).toEqual({ kind: "failed", text });
+  });
+
   it("never turns an unknown payment into not sent on a retry", () => {
-    const held = { draft: 1, prepared: 2, amount: 5, fee: 1 };
+    const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 5, fee: 1 };
     expect(broadcastFailure(err("send.no_peers"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
     expect(broadcastFailure(err("send.broadcast_rejected"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
     // The handle went with the draft (a lock closed it): still unknown, nothing to retry.
     expect(broadcastFailure(err("app.unknown_handle"), "test", held, false)).toMatchObject({ kind: "unknown", retry: false });
+  });
+});
+
+describe("a contact payment's refusals over the contact's data (H-09)", () => {
+  const UNCHECKED = "Dash Wallet can't check this contact's payment details yet. Try again in a few minutes.";
+  const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
+
+  it("says the contact's details can't be checked yet, or don't match", () => {
+    expect(contactDataText(err("platform.context_unavailable"))).toBe(UNCHECKED);
+    expect(contactDataText(err("platform.trust_mismatch"))).toBe(MISMATCH);
+    expect(contactDataText(err("platform.unavailable"))).toBeNull();
+    expect(contactDataText(new Error("x"))).toBeNull();
+  });
+
+  it("speaks of the contact only for a contact payment", () => {
+    expect(failureText(err("platform.context_unavailable"), "test", "DASH", true)).toBe(UNCHECKED);
+    expect(failureText(err("platform.trust_mismatch"), "test", "DASH", true)).toBe(MISMATCH);
+    expect(failureText(err("platform.context_unavailable"), "test")).toBe("platform.context_unavailable");
+    expect(failureText(err("platform.unavailable"), "test", "DASH", true)).toBe("Could not reach Dash Platform. Try again.");
   });
 });
 
@@ -382,5 +434,13 @@ describe("why a payment cannot be reviewed yet (P15)", () => {
   it("falls back to incomplete or still being checked", () => {
     expect(reviewBlockedReason(false, [null, undefined, ""], false)).toBe(PAY_INCOMPLETE);
     expect(reviewBlockedReason(false, [null], true)).toBe(PAY_CHECKING);
+  });
+
+  it("asks the contact form only for an amount, and the address form for both", () => {
+    expect(PAY_INCOMPLETE_CONTACT).toBe("Enter an amount first.");
+    expect(PAY_INCOMPLETE).toBe("Enter an address and an amount first.");
+    expect(reviewBlockedReason(false, [null], false, "contact")).toBe(PAY_INCOMPLETE_CONTACT);
+    expect(reviewBlockedReason(false, [null], false, "address")).toBe(PAY_INCOMPLETE);
+    expect(reviewBlockedReason(false, [null], true, "contact")).toBe(PAY_CHECKING);
   });
 });

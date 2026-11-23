@@ -24,7 +24,7 @@ use platform_wallet::events::WalletEvent;
 use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShieldedOutcome};
 
 use crate::history::HistoryStore;
-use crate::pump::{EventPump, PumpTarget, TxidSet};
+use crate::pump::{EventPump, NewTxs, PumpTarget, TxidSet};
 use crate::sync::{SyncSnapshot, SyncTracker};
 use crate::tools::{RescanState, better_chainlock, count_masternodes};
 use crate::{DashNetwork, WalletBalances, WalletId};
@@ -86,12 +86,21 @@ pub enum EngineEvent {
     },
     /// Transactions of the wallet seen for the first time, batched over
     /// 100 ms as dash-qt batches its popups (QT-031…033). Never sent for
-    /// status changes. `catch_up`: SPV was not caught up when the batch was
-    /// sent (dash-qt shows no popups during initial sync).
+    /// status changes, so a transaction is named once: a payment seen in
+    /// the mempool and then mined is in the batch of its mempool sighting
+    /// only. `catch_up`: SPV was not caught up when the batch was sent
+    /// (dash-qt shows no popups during initial sync).
     NewTransactions {
         network: DashNetwork,
         wallet_id: WalletId,
         txids: Vec<Txid>,
+        /// Those of `txids` learned live, in their order: first seen in the
+        /// mempool or with an InstantSend lock (dash-spv relays both during
+        /// sync too), or in a block at most two blocks (`LIVE_DEPTH`) below the
+        /// network's best height when the block was processed. The others
+        /// were found by the scan in older blocks, or with no best height
+        /// known yet.
+        live: Vec<Txid>,
         catch_up: bool,
     },
     /// A wallet was loaded or unloaded (QT-101).
@@ -164,6 +173,11 @@ pub enum EngineEvent {
     /// closed). Not a network's: prices are the engine's. Hosts re-read
     /// `Rates::status`. dw-ffi withholds it.
     Rates,
+    /// An automatic backup was written (QT-116): hosts re-read the
+    /// automatic backups and their failures. dw-ffi withholds it.
+    Backups {
+        network: DashNetwork,
+    },
 }
 
 impl EngineEvent {
@@ -178,7 +192,8 @@ impl EngineEvent {
             | Self::LockProgress { .. }
             | Self::DispatchResolved { .. }
             | Self::Governance { .. }
-            | Self::Rates => true,
+            | Self::Rates
+            | Self::Backups { .. } => true,
             Self::Notice { code, .. } => code.engine_side(),
             _ => false,
         }
@@ -276,6 +291,26 @@ impl NoticeCode {
 /// Receives engine events. Called from engine threads; must not block.
 pub trait EventSink: Send + Sync + 'static {
     fn emit(&self, event: EngineEvent);
+}
+
+/// How far below the network's best height a block's transactions are
+/// still learned live (`EngineEvent::NewTransactions::live`): the block at
+/// the tip, and the two before it for a tip that moved while the block was
+/// processed.
+pub(crate) const LIVE_DEPTH: u32 = 2;
+
+/// Whether a transaction first seen in `context` is learned live, the
+/// network's best height being `network_tip`. A block above that height is
+/// not: the reading is behind, and may be a whole scan behind.
+pub(crate) fn learned_live(context: &TransactionContext, network_tip: Option<u32>) -> bool {
+    match context {
+        TransactionContext::Mempool | TransactionContext::InstantSend(_) => true,
+        TransactionContext::InBlock(block) | TransactionContext::InChainLockedBlock(block) => {
+            network_tip
+                .and_then(|tip| tip.checked_sub(block.height()))
+                .is_some_and(|depth| depth <= LIVE_DEPTH)
+        }
+    }
 }
 
 pub(crate) fn unix_now() -> u64 {
@@ -462,6 +497,9 @@ pub(crate) struct SessionHub {
     pub tracker: Mutex<SyncTracker>,
     pub pump: EventPump,
     pub history: HistoryStore,
+    /// The session's app database, once the session is open and until it
+    /// closes: a sweep drops the sent marks of the payments it removed.
+    pub appdb: std::sync::OnceLock<std::sync::Weak<dw_appdb::AppDb>>,
     pub wallets: RwLock<BTreeMap<WalletId, WalletState>>,
     pub names: RwLock<HashMap<WalletId, WalletName>>,
     /// The rescan the engine started, until it finishes or is cancelled.
@@ -488,6 +526,9 @@ pub(crate) struct SessionHub {
     /// Runs on each SPV peers 0 -> >0 transition: the recorded sweep
     /// chunks are sent again (`coinjoin`); unset in hub-only tests.
     peers_up: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    /// Reads a wallet's balances again from the manager, after the event
+    /// being applied (`update_balance`).
+    balance_reread: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// Records a beaten sweep chunk or a truncation in the sweep rows;
     /// unset in hub-only tests.
     sweep_news: OnceLock<SweepNewsHook>,
@@ -503,6 +544,9 @@ pub(crate) struct SessionHub {
     /// truncated the header chain, or Rebuild Index) checks every wallet
     /// for a truncation ([`Self::detect_truncation`]).
     header_tip: Mutex<Option<u32>>,
+    /// Payments whose own block a wallet's ChainLock named, by wallet:
+    /// their sent marks go at the next history flush.
+    final_sends: Mutex<Vec<(WalletId, Vec<Txid>)>>,
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -514,6 +558,17 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next wallet open before its replay is resumed.
     #[cfg(test)]
     pub(crate) pause_load: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: runs once, when a load or watch-only import has published a
+    /// wallet and before it widens the wallet's pools.
+    #[cfg(test)]
+    pub(crate) on_published: Mutex<Option<PublishedHook>>,
+    /// Tests: holds the next wallet open before its spend claims are set.
+    #[cfg(test)]
+    pub(crate) pause_claims: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next spend-claim restore before it takes the
+    /// wallet manager's write lock.
+    #[cfg(test)]
+    pub(crate) pause_spend_claims: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next history load once it has read the stored
     /// records, before it reads the wallet.
     #[cfg(test)]
@@ -524,8 +579,29 @@ pub(crate) struct SessionHub {
     /// Tests: the next history load's first stored record read goes wrong.
     #[cfg(test)]
     pub(crate) record_read_fault: Mutex<Option<crate::history_ops::RecordFault>>,
+    /// Tests: the next history load (`.0`) or stored spend-claims read
+    /// (`.1`) cannot read this transaction's record.
+    #[cfg(test)]
+    pub(crate) unreadable_record: Mutex<(Option<dashcore::Txid>, Option<dashcore::Txid>)>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next abandon after its marks are written, before
+    /// its sweep.
+    #[cfg(test)]
+    pub(crate) pause_abandon_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next abandon's write of its abandoned marks fails.
+    #[cfg(test)]
+    pub(crate) fail_abandon_mark: std::sync::atomic::AtomicBool,
+    /// Tests: the next abandon's store of its sweep fails.
+    #[cfg(test)]
+    pub(crate) fail_abandon_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: Remove unconfirmed transactions reads this wallet's sent marks
+    /// as not read.
+    #[cfg(test)]
+    pub(crate) fail_sent_read: Mutex<Option<WalletId>>,
+    /// Tests: holds the next payment's metadata write after its wallet read.
+    #[cfg(test)]
+    pub(crate) pause_metadata: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next resume between its record read and its rewind.
     #[cfg(test)]
     pub(crate) pause_resume: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -551,7 +627,18 @@ pub(crate) struct SessionHub {
     pub(crate) pause_event: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
 }
 
+#[cfg(test)]
+pub(crate) type PublishedHook = Box<dyn FnOnce(crate::WalletId) -> bool + Send>;
+
 impl SessionHub {
+    /// Tests: runs [`Self::on_published`], if set, for wallet `id`. A load
+    /// stops there, as a quit would, when it returns `true`.
+    #[cfg(test)]
+    pub(crate) fn run_on_published(&self, id: crate::WalletId) -> bool {
+        let hook = self.on_published.lock().unwrap().take();
+        hook.is_some_and(|hook| hook(id))
+    }
+
     pub(crate) fn set_rates(&self, rates: std::sync::Weak<crate::rates::RatesHub>) {
         let _ = self.rates.set(rates);
     }
@@ -619,6 +706,7 @@ impl SessionHub {
             tracker: Mutex::new(SyncTracker::default()),
             pump: EventPump::default(),
             history: HistoryStore::default(),
+            appdb: std::sync::OnceLock::new(),
             wallets: RwLock::new(BTreeMap::new()),
             names: RwLock::new(HashMap::new()),
             rescan: Mutex::new(None),
@@ -630,11 +718,13 @@ impl SessionHub {
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
             peers_up: OnceLock::new(),
+            balance_reread: OnceLock::new(),
             sweep_news: OnceLock::new(),
             sweep_retry_due: Mutex::new(HashSet::new()),
             sweep_retry: OnceLock::new(),
             headers: RwLock::new(None),
             header_tip: Mutex::new(None),
+            final_sends: Mutex::new(Vec::new()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
@@ -643,13 +733,31 @@ impl SessionHub {
             #[cfg(test)]
             pause_load: Mutex::new(None),
             #[cfg(test)]
+            on_published: Mutex::new(None),
+            #[cfg(test)]
+            pause_claims: Mutex::new(None),
+            #[cfg(test)]
+            pause_spend_claims: Mutex::new(None),
+            #[cfg(test)]
             pause_history: Mutex::new(None),
             #[cfg(test)]
             fail_history_read: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             record_read_fault: Mutex::new(None),
             #[cfg(test)]
+            unreadable_record: Mutex::default(),
+            #[cfg(test)]
             pause_abandon: Mutex::new(None),
+            #[cfg(test)]
+            pause_abandon_sweep: Mutex::new(None),
+            #[cfg(test)]
+            fail_abandon_mark: Default::default(),
+            #[cfg(test)]
+            fail_abandon_sweep: Default::default(),
+            #[cfg(test)]
+            fail_sent_read: Mutex::new(None),
+            #[cfg(test)]
+            pause_metadata: Mutex::new(None),
             #[cfg(test)]
             pause_resume: Mutex::new(None),
             #[cfg(test)]
@@ -671,6 +779,11 @@ impl SessionHub {
 
     fn lease_table(&self) -> Option<Arc<crate::platform::lease::LeaseTable>> {
         self.leases.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Sets what reads a wallet's balances again (once).
+    pub(crate) fn attach_balance_reread(&self, run: Box<dyn Fn(WalletId) + Send + Sync>) {
+        let _ = self.balance_reread.set(run);
     }
 
     /// Sets what runs on each SPV peers 0 -> >0 transition (once).
@@ -957,7 +1070,10 @@ impl SessionHub {
     pub(crate) fn admit(&self, id: WalletId) -> bool {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         let was = unloaded.remove(&id);
-        self.history.with_wallet(id, |h| h.session_held.clear());
+        self.history.with_wallet(id, |h| {
+            h.session_held.clear();
+            h.held_here.clear();
+        });
         was
     }
 
@@ -969,7 +1085,10 @@ impl SessionHub {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         for id in ids {
             if unloaded.remove(&id) {
-                self.history.with_wallet(id, |h| h.session_held.clear());
+                self.history.with_wallet(id, |h| {
+                    h.session_held.clear();
+                    h.held_here.clear();
+                });
             }
         }
     }
@@ -997,7 +1116,43 @@ impl SessionHub {
 
     /// Applies a wallet event's balance snapshot. Returns whether the
     /// visible balances changed.
+    ///
+    /// A snapshot with locked coins was taken while a funding held its
+    /// temporary locks (only those set the flag), and may be applied after
+    /// they were released: the balances are read again once it is.
     fn update_balance(
+        &self,
+        id: WalletId,
+        balance: &WalletCoreBalance,
+        accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+    ) -> bool {
+        let changed = self.write_balances(id, balance, accounts);
+        if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
+            && let Some(reread) = self.balance_reread.get()
+        {
+            reread(id);
+        }
+        changed
+    }
+
+    /// Applies balances read from the manager, under its lock, unless the
+    /// wallet is unloaded; announces them when they changed.
+    pub(crate) fn apply_balance_read(
+        &self,
+        id: WalletId,
+        balance: &WalletCoreBalance,
+        accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+    ) {
+        let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        if unloaded.contains(&id) {
+            return;
+        }
+        if self.write_balances(id, balance, accounts) {
+            self.pump.mark_balances(id);
+        }
+    }
+
+    fn write_balances(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
@@ -1253,12 +1408,17 @@ impl SessionHub {
                 // A contact's record shows nowhere; a ProRegTx among them is
                 // kept out of sight for its collateral, as at a load.
                 if self.history.with_wallet(id, |h| h.upsert(record, now)) {
-                    self.pump.mark_new_txs(id, &[record.txid]);
+                    let live = learned_live(&record.context, self.tracker().network_tip());
+                    self.pump.mark_new_txs(id, &[(record.txid, live)]);
                 }
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
-                if self.update_balance(id, balance, account_balances) {
+                // Queued before an Abandon this session took it: its balance
+                // is older.
+                let queued = matches!(record.context, TransactionContext::Mempool)
+                    && (self.history).read_wallet(&id, |h| h.abandoned_here.contains(&record.txid));
+                if !queued && self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
                 }
                 // First seen through its InstantSend lock: evidence. In
@@ -1307,12 +1467,21 @@ impl SessionHub {
                     },
                 );
                 // Upstream deleted these records (provably beaten spends);
-                // the history drops them too.
+                // the history drops them too, and their sent marks go.
                 self.history.with_wallet(id, |h| {
                     for t in txids {
                         h.forget(t);
+                        h.swept.insert(*t);
                     }
                 });
+                if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
+                    match crate::tx_actions::forget_sent(&appdb, id, txids) {
+                        Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
+                        Err(e) => {
+                            tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
+                        }
+                    }
+                }
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
@@ -1350,6 +1519,7 @@ impl SessionHub {
                 ..
             } => {
                 let mut new = Vec::new();
+                let tip = self.tracker().network_tip();
                 let changed: Vec<Txid> = self.history.with_wallet(id, |h| {
                     inserted
                         .iter()
@@ -1357,7 +1527,7 @@ impl SessionHub {
                         .chain(matured)
                         .filter_map(|r| {
                             if h.upsert(r, now) {
-                                new.push(r.txid);
+                                new.push((r.txid, learned_live(&r.context, tip)));
                             }
                             crate::history::is_wallets(r).then_some(r.txid)
                         })
@@ -1398,16 +1568,35 @@ impl SessionHub {
                 ..
             } => {
                 self.note_chainlock(chain_lock.block_height, chain_lock.block_hash);
-                let locked: Vec<Txid> = self.history.with_wallet(id, |h| {
-                    locked_transactions
-                        .values()
-                        .flatten()
+                let (locked, settled): (Vec<Txid>, Vec<Txid>) = self.history.with_wallet(id, |h| {
+                    // key-wallet promotes by height; only a record whose own
+                    // block the lock names is final for its sent mark. This
+                    // relies on dash-spv dispatching only validated locks
+                    // (BLS-verified, header-matched): recheck that on any
+                    // rust-dashcore bump.
+                    let settled = (locked_transactions.values().flatten())
+                        .filter(|t| {
+                            (h.txs.get(*t).and_then(|e| e.context.block_info())).is_some_and(|b| {
+                                b.height() == chain_lock.block_height
+                                    && b.block_hash() == chain_lock.block_hash
+                            })
+                        })
+                        .copied()
+                        .collect();
+                    let locked = (locked_transactions.values().flatten())
                         .filter(|t| h.set_chain_locked(t))
                         .copied()
-                        .collect()
+                        .collect();
+                    (locked, settled)
                 });
-                if !locked.is_empty() {
-                    self.pump.mark_history(id, Some(&locked));
+                let mut changed = locked;
+                if !settled.is_empty() {
+                    changed.extend(&settled);
+                    (self.final_sends.lock().unwrap_or_else(|p| p.into_inner()))
+                        .push((id, settled));
+                }
+                if !changed.is_empty() {
+                    self.pump.mark_history(id, Some(&changed));
                 }
                 self.note_seen(id, locked_transactions.values().flatten().copied());
             }
@@ -1607,7 +1796,9 @@ impl PumpTarget for SessionPump {
                 txids,
             });
         }
-        if seen.is_empty() {
+        let finals =
+            std::mem::take(&mut *(self.hub.final_sends.lock()).unwrap_or_else(|p| p.into_inner()));
+        if seen.is_empty() && finals.is_empty() {
             return;
         }
         // First-seen times keep a mempool payment's arrival time across
@@ -1627,6 +1818,15 @@ impl PumpTarget for SessionPump {
                     tracing::warn!(%wallet_id, error = %e, "could not store price stamps");
                 }
             }
+            for (wallet_id, txids) in finals {
+                let (sent, _) = crate::tx_actions::load_sent(&appdb, wallet_id);
+                let marked: Vec<Txid> = (txids.into_iter())
+                    .filter(|t| sent.contains_key(t))
+                    .collect();
+                if let Err(e) = crate::tx_actions::forget_sent(&appdb, wallet_id, &marked) {
+                    tracing::warn!(wallet = %wallet_id, error = %e, "could not drop the marks of settled payments");
+                }
+            }
         };
         #[cfg(test)]
         let write = {
@@ -1644,13 +1844,14 @@ impl PumpTarget for SessionPump {
         tokio::task::spawn_blocking(write);
     }
 
-    fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {
+    fn flush_new_txs(&self, batches: BTreeMap<WalletId, NewTxs>) {
         let catch_up = !self.hub.tracker().caught_up();
-        for (wallet_id, txids) in batches {
+        for (wallet_id, batch) in batches {
             self.hub.emit(EngineEvent::NewTransactions {
                 network: self.hub.network.clone(),
                 wallet_id,
-                txids,
+                live: batch.live_in_order(),
+                txids: batch.txids,
                 catch_up,
             });
         }
@@ -1734,13 +1935,20 @@ mod tests {
     }
 
     fn in_block(t: &Transaction, height: u32) -> TransactionRecord {
+        seen(
+            t,
+            TransactionContext::InBlock(BlockInfo::new(height, BlockHash::all_zeros(), 0)),
+        )
+    }
+
+    fn seen(t: &Transaction, context: TransactionContext) -> TransactionRecord {
         TransactionRecord::new(
             t.clone(),
             AccountType::Standard {
                 index: 0,
                 standard_account_type: StandardAccountType::BIP44Account,
             },
-            TransactionContext::InBlock(BlockInfo::new(height, BlockHash::all_zeros(), 0)),
+            context,
             TransactionType::Standard,
             TransactionDirection::Incoming,
             Vec::new(),
@@ -1878,7 +2086,13 @@ mod tests {
             block_marks,
             (
                 BTreeMap::from([(W, crate::pump::TxidSet::Some([own.txid()].into()))]),
-                BTreeMap::from([(W, vec![own.txid()])]),
+                BTreeMap::from([(
+                    W,
+                    NewTxs {
+                        txids: vec![own.txid()],
+                        live: BTreeSet::new(),
+                    }
+                )]),
             ),
             "the block event marks its own record alone"
         );
@@ -1888,6 +2102,134 @@ mod tests {
             "a contact's record marks nothing"
         );
         assert_eq!(hidden, [mined.txid(), seen.txid()].into());
+    }
+
+    fn detected(record: TransactionRecord) -> WalletEvent {
+        WalletEvent::TransactionDetected {
+            wallet_id: W.0,
+            record: Box::new(record),
+            balance: WalletCoreBalance::new(1_000, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        }
+    }
+
+    fn block_of(
+        height: u32,
+        inserted: Vec<TransactionRecord>,
+        updated: Vec<TransactionRecord>,
+    ) -> WalletEvent {
+        WalletEvent::BlockProcessed {
+            wallet_id: W.0,
+            height,
+            chain_lock: None,
+            inserted,
+            updated,
+            matured: Vec::new(),
+            balance: WalletCoreBalance::new(1_000, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        }
+    }
+
+    /// A hub whose headers are at `current` of the peers' `target`.
+    fn headers_at(current: u32, target: u32) -> SessionHub {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        hub.tracker().set_headers_syncing(current, target);
+        hub
+    }
+
+    fn new_txs(hub: &SessionHub) -> NewTxs {
+        hub.pump.take_new_txs().remove(&W).unwrap_or_default()
+    }
+
+    /// Issue #141: a payment relayed from the mempool, or with its
+    /// InstantSend lock, while SPV is still catching up is live.
+    #[test]
+    fn a_mempool_or_instantsend_payment_during_catch_up_is_live() {
+        let hub = headers_at(600, 1000);
+        let (mempool, locked) = (tx(1), tx(2));
+        let lock = dashcore::InstantLock {
+            txid: locked.txid(),
+            ..dashcore::InstantLock::default()
+        };
+        hub.apply_wallet_event(&detected(seen(&mempool, TransactionContext::Mempool)));
+        hub.apply_wallet_event(&detected(seen(
+            &locked,
+            TransactionContext::InstantSend(lock),
+        )));
+        let batch = new_txs(&hub);
+        assert!(!hub.tracker().caught_up());
+        assert_eq!(batch.txids, [mempool.txid(), locked.txid()]);
+        assert_eq!(batch.live_in_order(), batch.txids);
+    }
+
+    /// A block's transactions are live when the block is at most
+    /// `LIVE_DEPTH` below the peers' best height, whatever height the scan
+    /// is at; an older block's are the scan's findings, and so are those of
+    /// a block above that height, which the reading has not reached.
+    #[test]
+    fn a_blocks_transactions_are_live_only_near_the_network_tip() {
+        let hub = headers_at(600, 1000);
+        let [old, behind, near, tip, above] = [1, 2, 3, 4, 5].map(tx);
+        hub.apply_wallet_event(&block_of(600, vec![in_block(&old, 600)], vec![]));
+        hub.apply_wallet_event(&block_of(997, vec![in_block(&behind, 997)], vec![]));
+        hub.apply_wallet_event(&block_of(998, vec![in_block(&near, 998)], vec![]));
+        let locked_tip = seen(
+            &tip,
+            TransactionContext::InChainLockedBlock(BlockInfo::new(1000, BlockHash::all_zeros(), 0)),
+        );
+        hub.apply_wallet_event(&block_of(1000, vec![locked_tip], vec![]));
+        hub.apply_wallet_event(&block_of(1001, vec![in_block(&above, 1001)], vec![]));
+        let batch = new_txs(&hub);
+        assert_eq!(
+            batch.txids,
+            [&old, &behind, &near, &tip, &above].map(|t| t.txid())
+        );
+        assert_eq!(batch.live_in_order(), [near.txid(), tip.txid()]);
+    }
+
+    /// Before dash-spv reports a best height, no block's transaction is
+    /// live; a mempool one still is.
+    #[test]
+    fn without_a_best_height_only_off_chain_payments_are_live() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let (mined, relayed) = (tx(1), tx(2));
+        hub.apply_wallet_event(&block_of(5, vec![in_block(&mined, 5)], vec![]));
+        hub.apply_wallet_event(&detected(seen(&relayed, TransactionContext::Mempool)));
+        assert_eq!(new_txs(&hub).live_in_order(), [relayed.txid()]);
+    }
+
+    /// A payment seen in the mempool and then in its block is named once,
+    /// live, in the batch of its mempool sighting.
+    #[test]
+    fn a_payment_seen_then_mined_is_named_once() {
+        let hub = headers_at(600, 1000);
+        let t = tx(1);
+        hub.apply_wallet_event(&detected(seen(&t, TransactionContext::Mempool)));
+        assert_eq!(new_txs(&hub).live_in_order(), [t.txid()]);
+        hub.apply_wallet_event(&block_of(1000, vec![], vec![in_block(&t, 1000)]));
+        assert_eq!(new_txs(&hub), NewTxs::default());
+    }
+
+    /// A wallet restored from its phrase scans years of blocks: none of its
+    /// old payments is live, and a payment relayed meanwhile is, in the
+    /// same batch.
+    #[test]
+    fn a_restore_scanning_years_of_history_finds_no_live_payment() {
+        let hub = headers_at(2_400_000, 2_400_000);
+        let mut found = Vec::new();
+        for (n, height) in (1..=40u8).zip((1_000_000..).step_by(35_000)) {
+            let t = tx(n);
+            hub.apply_wallet_event(&block_of(height, vec![in_block(&t, height)], vec![]));
+            found.push(t.txid());
+        }
+        let relayed = tx(100);
+        hub.apply_wallet_event(&detected(seen(&relayed, TransactionContext::Mempool)));
+        found.push(relayed.txid());
+        let batch = new_txs(&hub);
+        assert_eq!(batch.txids, found);
+        assert_eq!(batch.live_in_order(), [relayed.txid()]);
     }
 
     /// The reconcile's balance replaces an event's doubled one, and is

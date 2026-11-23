@@ -4,7 +4,8 @@
 #   its `selftest` feature (E0-13 D17: the workspace build proves the self-test is absent, the
 #   feature build that it works); rust-linux then regenerates the Tauri bindings
 #   (apps/desktop/src/api/generated and the E0-13 facade coverage table) and fails if they
-#   differ from the committed ones. lint also runs `cargo deny check advisories` (BL-151,
+#   differ from the committed ones, and checks the committed Swift bindings against dw-ffi
+#   (scripts/build-core.sh --check-bindings). lint also runs `cargo deny check advisories` (BL-151,
 #   rust/deny.toml) so a RustSec advisory against Cargo.lock fails CI. lint first checks that
 #   every tracked path can be checked out on Windows (ci/github/windows-paths.py).
 # - desktop-renderer: the Tauri renderer (apps/desktop): design tokens, tsc, vitest, the
@@ -12,8 +13,9 @@
 #   the fixture sources' literals in production), the guard's negative control, and the test of
 #   tauri-selftest.yml's report judge.
 # - ui-playwright: Playwright on the fixture backend in Chromium and WebKit, light and dark, with
-#   axe, inside the pinned Playwright image and without Rust or the engine (U-07). Same commands
-#   locally: apps/desktop/scripts/e2e-docker.sh.
+#   axe, inside the pinned Playwright image and without Rust or the engine (U-07), in two shards
+#   (ui-playwright-shard) whose reports it merges. Same commands locally:
+#   apps/desktop/scripts/e2e-docker.sh.
 # - e2e-tauri-linux: tauri-driver drives the real app on the real engine (a dwcli regtest wallet)
 #   under Xvfb: apps/desktop/scripts/e2e-tauri.sh (launch link, second-launch forwarding, U-01).
 # - deep-links: on Linux, macOS and Windows, the packaged app (a debug bundle with the
@@ -35,7 +37,7 @@ name: CI
 
 # A branch is checked through its pull request only: a push trigger for it as well ran every
 # job twice, and the hosted macOS runners are the scarce ones.
-# Pull requests run the Linux checks only (lint, rust-linux, desktop-renderer, ui-playwright). The
+# Pull requests run the fast Linux checks their changes need (the `changes` job). Playwright and the
 # macOS, Windows, deep-link, E2E and Swift jobs run on pushes to main, nightly and on a dispatch
 # (`gh workflow run ci.yml --ref <branch>` runs them all for a branch); docs/ci.md, "Triggers".
 on:
@@ -70,17 +72,29 @@ env:
   DWD_SWIFT_LINUX_SUITES: DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests|SwiftCrossUIPatchTests
 
 jobs:
-  # A pull request that changes only documentation (docs/ outside docs/contracts and the generated
-  # E0-13 coverage table, or *.md elsewhere) and whose paths are valid on Windows skips the four required
-  # jobs, which then report success. Every other event, and any failure here, runs them. This job is a
-  # required check too: a run cancelled while it is pending skips the four jobs, and its own cancelled
-  # check then blocks the merge.
+  # What a pull request runs, by its changed files (docs/ci.md, "Pull request checks"). While in
+  # development every pull request runs only the fast checks and may merge in batches; Playwright
+  # and the platform matrix run on main and nightly, and a red main is fixed before the next merge.
+  # - docs/ or *.md only (not docs/contracts or the generated E0-13 coverage table): nothing.
+  # - only apps/desktop (not the paths Rust tests read, below): desktop-renderer (tokens, tsc, vitest,
+  #   and dw-protx's no_operator_signing scan of apps/desktop/src).
+  # - anything else, unknown paths included: lint, rust-linux and desktop-renderer.
+  # With FUNDS_FULL_SUITE true, a funds path (any renderer file but i18n catalogs and stylesheets, any
+  # Rust or Swift file, or a path naming a funds word) runs every required job.
+  # Skipped required jobs report success. Every other event, and any failure here, runs them all.
+  # This job is a required check too: a run cancelled while it is pending skips the four jobs,
+  # and its own cancelled check then blocks the merge.
   changes:
     name: What this pull request changes
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      # Restore full per-PR CI on funds paths before RC (11-30) / 1.0: set this to "true".
+      FUNDS_FULL_SUITE: "false"
     outputs:
-      code: ${{ steps.diff.outputs.code }}
+      rust: ${{ steps.diff.outputs.rust }}
+      renderer: ${{ steps.diff.outputs.renderer }}
+      ui: ${{ steps.diff.outputs.ui }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ github.event_name == 'pull_request' }}
@@ -89,23 +103,43 @@ jobs:
           persist-credentials: false
       - id: diff
         run: |
-          code=true
+          rust=true renderer=true ui=true
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
-            printf '%s\n' "$changed"
-            if [[ -n "$changed" ]] \
-              && ! grep -vE '^docs/|\.md$' <<<"$changed" >/dev/null \
-              && ! grep -E '^docs/contracts/|^docs/design/E0-13-facade-coverage\.md$' <<<"$changed" >/dev/null; then
-              code=false
-              ci/github/windows-paths.py
-            fi
+            # NUL-separated: git quotes unusual names otherwise. A failed diff fails this job.
+            git diff --no-renames --name-only -z HEAD^1 HEAD > "$RUNNER_TEMP/changed"
+            docs_code='^docs/contracts/|^docs/design/E0-13-facade-coverage\.md$|\.(rs|swift|ts|tsx|js|mjs|json|toml|ya?ml|sh|py)$'
+            docs='^docs/|\.md$'
+            renderer_only='^apps/desktop/'
+            # Renderer files the Rust tests read (docs/ci.md, "Pull request checks"): these run rust-linux.
+            read_by_rust='^apps/desktop/src/(api/generated/|fixture/vectors/|dashpay/editProfile\.ts$)'
+            # Funds paths: send, signing, CoinJoin, keys, wallet storage, fees and coin selection,
+            # the engine and the Swift and Rust bindings.
+            funds_tree='^rust/|^Sources/|^Tests/|^Package\.(swift|resolved)$|^apps/desktop/src/api/|\.(rs|swift)$'
+            funds_word='send|sign|psbt|coin|fee|key|seed|phrase|mnemonic|vault|wallet|backup|restore|recover|lock|secur|biometr|transfer|withdraw|shield|mix|protx|masternode|collateral|governance|top-?up|fund|pay|utxo|balance|credit|regist|asset|spend|amount|address|invit|tx|pin'
+            # Renderer code can reach a funds flow from any file: only catalogs and stylesheets are exempt.
+            copy='^apps/desktop/src/(i18n/catalog/[^/]+\.ts|styles/[^/]+\.css)$'
+            rust=false renderer=false ui=false any=false
+            while IFS= read -r -d '' f; do
+              any=true
+              if [[ $f =~ $docs && ! $f =~ $docs_code && ! $f =~ $read_by_rust ]]; then kind=docs
+              elif [[ $f =~ $renderer_only && ! $f =~ $read_by_rust ]]; then kind=renderer renderer=true
+              else kind=all rust=true renderer=true
+              fi
+              if [[ $FUNDS_FULL_SUITE == true && $kind != docs && ! $f =~ $copy ]] \
+                && [[ $f =~ $renderer_only || $f =~ $funds_tree || ${f,,} =~ $funds_word ]]; then
+                kind=funds rust=true renderer=true ui=true
+              fi
+              echo "$kind $f"
+            done < "$RUNNER_TEMP/changed"
+            [[ $any == true ]] || rust=true renderer=true ui=true
+            [[ $rust == true ]] || ci/github/windows-paths.py
           fi
-          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+          printf 'rust=%s\nrenderer=%s\nui=%s\n' "$rust" "$renderer" "$ui" | tee -a "$GITHUB_OUTPUT"
 
   lint:
     name: Rust lint (fmt, clippy)
     needs: changes
-    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.rust == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -119,16 +153,12 @@ jobs:
       - name: Tracked paths are valid on Windows
         working-directory: .
         run: ci/github/windows-paths.py
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
-        working-directory: .
         # A download that has not finished in a minute has stalled on a mirror (it takes seconds);
         # the next attempt uses the Azure mirror. The default deadline is 6 minutes.
         env:
           DW_APT_DOWNLOAD_DEADLINE: "60"
-        run: ci/github/linux-host-deps.sh rust
+        uses: ./.github/actions/linux-host-deps
       # Only that toolchain: rust-cache's key hashes every installed one.
       - name: Rust toolchain (rust-toolchain.toml)
         run: ../ci/github/rust-toolchain-only.sh
@@ -137,6 +167,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo clippy -p dw-app --all-targets --features selftest --locked -- -D warnings
@@ -149,14 +180,14 @@ jobs:
             ~/.cargo/.crates2.json
           key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-0.20.2
       - name: cargo-deny
-        run: cargo install cargo-deny --version 0.20.2 --locked
+        run: env -u CARGO_TARGET_DIR cargo install cargo-deny --version 0.20.2 --locked
       - name: RustSec advisories (Cargo.lock; ignores in rust/deny.toml)
         run: cargo deny --locked check advisories
 
   rust-linux:
     name: Rust tests (Linux)
     needs: changes
-    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.rust == 'false') }}
     runs-on: ubuntu-24.04
     # Cold runs (no cache restored) take about 45 min, warm ones under 20. This job alone saves
     # the ci-Linux cache, only on main and only when it succeeds, so it must be able to finish cold.
@@ -170,16 +201,12 @@ jobs:
         with:
           persist-credentials: false
       # No linux-free-disk.sh: the runner starts with about 90 GB free; a cold run uses about 20.
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
-        working-directory: .
         # A download that has not finished in a minute has stalled on a mirror (it takes seconds);
         # the next attempt uses the Azure mirror. The default deadline is 6 minutes.
         env:
           DW_APT_DOWNLOAD_DEADLINE: "60"
-        run: ci/github/linux-host-deps.sh rust
+        uses: ./.github/actions/linux-host-deps
       # Only that toolchain: rust-cache's key hashes every installed one.
       - name: Rust toolchain (rust-toolchain.toml)
         run: ../ci/github/rust-toolchain-only.sh
@@ -188,11 +215,13 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/pinned-sources
       # dw-app's build writes files that cargo then finds newer than the build, so the next cargo
       # command would compile dw-app again (about 60 s): tauri-codegen's assets in its OUT_DIR,
       # named by their content hash, and tauri-build's permissions/autogenerated, which it watches
       # once permissions/ exists. They are what this build generated: date them before it.
       - name: cargo test --workspace --no-run --locked
+        id: build
         run: |
           cargo test --workspace --no-run --locked
           find crates/dw-app/permissions target/debug/build/dw-app-*/out -exec touch -d @0 {} +
@@ -238,6 +267,15 @@ jobs:
           cd ..
           git add -N apps/desktop/src/api/generated docs/design/E0-13-facade-coverage.md
           git diff --exit-code -- apps/desktop/src/api/generated docs/design/E0-13-facade-coverage.md
+      # The Swift bindings are generated from dw-ffi and committed too. The Swift jobs check them, but
+      # those run only after a merge: a pull request that changed an exported item's doc comment
+      # and not the Swift file left main red twice (#189, #193). build-core.sh builds dw-ffi alone,
+      # so cargo gives its dependencies their non-test feature set and compiles many of them a
+      # second time: about 9 min on the first run, 7 of them that build. Not after a failed
+      # build: it would only compile again to print the same error.
+      - name: The committed Swift bindings match dw-ffi
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: ../scripts/build-core.sh --check-bindings
       - name: Disk use
         if: ${{ !cancelled() }}
         run: df -h / && du -sh target
@@ -245,7 +283,7 @@ jobs:
   desktop-renderer:
     name: Tauri renderer (tokens, tsc, vitest)
     needs: changes
-    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.renderer == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -282,13 +320,36 @@ jobs:
       - name: selftest judge (ci/github/selftest-judge.jq)
         working-directory: .
         run: ci/github/selftest-judge-test.sh
+      # rust-linux runs this with the workspace; a pull request that skips rust-linux runs it here,
+      # because it scans apps/desktop/src for operator-key signing (MG-01).
+      - name: Rust toolchain (rust-toolchain.toml)
+        if: ${{ needs.changes.outputs.rust == 'false' }}
+        working-directory: rust
+        run: ../ci/github/rust-toolchain-only.sh
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ needs.changes.outputs.rust == 'false' }}
+        with:
+          workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
+      - name: No operator-key signing (dw-protx no_operator_signing)
+        if: ${{ needs.changes.outputs.rust == 'false' }}
+        working-directory: rust
+        run: cargo test -p dw-protx --test no_operator_signing --locked
 
-  ui-playwright:
-    name: UI tests (Playwright, axe)
+  # The suite in two shards (`--shard`), each a blob report; `ui-playwright` merges them into the one
+  # HTML report and is the required check. Each shard's limit is about twice its slowest run on a
+  # slow hosted runner (docs/ci.md, "UI tests"); Playwright's own timeouts catch a hung test.
+  ui-playwright-shard:
+    name: UI tests (Playwright, axe), shard ${{ matrix.shard }} of 2
     needs: changes
-    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.ui == 'false') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     # The browsers and their libraries, pinned to @playwright/test in package.json (bump both).
     # No Rust and no engine: the renderer runs on the fixture backend.
     container:
@@ -312,14 +373,24 @@ jobs:
           have=$(pnpm exec playwright --version)
           [[ "$have" == "Version $want" ]] || { echo "::error::image has $have, package.json pins $want"; exit 1; }
       - run: pnpm build:fixture
+      # Half of each project's tests, a project at a time: a single --shard cuts the run's list in
+      # two in order, which gave one shard most of Chromium and the other most of WebKit (slower).
       - name: playwright test (scenarios, light and dark, axe, errors, lock report, security)
         env:
           CI: "1"
-        run: pnpm exec playwright test
-      # Non-blocking until the baselines (made with scripts/e2e-docker.sh) have proven stable on the
-      # hosted runners (docs/ci.md, "UI tests"); a mismatch uploads the actual and diff images.
+          SHARD: ${{ matrix.shard }}
+        run: |
+          status=0
+          for project in chromium webkit; do
+            PLAYWRIGHT_BLOB_OUTPUT_DIR="blob-report/$project" PLAYWRIGHT_BLOB_OUTPUT_NAME="report-$project-$SHARD.zip" \
+              pnpm exec playwright test --project="$project" --shard="$SHARD/2" --reporter=list,blob --output "test-results/$project" || status=1
+          done
+          exit "$status"
+      # Once, in the first shard. Non-blocking until the baselines (made with scripts/e2e-docker.sh)
+      # have proven stable on the hosted runners (docs/ci.md, "UI tests"); a mismatch uploads the
+      # actual and diff images.
       - name: Visual baselines (non-blocking)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         continue-on-error: true
         timeout-minutes: 15
         env:
@@ -329,11 +400,64 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
+          name: ui-playwright-shard-${{ matrix.shard }}
+          path: |
+            apps/desktop/blob-report/
+            apps/desktop/test-results/
+          if-no-files-found: warn
+          retention-days: 3
+
+  # The required check. Green only when both shards passed: a failed, cancelled or skipped shard
+  # fails it. It skips where the shards do (a pull request that changes no UI).
+  ui-playwright:
+    name: UI tests (Playwright, axe)
+    needs: [changes, ui-playwright-shard]
+    if: ${{ always() && !(needs.changes.result == 'success' && needs.changes.outputs.ui == 'false') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.0-noble
+      options: --ipc=host --init
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !cancelled() }}
+        with:
+          pattern: ui-playwright-shard-*
+          path: apps/desktop/shards
+      - name: One HTML report from both shards
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p blob-report test-results
+          find shards -path '*/blob-report/*' -name '*.zip' -exec cp {} blob-report/ \;
+          for d in shards/*/; do
+            if [[ -d "$d/test-results" ]]; then cp -r "$d"/test-results/. test-results/; fi
+          done
+          pnpm exec playwright merge-reports --reporter html blob-report
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
           name: ui-playwright
           path: |
             apps/desktop/test-results/
             apps/desktop/playwright-report/
           if-no-files-found: warn
+      - name: Both shards passed
+        if: always()
+        env:
+          SHARDS: ${{ needs.ui-playwright-shard.result }}
+        run: |
+          [[ "$SHARDS" == success ]] || { echo "::error::the Playwright shards ended '$SHARDS', not success"; exit 1; }
 
   e2e-tauri-linux:
     name: Tauri E2E (tauri-driver, Linux)
@@ -351,12 +475,8 @@ jobs:
       - name: Free disk space
         working-directory: .
         run: ci/github/linux-free-disk.sh
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Linux packages (WebKitGTK, its WebDriver, Xvfb)
-        working-directory: .
-        run: ci/github/linux-host-deps.sh tauri
+        uses: ./.github/actions/linux-host-deps
       # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
@@ -366,6 +486,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -374,7 +495,7 @@ jobs:
             ~/.cargo/.crates2.json
           key: tauri-driver-${{ runner.os }}-${{ runner.arch }}-2.1.0
       - name: tauri-driver
-        run: cargo install tauri-driver --version 2.1.0 --locked
+        run: env -u CARGO_TARGET_DIR cargo install tauri-driver --version 2.1.0 --locked
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: apps/desktop/package.json
@@ -423,9 +544,7 @@ jobs:
         run: ci/github/linux-free-disk.sh
       - name: Linux packages (WebKitGTK, Xvfb, D-Bus, xdg-utils)
         if: ${{ matrix.os == 'linux' }}
-        run: ci/github/linux-host-deps.sh tauri
-      - name: protoc
-        run: ci/github/install-protoc.sh
+        uses: ./.github/actions/linux-host-deps
       # On Linux only that toolchain, as in rust-linux, whose cache the Linux leg restores; the
       # macOS and Windows caches are saved by jobs that keep the image's stable.
       - name: Rust toolchain (rust-toolchain.toml), Linux
@@ -443,6 +562,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: apps/desktop/package.json
@@ -472,6 +592,8 @@ jobs:
           [[ -n "$bundle" ]] || { echo "::error::no $kind bundle"; exit 1; }
           echo "BUNDLE=$bundle" >> "$GITHUB_ENV"
       - name: Links through the OS
+        # It takes under a minute; a hang fails here, and the upload below still keeps its trace.
+        timeout-minutes: 10
         run: |
           export DW_LINKS_OUT=$PWD/deep-links-out
           if [[ "$MATRIX_OS" == linux ]]; then
@@ -501,8 +623,6 @@ jobs:
         run: ci/github/linux-host-deps.sh swiftcrossui
       - name: Swift 6.3.3 (swiftly)
         run: ci/github/linux-swiftly.sh 6.3.3
-      - name: protoc
-        run: ci/github/install-protoc.sh
       # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
@@ -512,6 +632,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - name: Rust core bundle (and check the committed bindings)
         run: scripts/build-core.sh --check-bindings
       # By product: a plain `swift build --build-tests` also compiles swift-winui's
@@ -550,9 +671,6 @@ jobs:
           xcodebuild -version
           swift --version
           df -h /System/Volumes/Data
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
@@ -561,6 +679,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/pinned-sources
       - name: cargo test --workspace
         working-directory: rust
         run: cargo test --workspace --locked --no-fail-fast
@@ -632,9 +751,6 @@ jobs:
           persist-credentials: false
       - name: Disk space
         run: df -h . || true
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
@@ -643,6 +759,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/pinned-sources
       - name: cargo build --workspace
         working-directory: rust
         run: cargo build --workspace --locked
@@ -678,9 +795,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
@@ -689,6 +803,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057 # v0.5.0
         with:
           swift-version: swift-6.3.3-release

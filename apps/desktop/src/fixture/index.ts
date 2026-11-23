@@ -14,13 +14,19 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { NetworkKind } from "../api/generated/NetworkKind";
+import type { UpdateAvailability } from "../api/generated/UpdateAvailability";
+import type { UpdatePhase } from "../api/generated/UpdatePhase";
+import { startingPhase, UPDATE_FAULTS, type UpdateFault } from "./updates";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
 import { landSend, PENDING_HANDLERS, switchedWorld } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
 import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type ScenarioName, type World } from "./scenarios";
-import { receivePayment } from "./send";
+import { receivePayment, type PaymentSource } from "./send";
 import { FIXTURE_NOW } from "./wallet";
+import { ui } from "../app/ui";
+import { isLanguage } from "../i18n";
+import { isLanguageTag } from "./settings";
 
 /** Present in every fixture build and in no production build (scripts/check-bundle.mjs). */
 export const FIXTURE_SENTINEL = "dw-fixture-backend:U-07";
@@ -37,6 +43,19 @@ export interface FixtureOptions {
   /** Commands whose first call is held from the page's start (`hold=<command>`): a read that is still
    * out when the screen shows. `release(command)` lets it answer. A relaunch holds them again. */
   holds?: CommandName[];
+  /** The saved language (`lang=<tag>`, MP-14): a shipped one or a pseudo-locale (`en-XA` long,
+   * `ar-XB` right to left). Applied on every load, a relaunch's included. */
+  language?: string;
+  /** `savedLang=<tag>`: any well-formed tag as a hand-edited or older settings file may hold it
+   * (`EN`, `pt-BR`), shipped or not. Seeds a fresh world only, so a relaunch keeps what was saved. */
+  savedLanguage?: string;
+  /** This copy's update availability (`updates=<availability>`, PK-03); with `update=<version>`, the
+   * version the stable feed serves, `updatePhase=<kind>` the phase it starts in and
+   * `updateFault=<fault>` what goes wrong next. */
+  updates?: UpdateAvailability;
+  updateServes?: string;
+  updatePhase?: UpdatePhase["kind"];
+  updateFault?: UpdateFault;
 }
 
 export interface FixtureHandle {
@@ -46,13 +65,16 @@ export interface FixtureHandle {
   /** Sends an engine event, as dw-app's bridge would. */
   emit(event: AppEvent): void;
   /** A payment of `duffs` arrives at the wallet's current receiving address (the next one is current
-   * from then on): its row, `historyChanged` and `newTransactions`. Returns the address paid. */
-  receivePayment(duffs: number, walletId?: string, to?: string): string;
+   * from then on): its row, `historyChanged` and `newTransactions`, learned live or by the catch-up
+   * scan (`source`). Returns the address paid. */
+  receivePayment(duffs: number, walletId?: string, to?: string, source?: PaymentSource): string;
   /** Queues links as dw-app's shell routed them and says so (`linksPending`), as a clicked link
    * or a second launch would. */
   deliverLinks(routes: LinkRoute[]): void;
   /** A native menu or tray command. */
   shellCommand(command: ShellCommand): void;
+  /** The app's language as Settings ▸ General sets it, with no navigation: what is open stays open. */
+  setLanguage(tag: string | null): void;
   /** Makes `command` reject with a sample of `cls` from now on (`null` clears it). */
   fail(command: CommandName, cls: ErrorClass | null): void;
   /** Holds the next call of `command`: it answers from the world as it is when called, a result
@@ -85,6 +107,15 @@ const notImplemented = (call: string): AppError => ({
   data: { kind: "call", call },
 });
 
+const UPDATE_AVAILABILITIES: UpdateAvailability[] = ["available", "notInThisBuild", "flatpak", "packageManager", "notInstalled", "moveToApplications"];
+const UPDATE_PHASES: UpdatePhase["kind"][] = ["idle", "checking", "upToDate", "found", "downloaded", "downloading", "installing", "installed", "restartRequired"];
+
+function oneOf<T extends string>(p: URLSearchParams, name: string, allowed: readonly T[]): T | undefined {
+  const v = p.get(name);
+  if (v !== null && !allowed.includes(v as T)) throw new Error(`unknown ${name}=${v}`);
+  return (v ?? undefined) as T | undefined;
+}
+
 /** Where `relaunch` leaves the world for the next page load (one tab's session). */
 const RELAUNCH_KEY = "dw-fixture-relaunch";
 
@@ -98,7 +129,14 @@ function relaunchedWorld(): World | null {
 }
 
 export function installFixture(opts: FixtureOptions): FixtureHandle {
-  const world = relaunchedWorld() ?? switchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
+  const carried = relaunchedWorld() ?? switchedWorld();
+  const world = carried ?? buildWorld(opts.scenario, opts.theme ?? null);
+  if (!carried && opts.savedLanguage) world.settings.ui = { ...world.settings.ui, language: opts.savedLanguage };
+  if (opts.language) world.settings.ui = { ...world.settings.ui, language: opts.language };
+  if (opts.updates) world.updates.availability = opts.updates;
+  if (opts.updateServes) world.updates.serves = opts.updateServes;
+  if (opts.updatePhase) world.updates.phase = startingPhase(opts.updatePhase, world.updates.serves ?? "0.0.0");
+  if (opts.updateFault) world.updates.fault = opts.updateFault;
   if (opts.network) {
     world.launch.network = { kind: opts.network, dirName: opts.network, unitName: opts.network === "mainnet" ? "DASH" : "tDASH" };
     world.pending.networkChoice = { chosen: opts.network === "testnet" ? "mainnet" : "testnet", saved: true };
@@ -150,12 +188,13 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     scenario: opts.scenario,
     world,
     emit: ctx.emit,
-    receivePayment: (duffs, walletId = FIXTURE_WALLET_ID, to) => receivePayment(ctx, walletId, duffs, to),
+    receivePayment: (duffs, walletId = FIXTURE_WALLET_ID, to, source) => receivePayment(ctx, walletId, duffs, to, source),
     deliverLinks: (routes) => {
       world.links.push(...routes);
       void emit(SHELL_EVENT, { kind: "linksPending" } satisfies ShellEvent);
     },
     shellCommand: (command) => void emit(SHELL_EVENT, { kind: "command", command } satisfies ShellEvent),
+    setLanguage: (language) => ui.set({ prefs: { ...ui.get().prefs, language } }),
     fail: (command, cls) => (cls ? failures.set(command, cls) : failures.delete(command)),
     hold: startHold,
     release: (command) => void startReleases.get(command)?.(),
@@ -174,7 +213,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   };
 }
 
-/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
+/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&savedLang=<tag>&updates=<availability>&update=<version>&updatePhase=<kind>&updateFault=<fault>&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
  * `error-<class>` scenario is `funded` with `list_wallets` failing with that class. Unknown
  * names throw, so a typo in a test URL fails loudly instead of showing the default. */
 export function fixtureOptionsFromUrl(search: string): FixtureOptions {
@@ -204,6 +243,16 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
     if (!Object.hasOwn(COMMANDS, c)) throw new Error(`bad hold=${c}: not a command`);
     holds.push(c as CommandName);
   }
+  const saved = p.get("savedLang");
+  if (saved !== null && !isLanguageTag(saved)) throw new Error(`bad savedLang=${saved}: not a language tag`);
+  if (saved !== null && p.has("lang")) throw new Error("give lang= or savedLang=, not both");
+  const savedLanguage = saved ?? undefined;
+  const language = p.get("lang") ?? undefined;
+  if (language !== undefined && !isLanguage(language)) throw new Error(`unknown language ${language}`);
+  const updates = oneOf(p, "updates", UPDATE_AVAILABILITIES);
+  const updateServes = p.get("update") ?? undefined;
+  const updatePhase = oneOf(p, "updatePhase", UPDATE_PHASES);
+  const updateFault = oneOf(p, "updateFault", UPDATE_FAULTS);
   const delay = Number(p.get("delay") ?? 0);
-  return { scenario, theme, network, failures, holds, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
+  return { scenario, theme, network, failures, holds, language, savedLanguage, updates, updateServes, updatePhase, updateFault, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
 }

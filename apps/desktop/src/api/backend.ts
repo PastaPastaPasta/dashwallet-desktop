@@ -15,6 +15,7 @@ import type { MoveToCoreQuote } from "./generated/MoveToCoreQuote";
 import type { PlatformReceiveAddress } from "./generated/PlatformReceiveAddress";
 import type { PendingPlatformFund } from "./generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "./generated/PlatformFundOutcome";
+import type { FundAmount } from "./generated/FundAmount";
 import type { PlatformFundQuote } from "./generated/PlatformFundQuote";
 import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
@@ -34,6 +35,7 @@ import type { ShieldedStatus } from "./generated/ShieldedStatus";
 import type { ShieldOutcome } from "./generated/ShieldOutcome";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
+import type { UpdateStatus } from "./generated/UpdateStatus";
 import type { Balances } from "./generated/Balances";
 import type { CurrencyRate } from "./generated/CurrencyRate";
 import type { RatesSettings } from "./generated/RatesSettings";
@@ -149,6 +151,7 @@ import type { AccountXpub } from "./generated/AccountXpub";
 import type { BackupFileHeader } from "./generated/BackupFileHeader";
 import type { BackupPolicyInfo } from "./generated/BackupPolicyInfo";
 import type { BackupSummary } from "./generated/BackupSummary";
+import type { AutomaticBackupFailure } from "./generated/AutomaticBackupFailure";
 import type { CoreExportFormatName } from "./generated/CoreExportFormatName";
 import type { CoreExportReport } from "./generated/CoreExportReport";
 import type { CoreImportReport } from "./generated/CoreImportReport";
@@ -184,6 +187,8 @@ import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import type { Withdrawal } from "./generated/Withdrawal";
 import type { WithdrawOutcome } from "./generated/WithdrawOutcome";
 import type { WithdrawQuote } from "./generated/WithdrawQuote";
+import type { WithdrawToPlatformOutcome } from "./generated/WithdrawToPlatformOutcome";
+import type { WithdrawToPlatformQuote } from "./generated/WithdrawToPlatformQuote";
 import type { DashPayEventPage } from "./generated/DashPayEventPage";
 import type { GrantAction } from "./generated/GrantAction";
 import type { GrantRequest } from "./generated/GrantRequest";
@@ -247,8 +252,8 @@ export interface Backend {
   /** The account's receive address, for Receive and its QR. */
   shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress>;
   /** Core → Shielded: what `duffs` cost and buy. */
-  shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote>;
-  shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome>;
+  shieldQuote(walletId: string, amount: FundAmount): Promise<ShieldQuote>;
+  shieldFromCore(walletId: string, amount: FundAmount, grant: string): Promise<ShieldOutcome>;
   /** Applies a pending lock. */
   resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome>;
   /** The Core → Shielded locks Platform is not known to have applied; `null` while dw-app has no such command. */
@@ -284,9 +289,9 @@ export interface Backend {
   /** Sends the quoted `operation` (single use) from the Platform addresses under a fresh `platformOp` `grant` (`platform_send`). */
   platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome>;
   /** What "Add from Dash wallet" of `duffs` costs and adds (`platform_fund_quote`). */
-  platformFundQuote(walletId: string, duffs: number): Promise<PlatformFundQuote>;
+  platformFundQuote(walletId: string, amount: FundAmount): Promise<PlatformFundQuote>;
   /** Locks `duffs` of the Dash wallet and funds the wallet's Platform receive address under `grant` (`platform_fund`). */
-  platformFund(walletId: string, duffs: number, grant: string): Promise<PlatformFundOutcome>;
+  platformFund(walletId: string, amount: FundAmount, grant: string): Promise<PlatformFundOutcome>;
   /** The locks not yet applied (`pending_platform_funds`); `null` while dw-app has no such command. */
   pendingPlatformFunds(walletId: string): Promise<PendingPlatformFund[] | null>;
   /** Applies a pending lock (`resume_platform_fund`). */
@@ -359,6 +364,16 @@ export interface Backend {
   uiSettings(): Promise<UiSettings>;
   /** Saves them; dw-app also sets the window's theme unless `--theme` was given (D3). */
   setUiSettings(settings: UiSettings): Promise<UiSettings>;
+  // Updates (PK-03): each step on the user's request; `updateStatus` fetches nothing.
+  updateStatus(): Promise<UpdateStatus>;
+  /** Reads the stable feed once. */
+  checkForUpdate(): Promise<UpdateStatus>;
+  /** Downloads, verifies and installs `version`, the one on offer. On Windows the app closes. */
+  installUpdate(version: string): Promise<UpdateStatus>;
+  /** Quits through the normal exit path and starts the installed update. */
+  restartToUpdate(): Promise<null>;
+  /** Opens the page of the release on offer, on this repository. */
+  openUpdateNotes(): Promise<null>;
   // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.
   ratesStatus(): Promise<RatesView>;
   ratesCurrencies(): Promise<CurrencyRate[]>;
@@ -385,6 +400,8 @@ export interface Backend {
   /** Restores the wallets of a `.dwbackup`; returns their ids. */
   restoreBackup(path: string, passphrase: string | null): Promise<string[]>;
   automaticBackups(walletId: string | null): Promise<BackupSummary[]>;
+  /** Wallets whose latest automatic backup failed, and when. */
+  automaticBackupFailures(): Promise<AutomaticBackupFailure[]>;
   backupDirectory(): Promise<string>;
   backupPolicy(): Promise<BackupPolicyInfo>;
   setBackupPolicy(keep: number): Promise<BackupPolicyInfo>;
@@ -572,6 +589,10 @@ export interface Backend {
   creditsWithdrawQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawQuote>;
   /** Withdraws to a Dash address under the quote's `platformOp` grant. */
   creditsWithdraw(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawOutcome>;
+  /** C-routes D-C6: moving credits to the wallet's own Platform address; `all` keeps the fee in reserve. */
+  creditsWithdrawToPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawToPlatformQuote>;
+  /** Moves credits to `to`, one of the wallet's own Platform addresses, under the quote's `platformOp` grant. */
+  creditsWithdrawToPlatform(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawToPlatformOutcome>;
   /** The identity's withdrawals on Platform, newest first. */
   creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
@@ -642,7 +663,10 @@ export interface Backend {
   onShellEvent(listener: (event: ShellEvent) => void): Promise<() => void>;
   /** The clock and locale the screens format dates with (fixed in fixtures). */
   now(): Date;
+  /** The display locale: names, prices and dates. */
   readonly locale: string | undefined;
+  /** The system's own locale, for its region (the first local currency); never the UI language. */
+  readonly regionLocale: string | undefined;
 }
 
 const KNOWN_CODES: ReadonlySet<string> = new Set(ERROR_CODES);

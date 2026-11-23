@@ -248,6 +248,13 @@ impl TxDraft {
         self.session
             .on_runtime(async move {
                 let _op = this.session.enter().await?;
+                // A contact's address is reserved only when the payment is
+                // signed: the plan pays a stand-in.
+                if this.state().contact.is_some() {
+                    return Err(EngineError::InvalidArgument(
+                        "a payment to a contact has no unsigned transaction".into(),
+                    ));
+                }
                 let session = &this.session;
                 // Held to the end: building reserves nothing, but the plan
                 // reads the coins (and dust locks them) under it.
@@ -267,7 +274,7 @@ impl TxDraft {
                 check_against_plan(&tx, &r.plan, &change).map_err(|m| m.into_error())?;
                 let fingerprint = session.master_fingerprint(&this.wallet_id).await;
                 let history = session.hub.history.snapshot(&this.wallet_id);
-                let state = wallet.state().await;
+                let state = crate::wallet_read::info_of(&wallet).await?;
                 let info = &state.core_wallet;
                 let network = this.network();
                 let inputs = tx
@@ -359,7 +366,7 @@ impl NetworkSession {
             };
             let w = this.wallet(&id).await?;
             let owned = {
-                let state = w.state().await;
+                let state = crate::wallet_read::info_of(&w).await?;
                 ownership(&state.core_wallet, &psbt, network)
             };
             let external_sent = base
@@ -438,7 +445,7 @@ impl NetworkSession {
             }
             let network = this.network.core_network();
             let owned = {
-                let state = w.state().await;
+                let state = crate::wallet_read::info_of(&w).await?;
                 ownership(&state.core_wallet, &psbt, network)
             };
             let fee = dw_psbt::analyze(&psbt, network)
@@ -451,6 +458,9 @@ impl NetworkSession {
             // Read under the coin fence, held through the signing, as an
             // engine build reads and spends them (`coins.rs`).
             let _fence = this.coin_fence(wallet_id).await?;
+            // Not while a replay may still credit or spend a coin it signs
+            // for, as a send or contact payment.
+            this.replay_guard(wallet_id, 0).await?;
             let snapshot = this.coin_snapshot(&_fence, &w).await?;
             // The raw set too: an input the wallet already reads spent (the
             // lock seen, not proved) is no coin of the snapshot.
@@ -531,8 +541,10 @@ impl NetworkSession {
                 let Ok(w) = this.wallet(&id).await else {
                     continue;
                 };
+                #[cfg(test)]
+                crate::coins::pause_at(&this.coin_fences.pause_ownership).await;
                 let owns = {
-                    let state = w.state().await;
+                    let state = crate::wallet_read::info_of(&w).await?;
                     !ownership(&state.core_wallet, &psbt, network)
                         .paths
                         .is_empty()

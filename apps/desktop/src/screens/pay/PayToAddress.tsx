@@ -12,12 +12,13 @@ import { useDebounced } from "../../app/useDebounced";
 import { DashButton } from "../../components/basics";
 import { AddressBookPicker } from "../tools/AddressBook";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { PayFromPlatform } from "./PayFromPlatform";
-import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
+import { HeldPlatformSend, PayFromPlatform } from "./PayFromPlatform";
+import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
 import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, reviewBlockedReason, type Advanced } from "./model";
-import { ResultSheet } from "./ResultSheet";
+import { ResultSheet, SendingSheet } from "./ResultSheet";
 import { UnsignedPsbt } from "./UnsignedPsbt";
 import { useDraft } from "./useDraft";
 
@@ -33,6 +34,7 @@ export function PayToAddress({
   walletId: string;
   network: NetworkInfo;
 }) {
+  const t = useT();
   const b = useBackend();
   const shown = useDisplay(network);
   const locked = useLockStatus().data?.state === "locked";
@@ -48,14 +50,14 @@ export function PayToAddress({
   const [message, setMessage] = useState(prefill?.message ?? "");
   const [advanced, setAdvanced] = useState<Advanced>(coins?.length ? { ...DEFAULT_ADVANCED, coins: "selected", selected: coins } : DEFAULT_ADVANCED);
   // A payment that went, or may have, ends the form: paying again is a new payment.
-  const sheets = usePaySheets(walletId, draft, () => {
+  const sheets = usePaySheets(payFormKey(walletId), walletId, draft, () => {
     setAddress("");
     amount.setText("");
     setSubtractFee(subtractFeeByDefault());
     setLabel("");
     setMessage("");
     setAdvanced(DEFAULT_ADVANCED);
-  });
+  }, "link");
   const { phase } = sheets;
   // Closing the confirm or result sheet returns to Review, or to the address of a cleared form.
   const reviewButton = useRef<HTMLButtonElement>(null);
@@ -119,7 +121,7 @@ export function PayToAddress({
       <form
         className="pay-form"
         data-testid="pay-address-form"
-        aria-label="Pay to an address"
+        aria-label={t("pay.toAddress.form")}
         onSubmit={(e) => {
           e.preventDefault();
           review("review");
@@ -127,11 +129,11 @@ export function PayToAddress({
       >
         {prefill?.username && (
           <p className="placeholder-note" data-testid="pay-username">
-            The link names the payee @{prefill.username}. The name is not verified.
+            {t("pay.toAddress.linkUsername", { username: `@${prefill.username}` })}
           </p>
         )}
         <section className="pay-card card-l1">
-          <FormField label="Pay to" error={addrError ?? fieldError("address")}>
+          <FormField label={t("pay.toAddress.payTo")} error={addrError ?? fieldError("address")}>
             {(p) => (
               <span className="amount-entry">
                 <input
@@ -141,11 +143,11 @@ export function PayToAddress({
                   value={address}
                   autoComplete="off"
                   spellCheck={false}
-                  placeholder="Dash address"
+                  placeholder={t("pay.toAddress.placeholder")}
                   onChange={(e) => setAddress(e.target.value)}
                 />
                 <DashButton variant="tintedBlue" size="small" data-testid="pay-address-book" onClick={() => setPicking(true)}>
-                  Address Book…
+                  {t("pay.toAddress.addressBook")}
                 </DashButton>
               </span>
             )}
@@ -164,10 +166,10 @@ export function PayToAddress({
             subtractFee={subtractFee}
             onSubtractFee={setSubtractFee}
           />
-          <FormField label="Label" hint="Saved to your address book with the address.">
+          <FormField label={t("pay.toAddress.label")} hint={t("pay.toAddress.labelHint")}>
             {(p) => <input {...p} data-testid="pay-label" value={label} autoComplete="off" onChange={(e) => setLabel(e.target.value)} />}
           </FormField>
-          <FormField label="Message" hint="Kept with the transaction in this wallet; not sent to the payee.">
+          <FormField label={t("pay.toAddress.message")} hint={t("pay.toAddress.messageHint")}>
             {(p) => <input {...p} data-testid="pay-message" value={message} autoComplete="off" onChange={(e) => setMessage(e.target.value)} />}
           </FormField>
             </>
@@ -183,10 +185,11 @@ export function PayToAddress({
               buttonRef={psbtButton}
               summaryRef={psbtSummary}
             />
-            <PayFooter reviewLabel={watchOnly ? "Review PSBT" : "Review"} problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
+            <PayFooter reviewLabel={watchOnly ? t("pay.toAddress.reviewPsbt") : t("pay.form.review")} problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
           </>
         )}
       </form>
+      {!platform && <HeldPlatformSend walletId={walletId} network={network} />}
       {picking && <AddressBookPicker walletId={walletId} network={network} purpose="send" onChoose={chosen} onClose={() => setPicking(false)} />}
       {phase.kind === "confirm" && (
         <ConfirmSheet
@@ -200,15 +203,18 @@ export function PayToAddress({
           returnFocus={backToForm}
           onCancel={sheets.cancel}
           onOutcome={sheets.outcome}
+          onSend={sheets.begin}
         />
       )}
+      {phase.kind === "sending" && <SendingSheet sending={phase.sending} network={network} />}
       {phase.kind === "result" && (
         <ResultSheet
           outcome={phase.outcome}
           network={network}
           draft={draft}
           returnFocus={backToForm}
-          onOutcome={sheets.outcome}
+          retrying={phase.retrying}
+          onRetry={sheets.retry}
           onDone={sheets.done}
         />
       )}

@@ -1,13 +1,13 @@
 //! Session operations over the history read model: loading persisted
 //! history at open, `history_page` and `tx_detail`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use dashcore::hashes::Hash;
-use dashcore::{ScriptBuf, Txid};
+use dashcore::{OutPoint, ScriptBuf, Txid};
 use dw_appdb::{AppDb, LabelKind};
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::managed_account::managed_account_type::ManagedAccountType;
@@ -59,11 +59,7 @@ pub(crate) fn owned_scripts(info: &PlatformWalletInfo) -> HashMap<ScriptBuf, Own
             for info in pool.addresses.values() {
                 map.insert(
                     info.script_pubkey.clone(),
-                    Owned {
-                        address: info.address.clone(),
-                        chain,
-                        coinjoin,
-                    },
+                    Owned::new(info.address.clone(), chain, coinjoin),
                 );
             }
         }
@@ -123,46 +119,155 @@ impl RecordFault {
     }
 }
 
+/// Height of the ChainLock key-wallet applied to the wallet: the only one
+/// its finality order lets beat an InstantSend lock.
+pub(crate) fn applied_chainlock(info: &PlatformWalletInfo) -> Option<u32> {
+    (info.core_wallet.metadata.last_applied_chain_lock.as_ref()).map(|c| c.block_height)
+}
+
 /// One wallet's stored transactions: those whose record is stored, and the
 /// recordless ones (height-only rows, kept for their coins).
 #[derive(Default, Clone)]
-struct Persisted {
-    records: Vec<Txid>,
-    recordless: HashSet<Txid>,
+pub(crate) struct Persisted {
+    pub(crate) records: Vec<Txid>,
+    pub(crate) recordless: HashSet<Txid>,
+    /// Of `recordless`, the rows without a height: an unconfirmed coin's,
+    /// no evidence that its transaction settled.
+    pub(crate) unconfirmed: HashSet<Txid>,
+    /// Spends the store's open dropped as not signed by their coins'
+    /// owner (`core_dropped_unsigned_spends`): never restored from a mark.
+    pub(crate) dropped: HashSet<Txid>,
+}
+
+impl Persisted {
+    /// Whether a load restores `txid`'s claims from its sent mark: not a
+    /// spend the store's open dropped, nor an abandoned payment whose saved
+    /// copy doesn't read back (`unread`) unless the store still holds it.
+    pub(crate) fn keeps_mark(&self, txid: &Txid, unread: &BTreeSet<Txid>) -> bool {
+        !self.dropped.contains(txid)
+            && (!unread.contains(txid)
+                || self.records.contains(txid)
+                || self.recordless.contains(txid))
+    }
 }
 
 /// Txids of the stored transactions per wallet, read from `wallet.sqlite`
 /// over a read-only connection (SqlitePersister has no enumeration API;
 /// `get_core_tx_record` then reads each record).
-fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Persisted>, rusqlite::Error> {
+/// The stored records of `wallet` named by `txids` that `read` returns:
+/// each the listed key's record, of the transaction it names. False when
+/// one was missing, another's or unreadable (logged).
+fn read_records<'a, E: std::fmt::Display>(
+    wallet: WalletId,
+    txids: impl IntoIterator<Item = &'a Txid>,
+    mut read: impl FnMut(&Txid) -> Result<Option<TransactionRecord>, E>,
+) -> (Vec<TransactionRecord>, bool) {
+    let mut clean = true;
+    let records = (txids.into_iter())
+        .filter_map(|t| match read(t) {
+            Ok(Some(r)) if r.txid == *t && r.transaction.txid() == *t => Some(r),
+            Ok(found) => {
+                tracing::warn!(%wallet, txid = %t, found = ?found.map(|r| r.txid), "a listed transaction record is missing or another's");
+                clean = false;
+                None
+            }
+            Err(e) => {
+                tracing::warn!(%wallet, txid = %t, error = %e, "unreadable transaction record");
+                clean = false;
+                None
+            }
+        })
+        .collect();
+    (records, clean)
+}
+
+pub(crate) fn persisted_txids(
+    db_path: &Path,
+) -> Result<HashMap<[u8; 32], Persisted>, rusqlite::Error> {
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    let mut stmt =
-        conn.prepare("SELECT wallet_id, txid, record_blob IS NULL FROM core_transactions")?;
+    let mut stmt = conn.prepare(
+        "SELECT wallet_id, txid, record_blob IS NULL, height IS NULL FROM core_transactions",
+    )?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, Vec<u8>>(0)?,
             r.get::<_, Vec<u8>>(1)?,
             r.get::<_, bool>(2)?,
+            r.get::<_, bool>(3)?,
         ))
     })?;
     let mut out: HashMap<[u8; 32], Persisted> = HashMap::new();
     for row in rows {
-        let (wallet, txid, recordless) = row?;
+        let (wallet, txid, recordless, unconfirmed) = row?;
         let (Ok(wallet), Ok(txid)) = (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid)) else {
             continue;
         };
         let persisted = out.entry(wallet).or_default();
+        if recordless && unconfirmed {
+            persisted.unconfirmed.insert(txid);
+        }
         if recordless {
             persisted.recordless.insert(txid);
         } else {
             persisted.records.push(txid);
         }
     }
+    type Row = (Vec<u8>, Vec<u8>);
+    let dropped = || -> Result<Vec<Row>, rusqlite::Error> {
+        let mut stmt = conn.prepare("SELECT wallet_id, txid FROM core_dropped_unsigned_spends")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    };
+    match dropped() {
+        Ok(rows) => {
+            for (wallet, txid) in rows {
+                let (Ok(wallet), Ok(txid)) =
+                    (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid))
+                else {
+                    continue;
+                };
+                out.entry(wallet).or_default().dropped.insert(txid);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the spends the store dropped as unsigned")
+        }
+    }
     Ok(out)
+}
+
+/// Of `txids`, those with an output of theirs stored for `wallet`, and
+/// those with an InstantSend lock stored for them.
+pub(crate) fn txids_with_outputs_and_locks(
+    db_path: &Path,
+    wallet: WalletId,
+    txids: impl IntoIterator<Item = Txid>,
+) -> Result<(HashSet<Txid>, HashSet<Txid>), rusqlite::Error> {
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let mut outputs = conn.prepare(
+        "SELECT 1 FROM core_utxos WHERE wallet_id = ?1 AND substr(outpoint, 2, 32) = ?2 LIMIT 1",
+    )?;
+    let mut locks =
+        conn.prepare("SELECT 1 FROM core_instant_locks WHERE wallet_id = ?1 AND txid = ?2")?;
+    let (mut with_outputs, mut locked) = (HashSet::new(), HashSet::new());
+    for txid in txids {
+        let key = rusqlite::params![wallet.0.as_slice(), AsRef::<[u8]>::as_ref(&txid)];
+        if outputs.exists(key)? {
+            with_outputs.insert(txid);
+        }
+        if locks.exists(key)? {
+            locked.insert(txid);
+        }
+    }
+    Ok((with_outputs, locked))
 }
 
 /// The parts of a [`ChainView`] read from the library's state.
@@ -190,6 +295,10 @@ impl ViewParts {
     }
 }
 
+/// A wallet's stored history and the payments this app sent, read before
+/// the wallet is loaded.
+pub(crate) type StoredSpends = (crate::history::WalletHistory, crate::tx_actions::Sent);
+
 /// Persisted records, first-seen times and abandoned transactions of one
 /// wallet.
 struct LoadedHistory {
@@ -197,9 +306,20 @@ struct LoadedHistory {
     records: Vec<TransactionRecord>,
     seen: Vec<(String, u64)>,
     abandoned: Vec<(Txid, dashcore::Transaction)>,
+    /// The payments this app sent (#88).
+    sent: crate::tx_actions::Sent,
+    /// Every stored record was listed and read, and so were the abandoned
+    /// and sent marks: the pruning of marks needs all three.
+    complete: bool,
+    /// As `complete`, but the sent marks' saved copies may not have read
+    /// (`SentRead::CoinsOnly`): enough to restore the spend claims.
+    claims: bool,
     /// Every stored transaction of the wallet, with a record or not, when
     /// every stored record was listed and read; else none.
     stored: HashSet<Txid>,
+    /// Of `stored`, those that settle a sent payment: a record, or a
+    /// height-only row with a height.
+    settled: HashSet<Txid>,
 }
 
 impl NetworkSession {
@@ -224,6 +344,8 @@ impl NetworkSession {
         let fail = false;
         #[cfg(test)]
         let fault = self.hub.record_read_fault.lock().unwrap().take();
+        #[cfg(test)]
+        let unreadable = self.hub.unreadable_record.lock().unwrap().0.take();
         let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
@@ -246,49 +368,54 @@ impl NetworkSession {
             wallet_ids
                 .into_iter()
                 .map(|wallet| {
-                    let mut clean = listed;
                     let persisted = txids.get(&wallet.0).cloned().unwrap_or_default();
-                    let records = (persisted.records.iter())
-                        .filter_map(|t| {
-                            let read = persister.get_core_tx_record(wallet.0, t);
-                            #[cfg(test)]
-                            let read = match fault.take() {
-                                Some(f) => f.apply(read),
-                                None => read,
-                            };
-                            match read {
-                                // The listed key's record, of the transaction it names.
-                                Ok(Some(r)) if r.txid == *t && r.transaction.txid() == *t => Some(r),
-                                Ok(found) => {
-                                    tracing::warn!(%wallet, txid = %t, found = ?found.map(|r| r.txid), "a listed transaction record is missing or another's");
-                                    clean = false;
-                                    None
-                                }
-                                Err(e) => {
-                                    tracing::warn!(%wallet, txid = %t, error = %e, "unreadable transaction record");
-                                    clean = false;
-                                    None
-                                }
-                            }
-                        })
-                        .collect();
+                    let (records, read) = read_records(wallet, &persisted.records, |t| {
+                        let read = persister.get_core_tx_record(wallet.0, t);
+                        #[cfg(test)]
+                        let read = match fault.take() {
+                            Some(f) => f.apply(read),
+                            None => read,
+                        };
+                        #[cfg(test)]
+                        let read = match unreadable == Some(*t) {
+                            true => RecordFault::Error.apply(read),
+                            false => read,
+                        };
+                        read
+                    });
+                    let clean = listed && read;
                     let seen = appdb.tx_seen_times(&wallet.to_string()).unwrap_or_else(|e| {
                         tracing::warn!(%wallet, error = %e, "could not read first-seen times");
                         Vec::new()
                     });
-                    let abandoned = crate::tx_actions::load_abandoned(&appdb, wallet);
+                    let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
+                    let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
+                    sent.retain(|t, _| persisted.keeps_mark(t, &abandoned.unread));
+                    let abandoned = abandoned.copies;
+                    let stored: HashSet<Txid> = match clean {
+                        true => (persisted.records.into_iter())
+                            .chain(persisted.recordless)
+                            .collect(),
+                        false => HashSet::new(),
+                    };
+                    let settled = (stored.iter())
+                        .filter(|t| !persisted.unconfirmed.contains(*t))
+                        .copied()
+                        .collect();
                     LoadedHistory {
                         wallet,
                         records,
                         seen,
                         abandoned,
-                        stored: if clean {
-                            (persisted.records.into_iter())
-                                .chain(persisted.recordless)
-                                .collect()
-                        } else {
-                            HashSet::new()
-                        },
+                        sent,
+                        complete: clean
+                            && marks_read
+                            && sent_read == crate::tx_actions::SentRead::Complete,
+                        claims: clean
+                            && marks_read
+                            && sent_read != crate::tx_actions::SentRead::Failed,
+                        stored,
+                        settled,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -306,12 +433,17 @@ impl NetworkSession {
         }
         let wm = live.manager.wallet_manager_arc();
         let wm = wm.read().await;
+        let mut sends = Vec::new();
         for LoadedHistory {
             wallet,
             records,
             seen,
             abandoned,
+            sent,
+            complete,
+            claims,
             stored,
+            settled,
         } in loaded
         {
             let info = wm.get_wallet_info(&wallet.0);
@@ -348,20 +480,16 @@ impl NetworkSession {
                     h.upsert(r, None);
                 }
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
-                // Abandoned transactions are gone from wallet.sqlite; the
-                // app database keeps them so the history still shows them.
-                for (txid, tx) in &abandoned {
-                    h.txs
-                        .entry(*txid)
-                        .or_insert_with(|| crate::history::TxEntry {
-                            tx: tx.clone(),
-                            context: key_wallet::transaction_checking::TransactionContext::Mempool,
-                            instant_locked: false,
-                            first_seen: None,
-                            own_inputs: Default::default(),
-                            abandoned: true,
-                        })
-                        .abandoned = true;
+                h.mark_abandoned(&abandoned);
+                if complete {
+                    h.add_unrecorded_sends(&sent, &settled, self.network.core_network());
+                }
+                // Stored apart from the records, which can still say mempool.
+                for t in info
+                    .into_iter()
+                    .flat_map(|i| i.core_wallet.instant_send_locks())
+                {
+                    h.set_instant_locked(t);
                 }
                 for (txid, entry) in h.txs.iter_mut() {
                     if let Some(t) = seen.get(&txid.to_string()) {
@@ -369,8 +497,286 @@ impl NetworkSession {
                     }
                 }
             });
+            sends.push((wallet, sent, complete, claims, settled));
+        }
+        drop(wm);
+        for (wallet, sent, complete, claims, stored) in sends {
+            self.restore_unmined_spends(&live.manager, wallet, &sent, (complete, claims), &stored)
+                .await;
         }
         Ok(())
+    }
+
+    /// key-wallet rebuilds no records at load, so it no longer knows which
+    /// of its coins the payments this app sent and that are still out of a
+    /// block spent: a scan reaching such a coin's funding block would
+    /// credit it again beside the change the store gave back (#88). Each
+    /// one is restored as a spent-output claim held by its payment. An
+    /// abandon or a competing spend that beats the payment settles the
+    /// claim. A block or InstantSend lock beats an unlocked payment; only a
+    /// ChainLock-covered block beats an InstantSend-locked payment.
+    /// Spends key-wallet holds a record of this session are left to it.
+    /// Then the marks of payments gone from the history go, and of those
+    /// the SPV header chain proves final: it holds their block, at or below the
+    /// block of this wallet's own applied ChainLock, which it holds too. A
+    /// load that did not read every stored record and mark does neither,
+    /// except that one whose sent marks read without their saved copies
+    /// still restores the claims.
+    async fn restore_unmined_spends(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        sent: &crate::tx_actions::Sent,
+        (complete, claims): (bool, bool),
+        stored: &HashSet<Txid>,
+    ) {
+        if !claims {
+            tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
+            return;
+        }
+        let (mut candidates, mut own) = (Vec::new(), None);
+        self.apply_spend_claims(manager, wallet, |core, chainlock| {
+            self.hub.history.with_wallet(wallet, |h| {
+                for t in core.instant_send_locks() {
+                    h.set_instant_locked(t);
+                }
+                own = (core.metadata.last_applied_chain_lock.as_ref())
+                    .map(|c| (c.block_height, c.block_hash));
+                candidates =
+                    crate::history::settled_candidates(&h.txs, sent, stored, own.map(|c| c.0));
+                let mut claims = crate::history::unmined_own_spends(&h.txs, sent, chainlock);
+                claims.retain(|(_, spender)| {
+                    !h.session_held.contains(spender) && !h.swept.contains(spender)
+                });
+                let locked = crate::history::locked_claimants(&h.txs, &claims);
+                (claims, locked)
+            })
+        })
+        .await;
+        if !complete {
+            tracing::warn!(%wallet, "history load incomplete: no sent mark settled");
+            return;
+        }
+        let settled = self.proven_settled(candidates, own).await;
+        if !settled.is_empty() {
+            let gone = settled.clone();
+            let forgotten = self
+                .appdb_op(move |db| crate::tx_actions::forget_sent(db, wallet, &settled))
+                .await;
+            match forgotten {
+                Ok(()) => self.hub.history.drop_claims(&wallet, gone),
+                Err(e) => {
+                    tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments")
+                }
+            }
+        }
+    }
+
+    /// [`crate::history::proven_settled`] against the SPV header chain,
+    /// read after the claims' guard: the lock's header first, and the
+    /// candidates' only when it holds the lock's block.
+    async fn proven_settled(
+        &self,
+        candidates: Vec<(Txid, Option<(u32, dashcore::BlockHash)>)>,
+        chainlock: Option<(u32, dashcore::BlockHash)>,
+    ) -> Vec<Txid> {
+        let mut headers = HashMap::new();
+        if let Some((height, hash)) = chainlock
+            && candidates.iter().any(|(_, b)| b.is_some())
+            && self.hub.header_hash(height).await == Some(hash)
+        {
+            headers.insert(height, hash);
+            let heights = candidates
+                .iter()
+                .filter_map(|(_, b)| b.map(|b| b.0))
+                .collect();
+            headers.extend(self.hub.header_hashes(heights).await);
+        }
+        crate::history::proven_settled(candidates, chainlock, &headers)
+    }
+
+    /// Restores the claims `select` chooses, given the wallet and the best
+    /// ChainLock height any loaded wallet applied or SPV reported (one
+    /// applied while this wallet was closed counts), under the write lock
+    /// that installs them, as key-wallet spent-output claims of `wallet`. A
+    /// claimed coin the wallet still holds (a block processed for a wallet
+    /// opened later before its claims were set, or a store written while
+    /// the claim was not restored) is spent by a live payment this app
+    /// sent: it leaves the funds accounts, is stored as spent and the
+    /// balance is announced.
+    pub(crate) async fn apply_spend_claims(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        select: impl FnOnce(
+            &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+            Option<u32>,
+        ) -> (Vec<(OutPoint, Txid)>, HashSet<Txid>),
+    ) {
+        let Ok(live) = self.live() else {
+            return;
+        };
+        #[cfg(test)]
+        let pause = self.hub.pause_spend_claims.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause
+                .reached
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            pause.release.notified().await;
+        }
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let chainlock = (wm.get_all_wallet_infos().values())
+            .filter_map(applied_chainlock)
+            .max()
+            .max(self.hub.tracker().chainlock_height())
+            .max(self.hub.best_chainlock().map(|(h, _)| h));
+        let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
+            return;
+        };
+        let core = &mut info.core_wallet;
+        let (claims, locked) = select(core, chainlock);
+        let claims = claims.as_slice();
+        if claims.is_empty() {
+            return;
+        }
+        (self.hub.history).with_wallet(wallet, |h| {
+            h.claimed_at_load.extend(claims.iter().map(|c| c.1))
+        });
+        // A block this process saw spend a claimed coin mined the payment or
+        // beat it: either way it claims nothing. Only a block the ChainLock
+        // covers beats an InstantSend-locked one.
+        let observed = core.observed_spent_outpoints();
+        let beaten: BTreeSet<Txid> = (claims.iter())
+            .filter(|(o, t)| {
+                observed
+                    .get(o)
+                    .is_some_and(|h| !locked.contains(t) || chainlock.is_some_and(|cl| cl >= *h))
+            })
+            .map(|(_, t)| *t)
+            .collect();
+        let restore: Vec<(OutPoint, Option<Txid>)> = (claims.iter())
+            .filter(|(_, t)| !beaten.contains(t))
+            .map(|(o, t)| (*o, Some(*t)))
+            .collect();
+        let held = core.restore_spent_outpoints(&restore);
+        if held.is_empty() {
+            return;
+        }
+        let mut removed: Vec<key_wallet::Utxo> = Vec::new();
+        for account in core.accounts.all_funding_accounts_mut() {
+            removed.extend(held.iter().filter_map(|o| account.utxos.remove(o)));
+        }
+        core.update_balance();
+        self.hub
+            .publish_core_balance(wallet, &core.balance(), &core.account_balances());
+        for utxo in &removed {
+            let spenders: Vec<Txid> = (claims.iter())
+                .filter(|(o, _)| *o == utxo.outpoint)
+                .map(|(_, t)| *t)
+                .collect();
+            tracing::warn!(%wallet, outpoint = %utxo.outpoint, value = utxo.value(), ?spenders,
+                "dropped a coin an unmined own transaction spends");
+        }
+        if removed.is_empty() {
+            return;
+        }
+        // Stored under the lock that dropped them, so no write of a later
+        // change to the same coins lands before this one.
+        let persister = Arc::clone(&live.persister);
+        let stored = tokio::task::spawn_blocking(move || {
+            let changeset = platform_wallet::changeset::PlatformWalletChangeSet {
+                core: Some(platform_wallet::changeset::CoreChangeSet {
+                    spent_utxos: removed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            persister.store(wallet.0, changeset)?;
+            persister.flush(wallet.0)
+        })
+        .await;
+        drop(wm);
+        if !matches!(stored, Ok(Ok(()))) {
+            tracing::warn!(%wallet, ?stored, "could not store the dropped coins as spent");
+        }
+    }
+
+    /// The stored history of `wallet` and the payments this app sent, read
+    /// from wallet.sqlite before the wallet is loaded, so its spend claims
+    /// can be restored before a block is processed for it
+    /// ([`Self::apply_stored_spends`]). No payment when a stored record or
+    /// mark could not be read, so none claims.
+    pub(crate) async fn stored_spends(
+        &self,
+        wallet: WalletId,
+    ) -> Result<StoredSpends, EngineError> {
+        let live = self.live()?;
+        let db_path = self.data_dir().join(WALLET_DB_FILE);
+        let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+        #[cfg(test)]
+        let unreadable = self.hub.unreadable_record.lock().unwrap().1.take();
+        let network = self.network.core_network();
+        let stored = tokio::task::spawn_blocking(move || {
+            let mut history = crate::history::WalletHistory::default();
+            let persisted = match persisted_txids(&db_path) {
+                Ok(mut all) => all.remove(&wallet.0).unwrap_or_default(),
+                Err(e) => {
+                    tracing::warn!(%wallet, error = %e, "could not list stored transactions for spend claims");
+                    return (history, crate::tx_actions::Sent::new());
+                }
+            };
+            // Read and marked abandoned as the history load does.
+            let (records, read) = read_records(wallet, &persisted.records, |t| {
+                let read = persister.get_core_tx_record(wallet.0, t);
+                #[cfg(test)]
+                let read = match unreadable == Some(*t) {
+                    true => RecordFault::Error.apply(read),
+                    false => read,
+                };
+                read
+            });
+            for r in &records {
+                history.upsert(r, None);
+            }
+            let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
+            history.mark_abandoned(&abandoned.copies);
+            let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
+            sent.retain(|t, _| persisted.keeps_mark(t, &abandoned.unread));
+            if !(read && marks_read && sent_read != crate::tx_actions::SentRead::Failed) {
+                tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
+                return (history, crate::tx_actions::Sent::new());
+            }
+            let stored: HashSet<Txid> = (persisted.records.iter())
+                .chain(&persisted.recordless)
+                .filter(|t| !persisted.unconfirmed.contains(*t))
+                .copied()
+                .collect();
+            history.add_unrecorded_sends(&sent, &stored, network);
+            (history, sent)
+        })
+        .await?;
+        Ok(stored)
+    }
+
+    /// Restores the spend claims of `stored` once `wallet` is registered,
+    /// with the InstantSend locks its store holds apart from the records.
+    pub(crate) async fn apply_stored_spends(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        (mut history, sent): StoredSpends,
+    ) {
+        self.apply_spend_claims(manager, wallet, |core, chainlock| {
+            for t in core.instant_send_locks() {
+                history.set_instant_locked(t);
+            }
+            let claims = crate::history::unmined_own_spends(&history.txs, &sent, chainlock);
+            let locked = crate::history::locked_claimants(&history.txs, &claims);
+            (claims, locked)
+        })
+        .await;
     }
 
     /// Transaction and address labels of a wallet (dw-appdb).
@@ -435,12 +841,35 @@ impl NetworkSession {
         }
     }
 
-    /// Runs `f` with the wallet's chain view. `WalletNotFound` for an
-    /// unknown wallet.
+    /// Runs `f` with the wallet's chain view, over the history store's own
+    /// entries under its read lock, with no copy (H-06). `f` must be a pure
+    /// function of the view: no lock, task or store a history writer may
+    /// wait on. `WalletNotFound` for an unknown wallet.
     pub(crate) async fn with_view<R>(
         &self,
         manager: &Manager,
         wallet: WalletId,
+        f: impl FnOnce(&ChainView<'_>) -> R,
+    ) -> Result<R, EngineError> {
+        self.view_of(manager, wallet, false, f).await
+    }
+
+    /// [`Self::with_view`] for a read that shows payees: their names are
+    /// fetched first, outside the history store's lock.
+    pub(crate) async fn with_view_naming_payees<R>(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        f: impl FnOnce(&ChainView<'_>) -> R,
+    ) -> Result<R, EngineError> {
+        self.view_of(manager, wallet, true, f).await
+    }
+
+    async fn view_of<R>(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        name_payees: bool,
         f: impl FnOnce(&ChainView<'_>) -> R,
     ) -> Result<R, EngineError> {
         let wm = manager.wallet_manager_arc();
@@ -450,8 +879,14 @@ impl NetworkSession {
             .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
         let parts = self.view_parts(info, &wallet);
         drop(wm);
-        let history = self.hub.history.snapshot(&wallet);
-        Ok(f(&parts.view(&history, self.network.core_network())))
+        if name_payees {
+            self.fetch_payee_names(wallet, &parts.payees);
+        }
+        let network = self.network.core_network();
+        Ok(self
+            .hub
+            .history
+            .read(&wallet, |history| f(&parts.view(history, network))))
     }
 
     /// One page of dash-qt history records (QT-086…089, IOS-027/028).
@@ -481,8 +916,7 @@ impl NetworkSession {
         let labels = Self::labels(&live.appdb, wallet).await?;
         let watch_only = !self.vault.has_wallet_secret(&wallet.0);
         let mut records = self
-            .with_view(&live.manager, wallet, |view| {
-                self.fetch_payee_names(wallet, view.payees);
+            .with_view_naming_payees(&live.manager, wallet, |view| {
                 view.history
                     .iter()
                     .flat_map(|(txid, entry)| records_of(txid, entry, view, &labels).0)
@@ -518,8 +952,7 @@ impl NetworkSession {
             .map_err(|e| EngineError::Storage(e.to_string()))?;
             let watch_only = !this.vault.has_wallet_secret(&wallet.0);
             let mut detail = this
-                .with_view(&live.manager, wallet, |view| {
-                    this.fetch_payee_names(wallet, view.payees);
+                .with_view_naming_payees(&live.manager, wallet, |view| {
                     view.history
                         .get(&parsed)
                         .map(|entry| detail_of(&parsed, entry, view, &labels, message))

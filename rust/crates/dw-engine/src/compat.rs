@@ -674,6 +674,7 @@ impl NetworkSession {
                             issued,
                             locks,
                             coinjoin_salt: wallet.coinjoin_salt,
+                            rows: None,
                         },
                     })
                 })
@@ -908,6 +909,10 @@ pub(crate) struct ImportedState {
     /// Core's persistent coin locks (`lockedutxo`).
     pub(crate) locks: Vec<dashcore::OutPoint>,
     pub(crate) coinjoin_salt: Option<[u8; 32]>,
+    /// A restore's backed-up app rows of the wallet (labels, address book,
+    /// notes, local contacts, settings, its salt and coin locks), perhaps
+    /// none; `None` for any other import.
+    pub(crate) rows: Option<Vec<dw_appdb::TableRows>>,
 }
 
 /// What `import_wallet_dat` carries out of the blocking read.
@@ -984,15 +989,19 @@ impl NetworkSession {
 
     /// Stores `state` for wallet `id` in one transaction: the range
     /// setting, Core's coin locks and its CoinJoin salt, so the same coins
-    /// count as fully mixed (QT-043, m3-engine.md §5). The salt replaces a
-    /// stored one; each stored counter of the range only rises, so an older
-    /// copy of the file does not narrow it; Core's locks are added to any
-    /// the wallet has. Returns what was replaced, for
-    /// [`Self::restore_imported_state`].
+    /// count as fully mixed (QT-043, m3-engine.md §5), then a backup's rows.
+    /// The salt replaces a stored one; each stored counter of the range only
+    /// rises, so an older copy of the file does not narrow it; Core's locks
+    /// are added to any the wallet has. A backup's rows are added to those
+    /// of a `registered` wallet; those of one not registered (an earlier
+    /// restore's, stopped before it registered the wallet) are replaced,
+    /// even by none. Returns what the settings replaced or added and what
+    /// the locks replaced, for [`Self::restore_imported_state`].
     pub(crate) async fn write_imported_state(
         self: &Arc<Self>,
         id: WalletId,
         state: &ImportedState,
+        registered: bool,
     ) -> Result<Option<dw_appdb::PriorRows>, EngineError> {
         let mut settings = Vec::new();
         if let Some((external, internal)) = state.issued {
@@ -1006,10 +1015,11 @@ impl NetworkSession {
         let locks: Vec<(String, u32)> = (state.locks.iter())
             .map(|o| (o.txid.to_string(), o.vout))
             .collect();
-        if settings.is_empty() && locks.is_empty() {
+        if settings.is_empty() && locks.is_empty() && state.rows.is_none() {
             return Ok(None);
         }
         let key = id.to_string();
+        let rows = state.rows.clone();
         self.appdb_op(move |db| {
             db.write_settings_and_locks(
                 &key,
@@ -1017,20 +1027,26 @@ impl NetworkSession {
                 &widen_issued,
                 &locks,
                 crate::coins::now_secs(),
+                rows.as_deref().map(|tables| dw_appdb::BackupRows {
+                    tables,
+                    replace: !registered,
+                }),
             )
         })
         .await
         .map(Some)
     }
 
-    /// Puts back what [`Self::write_imported_state`] replaced.
-    pub(crate) async fn restore_imported_state(&self, prior: dw_appdb::PriorRows) {
-        if let Err(e) = self
+    /// Puts back what [`Self::write_imported_state`] replaced; whether it
+    /// did.
+    pub(crate) async fn restore_imported_state(&self, prior: dw_appdb::PriorRows) -> bool {
+        let restored = self
             .appdb_op(move |db| db.restore_settings_and_locks(&prior))
-            .await
-        {
+            .await;
+        if let Err(e) = &restored {
             tracing::warn!(error = %e, "could not put back the rows a failed import replaced");
         }
+        restored.is_ok()
     }
 
     /// Applies the range of `state` to registered wallet `id`, before it is
@@ -1051,15 +1067,26 @@ impl NetworkSession {
         self.cover_issued(manager, id, issued).await
     }
 
-    /// Wallet `id`'s stored legacy counters, if valid ones are stored.
-    pub(crate) async fn stored_issued(&self, id: WalletId) -> Option<(u32, u32)> {
-        let appdb = Arc::clone(&self.live().ok()?.appdb);
+    /// Wallet `id`'s stored legacy counters, if stored; `Err` when they
+    /// cannot be read or are malformed.
+    pub(crate) async fn stored_issued(
+        &self,
+        id: WalletId,
+    ) -> Result<Option<(u32, u32)>, EngineError> {
+        #[cfg(test)]
+        if crate::keys::fails_for(&crate::keys::FAIL_RESTORE_READ, id) {
+            return Err(EngineError::Storage("test: range not read".into()));
+        }
         let key = id.to_string();
-        let value = tokio::task::spawn_blocking(move || appdb.setting(&key, ISSUED_SETTING))
-            .await
-            .ok()?
-            .ok()??;
-        parse_issued(&value)
+        let value = self
+            .appdb_op(move |db| db.setting(&key, ISSUED_SETTING))
+            .await?;
+        value
+            .map(|v| {
+                parse_issued(&v)
+                    .ok_or_else(|| EngineError::Storage(format!("malformed stored range {v:?}")))
+            })
+            .transpose()
     }
 }
 
@@ -1132,6 +1159,13 @@ fn check_destination(dest: &Path) -> Result<(), EngineError> {
 /// Creates `dest` (failing if it exists) with mode 0600 and writes `bytes`.
 /// A failed write removes the partial file.
 pub(crate) fn write_new_private(dest: &Path, bytes: &[u8]) -> Result<(), EngineError> {
+    write_new_private_io(dest, bytes)
+        .map_err(|e| CompatFailure::DestinationUnwritable(e.to_string()).into())
+}
+
+/// [`write_new_private`] with the I/O error, whose kind is `AlreadyExists`
+/// when `dest` exists.
+pub(crate) fn write_new_private_io(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -1139,12 +1173,11 @@ pub(crate) fn write_new_private(dest: &Path, bytes: &[u8]) -> Result<(), EngineE
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let unwritable = |e: std::io::Error| CompatFailure::DestinationUnwritable(e.to_string());
-    let mut f = opts.open(dest).map_err(unwritable)?;
+    let mut f = opts.open(dest)?;
     if let Err(e) = f.write_all(bytes).and_then(|()| f.sync_all()) {
         drop(f);
         let _ = std::fs::remove_file(dest);
-        return Err(unwritable(e).into());
+        return Err(e);
     }
     Ok(())
 }
@@ -1457,6 +1490,54 @@ mod tests {
         assert_eq!(report.wallet_id, id);
         assert_eq!(*created.0.lock().unwrap(), [id]);
         assert_eq!(engine.block_on(s.locked_outpoints(id)).unwrap().len(), 1);
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// F-B: keys attached from a wallet.dat whose range cannot be applied
+    /// are refused, and the marker and lookahead they replaced are back: a
+    /// reopen neither lowers the birth nor replays.
+    #[test]
+    fn an_attach_whose_range_fails_leaves_nothing_behind() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let id = import(&engine, &s, "bdb_wide_range.dat");
+        assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+        engine.block_on(s.set_wide_scan(id, Some(crate::keys::WideScan::Done)));
+        let gap = |s: &NetworkSession| {
+            (s.live().unwrap().appdb)
+                .setting(&id.to_string(), crate::keys::LOOKAHEAD_SETTING)
+                .unwrap()
+        };
+        let birth = |s: &NetworkSession| {
+            use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+            let wm = s.manager().unwrap().wallet_manager_arc();
+            engine.block_on(async {
+                let wm = wm.read().await;
+                (wm.get_wallet_info(&id.0).unwrap().core_wallet).birth_height()
+            })
+        };
+        let (gap_before, birth_before) = (gap(&s), birth(&s));
+        FAIL_COVER_IN
+            .lock()
+            .unwrap()
+            .push(s.data_dir().to_path_buf());
+
+        let file = testdata("compat/walletdat/bdb_wide_range.dat");
+        let failed = engine.block_on(s.import_wallet_dat(file, None, ImportOptions::default()));
+
+        assert!(failed.is_err());
+        assert_eq!(
+            engine.block_on(s.wide_scan(id)).unwrap(),
+            Some(crate::keys::WideScan::Done)
+        );
+        assert_eq!(gap(&s), gap_before);
+        let s = reopen(&engine, s);
+        assert_eq!(birth(&s), birth_before);
+        assert!(
+            engine
+                .block_on(s.live().unwrap().replay.get(id))
+                .unwrap()
+                .is_none()
+        );
         engine.block_on(engine.shutdown()).unwrap();
     }
 

@@ -22,6 +22,7 @@ import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FlowKindName } from "../api/generated/FlowKindName";
+import type { FundAmount } from "../api/generated/FundAmount";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -43,13 +44,14 @@ import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { masternodesHandlers } from "./masternodes";
-import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers } from "./registration";
+import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers, shieldedOff } from "./registration";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
 import { topUpHandlers } from "./topup";
 import { ratesHandlers } from "./rates";
+import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
 import { isClosed, settingsHandlers } from "./settings";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
@@ -317,6 +319,12 @@ export function checkGrant(w: World, id: string, walletId: string, kinds: GrantP
 
 export function useGrant(w: World, id: string) {
   for (const g of w.grants) if (g.grant.id === id) g.used = true;
+}
+
+/** A shield's or a fund's amount in duffs; the fixture has no Core Max (`all`) yet. */
+export function fundDuffs(amount: FundAmount): number {
+  if (amount.kind === "duffs") return amount.duffs;
+  throw fail("invalid_argument", "the fixture has no Core Max", { kind: "reason", reason: "the fixture has no Core Max" });
 }
 
 /** An unused `changeCredential` grant whose key is usable (it is bound to no wallet). */
@@ -623,6 +631,9 @@ const checkContact: SendDeps["checkContact"] = (w, walletId, r, stage, amount) =
   if (!c || (relation !== "contact" && relation !== "pendingIncoming")) throw fail("invalid_argument", "not a contact of this identity");
   if (c.summary.channel === "broken") throw fail("contact.channel_broken", "the payment channel is broken");
   if (c.paymentLock) throw fail("contact.payment_locked", "contact payment locked", { kind: "txid", txid: c.paymentLock.txid });
+  const refusal = stage === "prepare" && c.summary.unverified ? dashpay(w, walletId).unverifiedPrepare : undefined;
+  if (refusal === "contextUnavailable") throw fail("platform.context_unavailable", "platform context unavailable");
+  if (refusal === "trustMismatch") throw fail("platform.trust_mismatch", "quorum key mismatch between SPV and the trusted service");
 };
 
 /** A contact payment's lease (DP3-01 D5): an `acceptAndPay` or `contactPayment` lease of the
@@ -712,6 +723,7 @@ export const HANDLERS: Handlers = {
   ...identitiesHandlers({ dashpay, grant: checkGrant, useGrant }),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesHandlers(),
+  ...updatesHandlers(),
 
   // App and network
   launch_info: (_, { world }) => world.launch,
@@ -1057,9 +1069,11 @@ export const HANDLERS: Handlers = {
         remainingCredits: String(BigInt(held * 1000) - plan.credits),
         availableDuffs: 0,
         grant: { maxDuffs: 0, maxCredits: String(plan.credits) },
+        readiness: null,
       };
     }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
+    if (funding.kind === "shielded") throw shieldedOff();
     const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label);
     return {
       contested,
@@ -1070,6 +1084,7 @@ export const HANDLERS: Handlers = {
       availableDuffs: funding.kind === "coreBalance" ? fundable(wallet(world, walletId)) : 0,
       // D30: one duff past the total for a lock, the identity step's proof authority (registration.rs).
       grant: { maxDuffs: funding.kind === "coreBalance" ? totalDuffs + 1 : totalDuffs, maxCredits: String(credits) },
+      readiness: null,
     };
   },
   search_users: ({ walletId, prefix, limit }, { world }) => {

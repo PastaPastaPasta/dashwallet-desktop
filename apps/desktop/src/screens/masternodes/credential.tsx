@@ -10,6 +10,7 @@ import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { GrantPurposeSpec } from "../../api/generated/GrantPurposeSpec";
 import { useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy } from "../../api/queries";
+import { useT } from "../../i18n";
 import { authRefusal, credentialPrompt } from "../pay/model";
 
 export interface Credential {
@@ -107,6 +108,7 @@ export function useCredential(walletId: string, ask: string, windowAmount: numbe
 
 /** The passphrase field (when asked), the refusal and the wait. */
 export function CredentialField({ c, busy, testId, className }: { c: Credential; busy: boolean; testId: string; className?: string }) {
+  const t = useT();
   const id = useId();
   const field = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -116,7 +118,7 @@ export function CredentialField({ c, busy, testId, className }: { c: Credential;
     <div className={className}>
       {c.prompt === "passphrase" && (
         <div className="form-field">
-          <label htmlFor={id}>Passphrase</label>
+          <label htmlFor={id}>{t("masternodes.governance.credential.passphrase")}</label>
           <input
             ref={field}
             id={id}
@@ -136,7 +138,7 @@ export function CredentialField({ c, busy, testId, className }: { c: Credential;
       </p>
       {c.waitSecs > 0 && (
         <p id={`${id}-wait`} className="form-problem" data-testid={`${testId}-wait`}>
-          {c.error ? "" : "Too many attempts. "}Try again in {c.waitSecs} s.
+          {t(c.error ? "masternodes.governance.credential.waitAfterError" : "masternodes.governance.credential.wait", { secs: String(c.waitSecs) })}
         </p>
       )}
     </div>

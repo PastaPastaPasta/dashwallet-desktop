@@ -24,7 +24,7 @@ import {
   myQr,
   ownerLine,
   scanStatus,
-  SCREEN_SHORTCUT,
+  AddText,
   type AddTab,
   type Candidate,
   type CardLine,
@@ -32,8 +32,9 @@ import {
   type Listed,
   watchClaim,
 } from "../../contacts/add";
-import { initials, NETWORK_DEBOUNCE_MS, networkPrefix, relationTitle, type ContactsOwner } from "../../contacts/model";
+import { initials, NETWORK_DEBOUNCE_MS, networkPrefix, relationTitle, unverifiedWarning, type ContactsOwner } from "../../contacts/model";
 import { useEligibility, useMyUserLink, useNetworkSearch, useScreenScanMode } from "../../contacts/queries";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { Outcome } from "../tools/common";
 import { Tabs } from "../Routes";
@@ -69,6 +70,7 @@ function focusContact(target: HTMLElement | null) {
 
 export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: AddContactIntent | null; link: ContactPrefill | null }) {
   const backend = useBackend();
+  const t = useT();
   const model = useModel(useMemo(() => new AddContactModel(backend, ctx.walletId), [backend, ctx.walletId]));
   const identity = ctx.owner.kind === "identity" ? ctx.owner.identity : null;
   const [tab, setTab] = useState<AddTab>("search");
@@ -98,10 +100,10 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
     <section className="add-contact add-contact-slot card-l1" aria-labelledby="add-contact-title" data-testid="add-contact">
       <header className="add-contact-header">
         <h2 id="add-contact-title" className="add-contact-title">
-          Add a New Contact
+          {t("contacts.addContact.title")}
         </h2>
         <DashButton variant="plainBlue" size="small" data-testid="add-contact-close" onClick={close}>
-          Close
+          {t("contacts.addContact.close")}
         </DashButton>
       </header>
       {/* A new candidate is a new card: a send still running for the last one toasts (D5). */}
@@ -109,11 +111,11 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
       {linkState && link && (
         <div className="add-contact-candidate" data-testid="add-contact-link">
           <p className="contact-row-username" data-testid="add-contact-username">
-            @{link.username}
+            <bdi>@{link.username}</bdi>
           </p>
           {linkState.kind === "verifying" ? (
             <p role="status" data-testid="add-contact-checking">
-              Checking @{link.username} on the Dash network…
+              {t.rich("contacts.addContact.checkingLink", { username: <bdi>@{link.username}</bdi> })}
             </p>
           ) : (
             <ScanProblem text={linkState.text} retry={linkState.retry ? () => void model.retry() : null} testId="add-contact-link-error" />
@@ -121,7 +123,7 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
         </div>
       )}
       {identity !== null && (
-        <Tabs label="Add a contact by" tabs={ADD_TABS} current={tab} onSelect={setTab} testId="add-contact-tabs">
+        <Tabs label={t("contacts.addContact.tabsLabel")} tabs={ADD_TABS} current={tab} onSelect={setTab} testId="add-contact-tabs">
           {tab === "search" && <SearchTab ctx={ctx} identity={identity} query={intent?.query ?? ""} onPick={(h) => model.pick(h)} />}
           {tab === "scan" && <ScanTab model={model} />}
           {tab === "myQr" && <MyQrTab walletId={ctx.walletId} identity={identity} />}
@@ -133,6 +135,7 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
 
 /** A scan's refusal, with Try again after a network failure; it takes focus when it shows (D15). */
 function ScanProblem({ text, retry, testId }: { text: string; retry: (() => void) | null; testId: string }) {
+  const t = useT();
   const ref = useRef<HTMLParagraphElement>(null);
   useEffect(() => ref.current?.focus(), [text]);
   return (
@@ -142,7 +145,7 @@ function ScanProblem({ text, retry, testId }: { text: string; retry: (() => void
         <>
           {" "}
           <DashButton variant="plainBlue" size="small" onClick={retry}>
-            Try again
+            {t("contacts.tryAgain")}
           </DashButton>
         </>
       )}
@@ -150,20 +153,9 @@ function ScanProblem({ text, retry, testId }: { text: string; retry: (() => void
   );
 }
 
-const SHOW: Record<"showContact" | "showRequest" | "showHidden", string> = {
-  showContact: "Show Contact",
-  showRequest: "Show Request",
-  showHidden: "Show in Hidden",
-};
-
-const SOURCES: Record<Candidate["source"], string> = {
-  search: "Found by username search",
-  scan: "From a QR code",
-  link: "From a link",
-};
-
 /** The candidate (D4–D7, D13, D14, D34, D36): who, whether Platform vouched for them, and the one next step. */
 function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Candidate }) {
+  const t = useT();
   const identity = ctx.owner.kind === "identity" ? ctx.owner.identity : null;
   const relation = currentRelation(c, ctx.listed);
   const asks = identity !== null && !answersAtOnce(relation);
@@ -197,7 +189,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
     case "showHidden":
       button = (
         <DashButton key="show" variant="tintedBlue" data-testid="add-contact-show" onClick={() => select(c.identity)}>
-          {SHOW[line.next]}
+          {t(`contacts.addContact.show.${line.next}`)}
         </DashButton>
       );
       break;
@@ -207,40 +199,41 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
     case "join":
       button = (
         <DashButton key="join" variant="filledBlue" data-testid="add-contact-join" onClick={() => navigate("joinDashPay")}>
-          Join DashPay
+          {t("contacts.joinDashPay")}
         </DashButton>
       );
       break;
     case "retry":
       button = (
         <DashButton key="retry" variant="plainBlue" data-testid="add-contact-retry" onClick={() => void eligibility.refetch()}>
-          Try again
+          {t("contacts.tryAgain")}
         </DashButton>
       );
       break;
   }
   const note = claimNote(c.claim, now);
+  const warning = line?.next === "send" ? unverifiedWarning("send", c.unverified) : null;
   return (
     <div className="add-contact-candidate" data-testid="add-contact-candidate">
       <header className="contact-detail-header">
         <Avatar letters={initials(c.displayName || c.username || "")} size="pane" identity={c.identity} />
         <div className="contact-detail-names">
           <h3 className="add-contact-name" tabIndex={-1} ref={heading} data-testid="add-contact-name">
-            {name}
+            <bdi>{name}</bdi>
           </h3>
           {c.username && c.displayName && (
             <p className="contact-row-username" data-testid="add-contact-username">
-              @{c.username}
+              <bdi>@{c.username}</bdi>
             </p>
           )}
         </div>
       </header>
       <p className="add-contact-identity" data-testid="add-contact-identity">
-        <CopyValue value={c.identity} label="identity" mono />
+        <CopyValue value={c.identity} action={t("contacts.addContact.copyIdentity")} mono />
       </p>
       <p className="add-contact-meta" data-testid="add-contact-verified">
-        {c.unverified ? <Chip tone="warning">Unverified</Chip> : <Chip tone="info">Verified on the Dash network</Chip>}
-        <span className="add-contact-source">{SOURCES[c.source]}</span>
+        {c.unverified ? <Chip tone="warning">{t("contacts.unverified")}</Chip> : <Chip tone="info">{t("contacts.addContact.verified")}</Chip>}
+        <span className="add-contact-source">{t(`contacts.addContact.sources.${c.source}`)}</span>
       </p>
       {note && (
         <p className="placeholder-note" data-testid="add-contact-claim">
@@ -249,7 +242,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
       )}
       <div className="add-contact-status" ref={status} data-testid="add-contact-status">
         {line === undefined ? (
-          <p role="status">Checking…</p>
+          <p role="status">{t("contacts.addContact.checking")}</p>
         ) : (
           line.text && (
             <p className="placeholder-note" data-testid="add-contact-line">
@@ -257,8 +250,13 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
             </p>
           )
         )}
+        {warning && (
+          <p className="sheet-warning" role="note" data-testid="add-contact-unverified">
+            {warning}
+          </p>
+        )}
         {button && <span className="add-contact-actions">{button}</span>}
-        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="add-contact-outcome" />
+        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="add-contact-outcome" polite />
         <EnableFailure actions={actions} testId="add-contact-enable-outcome" />
       </div>
     </div>
@@ -288,6 +286,7 @@ function useOptionalModel<M extends ContactActions>(model: M | null): M | null {
 
 /** Search (D3): every hit of the prefix, with how it relates to the identity. */
 function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity: string; query: string; onPick: (hit: HitFields) => void }) {
+  const t = useT();
   const [text, setText] = useState(query);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -305,32 +304,32 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
     if (prefix === null)
       return (
         <p className="placeholder-note" data-testid="add-contact-search-hint">
-          Search for a User on the Dash Network by their username.
+          {t("contacts.addContact.searchHint")}
         </p>
       );
     if (search.isPending || (search.isError && search.isFetching))
       return (
         <p className="contacts-network-note" role="status">
-          Searching…
+          {t("contacts.searching")}
         </p>
       );
     if (search.isError)
       return (
         <p className="contacts-network-note" role="alert" data-testid="add-contact-search-error">
-          Could not search the Dash network.{" "}
+          {t("contacts.searchFailed")}{" "}
           <DashButton variant="plainBlue" size="small" onClick={() => void search.refetch()}>
-            Try again
+            {t("contacts.tryAgain")}
           </DashButton>
         </p>
       );
     if (search.data.length === 0)
       return (
         <p className="contacts-network-note" data-testid="add-contact-search-none">
-          No usernames found
+          {t("contacts.noUsernames")}
         </p>
       );
     return (
-      <ul className="tx-group-rows" aria-label="Usernames">
+      <ul className="tx-group-rows" aria-label={t("contacts.addContact.usernames")}>
         {search.data.map((h) => {
           const displayName = h.displayName?.trim();
           const relation = currentRelation(h, ctx.listed);
@@ -344,7 +343,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
               trailing={
                 <>
                   {relation !== "stranger" && <span className="contact-row-note">{relationTitle(relation)}</span>}
-                  {h.unverified && <Chip tone="warning">Unverified</Chip>}
+                  {h.unverified && <Chip tone="warning">{t("contacts.unverified")}</Chip>}
                 </>
               }
               data-testid="add-contact-hit"
@@ -359,7 +358,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
     <div className="add-contact-search">
       <label className="search-field" data-testid="add-contact-search">
         <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
-        <input ref={input} type="search" value={text} placeholder="Search username" aria-label="Search username" onChange={(e) => setText(e.target.value)} />
+        <input ref={input} type="search" value={text} placeholder={t("contacts.addContact.searchField")} aria-label={t("contacts.addContact.searchField")} onChange={(e) => setText(e.target.value)} />
       </label>
       {results()}
     </div>
@@ -375,6 +374,7 @@ function carried(e: DragEvent | ClipboardEvent): { file: File | null; text: stri
 
 /** Scan (D9, D10): a drop, Open Image…, a screen region, a paste. */
 function ScanTab({ model }: { model: AddContactModel }) {
+  const t = useT();
   const mode = useScreenScanMode();
   const [over, setOver] = useState(false);
   const [typed, setTyped] = useState("");
@@ -410,37 +410,37 @@ function ScanTab({ model }: { model: AddContactModel }) {
     >
       <div className={over ? "add-contact-drop is-over" : "add-contact-drop"} data-testid="add-contact-drop">
         <Icon id="shortcutScanQR" size={32} />
-        <span>Drop a QR code image here</span>
+        <span>{t("contacts.addContact.drop")}</span>
         <span className="add-contact-actions">
           <DashButton variant="tintedBlue" size="small" data-testid="add-contact-open-image" disabled={busy} onClick={() => void model.openImage()}>
-            Open Image…
+            {t("contacts.addContact.openImage")}
           </DashButton>
           {mode.data === "picker" &&
             (scan.kind === "capturing" ? (
               <DashButton key="cancel" variant="tintedGray" size="small" data-testid="add-contact-screen-cancel" onClick={() => model.cancelScreen()}>
-                Cancel
+                {t("contacts.addContact.cancel")}
               </DashButton>
             ) : (
               <DashButton key="screen" variant="tintedBlue" size="small" data-testid="add-contact-screen" disabled={busy} onClick={() => void model.screen()}>
-                Scan a Screen Region
+                {t("contacts.addContact.screen")}
               </DashButton>
             ))}
         </span>
         {mode.data === "copyShortcut" && (
           <p className="placeholder-note" data-testid="add-contact-screen-shortcut">
-            {SCREEN_SHORTCUT}
+            {AddText.screenShortcut}
           </p>
         )}
       </div>
       <label className="form-field">
-        Paste a link or a QR code image
+        {t("contacts.addContact.paste")}
         <input
           type="text"
           data-testid="add-contact-paste"
           value={typed}
           autoComplete="off"
           spellCheck={false}
-          placeholder="dashpay://user?… or a copied image"
+          placeholder={t("contacts.addContact.pastePlaceholder")}
           onChange={(e) => setTyped(e.target.value)}
           onPaste={onPaste}
           onKeyDown={(e) => {
@@ -466,27 +466,28 @@ function ScanTab({ model }: { model: AddContactModel }) {
 /** `qrSize`: the code's side in CSS px; a share sheet shows it larger, to scan across a table. */
 /** `username`: the name a share sheet says it shares; a link for another is not shown. */
 export function MyQrTab({ walletId, identity, qrSize = 220, username = null }: { walletId: string; identity: string; qrSize?: number; username?: string | null }) {
+  const t = useT();
   const link = useMyUserLink(walletId, identity);
   const state = myQr(link, username);
   const matrix = useQrMatrix(state.kind === "link" ? state.link : undefined);
   let body;
   switch (state.kind) {
     case "loading":
-      body = <p role="status">Loading…</p>;
+      body = <p role="status">{t("contacts.addContact.myQrLoading")}</p>;
       break;
     case "noUsername":
       body = (
         <p className="placeholder-note" data-testid="add-contact-qr-no-username">
-          Your username is not registered yet, so there is no link to share.
+          {t("contacts.addContact.noUsername")}
         </p>
       );
       break;
     case "updating":
       body = (
         <p className="placeholder-note" data-testid="add-contact-qr-updating">
-          Your username is being updated…{" "}
+          {t("contacts.addContact.usernameUpdating")}{" "}
           <DashButton variant="plainBlue" size="small" onClick={() => void link.refetch()}>
-            Try again
+            {t("contacts.tryAgain")}
           </DashButton>
         </p>
       );
@@ -502,7 +503,7 @@ export function MyQrTab({ walletId, identity, qrSize = 220, username = null }: {
       body = (
         <>
           {matrix.data ? (
-            <QrCode matrix={matrix.data} size={qrSize} label="Your DashPay QR code" testId="add-contact-qr" />
+            <QrCode matrix={matrix.data} size={qrSize} label={t("contacts.addContact.qrLabel")} testId="add-contact-qr" />
           ) : (
             <div className="qr-placeholder" style={{ width: qrSize, height: qrSize }} aria-hidden="true" />
           )}
@@ -511,7 +512,7 @@ export function MyQrTab({ walletId, identity, qrSize = 220, username = null }: {
           </p>
           <span className="add-contact-actions">
             <CopyDashButton variant="tintedBlue" size="small" data-testid="add-contact-copy-link" text={state.link}>
-              Copy Link
+              {t("contacts.addContact.copyLink")}
             </CopyDashButton>
           </span>
         </>
@@ -519,7 +520,7 @@ export function MyQrTab({ walletId, identity, qrSize = 220, username = null }: {
   }
   return (
     <div className="add-contact-my-qr" data-testid="add-contact-my-qr">
-      <p className="placeholder-note">Others scan this code or open the link to add you.</p>
+      <p className="placeholder-note">{t("contacts.addContact.myQrHint")}</p>
       {body}
     </div>
   );

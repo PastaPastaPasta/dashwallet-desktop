@@ -66,6 +66,9 @@ dash-wallet [--datadir DIR] [--network mainnet|testnet|regtest|devnet-NAME] [--s
             [link]…
 ```
 
+An option's value follows it as the next argument or after `=` (`--datadir DIR` or `--datadir=DIR`); an
+option that takes no value, such as `--no-platform`, refuses one.
+
 The `--selftest` options exist only in a build with dw-app's `selftest` feature
 (`pnpm tauri build --no-bundle --features selftest`, as `tauri-selftest.yml` does); release and
 packaged builds leave it off and refuse them as unknown options (E0-13 D17).
@@ -95,6 +98,68 @@ paint and 170 MB of memory on agentbox). Set the variable yourself to override t
 
 The gate harness that measured G-UI (Xvfb + AT-SPI, the UIA walk, `ci/gate/`) stays on branch
 `dw/g-02-tauri-measure`. Results and method: [ADR 0003](../../docs/adr/0003-ui-stack.md).
+
+## DashPay flows on testnet (H-04 O4a)
+
+Seven tauri-driver flows in `e2e-tauri/` drive the real app against public testnet: `dashpay-status`
+(DP1-08), `contacts` (DP2-07), `registration` (DP1-09), `add-contact` (DP2-08), `bell-accept` (DP2-09),
+`pay-contact` (DP3-06) and `profile-write` (BL-162). They read a fixture of four wallets A–D, each with an
+identity and a username, whose contacts are A:{B,C}, B:{A}, C:{A,D}, D:{C}. Two scripts make the
+fixture and run the flows; neither opens a window.
+
+```sh
+# 1. The fixture (once; a rerun resumes and never pays, registers or sends twice). Writes to testnet:
+#    one faucet payout (dash-faucet skill's helper), A→B,C,D, four identities, three contact pairs.
+#    The directory must lie under $HOME: each phrase and the vault passphrase go to the secret store
+#    (`secret set dwd-qa-testnet-<dir name>-<W>-mnemonic`, …) and are linked into it.
+DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/testnet-dashpay-fixture.sh
+
+# 2. The seven flows: builds once, reads first, then writes; goes on past a failure. Each run gets a
+#    new directory, test-results/dashpay-testnet/<UTC time>-XXXX/ (`latest` points at it), with
+#    summary.{md,json} (each flow's result, duration, first error) and <flow>/ (screenshots, logs);
+#    nothing is emptied. DW_SUITE_OUT moves that root; inside a git work tree it must be git-ignored.
+#    Starts under xvfb-run when $DISPLAY is unset.
+DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/e2e-tauri-dashpay-testnet.sh
+```
+
+Each write flow keeps a ledger in the fixture (`DP1-09.json`, `DP2-08.json`, `DP2-09.json`,
+`DP3-06.json`, and `BL-162.json`, which profile-write writes as soon as its edit is confirmed), so a
+second run checks rather than repeats. Every secret a flow makes (its app passphrase; registration's new
+wallet E, its phrase and its app data root's passphrase) goes to the store as it is made, as
+`<prefix>-run-<run>-<flow>-…`, and its name, never its value, to the run's `secrets.manifest`
+(`e2e-tauri/flow-secrets.ts`; a suite flow cannot take a screenshot before it has registered one). E's
+files are links into the store from the start: `<fixture>/E.mnemonic` and `DW_REG_STATE`'s passphrase
+(default `<fixture>.reg-state`, beside the fixture because registration fails on a secret among the
+fixture's files). Every run first checks that each phrase and passphrase file of the fixture and its
+registration state is a link into the store, and that each one the ledgers say exists is there.
+Registration is skipped once done. Profile-write records its edit `pending` before it submits (no
+record, no submit) and `done` once the profile reads the new name back; a rerun that finds `pending`
+reads the profile rather than submit again, records `done` if it shows the pending name and stops
+otherwise, and it is skipped once `done` (`DW_PROFILE_WRITE_AGAIN=1` submits another edit). And bell-accept's C→B pair is spent after one accept (move its
+ledger aside and pick B–D with `DW_BELL_SENDER`/`DW_BELL_RECEIVER`); pay-contact's rerun pays nothing
+but still checks the payee card.
+
+A secret never reaches a screenshot in the first place: every flow types one only through
+`fillSecret` (`e2e-tauri/driver.ts`), which refuses, typing nothing, unless the field is an
+`<input type="password">` with no reveal toggle in its form. The runner's closing phrase and key check
+over everything it kept is the second line (`e2e-tauri/artifact-scan.ts`: the fixture's secrets and
+those in the manifest, any run of 12 BIP39 words, xprv/tprv, and the secrets in screenshots through
+tesseract). OCR misreads, so a screenshot is matched with look-alikes folded together (`J`, `l`, `1`,
+`}` and `]` as one, and so on) and approximately: any stretch within max(2, 20%) edits of a secret of 8
+or more characters is a hit. A screenshot it cannot read, or of more than one colour that OCR reads no
+text from, is a hit too; the summary says whether it came back clean. `DW_SUITE_FLOWS` runs a subset,
+`DW_E2E_SKIP_BUILD=1` reuses the binaries.
+
+A run's throwaway secrets last as long as its artifacts. When a run is no longer needed, prune it:
+
+```sh
+DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/e2e-tauri-dashpay-testnet.sh prune test-results/dashpay-testnet/<run>
+```
+
+It reruns the check over the run and its profile directory and, only if that is clean, `secret rm`s
+each name the run's manifest holds in the store alone (printing the names, never the values; E's
+linked secrets stay with the fixture) and deletes the run, together. Nothing else removes a run, and
+nothing else removes its secrets.
 
 ## Fixture backend (U-07)
 

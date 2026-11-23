@@ -129,8 +129,9 @@ export interface ReceiveWorld {
 export const newReceiveWorld = (): ReceiveWorld => ({ firstUnused: 0, issued: 0, requests: [], nextRequest: 1, usernameInRequests: false });
 
 /** The funded wallet's coins: the confirmed ones add up to `FUNDED_BALANCES.confirmed`; the
- * unconfirmed one (neither mined nor InstantSend-locked) cannot be spent yet. */
-export function buildCoins(variant: HistoryVariant): Utxo[] {
+ * unconfirmed one (neither mined nor InstantSend-locked) cannot be spent yet. It is the output of
+ * the history's pending receive, `pendingTxid`, when there is one. */
+export function buildCoins(variant: HistoryVariant, pendingTxid?: string): Utxo[] {
   if (variant === "empty") return [];
   const { hex, address } = makeIds(prng(0x5e17));
   const coin = (amount: number, confirmations: number, extra: Partial<Utxo> = {}): Utxo => ({
@@ -157,7 +158,7 @@ export function buildCoins(variant: HistoryVariant): Utxo[] {
     coin(750_000_000, 40),
     coin(250_000_000, 12, { isChange: true }),
     coin(19_698_287, 6),
-    coin(20_000_000, 0),
+    coin(20_000_000, 0, pendingTxid ? { outpoint: { txid: pendingTxid, vout: 0 } } : {}),
   ];
 }
 
@@ -381,13 +382,18 @@ function maxSpendable(world: World, wallet: FixtureWallet, source: CoinSource, f
   return sourceCoins(world, wallet, source).reduce((n, u) => n + u.amount, 0);
 }
 
-function txActionRefusal(row: TxRow): TxActionRefusalName | null {
-  if (row.amount >= 0 && row.category !== "sent") return "notSentByWallet";
+/** Why the wallet can't abandon `row`. Like dash-qt, it abandons any unconfirmed transaction, incoming too. */
+function abandonRefusal(row: TxRow): TxActionRefusalName | null {
   if (row.status.kind === "abandoned") return "alreadyAbandoned";
   if (row.txType === "generated") return "coinbase";
   if (row.status.confirmations > 0) return "confirmed";
   if (row.status.instantLocked) return "instantLocked";
   return null;
+}
+
+/** Why the wallet can't resend `row`: it only resends what it sent. */
+function resendRefusal(row: TxRow): TxActionRefusalName | null {
+  return row.amount >= 0 && row.category !== "sent" ? "notSentByWallet" : abandonRefusal(row);
 }
 
 /** The wallet's row for `txid`, or `tx_not_found`. */
@@ -426,23 +432,33 @@ export interface SendDeps {
 const unknownHandle = (h: number) => fail("app.unknown_handle", `unknown handle: ${h}`);
 
 /** An address of the wallet's receiving chain: the same one for an index every run. */
+/** How the engine learned of a payment: relayed with its InstantSend lock, or found by the catch-up
+ * scan in an old block (`newTransactions`' `live`). */
+export type PaymentSource = "live" | "scanned";
+
 /** A payment of `duffs` to the wallet's current receiving address (or to `to`), as the engine reports one: the row,
- * the address used (the next one is current from now on), `historyChanged` and `newTransactions`.
- * Returns the paid address. */
-export function receivePayment(ctx: Ctx, walletId: string, duffs: number, to?: string): string {
+ * the address used (the next one is current from now on), `historyChanged` and `newTransactions`, its
+ * `catchUp` the world's sync. Returns the paid address. */
+export function receivePayment(ctx: Ctx, walletId: string, duffs: number, to?: string, source: PaymentSource = "live"): string {
   const w = ctx.world.wallets.find((x) => x.summary.walletId === walletId)!;
   const current = receiveAddress(w, w.receive.firstUnused, null).address;
   const address = to ?? current;
   const txid = (0xfeed0000 + w.rows.length).toString(16).padStart(64, "0");
+  const live = source === "live";
+  const sync = ctx.world.sync;
+  const tip = sync.tipHeight ?? 0;
+  const scannedAt = Math.max(1, sync.phases.find((p) => p.phase === "filters")?.currentHeight ?? tip);
   w.rows = [
     {
       txid,
       recordIndex: 0,
       txType: "recvWithAddress",
       category: "received",
-      status: { kind: "confirming", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
-      timestamp: secs(FIXTURE_NOW),
-      blockHeight: null,
+      status: live
+        ? { kind: "confirming", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null }
+        : { kind: "confirmed", confirmations: Math.max(1, tip - scannedAt + 1), instantLocked: false, chainLocked: true, maturesIn: null },
+      timestamp: live ? secs(FIXTURE_NOW) : secs(FIXTURE_NOW) - (tip - scannedAt) * 150,
+      blockHeight: live ? null : scannedAt,
       amount: duffs,
       fee: null,
       address,
@@ -459,7 +475,7 @@ export function receivePayment(ctx: Ctx, walletId: string, duffs: number, to?: s
   }
   const network = ctx.world.launch.network.dirName;
   ctx.emit({ kind: "historyChanged", network, walletId, txids: [txid] });
-  ctx.emit({ kind: "newTransactions", network, walletId, txids: [txid], count: 1, catchUp: false });
+  ctx.emit({ kind: "newTransactions", network, walletId, txids: [txid], live: [live], count: 1, catchUp: !sync.caughtUp });
   return address;
 }
 
@@ -497,10 +513,10 @@ function changed({ world, emit }: Ctx, wallet: FixtureWallet, txids: string[]) {
   emit({ kind: "historyChanged", network, walletId: wallet.summary.walletId, txids });
 }
 
-function moveBalance(wallet: FixtureWallet, delta: number) {
+function moveBalance(wallet: FixtureWallet, delta: number, bucket: "confirmed" | "unconfirmed" = "confirmed") {
   const b = wallet.summary.balances;
   if (!b) return;
-  wallet.summary = { ...wallet.summary, balances: { ...b, confirmed: b.confirmed + delta, total: b.total + delta } };
+  wallet.summary = { ...wallet.summary, balances: { ...b, [bucket]: b[bucket] + delta, total: b.total + delta } };
 }
 
 export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, chargeLease, paymentLock, setPaymentLock, contactPaid }: SendDeps): Handlers {
@@ -782,7 +798,6 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     tx_detail_extras: ({ walletId, txid }, { world }) => {
       const row = rowOf(wallet(world, walletId), txid);
       const d = txDetails(row);
-      const refusal = txActionRefusal(row);
       const extras: TxDetailExtrasInfo = {
         txid,
         isCoinbase: row.txType === "generated",
@@ -792,8 +807,8 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         maturesIn: row.status.maturesIn,
         inMempool: null,
         abandoned: row.status.kind === "abandoned",
-        canAbandon: refusal === null,
-        canResend: refusal === null,
+        canAbandon: abandonRefusal(row) === null,
+        canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
         lastAnnouncedAt: world.send.announced[txid] ?? null,
       };
@@ -802,20 +817,24 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     abandon_transaction: ({ walletId, txid }, ctx) => {
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
-      const refusal = txActionRefusal(row);
+      const refusal = abandonRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
       const mine = ctx.world.send.sent[txid];
       if (mine) {
         w.coins = [...w.coins.filter((u) => !(mine.change && sameOutpoint(u.outpoint, mine.change))), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];
         delete ctx.world.send.sent[txid];
+        moveBalance(w, -row.amount);
+      } else {
+        // An incoming payment the wallet abandons: its outputs go, and so does its pending amount.
+        w.coins = w.coins.filter((u) => u.outpoint.txid !== txid);
+        moveBalance(w, -row.amount, row.status.instantLocked || row.status.confirmations > 0 ? "confirmed" : "unconfirmed");
       }
-      moveBalance(w, -row.amount);
       changed(ctx, w, [txid]);
       return null;
     },
     resend_transaction: ({ walletId, txid }, { world }) => {
-      const refusal = txActionRefusal(rowOf(wallet(world, walletId), txid));
+      const refusal = resendRefusal(rowOf(wallet(world, walletId), txid));
       if (refusal) throw refused(refusal);
       world.send.announced[txid] = secs(FIXTURE_NOW);
       return null;

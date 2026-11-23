@@ -13,20 +13,23 @@ import { Sheet } from "../components/sheet";
 import { shortId } from "../dashpay/identities";
 import { known } from "../format/homeBalance";
 import { unreadText } from "../dashpay/registration";
+import { useT } from "../i18n";
 import { useModel } from "../onboarding/model";
 import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
 import { moveFor, MOVE_COPY as M } from "../platform/move";
 import { cardView, lockKey, lockKinds, RECOVERY_COPY as C, recoveryFor, resultText, sheetRows, withoutPendingShields, type CardAction, type RecoveryModel } from "../recovery/model";
 import { SHIELDED_COPY as S, shieldedErrorText, shieldedFor } from "../shielded/flow";
-import { SHIELDED_SYNCING_TEXT, shieldedSyncing } from "../shielded/syncing";
+import { SHIELDED_SYNC_COPY, shieldedSyncing } from "../shielded/syncing";
 import { shieldedRoute, transferFor } from "../transfer/model";
 import { usePlatformHold } from "./PlatformMoveSheet";
 import { ShieldedSheet, useFormats } from "./ShieldedSheet";
 import { GrantSheet } from "./tools/common";
 
-const ACTION_LABEL: Record<CardAction, string> = { finish: C.finish, finishAll: C.finishAll, checkAgain: C.checkAgain, details: C.details, retry: C.retry, dismiss: C.dismiss };
+/** Read when drawn, so the labels follow the language in use. */
+const actionLabel = (a: CardAction): string => C[a];
 
 export function UnfinishedTransfersCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  useT();
   const backend = useBackend();
   const model = recoveryFor(backend, walletId);
   useModel(model);
@@ -62,7 +65,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
   const s = status.data ?? null;
   const shields = s?.pendingShields ?? [];
   const shieldSyncing = s !== null && shieldedSyncing(s);
-  const shieldWhy = shieldSyncing ? SHIELDED_SYNCING_TEXT : shielded.running ? S.card.why.busy : null;
+  const shieldWhy = shieldSyncing ? SHIELDED_SYNC_COPY.syncing : shielded.running ? S.card.why.busy : null;
   // A lock this version can't finish has no action: Transfer's Add to Platform names it.
   const funds = (usePendingPlatformFunds(walletId).data ?? []).map((p) => ({ p, row: fundRowView(p, fmt.duffs) })).filter(({ row }) => row.action !== null);
   const checkFailed = platformKnown && block === "failed" && !move.running;
@@ -151,7 +154,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
             <div className="shielded-card-actions">
               {view.actions.map((a) => (
                 <DashButton key={a} variant="tintedBlue" size="small" data-testid={`unfinished-${a}`} onClick={run[a]}>
-                  {ACTION_LABEL[a]}
+                  {actionLabel(a)}
                 </DashButton>
               ))}
             </div>
@@ -164,6 +167,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
 }
 
 export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: { model: RecoveryModel; walletId: string; network: NetworkInfo; onClose: () => void }) {
+  const tr = useT();
   useModel(model);
   const query = useUnfinishedTransfers(walletId);
   const fmt = useFormats(network);
@@ -187,12 +191,12 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
             <div className="detail-row" key={key} data-testid="unfinished-row" data-state={result?.kind === "applied" ? "applied" : lock.state}>
               <dt className="detail-label">{C.sheet.kind[lock.kind]}</dt>
               <dd className="detail-value">
-                <span data-testid="unfinished-row-amount">{fmt.duffs(lock.duffs)}</span>{" "}
+                <bdi dir="ltr" data-testid="unfinished-row-amount">{fmt.duffs(lock.duffs)}</bdi>{" "}
                 <span className="chip" data-testid="unfinished-row-state">
                   {C.sheet.state[lock.state]}
                 </span>
                 <br />
-                <CopyValue value={lock.txid} display={shortId(lock.txid)} label="transaction id" mono />
+                <CopyValue value={lock.txid} display={shortId(lock.txid)} action={tr("home.unfinished.copyTxid")} mono />
                 {result && (
                   <p className={result.kind === "notApplied" ? "form-problem" : "field-hint"} role="status" data-testid="unfinished-row-result">
                     {resultText(result, errorText, lock.kind)}

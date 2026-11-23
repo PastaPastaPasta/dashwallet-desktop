@@ -88,6 +88,9 @@ fn unbound_launch_with(
     engine
         .block_on(session.vault_op(|v| v.create(Some(PASS))))
         .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
+        .unwrap();
     let wallet = engine
         .block_on(session.import_wallet(
             Zeroizing::new(PHRASE.as_bytes().to_vec()),
@@ -599,6 +602,9 @@ fn a_coordinator_setup_during_the_close_check_is_refused() {
     engine
         .block_on(session.vault_op(|v| v.create(Some(PASS))))
         .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
+        .unwrap();
     let wallet = engine
         .block_on(session.import_wallet(
             Zeroizing::new(PHRASE.as_bytes().to_vec()),
@@ -1093,7 +1099,9 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
         };
         assert_eq!((code(sent), code(unshielded)), want);
     }
-    let shield = engine.block_on(dp.shield_quote(100_000)).unwrap_err();
+    let shield = engine
+        .block_on(dp.shield_quote(crate::platform::FundAmount::Duffs { duffs: 100_000 }))
+        .unwrap_err();
     assert_ne!(shield.code(), "shielded.unrecorded_spend", "{shield:?}");
 }
 
@@ -1725,3 +1733,494 @@ fn a_cancel_during_an_admitted_settle_keeps_the_close_behind_it() {
 
 #[path = "shielded_disposition_tests.rs"]
 mod disposition_tests;
+
+/// #178: a periodic pass skips the library's note scan while Platform's
+/// proved note count shows the pool unchanged (`shielded_pool::guarded_pass`).
+/// The count is the test's (`PlatformRuntime::notes_count`); the passes that
+/// reach the library's scan are counted (`PlatformRuntime::passes_run`).
+mod idle_tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    /// [`scanned_unrested`], with the rest clock's first scan marked as the
+    /// pass's `observe_rest` does.
+    fn scanned(
+        engine: &Engine,
+        session: &Arc<NetworkSession>,
+        wallet: WalletId,
+        notes: u8,
+        watermark: u64,
+    ) {
+        scanned_unrested(engine, session, wallet, notes, watermark);
+        rested(session, wallet);
+    }
+
+    /// Marks `wallet`'s rest clock as first scanned, as `observe_rest` does.
+    fn rested(session: &Arc<NetworkSession>, wallet: WalletId) {
+        let now = crate::events::unix_now();
+        let appdb = session.live().unwrap().appdb;
+        pool::write_rest_clock(&appdb, wallet, &[], (now, now), true).unwrap();
+    }
+
+    /// Appends `notes` commitments to the shielded tree and sets `wallet`'s
+    /// watermark to `watermark`, as a completed scan of this session does.
+    fn scanned_unrested(
+        engine: &Engine,
+        session: &Arc<NetworkSession>,
+        wallet: WalletId,
+        notes: u8,
+        watermark: u64,
+    ) {
+        let (s, m) = (Arc::clone(session), session.manager().unwrap());
+        engine.block_on(async move {
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            let mut store = coordinator.store().write().await;
+            for n in 0..notes {
+                store.append_commitment(&[n; 32], false).unwrap();
+            }
+            store
+                .set_last_synced_note_index(subwallet(wallet), watermark)
+                .unwrap();
+        });
+    }
+
+    /// Whether one pass (`force`: the user's) with Platform's count `count`
+    /// reached the library's note scan.
+    fn scans(
+        engine: &Engine,
+        session: &Arc<NetworkSession>,
+        count: Option<u64>,
+        force: bool,
+    ) -> bool {
+        *session.platform.notes_count.lock().unwrap() = Some(count);
+        let (s, m) = (Arc::clone(session), session.manager().unwrap());
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let ran = if force {
+            engine.block_on(async move { pool::guarded_pass(&s, &m, true).await })
+        } else {
+            engine.block_on(pool::periodic_pass(s, m, |_| true))
+        };
+        assert!(ran, "the pass was admitted");
+        session.platform.passes_run.load(Ordering::SeqCst) > before
+    }
+
+    fn periodic(engine: &Engine, session: &Arc<NetworkSession>, count: Option<u64>) -> bool {
+        scans(engine, session, count, false)
+    }
+
+    /// After a completed scan, an idle periodic pass with the count unchanged
+    /// fetches no notes; one more note on Platform runs it, and so does a
+    /// lower count (a node behind the tree, or a reset Platform).
+    #[test]
+    fn an_unchanged_count_skips_the_periodic_scan_and_a_new_note_runs_it() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 3, 3);
+        assert!(!periodic(&engine, &session, Some(3)), "unchanged: no fetch");
+        assert!(
+            periodic(&engine, &session, Some(2)),
+            "a count below the tree"
+        );
+        assert!(
+            periodic(&engine, &session, Some(4)),
+            "a new note on Platform"
+        );
+    }
+
+    /// The first pass after the start, and after a wallet's bind, scans even
+    /// with the count unchanged.
+    #[test]
+    fn the_first_pass_after_the_start_or_a_bind_scans() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        assert!(
+            periodic(&engine, &session, Some(0)),
+            "nothing scanned this session"
+        );
+        scanned(&engine, &session, wallet, 0, 0);
+        assert!(!periodic(&engine, &session, Some(0)));
+
+        let other = engine
+            .block_on(session.import_wallet(
+                Zeroizing::new(OTHER_PHRASE.as_bytes().to_vec()),
+                Zeroizing::new(Vec::new()),
+                ImportOptions {
+                    birth_height: Some(0),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        assert!(bind(&engine, &session, other));
+        rested(&session, other);
+        assert!(periodic(&engine, &session, Some(0)), "a wallet bound since");
+        scanned(&engine, &session, other, 0, 0);
+        assert!(!periodic(&engine, &session, Some(0)));
+    }
+
+    /// A count that is not read runs the pass, as the network's unreachable
+    /// count does here.
+    #[test]
+    fn a_failed_count_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        assert!(periodic(&engine, &session, None), "the read fails");
+        *session.platform.notes_count.lock().unwrap() = None;
+        let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        assert!(engine.block_on(pool::periodic_pass(s, m, |_| true)));
+        assert_eq!(
+            session.platform.passes_run.load(Ordering::SeqCst),
+            before + 1,
+            "the network's count is unreachable offline"
+        );
+        assert!(!periodic(&engine, &session, Some(1)));
+    }
+
+    /// The user's passes (Sync, and those after a spend, a shield or a resume)
+    /// always scan.
+    #[test]
+    fn a_user_pass_scans_with_the_count_unchanged() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        assert!(!periodic(&engine, &session, Some(1)));
+        assert!(scans(&engine, &session, Some(1), true), "the user's pass");
+    }
+
+    /// A wallet whose watermark is short of the tree (a failed commit) scans.
+    #[test]
+    fn a_lagging_wallet_scans() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 2, 1);
+        assert!(periodic(&engine, &session, Some(2)), "watermark 1 of 2");
+        scanned(&engine, &session, wallet, 0, 2);
+        assert!(!periodic(&engine, &session, Some(2)));
+    }
+
+    /// A stored spend of unknown result (reserved, with its transition kept for
+    /// the re-send) runs every pass until it resolves.
+    #[test]
+    fn an_unresolved_spend_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        assert!(!periodic(&engine, &session, Some(1)));
+        store_spends(&engine, &session, wallet);
+        assert!(periodic(&engine, &session, Some(1)), "a stored spend");
+        let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+        engine.block_on(async move {
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            let mut store = coordinator.store().write().await;
+            for n in 1..=2 {
+                (store.resolve_redrive(
+                    subwallet(wallet),
+                    &[n; 32],
+                    ShieldedSpendDisposition::NotExecuted(NotExecutedReason::Refused),
+                ))
+                .unwrap();
+            }
+        });
+        assert!(
+            periodic(&engine, &session, Some(1)),
+            "outcomes not yet consumed"
+        );
+        assert!(
+            !periodic(&engine, &session, Some(1)),
+            "consumed by the last pass"
+        );
+    }
+
+    /// A spend whose library record failed (marked) runs every pass until a
+    /// scan finds its notes spent.
+    #[test]
+    fn a_marked_spend_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        mark(&engine, &session, wallet);
+        assert!(periodic(&engine, &session, Some(1)), "a marked spend");
+        spent_seen(&session, wallet, &MARKED_NULLIFIERS);
+        assert!(markers(&engine, &session, wallet).is_empty());
+        assert!(!periodic(&engine, &session, Some(1)));
+    }
+
+    /// The first pass after a relaunch scans with the tree kept, the
+    /// watermark persisted and the count unchanged (at the pin the wallet's
+    /// store restores no watermark; a restored one is not this session's).
+    #[test]
+    fn the_first_pass_after_a_relaunch_scans() {
+        use platform_wallet::changeset::{
+            PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
+        };
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        let mut shielded = ShieldedChangeSet::default();
+        shielded.synced_indices.insert(subwallet(wallet), 1);
+        let changeset = PlatformWalletChangeSet {
+            shielded: Some(shielded),
+            ..Default::default()
+        };
+        (session.live().unwrap().store)
+            .store(wallet.0, changeset)
+            .unwrap();
+        drop(session);
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        let session = open(&engine);
+        assert!(bind(&engine, &session, wallet), "bound from wallet.sqlite");
+        let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+        let tree = engine.block_on(async move {
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            coordinator.store().read().await.tree_size().unwrap()
+        });
+        assert_eq!(tree, 1, "the tree is kept");
+        assert!(
+            periodic(&engine, &session, Some(1)),
+            "not scanned this session"
+        );
+        scanned(&engine, &session, wallet, 0, 1);
+        assert!(!periodic(&engine, &session, Some(1)));
+    }
+
+    /// A skip proves the pool unchanged, so the "Last checked" the status
+    /// gives moves to it.
+    #[test]
+    fn an_idle_skip_moves_last_checked() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        let before = crate::events::unix_now();
+        assert!(!periodic(&engine, &session, Some(1)));
+        let state = engine
+            .block_on(on_pool(&session, wallet, |_, lib| async move {
+                Ok(pool::ShieldedLib::sync_state(&lib))
+            }))
+            .unwrap();
+        assert!(
+            state.last_sync_at.is_some_and(|at| at >= before),
+            "{state:?}"
+        );
+    }
+
+    /// A first scan whose rest-clock mark was not written (a failed
+    /// `observe_rest`) keeps the periodic pass running, so the next one
+    /// writes it.
+    #[test]
+    fn an_unmarked_rest_clock_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned_unrested(&engine, &session, wallet, 1, 1);
+        assert!(periodic(&engine, &session, Some(1)), "the mark is retried");
+        scanned(&engine, &session, wallet, 0, 1);
+        assert!(!periodic(&engine, &session, Some(1)));
+    }
+
+    /// A periodic pass with Platform's count `count`, started on the engine
+    /// and held from its count read's return until the sender is used.
+    fn stalled(
+        engine: &Engine,
+        session: &Arc<NetworkSession>,
+        count: Option<u64>,
+        runs: impl Fn(&NetworkSession) -> bool + Send + Sync + 'static,
+    ) -> (
+        tokio::task::JoinHandle<bool>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        *session.platform.notes_count.lock().unwrap() = Some(count);
+        let (reached_tx, reached) = tokio::sync::oneshot::channel();
+        let (resume, resume_rx) = tokio::sync::oneshot::channel();
+        *session.platform.probe_pause.lock().unwrap() = Some(pool::PassPause {
+            reached: reached_tx,
+            resume: resume_rx,
+        });
+        let pass = pool::periodic_pass(Arc::clone(session), session.manager().unwrap(), runs);
+        let pass = session.rt.spawn(pass);
+        engine
+            .block_on(async { tokio::time::timeout(Duration::from_secs(60), reached).await })
+            .expect("the count read returned")
+            .unwrap();
+        (pass, resume)
+    }
+
+    /// The loops start as `start_loops` marks them, under a new supervisor:
+    /// its epoch.
+    fn loops_started(session: &NetworkSession) -> u64 {
+        let epoch = session.platform.recovery.names_runs.arm();
+        session.platform.loops_on.store(true, Ordering::Release);
+        epoch
+    }
+
+    /// A count read stalled past the close, its task blocked with the SDK,
+    /// holds nothing of the session: the network reopens at once, and the
+    /// pass, released, starts nothing.
+    #[test]
+    fn a_count_read_stalled_past_the_close_holds_nothing() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, _) = first_launch(&engine);
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let (_unblock, block) = std::sync::mpsc::channel();
+        *session.platform.probe_block.lock().unwrap() = Some(block);
+        let (pass, resume) = stalled(&engine, &session, None, |_| true);
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        let reopened = engine.block_on(engine.open_network(DashNetwork::Regtest, options()));
+        assert!(reopened.is_ok(), "the reopen: {:?}", reopened.err());
+        resume.send(()).unwrap();
+        assert!(!engine.block_on(pass).unwrap(), "no pass after the close");
+        assert_eq!(session.platform.passes_run.load(Ordering::SeqCst), before);
+    }
+
+    /// A count read that returns after an SPV stop starts no pass, so no scan
+    /// and no spend's re-send, and none after a start since either: that is
+    /// another run of the loops.
+    #[test]
+    fn a_count_read_stalled_past_a_stop_starts_no_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, _) = first_launch(&engine);
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        for restart in [false, true] {
+            let epoch = loops_started(&session);
+            let runs = move |s: &NetworkSession| s.platform.loops_run(epoch);
+            let (pass, resume) = stalled(&engine, &session, None, runs);
+            engine.block_on(session.platform.deactivate(false));
+            if restart {
+                loops_started(&session);
+            }
+            resume.send(()).unwrap();
+            assert!(!engine.block_on(pass).unwrap(), "restart {restart}");
+            assert_eq!(session.platform.passes_run.load(Ordering::SeqCst), before);
+        }
+    }
+
+    /// While its loops run, a count read that returns late still runs the
+    /// pass, and an unchanged count still skips it.
+    #[test]
+    fn a_late_count_read_on_running_loops_runs_or_skips_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        let epoch = loops_started(&session);
+        let runs = move |s: &NetworkSession| s.platform.loops_run(epoch);
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let (pass, resume) = stalled(&engine, &session, None, runs);
+        resume.send(()).unwrap();
+        assert!(engine.block_on(pass).unwrap());
+        assert_eq!(
+            session.platform.passes_run.load(Ordering::SeqCst),
+            before + 1,
+            "the read failed: the pass runs"
+        );
+        scanned(&engine, &session, wallet, 1, 1);
+        let (pass, resume) = stalled(&engine, &session, Some(1), runs);
+        resume.send(()).unwrap();
+        assert!(engine.block_on(pass).unwrap());
+        assert_eq!(
+            session.platform.passes_run.load(Ordering::SeqCst),
+            before + 1,
+            "unchanged: skipped"
+        );
+    }
+
+    /// A count read whose verification blocks its thread past the budget is a
+    /// failed read: the pass runs without waiting for it, and nothing is
+    /// stamped.
+    #[test]
+    fn a_count_read_blocked_past_the_budget_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        *session.platform.notes_count.lock().unwrap() = Some(Some(1));
+        let (unblock, block) = std::sync::mpsc::channel();
+        *session.platform.probe_block.lock().unwrap() = Some(block);
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let pass = pool::periodic_pass(Arc::clone(&session), session.manager().unwrap(), |_| true);
+        let pass = session.rt.spawn(pass);
+        let ran =
+            engine.block_on(async { tokio::time::timeout(Duration::from_secs(60), pass).await });
+        assert!(ran.expect("the pass waited for the blocked read").unwrap());
+        assert_eq!(
+            session.platform.passes_run.load(Ordering::SeqCst),
+            before + 1
+        );
+        assert_eq!(
+            session.platform.shielded_checked_at.load(Ordering::SeqCst),
+            0
+        );
+        drop(unblock);
+    }
+
+    /// A pass whose read returned while its loops ran, but which waited for
+    /// its locks behind a spend until after an SPV stop, starts nothing.
+    #[test]
+    fn a_pass_queued_behind_a_spend_starts_nothing_after_a_stop() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, _) = first_launch(&engine);
+        let epoch = loops_started(&session);
+        *session.platform.notes_count.lock().unwrap() = Some(None);
+        let (queued_tx, queued) = tokio::sync::oneshot::channel();
+        *session.platform.spends_queued.lock().unwrap() = Some(queued_tx);
+        let spend = engine.block_on(session.platform.shielded_spends.write());
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let runs = move |s: &NetworkSession| s.platform.loops_run(epoch);
+        let pass = pool::periodic_pass(Arc::clone(&session), session.manager().unwrap(), runs);
+        let pass = session.rt.spawn(pass);
+        engine
+            .block_on(async { tokio::time::timeout(Duration::from_secs(60), queued).await })
+            .expect("the pass waits for its locks")
+            .unwrap();
+        engine.block_on(session.platform.deactivate(false));
+        drop(spend);
+        assert!(!engine.block_on(pass).unwrap(), "no pass after the stop");
+        assert_eq!(session.platform.passes_run.load(Ordering::SeqCst), before);
+    }
+
+    /// A pass admitted while its loops ran, but which waited on the shielded
+    /// store behind another pass's scan until after an SPV stop and its
+    /// quiesce, starts nothing.
+    #[test]
+    fn a_pass_queued_behind_a_scan_starts_nothing_after_a_stop() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, _) = first_launch(&engine);
+        let epoch = loops_started(&session);
+        *session.platform.notes_count.lock().unwrap() = Some(None);
+        let manager = session.manager().unwrap();
+        let coordinator = engine.block_on(manager.shielded_coordinator()).unwrap();
+        let (admitting_tx, admitting) = tokio::sync::oneshot::channel();
+        *session.platform.admitting.lock().unwrap() = Some(admitting_tx);
+        let scan = engine.block_on(coordinator.store().write());
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let runs = move |s: &NetworkSession| s.platform.loops_run(epoch);
+        let pass = pool::periodic_pass(Arc::clone(&session), Arc::clone(&manager), runs);
+        let pass = session.rt.spawn(pass);
+        engine
+            .block_on(async { tokio::time::timeout(Duration::from_secs(60), admitting).await })
+            .expect("the pass is admitted")
+            .unwrap();
+        engine.block_on(session.platform.deactivate(false));
+        assert!(engine.block_on(manager.shielded_sync().quiesce()));
+        drop(scan);
+        assert!(!engine.block_on(pass).unwrap(), "no pass after the stop");
+        assert_eq!(session.platform.passes_run.load(Ordering::SeqCst), before);
+    }
+}

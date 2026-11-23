@@ -5293,14 +5293,18 @@ public protocol VaultProtocol: AnyObject, Sendable {
     /**
      * Creates the vault. `passphrase` `Some` = encrypted (slot P, Argon2id);
      * `None` = unencrypted (slot O in the OS secret store). Leaves the vault
-     * unlocked. Errors: `AlreadyExists`, `PassphraseRejected`, `OsStoreUnavailable`.
+     * unlocked. An encrypted vault starts on the signing window, as one the
+     * desktop app creates (`NetworkSession::adopt_signing_window_default`;
+     * best-effort: a failed write leaves it asking every payment). Errors:
+     * `AlreadyExists`, `PassphraseRejected`, `OsStoreUnavailable`.
      */
     func create(passphrase: Data?) async throws  -> VaultStatus
     
     /**
      * dash-qt "Encrypt Wallet" (QT-111): adds slot P, deletes slot O. Needs
-     * a `ChangeCredential` grant. Leaves the vault locked. Errors:
-     * `AlreadyEncrypted`, `GrantInvalid`.
+     * a `ChangeCredential` grant. Leaves the vault locked and asking every
+     * payment (`NetworkSession::encrypt_vault`, as the desktop app).
+     * Errors: `AlreadyEncrypted`, `GrantInvalid`.
      */
     func encrypt(newPassphrase: Data, grantId: String) async throws  -> VaultStatus
     
@@ -5518,7 +5522,10 @@ open func changePassphrase(oldPassphrase: Data, newPassphrase: Data)async throws
     /**
      * Creates the vault. `passphrase` `Some` = encrypted (slot P, Argon2id);
      * `None` = unencrypted (slot O in the OS secret store). Leaves the vault
-     * unlocked. Errors: `AlreadyExists`, `PassphraseRejected`, `OsStoreUnavailable`.
+     * unlocked. An encrypted vault starts on the signing window, as one the
+     * desktop app creates (`NetworkSession::adopt_signing_window_default`;
+     * best-effort: a failed write leaves it asking every payment). Errors:
+     * `AlreadyExists`, `PassphraseRejected`, `OsStoreUnavailable`.
      */
 open func create(passphrase: Data?)async throws  -> VaultStatus  {
     return
@@ -5538,8 +5545,9 @@ open func create(passphrase: Data?)async throws  -> VaultStatus  {
     
     /**
      * dash-qt "Encrypt Wallet" (QT-111): adds slot P, deletes slot O. Needs
-     * a `ChangeCredential` grant. Leaves the vault locked. Errors:
-     * `AlreadyEncrypted`, `GrantInvalid`.
+     * a `ChangeCredential` grant. Leaves the vault locked and asking every
+     * payment (`NetworkSession::encrypt_vault`, as the desktop app).
+     * Errors: `AlreadyEncrypted`, `GrantInvalid`.
      */
 open func encrypt(newPassphrase: Data, grantId: String)async throws  -> VaultStatus  {
     return
@@ -19191,6 +19199,12 @@ enum SendError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case BroadcastUnknown(reason: String
     )
+    /**
+     * Code `send.held_until_restart`: not sent, but its saved copy could
+     * not be removed. The inputs stay reserved until a restart lists the
+     * payment pending, where it can be abandoned.
+     */
+    case HeldUntilRestart
 
     
     /**
@@ -19301,6 +19315,7 @@ public struct FfiConverterTypeSendError: FfiConverterRustBuffer {
         case 28: return .BroadcastUnknown(
             reason: try FfiConverterString.read(from: &buf)
             )
+        case 29: return .HeldUntilRestart
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -19445,6 +19460,10 @@ public struct FfiConverterTypeSendError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(28))
             FfiConverterString.write(reason, into: &buf)
             
+        
+        case .HeldUntilRestart:
+            writeInt(&buf, Int32(29))
+        
         }
     }
 }
@@ -24352,10 +24371,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_vault_change_passphrase() != 65154) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_create() != 45384) {
+    if (uniffi_dashwallet_core_checksum_method_vault_create() != 17227) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_encrypt() != 49372) {
+    if (uniffi_dashwallet_core_checksum_method_vault_encrypt() != 27555) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_enroll_quick_unlock() != 31048) {

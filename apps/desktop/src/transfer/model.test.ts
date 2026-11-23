@@ -8,14 +8,17 @@ import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import { SHIELDED_CODES } from "../api/pending";
 import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
+import type { FundAmount } from "../api/generated/FundAmount";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { PlatformFundFlow, resetPlatformFunds } from "../platform/fund";
 import { MOVE_COPY, PlatformMoveFlow, resetPlatformMoves } from "../platform/move";
 import { resetShielded, SHIELDED_COPY, ShieldedFlow } from "../shielded/flow";
-import { SHIELDED_SYNCING_TEXT } from "../shielded/syncing";
+import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
 import { engineSpendQuote, NOTE_SETS, NOTES_BALANCE } from "../shielded/testNotes";
 import { fakeVault } from "../tools/testApi";
 import { coreFundedMax, defaultRoute, feeText, listedPools, noRouteText, QuoteLine, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, type Pools, type Settled, type Timers } from "./model";
+
+const duffsOf = (a: FundAmount) => (a.kind === "duffs" ? a.duffs : 0);
 
 /** Timers run by hand: `tick(ms)` fires those due. */
 function manualTimers() {
@@ -103,8 +106,8 @@ describe("routes", () => {
     const inactive = { ...POOLS, shielded: { active: false, syncing: false, duffs: null } };
     expect(routeWhy("coreToShielded", inactive, f)).toBe(SHIELDED_COPY.card.inactive);
     const syncing = { ...POOLS, shielded: { active: true, syncing: true, duffs: null } };
-    expect(routeWhy("coreToShielded", syncing, f)).toBe(SHIELDED_SYNCING_TEXT);
-    expect(routeWhy("shieldedToCore", syncing, f)).toBe(SHIELDED_SYNCING_TEXT);
+    expect(routeWhy("coreToShielded", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
+    expect(routeWhy("shieldedToCore", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
     expect(routeWhy("shieldedToCore", { ...POOLS, shielded: { active: true, syncing: false, duffs: 0 } }, f)).toBe(SHIELDED_COPY.card.why.empty);
     expect(routeWhy("coreToPlatform", { ...POOLS, platform: null }, f)).toBe("Platform addresses are not active on this network yet.");
     const platform = POOLS.platform!;
@@ -278,7 +281,8 @@ describe("Max", () => {
 
   it("shows the re-quote's refusal (too many coins) and fills nothing, with no third quote", async () => {
     const { timers } = manualTimers();
-    const fetch = vi.fn(async (_wallet: string, d: number): Promise<never> => {
+    const fetch = vi.fn(async (_wallet: string, a: FundAmount): Promise<never> => {
+      const d = duffsOf(a);
       if (d === 600_000_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: d + 1_000, available: 600_000_000 });
       throw appError("credits.too_many_inputs", { kind: "number", value: 60 });
     });
@@ -380,7 +384,8 @@ describe("a refusal never outlives its inputs", () => {
   it("the same amount is read again when the source balance changes", async () => {
     const { timers, tick } = manualTimers();
     let balance = 100_000;
-    const shieldQuote = vi.fn(async (_wallet: string, d: number) => {
+    const shieldQuote = vi.fn(async (_wallet: string, a: FundAmount) => {
+      const d = duffsOf(a);
       if (d > balance) throw appError(SHIELDED_CODES.fundingInsufficient, { kind: "duffs", needed: d + 1_000, available: balance });
       return { duffs: d } as never;
     });
@@ -422,11 +427,12 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
   /** A model whose Platform quote refuses the whole balance with its shortfall and takes less. */
   function fundModel() {
     const { timers, tick } = manualTimers();
-    const platformFundQuote = vi.fn(async (_wallet: string, d: number) => {
+    const platformFundQuote = vi.fn(async (_wallet: string, a: FundAmount) => {
+      const d = duffsOf(a);
       if (d > 2_899_999_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: d + 1_000, available: 2_900_000_000 });
       return { duffs: d } as never;
     });
-    const shieldQuote = vi.fn(async (_wallet: string, d: number) => ({ duffs: d }) as never);
+    const shieldQuote = vi.fn(async (_wallet: string, a: FundAmount) => ({ duffs: duffsOf(a) }) as never);
     const t = new TransferModel(flows(), { shieldQuote, unshieldQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
     return { t, tick, platformFundQuote, shieldQuote };
   }
@@ -442,14 +448,14 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
     t.typed("coreToShielded", 100_000);
     tick(400);
     await flush();
-    expect(shieldQuote.mock.calls).toEqual([[WALLET_A, 100_000]]);
+    expect(shieldQuote.mock.calls).toEqual([[WALLET_A, { kind: "duffs", duffs: 100_000 }]]);
   });
 
   it("Max is a click, not typing: two calls (the whole balance, then the most it leaves room for), and typing after it quotes nothing", async () => {
     const { t, tick, platformFundQuote } = fundModel();
     const fill = vi.fn();
     await t.max("coreToPlatform", 3_000_000_000, fill);
-    expect(platformFundQuote.mock.calls.map(([, d]) => d)).toEqual([3_000_000_000, 2_899_999_000]);
+    expect(platformFundQuote.mock.calls.map(([, a]) => duffsOf(a))).toEqual([3_000_000_000, 2_899_999_000]);
     expect(fill).toHaveBeenCalledWith(2_899_999_000);
     t.typed("coreToPlatform", 2_899_999_000);
     t.typed("coreToPlatform", 1_000_000);
@@ -465,13 +471,14 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
     await t.max("coreToPlatform", 3_000_000_000, fill);
     expect(platformFundQuote).toHaveBeenCalledTimes(2);
     await t.max("coreToPlatform", 3_000_000_000, fill);
-    expect(platformFundQuote.mock.calls.map(([, d]) => d)).toEqual([3_000_000_000, 2_899_999_000, 3_000_000_000, 2_899_999_000]);
+    expect(platformFundQuote.mock.calls.map(([, a]) => duffsOf(a))).toEqual([3_000_000_000, 2_899_999_000, 3_000_000_000, 2_899_999_000]);
     expect(fill.mock.calls).toEqual([[2_899_999_000], [2_899_999_000]]);
   });
 
   it("a refused re-quote leaves the amount field unchanged and shows its refusal", async () => {
     const { timers } = manualTimers();
-    const platformFundQuote = vi.fn(async (_wallet: string, d: number): Promise<never> => {
+    const platformFundQuote = vi.fn(async (_wallet: string, a: FundAmount): Promise<never> => {
+      const d = duffsOf(a);
       if (d > 2_899_999_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: d + 1_000, available: 2_900_000_000 });
       throw appError("credits.too_many_inputs", { kind: "number", value: 60 });
     });
@@ -482,7 +489,7 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
     f.fund.setText("0.3");
     t.typed("coreToPlatform", 30_000_000);
     await t.max("coreToPlatform", 3_000_000_000, (duffs) => f.fund.setText(String(duffs / 1e8)));
-    expect(platformFundQuote.mock.calls.map(([, d]) => d)).toEqual([3_000_000_000, 2_899_999_000]);
+    expect(platformFundQuote.mock.calls.map(([, a]) => duffsOf(a))).toEqual([3_000_000_000, 2_899_999_000]);
     expect(f.fund.text).toBe("0.3");
     expect(t.lines.coreToPlatform.state).toMatchObject({ kind: "refused", amount: 2_899_999_000, error: { code: "credits.too_many_inputs" } });
   });

@@ -23,7 +23,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use super::avatar::{
-    Admission, CANDIDATE_WITHOUT_URL, Pictures, Pipeline, Target, UNKNOWN_CANDIDATE, Whose,
+    Admission, AvatarRuntime, CANDIDATE_WITHOUT_URL, Pictures, Pipeline, Target, UNKNOWN_CANDIDATE,
+    Whose,
 };
 use super::avatar_cache::ThumbDir;
 use super::avatar_dhash::mobile_dhash;
@@ -1524,4 +1525,169 @@ async fn an_off_waits_for_a_running_lookup_and_stops_a_later_one() {
         ["held.test"],
         "no lookup after the off"
     );
+}
+
+/// A store call a revoked read left running holds the app database; the
+/// close returns only once it has ended (issue #190).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_close_waits_for_a_store_call_left_running() {
+    let db = Arc::new(AppDb::open_in_memory().unwrap());
+    let held = Arc::downgrade(&db);
+    let avatars = AvatarRuntime::default();
+    let resolver = Arc::new(Script::default()) as Arc<dyn NameResolver>;
+    avatars.install(Pipeline::new(test_policy(), resolver, None, db));
+    let (started, running) = std::sync::mpsc::channel();
+    let (finish, finished) = std::sync::mpsc::channel::<()>();
+    let pipeline = avatars.pipeline().unwrap();
+    let call = tokio::spawn(async move {
+        (pipeline.blocking(move |_| {
+            started.send(()).unwrap();
+            let _ = finished.recv();
+        }))
+        .await
+    });
+    tokio::task::spawn_blocking(move || running.recv().unwrap())
+        .await
+        .unwrap();
+    call.abort();
+    assert!(call.await.unwrap_err().is_cancelled());
+    let close = avatars.close();
+    tokio::pin!(close);
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut close).await;
+    assert!(early.is_err(), "the close returned while a store call ran");
+    finish.send(()).unwrap();
+    close.await;
+    assert!(
+        held.upgrade().is_none(),
+        "the closed pipeline still holds the app database"
+    );
+}
+
+/// Runs test `name` again in a child process, where `child` is set, and
+/// asserts it passed: the poison flag is process-wide and never cleared.
+/// Whether this is that child.
+pub(crate) fn in_child(name: &str, child: &str) -> bool {
+    if std::env::var_os(child).is_some() {
+        return true;
+    }
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(child, "1");
+    let (status, stdout, stderr) =
+        run_with_deadline(cmd, Duration::from_secs(120)).unwrap_or_else(|e| panic!("{name}: {e}"));
+    assert!(
+        status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{stderr}"
+    );
+    false
+}
+
+/// `cmd`'s exit status and output; past `deadline` it is killed and reaped
+/// and the error carries what it printed (dw-app's `upgrade_path_tests`).
+fn run_with_deadline(
+    mut cmd: std::process::Command,
+    deadline: Duration,
+) -> Result<(std::process::ExitStatus, String, String), String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not start: {e}"))?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    };
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < deadline => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(e) => return Err(format!("could not wait: {e}")),
+        }
+    };
+    let (stdout, stderr) = (stdout.join().unwrap(), stderr.join().unwrap());
+    match status {
+        Some(status) => Ok((status, stdout, stderr)),
+        None => Err(format!(
+            "killed after {deadline:?} without finishing\n{stdout}\n{stderr}"
+        )),
+    }
+}
+
+/// An engine with the poison hook installed and its runtime's threads
+/// named `dw-engine`.
+fn poisonable_engine(tmp: &Path) -> crate::Engine {
+    struct NoEvents;
+    impl crate::EventSink for NoEvents {
+        fn emit(&self, _event: crate::EngineEvent) {}
+    }
+    crate::Engine::new(
+        crate::EngineConfig {
+            data_root: tmp.join("data"),
+            worker_threads: Some(2),
+            vault: dw_vault::VaultConfig::default(),
+        },
+        Arc::new(NoEvents),
+    )
+    .unwrap()
+}
+
+/// `body` as a task on the engine's runtime, as `on_wallet` runs a read,
+/// so a decode left on the read's thread runs on a `dw-engine` thread.
+async fn on_an_engine_worker(body: impl Future<Output = ()> + Send + 'static) {
+    tokio::spawn(body).await.unwrap();
+}
+
+/// #211: an avatar decode that panics on the engine's runtime is refused
+/// and leaves the engine unpoisoned, and the next read decodes.
+#[test]
+fn an_avatar_decode_that_panics_leaves_the_engine_unpoisoned() {
+    let name = "platform::avatar_tests::an_avatar_decode_that_panics_leaves_the_engine_unpoisoned";
+    if !in_child(name, "DW_AVATAR_PANIC_CHILD") {
+        return;
+    }
+    let tmp = dw_testutil::private_tempdir();
+    let engine = poisonable_engine(tmp.path());
+    engine.block_on(on_an_engine_worker(async {
+        let rig = Rig::new().await;
+        let bytes = png(300, 200);
+        rig.server.route("/me.png", Route::ok(bytes.clone()));
+        let profile = profile_for(&rig.server.url("good.test", "/me.png"), &bytes);
+        avatar_image::PANIC_IN_INGEST.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(rig.read(&profile).await, Err(AvatarError::Unsupported));
+        avatar_image::PANIC_IN_INGEST.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(!crate::engine_poisoned());
+        let bytes = png(200, 100);
+        rig.server.route("/next.png", Route::ok(bytes.clone()));
+        let profile = profile_for(&rig.server.url("good.test", "/next.png"), &bytes);
+        assert!(rig.read(&profile).await.unwrap().is_some());
+    }));
+    assert!(!crate::engine_poisoned());
 }

@@ -8,41 +8,81 @@ import type { OpenedFile } from "../api/generated/OpenedFile";
 import type { PsbtAnalysis } from "../api/generated/PsbtAnalysis";
 import { base64ToBytes, saveBase64 } from "../app/files";
 import { formatWithUnit, type Chain, type Unit } from "../format/amount";
+import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import type { GrantModel } from "./grant";
 
 export const PsbtText = {
-  sends: (amount: string, to: string) => ` * Sends ${amount} to ${to}`,
-  ownAddress: "own address",
-  unknownAddress: "unknown address",
-  feeUnknown: "Unable to calculate transaction fee or total transaction amount.",
-  paysFee: (fee: string) => `Pays transaction fee: ${fee}`,
-  total: (amount: string) => `Total Amount: ${amount}`,
-  unsignedInputs: (n: number) => `Transaction has ${n} unsigned inputs.`,
-  missingInputInfo: "Transaction is missing some information about inputs.",
-  needsSignatures: "Transaction still needs signature(s).",
-  noWallet: "(But no wallet is loaded.)",
-  cannotSign: "(But this wallet cannot sign transactions.)",
-  noMatchingKeys: "(But this wallet does not have the right keys.)",
-  complete: "Transaction is fully signed and ready for broadcast.",
-  signedComplete: "Signed transaction successfully. Transaction is ready to broadcast.",
-  signedPartially: (n: number) => `Signed ${n} inputs, but more signatures are still required.`,
-  couldNotSign: "Could not sign any more inputs.",
-  broadcastSucceeded: (txid: string) => `Transaction broadcast successfully! Transaction ID: ${txid}`,
-  broadcastFailed: (why: string) => `Transaction broadcast failed: ${why}`,
-  broadcastUnknown:
-    "The transaction was handed to the network, but whether it was accepted is unknown. Check the transaction list before trying again.",
-  broadcastPending: "This transaction is being broadcast already.",
-  broadcastEarlier: (txid: string) => `This transaction was broadcast already. Transaction ID: ${txid}`,
-  copied: "PSBT copied to clipboard.",
-  saved: "PSBT saved to disk.",
-  saveFailed: "There was an error trying to save the data to this location.",
-  loadFailed: (why: string) => `Failed to load transaction: ${why}`,
-  pasteInvalid: "Unable to decode PSBT (invalid base64)",
-  unsignedCopied: "The PSBT has been copied to the clipboard. You can also save it.",
-  noExternalAmount: "The amount this transaction sends could not be determined.",
-  invalid: "Unable to decode PSBT",
-  tooLarge: "PSBT file must be smaller than 100 MiB",
+  sends: (amount: string, to: string) => t("tools.psbt.sends", { amount, to }),
+  sendsOwn: (amount: string, to: string) => t("tools.psbt.sendsOwn", { amount, to }),
+  get unknownAddress() {
+    return t("tools.psbt.unknownAddress");
+  },
+  get feeUnknown() {
+    return t("tools.psbt.feeUnknown");
+  },
+  paysFee: (fee: string) => t("tools.psbt.paysFee", { fee }),
+  total: (amount: string) => t("tools.psbt.total", { amount }),
+  unsignedInputs: (n: number) => t("tools.psbt.unsignedInputs", { count: n }),
+  get missingInputInfo() {
+    return t("tools.psbt.missingInputInfo");
+  },
+  get needsSignatures() {
+    return t("tools.psbt.needsSignatures");
+  },
+  get noWallet() {
+    return t("tools.psbt.noWallet");
+  },
+  get cannotSign() {
+    return t("tools.psbt.cannotSign");
+  },
+  get noMatchingKeys() {
+    return t("tools.psbt.noMatchingKeys");
+  },
+  get complete() {
+    return t("tools.psbt.complete");
+  },
+  get signedComplete() {
+    return t("tools.psbt.signedComplete");
+  },
+  signedPartially: (n: number) => t("tools.psbt.signedPartially", { count: n }),
+  get couldNotSign() {
+    return t("tools.psbt.couldNotSign");
+  },
+  broadcastSucceeded: (txid: string) => t("tools.psbt.broadcastSucceeded", { txid }),
+  broadcastFailed: (why: string) => t("tools.psbt.broadcastFailed", { why }),
+  get broadcastUnknown() {
+    return t("tools.psbt.broadcastUnknown");
+  },
+  get broadcastPending() {
+    return t("tools.psbt.broadcastPending");
+  },
+  broadcastEarlier: (txid: string) => t("tools.psbt.broadcastEarlier", { txid }),
+  get copied() {
+    return t("tools.psbt.copied");
+  },
+  get saved() {
+    return t("tools.psbt.saved");
+  },
+  get saveFailed() {
+    return t("tools.psbt.saveFailed");
+  },
+  loadFailed: (why: string) => t("tools.psbt.loadFailed", { why }),
+  get pasteInvalid() {
+    return t("tools.psbt.pasteInvalid");
+  },
+  get unsignedCopied() {
+    return t("tools.psbt.unsignedCopied");
+  },
+  get noExternalAmount() {
+    return t("tools.psbt.noExternalAmount");
+  },
+  get invalid() {
+    return t("tools.psbt.invalid");
+  },
+  get tooLarge() {
+    return t("tools.psbt.tooLarge");
+  },
 };
 
 /** Copy for the `psbt.*` refusals (the Swift `L10n.M2Errors`). */
@@ -55,28 +95,28 @@ export function psbtErrorText(e: unknown): string {
     case "app.file_too_large":
       return PsbtText.tooLarge;
     case "psbt.not_complete":
-      return "Transaction is not fully signed yet.";
+      return t("tools.psbt.errors.notComplete");
     case "psbt.fee_rate_too_high":
-      return "The fee rate is above the broadcast limit of 0.1 DASH/kB.";
+      return t("tools.psbt.errors.feeRateTooHigh");
     case "psbt.fee_unknown":
-      return "The fee cannot be determined: the PSBT lacks the previous transaction of an input.";
+      return t("tools.psbt.errors.feeUnknown");
     case "psbt.absurd_fee":
-      return "The fee is above 0.1 DASH and is considered an absurdly high fee.";
+      return t("tools.psbt.errors.absurdFee");
     case "psbt.watch_only":
-      return "This wallet cannot sign transactions.";
+      return t("tools.psbt.errors.watchOnly");
     case "psbt.grant_exceeded":
-      return "The amount is more than was authorized. Please try again.";
+      return t("tools.psbt.errors.grantExceeded");
     case "psbt.no_peers":
-      return "No peers are connected. Try again when the wallet is connected to the network.";
+      return t("tools.psbt.errors.noPeers");
     case "psbt.broadcast_rejected":
-      return "The network rejected the transaction.";
+      return t("tools.psbt.errors.broadcastRejected");
     case "psbt.broadcast_unknown":
       return PsbtText.broadcastUnknown;
     case "vault.locked":
     case "vault.mixing_only":
-      return "Cannot sign inputs while wallet is locked.";
+      return t("tools.psbt.errors.walletLocked");
     case "app.file_read":
-      return "The file could not be read.";
+      return t("tools.psbt.errors.fileRead");
     default:
       return failureText(e);
   }
@@ -133,7 +173,8 @@ export class PsbtModel extends Model {
   error: string | null = null;
   constructor(
     private readonly api: Api,
-    readonly grants: GrantModel,
+    /** Whose prompt a Sign asks through: the one the Tools page shows (Psbt.tsx sets it). */
+    public grants: GrantModel,
     /** The wallet that signs; `null`: no wallet is loaded. */
     readonly walletId: string | null,
     /** The display settings (U-04 D4): amounts are said in this unit. */
@@ -153,7 +194,11 @@ export class PsbtModel extends Model {
   get lines(): string[] {
     const a = this.analysis;
     if (!a) return [];
-    const lines = a.outputs.map((o) => PsbtText.sends(this.#amount(o.amount), o.address ?? PsbtText.unknownAddress) + (o.isMine ? ` (${PsbtText.ownAddress})` : ""));
+    const lines = a.outputs.map((o) => {
+      const amount = this.#amount(o.amount);
+      const to = o.address ?? PsbtText.unknownAddress;
+      return o.isMine ? PsbtText.sendsOwn(amount, to) : PsbtText.sends(amount, to);
+    });
     if (a.fee !== null) {
       lines.push(PsbtText.paysFee(this.#amount(a.fee)));
       if (a.total !== null) lines.push(PsbtText.total(this.#amount(a.total)));
@@ -200,7 +245,7 @@ export class PsbtModel extends Model {
   /** dash-qt's Save suggestion: `<address>-<amount>` per paid output, `.psbt`. */
   get suggestedFileName(): string {
     const paid = (this.analysis?.outputs ?? []).filter((o) => !o.isMine);
-    const parts = paid.map((o) => `${o.address ?? PsbtText.unknownAddress}-${this.#amount(o.amount)}`);
+    const parts = paid.map((o) => `${o.address ?? "unknown address"}-${this.#amount(o.amount)}`);
     return (parts.length ? parts.join(" - ") : "transaction") + ".psbt";
   }
 

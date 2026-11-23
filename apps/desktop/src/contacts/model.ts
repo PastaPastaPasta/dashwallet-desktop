@@ -14,6 +14,7 @@ import type { LockStateName } from "../api/generated/LockStateName";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
 import type { Tone } from "../components/basics";
+import { messageTable, t } from "../i18n";
 
 /** Whose contacts the page shows (D2), or why it shows none. */
 export type ContactsOwner =
@@ -45,12 +46,12 @@ export function contactsOwner(status: DashPayStatus | undefined): ContactsOwner 
 }
 
 /** Android's four orders (UsernameSortOrderBy), as the "Sort by" menu names them (AND-090). */
-export const SORTS: { id: ContactSortName; title: string }[] = [
-  { id: "displayName", title: "Name" },
-  { id: "username", title: "Username" },
-  { id: "dateAdded", title: "Date added" },
-  { id: "lastActivity", title: "Last activity" },
-];
+export const SORTS: { id: ContactSortName; readonly title: string }[] = (["displayName", "username", "dateAdded", "lastActivity"] as const).map((id) => ({
+  id,
+  get title() {
+    return t(`contacts.sort.${id}`);
+  },
+}));
 
 const nameOf = (c: Pick<ContactSummaryInfo, "alias" | "displayName" | "username">) => c.alias?.trim() || c.displayName?.trim() || c.username?.trim();
 
@@ -96,22 +97,22 @@ export interface RowChip {
 export function rowChips(c: Pick<ContactSummaryInfo, "relation" | "channel" | "unverified">): RowChip[] {
   const chips: RowChip[] = [];
   if (c.relation === "contact" && c.channel === "setupPending")
-    chips.push({ id: "settingUp", text: "Setting up", tone: "info", detail: "Payments with this contact are still being set up." });
+    chips.push({ id: "settingUp", text: t("contacts.chips.settingUp"), tone: "info", detail: t("contacts.chips.settingUpDetail") });
   if (c.relation === "contact" && c.channel === "broken")
-    chips.push({ id: "unavailable", text: "Payments unavailable", tone: "danger", detail: "Payments to this contact cannot be sent right now." });
+    chips.push({ id: "unavailable", text: t("contacts.chips.unavailable"), tone: "danger", detail: t("contacts.chips.unavailableDetail") });
   if (c.unverified)
-    chips.push({ id: "unverified", text: "Unverified", tone: "warning", detail: "Not yet verified against the Dash network." });
+    chips.push({ id: "unverified", text: t("contacts.chips.unverified"), tone: "warning", detail: t("contacts.chips.unverifiedDetail") });
   return chips;
 }
 
-const RELATIONS: Record<UserRelation, string> = {
-  contact: "Contact",
-  pendingOutgoing: "Request sent",
-  pendingIncoming: "Request received",
-  ignored: "Ignored",
-  stranger: "Not a contact",
-  isSelf: "You",
-};
+/** Beside Accept or Send Contact Request when the other side's profile is not verified yet
+ * (H-09): the action stays on, and a payment to them waits until their data is checked. */
+export function unverifiedWarning(action: "accept" | "send", unverified: boolean): string | null {
+  if (!unverified) return null;
+  return action === "accept" ? t("contacts.unverifiedAccept") : t("contacts.unverifiedSend");
+}
+
+const RELATIONS: Readonly<Record<UserRelation, string>> = messageTable("contacts.relation", ["contact", "pendingOutgoing", "pendingIncoming", "ignored", "stranger", "isSelf"]);
 
 /** A row's trailing note (D7): which way a request goes, or an ignored sender. */
 export function rowNote(c: Pick<ContactSummaryInfo, "relation">): string | null {
@@ -129,10 +130,10 @@ export interface Group {
 }
 
 const TITLES: Record<ContactSectionName, (n: number) => string> = {
-  requests: (n) => `Contact Requests (${n})`,
-  contacts: () => "My Contacts",
-  pending: () => "Pending Requests",
-  hidden: (n) => `Hidden (${n})`,
+  requests: (count) => t("contacts.groups.requests", { count }),
+  contacts: () => t("contacts.groups.contacts"),
+  pending: () => t("contacts.groups.pending"),
+  hidden: (count) => t("contacts.groups.hidden", { count }),
 };
 
 /** The engine's sections as groups, in its order, empty ones dropped (D1). Hidden is open when
@@ -189,12 +190,7 @@ export function relationTitle(r: UserRelation): string {
   return RELATIONS[r];
 }
 
-const CHANNELS: Record<ChannelStateName, string> = {
-  notEstablished: "Not set up",
-  setupPending: "Setting up",
-  ready: "Ready",
-  broken: "Unavailable",
-};
+const CHANNELS: Readonly<Record<ChannelStateName, string>> = messageTable("contacts.channel", ["notEstablished", "setupPending", "ready", "broken"]);
 
 /** The DIP-15 payment channel as the detail slot names it. */
 export function channelTitle(c: ChannelStateName): string {
@@ -207,12 +203,10 @@ export interface SetupHint {
   text: string;
 }
 
-const contactsWord = (n: number) => (n === 1 ? "1 contact" : `${n} contacts`);
-
 export function setupHint(count: number | undefined, lock: LockStateName | undefined): SetupHint | null {
   if (!count || count <= 0 || lock === undefined) return null;
-  if (lock === "unlockedMixingOnly") return { kind: "unlock", text: `Unlock to finish setting up ${contactsWord(count)}` };
-  if (lock === "unlocked" || lock === "unencrypted") return { kind: "finishing", text: `Finishing the setup of ${contactsWord(count)}…` };
+  if (lock === "unlockedMixingOnly") return { kind: "unlock", text: t("contacts.hint.unlock", { count }) };
+  if (lock === "unlocked" || lock === "unencrypted") return { kind: "finishing", text: t("contacts.hint.finishing", { count }) };
   return null;
 }
 

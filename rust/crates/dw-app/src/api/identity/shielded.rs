@@ -54,7 +54,8 @@ pub struct ShieldedStatus {
     pub unrecorded_spends: Vec<UnrecordedSpend>,
     /// The note-tree position scanned to; `null` before a completed scan.
     pub synced_index: Option<u64>,
-    /// Unix seconds of the last completed sync pass.
+    /// When the pool was last scanned, or last proved unchanged with nothing
+    /// to scan. Unix seconds, this session.
     pub last_sync_at: Option<u64>,
     pub syncing: bool,
     /// The prover is ready, so a spend proves at once.
@@ -111,6 +112,54 @@ impl From<engine::ShieldedAddress> for ShieldedAddress {
     }
 }
 
+/// How much of the Core balance a shield or an "Add from Dash wallet"
+/// moves: `duffs`, its fee on top, or everything in the Dash wallet's
+/// account 0 (Max), the fee out of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FundAmount {
+    Duffs { duffs: u64 },
+    All,
+}
+
+impl From<FundAmount> for engine::FundAmount {
+    fn from(a: FundAmount) -> Self {
+        match a {
+            FundAmount::Duffs { duffs } => Self::Duffs { duffs },
+            FundAmount::All => Self::All,
+        }
+    }
+}
+
+/// What a Max quote adds: the coins it spends, and what stays in the Dash
+/// wallet (other accounts' coins, coins still arriving).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreMax {
+    pub inputs: u32,
+    pub left_duffs: u64,
+    pub arriving_duffs: u64,
+}
+
+impl From<engine::CoreMax> for CoreMax {
+    fn from(m: engine::CoreMax) -> Self {
+        let engine::CoreMax {
+            inputs,
+            left_duffs,
+            arriving_duffs,
+        } = m;
+        CoreMax {
+            inputs,
+            left_duffs,
+            arriving_duffs,
+        }
+    }
+}
+
 /// What moving duffs of the Core balance into the pool costs and buys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +175,8 @@ pub struct ShieldQuote {
     #[serde(with = "crate::dto::credits")]
     pub credits: u64,
     pub grant: GrantRequest,
+    /// A Max's (`all`): `totalDuffs` is the coins' sum, `duffs` the lock.
+    pub max: Option<CoreMax>,
 }
 
 impl From<engine::ShieldQuote> for ShieldQuote {
@@ -137,6 +188,7 @@ impl From<engine::ShieldQuote> for ShieldQuote {
             pool_fee_credits,
             credits,
             grant,
+            max,
         } = q;
         ShieldQuote {
             duffs,
@@ -145,6 +197,7 @@ impl From<engine::ShieldQuote> for ShieldQuote {
             pool_fee_credits,
             credits,
             grant: grant.into(),
+            max: max.map(Into::into),
         }
     }
 }

@@ -9,9 +9,10 @@ import { DashButton } from "../../components/basics";
 import { QuestionSheet } from "../../components/sheet";
 import { checkSettings, CoinJoinText, formOf, settingsFailureText, type FormField, type SettingsForm } from "../../coinjoin/model";
 import { useCoinJoinLimits, useCoinJoinSettings, useSaveCoinJoinSettings } from "../../coinjoin/queries";
+import { useT } from "../../i18n";
 import { Done, Hint, pendingText, Problem, SettingsCard } from "./parts";
 
-const FIELDS: { field: FormField; label: string; hint?: string }[] = [
+const fields = (): { field: FormField; label: string; hint?: string }[] => [
   { field: "rounds", label: CoinJoinText.mixingRounds, hint: CoinJoinText.mixingRoundsTip },
   { field: "targetAmountDash", label: CoinJoinText.targetBalance, hint: CoinJoinText.targetBalanceTip },
   { field: "maxSessions", label: CoinJoinText.parallelSessions, hint: CoinJoinText.parallelSessionsTip },
@@ -24,9 +25,10 @@ const NONE: Partial<CoinJoinSettings> = {};
 export function CoinJoinTab() {
   const settings = useCoinJoinSettings();
   const limits = useCoinJoinLimits();
+  const t = useT();
   if (!settings.data || !limits.data)
     return (
-      <SettingsCard title="CoinJoin (experimental)" testId="settings-coinjoin-loading">
+      <SettingsCard title={t("settings.coinjoin.title")} testId="settings-coinjoin-loading">
         <Hint>{pendingText(settings.isError ? settings : limits)}</Hint>
       </SettingsCard>
     );
@@ -34,8 +36,10 @@ export function CoinJoinTab() {
 }
 
 function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: CoinJoinLimits }) {
+  const t = useT();
   const save = useSaveCoinJoinSettings();
   const id = useId();
+  const FIELDS = fields();
   /** The fields as typed; the rest show the saved values. */
   const [edits, setEdits] = useState<Partial<SettingsForm>>({});
   const [wrong, setWrong] = useState<FormField | null>(null);
@@ -127,12 +131,12 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
 
   return (
     <>
-      <SettingsCard title="CoinJoin (experimental)" testId="settings-coinjoin">
+      <SettingsCard title={t("settings.coinjoin.title")} testId="settings-coinjoin">
         {box("settings-coinjoin-enabled", CoinJoinText.enableFeatures, CoinJoinText.enableFeaturesTip, shown.enabled, (enabled) => ({ enabled }))}
         {box("settings-coinjoin-multisession", CoinJoinText.multiSession, CoinJoinText.multiSessionTip, shown.multiSession, (multiSession) => ({ multiSession }))}
         <Hint>{CoinJoinText.persists}</Hint>
       </SettingsCard>
-      <SettingsCard title="Mixing" testId="settings-coinjoin-mixing">
+      <SettingsCard title={t("settings.coinjoin.mixing")} testId="settings-coinjoin-mixing">
         <form className="coinjoin-settings-form" noValidate onSubmit={submit}>
           {FIELDS.map(({ field, label, hint }) => {
             // Parallel sessions is off without multi-session, and shows the saved value.
@@ -164,7 +168,7 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
           <Done text={done} testId="settings-coinjoin-done" />
           <div className="card-actions">
             <DashButton type="submit" variant="tintedBlue" data-testid="settings-coinjoin-save" disabled={!changed || saving}>
-              Save
+              {t("common.save")}
             </DashButton>
             {edited && (
               <DashButton
@@ -176,7 +180,7 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
                   setProblem(null);
                 }}
               >
-                Cancel
+                {t("common.cancel")}
               </DashButton>
             )}
           </div>
@@ -189,7 +193,7 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
         <QuestionSheet
           title={CoinJoinText.restoreTitle}
           text={CoinJoinText.restoreMessage}
-          confirm="Restore"
+          confirm={t("settings.coinjoin.restore")}
           testId="settings-coinjoin-restore-sheet"
           confirmTestId="settings-coinjoin-restore-confirm"
           onConfirm={restore}

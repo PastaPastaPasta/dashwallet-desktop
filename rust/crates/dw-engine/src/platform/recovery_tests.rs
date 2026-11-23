@@ -38,6 +38,7 @@ use super::recovery::{
 };
 use super::reverify::{Held, Recorded, ShownProfile, confirmed, held_unverified, record_step};
 use super::runtime::{TestPause, guard};
+use super::runtime_tests::names_only_stuck_loops;
 use super::{DashPay, IdentitySummary, NamesCheck, SpvState, StartupStatus};
 use crate::session::Manager;
 use crate::{
@@ -651,6 +652,7 @@ fn session_with(
     engine
         .block_on(s.vault_op(move |v| v.create(passphrase)))
         .unwrap();
+    engine.block_on(s.adopt_signing_window_default()).unwrap();
     *guard(&s.platform.recovery.mock) = Some(platform);
     (engine, s)
 }
@@ -703,20 +705,15 @@ fn start(engine: &Engine, s: &Arc<NetworkSession>) {
 }
 
 /// Stops SPV. On a slow machine a Platform loop can still be in its pass at
-/// the stop's deadline: the stop then names it and stops SPV anyway
-/// (`bringup.rs` `stop_platform`). No test here is about that drain.
+/// the stop's deadline: the stop then names only such loops and stops SPV
+/// anyway (`bringup.rs` `stop_platform`). No test here is about that drain.
 fn stop(engine: &Engine, s: &Arc<NetworkSession>) {
     let stopped = engine.block_on(s.stop_spv());
-    let a_loop_outlived_the_deadline = matches!(
-        &stopped,
-        Err(EngineError::Sdk(detail))
-            if detail.starts_with("SPV stopped, but this Platform work did not end: ")
-                && !detail.contains("a vault key read")
-    );
     assert!(
-        stopped.is_ok() || a_loop_outlived_the_deadline,
+        stopped.is_ok() || names_only_stuck_loops(&stopped),
         "{stopped:?}"
     );
+    assert_eq!(s.spv_state().unwrap(), SpvState::Stopped);
 }
 
 /// `identities()` from the live read. A read while a sync pass holds the
@@ -2788,12 +2785,22 @@ fn the_refetch_walks_sent_incoming_and_established_requests() {
     });
     let mut requests: Vec<_> = (held.into_iter())
         .filter_map(|h| match h {
-            Held::ContactRequest(r) => Some(r),
+            Held::SentRequest(r) => Some((true, r)),
+            Held::ContactRequest(r) => Some((false, r)),
             _ => None,
         })
         .collect();
-    requests.sort_by_key(|r| r.created_at);
-    assert_eq!(requests, vec![sent, incoming, ours, theirs]);
+    requests.sort_by_key(|(_, r)| r.created_at);
+    assert_eq!(
+        requests,
+        vec![
+            (true, sent),
+            (false, incoming),
+            (true, ours),
+            (false, theirs)
+        ],
+        "our own requests are held as sent"
+    );
 }
 
 /// Sol r1 R1, the reviewer's probe: an identity whose name verified as
@@ -3469,6 +3476,26 @@ fn a_clean_reopen_forgets_the_removed_wallets() {
     let (db, wallet) = (s.live().unwrap().appdb, id.to_string());
     db.set_main_identity(&wallet, &base58(ALICE)).unwrap();
     assert_eq!(db.main_identity(&wallet).unwrap(), Some(base58(ALICE)));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The same while the host still holds the closed session: the close
+/// released the app database, so the reopen is alone on it (issue #190).
+#[test]
+fn a_reopen_while_the_closed_session_is_held_forgets_the_removed_wallets() {
+    let (_dir, engine, s, id, wipe) = removable();
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    let path = s.data_dir().join(dw_appdb::APP_DB_FILE);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    assert_nothing_left_open(&path);
+
+    let reopened = open_offline(&engine);
+    let (db, wallet) = (reopened.live().unwrap().appdb, id.to_string());
+    db.set_main_identity(&wallet, &base58(ALICE)).unwrap();
+    assert_eq!(db.main_identity(&wallet).unwrap(), Some(base58(ALICE)));
+    drop(s);
     engine.block_on(engine.shutdown()).unwrap();
 }
 

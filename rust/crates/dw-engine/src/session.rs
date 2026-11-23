@@ -141,6 +141,16 @@ pub struct SessionOptions {
     /// txindex on) in place of DAPI for the ProRegTxs governance resolves
     /// vote outpoints with (MG-02 D80); regtest has no DAPI.
     pub collateral_rpc: Option<String>,
+    /// Tests: this session's DAPI attempt timeout. `None` leaves the SDK
+    /// default (10 s, rs-dapi-client `request_settings.rs`). `Some(0)`
+    /// disables that deadline, so a request waits until the connection
+    /// fails. Absent from production builds.
+    #[cfg(test)]
+    pub dapi_request_timeout: Option<Duration>,
+    /// Tests: the session as a release build opens it (the trusted-only
+    /// toggle ignored).
+    #[cfg(test)]
+    pub as_release_build: bool,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -171,8 +181,14 @@ pub(crate) const PERSISTER_RELEASE: Duration = Duration::from_secs(3);
 /// Waits, within [`PERSISTER_RELEASE`], for the persister's last reference
 /// to go; `false` when one is still held.
 async fn persister_released(persister: &Weak<SqlitePersister>) -> bool {
+    released(persister).await
+}
+
+/// Waits, within [`PERSISTER_RELEASE`], for the last reference to `held`
+/// to go; `false` when one is still held.
+async fn released<T>(held: &Weak<T>) -> bool {
     let deadline = tokio::time::Instant::now() + PERSISTER_RELEASE;
-    while persister.strong_count() > 0 {
+    while held.strong_count() > 0 {
         if tokio::time::Instant::now() >= deadline {
             return false;
         }
@@ -263,6 +279,14 @@ pub struct NetworkSession {
     /// session, replaced by a later one, cancelled by `lock_vault` and
     /// `close`. (generation, task).
     pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
+    /// Automatic backups (`backup.rs`).
+    pub(crate) backups: crate::backup::BackupRuntime,
+    /// Orders every write of "ask for my passphrase for every payment"
+    /// with what the vault is told of it (`keys.rs`).
+    pub(crate) payment_auth: tokio::sync::Mutex<()>,
+    /// Other crates' tests: the next write of that setting fails.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub(crate) payment_auth_fault: std::sync::atomic::AtomicBool,
     /// The resends' acceptance waits (QT-091), aborted before SPV stops
     /// (`stop_spv_inner`, and `close` before the manager's shutdown): each
     /// holds platform-wallet's SPV client read lock for dash-spv's acceptance
@@ -287,6 +311,11 @@ pub struct NetworkSession {
     /// The withdrawals' nonces past Platform's proved ones (DP6-02 D24).
     pub(crate) withdrawal_nonces: crate::platform::withdrawal::WithdrawalNonces,
 }
+
+/// Tests: an operation [`NetworkSession::on_runtime`] spawns, boxed so the
+/// tests' task-locals can wrap it.
+#[cfg(test)]
+type TestRun<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, EngineError>> + Send>>;
 
 impl NetworkSession {
     /// Opens the session. Must run on the engine runtime: the manager spawns
@@ -345,6 +374,16 @@ impl NetworkSession {
         .await?
         .map_err(|e| EngineError::Storage(format!("app database: {e}")))?;
         let appdb = Arc::new(appdb);
+        {
+            let (vault, db) = (vault.clone(), Arc::clone(&appdb));
+            tokio::task::spawn_blocking(move || {
+                vault.attach_policy_commitments(Arc::new(crate::keys::PolicyCommitmentStore(
+                    Arc::downgrade(&db),
+                )));
+                crate::keys::sync_signing_window(&vault, &db)
+            })
+            .await?;
+        }
         // Owner-only whatever the umask (DASHPAY §3.4). The cache is
         // disposable, so a stray file, a symlink that cannot be resolved, or
         // an entry owned by another user (or a symlink loop) named `avatars`
@@ -375,15 +414,23 @@ impl NetworkSession {
         ));
         init_quorum_context(&context, &network, sink.as_ref()).await?;
 
-        let trust = Arc::new(TrustProvider::new(
+        let trust = TrustProvider::new(
             trust::DEFAULT_MODE,
             Arc::new(Arc::clone(&context)),
             Arc::clone(&sink),
             network.clone(),
-        ));
+        );
+        #[cfg(test)]
+        let trust = if opts.as_release_build {
+            trust.in_release_build()
+        } else {
+            trust
+        };
+        let trust = Arc::new(trust);
+        let allowed = trust.trusted_only_allowed();
         trust.set_trusted_only({
             let appdb = Arc::clone(&appdb);
-            tokio::task::spawn_blocking(move || read_trusted_only(&appdb)).await?
+            tokio::task::spawn_blocking(move || read_trusted_only(&appdb, allowed)).await?
         });
         let protocol = Arc::new(crate::platform::protocol::ProtocolRuntime::default());
         let sdk = build_sdk(
@@ -418,13 +465,15 @@ impl NetworkSession {
         );
         // dash-qt loads only the wallets of its settings list; a missing
         // list loads every wallet, and so does one that would load none of
-        // them: with no wallet open, closed ones cannot be reached.
-        let startup_list = {
+        // them: with no wallet open, closed ones cannot be reached. Such a
+        // list is stored again with every wallet on it, so what Settings
+        // shows is what this start did.
+        let mut startup_list = {
             let appdb = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::multiwallet::read_startup_list(&appdb))
                 .await??
         };
-        let unloaded = match &startup_list {
+        let unloaded: std::collections::HashSet<[u8; 32]> = match &startup_list {
             Some(list) => {
                 let db_path = data_dir.join(WALLET_DB_FILE);
                 let registered = tokio::task::spawn_blocking(move || {
@@ -438,11 +487,42 @@ impl NetworkSession {
                         .filter(|id| !list.contains(&WalletId(*id)))
                         .collect()
                 } else {
+                    if !registered.is_empty() {
+                        let every: std::collections::BTreeSet<WalletId> =
+                            registered.iter().copied().map(WalletId).collect();
+                        let (appdb, stored) = (Arc::clone(&appdb), every.clone());
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            crate::multiwallet::write_startup_list(&appdb, &stored)
+                        })
+                        .await?
+                        {
+                            tracing::warn!(error = %e, "could not repair the load-on-startup list");
+                        }
+                        startup_list = Some(every);
+                    }
                     Default::default()
                 }
             }
             None => Default::default(),
         };
+        // Before any wallet loads: an abandon marked but not swept is swept,
+        // so its change is never credited. A wallet this start leaves closed
+        // is swept when it is opened.
+        {
+            let (persister, appdb) = (Arc::clone(&persister), Arc::clone(&appdb));
+            let db_path = data_dir.join(WALLET_DB_FILE);
+            let closed = unloaded.clone();
+            tokio::task::spawn_blocking(move || {
+                let wallets: Vec<WalletId> = crate::store::registered_wallet_ids(&db_path)
+                    .map_err(|e| EngineError::Storage(format!("wallet list: {e}")))?
+                    .into_iter()
+                    .filter(|id| !closed.contains(id))
+                    .map(WalletId)
+                    .collect();
+                crate::tx_actions::finish_marked_abandons(&persister, &appdb, &db_path, &wallets)
+            })
+            .await??;
+        }
         let hub = Arc::new(SessionHub::new(network.clone(), Arc::clone(&sink)));
         let tap = Arc::new(crate::platform::journal::ChangesetTap::new(
             Arc::clone(&hub),
@@ -450,9 +530,22 @@ impl NetworkSession {
         ));
         let provenance = {
             let appdb = Arc::clone(&appdb);
+            let named: std::collections::HashSet<String> =
+                names.iter().map(|(id, _, _)| id.clone()).collect();
+            let db_path = data_dir.join(WALLET_DB_FILE);
             Arc::new(
                 tokio::task::spawn_blocking(move || {
-                    crate::platform::provenance::Provenance::open(appdb)
+                    let provenance = crate::platform::provenance::Provenance::open(appdb);
+                    // H-09: a wallet this installation never named came with
+                    // data fetched elsewhere, maybe through the fallback.
+                    let unnamed = crate::store::registered_wallet_ids(&db_path).map(|ids| {
+                        ids.iter()
+                            .any(|id| !named.contains(&WalletId(*id).to_string()))
+                    });
+                    if unnamed.unwrap_or(true) {
+                        provenance.data_fetched_elsewhere();
+                    }
+                    provenance
                 })
                 .await?,
             )
@@ -617,6 +710,10 @@ impl NetworkSession {
             unclean_previous,
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
+            backups: Default::default(),
+            payment_auth: tokio::sync::Mutex::new(()),
+            #[cfg(all(debug_assertions, feature = "test-support"))]
+            payment_auth_fault: Default::default(),
             resends: Mutex::new(Vec::new()),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
             masternodes,
@@ -667,6 +764,7 @@ impl NetworkSession {
         session.hub.attach_leases(&session.leases);
         session.attach_reconcile();
         session.attach_sweep_resend();
+        session.attach_balance_reread();
         session.attach_sweep_news();
         // Only a header the SPV store holds is evidence for a sweep record:
         // absent, unreadable or no SPV, its chunk stays pending.
@@ -721,7 +819,14 @@ impl NetworkSession {
         // Avatars (DP4-02): the toggle, the cache directory's descriptor.
         session.open_avatars(Arc::clone(&appdb)).await;
         // Before SPV starts: no block can replay a coin outside its account.
-        session.restore_loaded_wallets(&manager).await;
+        // A replay owed but not stored: the session does not open, and is
+        // closed as a close does, so the next open in this process can claim
+        // the wallet database.
+        if let Err(e) = session.restore_loaded_wallets(&manager).await {
+            drop((manager, appdb));
+            session.close().await;
+            return Err(e);
+        }
         for id in manager.list_wallet_ids_blocking() {
             session.resume_replay(&manager, WalletId(id)).await;
         }
@@ -736,11 +841,7 @@ impl NetworkSession {
         }
         session.load_history().await?;
         session.start_pump(&manager, appdb);
-        // dash-qt backs a wallet up when it loads (QT-116); skipped while
-        // the data key is not available.
-        for id in manager.list_wallet_ids_blocking() {
-            session.schedule_automatic_backup(WalletId(id));
-        }
+        session.back_up_every_wallet_once();
         session.spawn_ensure_background();
         session.spawn_reverify();
         tracing::info!(
@@ -751,6 +852,7 @@ impl NetworkSession {
     }
 
     fn start_pump(self: &Arc<Self>, manager: &Arc<Manager>, appdb: Arc<AppDb>) {
+        let _ = self.hub.appdb.set(Arc::downgrade(&appdb));
         let (stop, stop_rx) = watch::channel(false);
         let target = SessionPump {
             hub: Arc::clone(&self.hub),
@@ -883,14 +985,19 @@ impl NetworkSession {
         F: Future<Output = Result<T, EngineError>> + Send + 'static,
         T: Send + 'static,
     {
-        // Tests: a held app.sqlite job stays held in the spawned task.
+        // Tests: a held app.sqlite job and the gate's holds stay with the
+        // spawned task.
         #[cfg(test)]
-        if let Ok(pause) = crate::coins::HOLD_APPDB_JOB.try_with(Arc::clone) {
-            return self
-                .rt
-                .spawn(crate::coins::HOLD_APPDB_JOB.scope(pause, fut))
-                .await?;
-        }
+        let fut = {
+            let mut fut: TestRun<T> = Box::pin(fut);
+            if let Ok(pause) = crate::coins::HOLD_APPDB_JOB.try_with(Arc::clone) {
+                fut = Box::pin(crate::coins::HOLD_APPDB_JOB.scope(pause, fut));
+            }
+            if let Ok(holds) = crate::coins::GATE_HOLDS.try_with(Arc::clone) {
+                fut = Box::pin(crate::coins::GATE_HOLDS.scope(holds, fut));
+            }
+            fut
+        };
         self.rt.spawn(fut).await?
     }
 
@@ -920,7 +1027,8 @@ impl NetworkSession {
         Ok(config)
     }
 
-    /// Starts dash-spv and spawns its run loop.
+    /// Starts dash-spv and spawns its run loop. The caller announces the
+    /// start ([`Self::emit_spv_running`]) once `spv_state` reads `Running`.
     pub(crate) async fn start_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
         let config = self.spv_config()?;
         // Owner-only before dash-spv creates it with the umask's mode.
@@ -929,13 +1037,16 @@ impl NetworkSession {
         spv.start(config).await?;
         spv.spawn_run_loop();
         self.hub.set_spv_running(true);
+        // E0-04 H6 part 2: the catch-up's resume pass, spawned.
+        self.leases.spv_started();
+        Ok(())
+    }
+
+    pub(crate) fn emit_spv_running(&self) {
         self.sink.emit(EngineEvent::SpvStateChanged {
             network: self.network.clone(),
             running: true,
         });
-        // E0-04 H6 part 2: the catch-up's resume pass, spawned.
-        self.leases.spv_started();
-        Ok(())
     }
 
     pub(crate) async fn stop_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
@@ -1000,6 +1111,7 @@ impl NetworkSession {
         self.vault.lock();
         // A picture toggle's write lands before the session ends (DP4-02 D37).
         self.platform.avatars.settled().await;
+        self.platform.avatars.close().await;
         self.platform.deactivate(true).await;
         self.platform.contacts.close().await;
         // A retained session handle keeps no scanned key (DP2-03).
@@ -1134,12 +1246,14 @@ impl NetworkSession {
             }
         }
         let persister = Arc::downgrade(&live.persister);
+        let appdb = Arc::downgrade(&live.appdb);
         drop(manager);
         drop(live.store);
         drop(live.persister);
         drop(live.appdb);
         drop(live.tap);
         drop(live.provenance);
+        drop(live.replay);
         // The close returns once the database is released, so the network
         // reopens in this process (CI 41289102488: `StorageInUse` on a
         // reopen right after a close). Bounded: a holder that never lets go
@@ -1155,6 +1269,15 @@ impl NetworkSession {
             tracing::warn!(
                 network = %self.network,
                 "the wallet database is still held after the close; reopening it in this process is refused until it is released"
+            );
+        }
+        // A write the pump or the store's tap left on a blocking thread
+        // (first-seen times, an unread count) still holds the app database
+        // for as long as it runs; the close waits for those too.
+        if !holds_database && !released(&appdb).await {
+            tracing::warn!(
+                network = %self.network,
+                "the app database is still held after the close: a reopen in this process is not alone on it, and on Windows its file cannot be replaced until it is released"
             );
         }
         // Per network, so the last to close (§8.5).
@@ -1229,9 +1352,16 @@ fn load_ca(path: &Path) -> Result<Certificate, EngineError> {
 }
 
 /// The developer toggle (`trust.trusted_only`). A read error leaves it off:
-/// SPV keeps being compared.
-fn read_trusted_only(appdb: &AppDb) -> bool {
+/// SPV keeps being compared. A release build ignores it (H-09): a data
+/// root a developer build turned it on in does not carry it over.
+fn read_trusted_only(appdb: &AppDb, allowed: bool) -> bool {
     match appdb.setting(dw_appdb::GLOBAL_SCOPE, trust::TRUSTED_ONLY_KEY) {
+        Ok(v) if !allowed => {
+            if v.as_deref() == Some("1") {
+                tracing::warn!("the trusted-only toggle is set but ignored in a release build");
+            }
+            false
+        }
         Ok(v) => v.as_deref() == Some("1"),
         Err(e) => {
             tracing::warn!(error = %e, "could not read the trusted-only toggle; it stays off");
@@ -1271,6 +1401,18 @@ fn build_sdk(
     }
     if let Some(observer) = observer {
         builder = builder.with_protocol_version_observer(observer);
+    }
+    // Tests only: a session can hold a DAPI attempt open (`Some(0)` is
+    // "no deadline" in rs-dapi-client) or cut it sooner than the default.
+    #[cfg(test)]
+    if let Some(timeout) = opts.dapi_request_timeout {
+        builder = builder.with_settings(dash_sdk::RequestSettings {
+            connect_timeout: None,
+            timeout: Some(timeout),
+            retries: None,
+            ban_failed_address: None,
+            max_decoding_message_size: None,
+        });
     }
     Ok(builder.build()?)
 }

@@ -17,6 +17,7 @@ import { namedModel, pendingModel, screenModel, type ScreenActionKind } from "..
 import { JOIN_COPY, joinModel, type CardActionKind } from "../../dashpay/status";
 import { findFriends, openEditProfile } from "../../dashpay/welcome";
 import { wizardFor } from "../../dashpay/wizard";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { Page } from "../Routes";
 import { DashPayFaqSheet, VotingInfoSheet } from "./AboutDashPay";
@@ -25,6 +26,7 @@ import { DashPayCard, defaultCardAction } from "./DashPayCard";
 import { RegistrationScreen, WizardSteps } from "./Registration";
 
 function Intro() {
+  useT();
   return (
     <div className="join-intro card-l1" data-testid="join-intro">
       <h2 className="join-intro-headline">{JOIN_COPY.headline}</h2>
@@ -42,6 +44,7 @@ function Intro() {
 }
 
 export function JoinDashPayPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  useT();
   const invitation = useUi((s) => s.invitation);
   const b = useBackend();
   const wiz = useModel(wizardFor(b, walletId));

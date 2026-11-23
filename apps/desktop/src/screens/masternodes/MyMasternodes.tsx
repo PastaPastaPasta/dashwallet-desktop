@@ -38,6 +38,7 @@ import {
   voteBlocked,
 } from "../../masternodes/model";
 import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh } from "../../masternodes/queries";
+import { useT } from "../../i18n";
 import { MoreMenu, Notice, StatusChip } from "./common";
 
 const DAY = 86_400;
@@ -47,6 +48,7 @@ const MAX_LABEL = 64;
 export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSummary; network: NetworkInfo; onVote: () => void }) {
   const list = useMasternodes(wallet.walletId);
   const refresh = useMasternodesRefresh();
+  const t = useT();
   const shown = useDisplay(network);
   const [selected, setSelected] = useState<string | null>(null);
   const [retiredOpen, setRetiredOpen] = useState(false);
@@ -104,22 +106,20 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
       {!synced && <LoadingState testId="mn-syncing" text={MnText.loading} />}
       <div className="mg-summary card-l1" data-testid="mn-summary">
         <div>
-          <span className="mg-summary-label">Masternodes</span>
-          <span className="mg-summary-value">
-            {s.count} <span className="mg-muted mg-small">yours</span>
-          </span>
+          <span className="mg-summary-label">{t("masternodes.myMasternodes.summary.label")}</span>
+          <span className="mg-summary-value">{t.rich("masternodes.myMasternodes.summary.yours", { count: s.count, muted: (c) => <span className="mg-muted mg-small">{c}</span> })}</span>
           <span className="mg-summary-note">{s.countNote}</span>
         </div>
         <div data-testid="mn-summary-payouts">
-          <span className="mg-summary-label">Payouts, last 30 days</span>
+          <span className="mg-summary-label">{t("masternodes.myMasternodes.summary.payoutsLabel")}</span>
           <span className="mg-summary-value">{amount(s.payouts)}</span>
-          <span className="mg-summary-note">in masternode payouts</span>
+          <span className="mg-summary-note">{t("masternodes.myMasternodes.summary.payoutsNote")}</span>
           {s.unattributed !== null && (
             <>
               <span className="mg-summary-value" data-testid="mn-summary-unattributed">
                 {amount(s.unattributed)}
               </span>
-              <span className="mg-summary-note">of coinbase income to this wallet. {s.unattributedNote}</span>
+              <span className="mg-summary-note">{t("masternodes.myMasternodes.summary.unattributedNote", { note: s.unattributedNote ?? "" })}</span>
               <DashButton variant="plainBlue" size="small" data-testid="mn-summary-activity" onClick={() => navigate("activity", { activityFilter: { kind: "generated" } })}>
                 {MnText.seeInActivity}
               </DashButton>
@@ -134,7 +134,7 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
               <h2 className="contacts-group-title">
                 {g.id === "retired" ? (
                   <button type="button" className="contacts-disclosure" aria-expanded={retiredOpen} data-testid="mn-retired-toggle" onClick={() => setRetiredOpen((v) => !v)}>
-                    {GROUP_TITLE.retired} ({g.rows.length})
+                    {t("masternodes.myMasternodes.retiredCount", { count: g.rows.length })}
                   </button>
                 ) : (
                   GROUP_TITLE[g.id]
@@ -174,6 +174,7 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
 }
 
 function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: MasternodeRow[]; wallet: WalletSummary; shown: Display; onVote: () => void }) {
+  const t = useT();
   const detail = useMasternode(wallet.walletId, row.proTxHash);
   const [renaming, setRenaming] = useState(false);
   const d = detail.isError ? undefined : detail.data;
@@ -182,7 +183,7 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
   const outpoint = row.collateral.kind === "known" ? row.collateral.outpoint : null;
   const line = d ? registrarLine(d) : null;
   return (
-    <aside className="contacts-pane" aria-label="Masternode" data-testid="mn-pane">
+    <aside className="contacts-pane" aria-label={t("masternodes.myMasternodes.pane")} data-testid="mn-pane">
       <section className="mg-pane card-l1">
         <div>
           <h2 className="mg-pane-title" data-testid="mn-pane-title">
@@ -194,7 +195,7 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
           </div>
         </div>
         {row.status === "pose_banned" && (
-          <p className="mg-notice mg-notice-danger" data-testid="mn-banned">
+          <p className="mg-notice mg-notice-danger mn-banned-notice" data-testid="mn-banned">
             <strong>{MnText.banned}</strong> {MnText.bannedText(row.bannedSeenAt === null ? null : shortDate(row.bannedSeenAt))}
           </p>
         )}
@@ -204,7 +205,7 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
         </dl>
         <Payouts walletId={wallet.walletId} row={row} rows={rows} name={name} shown={shown} />
         <div>
-          <h3 className="mg-section-title">In this wallet</h3>
+          <h3 className="mg-section-title">{t("masternodes.myMasternodes.inWallet")}</h3>
           <ul className="mg-roles" data-testid="mn-roles">
             {heldRoles(row, wallet.watchOnly).map((h) => (
               <li key={h.id} className={h.held ? "mg-held" : "mg-elsewhere"}>
@@ -245,6 +246,7 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
 }
 
 function Facts({ row, detail, shown }: { row: MasternodeRow; detail: MasternodeDetail | undefined; shown: Display }) {
+  const t = useT();
   const list = detail?.list ?? null;
   const reg = detail?.registration ?? null;
   const fact = (id: string, title: string, value: React.ReactNode) => [
@@ -256,24 +258,40 @@ function Facts({ row, detail, shown }: { row: MasternodeRow; detail: MasternodeD
   const last = row.lastPayout;
   return (
     <>
-      {row.service && fact("service", "Service", row.service)}
-      {reg?.registeredHeight != null && fact("registered", "Registered", `block ${reg.registeredHeight.toLocaleString("en-US")}`)}
-      {row.mine && reg?.payoutAddress && fact("payout", "Payout address", <>
+      {row.service && fact("service", t("masternodes.myMasternodes.fact.service"), row.service)}
+      {reg?.registeredHeight != null && fact("registered", t("masternodes.myMasternodes.fact.registered"), t("masternodes.myMasternodes.fact.registeredValue", { height: reg.registeredHeight }))}
+      {row.mine && reg?.payoutAddress && fact("payout", t("masternodes.myMasternodes.fact.payout"), <>
         <span className="mono">{shortAddress(reg.payoutAddress)}</span> <span className="mg-muted">{MnText.payoutProvenance}</span>
       </>)}
-      {reg?.operatorReward ? fact("operator-share", "Operator's share", operatorShare(reg.operatorReward)) : null}
-      {list && fact("voting", "Voting address", <span className="mono">{shortAddress(list.votingAddress)}</span>)}
-      {list?.platformNodeId && fact("platform", "Platform node", <span className="mono">{`${shortHash(list.platformNodeId)}…${list.platformHttpPort ? ` · port ${list.platformHttpPort}` : ""}`}</span>)}
+      {reg?.operatorReward ? fact("operator-share", t("masternodes.myMasternodes.fact.operatorShare"), operatorShare(reg.operatorReward)) : null}
+      {list && fact("voting", t("masternodes.myMasternodes.fact.voting"), <span className="mono">{shortAddress(list.votingAddress)}</span>)}
+      {list?.platformNodeId &&
+        fact(
+          "platform",
+          t("masternodes.myMasternodes.fact.platform"),
+          <span className="mono">
+            {list.platformHttpPort
+              ? t("masternodes.myMasternodes.fact.platformValuePort", { node: shortHash(list.platformNodeId), port: String(list.platformHttpPort) })
+              : t("masternodes.myMasternodes.fact.platformValue", { node: shortHash(list.platformNodeId) })}
+          </span>,
+        )}
       {last &&
-        fact("last-payout", lastPayoutTitle(last), <>
-          {!last.unattributed && <AmountText text={shown.compact(last.amount)} unitName={shown.name} />}
-          {last.timestamp !== null && `${last.unattributed ? "" : " · "}${shortDate(last.timestamp)}`}
-        </>)}
-      {fact("pose", "PoSe score", <>
+        fact(
+          "last-payout",
+          lastPayoutTitle(last),
+          last.unattributed ? (
+            last.timestamp !== null && shortDate(last.timestamp)
+          ) : last.timestamp !== null ? (
+            t.rich("masternodes.myMasternodes.fact.lastPayoutValue", { amount: <AmountText text={shown.compact(last.amount)} unitName={shown.name} />, date: shortDate(last.timestamp) })
+          ) : (
+            <AmountText text={shown.compact(last.amount)} unitName={shown.name} />
+          ),
+        )}
+      {fact("pose", t("masternodes.myMasternodes.fact.pose"), <>
         — <span className="mg-muted">{MnText.poseScore}</span>
       </>)}
-      {reg?.revoked && fact("revoked", "Revoked", "Yes")}
-      {fact("hash", "ProTx hash", (
+      {reg?.revoked && fact("revoked", t("masternodes.myMasternodes.fact.revoked"), t("masternodes.myMasternodes.fact.yes"))}
+      {fact("hash", t("masternodes.myMasternodes.fact.hash"), (
         <span className="copy-value">
           <span className="mono">{`${row.proTxHash.slice(0, 4)}…${row.proTxHash.slice(-4)}`}</span>
           <CopyIconButton text={row.proTxHash} label={MnText.copyHash} />
@@ -284,13 +302,14 @@ function Facts({ row, detail, shown }: { row: MasternodeRow; detail: MasternodeD
 }
 
 function Payouts({ walletId, row, rows, name, shown }: { walletId: string; row: MasternodeRow; rows: MasternodeRow[]; name: string; shown: Display }) {
+  const t = useT();
   const backend = useBackend();
   const [since] = useState(() => Math.floor(backend.now().getTime() / 1000) - 30 * DAY);
   const payouts = useMasternodePayouts(walletId, row.proTxHash, since, row.mine && !row.sharedUnsupported);
   if (payouts.isError)
     return (
       <p className="mg-small mg-notice-row" data-testid="mn-payouts-failed">
-        <span className="mg-field-error">{`${MnText.payoutsFailed} ${mnErrorText(payouts.error)}`}</span>
+        <span className="mg-field-error">{t("masternodes.myMasternodes.payoutsFailedWith", { reason: mnErrorText(payouts.error) })}</span>
         <DashButton variant="tintedBlue" size="small" data-testid="mn-payouts-retry" onClick={() => void payouts.refetch()}>
           {MnText.tryAgain}
         </DashButton>
@@ -304,7 +323,7 @@ function Payouts({ walletId, row, rows, name, shown }: { walletId: string; row: 
         <div key={g.heading} data-testid={g.flagged ? "mn-payouts-flagged" : "mn-payouts-attributed"}>
           <h3 className="mg-section-title">{g.heading}</h3>
           <p className="mg-small">
-            <AmountText text={shown.compact(g.total)} unitName={shown.name} /> in {g.count === 1 ? "1 payment" : `${g.count} payments`} ·{" "}
+            {t.rich("masternodes.myMasternodes.payoutsIn", { amount: <AmountText text={shown.compact(g.total)} unitName={shown.name} />, count: g.count })} ·{" "}
             <DashButton
               variant="plainBlue"
               size="small"
@@ -322,6 +341,7 @@ function Payouts({ walletId, row, rows, name, shown }: { walletId: string; row: 
 }
 
 function RenameSheet({ row, onClose }: { row: MasternodeRow; onClose: () => void }) {
+  const t = useT();
   const backend = useBackend();
   const refresh = useMasternodesRefresh();
   const [label, setLabel] = useState(row.label ?? "");
@@ -348,9 +368,9 @@ function RenameSheet({ row, onClose }: { row: MasternodeRow; onClose: () => void
         }}
       >
         <label className={`mg-field ${error ? "has-error" : ""}`}>
-          Name
+          {t("masternodes.myMasternodes.renameName")}
           <input data-testid="mn-rename-input" value={label} maxLength={MAX_LABEL} placeholder={rowName({ ...row, label: null })} autoComplete="off" data-autofocus onChange={(e) => setLabel(e.target.value)} />
-          <span className="mg-field-help">Only this wallet sees it. Leave it empty for the default name.</span>
+          <span className="mg-field-help">{t("masternodes.myMasternodes.renameHelp")}</span>
           {error && (
             <span className="mg-field-error" role="alert" data-testid="mn-rename-error">
               {error}
@@ -361,10 +381,10 @@ function RenameSheet({ row, onClose }: { row: MasternodeRow; onClose: () => void
           <span />
           <span className="mg-actions">
             <DashButton type="button" variant="tintedGray" size="medium" onClick={onClose}>
-              Cancel
+              {t("masternodes.myMasternodes.cancel")}
             </DashButton>
             <DashButton type="submit" variant="filledBlue" size="medium" data-testid="mn-rename-save" disabled={busy}>
-              Save
+              {t("masternodes.myMasternodes.save")}
             </DashButton>
           </span>
         </footer>

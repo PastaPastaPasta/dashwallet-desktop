@@ -17,6 +17,7 @@ import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
 import { EMPTY } from "../../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { NETWORK_DEBOUNCE_MS, networkPrefix, SEARCH_DEBOUNCE_MS } from "../../contacts/model";
 import { refreshAfter, useContactDetail, useContactsOwner, useHasKeys, useNetworkSearch } from "../../contacts/queries";
 import { Outcome as ActionLine } from "../tools/common";
@@ -28,23 +29,24 @@ import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
-import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
+import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
 import { confirmedOf, DEFAULT_ADVANCED, type Advanced } from "./model";
-import { ResultSheet } from "./ResultSheet";
+import { ResultSheet, SendingSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
 
 export function PayToContact({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const t = useT();
   const { owner, retry } = useContactsOwner(walletId);
   if (owner.kind === "identity") return <ContactTab key={`${walletId}:${owner.identity}`} walletId={walletId} identity={owner.identity} network={network} />;
-  if (owner.kind === "starting") return <LoadingState testId="pay-contact-starting" text="Starting DashPay…" />;
+  if (owner.kind === "starting") return <LoadingState testId="pay-contact-starting" text={t("pay.contact.starting")} />;
   const none = noOwner(owner);
   // Without a username the tab is one line: Pay opened on To an address already.
   if (none.next === "join")
     return (
       <p className="placeholder-note" data-testid="pay-contact-none">
-        Join DashPay to pay people by their username.{" "}
+        {t("pay.contact.joinLine")}{" "}
         <DashButton variant="plainBlue" size="small" data-testid="pay-contact-join" onClick={() => navigate("joinDashPay")}>
-          Join DashPay
+          {t("pay.contact.join")}
         </DashButton>
       </p>
     );
@@ -58,11 +60,11 @@ export function PayToContact({ walletId, network }: { walletId: string; network:
         <span className="add-contact-actions">
           {none.next === "retry" && (
             <DashButton key="retry" variant="plainBlue" onClick={retry}>
-              Try again
+              {t("pay.contact.retry")}
             </DashButton>
           )}
           <DashButton key="address" variant="tintedBlue" data-testid="pay-contact-to-address" onClick={() => ui.set({ payTab: "address" })}>
-            Pay to an address
+            {t("pay.contact.toAddress")}
           </DashButton>
         </span>
       }
@@ -97,6 +99,7 @@ function ContactTab({ walletId, identity, network }: { walletId: string; identit
 /** The frequent strip (D3), the picker (D4), and under it Add contact's username search: a user
  * found there gets their own card. */
 function Chooser({ walletId, identity, onPick }: { walletId: string; identity: string; onPick: (payee: Payee) => void }) {
+  const t = useT();
   const id = useId();
   const [search, setSearch] = useState("");
   const [found, setFound] = useState<UserHit | null>(null);
@@ -153,23 +156,23 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
   if (list.data === undefined && list.isError)
     body = (
       <p className="form-problem" role="alert" data-testid="pay-picker-error">
-        Could not read your contacts: {errorMessage(list.error)}{" "}
+        {t("pay.contact.pickerError", { error: errorMessage(list.error) })}{" "}
         <DashButton variant="plainBlue" size="small" onClick={() => void list.refetch()}>
-          Try again
+          {t("pay.contact.retry")}
         </DashButton>
       </p>
     );
-  else if (list.data === undefined) body = <LoadingState testId="pay-picker-loading" text="Loading contacts…" />;
+  else if (list.data === undefined) body = <LoadingState testId="pay-picker-loading" text={t("pay.contact.loading")} />;
   else if (view.none === "anyone")
     body = (
       <EmptyState
         testId="pay-picker-none"
         art="search"
-        title="No one found"
-        message={`No contact or DashPay username starts with “${text}”.`}
+        title={t("pay.contact.noOneFound")}
+        message={t("pay.contact.noOneMessage", { text })}
         action={
           <DashButton variant="tintedBlue" data-testid="pay-none-to-address" onClick={toAddress}>
-            Pay to an address instead
+            {t("pay.contact.toAddressInstead")}
           </DashButton>
         }
       />
@@ -179,8 +182,8 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
       <EmptyState
         testId="pay-picker-none"
         art="search"
-        title="No contacts match"
-        message="Search by name or username."
+        title={t("pay.contact.noMatch")}
+        message={t("pay.contact.noMatchMessage")}
         action={
           <DashButton
             variant="filledBlue"
@@ -190,7 +193,7 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
               focusWhenIdle(field);
             }}
           >
-            Clear search
+            {t("pay.contact.clear")}
           </DashButton>
         }
       />
@@ -200,8 +203,8 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
       <EmptyState
         testId="pay-picker-empty"
         art="contacts"
-        title={list.data.updating ? "Your contacts are being updated" : "No contacts yet"}
-        message="Keep typing to search DashPay usernames."
+        title={list.data.updating ? t("pay.contact.updatingTitle") : t("pay.contact.noContacts")}
+        message={t("pay.contact.keepTyping")}
       />
     );
   else if (groups.length === 0 && text === "")
@@ -209,8 +212,8 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
       <EmptyState
         testId="pay-picker-empty"
         art="contacts"
-        title={list.data.updating ? "Your contacts are being updated" : "No contacts yet"}
-        message="Type a username above to find someone on DashPay."
+        title={list.data.updating ? t("pay.contact.updatingTitle") : t("pay.contact.noContacts")}
+        message={t("pay.contact.typeUsername")}
       />
     );
   else
@@ -246,8 +249,8 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
           ref={field}
           type="search"
           value={search}
-          placeholder="Search contacts or a username"
-          aria-label="Search contacts or a username"
+          placeholder={t("pay.contact.search")}
+          aria-label={t("pay.contact.search")}
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Escape" && search !== "") {
@@ -259,7 +262,7 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
       </label>
       {list.data?.updating && groups.length > 0 && (
         <p className="contacts-updating" role="status">
-          Your contacts are being updated.
+          {t("pay.contact.updating")}
         </p>
       )}
       {body}
@@ -280,9 +283,9 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
       )}
       {view.none !== "anyone" && (
         <p className="placeholder-note">
-          Paying someone who is not on DashPay?{" "}
+          {t("pay.contact.notOnDashPay")}{" "}
           <DashButton variant="plainBlue" size="small" data-testid="pay-contact-to-address" onClick={toAddress}>
-            Pay to an address
+            {t("pay.contact.toAddress")}
           </DashButton>
         </p>
       )}
@@ -304,6 +307,7 @@ function ContactForm({
   contact: string;
   shownAs: Payee | null;
 }) {
+  const t = useT();
   const client = useQueryClient();
   const shown = useDisplay(network);
   const lockState = useLockStatus().data?.state;
@@ -343,7 +347,7 @@ function ContactForm({
   const [note, setNote] = useState("");
   const [advanced, setAdvanced] = useState<Advanced>(DEFAULT_ADVANCED);
   // As To an address: a payment that went, or may have, ends the form; the payee stays.
-  const sheets = usePaySheets(walletId, draft, () => {
+  const sheets = usePaySheets(payFormKey(walletId, contact), walletId, draft, () => {
     amount.setText("");
     setSubtractFee(subtractFeeByDefault());
     setNote("");
@@ -375,7 +379,7 @@ function ContactForm({
       <form
         className="pay-form"
         data-testid="pay-contact-form"
-        aria-label={`Pay ${payee.name}`}
+        aria-label={t("pay.contact.form", { name: payee.name })}
         onSubmit={(e) => {
           e.preventDefault();
           review();
@@ -392,7 +396,7 @@ function ContactForm({
             </span>
           </span>
           <DashButton variant="tintedBlue" size="small" data-testid="pay-payee-change" onClick={() => ui.set({ payContact: null })}>
-            Change
+            {t("pay.contact.change")}
           </DashButton>
         </section>
         {banner && <PayBanner banner={banner} contact={contact} checking={resolve.isPending} onCheck={check} retry={() => void detail.refetch()} />}
@@ -411,12 +415,12 @@ function ContactForm({
                 onSubtractFee={setSubtractFee}
                 inputRef={amountField}
               />
-              <FormField label="Note" hint="Kept with the transaction in this wallet; not sent to the contact.">
+              <FormField label={t("pay.contact.note")} hint={t("pay.contact.noteHint")}>
                 {(p) => <input {...p} data-testid="pay-note" value={note} autoComplete="off" onChange={(e) => setNote(e.target.value)} />}
               </FormField>
             </section>
             <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
-            <PayFooter problem={general} offer={offer === null || !amount.settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
+            <PayFooter form="contact" problem={general} offer={offer === null || !amount.settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
           </>
         )}
       </form>
@@ -431,6 +435,7 @@ function ContactForm({
           returnFocus={backToForm}
           onCancel={sheets.cancel}
           onOutcome={sheets.outcome}
+          onSend={sheets.begin}
           contact={{
             identity,
             payee,
@@ -442,13 +447,15 @@ function ContactForm({
           }}
         />
       )}
+      {phase.kind === "sending" && <SendingSheet sending={phase.sending} network={network} />}
       {phase.kind === "result" && (
         <ResultSheet
           outcome={phase.outcome}
           network={network}
           draft={draft}
           returnFocus={backToForm}
-          onOutcome={sheets.outcome}
+          retrying={phase.retrying}
+          onRetry={sheets.retry}
           onDone={sheets.done}
         />
       )}
@@ -458,20 +465,21 @@ function ContactForm({
 
 /** Why the payee cannot be paid now, and what to do (D6, D7). */
 function PayBanner({ banner, contact, checking, onCheck, retry }: { banner: Banner; contact: string; checking: boolean; onCheck: () => void; retry: () => void }) {
-  if (banner.kind === "loading") return <LoadingState testId="pay-contact-loading" text="Reading the contact…" />;
+  const t = useT();
+  if (banner.kind === "loading") return <LoadingState testId="pay-contact-loading" text={t("pay.contact.reading")} />;
   let action = null;
   switch (banner.kind) {
     case "readFailed":
       action = (
         <DashButton variant="tintedBlue" size="small" onClick={retry}>
-          Try again
+          {t("pay.contact.retry")}
         </DashButton>
       );
       break;
     case "enable":
       action = (
         <DashButton variant="tintedBlue" size="small" data-testid="pay-banner-contacts" onClick={() => navigate("contacts", { contact })}>
-          Open in Contacts
+          {t("pay.contact.openInContacts")}
         </DashButton>
       );
       break;
@@ -479,10 +487,10 @@ function PayBanner({ banner, contact, checking, onCheck, retry }: { banner: Bann
       action = (
         <span className="add-contact-actions">
           <DashButton key="show" variant="tintedGray" size="small" data-testid="pay-banner-show" onClick={() => navigate("activity", { detail: banner.txid })}>
-            Show transaction
+            {t("pay.contact.showTransaction")}
           </DashButton>
           <DashButton key="check" variant="tintedBlue" size="small" data-testid="pay-banner-check" disabled={checking} onClick={onCheck}>
-            {checking ? "Checking…" : "Check again"}
+            {checking ? t("pay.contact.checking") : t("pay.contact.checkAgain")}
           </DashButton>
         </span>
       );
@@ -490,7 +498,7 @@ function PayBanner({ banner, contact, checking, onCheck, retry }: { banner: Bann
     case "mixingOnly":
       action = (
         <DashButton variant="tintedBlue" size="small" data-testid="pay-banner-unlock" onClick={() => ui.set({ dialog: "unlock" })}>
-          Unlock
+          {t("pay.contact.unlock")}
         </DashButton>
       );
       break;

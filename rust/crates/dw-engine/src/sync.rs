@@ -315,6 +315,15 @@ impl SyncTracker {
         self.readings.headers.map(|h| h.current).filter(|h| *h > 0)
     }
 
+    /// The network's best height as dash-spv knows it: the peers' best
+    /// header, or the stored tip when that is higher.
+    pub(crate) fn network_tip(&self) -> Option<u32> {
+        self.readings
+            .headers
+            .map(|h| h.current.max(h.target))
+            .filter(|h| *h > 0)
+    }
+
     pub(crate) fn chainlock_height(&self) -> Option<u32> {
         self.readings.chainlock_height
     }
@@ -342,6 +351,19 @@ impl SyncTracker {
             target: height,
         });
         self.readings.overall = SyncState::Synced;
+        self.running = true;
+    }
+
+    /// Headers at `current` of the peers' `target`, still syncing, as a
+    /// progress report during catch-up would say (tests only).
+    #[cfg(test)]
+    pub(crate) fn set_headers_syncing(&mut self, current: u32, target: u32) {
+        self.readings.headers = Some(PhaseReading {
+            state: SyncState::Syncing,
+            current,
+            target,
+        });
+        self.readings.overall = SyncState::Syncing;
         self.running = true;
     }
 
@@ -528,7 +550,9 @@ impl crate::NetworkSession {
                 return Err(crate::EngineError::SpvNotRunning);
             }
             this.stop_spv_inner(&manager).await?;
-            this.start_spv_inner(&manager).await
+            this.start_spv_inner(&manager).await?;
+            this.emit_spv_running();
+            Ok(())
         })
         .await
     }
@@ -559,13 +583,39 @@ impl crate::NetworkSession {
             }
             // No wallet is loaded or removed between the list and the rewinds.
             let _lifecycle = this.wallet_lifecycle.hold().await;
+            // A refused request changes no marker.
+            if this.rescan_running() {
+                return Err(crate::EngineError::RescanInProgress);
+            }
             let ids: Vec<crate::WalletId> = manager
                 .list_wallet_ids_blocking()
                 .into_iter()
                 .map(crate::WalletId)
                 .collect();
             for id in &ids {
-                crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await?;
+                let (_, ranges) = this.apply_stored_ranges(&manager, *id, true).await;
+                let widened = crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await;
+                if let Err(e) = &widened {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap before the rescan");
+                }
+                if ranges.is_err() || widened.is_err() {
+                    // Its next load replays what this rescan matches narrow;
+                    // no rescan without that marker.
+                    let start = match from {
+                        RescanFrom::WalletBirth => None,
+                        RescanFrom::Genesis => Some(0),
+                        RescanFrom::Height(h) => Some(h.saturating_sub(1)),
+                    };
+                    let birth = crate::keys::birth_checkpoint(&manager, *id).await;
+                    // A wallet without a marker is owed from the start or
+                    // its birth, the earlier: nothing else records it.
+                    if this.wide_scan(*id).await?.is_none() {
+                        let owed = start.map_or(birth, |s| s.min(birth));
+                        (this.mark_pending(*id, crate::keys::WideScan::From(owed))).await?;
+                    } else {
+                        this.note_narrow_from(*id, start, Some(birth)).await?;
+                    }
+                }
             }
             let from_height = match from {
                 RescanFrom::WalletBirth => ids

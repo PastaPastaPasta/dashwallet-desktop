@@ -179,21 +179,18 @@ test("DP3-07 discreet mode hides the strip with the history (D8); no identity, n
   await expect(page.getByTestId("home-frequent")).toHaveCount(0);
 });
 
-test("DP3-07 locking puts Home's strip behind the lock screen (D8)", async ({ page }) => {
+test("DP3-07 locking takes Home's strip down with the page, and the unlock brings it back (D8)", async ({ page }) => {
   const errors = await open(page);
   await expect(page.getByTestId("home-frequent")).toBeVisible();
   await page.getByTestId("toolbar-lock").click();
   await page.getByTestId("lock-screen").waitFor();
-  // The shell stays mounted under the lock screen, inert and covered: no chip takes focus, and
-  // what is drawn where the chip sits is the lock screen.
-  const chip = page.getByTestId("home-frequent-chip").first();
-  const shown = await chip.evaluate((el) => {
-    (el as HTMLElement).focus();
-    const r = el.getBoundingClientRect();
-    const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-    return { inert: el.closest("[inert]") !== null, focused: document.activeElement === el, covered: !!top?.closest('[data-testid="lock-screen"]') };
-  });
-  expect(shown).toEqual({ inert: true, focused: false, covered: true });
+  // The lock screen stands in place of the shell: no chip is left to focus or to read.
+  await expect(page.getByTestId("home-frequent")).toHaveCount(0);
+  await expect(page.locator(".app-chrome")).toHaveCount(0);
+  await page.getByTestId("lock-field").fill("demo");
+  await page.getByTestId("lock-field").press("Enter");
+  await expect(page.getByTestId("lock-screen")).toHaveCount(0);
+  await expect(page.getByTestId("home-frequent-chip").first()).toBeVisible();
   expect(errors).toEqual([]);
 });
 
