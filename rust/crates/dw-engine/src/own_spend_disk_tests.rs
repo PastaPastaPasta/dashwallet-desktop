@@ -2633,6 +2633,190 @@ fn abandoning_a_payment_to_a_contact_releases_a_coin_of_a_spend_behind_the_conta
     assert!(spendable(&engine, &session, id, u), "U is not offered");
 }
 
+/// The history learns that `txid` is InstantSend-locked; key-wallet does
+/// not (its record stays pending), as when the history holds a lock it
+/// rehydrated.
+fn locked_in_history_only(engine: &Engine, session: &NetworkSession, id: WalletId, txid: Txid) {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let manager = session.manager().unwrap();
+    let (balance, account_balances) = engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        (info.balance(), info.account_balances())
+    });
+    (session.hub).apply_wallet_event(
+        &platform_wallet::key_wallet_manager::WalletEvent::TransactionInstantLocked {
+            wallet_id: id.0,
+            txid,
+            instant_lock: InstantLock {
+                txid,
+                ..InstantLock::default()
+            },
+            balance,
+            account_balances,
+        },
+    );
+    assert!(session.hub.history.get(&id, &txid).unwrap().instant_locked);
+}
+
+/// An unlocked payment, its child T, which the history holds as
+/// InstantSend-locked while key-wallet's record of it is pending, and a
+/// spend E of T's change and the wallet's coin U that key-wallet credits
+/// and stores and the history has not heard of. key-wallet's walk would
+/// take T and E; the abandon refuses as locked, releases nothing and marks
+/// nothing, after a restart too.
+#[test]
+fn abandoning_a_payment_under_a_child_locked_in_the_history_only_is_refused() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let u = OutPoint::new(paid.txid(), 5);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 0)]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change]),
+        COIN / 100,
+        false,
+    );
+    mempool(&engine, &session, id, &child);
+    wait_stored(&session, id, &[payment.txid(), child.txid()]);
+    locked_in_history_only(&engine, &session, id, child.txid());
+    let left = change_of(&child, &own_scripts(&engine, &session, id));
+    let owner = |o: OutPoint, tx: &Transaction| {
+        Address::from_script(
+            &tx.output[o.vout as usize].script_pubkey,
+            dashcore::Network::Regtest,
+        )
+        .unwrap()
+    };
+    let to = fresh_address(&engine, &session, id);
+    let mut spend = super::spend_of(left, vec![(to.script_pubkey(), COIN)]);
+    spend.input.push(TxIn {
+        previous_output: u,
+        ..Default::default()
+    });
+    let e = super::signed_by_wallet_each(
+        &engine,
+        &session,
+        id,
+        &[owner(left, &child), owner(u, &paid)],
+        spend,
+    );
+    let _late = credited_with_late_events(&engine, &session, id, &e);
+    wait_stored(&session, id, &[e.txid()]);
+    assert!((session.hub.history).get(&id, &e.txid()).is_none());
+    start_spv(&engine, &session);
+
+    refused(&engine, &session, id, payment.txid(), "the abandon");
+    let mark = |session: &Arc<NetworkSession>| {
+        let (scope, key) = (id.to_string(), format!("abandoned:{}", e.txid()));
+        (engine.block_on(session.appdb_op(move |db| db.setting(&scope, &key)))).unwrap()
+    };
+    let mut session = session;
+    for state in ["the abandon", "a restart after"] {
+        if state != "the abandon" {
+            session = reopen(&engine, session);
+        }
+        let row = stored_row(&session, id, u);
+        assert!(
+            row.is_some_and(|(spent, _)| spent),
+            "{state}: U is released in the store: {row:?}"
+        );
+        assert!(!abandoned(&engine, &session, id, payment.txid()), "{state}");
+        assert!(!abandoned(&engine, &session, id, child.txid()), "{state}");
+        assert_eq!(mark(&session), None, "{state}: E is marked abandoned");
+    }
+}
+
+/// Two pending payments of the wallet's coin U (the second with change to
+/// the wallet, so key-wallet records it too): abandoning one leaves U
+/// spent by the other, in the store and in what is offered, at once and
+/// after a restart. Abandoning the other too releases U: it is offered at
+/// once and after a restart.
+#[test]
+fn abandoning_one_of_two_spends_of_a_coin_keeps_it_until_the_other_goes() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let u = OutPoint::new(paid.txid(), 0);
+    let first = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![u]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &first);
+    let owner =
+        Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let second = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(
+            u,
+            vec![
+                (
+                    fresh_address(&engine, &session, id).script_pubkey(),
+                    COIN / 4,
+                ),
+                (elsewhere(), COIN * 3 / 4 - 2_000),
+            ],
+        ),
+    );
+    mempool(&engine, &session, id, &second);
+    wait_stored(&session, id, &[first.txid(), second.txid()]);
+    start_spv(&engine, &session);
+
+    abandon(&engine, &session, id, first.txid());
+    let mut session = session;
+    for state in ["one abandoned", "a restart after"] {
+        if state != "one abandoned" {
+            session = reopen(&engine, session);
+            start_spv(&engine, &session);
+            mined(&engine, &session, id, TIP, vec![paid.clone()]);
+        }
+        let row = stored_row(&session, id, u);
+        assert!(
+            row.is_some_and(|(spent, _)| spent),
+            "{state}: U is released while the other spend is pending: {row:?}"
+        );
+        assert!(
+            !spendable(&engine, &session, id, u),
+            "{state}: U is offered while the other spend is pending"
+        );
+    }
+
+    abandon(&engine, &session, id, second.txid());
+    for state in ["both abandoned", "a restart after both"] {
+        if state != "both abandoned" {
+            session = reopen(&engine, session);
+            start_spv(&engine, &session);
+            mined(&engine, &session, id, TIP, vec![paid.clone()]);
+        }
+        let row = stored_row(&session, id, u);
+        assert!(
+            row.is_some_and(|(spent, _)| !spent),
+            "{state}: U is not released: {row:?}"
+        );
+        assert!(
+            spendable(&engine, &session, id, u),
+            "{state}: U is not offered"
+        );
+    }
+}
+
 /// A single Abandon of a locked payment a ChainLock beat, stopped after
 /// its sweep and before its rescan, its rewind record dropped by a sync
 /// commit in between. After the restart, and after Repair ▸ Rescan from the

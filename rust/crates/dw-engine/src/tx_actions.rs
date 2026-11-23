@@ -655,7 +655,7 @@ impl NetworkSession {
             if !abandoned.is_empty() {
                 info.core_wallet.update_balance();
             }
-            let released = overridden.clone().unwrap_or_else(|| {
+            let mut released = overridden.clone().unwrap_or_else(|| {
                 self.released(
                     wallet,
                     &abandoned,
@@ -664,6 +664,14 @@ impl NetworkSession {
                     info.core_wallet.observed_spent_outpoints(),
                 )
             });
+            // A coin another pending transaction of the wallet still spends
+            // (key-wallet records conflicting mempool spends) stays spent.
+            let still_spent: HashSet<OutPoint> = (info.core_wallet.accounts.all_accounts())
+                .into_iter()
+                .flat_map(|a| a.transactions().values())
+                .flat_map(|r| r.transaction.input.iter().map(|i| i.previous_output))
+                .collect();
+            released.retain(|o| !still_spent.contains(o));
             (abandoned, released, overridden.is_some(), copies, links)
         };
         // key-wallet refuses (returns nothing) when it holds the root as
@@ -807,10 +815,19 @@ impl NetworkSession {
         // it cannot see the InstantSend lock rehydrated for it.
         let locks = core.instant_send_locks();
         let overridden = self.lock_override(wallet, &root, &planned, proof, core, &trial)?;
-        if planned
-            .iter()
-            .any(|t| locks.contains(t) && !(overridden.is_some() && *t == root))
-        {
+        let exempt = |t: &Txid| overridden.is_some() && *t == root;
+        // key-wallet walks by its own records: one it holds as pending can
+        // be locked or mined in the history, and then what spends it is
+        // not the wallet's to abandon.
+        let settled = (self.hub.history).read(&wallet, |txs| {
+            (planned.iter()).any(|t| {
+                !exempt(t)
+                    && txs
+                        .get(t)
+                        .is_some_and(|e| locked(e) || e.context.block_info().is_some())
+            })
+        });
+        if settled || planned.iter().any(|t| locks.contains(t) && !exempt(t)) {
             return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
         }
         Ok((planned, overridden))
