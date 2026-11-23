@@ -175,7 +175,7 @@ export function ClaimConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationW
               </p>
               <p className="registration-line claim-recipient-id">
                 <span className="claim-label">{CLAIM_COPY.confirm.recipientId}</span>{" "}
-                <CopyValue value={recipient.identity} label={tr("dashpay.claim.confirm.identityId")} mono />
+                <CopyValue value={recipient.identity} action={tr("dashpay.claim.confirm.copyIdentityId")} mono />
               </p>
             </>
           )}

@@ -187,7 +187,7 @@ export const contacts = {
       scan: "From a QR code",
       link: "From a link",
     },
-    identity: "identity",
+    copyIdentity: "Copy identity",
     verified: "Verified on the Dash network",
     checking: "Checking…",
     searchHint: "Search for a User on the Dash Network by their username.",
