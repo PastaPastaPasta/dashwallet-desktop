@@ -15,6 +15,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod import;
+
 use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, UnlockScope, VaultConfig};
 
 use crate::{DashNetwork, Engine, EngineConfig, NetworkSession};

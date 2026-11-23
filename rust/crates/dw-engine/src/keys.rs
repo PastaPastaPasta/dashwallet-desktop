@@ -68,12 +68,20 @@ pub(crate) fn registration_refused(_: &std::path::Path) -> bool {
 pub(crate) const IMPORT_ROWS: &str = "import.rows";
 pub(crate) const IMPORT_SECRET: &str = "import.secret";
 pub(crate) const IMPORT_REGISTER: &str = "import.register";
+/// Tests: runs at each import fault point with its name, before the point.
+#[cfg(test)]
+pub(crate) static AT_IMPORT_POINT: std::sync::Mutex<Option<Box<dyn Fn(&str) + Send>>> =
+    std::sync::Mutex::new(None);
 
 impl NetworkSession {
     /// The import fault point `point` on this session's app database: armed,
     /// the step fails; `DW_FAULT` naming it aborts the process.
     #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
     fn import_fault(&self, point: &str) -> Result<(), EngineError> {
+        #[cfg(test)]
+        if let Some(at) = &*AT_IMPORT_POINT.lock().unwrap_or_else(|e| e.into_inner()) {
+            at(point);
+        }
         (self.live()?.appdb)
             .fault_point(point, dw_appdb::fault::Stage::After)
             .map_err(|e| EngineError::Storage(e.to_string()))
