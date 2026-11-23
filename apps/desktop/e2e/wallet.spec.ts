@@ -830,6 +830,17 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
   });
 
+  test("warns about paying twice for a payment whose spent coins are not known yet", async ({ page }) => {
+    const errors = await open(page, "abandon-debit-unknown");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"d0".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
+      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.",
+    );
+    expect(errors).toEqual([]);
+  });
+
   test("a rescanFirst refusal shows the catalog's steps", async ({ page }) => {
     const errors = await open(page, "abandon-rescan-first");
     await page.getByTestId("sidebar-activity").click();

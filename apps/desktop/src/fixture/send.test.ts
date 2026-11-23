@@ -271,6 +271,14 @@ describe("fixture send engine", () => {
     await expect(cmd.abandonTransaction(W, txid)).rejects.toMatchObject({ code: "tx_action_refused", data: { kind: "txAction", refusal: "alreadyAbandoned" } });
   });
 
+  it("reports an unknown debit for a payment seen only by its change, a known nothing for an incoming one", async () => {
+    clearMocks();
+    const scenario = installFixture({ scenario: "abandon-debit-unknown" });
+    const incoming = scenario.world.wallets[0].rows.find((r) => r.category === "received" && r.status.kind === "unconfirmed" && r.txid !== "d0".repeat(32))!;
+    expect((await cmd.txDetailExtras(W, "d0".repeat(32))).totalDebit).toBeNull();
+    expect((await cmd.txDetailExtras(W, incoming.txid)).totalDebit).toBe(0);
+  });
+
   it("refuses with the engine's message, and offers Abandon a restart and a rescan clear", async () => {
     const gone = fixture.world.wallets[0].rows.find((r) => r.status.kind === "abandoned")!;
     await expect(cmd.abandonTransaction(W, gone.txid)).rejects.toMatchObject({

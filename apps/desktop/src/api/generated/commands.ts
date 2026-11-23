@@ -999,8 +999,10 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
  * transaction is refused (`instantLocked`) unless a transaction in a
  * ChainLocked block of the SPV header chain spends one of its inputs,
  * nothing descending from it is in a block, locked or finalized, the
- * history load was complete and the scan has passed the ChainLock with
- * no replay pending; then only inputs proven unspent are released.
+ * wallet holds no record of it in a block or locked (in the session it
+ * was locked in, until a restart; #329), the history load was complete
+ * and the scan has passed the ChainLock with no replay pending; then
+ * only inputs proven unspent are released.
  * `rescanFirst` instead when all of that holds and the only inputs
  * missing are held by its own spend claim restored at load: a restart
  * and a rescan give that evidence.

@@ -711,6 +711,17 @@ const SCENARIOS = {
     w.send.rescanFirst = [row.txid];
     return w;
   },
+  /** A payment this wallet made on another device, seen only by its change before the coins it
+   * spent are known: its debit is unknown, so Abandon warns about paying twice. */
+  "abandon-debit-unknown": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const received = wallet.rows.find((r) => r.category === "received" && r.status.kind === "unconfirmed")!;
+    const row: TxRow = { ...received, txid: "d0".repeat(32), timestamp: (received.timestamp ?? 0) + 60, label: null };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.debitUnknown = [row.txid];
+    return w;
+  },
   /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
   "shielded-inactive": (t) => {
     const w = base(t);

@@ -26,7 +26,9 @@ pub struct TxDetailExtras {
     pub in_mempool: Option<bool>,
     pub abandoned: bool,
     /// dash-qt "Abandon transaction" enablement (§4.5 item 8): not abandoned,
-    /// unconfirmed, no InstantSend lock, and not known to be in a mempool.
+    /// unconfirmed, not coinbase, and no InstantSend lock unless the
+    /// ChainLock exception `abandon_transaction` describes holds and would
+    /// go through.
     pub can_abandon: bool,
     /// dash-qt "Resend transaction" enablement (§4.5 item 9): unconfirmed,
     /// not abandoned, not coinbase, no InstantSend lock, sent by this wallet.
@@ -201,8 +203,10 @@ impl NetworkSession {
     /// unless a transaction in a block of the SPV header chain, at or below
     /// the wallet's ChainLock whose block that chain holds, spends one of
     /// its inputs, nothing descending from it is in a block, locked or
-    /// finalized, the history load was complete and the scan has passed
-    /// the ChainLock with no replay pending. Then it is abandoned: inputs a
+    /// finalized, the wallet holds no record of it in a block or locked (in
+    /// the session it was locked in, until a restart; #329), the history
+    /// load was complete and the scan has passed the ChainLock with no
+    /// replay pending. Then it is abandoned: inputs a
     /// recorded block of that chain spends stay spent, and only inputs the
     /// wallet holds unspent from a scanned block are released.
     /// `RescanFirst` instead when all of that holds and the only inputs

@@ -92,6 +92,9 @@ export interface SendWorld {
   /** InstantSend-locked payments a ChainLocked spend beat: Abandon is offered, and refused until
    * the wallet restarts and rescans (the engine's `rescanFirst`). */
   rescanFirst: string[];
+  /** Payments of this wallet seen by their change before the coins they spent are known: the
+   * engine reports their debit as unknown (`totalDebit: null`). */
+  debitUnknown: string[];
 }
 
 export const newSendWorld = (): SendWorld => ({
@@ -104,6 +107,7 @@ export const newSendWorld = (): SendWorld => ({
   contactIndex: {},
   lockEvidence: null,
   rescanFirst: [],
+  debitUnknown: [],
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -812,7 +816,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         txid,
         isCoinbase: row.txType === "generated",
         totalCredit: d.outputs.filter((o) => o.isMine).reduce((n, o) => n + (o.amount ?? 0), 0),
-        totalDebit: d.inputs.filter((i) => i.isMine).reduce((n, i) => n + (i.amount ?? 0), 0),
+        totalDebit: world.send.debitUnknown.includes(txid) ? null : d.inputs.filter((i) => i.isMine).reduce((n, i) => n + (i.amount ?? 0), 0),
         net: row.amount,
         maturesIn: row.status.maturesIn,
         inMempool: null,

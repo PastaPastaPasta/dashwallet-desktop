@@ -579,6 +579,15 @@ pub(crate) struct SessionHub {
     /// Tests: the next abandon quits before its sweep, as at an exit.
     #[cfg(test)]
     pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: how many abandons pass before [`Self::pause_abandon`] holds one.
+    #[cfg(test)]
+    pub(crate) pause_abandon_skip: std::sync::atomic::AtomicUsize,
+    /// Tests: how long the last abandon held the wallet manager.
+    #[cfg(test)]
+    pub(crate) last_abandon_hold: Mutex<Option<std::time::Duration>>,
+    /// Tests: holds the next abandon between its plan and its sweep.
+    #[cfg(test)]
+    pub(crate) pause_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: fails the abandoned marks of the next abandon of this root,
     /// after its sweep.
     #[cfg(test)]
@@ -609,6 +618,8 @@ pub(crate) struct SessionHub {
     /// is applied wholly before the wallet leaves or not at all; taken
     /// before every other lock of the hub's.
     unloaded: Mutex<HashSet<WalletId>>,
+    /// Wallets with a Remove Unconfirmed batch whose rescan is not made yet.
+    abandon_batches: Mutex<HashMap<WalletId, usize>>,
     /// Tests: holds the next event right after its wallet's check.
     #[cfg(test)]
     pub(crate) pause_event: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
@@ -616,6 +627,24 @@ pub(crate) struct SessionHub {
 
 #[cfg(test)]
 pub(crate) type PublishedHook = Box<dyn FnOnce(crate::WalletId) -> bool + Send>;
+
+/// A Remove Unconfirmed batch in progress ([`SessionHub::abandon_batch`]).
+pub(crate) struct AbandonBatch<'a> {
+    hub: &'a SessionHub,
+    wallet: WalletId,
+}
+
+impl Drop for AbandonBatch<'_> {
+    fn drop(&mut self) {
+        let mut batches = (self.hub.abandon_batches.lock()).unwrap_or_else(|p| p.into_inner());
+        if let Some(n) = batches.get_mut(&self.wallet) {
+            *n -= 1;
+            if *n == 0 {
+                batches.remove(&self.wallet);
+            }
+        }
+    }
+}
 
 impl SessionHub {
     /// Tests: runs [`Self::on_published`], if set, for wallet `id`. A load
@@ -741,6 +770,12 @@ impl SessionHub {
             #[cfg(test)]
             fail_marks_of: Mutex::new(None),
             #[cfg(test)]
+            pause_sweep: Mutex::new(None),
+            #[cfg(test)]
+            pause_abandon_skip: Default::default(),
+            #[cfg(test)]
+            last_abandon_hold: Mutex::new(None),
+            #[cfg(test)]
             pause_metadata: Mutex::new(None),
             #[cfg(test)]
             pause_resume: Mutex::new(None),
@@ -750,6 +785,7 @@ impl SessionHub {
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),
             unloaded: Mutex::new(HashSet::new()),
+            abandon_batches: Mutex::new(HashMap::new()),
             #[cfg(test)]
             pause_event: Mutex::new(None),
         }
@@ -1017,6 +1053,28 @@ impl SessionHub {
 
     /// Forgets the in-memory state of an unloaded wallet; its name stays
     /// (the "Open Wallet" menu lists it).
+    /// Marks a Remove Unconfirmed batch of `wallet` in progress until the
+    /// returned guard drops: its abandons store rewind records it makes
+    /// only at its end, which a sync commit must leave stored meanwhile.
+    pub(crate) fn abandon_batch(&self, wallet: WalletId) -> AbandonBatch<'_> {
+        *(self
+            .abandon_batches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .entry(wallet)
+        .or_default() += 1;
+        AbandonBatch { hub: self, wallet }
+    }
+
+    /// Whether a Remove Unconfirmed batch of `wallet` is in progress.
+    pub(crate) fn abandon_batch_pending(&self, wallet: &WalletId) -> bool {
+        (self
+            .abandon_batches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .contains_key(wallet)
+    }
+
     pub(crate) fn unload_wallet(&self, id: &WalletId) {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         unloaded.insert(*id);
