@@ -19,7 +19,7 @@ import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
 import { moveFor, MOVE_COPY as M } from "../platform/move";
 import { cardView, lockKey, lockKinds, RECOVERY_COPY as C, recoveryFor, resultText, sheetRows, withoutPendingShields, type CardAction, type RecoveryModel } from "../recovery/model";
 import { SHIELDED_COPY as S, shieldedErrorText, shieldedFor } from "../shielded/flow";
-import { SHIELDED_SYNCING_TEXT, shieldedSyncing } from "../shielded/syncing";
+import { SHIELDED_SYNC_COPY, shieldedSyncing } from "../shielded/syncing";
 import { shieldedRoute, transferFor } from "../transfer/model";
 import { usePlatformHold } from "./PlatformMoveSheet";
 import { ShieldedSheet, useFormats } from "./ShieldedSheet";
@@ -65,7 +65,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
   const s = status.data ?? null;
   const shields = s?.pendingShields ?? [];
   const shieldSyncing = s !== null && shieldedSyncing(s);
-  const shieldWhy = shieldSyncing ? SHIELDED_SYNCING_TEXT : shielded.running ? S.card.why.busy : null;
+  const shieldWhy = shieldSyncing ? SHIELDED_SYNC_COPY.syncing : shielded.running ? S.card.why.busy : null;
   // A lock this version can't finish has no action: Transfer's Add to Platform names it.
   const funds = (usePendingPlatformFunds(walletId).data ?? []).map((p) => ({ p, row: fundRowView(p, fmt.duffs) })).filter(({ row }) => row.action !== null);
   const checkFailed = platformKnown && block === "failed" && !move.running;
