@@ -11,9 +11,10 @@ import { useMyUserLink } from "../../contacts/queries";
 import { CLAIM_COPY, claimErrorText } from "../../dashpay/claim";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
-import { shieldedDuffs, usePlatformAddresses, useShieldedStatus } from "../../api/queries";
-import { creditsToDuffs } from "../../api/pending";
-import { clockTime, PAY_WITH_COPY, payWithRows } from "../../dashpay/payWith";
+import { useBackend, usePoolBalances } from "../../api/queries";
+import { PAY_WITH_COPY, payWithRows } from "../../dashpay/payWith";
+import { timeText } from "../../fiat/rates";
+import { known } from "../../format/homeBalance";
 import { useLabelQuote, useNameChecks, useNameCredits, useShieldedReadiness, useUsernameCheck, useUsernameQuote } from "../../dashpay/queries";
 import {
   availabilityLine,
@@ -331,17 +332,17 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
 function PayWithStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
   useT();
   const id = useId();
+  const b = useBackend();
   const core = useUsernameQuote(walletId, true) ?? null;
-  const platform = usePlatformAddresses(walletId).data;
-  const shielded = useShieldedStatus(walletId).data;
-  const readiness = useShieldedReadiness(walletId, true);
+  const pools = usePoolBalances(walletId);
+  const readiness = useShieldedReadiness(walletId);
   const rows = payWithRows({
     core,
-    platformDuffs: platform ? creditsToDuffs(platform.credits) : null,
-    shieldedDuffs: shieldedDuffs(shielded ?? null),
+    platformDuffs: known(pools.platform) ? pools.platform : null,
+    shieldedDuffs: known(pools.shielded) ? pools.shielded : null,
     readiness,
     amount: inputs.amount,
-    clock: clockTime,
+    clock: (secs) => timeText(secs, b.locale),
     discreet: inputs.discreet,
   });
   const chosen = rows.find((r) => r.source === wiz.source);
@@ -404,13 +405,9 @@ export function WizardSteps({ wiz, walletId, inputs }: { wiz: RegistrationWizard
   useModel(wiz);
   return (
     <>
-      {wiz.step === "source" ? (
-        <PayWithStep wiz={wiz} walletId={walletId} inputs={inputs} />
-      ) : wiz.step === "name" ? (
-        <NameStep wiz={wiz} walletId={walletId} />
-      ) : (
-        <ConfirmStep wiz={wiz} walletId={walletId} inputs={inputs} />
-      )}
+      {wiz.step === "source" && <PayWithStep wiz={wiz} walletId={walletId} inputs={inputs} />}
+      {wiz.step === "name" && <NameStep wiz={wiz} walletId={walletId} />}
+      {wiz.step === "confirm" && <ConfirmStep wiz={wiz} walletId={walletId} inputs={inputs} />}
       <GrantSheet grants={wiz.grants} />
     </>
   );

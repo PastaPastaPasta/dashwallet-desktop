@@ -7,12 +7,10 @@ import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { ShieldedCheckName } from "../api/generated/ShieldedCheckName";
 import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
 import { creditsToDuffs } from "../api/pending";
-import { formatLocale, messageTable, t } from "../i18n";
+import { messageTable, t } from "../i18n";
 import { withTable } from "./status";
 
 export type PaySource = "core" | "platform" | "shielded";
-
-export const PAY_SOURCES: readonly PaySource[] = ["core", "platform", "shielded"];
 
 /** The sources this build's engine can register from: Dash wallet; Platform and Shielded once
  * their flow steps land, until then each reads "Not available on this network yet." */
@@ -67,7 +65,6 @@ export function shieldedReason(readiness: ShieldedReadiness | null, amount: (duf
     case "noUnsettledSpend":
       return PAY_WITH_COPY.unsettled;
     case "rested":
-      // No time while the clock is unknown or the first scan is not complete (F17).
       return readiness.readyAt === null ? PAY_WITH_COPY.syncing : PAY_WITH_COPY.resting(clock(readiness.readyAt));
     default:
       return PAY_WITH_COPY.syncing;
@@ -79,7 +76,6 @@ export function payWithRows(i: PayWithInputs): PaySourceRow[] {
   const live = i.live ?? LIVE_SOURCES;
   const shown = (duffs: number | null) => (duffs === null || i.discreet ? null : i.amount(duffs));
   const coreShort = i.core !== null && i.core.availableDuffs < i.core.totalDuffs ? PAY_WITH_COPY.short(i.amount(i.core.totalDuffs)) : null;
-  const shielded = shieldedReason(i.readiness, i.amount, i.clock);
   return [
     { source: "core", label: PAY_WITH_COPY.core, balance: shown(i.core?.availableDuffs ?? null), reason: coreShort },
     { source: "platform", label: PAY_WITH_COPY.platform, balance: shown(i.platformDuffs), reason: live.has("platform") ? null : PAY_WITH_COPY.notOffered },
@@ -87,12 +83,7 @@ export function payWithRows(i: PayWithInputs): PaySourceRow[] {
       source: "shielded",
       label: PAY_WITH_COPY.shielded,
       balance: shown(i.shieldedDuffs),
-      // A readiness reason first: it is true whatever this build can start.
-      reason: shielded ?? (live.has("shielded") ? null : PAY_WITH_COPY.notOffered),
+      reason: live.has("shielded") ? shieldedReason(i.readiness, i.amount, i.clock) : PAY_WITH_COPY.notOffered,
     },
   ];
 }
-
-/** HH:MM in the app's locale. */
-export const clockTime = (secs: number): string =>
-  new Intl.DateTimeFormat(formatLocale(undefined), { hour: "2-digit", minute: "2-digit" }).format(new Date(secs * 1000));

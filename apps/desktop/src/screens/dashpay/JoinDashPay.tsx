@@ -194,8 +194,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
                   {JOIN_COPY.waiting}
                 </span>
               )}
-              {/* C-funding F19: the other sources sit behind a link; the main button stays Core's. */}
-              <DashButton variant="plainBlue" data-testid="join-pay-another" disabled={model.waiting} onClick={() => wiz.chooseSource()}>
+              <DashButton variant="plainBlue" data-testid="join-pay-another" disabled={model.waiting} onClick={() => wiz.begin({ kind: "core" }, "source")}>
                 {PAY_WITH_COPY.link}
               </DashButton>
               <DashButton variant="plainBlue" data-testid="join-invitation" onClick={() => setSheet("invitation")}>

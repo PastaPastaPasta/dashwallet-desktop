@@ -113,26 +113,18 @@ export class RegistrationWizard extends Model {
     this.grants.subscribe(() => this.changed());
   }
 
-  /** Opens step 1. */
-  begin(mode: WizardMode) {
+  /** Opens step 1, or "Pay with" first, on Dash wallet (C-funding F18, F19). */
+  begin(mode: WizardMode, step: "name" | "source" = "name") {
     this.mode = mode;
-    this.step = "name";
+    this.step = step;
     this.source = "core";
-    this.picked = false;
+    this.picked = step === "source";
     this.label = "";
     this.requestInviter = true;
     this.draft = null;
     this.named = null;
     this.error = null;
     this.wedge = null;
-    this.changed();
-  }
-
-  /** "Pay another way": the "Pay with" step, on Dash wallet (F18, F19). */
-  chooseSource() {
-    this.begin({ kind: "core" });
-    this.step = "source";
-    this.picked = true;
     this.changed();
   }
 
@@ -174,7 +166,9 @@ export class RegistrationWizard extends Model {
   }
 
   back() {
-    this.step = this.step === "confirm" ? "name" : this.step === "name" && this.picked ? "source" : null;
+    if (this.step === "confirm") this.step = "name";
+    else if (this.step === "name" && this.picked) this.step = "source";
+    else this.step = null;
     this.error = null;
     this.wedge = null;
     this.grants.cancel();

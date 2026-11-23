@@ -331,11 +331,11 @@ describe("DP5-03 the claim (invitation mode)", () => {
 describe("the Pay with step (C-funding F18, F19)", () => {
   it("opens on Dash wallet every time, never the last choice (M4)", () => {
     const { wiz } = setup();
-    wiz.chooseSource();
+    wiz.begin({ kind: "core" }, "source");
     expect(wiz).toMatchObject({ step: "source", source: "core" });
     wiz.setSource("shielded");
     wiz.close();
-    wiz.chooseSource();
+    wiz.begin({ kind: "core" }, "source");
     expect(wiz.source).toBe("core");
     wiz.setSource("platform");
     wiz.begin({ kind: "core" });
@@ -344,7 +344,7 @@ describe("the Pay with step (C-funding F18, F19)", () => {
 
   it("continues to the name only from a source this build can start, and Back returns to it", () => {
     const { wiz } = setup();
-    wiz.chooseSource();
+    wiz.begin({ kind: "core" }, "source");
     for (const s of ["shielded", "platform"] as const) {
       wiz.setSource(s);
       wiz.pickSource();
@@ -369,7 +369,7 @@ describe("the Pay with step (C-funding F18, F19)", () => {
 
   it("a start through the step is the Core-funded request", async () => {
     const { wiz, api } = setup();
-    wiz.chooseSource();
+    wiz.begin({ kind: "core" }, "source");
     wiz.pickSource();
     wiz.setLabel("alice-77");
     wiz.next();

@@ -226,7 +226,7 @@ const CREATE_CREDITS = 300_000_000n;
 export function shieldedReadiness(s: ShieldedWorld | null | undefined): ShieldedReadiness {
   const active = s?.active === true;
   const synced = active && s.ready && s.scanning !== true;
-  const resting = s?.restingUntil ?? null;
+  const resting = s?.restingUntil !== undefined && s.restingUntil > secs(FIXTURE_NOW) ? s.restingUntil : null;
   const checks: [ShieldedCheckName, boolean][] = [
     ["poolActive", active],
     ["featureOn", true],

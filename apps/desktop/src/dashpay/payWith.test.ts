@@ -1,11 +1,14 @@
 // C-funding F16, F17, F19: the "Pay with" step's rows and their reasons, and the fixture's Shielded quote.
 
+import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { ShieldedCheckName } from "../api/generated/ShieldedCheckName";
 import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
 import type { UnrecordedSpend } from "../api/generated/UnrecordedSpend";
 import { costs, SHIELDED_DENOMINATION, shieldedQuote, shieldedReadiness } from "../fixture/registration";
 import { newShieldedWorld, type ShieldedWorld } from "../fixture/shielded";
+import { FIXTURE_NOW, secs } from "../fixture/wallet";
+import { dashpayKeys } from "./queries";
 import { LIVE_SOURCES, PAY_WITH_COPY, payWithRows, shieldedReason, type PayWithInputs, type PaySource } from "./payWith";
 
 const amount = (duffs: number) => `${duffs / 1e8} Dash`;
@@ -58,8 +61,9 @@ describe("Pay with rows (F19)", () => {
     expect(reasons(inputs({ core: { availableDuffs: 1_000, totalDuffs: 3_002_260 } })).core).toBe(PAY_WITH_COPY.short("0.0300226 Dash"));
   });
 
-  it("a Shielded readiness reason shows before the not-offered one", () => {
-    expect(reasons(inputs({ readiness: readiness("synced") })).shielded).toBe(PAY_WITH_COPY.syncing);
+  it("Shielded not offered here says so over any readiness reason; offered, its readiness reason", () => {
+    expect(reasons(inputs({ readiness: readiness("balance") })).shielded).toBe(PAY_WITH_COPY.notOffered);
+    expect(reasons(inputs({ readiness: readiness("balance"), live: new Set<PaySource>(["core", "shielded"]) })).shielded).toBe(PAY_WITH_COPY.short("0.03 Dash"));
   });
 });
 
@@ -94,8 +98,12 @@ describe("the fixture's Shielded quote", () => {
     expect(failed(undefined)).toBe("poolActive");
     expect(failed(world({ balance: "1000" }))).toBe("balance");
     expect(failed(world({ scanning: true }))).toBe("synced");
-    expect(shieldedReadiness(world({ restingUntil: 99 }))).toMatchObject({ readyAt: 99 });
-    expect(failed(world({ restingUntil: 99 }))).toBe("rested");
+    const later = secs(FIXTURE_NOW) + 600;
+    expect(shieldedReadiness(world({ restingUntil: later }))).toMatchObject({ readyAt: later });
+    expect(failed(world({ restingUntil: later }))).toBe("rested");
+    // A deadline passed no longer holds the notes.
+    expect(shieldedReadiness(world({ restingUntil: secs(FIXTURE_NOW) - 1 }))).toMatchObject({ readyAt: null });
+    expect(failed(world({ restingUntil: secs(FIXTURE_NOW) - 1 }))).toBeNull();
     expect(failed(world({ active: false }))).toBe("poolActive");
     expect(failed(world({ unrecorded: [{} as UnrecordedSpend] }))).toBe("noUnsettledSpend");
   });
@@ -107,3 +115,14 @@ describe("the fixture's Shielded quote", () => {
     expect(shieldedQuote("alice-77", undefined).grant.maxCredits).toBe(String(costs("alice-77").credits));
   });
 });
+
+describe("the Shielded readiness quote's cache key", () => {
+  it("is under the wallet's quotes and is no username's", async () => {
+    const client = new QueryClient();
+    client.setQueryData(dashpayKeys.shieldedReadiness("w"), "shielded");
+    for (const label of ["shielded", "funding"]) expect(client.getQueryData(dashpayKeys.labelQuote("w", label))).toBeUndefined();
+    await client.invalidateQueries({ queryKey: dashpayKeys.quote("w") });
+    expect(client.getQueryState(dashpayKeys.shieldedReadiness("w"))?.isInvalidated).toBe(true);
+  });
+});
+
