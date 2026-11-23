@@ -61,7 +61,7 @@ Sections 7 to 9 need more than one machine or account:
 | 7.6, the self-test | the GitHub CLI and permission to run workflows on the repository; no machine of yours | CI (hosted runners) |
 | 8, VoiceOver | a Mac with headphones | **real** Mac preferred: a macOS VM is enough for most checks, but its audio and the VoiceOver keys often misbehave |
 | 8, Narrator | a Windows 11 PC with headphones | VM with working audio is enough |
-| 9.1, opening an invitation | on each OS a wallet E with no DashPay identity, and two testnet invitation links made outside this app (each works once) | VM is enough |
+| 9.1, opening an invitation | on each OS two wallets, E and F, with no DashPay identity, and a testnet invitation link per OS made outside this app (each works once) | VM is enough |
 
 Run sections 7 to 9 in **other test user accounts** than the one sections 2 to 5 use: section 3 empties that
 account's data root and section 4 removes the app, and the DashPay wallets must outlive both. On Windows the
@@ -333,7 +333,8 @@ its own OS account and data root (see "What you need"):
   each OS, and so that each screen reader in 8.6 and each ignore in 9.2 has a fresh request of its own.
 
 Every step names the OS it covers. If you have only one machine, run all four wallets in accounts on it and record
-each cell of the other OS as **incomplete** (only one machine), never as covered.
+each cell of the other OS as **incomplete** (only one machine), never as covered. This rule is for the steps run by
+hand; it never applies to 7.6, which runs on hosted runners and covers both OSes whatever machines you have.
 
 Usernames, identity IDs and display names are public on Dash Platform, so they may stay in screenshots; redact the
 rest as the rules say. Write into the worksheet each wallet's username, its identity ID (My Profile ▸ **Copy
@@ -466,19 +467,24 @@ on GitHub's macOS and Windows runners against the candidate's tag. The workflow 
 regtest wallet that `dwcli` creates on the runner and a local regtest `dashd` funds. It touches neither testnet nor
 the wallets above.
 
-- [ ] Note the time, then dispatch:
+- [ ] Note the time (UTC), then dispatch:
       `gh workflow run tauri-selftest.yml --repo PastaPastaPasta/dashwallet-desktop --ref vX.Y.Z-rc.N -f os=both`.
-- [ ] Find that run:
+      The GitHub CLI prints the new run's URL when GitHub returns it
+      (`https://github.com/PastaPastaPasta/dashwallet-desktop/actions/runs/<id>`): the number at its end is the run
+      ID. Write it into the worksheet.
+- [ ] If no URL was printed, list the candidates:
       `gh run list --repo PastaPastaPasta/dashwallet-desktop --workflow tauri-selftest.yml --event workflow_dispatch --branch vX.Y.Z-rc.N --json databaseId,headSha,createdAt`.
-      Take the run created after the time you noted, and write its `databaseId` into the worksheet. Check that its
-      `headSha` is the tag's commit:
-      `gh api repos/PastaPastaPasta/dashwallet-desktop/commits/vX.Y.Z-rc.N --jq .sha` prints the same SHA.
-      If no run matches, or the SHA differs, stop: that run is not evidence for the candidate.
-- [ ] `gh run view <databaseId> --repo PastaPastaPasta/dashwallet-desktop`. Expected: both jobs, "Tauri on macos"
-      and "Tauri on windows", succeed. The job's `--selftest` step fails when the report fails
-      `ci/github/selftest-judge.jq` (all four screens recorded in light and dark, every check passed) and prints
-      the problems.
-- [ ] `gh run download <databaseId> --repo PastaPastaPasta/dashwallet-desktop`: the artifacts `tauri-macos` and
+      The run is the one created after the time you noted. If none matches, wait a minute and list again; if more
+      than one matches, stop and ask whoever else dispatched one which is yours rather than guess.
+- [ ] Check the run's commit: `gh run view <id> --repo PastaPastaPasta/dashwallet-desktop --json headSha --jq .headSha`
+      prints the same SHA as `gh api repos/PastaPastaPasta/dashwallet-desktop/commits/vX.Y.Z-rc.N --jq .sha`. If it
+      differs, stop: that run is not evidence for the candidate.
+- [ ] Wait until both jobs have finished: `gh run watch <id> --repo PastaPastaPasta/dashwallet-desktop`, or
+      `gh run view <id> --repo PastaPastaPasta/dashwallet-desktop --json status,conclusion` until `status` is
+      `completed`. Expected: `conclusion` `success`, with both jobs, "Tauri on macos" and "Tauri on windows",
+      succeeded. The job's `--selftest` step fails when the report fails `ci/github/selftest-judge.jq` (all four
+      screens recorded in light and dark, every check passed) and prints the problems.
+- [ ] Only then `gh run download <id> --repo PastaPastaPasta/dashwallet-desktop`: the artifacts `tauri-macos` and
       `tauri-windows` hold `selftest-<os>.json`, `selftest.log` and a screenshot of a second launch. Open each
       screenshot. Write the run's URL into the results.
 
@@ -628,27 +634,34 @@ it; the result is not announced.
 ### 8.6 Contacts and the bell
 
 Each reader checks a request of its own that nobody has answered yet: before you start, send one from D to A and one
-from C to B (7.2 steps 1 to 3). They stay unanswered here and go on in 9.2.
+from C to B (7.2 steps 1 to 3). They stay unanswered here and go on in 9.2. At this point A has B and C as contacts
+and D's request waiting; B has A as a contact and C's request waiting. Contacts leaves out a group with nobody in it,
+so "Pending Requests" and "Hidden" are not shown yet.
 
-- [ ] **Contacts**: the heading, **Add contact**, "Search contacts or a username", "Sort by", and the groups ("Contact
-      Requests (<n>)", "My Contacts", "Pending Requests", "Hidden (<n>)") as headings. Each row is read with its name
-      and its state ("Unverified", "Setting up" when shown). Choosing a row announces "<name>, <relation>" and the
-      detail ("Contact") follows with "Identity", "Relation", **Pay** and "Only visible to you".
+- [ ] **Contacts**: the heading, **Add contact**, "Search contacts or a username", "Sort by", and the groups
+      "Contact Requests (1)" and "My Contacts" as headings. Each row is read with its name and its state
+      ("Unverified", "Setting up" when shown). Choosing a contact announces "<name>, <relation>", and the detail
+      ("Contact") follows with "Identity", "Relation" "Contact", **Pay** and "Only visible to you". Choosing the
+      waiting sender (D on A, C on B) gives "Request received" with **Accept <name>** and **Ignore <name>**.
 - [ ] **Add contact**: the section "Add a New Contact" opens inside the page (it is not a dialog, and Escape does not
       close it); its heading is read, then **Close**, the tabs **Search**, **Scan** and **My QR**, and **Search
-      username** with its label. Type a username and select a result: its card is read with **Send Contact
-      Request** (do not send). Choose **Close**. Expected: the section goes and the focus is back on **Add
-      contact**.
+      username** with its label. Type the waiting sender's username and select the result. Expected: its card is
+      read, with **Show Request** (the request is already there, so there is no Send Contact Request). Choose **Show
+      Request**. Expected: the section closes and the sender's detail shows "Request received", without the focus
+      being lost. Open **Add contact** again and choose **Close**. Expected: the section goes and the focus is back
+      on **Add contact**.
 - [ ] The bell: announced as "Notifications, <n> unread" and as a button that opens a popup. Open it with Space or
       Return. Expected: the focus moves to the popover's "Notifications" heading; the waiting request is read with
       **Accept <name>** and **Ignore <name>**; **See all notifications** at the end. Press Escape. Expected: the
       popover closes and the focus is back on the bell. The popover is not modal: Tab past its last control closes
       it, which is expected.
 - [ ] Open the bell again and choose **Ignore <name>** for that request. Expected: "Request ignored. You can find it
-      under Hidden." announced without the focus being lost. Section 9.2 goes on from here.
+      under Hidden." announced without the focus being lost. In Contacts, "Contact Requests" is gone and the heading
+      "Hidden (1)" is read. Section 9.2 goes on from here.
 
 **Fail if:** the bell has no name or does not say it is unread; the popover's buttons do not name the person;
-Escape does not close the popover or the focus is lost after it; closing Add a New Contact loses the focus.
+Escape does not close the popover or the focus is lost after it; **Show Request** or closing Add a New Contact loses
+the focus.
 
 ### 8.7 Settings
 
@@ -676,27 +689,31 @@ an issue or the results; refer to it as "link 1" or "link 2".
 
 - [ ] Creating an invitation: not in this build ("Cuts applied 2026-11-19" in [`PLAN-1.0.md`](../PLAN-1.0.md)
       moves it to 1.0.x; claiming one stays). Skip and record **skipped (not in this build)**.
-- [ ] Opening one needs testnet invitation links made outside this app, for example by a mobile Dash wallet that
-      creates invitations on testnet, and each link works once: two links cover both OSes. With none, record
-      **skipped (no invitation link)**; with one, run it on the Mac and record Windows **incomplete** (one link).
-- [ ] In a new account on each OS, make a new wallet E with no DashPay identity (section 7's "Before you start",
-      without the faucet). On the Mac's E: **Join DashPay** ▸ **Have an invitation?**. Expected: the sheet "Open an
-      invitation" with the field **Invitation link**. Paste link 1 and choose **Open invitation**.
+- [ ] Opening one needs a testnet invitation link made outside this app, for example by a mobile Dash wallet that
+      creates invitations on testnet; each link works once. With none, record **skipped (no invitation link)** for
+      both results. With one link, run the steps below on whichever OS you have it on, and record the other OS's
+      two results **incomplete** (one link); with two, run them once on each OS, one link each.
+- [ ] On that machine, in two new accounts, make two wallets with no DashPay identity, E and F (section 7's "Before
+      you start", without the faucet). On E: **Join DashPay** ▸ **Have an invitation?**. Expected: the sheet "Open
+      an invitation" with the field **Invitation link**. Paste the link and choose **Open invitation**.
 - [ ] Expected: "DashPay invitation" (or "You have been invited to DashPay"), "Checking the invitation…", then
       either "Invited by" with the inviter's username, or "This invitation does not name who sent it." (an
       invitation may leave the inviter out), and **Accept invitation** and **Not now**. Choose **Accept
       invitation**, choose a username as in 7.1 step 3, and confirm. Expected: "Paid by the invitation: nothing is
       paid from this wallet." and **Claim invitation**; with a named inviter also the checkbox "Send a contact
-      request to <inviter>". Choose **Claim invitation**.
+      request to <inviter>". Choose **Claim invitation**, and if the **Authorize** sheet asks for the passphrase,
+      enter it and choose **Authorize**.
 - [ ] Expected: "Welcome to DashPay, @<name>", and with a named inviter "A contact request was sent to your
-      inviter."; E's balance is still zero.
-- [ ] Reuse: on the PC's E, which has no identity yet, open link 1. Expected: "This invitation has already been
-      used". (Opening it in the Mac's E would hit "This wallet already has a DashPay identity. …" first and prove
-      nothing.)
-- [ ] On the PC's E, open link 2 and claim it as above.
+      inviter."; E's balance is still zero. This is the **Open invitation** result.
+- [ ] Reuse, on F, which still has no identity: **Join DashPay** ▸ **Have an invitation?**, paste the same link,
+      **Open invitation**. Expected: "This invitation has already been used" with "Each invitation creates one
+      identity. Ask for a new one." and **Dismiss invitation**. Choose **Dismiss invitation**. Expected: back on the
+      Join page, with no invitation kept. This is the **Reuse refused** result. (Trying the link again in E would hit
+      "This wallet already has a DashPay identity. …" first and prove nothing.)
 
 **Fail if:** a valid link is refused ("This invitation link is not valid"); the claim pays anything from E; the
-claim ends without an identity and a name; a used invitation is accepted by a wallet with no identity.
+claim ends without an identity and a name; a used invitation is accepted by a wallet with no identity;
+**Dismiss invitation** does not return to the Join page.
 
 ### 9.2 Ignore a contact request (A on macOS, B on Windows; the app has no separate Decline)
 
@@ -763,8 +780,9 @@ the other side still loads it with "Load contact pictures" off; removing it does
 - [ ] Choose **Withdraw**. Expected: the sheet "Withdraw credits" with two choices, **Max** ("Everything but the
       network's fee.", chosen when the sheet opens) and **Amount**, and **To** with the wallet's receive address.
       Choose **Amount**. Expected: the field **Amount (<unit>)**. Enter 0.01 tDASH in the unit it names (`0.01` in
-      tDASH, `10` in mtDASH; if the sheet says "Withdraw between <min> and <max>.", an amount in that range) and
-      choose **Continue**. Expected: "Withdraw", "Network fee", "Taken from credits", "You receive about" and "To".
+      tDASH, `10` in mtDASH) and choose **Continue**. Expected: the fee is worked out ("Working out the fee…"), then
+      "Withdraw", "Network fee", "Taken from credits", "You receive about" and "To". If it says instead "Withdraw
+      between <min> and <max>.", choose **Back**, enter an amount in that range and choose **Continue** again.
       Choose **Confirm & withdraw** (and **Authorize** if asked).
 - [ ] Expected: "Withdrawing…", then "Withdrawal queued". Choose **Done**. My Profile ▸ "Withdrawals" lists
       "Withdrawal of <amount>" as "Pending", then "Sent"; the payment reaches the address in **Activity** (minutes,
@@ -804,8 +822,8 @@ Uninstall, one row per machine (section 4, after its last run):
 
 DashPay, one row per wallet (section 7). A cell for a step the wallet does not do is —; a resume that finished
 before the app could be quit is **unexercised**; a cell of an OS that was not available is **incomplete** (only one
-machine). The pay cell is the payment this wallet sent, and the profile cell is this wallet's edit as the other
-wallet saw it:
+machine), a rule for the steps run by hand and never for the self-test table below. The pay cell is the payment this
+wallet sent, and the profile cell is this wallet's edit as the other wallet saw it:
 
 | Wallet, machine, OS | Register (7.1) | Resume (7.1, 6) | Request sent (7.2) | Accepted from the bell (7.3) | Pay the other (7.4) | Profile seen on the other side (7.5) |
 |---|---|---|---|---|---|---|
@@ -814,7 +832,8 @@ wallet saw it:
 | C, PC …, Windows … | | — | | — | — | — |
 | D, Mac …, macOS … | | — | — | — | — | — |
 
-Self-test (7.6), one row per OS, with the run's URL:
+Self-test (7.6), one row per OS, with the run's ID and URL. It runs on hosted runners, so a machine you lack never
+makes these cells incomplete; only 7.6's own rerun rule does:
 
 | OS | Run URL | Result |
 |---|---|---|
@@ -832,8 +851,8 @@ Fixture-only flows in the real app (section 9), one row per OS:
 
 | OS, machine, wallets | Create invitation (9.1) | Open invitation (9.1) | Reuse refused (9.1) | Ignore and unignore (9.2) | Alias and note (9.3) | Avatar from a file (9.4) | Avatar by URL (9.4) | Top up (9.5) | Withdraw (9.5) |
 |---|---|---|---|---|---|---|---|---|---|
-| macOS, Mac …, A and E | skipped (not in this build) | | — | | | skipped (not in this build) | | | |
-| Windows, PC …, B and E | skipped (not in this build) | | | | | skipped (not in this build) | | | |
+| macOS, Mac …, A, E and F | skipped (not in this build) | | | | | skipped (not in this build) | | | |
+| Windows, PC …, B, E and F | skipped (not in this build) | | | | | skipped (not in this build) | | | |
 
 A step this build does not have is **skipped (not in this build)**; any other skipped cell names its reason (for
 example "no invitation link"). The report is **incomplete** while any row is outstanding or pending, a cell is empty
