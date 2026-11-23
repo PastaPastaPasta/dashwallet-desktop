@@ -161,9 +161,12 @@ function LabelEditor({ walletId, txid, label }: { walletId: string; txid: string
 
 /** The abandon confirmation. Whether the wallet spent inputs decides it (`totalDebit`, the engine's
  * `from_me`), not the amount's sign: a payment to yourself nets only the fee but spends this wallet's
- * coins. An unknown debit takes the spending text. */
-export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit">): string {
-  return x.totalDebit === 0 ? t("activity.abandon.notSpending") : t("activity.abandon.spending");
+ * coins. An unknown debit takes the spending text. A debit of none with an input whose coin the
+ * engine holds no record of (`inputsUnresolved`) may still be a payment sent from this wallet on
+ * another device, so it says what sending it again would do. */
+export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inputsUnresolved">): string {
+  if (x.totalDebit !== 0) return t("activity.abandon.spending");
+  return x.inputsUnresolved ? t("activity.abandon.unknownInputs") : t("activity.abandon.notSpending");
 }
 
 /** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`

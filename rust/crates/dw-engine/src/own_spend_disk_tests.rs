@@ -2501,7 +2501,8 @@ fn abandoning_through_an_abandoned_child_leaves_its_change_unclaimed() {
 /// A payment of this wallet that another device made, seen by its change
 /// before the wallet knows the coins it spent: its debit is unknown, so the
 /// Abandon confirmation warns of paying twice. A payment someone else
-/// funded to a receiving address keeps a known debit of nothing.
+/// funded to a receiving address keeps a known debit of nothing, with its
+/// inputs unresolved: it may be this wallet's, sent from another device.
 #[test]
 fn a_payment_seen_by_its_change_before_its_inputs_has_an_unknown_debit() {
     let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
@@ -2529,14 +2530,17 @@ fn a_payment_seen_by_its_change_before_its_inputs_has_an_unknown_debit() {
     mempool(&engine, &session, id, &mine);
     let theirs = funding(10, &[fresh_address(&engine, &session, id)], COIN);
     mempool(&engine, &session, id, &theirs);
-    let debit = |txid: Txid| {
-        engine
-            .block_on(session.tx_detail_extras(id, txid))
-            .unwrap()
-            .total_debit
+    let extras = |txid: Txid| {
+        let x = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
+        (x.total_debit, x.inputs_unresolved)
     };
+    let debit = |txid: Txid| extras(txid).0;
     assert_eq!(debit(mine.txid()), None, "a spend whose inputs are unknown");
-    assert_eq!(debit(theirs.txid()), Some(0), "an incoming payment");
+    assert_eq!(
+        extras(theirs.txid()),
+        (Some(0), true),
+        "an incoming payment"
+    );
 
     // A payment this app sent to one of its own receiving addresses, with no
     // change, its coins not known yet: its sent mark makes the debit unknown.
@@ -2548,7 +2552,11 @@ fn a_payment_seen_by_its_change_before_its_inputs_has_an_unknown_debit() {
         ..funding(11, &[], 0)
     };
     mempool(&engine, &session, id, &to_self);
-    assert_eq!(debit(to_self.txid()), Some(0), "no sent mark yet");
+    assert_eq!(
+        extras(to_self.txid()),
+        (Some(0), true),
+        "custom change to a receiving address, no sent mark yet"
+    );
     let (scope, key, coin) = (
         id.to_string(),
         format!("{}{}", crate::tx_actions::SENT_PREFIX, to_self.txid()),

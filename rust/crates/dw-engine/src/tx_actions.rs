@@ -75,6 +75,10 @@ pub struct TxDetailExtras {
     pub is_coinbase: bool,
     pub total_credit: u64,
     pub total_debit: Option<u64>,
+    /// Some input spends a coin this wallet holds no record of: another
+    /// party's, or this wallet's whose funding it has not seen. The debit
+    /// cannot tell those apart.
+    pub inputs_unresolved: bool,
     pub net: i64,
     pub matures_in: Option<u32>,
     pub in_mempool: Option<bool>,
@@ -898,6 +902,7 @@ impl NetworkSession {
                 is_coinbase: f.coinbase,
                 total_credit: f.credit,
                 total_debit: (!debit_unknown).then_some(f.debit),
+                inputs_unresolved: f.inputs_unresolved,
                 net: i64::try_from(f.credit).unwrap_or(i64::MAX)
                     - i64::try_from(f.debit).unwrap_or(i64::MAX),
                 matures_in: f.matures_in,

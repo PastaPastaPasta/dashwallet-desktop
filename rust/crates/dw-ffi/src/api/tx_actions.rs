@@ -16,6 +16,9 @@ pub struct TxDetailExtras {
     /// Sum of this wallet's inputs ("Total debit"); `None` when an input
     /// value is unknown.
     pub total_debit: Option<u64>,
+    /// Some input spends a coin this wallet holds no record of: another
+    /// party's, or this wallet's whose funding it has not seen.
+    pub inputs_unresolved: bool,
     /// "Net amount".
     pub net: i64,
     /// Immature coinbase: blocks until mature ("matures in %n more block(s)").
@@ -182,6 +185,7 @@ impl NetworkSession {
             is_coinbase: x.is_coinbase,
             total_credit: x.total_credit,
             total_debit: x.total_debit,
+            inputs_unresolved: x.inputs_unresolved,
             net: x.net,
             matures_in: x.matures_in,
             in_mempool: x.in_mempool,

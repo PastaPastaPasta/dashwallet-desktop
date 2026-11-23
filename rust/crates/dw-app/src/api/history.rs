@@ -39,6 +39,9 @@ pub struct TxDetailExtrasInfo {
     pub total_credit: u64,
     /// Sum of this wallet's inputs; `null` when an input value is unknown.
     pub total_debit: Option<u64>,
+    /// Some input spends a coin this wallet holds no record of: another
+    /// party's, or this wallet's whose funding it has not seen.
+    pub inputs_unresolved: bool,
     /// Signed duffs.
     pub net: i64,
     /// Immature coinbase: blocks until it matures.
@@ -62,6 +65,7 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             is_coinbase,
             total_credit,
             total_debit,
+            inputs_unresolved,
             net,
             matures_in,
             in_mempool,
@@ -76,6 +80,7 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             is_coinbase,
             total_credit,
             total_debit,
+            inputs_unresolved,
             net,
             matures_in,
             in_mempool,

@@ -11514,6 +11514,11 @@ public struct TxDetailExtras: Equatable, Hashable {
      */
     public let totalDebit: UInt64?
     /**
+     * Some input spends a coin this wallet holds no record of: another
+     * party's, or this wallet's whose funding it has not seen.
+     */
+    public let inputsUnresolved: Bool
+    /**
      * "Net amount".
      */
     public let net: Int64
@@ -11562,6 +11567,10 @@ public struct TxDetailExtras: Equatable, Hashable {
          * value is unknown.
          */totalDebit: UInt64?, 
         /**
+         * Some input spends a coin this wallet holds no record of: another
+         * party's, or this wallet's whose funding it has not seen.
+         */inputsUnresolved: Bool, 
+        /**
          * "Net amount".
          */net: Int64, 
         /**
@@ -11594,6 +11603,7 @@ public struct TxDetailExtras: Equatable, Hashable {
         self.isCoinbase = isCoinbase
         self.totalCredit = totalCredit
         self.totalDebit = totalDebit
+        self.inputsUnresolved = inputsUnresolved
         self.net = net
         self.maturesIn = maturesIn
         self.inMempool = inMempool
@@ -11624,6 +11634,7 @@ public struct FfiConverterTypeTxDetailExtras: FfiConverterRustBuffer {
                 isCoinbase: FfiConverterBool.read(from: &buf), 
                 totalCredit: FfiConverterUInt64.read(from: &buf), 
                 totalDebit: FfiConverterOptionUInt64.read(from: &buf), 
+                inputsUnresolved: FfiConverterBool.read(from: &buf), 
                 net: FfiConverterInt64.read(from: &buf), 
                 maturesIn: FfiConverterOptionUInt32.read(from: &buf), 
                 inMempool: FfiConverterOptionBool.read(from: &buf), 
@@ -11640,6 +11651,7 @@ public struct FfiConverterTypeTxDetailExtras: FfiConverterRustBuffer {
         FfiConverterBool.write(value.isCoinbase, into: &buf)
         FfiConverterUInt64.write(value.totalCredit, into: &buf)
         FfiConverterOptionUInt64.write(value.totalDebit, into: &buf)
+        FfiConverterBool.write(value.inputsUnresolved, into: &buf)
         FfiConverterInt64.write(value.net, into: &buf)
         FfiConverterOptionUInt32.write(value.maturesIn, into: &buf)
         FfiConverterOptionBool.write(value.inMempool, into: &buf)

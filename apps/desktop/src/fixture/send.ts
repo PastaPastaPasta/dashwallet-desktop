@@ -817,6 +817,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         isCoinbase: row.txType === "generated",
         totalCredit: d.outputs.filter((o) => o.isMine).reduce((n, o) => n + (o.amount ?? 0), 0),
         totalDebit: world.send.debitUnknown.includes(txid) ? null : d.inputs.filter((i) => i.isMine).reduce((n, i) => n + (i.amount ?? 0), 0),
+        inputsUnresolved: d.inputs.some((i) => !i.isMine),
         net: row.amount,
         maturesIn: row.status.maturesIn,
         inMempool: null,
