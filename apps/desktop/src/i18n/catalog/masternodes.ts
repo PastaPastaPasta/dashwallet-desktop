@@ -797,6 +797,7 @@ export const masternodes = {
       copied: "Copied",
       saveFile: "Save to file…",
       pasteReply: "Paste a reply",
+      ask: "Enter your passphrase to sign your consent.",
     },
     importPanel: {
       received: "You pasted message {code}. Ask the sender to read their code: it should be {code}.",

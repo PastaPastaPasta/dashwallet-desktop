@@ -46,7 +46,8 @@ export interface OpenSession {
 export function useSharedText(network: NetworkInfo) {
   const shown = useDisplay(network);
   const dash = (d: number) => shown.withUnit(d);
-  return { shown, dash, networkName: network.displayName };
+  const t = useT();
+  return { shown, dash, networkName: network.kind === "devnet" ? network.dirName : t(`network.${network.kind}`) };
 }
 
 /** `sh-start`: start one, join or continue, sessions in progress (§2.1). */
@@ -234,7 +235,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const replyId = useId();
   const s = pick(query.data, latest);
   const debit = s?.debit ?? 0;
-  const credential = useCredential(wallet.walletId, t("masternodes.governance.credential.ask"), 0);
+  const credential = useCredential(wallet.walletId, t(`${P}.session.ask`), 0);
 
   if (!s) return null;
   const v = renderSession(s);
