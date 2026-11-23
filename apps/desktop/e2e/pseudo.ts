@@ -1,4 +1,4 @@
-import { expect, type Page, type TestInfo } from "@playwright/test";
+import { expect, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { artifactPath, fontsReady, type Theme } from "./helpers";
 
@@ -117,3 +117,40 @@ export async function checkArea(page: Page, info: TestInfo, theme: Theme, [lang,
     }
   }
 }
+
+/** Under a right-to-left language a number is read before the word after it: it sits right of
+ * it. `re`'s first group is the number's first digit, its second the word. */
+export async function readFirst(root: Locator, what: string, re: RegExp) {
+  await expect(root).toContainText(re);
+  const at = await root.evaluate(
+    (el, [source, flags]) => {
+      const re = new RegExp(source, flags);
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const nodes: Text[] = [];
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
+      const text = nodes.map((n) => n.data).join("");
+      const m = re.exec(text);
+      if (!m?.indices) return null;
+      const left = (g: number) => {
+        let i = m.indices![g]![0];
+        for (const n of nodes) {
+          if (i < n.data.length) {
+            const r = document.createRange();
+            r.setStart(n, i);
+            r.setEnd(n, i + 1);
+            return r.getBoundingClientRect().left;
+          }
+          i -= n.data.length;
+        }
+        return 0;
+      };
+      return [left(1), left(2)] as [number, number];
+    },
+    [re.source, `${re.flags}d`] as const,
+  );
+  expect(at, what).not.toBeNull();
+  expect(at![0], what).toBeGreaterThan(at![1]);
+}
+
+const MARKS = "[⁦-⁩‪-‮]*";
+export const counted = (word: string, reversed: string) => new RegExp(`(\\p{Nd})[\\p{Nd}.,٫٬]*${MARKS} ?${MARKS}(${word}|${reversed})`, "u");
