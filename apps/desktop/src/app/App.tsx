@@ -157,8 +157,8 @@ function WalletChrome({
 
   const masternodesItem = useMasternodesItem(wallet?.walletId ?? null);
   useEffect(() => {
-    if (route === "masternodes" && masternodesItem.settled && !masternodesItem.shown) navigate("home");
-  }, [route, masternodesItem.settled, masternodesItem.shown]);
+    if (route === "masternodes" && !masternodesItem.shown) navigate("home");
+  }, [route, masternodesItem.shown]);
 
   const walletsBlocked =
     walletsLoading ??
