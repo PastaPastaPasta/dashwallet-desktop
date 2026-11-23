@@ -718,6 +718,49 @@ export const masternodes = {
       platformUnavailable: "Couldn't reach Dash Platform. Try again in a moment.",
     },
   },
+  /** Masternode keys (IOS-083, MG-10 §1.5, MG-00 D7): the keychain's keys and the one reveal of a secret. */
+  keys: {
+    title: "Masternode keys",
+    /** The Masternodes tab's More menu item that opens the sheet. */
+    open: "Masternode keys…",
+    intro: "Keys this wallet derives for masternodes it registers.",
+    matchedCount: { one: "{count} matched to a known masternode.", other: "{count} matched to known masternodes." },
+    roles: { owner: "Owner", voting: "Voting", operator: "Operator", platform_node: "Platform node" },
+    rolesLabel: "Key role",
+    loading: "Loading keys…",
+    /** `n` is the keypair's number, from 1. */
+    keypair: "Keypair {n}",
+    /** `name` is the masternode's name, `service` its IP and port. */
+    matchedTo: "Matched to {name}",
+    matchedToService: "Matched to {name} · {service}",
+    notMatched: "Not matched to a known masternode",
+    show: "Show",
+    hide: "Hide",
+    showMore: "Show more",
+    path: "Derivation path",
+    address: "Address",
+    publicKey: "Public key",
+    legacyPublicKey: "Public key, legacy BLS scheme",
+    nodeId: "Node ID",
+    privateKey: "Private key",
+    hidden: "Hidden",
+    reveal: "Reveal…",
+    revealShow: "Show private key",
+    revealing: "Checking…",
+    /** Under the private key before a reveal, per role. */
+    revealNote: {
+      owner: "Anyone with this key controls the masternode's registration.",
+      voting: "Anyone with this key can vote with the masternode.",
+      operator: "Anyone with this key runs the masternode's server. Copy it only to your own server.",
+      platform_node: "Anyone with this key runs the evonode's Platform node. Copy it only to your own server.",
+    },
+    needsPassphrase: "Needs your passphrase.",
+    wif: "Private key (WIF)",
+    hex: "Private key (hex)",
+    tenderdash: "Tenderdash key",
+    hideSecret: "Hide private key",
+    watchOnly: "This wallet can't show masternode keys: it holds no seed.",
+  },
   withdraw: {
     /** An evonode credit withdrawal whose identity data the wallet could not verify (H-09). */
     unverified: "Dash Wallet can't check this masternode's details yet. Try again in a few minutes.",

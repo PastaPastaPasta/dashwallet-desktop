@@ -1,0 +1,132 @@
+// Masternode keys (MG-10 §1.5, D8): matching a keychain key to known masternodes, and the reveal
+// behind the RevealSecret gate, which follows Show Recovery Phrase's lock policy.
+
+import { describe, expect, it } from "vitest";
+import type { MasternodeDetail } from "../api/generated/MasternodeDetail";
+import type { MasternodeKeyInfo } from "../api/generated/MasternodeKeyInfo";
+import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
+import type { RevealedMasternodeKey } from "../api/generated/RevealedMasternodeKey";
+import { appError, FakeWorld, status, WALLET_A } from "../onboarding/testWorld";
+import { KeyRevealModel, keyMatches } from "./keys";
+
+const key = (role: MasternodeKeyRoleName, over: Partial<MasternodeKeyInfo> = {}): MasternodeKeyInfo => ({
+  role,
+  index: 0,
+  derivationPath: "m/9'/1'/3'/1'/0'",
+  address: null,
+  publicKeyHex: "aa".repeat(48),
+  legacyPublicKeyHex: null,
+  platformNodeId: null,
+  ...over,
+});
+
+const detail = (hash: string, over: { owner?: string; voting?: string; operator?: string; node?: string; service?: string }): MasternodeDetail =>
+  ({
+    row: { proTxHash: hash, service: over.service ?? null },
+    list: over.operator || over.voting || over.node ? { operatorPublicKey: over.operator ?? "", votingAddress: over.voting ?? "", platformNodeId: over.node ?? null, service: over.service ?? null } : null,
+    registration: over.owner ? { ownerAddress: over.owner, votingAddress: null } : null,
+  }) as unknown as MasternodeDetail;
+
+const name = (d: MasternodeDetail) => `node ${d.row.proTxHash}`;
+
+describe("matching keys to known masternodes (D8)", () => {
+  const nodes = [
+    detail("h1", { owner: "yOwner1", voting: "yVote1", operator: "bb".repeat(48), service: "203.0.113.7:19999" }),
+    detail("h2", { voting: "yVote2", operator: "cc".repeat(48), node: "ab12" }),
+  ];
+
+  it("matches owner and voting keys by address, case aside", () => {
+    expect(keyMatches(key("owner", { address: "yowner1" }), nodes, name)).toEqual([{ proTxHash: "h1", name: "node h1", service: "203.0.113.7:19999" }]);
+    expect(keyMatches(key("voting", { address: "yVote2" }), nodes, name).map((m) => m.proTxHash)).toEqual(["h2"]);
+    expect(keyMatches(key("owner", { address: "yVote1" }), nodes, name)).toEqual([]);
+  });
+
+  it("matches an operator key by either BLS form", () => {
+    expect(keyMatches(key("operator", { publicKeyHex: "bb".repeat(48) }), nodes, name).map((m) => m.proTxHash)).toEqual(["h1"]);
+    expect(keyMatches(key("operator", { legacyPublicKeyHex: "cc".repeat(48) }), nodes, name).map((m) => m.proTxHash)).toEqual(["h2"]);
+    expect(keyMatches(key("operator"), nodes, name)).toEqual([]);
+  });
+
+  it("matches a platform node key by node id", () => {
+    expect(keyMatches(key("platform_node", { platformNodeId: "AB12" }), nodes, name).map((m) => m.proTxHash)).toEqual(["h2"]);
+    expect(keyMatches(key("platform_node", { platformNodeId: "ffff" }), nodes, name)).toEqual([]);
+  });
+});
+
+const SECRET: RevealedMasternodeKey = { privateKeyHex: "11".repeat(32), wif: "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy", tenderdashKey: null };
+
+class KeysWorld extends FakeWorld {
+  reveals: { role: string; index: number; grant: string }[] = [];
+  revealFails = false;
+  mnRevealKey = async (_wallet: string, role: MasternodeKeyRoleName, index: number, grant: string) => {
+    this.reveals.push({ role, index, grant });
+    if (this.revealFails) throw appError("masternode.grant_invalid");
+    return SECRET;
+  };
+}
+
+function world(encrypted = true) {
+  const w = new KeysWorld();
+  w.status = status({ state: encrypted ? "unlocked" : "unencrypted", encrypted, walletsWithSecrets: [WALLET_A] });
+  return w;
+}
+
+describe("revealing a masternode key", () => {
+  it("asks for the passphrase on an encrypted vault and reveals with a revealSecret grant", async () => {
+    const w = world();
+    const m = new KeyRevealModel(w, WALLET_A, "operator", 3);
+    await m.load();
+    expect(m.step).toBe("hidden");
+    await m.reveal("");
+    expect(m.secret).toBeNull();
+    expect(w.authorizations).toEqual([]);
+    await m.reveal("wrong");
+    expect(m.secret).toBeNull();
+    await m.reveal("right");
+    expect(m.step).toBe("shown");
+    expect(m.secret).toEqual(SECRET);
+    // The wrong passphrase was tried too, and counted by the vault, as the lock screen's attempts are.
+    expect(w.authorizations).toEqual(Array(2).fill({ kind: "revealSecret", walletId: WALLET_A, credential: "passphrase" }));
+    expect(w.reveals).toMatchObject([{ role: "operator", index: 3 }]);
+  });
+
+  it("needs no passphrase on an unencrypted vault", async () => {
+    const w = world(false);
+    const m = new KeyRevealModel(w, WALLET_A, "owner", 0);
+    await m.load();
+    await m.reveal("");
+    expect(m.secret).toEqual(SECRET);
+    expect(w.authorizations).toEqual([{ kind: "revealSecret", walletId: WALLET_A, credential: "unencrypted" }]);
+  });
+
+  it("drops the secret on hide and on dispose", async () => {
+    const w = world(false);
+    const m = new KeyRevealModel(w, WALLET_A, "owner", 0);
+    await m.load();
+    await m.reveal("");
+    m.hide();
+    expect(m.secret).toBeNull();
+    expect(m.step).toBe("hidden");
+    await m.reveal("");
+    m.dispose();
+    expect(m.secret).toBeNull();
+  });
+
+  it("keeps nothing from a reveal that finishes after the panel closed, and revokes a grant the reveal did not use", async () => {
+    const w = world(false);
+    const m = new KeyRevealModel(w, WALLET_A, "voting", 1);
+    await m.load();
+    const pending = m.reveal("");
+    m.dispose();
+    await pending;
+    expect(m.secret).toBeNull();
+    w.revealFails = true;
+    const m2 = new KeyRevealModel(w, WALLET_A, "voting", 1);
+    await m2.load();
+    await m2.reveal("");
+    expect(m2.secret).toBeNull();
+    expect(m2.step).toBe("hidden");
+    expect(m2.error).not.toBeNull();
+    expect(w.revoked).toEqual(["grant-1", "grant-2"]);
+  });
+});

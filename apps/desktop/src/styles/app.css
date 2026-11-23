@@ -5645,6 +5645,33 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-m);
 }
 
+/* Masternode keys (MG-10 §1.5): one row per keypair, the open one with its facts. */
+.mg-key-list {
+  margin: var(--dw-space-m) 0;
+  padding: 0 var(--dw-space-m);
+  list-style: none;
+}
+
+.mg-key-row {
+  padding: var(--dw-space-s) 0;
+}
+
+.mg-key-row + .mg-key-row {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.mg-key-secret {
+  display: grid;
+  gap: var(--dw-space-xs);
+  justify-items: start;
+}
+
+.mg-key-secret-line {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
 /* Votes bar: yes / no / abstain segments by weight, with the funding threshold as a tick. */
 .mg-votebar {
   position: relative;
