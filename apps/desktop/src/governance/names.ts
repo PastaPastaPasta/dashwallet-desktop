@@ -11,37 +11,23 @@ import type { NameRejectionName } from "../api/generated/NameRejectionName";
 import type { NameVoteCast } from "../api/generated/NameVoteCast";
 import type { NameVoter } from "../api/generated/NameVoter";
 import type { NameVoterState } from "../api/generated/NameVoterState";
-import { governanceErrorText, nodeName, shortDate, shortHash, spanLong, type ChipView } from "./model";
+import { withTable } from "../dashpay/status";
+import { messageTable, t } from "../i18n";
+import { dateTime, governanceErrorText, nodeName, shortDate, shortHash, spanLong, type ChipView } from "./model";
+
+const P = "masternodes.names";
 
 /** A contest ending within this reads "Ends in …" on its row (D7). */
 const ENDING_SOON_SECS = 86_400;
 
-export const NameText = {
-  tab: "Username voting",
-  intro:
-    "When more than one identity asks for the same username, masternodes vote on who gets it. When voting ends, the contender with the most votes gets the name, unless Lock has more votes: then nobody does.",
-  search: "Search usernames",
-  browsingOnly: "Browsing only.",
-  browsingOnlyText: "This wallet holds no masternode voting keys, so it can read these votes but not cast them.",
-  watchOnly: "Watch-only wallet.",
-  watchOnlyText: "It shows the votes on usernames. Voting needs the wallet that holds the voting keys.",
-  voteWatchOnly: "Voting needs the wallet that holds the voting keys",
-  noVoters: "No masternode in this wallet can vote on usernames",
-  empty: "No usernames are being voted on",
-  emptyHelp: "A vote starts when a second identity asks for a name someone has asked for.",
-  loading: "Reading the votes on usernames from Platform…",
-  failed: "Couldn't read the votes on usernames",
-  /** A later read failed: the tab keeps the last one it had (D25). */
-  stale: "These votes may be out of date.",
-  ended: "Voting on this name has ended",
-  tryAgain: "Try again",
-  limitNote: (allowed: number) =>
-    `Each masternode has ${allowed} votes per username: its first vote and ${allowed - 1} changes. This wallet counts the votes it sent, so votes sent from another wallet aren't included.`,
-  privacy: "Voting with several masternodes together shows that one person controls them. Choose fewer to keep them unlinked.",
-  partial: "Platform lists the first 100 contenders of this name. Only those can get votes from this wallet.",
-  normalized: "Usernames are shown as Platform compares them: o reads as 0, and i and l as 1.",
-  counts: "The tally updates as Platform takes the votes.",
-} as const;
+export const NameText = withTable(
+  messageTable(P, [
+    "tab", "intro", "search", "browsingOnly", "browsingOnlyText", "watchOnly", "watchOnlyText",
+    "voteWatchOnly", "noVoters", "empty", "emptyHelp", "loading", "failed", "stale", "ended", "endedSentence",
+    "tryAgain", "privacy", "partial", "normalized", "counts",
+  ]),
+  { limitNote: (allowed: number) => t(`${P}.limitNote`, { count: allowed, changes: allowed - 1 }) },
+);
 
 // ---------------------------------------------------------------- names and choices
 
@@ -64,16 +50,17 @@ export function choiceText(c: NameChoice): string {
     case "towardsIdentity":
       return shortIdentity(c.identity);
     case "lock":
-      return "Lock";
+      return t(`${P}.lock`);
     case "abstain":
-      return "Abstain";
+      return t(`${P}.abstain`);
   }
 }
 
 /** The vote button's label: "Vote for 8ZtW…R97P", "Vote Lock", "Vote Abstain". */
 export function voteButtonText(c: NameChoice | null): string {
-  if (c === null) return "Vote";
-  return c.kind === "towardsIdentity" ? `Vote for ${choiceText(c)}` : `Vote ${choiceText(c)}`;
+  if (c === null) return t(`${P}.vote`);
+  if (c.kind === "towardsIdentity") return t(`${P}.voteFor`, { choice: choiceText(c) });
+  return c.kind === "lock" ? t(`${P}.voteLock`) : t(`${P}.voteAbstain`);
 }
 
 /** A choice as a stable key, for radio values and React keys. */
@@ -93,7 +80,7 @@ export function voterState(v: NameVoter, label: string): NameVoterState {
 /** "3 votes left", "One vote left", "No votes left" (Android's wording; a lower bound, MG-07 D6). */
 export function votesLeftText(used: number, allowed: number): string {
   const left = Math.max(0, allowed - used);
-  return left === 0 ? "No votes left" : left === 1 ? "One vote left" : `${left} votes left`;
+  return left === 0 ? t(`${P}.noVotesLeft`) : t(`${P}.votesLeft`, { count: left });
 }
 
 // ---------------------------------------------------------------- times
@@ -101,18 +88,10 @@ export function votesLeftText(used: number, allowed: number): string {
 /** Voting on `c` is over by its end time, before Platform resolves it (MG-07 D8). */
 export const isClosed = (c: Pick<ContestedName, "endsAt">, now: number) => now >= c.endsAt;
 
-function dateTime(secs: number, locale?: string): string {
-  const t = new Date(secs * 1000).toLocaleTimeString(locale, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  return `${shortDate(secs, locale)} at ${t}`;
-}
-
 /** "Ends Jan 15 at 9:00 AM · in about 101 days", or "Voting ended Jan 15 at 9:00 AM". */
 export function endsText(c: Pick<ContestedName, "endsAt">, now: number, locale?: string): string {
-  if (isClosed(c, now)) return `Voting ended ${dateTime(c.endsAt, locale)}`;
-  return `Ends ${dateTime(c.endsAt, locale)} · in about ${spanLong(c.endsAt - now)}`;
+  if (isClosed(c, now)) return t(`${P}.endedAt`, { when: dateTime(c.endsAt, locale) });
+  return t(`${P}.ends`, { when: dateTime(c.endsAt, locale), span: spanLong(c.endsAt - now) });
 }
 
 // ---------------------------------------------------------------- the tally
@@ -137,10 +116,8 @@ export interface TallyView {
 }
 
 const votesOf = (n: number | null) => n ?? 0;
-const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
-
 /** "1 vote", "14 votes". */
-export const votesText = (n: number) => plural(n, "vote");
+export const votesText = (n: number) => t(`${P}.votes`, { count: n });
 
 /** The contenders by votes (Platform's order among equals), then Lock and Abstain, with who would
  * get the name if voting ended now: the contender with the most votes unless Lock has more
@@ -166,7 +143,7 @@ export function tallyView(c: ContestedName): TallyView {
     })),
     {
       key: "lock",
-      title: "Lock",
+      title: t(`${P}.lock`),
       identity: null,
       votes: lock,
       pct: pct(lock),
@@ -174,7 +151,7 @@ export function tallyView(c: ContestedName): TallyView {
     },
     {
       key: "abstain",
-      title: "Abstain",
+      title: t(`${P}.abstain`),
       identity: null,
       votes: abstain,
       pct: pct(abstain),
@@ -182,11 +159,11 @@ export function tallyView(c: ContestedName): TallyView {
     },
   ];
   let lead: string;
-  if (total === 0) lead = "No votes yet";
-  else if (lockLeads) lead = `Lock leads with ${lock.toLocaleString("en-US")} of ${votesText(total)}: if voting ended now, nobody would get the name`;
-  else if (top === 0) lead = "No contender has a vote yet";
-  else if (tied) lead = `Tied at ${votesText(top)} between ${topCount} contenders`;
-  else lead = `${shortIdentity(contenders[0].identity)} leads with ${top.toLocaleString("en-US")} of ${votesText(total)}`;
+  if (total === 0) lead = t(`${P}.lead.none`);
+  else if (lockLeads) lead = t(`${P}.lead.lock`, { lock, count: total });
+  else if (top === 0) lead = t(`${P}.lead.noContender`);
+  else if (tied) lead = t(`${P}.lead.tied`, { count: top, contenders: topCount });
+  else lead = t(`${P}.lead.leads`, { name: shortIdentity(contenders[0].identity), votes: top, count: total });
   return { rows, total, lead };
 }
 
@@ -206,25 +183,25 @@ export function youText(voters: NameVoter[], label: string): string | null {
   if (voters.length === 0) return null;
   const choices = voters.map((v) => voterState(v, label).choice);
   const voted = choices.filter((c) => c !== null);
-  if (voted.length === 0) return "You: no vote yet";
-  if (voted.length === voters.length && voted.every((c) => sameChoice(c, voted[0]))) return `You: ${choiceText(voted[0])}`;
-  return `You: ${voted.length} of ${voters.length} voted`;
+  if (voted.length === 0) return t(`${P}.you.none`);
+  if (voted.length === voters.length && voted.every((c) => sameChoice(c, voted[0]))) return t(`${P}.you.choice`, { choice: choiceText(voted[0]) });
+  return t(`${P}.you.some`, { voted: voted.length, count: voters.length });
 }
 
 /** "Voting ended", or "Ends in …" within a day of the end; `null` otherwise (D7). */
 export function contestChip(c: ContestedName, now: number, locale?: string): ChipView | null {
-  if (isClosed(c, now)) return { text: "Voting ended", tone: "neutral", tooltip: "Platform names the winner in its next block." };
+  if (isClosed(c, now)) return { text: t(`${P}.chip.ended`), tone: "neutral", tooltip: t(`${P}.chip.endedTooltip`) };
   const left = c.endsAt - now;
   if (left >= ENDING_SOON_SECS) return null;
-  return { text: `Ends in ${spanLong(left)}`, tone: "warning", tooltip: endsText(c, now, locale) };
+  return { text: t(`${P}.chip.endsIn`, { span: spanLong(left) }), tone: "warning", tooltip: endsText(c, now, locale) };
 }
 
 export function contestRow(c: ContestedName, voters: NameVoter[], now: number, locale?: string): ContestRowView {
   const closed = isClosed(c, now);
-  const count = c.contendersComplete ? plural(c.contenders.length, "contender") : `${c.contenders.length}+ contenders`;
+  const key = `${P}.row.${closed ? "ended" : "ends"}${c.contendersComplete ? "" : "More"}` as const;
   return {
     label: c.label,
-    sub: `${count} · ${closed ? "ended" : "ends"} ${shortDate(c.endsAt, locale)}`,
+    sub: t(key, { count: c.contenders.length, date: shortDate(c.endsAt, locale) }),
     you: youText(voters, c.label),
     total: tallyView(c).total,
     chip: contestChip(c, now, locale),
@@ -232,12 +209,12 @@ export function contestRow(c: ContestedName, voters: NameVoter[], now: number, l
 }
 
 export type NameSort = "ending" | "name" | "votes" | "lock";
-export const NAME_SORTS: { id: NameSort; title: string }[] = [
-  { id: "ending", title: "Ending soonest" },
-  { id: "name", title: "Name" },
-  { id: "votes", title: "Most votes" },
-  { id: "lock", title: "Most lock votes" },
-];
+export const NAME_SORTS: { id: NameSort; readonly title: string }[] = (["ending", "name", "votes", "lock"] as const).map((id) => ({
+  id,
+  get title() {
+    return t(`${P}.sort.${id}`);
+  },
+}));
 
 /** iOS's sorts over the search (D4); "ending" keeps the engine's order, soonest first. */
 export function listContests(contests: ContestedName[], search: string, sort: NameSort): ContestedName[] {
@@ -254,15 +231,15 @@ export function voteBlocked(c: ContestedName, names: ContestedNames, watchOnly: 
   if (watchOnly) return NameText.voteWatchOnly;
   if (isClosed(c, now)) return NameText.ended;
   if (names.voters.length === 0) return NameText.noVoters;
-  if (names.voters.every((v) => voterState(v, c.label).votesUsed >= names.votesAllowed)) return "Your masternodes have used all their votes on this name";
+  if (names.voters.every((v) => voterState(v, c.label).votesUsed >= names.votesAllowed)) return t(`${P}.allUsed`);
   return null;
 }
 
 /** The pane's "Your masternodes" line for one voter: its present choice and votes left. */
 export function voterLine(v: NameVoter, label: string, allowed: number): string {
   const s = voterState(v, label);
-  const present = s.choice ? `Votes ${choiceText(s.choice)}` : "No vote yet";
-  return `${present} · ${votesLeftText(s.votesUsed, allowed)}`;
+  const present = s.choice ? t(`${P}.votesChoice`, { choice: choiceText(s.choice) }) : t(`${P}.noVoteYet`);
+  return t(`${P}.voterLine`, { present, left: votesLeftText(s.votesUsed, allowed) });
 }
 
 // ---------------------------------------------------------------- the vote sheet
@@ -284,13 +261,13 @@ export function choiceOptions(c: ContestedName): {
     })),
     {
       choice: { kind: "abstain" },
-      title: "Abstain",
+      title: t(`${P}.abstain`),
       identity: null,
       votes: votesOf(c.abstainVotes),
     },
     {
       choice: { kind: "lock" },
-      title: "Lock",
+      title: t(`${P}.lock`),
       identity: null,
       votes: votesOf(c.lockVotes),
     },
@@ -317,13 +294,12 @@ export interface NameVoterRowView {
 export function nameVoterRows(voters: NameVoter[], label: string, choice: NameChoice | null, allowed: number): NameVoterRowView[] {
   return voters.map((v) => {
     const s = voterState(v, label);
-    const custody = v.key.kind === "keychain" ? `key in this wallet · voting key ${v.key.index + 1}` : "key you added";
-    const banned = v.valid ? "" : " · PoSe banned, still votes on names";
+    const custody = v.key.kind === "keychain" ? t(`${P}.sheet.keychain`, { index: v.key.index + 1 }) : t(`${P}.sheet.added`);
     const votesLeft = Math.max(0, allowed - s.votesUsed);
-    const base = { proTxHash: v.proTxHash, name: nodeName(v), weight: v.weight, present: s.choice ? choiceText(s.choice) : "None", votesLeft };
-    if (s.votesUsed >= allowed) return { ...base, sub: `No votes left: it used its ${allowed} votes on this name`, eligible: false };
-    if (sameChoice(s.choice, choice)) return { ...base, sub: `Votes ${choiceText(s.choice!)} already`, eligible: false };
-    return { ...base, sub: `${custody}${banned} · ${votesLeftText(s.votesUsed, allowed)}`, eligible: true };
+    const base = { proTxHash: v.proTxHash, name: nodeName(v), weight: v.weight, present: s.choice ? choiceText(s.choice) : t(`${P}.sheet.none`), votesLeft };
+    if (s.votesUsed >= allowed) return { ...base, sub: t(`${P}.sheet.usedAll`, { count: allowed }), eligible: false };
+    if (sameChoice(s.choice, choice)) return { ...base, sub: t(`${P}.sheet.already`, { choice: choiceText(s.choice!) }), eligible: false };
+    return { ...base, sub: t(v.valid ? `${P}.sheet.eligible` : `${P}.sheet.eligibleBanned`, { custody, left: votesLeftText(s.votesUsed, allowed) }), eligible: true };
   });
 }
 
@@ -339,42 +315,40 @@ export const pickedVoters = (rows: NameVoterRowView[], checked: ReadonlySet<stri
 export function lastVoteNotice(picked: NameVoterRowView[]): string | null {
   const last = picked.filter((r) => r.votesLeft === 1);
   if (last.length === 0) return null;
-  const names = last.map((r) => r.name).join(" and ");
-  return last.length === 1
-    ? `This is the last vote ${names} has on this name: after it, its choice can't change.`
-    : `This is the last vote ${names} have on this name: after it, their choices can't change.`;
+  const names = last.map((r) => r.name).reduce((first, next) => t(`${P}.sheet.and`, { first, next }));
+  return t(last.length === 1 ? `${P}.sheet.lastOne` : `${P}.sheet.lastMany`, { names });
 }
 
 // ---------------------------------------------------------------- the result
 
 /** A sentence per reason dw-app passes (`NameRejectionName`, MG-11 D15): `unconfirmed` has its own. */
-const REJECTED: Record<Exclude<NameRejectionName, "unconfirmed">, string> = {
-  unknown_masternode: "This masternode isn't in the current masternode list.",
-  no_voting_key: "Its voting key is not in this wallet.",
-  cancelled: "Not sent: the wallet locked, or the send ran out of time, before it left.",
-  signer_unavailable: "The wallet couldn't read its voting key.",
-  in_flight: "The same vote is already being sent.",
-  vote_limit: "It has used all its votes on this name, so its choice can't change.",
-  platform_unavailable: "Not sent: Platform couldn't be reached.",
-  already_voted: "Platform already has this choice from it, so nothing changed.",
-  contest_closed: "Voting on this name has ended.",
-  contest_not_found: "Platform has no vote on this name.",
-  masternode_not_found: "Platform's masternode list doesn't have it yet.",
-  wrong_voting_key: "Its voting key changed, so the key in this wallet no longer matches.",
-  choice_not_allowed: "Platform doesn't allow this choice on this name.",
-  no_voter_identity: "Platform has no voting identity for its key yet.",
-  voting_key_disabled: "Platform disabled this voting key: the masternode's voting key was changed.",
-  refused: "Platform refused the vote.",
+const REJECTED = messageTable(`${P}.result.rejected`, [
+  "unknown_masternode",
+  "no_voting_key",
+  "cancelled",
+  "signer_unavailable",
+  "in_flight",
+  "vote_limit",
+  "platform_unavailable",
+  "already_voted",
+  "contest_closed",
+  "contest_not_found",
+  "masternode_not_found",
+  "wrong_voting_key",
+  "choice_not_allowed",
+  "no_voter_identity",
+  "voting_key_disabled",
+  "refused",
   // A reason this build doesn't know (dw-app logs it): not counted, and not passed off as Platform's
   // `refused` (MG-11 review n4).
-  unknown: "Not counted, for a reason this version of the wallet doesn't know.",
-};
+  "unknown",
+] as const satisfies readonly Exclude<NameRejectionName, "unconfirmed">[]);
 
 /** A `NameVoteCast.rejected` reason as a sentence (MG-09 D13's rule): never the raw value. */
-export const nameRejectedText = (reason: Exclude<NameRejectionName, "unconfirmed">) => REJECTED[reason];
+export const nameRejectedText = (reason: Exclude<NameRejectionName, "unconfirmed">) => (Object.hasOwn(REJECTED, reason) ? REJECTED[reason] : REJECTED.unknown);
 
 /** The sentence for an outcome Platform didn't answer (MG-07 D7): never a success claim. */
-export const UNCONFIRMED_TEXT = "Sent, but Platform didn't confirm it. It may still count: check again in a minute.";
+export const unconfirmedText = () => t(`${P}.result.unconfirmed`);
 
 export type CastState = "counted" | "unconfirmed" | "refused";
 
@@ -392,11 +366,8 @@ export interface NameResultView {
   unconfirmed: boolean;
 }
 
-const CHIPS: Record<CastState, ChipView> = {
-  counted: { text: "Counted", tone: "success", tooltip: "" },
-  unconfirmed: { text: "Unconfirmed", tone: "neutral", tooltip: "" },
-  refused: { text: "Not counted", tone: "neutral", tooltip: "" },
-};
+const TONE: Record<CastState, ChipView["tone"]> = { counted: "success", unconfirmed: "neutral", refused: "neutral" };
+const chip = (state: CastState): ChipView => ({ text: t(`${P}.result.chip.${state}`), tone: TONE[state], tooltip: "" });
 
 /** §4.25.4's result for a name vote: "2 of 3 votes counted", the choice with its weight, and one
  * line per masternode. An `unconfirmed` vote is never counted (MG-07 D7) until a re-read
@@ -408,22 +379,25 @@ export function nameVoteResult(casts: NameVoteCast[], voters: NameVoter[], label
   const weightOf = (h: string) => byHash.get(h)?.weight ?? 1;
   const rows = casts.map((c) => {
     const v = byHash.get(c.proTxHash);
-    const name = v ? nodeName(v) : `Masternode ${shortHash(c.proTxHash)}`;
-    const weight = `weight ${weightOf(c.proTxHash)}`;
+    const name = v ? nodeName(v) : t(`${P}.result.masternode`, { hash: shortHash(c.proTxHash) });
+    const weight = weightOf(c.proTxHash);
     let state: CastState, sub: string;
-    if (c.rejected === null) [state, sub] = ["counted", `${weight} · Platform counted it`];
+    if (c.rejected === null) [state, sub] = ["counted", t(`${P}.result.counted`, { weight })];
     else if (c.rejected !== "unconfirmed") [state, sub] = ["refused", nameRejectedText(c.rejected)];
-    else if (sameChoice(now.get(c.proTxHash), choice)) [state, sub] = ["counted", `${weight} · Platform now shows this choice`];
-    else [state, sub] = ["unconfirmed", UNCONFIRMED_TEXT];
-    return { proTxHash: c.proTxHash, name, sub, state, chip: CHIPS[state] };
+    else if (sameChoice(now.get(c.proTxHash), choice)) [state, sub] = ["counted", t(`${P}.result.nowShows`, { weight })];
+    else [state, sub] = ["unconfirmed", unconfirmedText()];
+    return { proTxHash: c.proTxHash, name, sub, state, chip: chip(state) };
   });
   const counted = rows.filter((r) => r.state === "counted");
   const pending = rows.filter((r) => r.state === "unconfirmed").length;
   const total = casts.reduce((s, c) => s + weightOf(c.proTxHash), 0);
   const weight = counted.reduce((s, r) => s + weightOf(r.proTxHash), 0);
   return {
-    title: `${counted.length} of ${votesText(casts.length)} counted${pending > 0 ? ` · ${pending} not confirmed yet` : ""}`,
-    line: `${choice.kind === "towardsIdentity" ? `For ${shortIdentity(choice.identity)}` : choiceText(choice)} on ${label} · weight ${weight} of ${total}`,
+    title: t(pending > 0 ? `${P}.result.titlePending` : `${P}.result.title`, { counted: counted.length, count: casts.length, pending }),
+    line:
+      choice.kind === "towardsIdentity"
+        ? t(`${P}.result.lineFor`, { identity: shortIdentity(choice.identity), label, weight, total })
+        : t(`${P}.result.line`, { choice: choiceText(choice), label, weight, total }),
     rows,
     unconfirmed: pending > 0,
   };
@@ -438,14 +412,14 @@ export function nameErrorText(e: unknown): string | null {
   const label = e.data?.kind === "contestLabel" ? e.data.label : null;
   switch (e.code) {
     case "governance.contest_not_found":
-      return label ? `Platform has no vote on “${label}”.` : "Platform has no vote on this name.";
+      return label ? t(`${P}.errors.contestNotFoundLabel`, { label }) : t(`${P}.errors.contestNotFound`);
     case "governance.contest_closed":
-      return label ? `Voting on “${label}” has ended.` : "Voting on this name has ended.";
+      return label ? t(`${P}.errors.contestClosedLabel`, { label }) : t(`${P}.errors.contestClosed`);
     case "governance.not_a_contender":
-      return e.data?.kind === "contender" ? `${shortIdentity(e.data.identity)} isn't a contender for this name.` : "That identity isn't a contender for this name.";
+      return e.data?.kind === "contender" ? t(`${P}.errors.notAContenderIdentity`, { identity: shortIdentity(e.data.identity) }) : t(`${P}.errors.notAContender`);
     case "platform.unavailable":
     case "platform.timeout":
-      return "Couldn't reach Dash Platform. Try again in a moment.";
+      return t(`${P}.errors.platformUnavailable`);
     default:
       return governanceErrorText(e);
   }
