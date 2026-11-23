@@ -1,0 +1,109 @@
+import { mkdirSync } from "node:fs";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { fixtureUrl, fontsReady, type Theme } from "./helpers";
+
+const OUT = `${import.meta.dirname}/../.e2e-cache/o5b-out`;
+test.describe.configure({ timeout: 120_000 });
+
+async function tabTo(page: Page, target: Locator, back = false) {
+  await target.waitFor();
+  for (let i = 0; i <= 80; i++) {
+    if (await target.evaluate((el) => el === document.activeElement)) return;
+    await page.keyboard.press(back ? "Shift+Tab" : "Tab");
+  }
+  throw new Error("never reached");
+}
+
+const frames = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+
+async function shoot(page: Page, name: string) {
+  mkdirSync(OUT, { recursive: true });
+  await frames(page);
+  await page.waitForTimeout(400);
+  await page.mouse.move(1279, 819);
+  await page.screenshot({ path: `${OUT}/${name}.png` });
+  await page.evaluate(() => {
+    const a = document.activeElement;
+    const body = !a || a === document.body;
+    const r = body ? { left: 8, top: 8, width: innerWidth - 16, height: innerHeight - 16 } : a.getBoundingClientRect();
+    const id = body ? "<body>" : (a.getAttribute("data-testid") ?? `${a.tagName.toLowerCase()}${a.getAttribute("role") ? `[role=${a.getAttribute("role")}]` : ""} "${(a.textContent ?? "").trim().slice(0, 40)}"`);
+    const status = document.querySelector('[data-testid="registration-announced"]')?.textContent?.trim() ?? "";
+    const box = document.createElement("div");
+    box.className = "o5b-mark";
+    Object.assign(box.style, { position: "fixed", left: `${r.left - 4}px`, top: `${r.top - 4}px`, width: `${r.width + 8}px`, height: `${r.height + 8}px`, outline: "3px dashed #ff00ff", zIndex: "2147483647", pointerEvents: "none", boxSizing: "border-box" });
+    const label = document.createElement("div");
+    label.className = "o5b-mark";
+    label.textContent = `document.activeElement: ${id}`;
+    const said = document.createElement("div");
+    said.className = "o5b-mark";
+    said.textContent = `registration-announced status: ${status ? `"${status}"` : "(empty)"}`;
+    const tag = { background: "#ff00ff", color: "#fff", font: "600 13px/1.2 system-ui, sans-serif", padding: "4px 8px", borderRadius: "3px", zIndex: "2147483647", pointerEvents: "none" };
+    Object.assign(label.style, tag, { position: "fixed", left: `${Math.max(4, r.left - 4)}px`, top: `${body ? 10 : Math.max(4, r.top - 30)}px` });
+    Object.assign(said.style, tag, { position: "fixed", left: "8px", bottom: "8px", maxWidth: `${innerWidth - 32}px` });
+    document.body.append(box, label, said);
+  });
+  await page.screenshot({ path: `${OUT}/${name}-focus.png` });
+  await page.evaluate(() => document.querySelectorAll(".o5b-mark").forEach((e) => e.remove()));
+}
+
+async function toProgressHome(page: Page, theme: Theme) {
+  await page.goto(fixtureUrl("dashpay-no-identity", theme));
+  await page.getByTestId("toolbar").waitFor();
+  await fontsReady(page);
+  await tabTo(page, page.getByTestId("sidebar-joinDashPay"));
+  await page.keyboard.press("Enter");
+  await tabTo(page, page.getByTestId("join-create"));
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("registration-name-field")).toBeFocused();
+  await page.keyboard.type("alice-77");
+  await expect(page.getByTestId("registration-availability")).toHaveText("Username available");
+  await page.keyboard.press("Enter");
+  await tabTo(page, page.getByTestId("registration-pay"));
+  await page.keyboard.press("Enter");
+  const grant = page.getByTestId("grant-sheet");
+  await expect(grant.locator("input[type=password]")).toBeFocused();
+  await page.keyboard.type("demo");
+  await page.keyboard.press("Enter");
+  await expect(grant).toHaveCount(0);
+  const screen = page.getByTestId("registration-screen");
+  await expect(screen).toHaveAttribute("data-kind", "progress");
+  await tabTo(page, page.getByTestId("registration-home"));
+  return screen;
+}
+
+const finish = (page: Page) =>
+  page.evaluate(() => {
+    const d = window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft;
+    while (window.__dwFixture!.advanceRegistration(d));
+  });
+
+for (const theme of ["light", "dark"] as const) {
+  test(`capture title ${theme}`, async ({ page }) => {
+    const screen = await toProgressHome(page, theme);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+    const about = page.getByTestId("about");
+    await expect(about).toBeVisible();
+    await finish(page);
+    await expect(screen).toHaveAttribute("data-kind", "done");
+    await shoot(page, `1-about-over-finished-${theme}`);
+    await page.keyboard.press("Escape");
+    await expect(about).toHaveCount(0);
+    await page.waitForTimeout(600);
+    await shoot(page, `2-after-escape-${theme}`);
+  });
+
+  test(`capture status ${theme}`, async ({ page }) => {
+    const screen = await toProgressHome(page, theme);
+    await tabTo(page, page.getByTestId("toolbar-discreet"), true);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+    const about = page.getByTestId("about");
+    await expect(about).toBeVisible();
+    await finish(page);
+    await expect(screen).toHaveAttribute("data-kind", "done");
+    await page.keyboard.press("Escape");
+    await expect(about).toHaveCount(0);
+    await expect(page.getByTestId("toolbar-discreet")).toBeFocused();
+    await page.waitForTimeout(600);
+    await shoot(page, `3-status-after-escape-${theme}`);
+  });
+}
