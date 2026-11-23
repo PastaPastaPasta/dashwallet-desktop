@@ -202,7 +202,7 @@ function QrSheet({ entry, onClose }: { entry: AddressBookEntry; onClose: () => v
     <Sheet title={entry.label || AddressBookText.noLabel} width="small" testId="address-book-qr" onClose={onClose}>
       <div className="tool-qr">
         {qr.data ? <QrCode matrix={qr.data} size={240} label={t("tools.addressBook.qrLabel", { address: entry.address })} testId="address-book-qr-code" /> : <LoadingState testId="address-book-qr-loading" text={t("tools.addressBook.qrLoading")} />}
-        <CopyValue value={uri.data ?? entry.address} label={t("tools.addressBook.paymentLink")} mono />
+        <CopyValue value={uri.data ?? entry.address} action={t("tools.addressBook.copyPaymentLink")} mono />
       </div>
     </Sheet>
   );
