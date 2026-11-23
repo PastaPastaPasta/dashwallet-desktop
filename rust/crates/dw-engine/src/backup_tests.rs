@@ -1794,7 +1794,7 @@ fn unless_stuck_on<T: Send + 'static>(
 ) -> T {
     use std::os::unix::fs::OpenOptionsExt;
     let task = session.rt.spawn(fut);
-    match engine.block_on(tokio::time::timeout(Duration::from_secs(60), task)) {
+    match engine.block_on(async { tokio::time::timeout(Duration::from_secs(60), task).await }) {
         Ok(out) => out.unwrap(),
         Err(_) => {
             for fifo in fifos {
