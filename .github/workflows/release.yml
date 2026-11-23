@@ -332,8 +332,12 @@ jobs:
       - run: ci/github/release-version.sh
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Live first: a WebKitGTK security update published since the cache entry was saved must reach
+      # the AppImage. The verified cached set installs only when the download fails.
       - name: Linux packages (WebKitGTK, Xvfb, ImageMagick)
         uses: ./.github/actions/linux-host-deps
+        with:
+          live-first: 'true'
       # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
@@ -425,17 +429,21 @@ jobs:
         run: rustup toolchain install && rustc --version
       # Cached, so a crates.io outage cannot stop the SBOMs; installed only when the cached binary
       # is missing or another version.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - id: cyclonedx
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            ~/.cargo/bin/cargo-cyclonedx
-            ~/.cargo/.crates.toml
-            ~/.cargo/.crates2.json
-          key: cargo-cyclonedx-${{ runner.os }}-${{ runner.arch }}-0.5.9
-      - name: cargo-cyclonedx
-        run: |
-          cargo cyclonedx --version 2>/dev/null | grep -qE ' 0[.]5[.]9$' ||
-            cargo install --locked cargo-cyclonedx --version 0.5.9
+          path: ${{ runner.temp }}/cargo-cyclonedx
+          key: cargo-cyclonedx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/github/install-cargo-cyclonedx.sh') }}
+      - name: cargo-cyclonedx (the release tarball, checked against its pinned SHA-256)
+        env:
+          PINNED_CACHE_DIR: ${{ runner.temp }}/cargo-cyclonedx
+          PINNED_CACHE_KEY: ${{ steps.cyclonedx.outputs.cache-primary-key }}
+        run: ci/github/install-cargo-cyclonedx.sh
+      - if: steps.cyclonedx.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cargo-cyclonedx
+          key: ${{ steps.cyclonedx.outputs.cache-primary-key }}
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: apps/desktop/package.json

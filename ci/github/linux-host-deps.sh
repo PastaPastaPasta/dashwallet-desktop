@@ -34,9 +34,12 @@ install=(apt-get "${apt_opts[@]}" install -y --no-install-recommends)
 # When it holds .deb files, ci/github/apt-cache.sh verifies them against the image's Ubuntu
 # keyring and they are installed without the network; a break in that chain fails the job. When
 # it is empty, the packages are downloaded as below and saved into it.
+# DW_APT_LIVE_FIRST=1 (Release): with a cache, one live attempt under short deadlines comes first,
+# and the cached files install only if it fails.
 cache=${DW_APT_CACHE:-}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-if [[ -n "$cache" ]] && compgen -G "$cache/archives/*.deb" > /dev/null; then
+from_cache() {
+  local none status
   "$here/apt-cache.sh" verify "$cache"
   # The files themselves, with no source configured, so apt can fetch nothing and needs no index
   # (it refuses local files with --no-download).
@@ -45,11 +48,21 @@ if [[ -n "$cache" ]] && compgen -G "$cache/archives/*.deb" > /dev/null; then
     -o Dir::Etc::SourceParts="$none" "$cache"/archives/*.deb
   rmdir "$none"
   if ! status=$(dpkg-query -W -f '${Status}\n' "${packages[@]}") || grep -vqx 'install ok installed' <<< "$status"; then
-    echo "::error::linux-host-deps: the cached .deb files did not install every package of the $1 set" >&2
+    echo "::error::linux-host-deps: the cached .deb files did not install every package of the $pkgset set" >&2
     exit 1
   fi
-  echo "linux-host-deps: the $1 set from the Actions cache, no download"
+  echo "linux-host-deps: the $pkgset set from the Actions cache, no download"
+}
+pkgset=$1
+cached=
+if [[ -n "$cache" ]] && compgen -G "$cache/archives/*.deb" > /dev/null; then cached=1; fi
+if [[ -n "$cached" && "${DW_APT_LIVE_FIRST:-}" != 1 ]]; then
+  from_cache
   exit 0
+fi
+attempts=3 update_deadline=120 download_deadline=${DW_APT_DOWNLOAD_DEADLINE:-360}
+if [[ -n "$cached" ]]; then
+  attempts=1 update_deadline=60 download_deadline=180
 fi
 
 # Only the network steps run under a deadline and are tried again. A deadline that fired while
@@ -62,7 +75,8 @@ fi
 # that failed is the Azure one (it is the regional mirror of some runners, and on 2026-11-20 it
 # served 70 MB too slowly for three attempts), it goes last, so archive.ubuntu.com serves the next
 # attempt. apt keeps what an attempt downloaded.
-# DW_APT_DOWNLOAD_DEADLINE (seconds, default 360) bounds each download attempt.
+# DW_APT_DOWNLOAD_DEADLINE (seconds, default 360) bounds each download attempt; a live-first
+# attempt has 60 s for the update and 180 s for the download.
 mirrors=${DW_APT_MIRRORS:-/etc/apt/apt-mirrors.txt}
 sources=${DW_APT_SOURCES:-/etc/apt/sources.list.d/ubuntu.sources}
 fallback=http://azure.archive.ubuntu.com/ubuntu/
@@ -93,17 +107,22 @@ use_fallback_mirror() {
   echo "apt mirrors now: $(tr '\n' ' ' < "$mirrors")" >&2
 }
 downloaded=
-for attempt in 1 2 3; do
-  if sudo timeout --verbose 120 apt-get "${apt_opts[@]}" update &&
-    sudo DEBIAN_FRONTEND=noninteractive timeout --verbose "${DW_APT_DOWNLOAD_DEADLINE:-360}" "${install[@]}" --download-only "${packages[@]}"; then
+for ((attempt = 1; attempt <= attempts; attempt++)); do
+  if sudo timeout --verbose "$update_deadline" apt-get "${apt_opts[@]}" update &&
+    sudo DEBIAN_FRONTEND=noninteractive timeout --verbose "$download_deadline" "${install[@]}" --download-only "${packages[@]}"; then
     downloaded=1
     break
   fi
   echo "apt download attempt $attempt failed" >&2
   use_fallback_mirror || echo "could not switch apt mirrors" >&2
 done
-[ -n "$downloaded" ] || exit 1
-if [[ -n "$cache" ]]; then
+if [ -z "$downloaded" ]; then
+  [[ -n "$cached" ]] || exit 1
+  echo "::warning::linux-host-deps: the live download failed; installing the verified $pkgset set from the Actions cache"
+  from_cache
+  exit 0
+fi
+if [[ -n "$cache" && -z "$cached" ]]; then
   if "$here/apt-cache.sh" save "$cache"; then
     [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "saved=1" >> "$GITHUB_OUTPUT"
   else
@@ -112,3 +131,4 @@ if [[ -n "$cache" ]]; then
   fi
 fi
 sudo DEBIAN_FRONTEND=noninteractive "${install[@]}" -qq --no-download "${packages[@]}"
+[[ -z "$cached" ]] || echo "linux-host-deps: the $pkgset set downloaded live; the cached set was not needed"

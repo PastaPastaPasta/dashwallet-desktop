@@ -8,22 +8,30 @@
 #
 # The chain, checked from the image, never from the cache:
 #   1. each DIR/lists/*_InRelease verifies with gpgv against the image's Ubuntu archive keyring
-#      (/usr/share/keyrings/ubuntu-archive-keyring.gpg), and only its signed text is read;
+#      (/usr/share/keyrings/ubuntu-archive-keyring.gpg), and only its signed text is read; it must
+#      name this image's Ubuntu release and a pocket the image's ubuntu.sources lists (release,
+#      updates, security, backports: never proposed);
 #   2. each DIR/lists/*_Packages has the SHA-256 that its signed InRelease gives it;
 #   3. each DIR/archives/*.deb has a SHA-256 that one of those Packages indexes lists.
 # A .deb, an index or a release file that breaks the chain fails `verify`, and the job with it.
 set -euo pipefail
 
 keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+sources=${DW_APT_SOURCES:-/etc/apt/sources.list.d/ubuntu.sources}
+saving=
 # shellcheck disable=SC2016 # the quotes are literal; the key expands
 die() {
-  echo "::error::apt-cache: $*. Nothing was installed from the cache.${APT_CACHE_KEY:+ If the cache entry is the bad one, delete it (gh cache delete '$APT_CACHE_KEY') and rerun.}" >&2
+  if [[ -n "$saving" ]]; then
+    echo "::warning::apt-cache: $*. The download is not cached." >&2
+  else
+    echo "::error::apt-cache: $*. Nothing was installed from the cache.${APT_CACHE_KEY:+ If the cache entry is the bad one, delete it (gh cache delete '$APT_CACHE_KEY') and rerun.}" >&2
+  fi
   exit 1
 }
 sha() { sha256sum < "$1" | cut -d' ' -f1; }
 
 verify() {
-  local dir=$1 rel name prefix signed pk rest path want n_rel=0 n_pk=0 n_deb=0 deb codename
+  local dir=$1 rel name prefix signed pk rest path want n_rel=0 n_pk=0 n_deb=0 deb codename suite suites
   local -A listed=()
   local tmp
   tmp=$(mktemp -d)
@@ -32,14 +40,23 @@ verify() {
   [[ -r "$keyring" ]] || die "no Ubuntu archive keyring at $keyring"
   # shellcheck source=/dev/null
   codename=$(. /etc/os-release && echo "${VERSION_CODENAME:?}")
+  [[ -r "$sources" ]] || die "no $sources to read the image's pockets from"
+  suites=$(awk '/^Suites:/ { for (i = 2; i <= NF; i++) print $i }' "$sources")
+  [[ -n "$suites" ]] || die "$sources lists no Suites"
   for rel in "$dir"/lists/*_InRelease; do
     name=${rel##*/}
     prefix=${name%InRelease}
     signed="$tmp/$name"
-    gpgv --quiet --keyring "$keyring" --output "$signed" "$rel" 2>/dev/null ||
+    if ! gpgv --quiet --keyring "$keyring" --output "$signed" "$rel" 2> "$tmp/gpgv"; then
+      cat "$tmp/gpgv" >&2
       die "$name does not verify against $keyring"
-    [[ "$(awk '/^Codename: / { print $2; exit }' "$signed")" =~ ^$codename(-[a-z]+)?$ ]] ||
+    fi
+    [[ "$(awk '/^Codename: / { print $2; exit }' "$signed")" == "$codename" ]] ||
       die "$name is not a release file of $codename, this image's Ubuntu release"
+    suite=$(awk '/^Suite: / { print $2; exit }' "$signed")
+    if [[ -z "$suite" ]] || ! grep -qxF -- "$suite" <<< "$suites"; then
+      die "$name is for ${suite:-no suite}, not one of the pockets in $sources (${suites//$'\n'/ })"
+    fi
     n_rel=$((n_rel + 1))
     for pk in "$dir/lists/$prefix"*_Packages; do
       rest=${pk##*/}
@@ -87,6 +104,7 @@ save() {
     fi
   done
   rm "$dir/hashes"
+  saving=1
   verify "$dir"
   du -sh "$dir" | cut -f1 | sed 's/^/apt-cache: saved /'
 }
