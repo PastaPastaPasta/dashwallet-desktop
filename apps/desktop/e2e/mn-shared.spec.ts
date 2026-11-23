@@ -93,7 +93,31 @@ for (const theme of THEMES) {
     await page.getByTestId("sidebar-masternodes").click();
     await page.getByTestId("mn-shared").click();
     await page.getByTestId("sh-in-progress").getByRole("button").first().click();
-    await expect(page.getByTestId("sh-row-sign")).toBeVisible();
+    await expect(page.getByTestId("sh-row-signLater").or(page.getByTestId("sh-row-sign"))).toBeVisible();
     if (info.project.name === "chromium") await shot(page, "sh-sign-later", theme);
+    await page.goto(fixtureUrl("sh-close-out", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.getByTestId("sidebar-masternodes").click();
+    await page.getByTestId("mn-shared").click();
+    await page.getByTestId("sh-in-progress").getByRole("button").first().click();
+    await expect(page.getByTestId("sh-session")).toBeVisible();
+    await expect(page.getByTestId("sh-copy")).toHaveCount(0);
+    await page.getByTestId("sh-close-button").click();
+    await expect(page.getByTestId("sh-close")).toHaveCount(0);
+    await expect(page.getByTestId("sh-session")).toBeHidden();
+  });
+
+  test(`shared masternode ${theme}: with two shares open, Join waits until one is picked`, async ({ page }, info) => {
+    const errors = await open(page, "sh-participant-invited-two", theme);
+    await page.getByTestId("mn-shared").click();
+    await page.getByTestId("sh-in-progress").getByRole("button").first().click();
+    await expect(page.getByTestId("sh-join-pick")).toBeVisible();
+    await expect(page.getByTestId("sh-join-button")).toBeDisabled();
+    await page.getByTestId("sh-join-pick-2").click();
+    await expect(page.getByTestId("sh-join-button")).toBeEnabled();
+    if (info.project.name === "chromium") await shot(page, "sh-join-pick", theme);
+    await page.getByTestId("sh-join-button").click();
+    await expect(page.getByTestId("sh-copy")).toBeVisible();
+    expect(errors).toEqual([]);
   });
 }

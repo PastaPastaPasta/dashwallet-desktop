@@ -20,6 +20,7 @@ import { useMasternodesRefresh, useSharedCapability, useSharedSession, useShared
 import {
   basisPoints,
   DEFAULT_FEE,
+  MAX_SHARED_FEE,
   fundingLine,
   grantCap,
   joinEstimate,
@@ -232,13 +233,42 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const [reply, setReply] = useState("");
   const [closing, setClosing] = useState(false);
   const [feeOpen, setFeeOpen] = useState(false);
+  const [pickedShare, setPickedShare] = useState<number | null>(null);
   const replyId = useId();
   const s = pick(query.data, latest);
   const debit = s?.debit ?? 0;
   const credential = useCredential(wallet.walletId, t(`${P}.session.ask`), 0);
 
-  if (!s) return null;
+  if (!s)
+    return (
+      <Sheet title={t(`${P}.title`)} width="large" testId="sh-session" onClose={onClose}>
+        <div className="mg-sheet-body mg-step" data-testid="sh-session-state">
+          {query.isError ? (
+            <>
+              <p className="form-problem" role="alert">
+                {t(`${P}.session.readFailed`, { reason: sharedErrorText(query.error, { network: networkName, session: null, dash }) })}
+              </p>
+              <span className="mg-actions">
+                <DashButton variant="tintedGray" size="medium" data-testid="sh-session-retry" onClick={() => void query.refetch()}>
+                  {t(`${P}.session.retry`)}
+                </DashButton>
+                <DashButton variant="filledBlue" size="medium" data-testid="sh-session-close" onClick={onClose}>
+                  {t(`${P}.close.cancel`)}
+                </DashButton>
+              </span>
+            </>
+          ) : (
+            <p className="mg-muted" aria-live="polite">
+              {t(`${P}.session.loading`)}
+            </p>
+          )}
+        </div>
+      </Sheet>
+    );
   const v = renderSession(s);
+  const openShares = s.rows.filter((r) => !r.ownerAddress);
+  const joinShare = openShares.length === 1 ? openShares[0]!.index : pickedShare;
+  const joinRow = s.rows.find((r) => r.index === joinShare) ?? null;
   const ctx = { network: networkName, session: s, dash };
   const coordinatorLabel = s.rows[0]?.label ?? "";
   const act = async (f: () => Promise<{ session: SharedSession }>) => {
@@ -283,6 +313,10 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
       const r = await b.mnSharedImport(wallet.walletId, reply, s.id);
       setReply("");
       if (r.kind === "session") {
+        if (r.session.id !== s.id) {
+          setError(t(`${P}.error.other_session`));
+          return { session: s };
+        }
         setImported(r);
         return { session: r.session };
       }
@@ -301,7 +335,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
     ...(s.role === "coordinator" && s.stage.kind === "signing" ? [{ id: "unlock", title: t(`${P}.session.unlock`), onSelect: () => void act(() => b.mnSharedUnlock(wallet.walletId, s.id)) }] : []),
   ];
 
-  if (closing)
+  if (closing && s.discardable)
     return (
       <Sheet title={t(`${P}.close.title`)} width="small" testId="sh-close" onClose={() => setClosing(false)}>
         <div className="mg-sheet-body mg-step">
@@ -416,7 +450,18 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
         <p className="sh-row-copy" aria-live="polite" data-testid={`sh-row-${v.row}`}>
           {rowText}
         </p>
-        {v.row === "join" && <p className="mg-muted">{joinEstimate(s, null, dash)}</p>}
+        {v.row === "join" && openShares.length > 1 && (
+          <div className="mg-choices" role="radiogroup" aria-label={t(`${P}.session.pickShare`)} data-testid="sh-join-pick">
+            <p className="mg-muted mg-small">{t(`${P}.session.pickShare`)}</p>
+            {openShares.map((r) => (
+              <label key={r.index} className="mg-choice" data-testid={`sh-join-pick-${r.index}`}>
+                <input type="radio" name={`${replyId}-share`} checked={pickedShare === r.index} onChange={() => setPickedShare(r.index)} />
+                <span className="mg-choice-text">{t(`${P}.session.pickShareOption`, { label: r.label, amount: dash(r.amount) })}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        {v.row === "join" && joinShare !== null && <p className="mg-muted">{joinEstimate(s, joinShare, dash)}</p>}
         {imported && (
           <div className="mg-notice mg-notice-info" data-testid="sh-import-panel">
             <span>
@@ -469,10 +514,10 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
                 variant="filledBlue"
                 size="medium"
                 data-testid="sh-join-button"
-                disabled={busy || wallet.watchOnly}
-                onClick={() => void act(() => b.mnSharedJoin(wallet.walletId, s.id, { shareIndex: null, reward: { kind: "refund" } }))}
+                disabled={busy || wallet.watchOnly || joinShare === null}
+                onClick={() => void act(() => b.mnSharedJoin(wallet.walletId, s.id, { shareIndex: joinShare, reward: { kind: "refund" } }))}
               >
-                {t(`${P}.row.joinButton`, { amount: dash(s.rows.find((r) => !r.ownerAddress)?.amount ?? 0) })}
+                {t(`${P}.row.joinButton`, { amount: dash(joinRow?.amount ?? 0) })}
               </DashButton>
             )}
             {v.primary === "lock" && (
@@ -553,6 +598,7 @@ function rowCopy(
     case "approvedCount":
       return t(`${P}.row.approvedCount`, { approved: counts.approved, total: counts.total });
     case "sign":
+    case "signLater":
       return t(`${P}.row.signLater`);
     case "sendSigned":
       return t(`${P}.row.sendSigned`, { coordinator });
@@ -580,14 +626,15 @@ function FeeSheet({ wallet, network, session, onDone }: { wallet: WalletSummary;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const id = useId();
-  const duffs = /^\d{1,9}$/.test(fee.trim()) ? Number(fee.trim()) : null;
+  const typed = /^\d{1,9}$/.test(fee.trim()) ? Number(fee.trim()) : null;
+  const duffs = typed !== null && typed >= 1 && typed <= MAX_SHARED_FEE ? typed : null;
   return (
     <Sheet title={t(`${P}.feeSheet.title`)} width="small" testId="sh-fee" onClose={() => onDone(null)}>
       <div className="mg-sheet-body mg-step">
         <div className="form-field">
           <label htmlFor={id}>{t(`${P}.feeSheet.label`)}</label>
           <input id={id} inputMode="numeric" data-testid="sh-fee-input" value={fee} onChange={(e) => setFee(e.target.value)} />
-          {duffs !== null && <span className="mg-field-help">{dash(duffs)}</span>}
+          <span className="mg-field-help">{duffs !== null ? dash(duffs) : t(`${P}.feeSheet.range`, { max: MAX_SHARED_FEE.toLocaleString(), maxDash: dash(MAX_SHARED_FEE) })}</span>
         </div>
         <p className="form-problem" role="alert">
           {error}
@@ -598,7 +645,7 @@ function FeeSheet({ wallet, network, session, onDone }: { wallet: WalletSummary;
             variant="filledBlue"
             size="medium"
             data-testid="sh-fee-save"
-            disabled={busy || duffs === null || duffs <= 0}
+            disabled={busy || duffs === null}
             onClick={() =>
               void (async () => {
                 setBusy(true);

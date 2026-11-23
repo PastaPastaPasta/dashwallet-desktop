@@ -766,6 +766,11 @@ export const masternodes = {
     },
     session: {
       title: "Shared masternode · Session {code}",
+      loading: "Reading the session…",
+      readFailed: "Couldn't read this session. {reason}",
+      retry: "Try again",
+      pickShare: "Which share is yours?",
+      pickShareOption: "{label} · {amount}",
       checkCode: "Check code {code}",
       sessionCode: "session {code}",
       participants: "Participants",
@@ -805,7 +810,7 @@ export const masternodes = {
     },
     warning: {
       edited_message: "This message was edited after it was copied. Ask for it again before you approve.",
-      unvalued_inputs: "This wallet can't check the amounts of {labels}'s coins. If one is short, the registration never confirms; your coins come back only through Abandon.",
+      unvalued_inputs: "This wallet can't check the amounts of {labels}'s coins. If one is short, the registration can't confirm. Discard this session to release your coins.",
       empty_service: "The coordinator gave no server address: the masternode starts banned until the operator sends a service update.",
       zero_penalty: "With an early period and no penalty, anyone can leave early for just the network fee.",
       skipped_signatures: { one: "{count} signature for {labels} didn't apply to this session and was skipped.", other: "{count} signatures for {labels} didn't apply to this session and were skipped." },
@@ -828,7 +833,7 @@ export const masternodes = {
       approvedCount: "{approved} of {total} approved the locked terms",
       copyLocked: "Copy locked terms",
       signText: "Sign your coins into the registration: {debit} leaves this wallet when {coordinator} sends it. After you sign, only Abandon gets them back.",
-      signLater: "Signing comes in a later version of the wallet. Keep this session: nothing has left this wallet.",
+      signLater: "Signing comes in a later version of the wallet. Keep this session: nothing has left this wallet, and your coins stay reserved until you discard it.",
       sendSigned: "Send your signed contribution to {coordinator}. They can send the registration once they have everyone's.",
       copySigned: "Copy signed contribution",
       waitingSigned: "Waiting for signed contributions: {signed} of {total}",
@@ -908,7 +913,7 @@ export const masternodes = {
       nothingSent: "Creating the invitation reserves your coins and sends nothing to the network.",
       sessionCode: "Session code",
       checkCode: "Check code",
-      readBack: "Send it to each participant. Ask each to read the check code back to you.",
+      readBack: "Send it to each participant, and ask each one to read its check code back to you.",
       done: "Done",
       sharesHelp:
         "2 to 8 people. Each share is at least 100 Dash and earns its part of every payout, after the operator's share once the operator sets a payout address. Names are labels: they go into the invitation so everyone sees the same list, and nothing else uses them.",
@@ -942,7 +947,8 @@ export const masternodes = {
     },
     feeSheet: {
       title: "Change network fee",
-      label: "Network fee",
+      label: "Network fee (duffs)",
+      range: "Between 1 and {max} duffs ({maxDash}).",
       save: "Change fee",
     },
     error: {
@@ -961,7 +967,7 @@ export const masternodes = {
       bad_signature_unknown: "A signature in this message doesn't verify. Ask for the approval again.",
       not_participant: "Continue this session on the device that joined it.",
       labels: "Two participants have the same name in this message.",
-      replied: "Someone has replied, so the fee can't change now.",
+      replied: "A participant has already replied, so the network fee can't change now.",
       stage: "This changed since you opened it.",
       fileRead: "Couldn't read this file.",
       fileNotMessage: "This file isn't a shared-masternode message.",

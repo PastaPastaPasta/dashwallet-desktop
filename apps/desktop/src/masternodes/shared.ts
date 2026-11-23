@@ -14,6 +14,7 @@ export const SHARE_TOTAL = 1_000 * COIN;
 export const SHARE_MIN = 100 * COIN;
 export const MAX_SHARES = 8;
 export const DEFAULT_FEE = 100_000;
+export const MAX_SHARED_FEE = 10_000_000;
 /** Early-period presets, blocks (§2.2): none, 3 months, 6 months, 1 year, 2 years. */
 export const PERIOD_PRESETS = [
   { blocks: 0, key: "none" },
@@ -46,6 +47,7 @@ export type RowKey =
   | "sign"
   | "sendSigned"
   | "waitingSigned"
+  | "signLater"
   | "send"
   | "sent"
   | "confirmed"
@@ -83,12 +85,13 @@ export function renderSession(s: SharedSession, slice: SharedSlice = S5_SLICE): 
     case "sign":
       return stage === "combined" && !c ? r("sign", slice.sign ? "sign" : null) : r("unknown", slice.sign ? "sign" : null, false, false);
     case "send":
-      return (stage === "combined" || stage === "funding_signed") && c ? r("send", slice.send ? "send" : null) : r("unknown", slice.send ? "send" : null, false, false);
+      if (!slice.send) return (stage === "combined" || stage === "funding_signed") && c ? r("signLater", null) : r("unknown", null, false, false);
+      return (stage === "combined" || stage === "funding_signed") && c ? r("send", "send") : r("unknown", "send", false, false);
     case "copy":
       if (stage === "draft") return r(c ? "waitingReplies" : "sendReply", null, true);
       if (stage === "signing") return r(c ? "approvedCount" : "sendApproval", null, true);
-      if (stage === "funding_signed" && !c) return r("sendSigned", null, true);
-      if ((stage === "combined" || stage === "funding_signed") && c) return r("waitingSigned", null, true);
+      if (stage === "funding_signed" && !c) return slice.sign ? r("sendSigned", null, true) : r("signLater", null);
+      if ((stage === "combined" || stage === "funding_signed") && c) return slice.sign ? r("waitingSigned", null, true) : r("signLater", null);
       return r("unknown", null, true, false);
     case "wait":
       return stage === "sent" ? r("sent", null) : r("unknown", null, false, false);

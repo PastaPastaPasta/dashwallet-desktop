@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { SharedNextName } from "../api/generated/SharedNextName";
+import type { SharedSession } from "../api/generated/SharedSession";
 import { coordinatorSession, participantSession } from "../fixture/shared";
 import { COIN, isIpv4Service, operatorKeyProblem, parseDash, parsePercent, penaltyError, renderSession, S5_SLICE, sessionNeedsAction, shareErrors, stageStep } from "./shared";
 
@@ -44,6 +46,19 @@ describe("the session's render under this slice", () => {
     expect(v.primary).toBeNull();
     expect(sessionNeedsAction(combined)).toBe(false);
     expect(renderSession(combined, { sign: true, send: true }).primary).toBe("sign");
+  });
+
+  it("never renders a signing or sending step, whatever the stage, role or next", () => {
+    const stages: SharedSession["stage"][] = [{ kind: "invited" }, { kind: "draft" }, { kind: "signing" }, { kind: "combined" }, { kind: "funding_signed" }, { kind: "sent" }, { kind: "confirmed", height: 1 }, { kind: "conflicted" }, { kind: "stale" }, { kind: "dead", reason: "abandoned" }];
+    const nexts: SharedNextName[] = ["join", "copy", "wait", "lock", "approve", "sign", "send", "create_standby", "abandon", "nothing"];
+    for (const role of ["coordinator", "participant"] as const)
+      for (const stage of stages)
+        for (const next of nexts) {
+          const v = renderSession({ ...participantSession("combined"), role, stage, next }, S5_SLICE);
+          const at = `${role} ${stage.kind} ${next}`;
+          expect(["sendSigned", "waitingSigned", "send"], at).not.toContain(v.row);
+          expect(["sign", "send"], at).not.toContain(v.primary);
+        }
   });
 
   it("knows every fixture session and maps each to a stage", () => {
