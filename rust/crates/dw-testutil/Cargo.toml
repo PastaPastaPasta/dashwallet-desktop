@@ -10,5 +10,5 @@ description = "Test helpers shared by the workspace's test suites (dev-dependenc
 [dependencies]
 tempfile = { workspace = true }
 
-[target.'cfg(unix)'.dev-dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
