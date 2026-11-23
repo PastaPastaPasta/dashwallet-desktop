@@ -2789,6 +2789,19 @@ fn abandoning_a_payment_under_a_child_locked_in_the_history_only_is_refused() {
     );
 }
 
+/// A child the history holds both locked and mined: `Confirmed` wins.
+#[test]
+fn abandoning_a_payment_under_a_child_locked_and_mined_in_the_history_only_is_refused_as_confirmed()
+{
+    abandon_under_a_child_settled_in_the_history_only(
+        |engine, session, id, txid| {
+            locked_in_history_only(engine, session, id, txid);
+            mined_in_history_only(engine, session, id, txid, TIP);
+        },
+        crate::tx_actions::TxActionRefusal::Confirmed,
+    );
+}
+
 #[test]
 fn abandoning_a_payment_under_a_child_mined_in_the_history_only_is_refused_as_confirmed() {
     abandon_under_a_child_settled_in_the_history_only(
@@ -2936,6 +2949,10 @@ fn abandoning_both_spends_of_a_coin_in_one_session_releases_it() {
 fn abandoning_one_of_two_spends_of_a_coin_after_a_restart_keeps_it_until_the_other_goes() {
     let (_dir, engine, session, id, paid, u, first, second) = two_spends_of_a_coin();
     let session = reopen(&engine, session);
+    assert_eq!(
+        held_in(&engine, &session, id, second.txid()),
+        (false, false)
+    );
     start_spv(&engine, &session);
     mined(&engine, &session, id, TIP, vec![paid.clone()]);
     abandon(&engine, &session, id, first.txid());
@@ -3005,6 +3022,56 @@ fn a_coin_kept_for_a_spend_the_store_never_got_comes_back_with_a_rescan() {
             );
         }
     }
+}
+
+/// A payment P of A, abandoned and then relayed again with its InstantSend
+/// lock (the history keeps its abandoned flag), and after it another
+/// pending spend Q of A the wallet sees, then a reload (key-wallet then
+/// holds neither). Abandoning Q leaves A stored spent: P's lock spends it.
+/// (A Q made before P's lock is swept by it.)
+#[test]
+fn abandoning_a_spend_of_a_coin_an_abandoned_payment_locked_later_spends_keeps_it() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let a = OutPoint::new(paid.txid(), 0);
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    abandon(&engine, &session, id, p.txid());
+    let reload = || {
+        engine.block_on(session.unload_wallet(id)).unwrap();
+        engine.block_on(session.load_wallet(id)).unwrap();
+    };
+    reload();
+    instant_lock(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    let q = second_spend_of(&engine, &session, id, &paid, a);
+    mempool(&engine, &session, id, &q);
+    wait_stored(&session, id, &[q.txid()]);
+    reload();
+    let entry =
+        |t: Txid| (session.hub.history.get(&id, &t)).map(|e| (e.abandoned, e.instant_locked));
+    assert_eq!(
+        entry(p.txid()),
+        Some((true, true)),
+        "P is flagged abandoned and locked"
+    );
+    assert_eq!(entry(q.txid()), Some((false, false)), "Q is pending");
+    start_spv(&engine, &session);
+
+    abandon(&engine, &session, id, q.txid());
+    let row = stored_row(&session, id, a);
+    assert!(
+        row.is_some_and(|(spent, _)| spent),
+        "A is released although P's lock spends it: {row:?}"
+    );
 }
 
 /// A single Abandon of a locked payment a ChainLock beat, stopped after

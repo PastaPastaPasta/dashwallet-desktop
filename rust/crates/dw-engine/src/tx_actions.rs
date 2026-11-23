@@ -472,7 +472,9 @@ impl NetworkSession {
                 });
                 self.plan_abandon(wallet, txid, &descendants, &proof, &i.core_wallet)
             });
-            if let Some(Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked))) = planned
+            if let Some(Err(EngineError::TxActionRefused(
+                TxActionRefusal::InstantLocked | TxActionRefusal::Confirmed,
+            ))) = planned
             {
                 f.chainlock_beaten = false;
             }
@@ -676,7 +678,7 @@ impl NetworkSession {
                 .collect();
             (self.hub.history).read(&wallet, |txs| {
                 let left = (txs.iter()).filter(|(t, e)| {
-                    !e.abandoned && !abandoned.contains(*t) && !links.contains(*t)
+                    !e.is_abandoned() && !abandoned.contains(*t) && !links.contains(*t)
                 });
                 still_spent
                     .extend(left.flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output)));
