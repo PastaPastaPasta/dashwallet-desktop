@@ -7,7 +7,6 @@ vi.mock("../components/toast", () => ({ showShellToast: (text: string) => toasts
 const { dismissExportStaging, onExportStagingNotice, readExportStagingNotices, resetExportStaging, subscribeStuck } = await import("./exportStaging");
 const { t } = await import("../i18n");
 
-
 describe("unfinished export staging files", () => {
   afterEach(() => {
     resetExportStaging();
@@ -47,5 +46,29 @@ describe("unfinished export staging files", () => {
     expect(stuck.at(-1)).toEqual(["/mine"]);
     expect(toasts).toEqual([t("home.exportStaging.deleted")]);
     stop();
+  });
+
+  it("brings a dismissed card back at each start while the engine still names its file, and not once it is gone", async () => {
+    const path = "/home/u/.dash-wallet-export.tmp-1-0000000000000003";
+    const named: RecentNotice = { seq: 1, network: "testnet", code: "exportStagingNotDeleted", detail: path };
+    const start = async (recent: RecentNotice[]) => {
+      vi.resetModules();
+      const run = await import("./exportStaging");
+      const shown: (readonly string[])[] = [];
+      run.subscribeStuck((paths) => shown.push(paths));
+      await run.readExportStagingNotices(async () => recent, "testnet");
+      return { run, shown };
+    };
+
+    const first = await start([named]);
+    expect(first.shown.at(-1)).toEqual([path]);
+    first.run.dismissExportStaging(path);
+    expect(first.shown.at(-1)).toEqual([]);
+
+    const second = await start([named]);
+    expect(second.shown.at(-1)).toEqual([path]);
+
+    const third = await start([]);
+    expect(third.shown).toEqual([]);
   });
 });

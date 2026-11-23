@@ -2285,30 +2285,60 @@ fn an_export_stopped_before_its_publish_is_cleaned_up_at_the_next_start() {
     );
 }
 
-/// An export staging file the start cannot delete is named in its notice,
-/// at every start until it is gone.
+/// An export staging file the start cannot delete keeps its record and is
+/// named in a notice at every start while it is there (the renderer's card;
+/// a dismissal there changes nothing here); once it is gone, the next start
+/// clears the record and sends nothing.
 #[test]
-fn an_export_staging_file_the_start_cannot_delete_is_named_in_its_notice() {
+fn an_export_staging_file_the_start_cannot_delete_is_named_at_every_start_until_it_is_gone() {
     let dir = dw_testutil::private_tempdir();
-    let notices = Arc::new(Notices::default());
-    let (engine, session) = open(dir.path().join("a"), notices.clone());
+    let root = dir.path().join("a");
+    let os_store = Arc::new(MemoryOsStore::new());
+    let records = |session: &NetworkSession| {
+        session
+            .live()
+            .unwrap()
+            .appdb
+            .settings_with_prefix(dw_appdb::GLOBAL_SCOPE, crate::compat::EXPORT_STAGING_PREFIX)
+            .unwrap()
+            .len()
+    };
+    let restart = |engine: Engine, session: Arc<NetworkSession>| {
+        engine.block_on(engine.shutdown()).unwrap();
+        drop(session);
+        drop(engine);
+        let notices = Arc::new(Notices::default());
+        let (engine, session) = launch(root.clone(), notices.clone(), &os_store);
+        (engine, session, notices)
+    };
+    let (engine, session) = launch(root.clone(), Arc::new(Notices::default()), &os_store);
+    engine
+        .block_on(session.vault_op(|v| v.create(None)))
+        .unwrap();
     let chosen = private_dir(&dir.path().join("chosen"));
     let dest = chosen.join("wallet.txt");
     let stuck = crate::compat::staging_path(&dest, crate::compat::EXPORT_STAGING_TAG).unwrap();
     std::fs::create_dir(&stuck).unwrap();
     std::fs::write(stuck.join("x"), b"").unwrap();
     crate::compat::record_export_staging(&session.live().unwrap().appdb, &stuck, &dest).unwrap();
-    let named = (
+    let named = [(
         NoticeCode::ExportStagingNotDeleted,
         stuck.display().to_string(),
-    );
+    )];
 
-    engine.block_on(session.clean_export_staging());
-    assert_eq!(export_notices(&notices), std::slice::from_ref(&named));
-    engine.block_on(session.clean_export_staging());
-    assert_eq!(export_notices(&notices), [named.clone(), named]);
+    let (engine, session, notices) = restart(engine, session);
+    assert_eq!(export_notices(&notices), named);
+    assert_eq!(records(&session), 1);
+
+    let (engine, session, notices) = restart(engine, session);
+    assert_eq!(export_notices(&notices), named);
+    assert_eq!(records(&session), 1);
 
     std::fs::remove_dir_all(&stuck).unwrap();
-    engine.block_on(session.clean_export_staging());
-    assert_eq!(export_notices(&notices).len(), 2);
+    let (engine, session, notices) = restart(engine, session);
+    assert_eq!(export_notices(&notices), []);
+    assert_eq!(records(&session), 0);
+
+    let (_engine, _session, notices) = restart(engine, session);
+    assert_eq!(export_notices(&notices), []);
 }

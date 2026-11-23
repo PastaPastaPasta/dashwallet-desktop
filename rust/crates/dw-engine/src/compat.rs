@@ -1188,7 +1188,7 @@ pub(crate) const EXPORT_STAGING_TAG: &str = "dash-wallet-export";
 
 /// The app database's global settings recording a Dash Core export's
 /// staging file, one per file: this prefix, then its name.
-const EXPORT_STAGING_PREFIX: &str = "compat.export_staging.";
+pub(crate) const EXPORT_STAGING_PREFIX: &str = "compat.export_staging.";
 
 /// Records, durably, `staging` as the staging file of an export to `dest`;
 /// the record's key.
