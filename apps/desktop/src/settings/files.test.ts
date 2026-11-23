@@ -86,7 +86,7 @@ describe("import a wallet file (D21)", () => {
     await b.removeWallet(A, grant.id);
     await model.run(PASS, "");
     expect(model.step).toBe("done");
-    expect(model.done).toEqual({ walletIds: [A], lines: [FilesText.restored(1)] });
+    expect(model.done).toEqual({ walletIds: [A], lines: [FilesText.restored(1)], report: null });
   });
 
   it("QT107_dumpwalletImportReportsKeysNotImported", async () => {
