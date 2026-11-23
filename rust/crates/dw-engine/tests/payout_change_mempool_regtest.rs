@@ -403,9 +403,13 @@ impl Installation {
             let detail = self
                 .engine
                 .block_on(self.session.tx_detail(self.wallet, txid.to_owned()));
-            if let Ok(detail) = detail {
-                let tx = deserialize(&hex::decode(&detail.raw_hex).unwrap()).unwrap();
-                return (detail.status.kind, tx);
+            match detail {
+                Ok(detail) => {
+                    let tx = deserialize(&hex::decode(&detail.raw_hex).unwrap()).unwrap();
+                    return (detail.status.kind, tx);
+                }
+                Err(EngineError::TxNotFound(_)) => {}
+                Err(e) => panic!("{txid}: {e:?}"),
             }
             assert!(
                 Instant::now() < deadline,

@@ -186,11 +186,12 @@ pub(crate) async fn look(
     } else {
         None
     };
+    let payout_p2sh = owner_payout_p2sh(&changes, identity.read.value.as_ref());
     Ok(Seen {
         identity,
         header_tip,
         reason,
-        payout_p2sh: latest_is_p2sh(&changes),
+        payout_p2sh,
     })
 }
 
@@ -217,9 +218,21 @@ pub(super) fn unpaid_changes(
     )
 }
 
+/// Whether an owner-key withdrawal would pay a script nobody can spend: the
+/// latest payout of `changes` is P2SH while Drive's window in `identity`
+/// still pays P2PKH (dashpay/platform#5840). Once Drive's window pays the
+/// P2SH script itself, nothing is refused.
+pub(super) fn owner_payout_p2sh(changes: &[PayoutChange], identity: Option<&Identity>) -> bool {
+    latest_is_p2sh(changes)
+        && identity.map(window).is_some_and(|w| {
+            matches!(w, Window::Pays { script, .. }
+                if dashcore::Script::from_bytes(script.as_bytes()).is_p2pkh())
+        })
+}
+
 /// Whether the latest payout of `changes` is P2SH: the unconfirmed
 /// changes, else those in the highest block, else the registration's.
-fn latest_is_p2sh(changes: &[PayoutChange]) -> bool {
+pub(super) fn latest_is_p2sh(changes: &[PayoutChange]) -> bool {
     let rank = |c: &PayoutChange| match (c.registration, c.height) {
         (true, _) => 0,
         (false, Some(h)) => u64::from(h) + 1,

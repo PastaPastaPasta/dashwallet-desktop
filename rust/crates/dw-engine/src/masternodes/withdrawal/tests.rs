@@ -620,6 +620,8 @@ struct Scene {
     work: Arc<Background>,
     /// Runs in the next app database call, on its blocking thread.
     pause: Arc<Mutex<Option<Hook>>>,
+    /// The masternode's payouts in the wallets' history.
+    changes: Mutex<Vec<PayoutChange>>,
 }
 
 impl Scene {
@@ -635,6 +637,7 @@ impl Scene {
             alarms: Mutex::default(),
             work: Arc::default(),
             pause: Arc::default(),
+            changes: Mutex::default(),
         }
     }
 
@@ -679,7 +682,7 @@ impl Env for Scene {
     }
 
     fn payout_changes(&self, _: &[u8; 32]) -> Vec<PayoutChange> {
-        Vec::new()
+        self.changes.lock().unwrap().clone()
     }
 
     fn waits(&self) -> Waits {
@@ -1572,6 +1575,87 @@ async fn a_recheck_resends_only_the_open_siblings_stored_bytes_identical() {
             .count(),
         1
     );
+}
+
+/// The payout in the wallets' history moved to P2SH after an owner-key
+/// record was signed: Drive takes the destination at execution, so sending
+/// it again would pay the P2PKH of the P2SH's 20 bytes. It is held while
+/// Drive's window pays P2PKH, and sent again once the window pays the P2SH
+/// script or the payout is P2PKH again.
+#[tokio::test]
+async fn an_owner_key_record_is_not_sent_again_while_the_payout_is_p2sh() {
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    let row = f.withdraw(Owner, AMOUNT).await.unwrap();
+    let payout = |script: CoreScript| PayoutChange {
+        script: Some(script.as_bytes().to_vec()),
+        height: Some(TIP - 1),
+        registration: false,
+    };
+    *f.scene.changes.lock().unwrap() = vec![payout(CoreScript::new_p2sh(hash_of(&PAYOUT_SECRET)))];
+    let sent = f.plat.sent().len();
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent, "held");
+    assert!(f.row(&row.signed.id).state.is_open());
+    // Step 1's identity read passes; the hold's own read, after the nonce
+    // read, fails rule 5: held too.
+    let plat = Arc::clone(&f.plat);
+    *f.plat.hook.lock().unwrap() = Some((
+        Read::Nonce,
+        Box::new(move || plat.deviate(Read::Identity, Dev::Unverified, ALWAYS)),
+    ));
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent, "held on an unverified read");
+    f.plat.calm();
+    // Drive's window pays the P2SH script: sent again.
+    f.plat.identity_mut(|i| {
+        let sh = key(
+            0,
+            Purpose::TRANSFER,
+            KeyType::BIP13_SCRIPT_HASH,
+            &hash_of(&PAYOUT_SECRET),
+        );
+        i.public_keys_mut().insert(0, sh);
+    });
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent + 1);
+    assert_eq!(f.plat.sent().last().unwrap(), &row.signed.signed_bytes);
+
+    // The payout P2PKH again, Drive's window P2PKH: sent again.
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    f.withdraw(Owner, AMOUNT).await.unwrap();
+    *f.scene.changes.lock().unwrap() = vec![
+        payout(CoreScript::new_p2sh(hash_of(&PAYOUT_SECRET))),
+        PayoutChange {
+            height: Some(TIP),
+            ..payout(payout_script())
+        },
+    ];
+    let sent = f.plat.sent().len();
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent + 1);
+}
+
+/// A payout-key record names its own script: a P2SH payout doesn't hold
+/// it.
+#[tokio::test]
+async fn a_payout_key_record_is_sent_again_whatever_the_payout() {
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    f.withdraw(Payout, AMOUNT).await.unwrap();
+    *f.scene.changes.lock().unwrap() = vec![PayoutChange {
+        script: Some(
+            CoreScript::new_p2sh(hash_of(&PAYOUT_SECRET))
+                .as_bytes()
+                .to_vec(),
+        ),
+        height: Some(TIP - 1),
+        registration: false,
+    }];
+    let sent = f.plat.sent().len();
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent + 1);
 }
 
 #[tokio::test]

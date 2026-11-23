@@ -2304,7 +2304,9 @@ Every merge gate is COMMON's gate, plus the rows below.
   - **the `masternodeWithdraw` host grant**: `GrantPurposeSpec::MasternodeWithdraw`, its mapping, the generated TS,
     and the E0-13 text (Opus M1);
   - the withdraw sheet and the pane's Platform block with every state, the `mnPlatform` keys, D11, and the unlock
-    path.
+    path;
+  - the owner-key note for a masternode with no registration in history (#379): the copy goes to MG when the sheet is
+    built.
 - **Hidden:** shared.
 - **Needs:** S1 + MG-13 on main.
 - **Merge gate:**

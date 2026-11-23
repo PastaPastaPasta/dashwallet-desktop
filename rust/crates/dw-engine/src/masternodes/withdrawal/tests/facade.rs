@@ -1390,19 +1390,47 @@ fn registration(to: &CoreScript) -> Transaction {
     }
 }
 
+/// `PRO_TX`'s ProRegTx at version 3, paying `to` in DIP-0026 shares.
+fn registration_v3(to: &[&CoreScript]) -> Transaction {
+    use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    use dashcore::blockdata::transaction::special_transaction::provider_registration::MasternodePayoutShare;
+    let mut tx = registration(to[0]);
+    let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+        &mut tx.special_transaction_payload
+    else {
+        unreachable!()
+    };
+    p.version = 3;
+    p.script_payout = dashcore::ScriptBuf::new();
+    p.payouts = Some(
+        (to.iter())
+            .map(|s| MasternodePayoutShare {
+                script_payout: dashcore::ScriptBuf::from_bytes(s.as_bytes().to_vec()),
+                reward: (10_000 / to.len()) as u16,
+            })
+            .collect(),
+    );
+    tx
+}
+
 impl Fa {
     /// `PRO_TX`'s ProRegTx paying `to`, mined long ago: the history keeps it
     /// under its txid, the ProTx hash.
     fn registered(&self, to: &CoreScript) {
+        self.registered_in(self.f.wallet, registration(to));
+    }
+
+    /// `PRO_TX`'s ProRegTx `tx` in `wallet`'s history, mined long ago.
+    fn registered_in(&self, wallet: crate::WalletId, tx: Transaction) {
         let entry = crate::history::TxEntry {
-            tx: registration(to),
+            tx,
             context: in_block(TIP - 50),
             instant_locked: false,
             first_seen: None,
             own_inputs: Default::default(),
             abandoned: false,
         };
-        (self.f.session.hub.history).with_wallet(self.f.wallet, |h| {
+        (self.f.session.hub.history).with_wallet(wallet, |h| {
             h.txs.insert(dashcore::Txid::from_byte_array(PRO_TX), entry);
         });
     }
@@ -1492,6 +1520,69 @@ fn a_masternode_with_no_payout_in_the_history_withdraws_by_owner_key() {
     fa.seen(
         &payout_change(&pro_tx(0x70), &p2sh_payout(), coin(1)),
         in_block(TIP - 10),
+    );
+    fa.released(Key::Owner);
+}
+
+/// Once Drive's window pays a P2SH TRANSFER key itself (dashpay/platform#5840
+/// fixed), a P2SH payout refuses nothing.
+#[test]
+fn a_p2sh_payout_refuses_the_owner_key_only_while_drives_window_pays_p2pkh() {
+    let fa = Fa::new(true);
+    fa.registered(&p2sh_payout());
+    fa.owner_held_by_p2sh();
+
+    let fa = Fa::new(true);
+    fa.registered(&p2sh_payout());
+    let sh = key(
+        0,
+        Purpose::TRANSFER,
+        KeyType::BIP13_SCRIPT_HASH,
+        &hash_of(&PAYOUT_SECRET),
+    );
+    fa.plat
+        .with(|w| w.identity = Some(masternode_identity(&PRO_TX, vec![sh, owner_key()])));
+    fa.released(Key::Owner);
+}
+
+/// A version-3 payload with one P2SH payee, in another loaded wallet's
+/// history (in this wallet's own, version 3 is `withdrawal_shared` first).
+#[test]
+fn a_v3_single_p2sh_payee_refuses_the_owner_key() {
+    let fa = Fa::new(true);
+    fa.registered_in(OTHER_WALLET, registration_v3(&[&p2sh_payout()]));
+    fa.owner_held_by_p2sh();
+
+    let fa = Fa::new(true);
+    fa.registered(&payout_script());
+    fa.seen_in(
+        OTHER_WALLET,
+        &payout_change_v3(&PRO_TX, &[&p2sh_payout()], coin(1)),
+        in_block(TIP - 10),
+    );
+    fa.owner_held_by_p2sh();
+}
+
+/// The other holds keep their order: an unconfirmed change shows first.
+#[test]
+fn another_reason_shows_before_owner_payout_p2sh() {
+    let fa = Fa::new(true);
+    fa.registered(&p2sh_payout());
+    fa.seen(
+        &payout_change(&PRO_TX, &p2sh_payout(), coin(1)),
+        TransactionContext::Mempool,
+    );
+    fa.held_by(Key::Owner, UNCONFIRMED);
+}
+
+/// The way out the copy offers: change the payout to a regular address.
+#[test]
+fn a_p2sh_registration_and_one_mined_p2pkh_change_release_the_owner_key() {
+    let fa = Fa::new(true);
+    fa.registered(&p2sh_payout());
+    fa.seen(
+        &payout_change(&PRO_TX, &payout_script(), coin(1)),
+        in_block(TIP - 5),
     );
     fa.released(Key::Owner);
 }
