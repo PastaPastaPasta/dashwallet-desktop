@@ -247,6 +247,12 @@ export function newMasternodesWorld(): MasternodesWorld {
   };
 }
 
+/** A wallet with nothing for My masternodes: the default world, so Automatic keeps the sidebar item
+ * hidden (§3.6). The `mn-*` and governance scenarios install the board. */
+export function emptyMasternodesWorld(): MasternodesWorld {
+  return { ...newMasternodesWorld(), rows: [], registrations: [], payouts: {}, attached: {}, trackedAt: {}, ownerKeys: {} };
+}
+
 const keyId = (secret: string) => fake(HEX64.test(secret) ? `${secret.slice(0, 2)}9` : "c0", 40);
 
 const locked = (world: World) => world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly" || world.lock.state === "noVault";
@@ -941,7 +947,7 @@ function payoutRows(m: MasternodesWorld): TxRow[] {
 function mnBase(base: Base, theme: ThemeName | null, patch?: (m: MasternodesWorld, w: World) => void): World {
   const w = base(theme);
   w.masternodes = newMasternodesWorld();
-  w.settings.ui = { ...w.settings.ui, showMasternodes: true };
+  w.settings.ui = { ...w.settings.ui, masternodesItem: "on" };
   patch?.(w.masternodes, w);
   const main = w.wallets[0];
   main.rows = [...main.rows, ...payoutRows(w.masternodes)].sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));

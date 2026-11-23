@@ -1,10 +1,12 @@
-// In progress (operations.ts, MG-10 §1.10).
+// In progress, the operations' badge and the Auto sidebar rule (operations.ts, MG-10 §1.10, §3.6).
 
 import { describe, expect, it } from "vitest";
+import type { MasternodeOverview } from "../api/generated/MasternodeOverview";
 import type { ProTxOperation } from "../api/generated/ProTxOperation";
 import type { ProTxOperationStateName } from "../api/generated/ProTxOperationStateName";
+import { newMasternodesWorld } from "../fixture/masternodes";
 import { t } from "../i18n";
-import { conflicted, inProgress, lastErrorText, opRow, resendCap, resendConfirmText } from "./operations";
+import { autoShows, conflicted, inProgress, lastErrorText, masternodesBadge, opRow, opsBadge, resendCap, resendConfirmText } from "./operations";
 
 const I = "masternodes.inProgress";
 const op = (id: string, state: ProTxOperationStateName, patch: Partial<ProTxOperation> = {}): ProTxOperation => ({
@@ -50,6 +52,16 @@ const every = [
   op("cf", { kind: "confirmed", height: 7 }),
   op("cx", { kind: "conflicted" }),
 ];
+const overview = (patch: Partial<MasternodeOverview> = {}): MasternodeOverview => ({
+  list: { synced: true, height: 1 },
+  masternodes: [],
+  collateralCoins: [],
+  payouts30d: 0,
+  unattributed30d: 0,
+  payoutsIncomplete: false,
+  ...patch,
+});
+
 describe("In progress (§1.10)", () => {
   it("lists every unsettled operation and shows conflicted ones apart", () => {
     expect(inProgress(every).map((o) => o.id)).toEqual(["ns", "is", "sg", "nt", "st"]);
@@ -87,5 +99,30 @@ describe("In progress (§1.10)", () => {
     expect(lastErrorText(null)).toBeNull();
     expect(lastErrorText("send.no_peers")).toBe(t("pay.error.noPeers"));
     expect(lastErrorText("send.something_new")).toBe(t(`${I}.unknownError`, { code: "send.something_new" }));
+  });
+});
+
+describe("the badge (§3.6, S2)", () => {
+  it("counts needs_signature, inputs_spent and not_sent, never a wait", () => {
+    expect(opsBadge(every)).toBe(3);
+    expect(opsBadge(undefined)).toBe(0);
+  });
+
+  it("adds banned own masternodes", () => {
+    const rows = newMasternodesWorld().rows;
+    expect(masternodesBadge(overview({ masternodes: rows }), every)).toBe(1 + 3);
+  });
+});
+
+describe("Auto (§3.6)", () => {
+  const rows = newMasternodesWorld().rows;
+  it("shows for a mine or tracked row, a collateral coin, or unsettled work", () => {
+    expect(autoShows(overview(), [])).toBe(false);
+    expect(autoShows(undefined, undefined)).toBe(false);
+    expect(autoShows(overview({ masternodes: rows.filter((r) => r.mine) }), [])).toBe(true);
+    expect(autoShows(overview({ masternodes: rows.filter((r) => r.tracked && !r.mine) }), [])).toBe(true);
+    expect(autoShows(overview({ collateralCoins: [{ outpoint: "a-0", address: "y", amount: 1, kind: "regular", confirmations: 1, userLocked: false }] }), [])).toBe(true);
+    expect(autoShows(overview(), [every[4]])).toBe(true);
+    expect(autoShows(overview(), [every[5], every[6]])).toBe(false);
   });
 });
