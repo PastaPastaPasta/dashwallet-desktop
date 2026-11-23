@@ -3864,6 +3864,52 @@ impl EngineMixingWallet {
     }
 }
 
+/// Tests (#377): a session's wallet side, as `spawn_session` hands it to
+/// `run_session`, and what that task records when a session ends with our
+/// signatures out.
+#[cfg(test)]
+impl NetworkSession {
+    pub(crate) fn mixing_wallet_for_test(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+    ) -> (impl MixingWallet + use<>, SpendOwner) {
+        let owner = SpendOwner::mixing_session();
+        let wallet = EngineMixingWallet {
+            session: Arc::downgrade(self),
+            wallet_id,
+            owner,
+            reserved: Mutex::new(Vec::new()),
+        };
+        (wallet, owner)
+    }
+
+    /// `spawn_session`'s `Success` and `SignedUnknown` arms: `inputs` held
+    /// by `owner` since `at` (Unix seconds).
+    pub(crate) fn hold_signed_for_test(
+        &self,
+        wallet_id: WalletId,
+        owner: SpendOwner,
+        inputs: &[OutPoint],
+        at: u64,
+    ) {
+        let mut mixers = self.coinjoin.mixers();
+        let m = mixers.entry(wallet_id).or_default();
+        for i in inputs {
+            m.held.insert((*i, owner), at);
+        }
+    }
+
+    /// The mixing loop's tick: held inputs past the observation timeout,
+    /// or seen spent, are released.
+    pub(crate) fn expire_held_for_test(&self, wallet_id: WalletId) {
+        self.expire_held(wallet_id);
+    }
+}
+
+/// [`PENDING_OBSERVATION_SECS`], for tests.
+#[cfg(test)]
+pub(crate) const PENDING_OBSERVATION_FOR_TEST: u64 = PENDING_OBSERVATION_SECS;
+
 impl MixingWallet for EngineMixingWallet {
     async fn ready_to_mix(&self, amount: u64) -> Result<Vec<MixCoin>, WalletError> {
         let s = self.session()?;

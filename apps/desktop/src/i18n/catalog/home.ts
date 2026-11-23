@@ -54,8 +54,8 @@ export const home = {
     loading: "Loading transactions",
     seeAll: "See all transactions",
   },
-  /** The Unfinished transfers sheet: a lock's transaction id, copied. */
-  unfinished: { txid: "transaction id" },
+  /** The Unfinished transfers sheet: a lock's transaction ID, copied. */
+  unfinished: { copyTxid: "Copy transaction ID" },
   /** The banner when the network has upgraded past this version (a security notice). */
   advisory: {
     label: "App update available",

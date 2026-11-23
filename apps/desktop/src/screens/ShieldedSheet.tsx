@@ -406,7 +406,7 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
     </>,
     after: !address.isError && address.data ? (
       <p className="withdraw-to" data-testid="shielded-receive-address">
-        <CopyValue value={address.data.address} label={tr("transfer.shielded.receive.address")} mono />
+        <CopyValue value={address.data.address} action={tr("transfer.shielded.receive.copyAddress")} mono />
       </p>
     ) : null,
   };

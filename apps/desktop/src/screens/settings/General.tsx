@@ -90,7 +90,7 @@ export function GeneralTab() {
           </div>
         </div>
         {launch.theme !== null && (
-          <Hint>{t("settings.general.themeForced", { theme: t(launch.theme === "dark" ? "settings.general.themeDark" : "settings.general.themeLight") })}</Hint>
+          <Hint>{t(launch.theme === "dark" ? "settings.general.themeForced.dark" : "settings.general.themeForced.light")}</Hint>
         )}
         <div className="settings-row">
           <span className="settings-row-title" id={`${id}-unit`}>

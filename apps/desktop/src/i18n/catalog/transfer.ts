@@ -254,7 +254,7 @@ export const transfer = {
       copy: "Copy address",
       loading: "Getting your Shielded address…",
       qr: "QR code of {address}",
-      address: "Shielded address",
+      copyAddress: "Copy Shielded address",
     },
     error: {
       poolTooSmall: "Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.",

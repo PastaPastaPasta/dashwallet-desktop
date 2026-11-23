@@ -16,8 +16,13 @@
 //! open must answer exactly as the first, less [`VOLATILE`]. From v0.2.0 a
 //! snapshot also holds a signature by every funded address
 //! (`fundedSignatures`), which each open must make again, and dashd's fee
-//! for the payment, which the recorded balances must account for to the
-//! duff. A new release is covered by adding its directory.
+//! for the payment; for v0.1.0 the fee and the deposits are read from the
+//! recorded transactions. The recorded balances must account for them to the
+//! duff. After its calls, each open also prepares and signs, without
+//! broadcasting, a spend of every coin the release recorded, verifies each
+//! input's signature, abandons it and checks that the wallet is as it was
+//! ([`spend_every_recorded_coin`]). A new release is covered by adding its
+//! directory.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -65,6 +70,8 @@ const KNOWN: &[(&str, &str, &str, &str)] = &[(
 )];
 
 /// Releases whose snapshot predates `fundedSignatures` and `dashd.deposits`.
+/// Their deposits and dashd's fee are read from the recorded transactions
+/// instead ([`dashd_from_transactions`]).
 const BEFORE_FUNDED_SIGNATURES: &[&str] = &["v0.1.0"];
 
 /// SHA-256 of each release's committed `expected.json`, with LF line endings.
@@ -227,9 +234,147 @@ fn snapshot_problems(tag: &str, expected: &Value) -> Vec<String> {
             ));
         }
         problems.extend(funded_signature_problems(&wallets, calls, expected));
-        problems.extend(balance_problems(&every_wallet, calls, &expected["dashd"]));
+    }
+    match dashd_figures(tag, expected) {
+        Ok(dashd) => problems.extend(balance_problems(&every_wallet, calls, &dashd)),
+        Err(e) => problems.push(e),
     }
     problems
+}
+
+/// dashd's deposits and its fee for the payment: the snapshot's own
+/// `dashd` from v0.2.0, read from the recorded transactions before.
+fn dashd_figures(tag: &str, expected: &Value) -> Result<Value, String> {
+    if BEFORE_FUNDED_SIGNATURES.contains(&tag) {
+        dashd_from_transactions(expected)
+    } else {
+        Ok(expected["dashd"].clone())
+    }
+}
+
+/// The transaction `txid` from its recorded `tx_detail` answer, whose
+/// `rawHex` must hash to `txid`.
+fn recorded_tx(calls: &[Value], txid: &str) -> Result<dashcore::Transaction, String> {
+    let hex = calls
+        .iter()
+        .find(|c| c["cmd"] == "tx_detail" && c["args"]["txid"] == txid)
+        .and_then(|c| c["result"]["rawHex"].as_str())
+        .ok_or_else(|| format!("no recorded rawHex for {txid}"))?;
+    let bytes = hex::decode(hex).map_err(|e| format!("rawHex of {txid}: {e}"))?;
+    let tx: dashcore::Transaction =
+        dashcore::consensus::deserialize(&bytes).map_err(|e| format!("rawHex of {txid}: {e}"))?;
+    if tx.txid().to_string() != txid {
+        return Err(format!("the rawHex recorded for {txid} is {}", tx.txid()));
+    }
+    Ok(tx)
+}
+
+/// `dashd.deposits` and `dashd.payment` with its `walletId` and `feeDuffs`,
+/// for a snapshot that records neither: from the transactions dashd named.
+/// Each must be a recorded `tx_detail` answer whose `rawHex` hashes to that
+/// txid. A wallet's deposits are the funding outputs to its recorded
+/// `addresses`; the payment spends funding outputs of one wallet, the payer,
+/// pays `dashd.payment.to` its `duffs`, and its fee is what it spends less
+/// what it pays out.
+fn dashd_from_transactions(expected: &Value) -> Result<Value, String> {
+    let calls = expected["calls"].as_array().map_or(&[][..], Vec::as_slice);
+    let dashd = &expected["dashd"];
+    let raw = |txid: &str| recorded_tx(calls, txid);
+    let mut owner = std::collections::HashMap::new();
+    for wallet in expected["wallets"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+    {
+        let id = wallet["walletId"]
+            .as_str()
+            .ok_or("a wallet without walletId")?;
+        let listed = first_answer(calls, "addresses", &wallet["walletId"])
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("wallet {id}: no addresses answer"))?;
+        for address in listed.iter().filter_map(|a| a["address"].as_str()) {
+            owner.insert(address.to_string(), id.to_string());
+        }
+    }
+    let address_of = |script: &dashcore::ScriptBuf| {
+        dashcore::Address::from_script(script, dashcore::Network::Regtest)
+            .map(|a| a.to_string())
+            .ok()
+    };
+    let funding = dashd["funding"]
+        .as_object()
+        .filter(|f| !f.is_empty())
+        .ok_or("no dashd.funding")?;
+    let mut deposits = serde_json::Map::new();
+    let mut funded = std::collections::HashMap::new();
+    for (name, txid) in funding {
+        let txid = txid
+            .as_str()
+            .ok_or_else(|| format!("dashd.funding.{name}"))?;
+        let tx = raw(txid)?;
+        let mut credited = 0;
+        for (vout, out) in tx.output.iter().enumerate() {
+            let Some(id) = address_of(&out.script_pubkey).and_then(|a| owner.get(&a)) else {
+                continue;
+            };
+            credited += 1;
+            funded.insert((txid.to_string(), vout as u32), (id.clone(), out.value));
+            let sum = deposits.entry(id.clone()).or_insert(json!(0));
+            *sum = json!(
+                sum.as_u64()
+                    .unwrap()
+                    .checked_add(out.value)
+                    .ok_or("deposits overflow")?
+            );
+        }
+        if credited != 1 {
+            return Err(format!(
+                "funding {name} ({txid}) pays {credited} recorded wallet addresses, not one"
+            ));
+        }
+    }
+    let payment = &dashd["payment"];
+    let (Some(txid), Some(to), Some(paid)) = (
+        payment["txid"].as_str(),
+        payment["to"].as_str(),
+        payment["duffs"].as_u64(),
+    ) else {
+        return Err("no dashd.payment txid, to and duffs".to_string());
+    };
+    let tx = raw(txid)?;
+    let mut payer = None;
+    let mut spent = 0u64;
+    for input in &tx.input {
+        let at = (
+            input.previous_output.txid.to_string(),
+            input.previous_output.vout,
+        );
+        let (id, value) = funded
+            .get(&at)
+            .ok_or_else(|| format!("the payment spends {}:{}, no funding output", at.0, at.1))?;
+        if *payer.get_or_insert(id) != id {
+            return Err("the payment spends coins of two wallets".to_string());
+        }
+        spent = spent.checked_add(*value).ok_or("inputs overflow")?;
+    }
+    let paid_out = tx
+        .output
+        .iter()
+        .try_fold(0u64, |sum, o| sum.checked_add(o.value))
+        .ok_or("outputs overflow")?;
+    if !tx
+        .output
+        .iter()
+        .any(|o| o.value == paid && address_of(&o.script_pubkey).as_deref() == Some(to))
+    {
+        return Err(format!("the payment {txid} does not pay {to} {paid} duffs"));
+    }
+    let fee = spent
+        .checked_sub(paid_out)
+        .ok_or("the payment pays out more than it spends")?;
+    Ok(json!({
+        "deposits": deposits,
+        "payment": { "txid": txid, "to": to, "duffs": paid, "walletId": payer.ok_or("the payment has no inputs")?, "feeDuffs": fee },
+    }))
 }
 
 /// Every wallet id a recorded call names, in its arguments or its answer:
@@ -322,9 +467,9 @@ fn balance_problems(wallets: &[&Value], calls: &[Value], dashd: &Value) -> Vec<S
         return vec!["no dashd.deposits".to_string()];
     };
     let payment = &dashd["payment"];
-    let (Some(paid), Some(fee)) = (payment["duffs"].as_u64(), payment["feeDuffs"].as_u64()) else {
+    if payment["duffs"].as_u64().is_none() || payment["feeDuffs"].as_u64().is_none() {
         return vec!["no dashd.payment.duffs and feeDuffs".to_string()];
-    };
+    }
     let mut problems = Vec::new();
     let mut want: Vec<&str> = wallets.iter().filter_map(|w| w.as_str()).collect();
     want.sort_unstable();
@@ -339,17 +484,9 @@ fn balance_problems(wallets: &[&Value], calls: &[Value], dashd: &Value) -> Vec<S
     if !payer.as_str().is_some_and(|p| deposits.contains_key(p)) {
         problems.push(format!("the paying wallet {payer} has no deposit"));
     }
-    for (id, deposited) in deposits {
+    for id in deposits.keys() {
         let id = Value::String(id.clone());
-        let spent = if payment["walletId"] == id {
-            paid.checked_add(fee)
-        } else {
-            Some(0)
-        };
-        let want = deposited
-            .as_u64()
-            .zip(spent)
-            .and_then(|(d, s)| d.checked_sub(s));
+        let want = exact_balance(dashd, &id);
         let got = first_answer(calls, "balance", &id).and_then(|b| b["confirmed"].as_u64());
         if want.is_none() || want != got {
             problems.push(format!(
@@ -373,6 +510,86 @@ fn balance_problems(wallets: &[&Value], calls: &[Value], dashd: &Value) -> Vec<S
         if !id.as_str().is_some_and(|i| deposits.contains_key(i)) {
             problems.push(format!(
                 "a balance is recorded for wallet {id}, which has no deposit"
+            ));
+        }
+    }
+    problems
+}
+
+/// What `wallet` must report as `balance.confirmed`: its deposits, less the
+/// payment and dashd's fee for it when it paid.
+fn exact_balance(dashd: &Value, wallet: &Value) -> Option<u64> {
+    let payment = &dashd["payment"];
+    let spent = if &payment["walletId"] == wallet {
+        payment["duffs"]
+            .as_u64()?
+            .checked_add(payment["feeDuffs"].as_u64()?)?
+    } else {
+        0
+    };
+    dashd["deposits"][wallet.as_str()?]
+        .as_u64()?
+        .checked_sub(spent)
+}
+
+/// Each open's `spends` against the release's coins: one per wallet with
+/// keys, its inputs signed by exactly the wallet's distinct recorded coin
+/// addresses (change and user-locked coins included), each user-locked coin
+/// locked again, and the balance after the abandoned spend still dashd's
+/// exact figure.
+fn spend_problems(tag: &str, expected: &Value, answers: &Value) -> Vec<String> {
+    let calls = expected["calls"].as_array().map_or(&[][..], Vec::as_slice);
+    let dashd = match dashd_figures(tag, expected) {
+        Ok(d) => d,
+        Err(e) => return vec![e],
+    };
+    let spends = answers["spends"].as_array().map_or(&[][..], Vec::as_slice);
+    let wallets = expected["wallets"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    let mut problems = Vec::new();
+    if spends.len() != wallets.len() {
+        problems.push(format!(
+            "{} spends for {} wallets with keys",
+            spends.len(),
+            wallets.len()
+        ));
+    }
+    for wallet in wallets {
+        let id = &wallet["walletId"];
+        let Some(spend) = spends.iter().find(|s| &s["walletId"] == id) else {
+            problems.push(format!("wallet {id}: no spend"));
+            continue;
+        };
+        let coins = every_coin(calls, id).unwrap_or_default();
+        let mut want: Vec<&str> = coins.iter().filter_map(|c| c["address"].as_str()).collect();
+        want.sort_unstable();
+        want.dedup();
+        let got: Vec<&str> = spend["addresses"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        if want.is_empty() || got != want || spend["inputs"].as_u64() != Some(coins.len() as u64) {
+            problems.push(format!(
+                "wallet {id}: the spend signed {} inputs by {got:?}, the release recorded {} coins at {want:?}",
+                spend["inputs"],
+                coins.len()
+            ));
+        }
+        let locked = coins.iter().filter(|c| c["userLocked"] == true).count() as u64;
+        if spend["relocked"].as_u64() != Some(locked) {
+            problems.push(format!(
+                "wallet {id}: {} coins locked again, the release recorded {locked} locked",
+                spend["relocked"]
+            ));
+        }
+        let want_balance = exact_balance(&dashd, id);
+        if want_balance.is_none() || spend["balanceAfter"].as_u64() != want_balance {
+            problems.push(format!(
+                "wallet {id}: balance {} after the abandoned spend, dashd's figure {want_balance:?}",
+                spend["balanceAfter"]
             ));
         }
     }
@@ -444,6 +661,13 @@ fn every_release_data_root_opens_with_the_same_answers() {
                 .into_iter()
                 .map(|(cmd, d)| (format!("{cmd} (second open)"), d)),
         );
+        for (n, answers) in [(1, &first), (2, &second)] {
+            found.extend(
+                spend_problems(&tag, expected, answers)
+                    .into_iter()
+                    .map(|d| (format!("draft_prepare (open {n})"), d)),
+            );
+        }
         let known: Vec<_> = KNOWN.iter().filter(|k| k.0 == tag).collect();
         for k in &known {
             assert!(
@@ -593,7 +817,7 @@ fn compare_opens(first: &Value, second: &Value) -> Vec<(String, String)> {
             );
         } else {
             let mut diffs = Vec::new();
-            equal(&a["result"], &b["result"], &path, &mut diffs);
+            equal(&a["result"], &b["result"], OPENS, &path, &mut diffs);
             found.extend(diffs.into_iter().map(|d| (cmd.to_string(), d)));
         }
     }
@@ -625,30 +849,34 @@ fn stable(cmd: &str, value: &Value) -> Value {
     }
 }
 
-/// Every difference between `a` and `b`: a field on one side only, an array
-/// of another length, or another value.
-fn equal(a: &Value, b: &Value, path: &str, diffs: &mut Vec<String>) {
+/// The two sides [`equal`] names in its differences, for the two opens.
+const OPENS: [&str; 2] = ["on the first open", "on the second open"];
+
+/// Every difference between `a` and `b`, which `sides` names: a field on one
+/// side only, an array of another length, or another value.
+fn equal(a: &Value, b: &Value, sides: [&str; 2], path: &str, diffs: &mut Vec<String>) {
+    let [first, second] = sides;
     match (a, b) {
         (Value::Object(x), Value::Object(y)) => {
             for (key, xv) in x {
                 match y.get(key) {
-                    Some(yv) => equal(xv, yv, &format!("{path}.{key}"), diffs),
-                    None => diffs.push(format!("{path}.{key}: only on the first open ({xv})")),
+                    Some(yv) => equal(xv, yv, sides, &format!("{path}.{key}"), diffs),
+                    None => diffs.push(format!("{path}.{key}: only {first} ({xv})")),
                 }
             }
             for (key, yv) in y {
                 if !x.contains_key(key) {
-                    diffs.push(format!("{path}.{key}: only on the second open ({yv})"));
+                    diffs.push(format!("{path}.{key}: only {second} ({yv})"));
                 }
             }
         }
         (Value::Array(x), Value::Array(y)) if x.len() == y.len() => {
             for (i, (xv, yv)) in x.iter().zip(y).enumerate() {
-                equal(xv, yv, &format!("{path}[{i}]"), diffs);
+                equal(xv, yv, sides, &format!("{path}[{i}]"), diffs);
             }
         }
         (x, y) if x == y => {}
-        (x, y) => diffs.push(format!("{path}: first open {x}, second {y}")),
+        (x, y) => diffs.push(format!("{path}: {first} {x}, {second} {y}")),
     }
 }
 
@@ -791,6 +1019,30 @@ fn child(dir: &Path) {
     let funded = expected
         .get("fundedSignatures")
         .map(|_| Value::Array(sign_again("fundedSignatures")));
+    let prepared_raw = |handle: u64| {
+        let (_, tx) = state
+            .sends
+            .prepared(handle)
+            .expect("the prepared transaction");
+        tx.raw().expect("a signed transaction")
+    };
+    let sent_marks = |wallet_id: &Value| {
+        let session = tauri::async_runtime::block_on(state.session()).expect("the session");
+        let wallet = wallet_id.as_str().unwrap().parse().expect("a wallet id");
+        dw_engine::test_support::sent_marks(&session, wallet)
+    };
+    let spends: Vec<Value> = expected["wallets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| {
+            let probes = SpendProbes {
+                prepared_raw: &prepared_raw,
+                sent_marks: &sent_marks,
+            };
+            spend_every_recorded_coin(&expected, &w["walletId"], passphrase, &ok, &probes)
+        })
+        .collect();
     tauri::async_runtime::block_on(state.shutdown_engine()).expect("engine shutdown");
     let marker = root.join(network.dir_name()).join(".session-open");
     assert!(
@@ -801,12 +1053,269 @@ fn child(dir: &Path) {
     std::fs::write(
         dir.join(format!("answers-{n}.json")),
         serde_json::to_string_pretty(
-            &json!({ "calls": calls, "signatures": signatures, "fundedSignatures": funded }),
+            &json!({ "calls": calls, "signatures": signatures, "fundedSignatures": funded, "spends": spends }),
         )
         .unwrap(),
     )
     .unwrap();
     println!("{DONE}");
+}
+
+/// The wallet's state that a spend that is prepared and abandoned must leave
+/// as it was: this open's answers to the recorded `balance`, `utxos`,
+/// `locked_outpoints` and `history_page` calls of the wallet.
+fn spend_state(expected: &Value, wallet_id: &Value, ok: &dyn Fn(&str, Value) -> Value) -> Value {
+    Value::Array(
+        expected["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| {
+                &c["args"]["walletId"] == wallet_id
+                    && ["balance", "utxos", "locked_outpoints", "history_page"]
+                        .contains(&c["cmd"].as_str().unwrap())
+            })
+            .map(|c| json!({ "cmd": c["cmd"], "args": c["args"], "result": ok(c["cmd"].as_str().unwrap(), c["args"].clone()) }))
+            .collect(),
+    )
+}
+
+/// What a child reads of its session beside the IPC answers: a prepared
+/// transaction's signed bytes, and the txids of a wallet's durable sent
+/// marks.
+struct SpendProbes<'a> {
+    prepared_raw: &'a dyn Fn(u64) -> Vec<u8>,
+    sent_marks: &'a dyn Fn(&Value) -> Vec<String>,
+}
+
+/// Builds and signs, through `draft_prepare` (which never broadcasts), one
+/// transaction that spends every coin the release recorded for the wallet,
+/// change and user-locked coins included (a locked coin is unlocked for it
+/// and locked again). Each input must be one of those coins, and must spend
+/// the output its parent's recorded `rawHex` holds at that outpoint, to the
+/// coin's address and of its amount, signed by that address's key over the
+/// legacy sighash. The transaction is then abandoned. Before the coins are
+/// locked again, the same coins must sign again (key-wallet's builder and
+/// the engine leave out a reserved coin) and no sent mark may name either
+/// transaction. After it the wallet's [`spend_state`] must be what it was
+/// before: the coins locked again, none reserved, no row in the history. A
+/// lock made again has a new time, which `locked_outpoints` does not show;
+/// no release records more than one lock in a wallet, so the order of its
+/// locks cannot change.
+fn spend_every_recorded_coin(
+    expected: &Value,
+    wallet_id: &Value,
+    passphrase: &str,
+    ok: &dyn Fn(&str, Value) -> Value,
+    probes: &SpendProbes,
+) -> Value {
+    let calls = expected["calls"].as_array().unwrap();
+    let coins = every_coin(calls, wallet_id).expect("every coin of the wallet is recorded");
+    assert!(!coins.is_empty(), "wallet {wallet_id} has no recorded coin");
+    let outpoint = |c: &Value| {
+        (
+            c["outpoint"]["txid"].as_str().unwrap().to_string(),
+            c["outpoint"]["vout"].as_u64().unwrap() as u32,
+        )
+    };
+    let outpoints: Vec<Value> = coins.iter().map(|c| c["outpoint"].clone()).collect();
+    let locked: Vec<Value> = coins
+        .iter()
+        .filter(|c| c["userLocked"] == true)
+        .map(|c| c["outpoint"].clone())
+        .collect();
+    let total = coins
+        .iter()
+        .try_fold(0u64, |sum, c| sum.checked_add(c["amount"].as_u64()?))
+        .expect("the recorded coins add up");
+    let to = first_answer(calls, "current_receive_address", wallet_id)
+        .expect("a recorded receive address")["address"]
+        .clone();
+    let mut want: Vec<(String, u32)> = coins.iter().map(outpoint).collect();
+    want.sort_unstable();
+    let prepare = || {
+        let draft = ok("new_tx_draft", json!({ "walletId": wallet_id }));
+        ok(
+            "draft_set_source",
+            json!({ "draft": draft, "source": { "kind": "outpoints", "outpoints": outpoints } }),
+        );
+        ok(
+            "draft_set_fee",
+            json!({ "draft": draft, "fee": { "kind": "perKb", "duffsPerKb": 1000 } }),
+        );
+        ok(
+            "draft_set_recipients",
+            json!({ "draft": draft, "recipients": [{ "address": to, "amount": total, "subtractFeeFromAmount": true, "label": null, "message": null }] }),
+        );
+        let grant = ok(
+            "authorize",
+            json!({
+                "purpose": { "kind": "spend", "maxDuffs": total },
+                "walletId": wallet_id,
+                "credential": { "kind": "passphrase", "passphrase": passphrase },
+            }),
+        );
+        let prepared = ok(
+            "draft_prepare",
+            json!({ "draft": draft, "grantId": grant["id"] }),
+        );
+        let handle = prepared["handle"].as_u64().unwrap();
+        let tx: dashcore::Transaction =
+            dashcore::consensus::deserialize(&(probes.prepared_raw)(handle))
+                .expect("the signed transaction decodes");
+        let mut got: Vec<(String, u32)> = tx
+            .input
+            .iter()
+            .map(|i| (i.previous_output.txid.to_string(), i.previous_output.vout))
+            .collect();
+        got.sort_unstable();
+        assert_eq!(
+            got, want,
+            "wallet {wallet_id}: the spend's inputs are not the recorded coins"
+        );
+        (draft, handle, tx)
+    };
+    let abandon = |draft: &Value, handle: u64| {
+        ok(
+            "draft_abandon",
+            json!({ "draft": draft, "prepared": handle }),
+        );
+        ok("close_draft", json!({ "draft": draft }));
+    };
+
+    let before = spend_state(expected, wallet_id, ok);
+    let marks_before = (probes.sent_marks)(wallet_id);
+    if !locked.is_empty() {
+        ok(
+            "unlock_outpoints",
+            json!({ "walletId": wallet_id, "outpoints": locked }),
+        );
+    }
+    let (draft, handle, tx) = prepare();
+    let mut addresses = Vec::new();
+    for (index, input) in tx.input.iter().enumerate() {
+        let at = (
+            input.previous_output.txid.to_string(),
+            input.previous_output.vout,
+        );
+        let coin = coins.iter().find(|c| outpoint(c) == at).unwrap();
+        let address = coin["address"].as_str().unwrap();
+        let parent = recorded_tx(calls, &at.0)
+            .unwrap_or_else(|e| panic!("wallet {wallet_id}: input {index}: {e}"));
+        let spent = parent.output.get(at.1 as usize).unwrap_or_else(|| {
+            panic!(
+                "wallet {wallet_id}: input {index}: {} has no output {}",
+                at.0, at.1
+            )
+        });
+        let recorded = address
+            .parse::<dashcore::Address<_>>()
+            .expect("a recorded address")
+            .require_network(dashcore::Network::Regtest)
+            .expect("a regtest address")
+            .script_pubkey();
+        assert!(
+            spent.script_pubkey == recorded && Some(spent.value) == coin["amount"].as_u64(),
+            "wallet {wallet_id}: input {index}: the output it spends pays {} duffs to {:?}, the recorded coin {} to {address}",
+            spent.value,
+            spent.script_pubkey,
+            coin["amount"]
+        );
+        if let Some(problem) = p2pkh_input_problem(&tx, index, &spent.script_pubkey) {
+            panic!("wallet {wallet_id}: input {index} ({address}): {problem}");
+        }
+        addresses.push(address.to_string());
+    }
+    addresses.sort_unstable();
+    addresses.dedup();
+    abandon(&draft, handle);
+
+    let (again, again_handle, again_tx) = prepare();
+    abandon(&again, again_handle);
+    let marks = (probes.sent_marks)(wallet_id);
+    for txid in [tx.txid().to_string(), again_tx.txid().to_string()] {
+        assert!(
+            !marks.contains(&txid),
+            "wallet {wallet_id}: the abandoned spend {txid} is marked sent"
+        );
+    }
+    assert_eq!(
+        marks, marks_before,
+        "wallet {wallet_id}: the abandoned spends changed the sent marks"
+    );
+    if !locked.is_empty() {
+        ok(
+            "lock_outpoints",
+            json!({ "walletId": wallet_id, "outpoints": locked }),
+        );
+    }
+    let after = spend_state(expected, wallet_id, ok);
+    let mut diffs = Vec::new();
+    equal(
+        &before,
+        &after,
+        ["before the spend", "after it was abandoned"],
+        "",
+        &mut diffs,
+    );
+    assert!(
+        diffs.is_empty(),
+        "wallet {wallet_id}: the abandoned spend changed the wallet: {diffs:?}"
+    );
+    let balance = after
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["cmd"] == "balance")
+        .map(|c| c["result"]["confirmed"].clone());
+    json!({
+        "walletId": wallet_id,
+        "inputs": tx.input.len(),
+        "addresses": addresses,
+        "relocked": locked.len(),
+        "balanceAfter": balance,
+    })
+}
+
+/// Why input `index` of `tx` is not a P2PKH spend of `script`: its scriptSig
+/// must be `<DER signature ‖ SIGHASH_ALL> <public key>`, the key must hash to
+/// `script`'s, and the signature must verify over the legacy sighash.
+fn p2pkh_input_problem(
+    tx: &dashcore::Transaction,
+    index: usize,
+    script: &dashcore::ScriptBuf,
+) -> Option<String> {
+    use dashcore::hashes::Hash as _;
+    use dashcore::secp256k1::{Message, ecdsa};
+    let mut pushes = tx.input[index].script_sig.instructions();
+    let (Some(Ok(sig)), Some(Ok(key)), None) = (pushes.next(), pushes.next(), pushes.next()) else {
+        return Some("its scriptSig is not two pushes".into());
+    };
+    let (Some(sig), Some(key)) = (sig.push_bytes(), key.push_bytes()) else {
+        return Some("its scriptSig is not two pushes".into());
+    };
+    let Some((&hash_type, der)) = sig.as_bytes().split_last() else {
+        return Some("an empty signature".into());
+    };
+    if hash_type != 1 {
+        return Some(format!("sighash type {hash_type}, not SIGHASH_ALL"));
+    }
+    let pk = match dashcore::PublicKey::from_slice(key.as_bytes()) {
+        Ok(pk) => pk,
+        Err(e) => return Some(format!("the public key: {e}")),
+    };
+    if dashcore::ScriptBuf::new_p2pkh(&pk.pubkey_hash()) != *script {
+        return Some("its key is not the key of the coin's address".into());
+    }
+    let hash =
+        match dashcore::sighash::SighashCache::new(tx).legacy_signature_hash(index, script, 1) {
+            Ok(h) => h,
+            Err(e) => return Some(format!("the sighash: {e}")),
+        };
+    ecdsa::Signature::from_der(der)
+        .and_then(|s| ecdsa::verify(&s, Message::from_digest(hash.to_byte_array()), &pk.inner))
+        .err()
+        .map(|e| format!("the signature does not verify: {e}"))
 }
 
 fn v0_1_0_snapshot() -> Value {
@@ -1167,6 +1676,222 @@ fn a_snapshot_without_a_funded_signature_or_with_an_unaccounted_balance_is_refus
         full["fundedSignatures"].as_array().unwrap().len() - 1
     );
     assert!(!snapshot_problems("v0.2.0", &coin_dropped).is_empty());
+}
+
+#[test]
+fn a_v0_1_0_balance_off_by_a_duff_is_refused() {
+    let full = v0_1_0_snapshot();
+    assert_eq!(snapshot_problems("v0.1.0", &full), Vec::<String>::new());
+    for wallet in full["wallets"].as_array().unwrap() {
+        let id = wallet["walletId"].as_str().unwrap();
+        let mut off = full.clone();
+        for call in off["calls"].as_array_mut().unwrap() {
+            if call["cmd"] == "balance" && call["args"]["walletId"] == id {
+                let confirmed = call["result"]["confirmed"].as_u64().unwrap();
+                call["result"]["confirmed"] = json!(confirmed - 1);
+            }
+        }
+        let problems = snapshot_problems("v0.1.0", &off);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains(id) && p.contains("less payment and fee")),
+            "{problems:?}"
+        );
+    }
+}
+
+#[test]
+fn v0_1_0_deposits_and_fee_come_from_the_transactions_dashd_named() {
+    let full = v0_1_0_snapshot();
+    let dashd = dashd_from_transactions(&full).unwrap();
+    let main = full["wallets"][0]["walletId"].as_str().unwrap();
+    let second = full["wallets"][1]["walletId"].as_str().unwrap();
+    assert_eq!(dashd["deposits"][main], 1_250_000_000u64);
+    assert_eq!(dashd["deposits"][second], 300_000_000u64);
+    assert_eq!(dashd["payment"]["walletId"], main);
+    assert_eq!(dashd["payment"]["duffs"], 125_000_000u64);
+    assert_eq!(dashd["payment"]["feeDuffs"], 226u64);
+
+    let payment = full["dashd"]["payment"]["txid"].as_str().unwrap();
+    let edit_raw = |txid: &str, edit: &dyn Fn(&str) -> String| {
+        let mut snapshot = full.clone();
+        for call in snapshot["calls"].as_array_mut().unwrap() {
+            if call["cmd"] == "tx_detail" && call["args"]["txid"] == txid {
+                let raw = call["result"]["rawHex"].as_str().unwrap().to_string();
+                call["result"]["rawHex"] = json!(edit(&raw));
+            }
+        }
+        dashd_from_transactions(&snapshot)
+    };
+    let flipped = |raw: &str| {
+        let mut bytes = hex::decode(raw).unwrap();
+        let last = bytes.len() - 5;
+        bytes[last] ^= 1;
+        hex::encode(bytes)
+    };
+    let e = edit_raw(payment, &flipped).unwrap_err();
+    assert!(e.contains(payment), "{e}");
+    let funding = full["dashd"]["funding"]["mainFirst"].as_str().unwrap();
+    let e = edit_raw(funding, &flipped).unwrap_err();
+    assert!(e.contains(funding), "{e}");
+    let e = edit_raw(payment, &|_| "zz".to_string()).unwrap_err();
+    assert!(e.contains(payment), "{e}");
+
+    let mut unaddressed = full.clone();
+    unaddressed["calls"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|c| c["cmd"] != "addresses" || c["args"]["walletId"] != second);
+    assert!(dashd_from_transactions(&unaddressed).is_err());
+    let mut other_payee = full.clone();
+    other_payee["dashd"]["payment"]["duffs"] = json!(125_000_001u64);
+    assert!(dashd_from_transactions(&other_payee).is_err());
+}
+
+#[test]
+fn a_p2pkh_input_verifies_only_with_its_own_key_signature_and_sighash() {
+    use dashcore::hashes::Hash as _;
+    use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
+    let key = |b: u8| {
+        let sk = SecretKey::from_secret_bytes([b; 32]).unwrap();
+        (
+            sk,
+            dashcore::PublicKey::new(PublicKey::from_secret_key(&sk)),
+        )
+    };
+    let (sk, pk) = key(1);
+    let (other_sk, other_pk) = key(2);
+    let script = dashcore::ScriptBuf::new_p2pkh(&pk.pubkey_hash());
+    let mut tx = dashcore::Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: dashcore::OutPoint::new(dashcore::Txid::all_zeros(), 0),
+            script_sig: dashcore::ScriptBuf::new(),
+            sequence: 0xffff_ffff,
+            witness: Default::default(),
+        }],
+        output: vec![dashcore::TxOut {
+            value: 1000,
+            script_pubkey: script.clone(),
+        }],
+        special_transaction_payload: None,
+    };
+    let script_sig =
+        |tx: &dashcore::Transaction, sk: &SecretKey, pk: &dashcore::PublicKey, hash_type: u8| {
+            let hash = dashcore::sighash::SighashCache::new(tx)
+                .legacy_signature_hash(0, &script, u32::from(hash_type))
+                .unwrap();
+            let mut der = ecdsa::sign(Message::from_digest(hash.to_byte_array()), sk)
+                .serialize_der()
+                .to_vec();
+            der.push(hash_type);
+            let pk = pk.to_bytes();
+            let mut bytes = vec![der.len() as u8];
+            bytes.extend_from_slice(&der);
+            bytes.push(pk.len() as u8);
+            bytes.extend_from_slice(&pk);
+            dashcore::ScriptBuf::from_bytes(bytes)
+        };
+    tx.input[0].script_sig = script_sig(&tx, &sk, &pk, 1);
+    assert_eq!(p2pkh_input_problem(&tx, 0, &script), None);
+    let mut moved = tx.clone();
+    moved.output[0].value = 999;
+    assert!(
+        p2pkh_input_problem(&moved, 0, &script)
+            .unwrap()
+            .contains("does not verify")
+    );
+    let mut other = tx.clone();
+    other.input[0].script_sig = script_sig(&tx, &other_sk, &other_pk, 1);
+    assert!(
+        p2pkh_input_problem(&other, 0, &script)
+            .unwrap()
+            .contains("not the key")
+    );
+    let mut wrong_signer = tx.clone();
+    wrong_signer.input[0].script_sig = script_sig(&tx, &other_sk, &pk, 1);
+    assert!(
+        p2pkh_input_problem(&wrong_signer, 0, &script)
+            .unwrap()
+            .contains("does not verify")
+    );
+    let mut none = tx.clone();
+    none.input[0].script_sig = script_sig(&tx, &sk, &pk, 2);
+    assert!(
+        p2pkh_input_problem(&none, 0, &script)
+            .unwrap()
+            .contains("SIGHASH_ALL")
+    );
+    let mut empty = tx.clone();
+    empty.input[0].script_sig = dashcore::ScriptBuf::new();
+    assert!(p2pkh_input_problem(&empty, 0, &script).is_some());
+}
+
+#[test]
+fn a_spend_that_misses_a_coin_a_lock_or_the_exact_balance_is_a_problem() {
+    let full = v0_2_0_snapshot();
+    let calls = full["calls"].as_array().unwrap();
+    let dashd = &full["dashd"];
+    let spends: Vec<Value> = full["wallets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| {
+            let id = &w["walletId"];
+            let coins = every_coin(calls, id).unwrap();
+            let mut addresses: Vec<&str> = coins
+                .iter()
+                .map(|c| c["address"].as_str().unwrap())
+                .collect();
+            addresses.sort_unstable();
+            addresses.dedup();
+            json!({
+                "walletId": id,
+                "inputs": coins.len(),
+                "addresses": addresses,
+                "relocked": coins.iter().filter(|c| c["userLocked"] == true).count(),
+                "balanceAfter": exact_balance(dashd, id),
+            })
+        })
+        .collect();
+    let answers = |spends: &[Value]| json!({ "spends": spends });
+    assert_eq!(
+        spend_problems("v0.2.0", &full, &answers(&spends)),
+        Vec::<String>::new()
+    );
+    let payer = spends
+        .iter()
+        .position(|s| s["walletId"] == dashd["payment"]["walletId"])
+        .unwrap();
+    assert_eq!(
+        spends[payer]["relocked"], 1,
+        "the paying wallet has a locked coin"
+    );
+    let edited = |edit: &dyn Fn(&mut Value)| {
+        let mut s = spends.clone();
+        edit(&mut s[payer]);
+        spend_problems("v0.2.0", &full, &answers(&s))
+    };
+    assert_eq!(
+        edited(&|s| {
+            s["addresses"].as_array_mut().unwrap().pop();
+        })
+        .len(),
+        1
+    );
+    assert_eq!(edited(&|s| s["inputs"] = json!(1)).len(), 1);
+    assert_eq!(edited(&|s| s["relocked"] = json!(0)).len(), 1);
+    assert_eq!(
+        edited(&|s| s["balanceAfter"] = json!(s["balanceAfter"].as_u64().unwrap() - 1)).len(),
+        1
+    );
+    assert_eq!(
+        spend_problems("v0.2.0", &full, &answers(&spends[..1])).len(),
+        2
+    );
+    assert!(!spend_problems("v0.2.0", &full, &json!({})).is_empty());
 }
 
 #[cfg(unix)]
