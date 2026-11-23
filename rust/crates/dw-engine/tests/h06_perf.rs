@@ -4,7 +4,7 @@
 //! probes are in `src/platform/contacts_perf_tests.rs`.
 //!
 //! ```sh
-//! DWD_H06_DATADIR=/work/scratch/h06-perf/fixture DWD_H06_ITERS=60 \
+//! DWD_H06_DATADIR="$fixture" DWD_H06_ITERS=60 \
 //!   cargo test --release -p dw-engine --test h06_perf -- --ignored --nocapture
 //! ```
 //!

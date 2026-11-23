@@ -2,7 +2,7 @@
 
 ROADMAP H-06 asks for a large wallet with 500 contacts, a 10k-row history, a cold restore with DashPay
 and a contacts query under 100 ms at 1,000 contacts, with the U5 budgets (DASHPAY §2.1) still holding.
-This page records the engine's numbers on agentbox, what was fixed, and what is left for 1.0.x.
+This page records the engine's numbers on a shared, loaded Linux VM, what was fixed, and what is left for 1.0.x.
 
 ADR 0003 left the engine's share of U5 to "E-HIST" and to H-06: `history_page(200)` took 60–503 ms in
 the engine and wallet open 2–9 s. E-HIST never landed (no commit, no ROADMAP row); nothing changed
@@ -10,9 +10,9 @@ the history read path between the gate and this work.
 
 ## Summary
 
-| Metric | Budget | Before | After | Machine / load | Verdict |
+| Metric | Budget | Before | After | Load | Verdict |
 |---|---|---|---|---|---|
-| Contacts query, 1,000 contacts, all sections | < 100 ms | — | p50 **34 ms**, p95 **47 ms** wall (CPU p50 33 ms) | agentbox, load 70 | **pass** |
+| Contacts query, 1,000 contacts, all sections | < 100 ms | — | p50 **34 ms**, p95 **47 ms** wall (CPU p50 33 ms) | load 70 | **pass** |
 | Contacts query, 1,000, sort by last activity | < 100 ms | — | p50 42 ms, p95 69 ms (CPU p50 41 ms) | load 70 | **pass** |
 | Contacts query, 1,000, search (hit / no hit) | < 100 ms | — | p50 31–33 ms, p95 45–47 ms | load 70 | **pass** |
 | Contacts query, 500 contacts (all four shapes) | — | — | p50 15–17 ms, p95 21–24 ms | load 70 | pass |
@@ -31,7 +31,7 @@ cost passes 400 MB. Each has a 1.0.x entry under "Follow-ups".
 
 ## Machine and method
 
-- **Machine.** agentbox: a Proxmox VM on a Dell R730, 48 vCPUs (Xeon E5-2696 v4, 2.2 GHz, AVX2, no
+- **Machine.** a shared Linux VM, 48 vCPUs (Xeon E5-2696 v4, 2.2 GHz, AVX2, no
   SHA-NI), 160 GB RAM, Ubuntu 26.04. It is shared: load average 40–104 during these runs. Wall times
   carry that load; CPU time (the sum of every thread's on-CPU time from `/proc/self/task/*/schedstat`) and
   `perf stat -e instructions:u` do not. Medians and p95 are over repeated calls in one process after
@@ -128,7 +128,7 @@ needs testnet identities with 500 contacts, which this offline probe does not ha
 
 ## Follow-ups (1.0.x)
 
-1. **History read model kept between calls (E-HIST).**
+1. **History read model kept between calls (E-HIST).** #296
    - Cause: `history_page` derives every record of the wallet on each call (0.18 × 10⁹ instructions,
      ~90 ms on 40k transactions), then pages them. `tx_detail`, the notices and the CSV export share the
      derivation.
@@ -137,7 +137,7 @@ needs testnet identities with 500 contacts, which this offline probe does not ha
      on a new tip. Join labels, fiat stamps and purposes per page from app.sqlite, and invalidate on their
      writes. A page is then O(limit + log n). Measure with `tests/h06_perf.rs`; target p95 ≤ 10 ms engine
      share on the 40k wallet.
-2. **Wallet open: bulk record read and a lighter `load()`.**
+2. **Wallet open: bulk record read and a lighter `load()`.** #297
    - Cause: `SqlitePersister::load()` takes 3.4–5.0 s on the 40k wallet, and `load_history` then reads
      each of the 40,051 records with its own SELECT (1.3–3.1 s). `stored_spends` does the same full read
      when a wallet is loaded later.
@@ -145,13 +145,13 @@ needs testnet identities with 500 contacts, which this offline probe does not ha
      with the point read's checks (verified InstantSend locks, column drift); use it in `load_history` and
      `stored_spends`. Profile `load()` upstream (40k coins and their rehydrate). Consider serving the lock
      screen before the history load finishes.
-3. **Engine memory on a 40k wallet.**
+3. **Engine memory on a 40k wallet.** #298
    - Cause: 210 MiB PSS for the engine alone after open; the history store keeps each transaction whole
      beside key-wallet's own records and coins.
    - Proposed fix: a heap profile (dhat) of an open 40k wallet; keep one copy of each transaction (share
      key-wallet's, or an `Arc`), and return freed pages after open (`malloc_trim`) or use a different
      allocator. Target: engine ≤ 150 MiB, so engine plus UI stays under 400 MB.
-4. **Contacts read model cached between reads.**
+4. **Contacts read model cached between reads.** #299
    - Cause: each read rebuilds the wallet's contacts from the library and re-encodes every id and
      provenance digest (33 µs per contact); a search builds every row before filtering.
    - Proposed fix: keep the snapshot `read_contacts` already stores and rebuild it only when the library's
@@ -162,14 +162,14 @@ needs testnet identities with 500 contacts, which this offline probe does not ha
 
 ```sh
 # The 40k fixture, unpacked (public regtest test data; passphrase "g02-regtest-fixture", not needed offline).
-mkdir -p /work/scratch/h06-perf/fixture && chmod 700 /work/scratch/h06-perf/fixture
-git show 042695b9f:ci/gate/fixtures/regtest40k-dw.tar.gz | tar xz -C /work/scratch/h06-perf/fixture
+fixture=$(mktemp -d) && chmod 700 "$fixture"
+git show 042695b9f:ci/gate/fixtures/regtest40k-dw.tar.gz | tar xz -C "$fixture"
 
 cd rust
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
 
 # history_page, wallet open, memory (release)
-DWD_H06_DATADIR=/work/scratch/h06-perf/fixture DWD_H06_ITERS=60 \
+DWD_H06_DATADIR="$fixture" DWD_H06_ITERS=60 \
   cargo test --release -p dw-engine --test h06_perf -- --ignored --nocapture
 
 # contacts at 500 and 1,000, cold load of 500 (unit tests: debug assertions on, optimised)
@@ -178,7 +178,7 @@ CARGO_PROFILE_DEV_OPT_LEVEL=3 CARGO_PROFILE_TEST_OPT_LEVEL=3 \
 
 # instructions per history_page call: the difference between two iteration counts, over 3 × 40 calls
 for n in 5 45; do
-  DWD_H06_DATADIR=/work/scratch/h06-perf/fixture DWD_H06_ITERS=$n perf stat -x, -e instructions:u \
+  DWD_H06_DATADIR="$fixture" DWD_H06_ITERS=$n perf stat -x, -e instructions:u \
     target/release/deps/h06_perf-<hash> --ignored --nocapture 2>&1 | grep instructions
 done
 ```
