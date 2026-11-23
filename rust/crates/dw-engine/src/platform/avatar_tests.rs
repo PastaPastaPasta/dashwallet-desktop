@@ -1566,7 +1566,7 @@ async fn the_close_waits_for_a_store_call_left_running() {
 /// Runs test `name` again in a child process, where `child` is set, and
 /// asserts it passed: the poison flag is process-wide and never cleared.
 /// Whether this is that child.
-fn in_child(name: &str, child: &str) -> bool {
+pub(crate) fn in_child(name: &str, child: &str) -> bool {
     if std::env::var_os(child).is_some() {
         return true;
     }

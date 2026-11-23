@@ -53,6 +53,10 @@ pub enum WithdrawalCheckingReason {
     PlatformBehind,
     /// (b): a payout-change barrier of the masternode is pending (P16).
     PayoutChangePending,
+    /// (b) across installations: a ProUpRegTx changing the payout from the
+    /// one Drive's window pays is in a loaded wallet's history, out of a
+    /// block, neither conflicted nor abandoned.
+    PayoutChangeUnconfirmed,
     /// (c): the identity read failed rule 5 (P12).
     Unverified,
     /// SPV has no synced header tip to compare with.
@@ -65,6 +69,7 @@ impl WithdrawalCheckingReason {
         match self {
             Self::PlatformBehind => "platform_behind",
             Self::PayoutChangePending => "payout_change_pending",
+            Self::PayoutChangeUnconfirmed => "payout_change_unconfirmed",
             Self::Unverified => "unverified",
             Self::SpvUnsynced => "spv_unsynced",
         }

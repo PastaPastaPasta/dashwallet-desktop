@@ -2,7 +2,7 @@
 //! and rotated automatic backups. Format: docs/contracts/dwbackup-v1.md.
 //!
 //! ```text
-//! DWBACKUP 1\n
+//! DWBACKUP <1 or 2>\n
 //! <header JSON>\n      network, created_at, wallet ids, automatic (plain, authenticated)
 //! <body JSON>\n        {"bundles": [dw-vault WalletBackupBundle, …]}
 //! ```
@@ -22,6 +22,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine as _;
 use dw_appdb::{SqlValue, TableRows};
@@ -29,7 +30,7 @@ use dw_vault::{Credential, GrantPurpose, LockState, Vault, VaultError, WalletBac
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::compat::write_new_private;
+use crate::compat::{write_new_private, write_new_private_io};
 use crate::events::unix_now;
 use crate::gate::Lifecycle;
 use crate::keys::{AutoBackup, Checked, Origin};
@@ -40,8 +41,12 @@ use crate::{
 
 /// First bytes of every `.dwbackup` file.
 pub const MAGIC: &[u8] = b"DWBACKUP ";
-/// The format this engine writes and reads.
-pub const FORMAT_VERSION: u32 = 1;
+/// The newest format this engine reads and writes: version 2 is written only
+/// for a payload holding a TEXT value that is not UTF-8 (`{"tb": …}`), every
+/// other backup as version 1, which older apps read.
+pub const FORMAT_VERSION: u32 = 2;
+/// The format of a backup whose TEXT values are all UTF-8.
+const UTF8_TEXT_VERSION: u32 = 1;
 /// Automatic backups kept per wallet by default and at most (dash-qt
 /// `-createwalletbackups`).
 pub const DEFAULT_KEEP: u32 = 10;
@@ -54,6 +59,9 @@ pub const EXTENSION: &str = "dwbackup";
 const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 /// dw-appdb setting holding the automatic backup count.
 const KEEP_SETTING: &str = "backup.keep";
+/// dw-appdb setting, in a wallet's `local:` scope, holding when its latest
+/// automatic backup failed (UNIX seconds); absent once one succeeds.
+const AUTO_FAILED_SETTING: &str = "backup.auto_failed_at";
 
 /// Why a backup call failed (`backup.*` codes).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +203,9 @@ fn to_json(v: &SqlValue) -> serde_json::Value {
         SqlValue::Integer(i) => json!({ "i": i }),
         SqlValue::Real(r) => json!({ "r": r }),
         SqlValue::Text(t) => json!({ "t": t }),
+        SqlValue::NonUtf8Text(t) => {
+            json!({ "tb": base64::engine::general_purpose::STANDARD.encode(t) })
+        }
         SqlValue::Blob(b) => json!({ "b": base64::engine::general_purpose::STANDARD.encode(b) }),
     }
 }
@@ -289,13 +300,19 @@ fn from_json(v: &serde_json::Value) -> Result<SqlValue, EngineError> {
         "i" => SqlValue::Integer(val.as_i64().ok_or_else(bad)?),
         "r" => SqlValue::Real(val.as_f64().ok_or_else(bad)?),
         "t" => SqlValue::Text(val.as_str().ok_or_else(bad)?.to_owned()),
-        "b" => SqlValue::Blob(
-            base64::engine::general_purpose::STANDARD
-                .decode(val.as_str().ok_or_else(bad)?)
-                .map_err(|_| bad())?,
-        ),
+        "tb" => match String::from_utf8(base64_value(val).ok_or_else(bad)?) {
+            Ok(t) => SqlValue::Text(t),
+            Err(e) => SqlValue::NonUtf8Text(e.into_bytes()),
+        },
+        "b" => SqlValue::Blob(base64_value(val).ok_or_else(bad)?),
         _ => return Err(bad().into()),
     })
+}
+
+fn base64_value(v: &serde_json::Value) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD
+        .decode(v.as_str()?)
+        .ok()
 }
 
 /// The header of a `.dwbackup` file (no decryption).
@@ -304,12 +321,12 @@ pub fn read_header(path: &Path) -> Result<BackupHeader, EngineError> {
     std::fs::File::open(path)
         .and_then(|f| f.take(64 * 1024).read_to_end(&mut start))
         .map_err(|e| BackupFailure::Corrupt(e.to_string()))?;
-    let (header, _) = split_header(&start)?;
+    let (header, _, _) = split_header(&start)?;
     Ok(header)
 }
 
-/// Splits `bytes` after the header line: (header, header line bytes, rest).
-fn split_header(bytes: &[u8]) -> Result<(BackupHeader, &[u8]), EngineError> {
+/// Splits `bytes` after the header line: (header, header line bytes, body).
+fn split_header(bytes: &[u8]) -> Result<(BackupHeader, &[u8], &[u8]), EngineError> {
     let corrupt = |d: &str| EngineError::from(BackupFailure::Corrupt(d.into()));
     let rest = bytes
         .strip_prefix(MAGIC)
@@ -322,7 +339,7 @@ fn split_header(bytes: &[u8]) -> Result<(BackupHeader, &[u8]), EngineError> {
         .ok()
         .and_then(|v| v.trim().parse().ok())
         .ok_or_else(|| corrupt("version"))?;
-    if version != FORMAT_VERSION {
+    if !(UTF8_TEXT_VERSION..=FORMAT_VERSION).contains(&version) {
         return Err(BackupFailure::UnsupportedVersion(version).into());
     }
     let rest = &rest[nl + 1..];
@@ -335,7 +352,7 @@ fn split_header(bytes: &[u8]) -> Result<(BackupHeader, &[u8]), EngineError> {
     if header.format != "dwbackup" || header.format_version != version {
         return Err(corrupt("header format"));
     }
-    Ok((header, &rest[..nl]))
+    Ok((header, &rest[..nl], &rest[nl + 1..]))
 }
 
 /// `<wallet id>.YYYY-MM-DD-HH-MM.dwbackup` (UTC), dash-qt's automatic name
@@ -432,20 +449,28 @@ impl NetworkSession {
         let live = self.live()?;
         let name = self.hub.name_of(&id);
         let birth_height = self.hub.wallet_state(&id).map(|s| s.birth_height);
-        let header = BackupHeader {
+        let mut header = BackupHeader {
             format: "dwbackup".into(),
-            format_version: FORMAT_VERSION,
+            format_version: UTF8_TEXT_VERSION,
             network: self.network.dir_name(),
             created_at: unix_now(),
             wallet_ids: vec![id.to_string()],
             automatic,
             app_version: env!("CARGO_PKG_VERSION").into(),
         };
-        let header_line = serde_json::to_vec(&header)
-            .map_err(|e| EngineError::Internal(format!("backup header: {e}")))?;
         let vault = self.vault.clone();
         tokio::task::spawn_blocking(move || -> Result<Zeroizing<Vec<u8>>, EngineError> {
             let rows = live.appdb.export_wallet_rows(&id.to_string())?;
+            let non_utf8 = rows
+                .iter()
+                .flat_map(|t| t.rows.iter().flatten())
+                .any(|v| matches!(v, SqlValue::NonUtf8Text(_)));
+            if non_utf8 {
+                header.format_version = FORMAT_VERSION;
+            }
+            let version = header.format_version;
+            let header_line = serde_json::to_vec(&header)
+                .map_err(|e| EngineError::Internal(format!("backup header: {e}")))?;
             let payload = Payload {
                 name: name.as_ref().map(|n| n.name.clone()),
                 birth_height,
@@ -481,7 +506,7 @@ impl NetworkSession {
             .map_err(|e| EngineError::Internal(format!("backup body: {e}")))?;
             let mut out = Zeroizing::new(Vec::with_capacity(body.len() + header_line.len() + 16));
             out.extend_from_slice(MAGIC);
-            out.extend_from_slice(format!("{FORMAT_VERSION}\n").as_bytes());
+            out.extend_from_slice(format!("{version}\n").as_bytes());
             out.extend_from_slice(&header_line);
             out.push(b'\n');
             out.extend_from_slice(&body);
@@ -554,6 +579,9 @@ impl NetworkSession {
                     }
                     other => other,
                 })?;
+            if this.automatic_backup_failed(wallet_id).await {
+                this.automatic_backup(wallet_id).await;
+            }
             Ok(BackupInfo {
                 path: dest,
                 wallet_id,
@@ -610,13 +638,11 @@ impl NetworkSession {
                     let bytes = Zeroizing::new(
                         std::fs::read(&path).map_err(|e| BackupFailure::Corrupt(e.to_string()))?,
                     );
-                    let (header, header_line) = split_header(&bytes)?;
+                    let (header, header_line, body) = split_header(&bytes)?;
                     if header.network != tag {
                         return Err(BackupFailure::NetworkMismatch.into());
                     }
-                    let body_start =
-                        MAGIC.len() + format!("{FORMAT_VERSION}\n").len() + header_line.len() + 1;
-                    let body: Body = parse_body(&bytes[body_start..])?;
+                    let body: Body = parse_body(body)?;
                     if body.bundles.len() != header.wallet_ids.len() {
                         return Err(BackupFailure::Corrupt("bundle count".into()).into());
                     }
@@ -675,6 +701,8 @@ impl NetworkSession {
                 self.roll_back_restore(&held, &done).await;
                 return Err(e);
             }
+            #[cfg(test)]
+            crate::coins::pause_at(&self.backups.pause_restore).await;
         }
         // The commit, stamped before the marks clear: a readmission their
         // clearing sends covers it (review r4 M4-R4).
@@ -726,12 +754,22 @@ impl NetworkSession {
             })
             .collect::<Result<Vec<_>, EngineError>>()?;
         // A legacy wallet's range and lookahead are applied before it is
-        // announced, as its file import does; its rows land after
-        // registration.
-        let state = crate::compat::ImportedState {
-            issued: bundled_issued(&tables, id)?,
-            ..Default::default()
-        };
+        // announced, as its file import does; its rows are stored with them,
+        // before its seed and its registration (#359).
+        // Listed as of its restore, as when its rows landed after the
+        // registration wrote its name.
+        let mut tables = tables;
+        let now = SqlValue::Integer(unix_now() as i64);
+        for t in tables.iter_mut().filter(|t| t.table == "wallets") {
+            if let Some(i) = t.columns.iter().position(|c| c == "created_at") {
+                for row in &mut t.rows {
+                    if let Some(v) = row.get_mut(i) {
+                        *v = now.clone();
+                    }
+                }
+            }
+        }
+        let issued = bundled_issued(&tables, id)?;
         let lookahead = bundled_lookahead(&tables, id)?;
         let existed = self.manager()?.get_wallet(&id.0).await.is_some();
         // A wallet already there gets back, if the restore fails later, the
@@ -746,6 +784,11 @@ impl NetworkSession {
             Some(tokio::task::spawn_blocking(move || appdb.prior_settings(&wid, &keys)).await??)
         } else {
             None
+        };
+        let state = crate::compat::ImportedState {
+            issued,
+            rows: Some(tables),
+            ..Default::default()
         };
         let options = ImportOptions {
             birth_height: Some(payload.birth_height.unwrap_or(0)),
@@ -773,11 +816,7 @@ impl NetworkSession {
             Err(EngineError::Vault(e)) => return Err(vault_failure(e)),
             Err(e) => return Err(e),
         }
-        let appdb = self.live()?.appdb;
-        let wid = id.to_string();
-        let inserted =
-            tokio::task::spawn_blocking(move || appdb.import_wallet_rows(&wid, &tables)).await??;
-        tracing::info!(wallet_id = %id, rows = inserted, "restored app metadata from backup");
+        tracing::info!(wallet_id = %id, "restored app metadata from backup");
         // The bell's count, which the imported rows moved (DP2-05).
         let tap = self.live()?.tap;
         tokio::task::spawn_blocking(move || tap.unread_moved(id)).await?;
@@ -930,10 +969,21 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            let _policy = this.backups.hold_policy().await;
             let appdb = this.live()?.appdb;
             let dir = this.backup_directory();
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
-                appdb.set_setting("", KEEP_SETTING, Some(&keep.to_string()))?;
+                let value = keep.to_string();
+                if keep == 0 {
+                    appdb.set_setting_clearing_local(
+                        "",
+                        KEEP_SETTING,
+                        Some(&value),
+                        AUTO_FAILED_SETTING,
+                    )?;
+                } else {
+                    appdb.set_setting("", KEEP_SETTING, Some(&value))?;
+                }
                 prune(&dir, None, keep)
             })
             .await??;
@@ -945,50 +995,131 @@ impl NetworkSession {
         .await
     }
 
+    /// Wallets whose latest automatic backup failed, and when (UNIX
+    /// seconds). A wallet's entry goes when one succeeds, when automatic
+    /// backups are turned off and with the wallet.
+    pub async fn automatic_backup_failures(
+        self: &Arc<Self>,
+    ) -> Result<Vec<(WalletId, u64)>, EngineError> {
+        drop(self.try_enter()?);
+        let appdb = self.live()?.appdb;
+        self.on_runtime(async move {
+            let rows = tokio::task::spawn_blocking(move || {
+                appdb.local_settings_of_key(AUTO_FAILED_SETTING)
+            })
+            .await??;
+            Ok(rows
+                .into_iter()
+                .filter_map(|(id, at)| Some((id.parse().ok()?, at.parse().ok()?)))
+                .collect())
+        })
+        .await
+    }
+
+    /// Whether the latest automatic backup of `id` failed, or its record
+    /// cannot be read.
+    async fn automatic_backup_failed(&self, id: WalletId) -> bool {
+        let Ok(live) = self.live() else { return false };
+        let scope = dw_appdb::local_scope(&id.to_string());
+        let recorded =
+            tokio::task::spawn_blocking(move || live.appdb.setting(&scope, AUTO_FAILED_SETTING))
+                .await;
+        !matches!(recorded, Ok(Ok(None)))
+    }
+
     /// Writes an automatic backup of `id` when the policy keeps any and the
-    /// data key is available, then rotates. A failure sends
+    /// data key is available, then rotates, and sends `Backups`. A failure
+    /// is recorded ([`Self::automatic_backup_failures`]) and sends
     /// `Notice{BackupFailed}`; a missing data key skips quietly (dash-qt
-    /// backs up when the wallet loads; here the key may not be there yet).
-    pub(crate) async fn automatic_backup(self: &Arc<Self>, id: WalletId) {
+    /// backs up when the wallet loads; here the key may not be there yet),
+    /// and so does a backup of the same minute that is already written.
+    /// With `keep` 0 it only deletes the wallet's record. Runs under the
+    /// wallet lifecycle lock (a wallet removed or a restore rolled back is
+    /// not backed up) and the policy lock (`set_backup_policy` waits for
+    /// it). The caller must not hold the lifecycle lock.
+    pub(crate) async fn automatic_backup(self: &Arc<Self>, id: WalletId) -> AutomaticRun {
+        let _lifecycle = self.wallet_lifecycle.hold().await;
+        let _policy = self.backups.hold_policy().await;
+        if self.require_wallet(&id).is_err() || !self.vault.has_wallet_secret(&id.0) {
+            return AutomaticRun::Done;
+        }
         let keep = match self.backup_keep() {
-            Ok(0) | Err(_) => return,
+            Ok(0) => {
+                if self.automatic_backup_failed(id).await {
+                    self.record_automatic_outcome(id, None).await;
+                }
+                return AutomaticRun::Done;
+            }
+            Err(_) => return AutomaticRun::Done,
             Ok(k) => k,
         };
-        if !self.vault.has_wallet_secret(&id.0)
-            || !matches!(
-                self.vault.lock_state(),
-                LockState::Unlocked | LockState::Unencrypted
-            )
-        {
-            return;
+        if !matches!(
+            self.vault.lock_state(),
+            LockState::Unlocked | LockState::Unencrypted
+        ) {
+            return AutomaticRun::Locked;
         }
         let dir = self.backup_directory();
         let path = dir.join(automatic_name(&id, unix_now()));
         if path.exists() {
-            return;
+            return AutomaticRun::Done;
         }
+        #[cfg(test)]
+        crate::coins::pause_at(&self.backups.pause).await;
         let result = async {
             let bytes = self.backup_bytes(id, None, true).await?;
             let (data_dir, d) = (self.data_dir().to_path_buf(), dir.clone());
-            tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
+            tokio::task::spawn_blocking(move || -> Result<bool, EngineError> {
                 crate::fsutil::create_owned_dir(&data_dir, Path::new(BACKUP_DIR))?;
-                write_new_private(&path, &bytes)?;
-                prune(&d, Some(id), keep)
+                match write_new_private_io(&path, &bytes) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+                    Err(e) => {
+                        return Err(BackupFailure::DestinationUnwritable(e.to_string()).into());
+                    }
+                }
+                prune(&d, Some(id), keep)?;
+                Ok(true)
             })
             .await?
         }
         .await;
         match result {
-            Ok(()) => {}
-            Err(EngineError::Backup(BackupFailure::VaultLocked)) => {}
+            Ok(false) => AutomaticRun::Done,
+            Ok(true) => {
+                self.record_automatic_outcome(id, None).await;
+                self.sink.emit(EngineEvent::Backups {
+                    network: self.network.clone(),
+                });
+                AutomaticRun::Done
+            }
+            Err(EngineError::Backup(BackupFailure::VaultLocked)) => AutomaticRun::Locked,
             Err(e) => {
+                self.record_automatic_outcome(id, Some(unix_now().to_string()))
+                    .await;
                 tracing::warn!(wallet_id = %id, error = %e, "automatic backup failed");
                 self.sink.emit(EngineEvent::Notice {
                     network: Some(self.network.clone()),
                     code: NoticeCode::BackupFailed,
                     detail: format!("wallet {id}: {e}"),
                 });
+                AutomaticRun::Done
             }
+        }
+    }
+
+    /// Records when the latest automatic backup of `id` failed, or deletes
+    /// the record for `None`.
+    async fn record_automatic_outcome(&self, id: WalletId, failed_at: Option<String>) {
+        let Ok(live) = self.live() else { return };
+        let scope = dw_appdb::local_scope(&id.to_string());
+        let recorded = tokio::task::spawn_blocking(move || {
+            live.appdb
+                .set_setting(&scope, AUTO_FAILED_SETTING, failed_at.as_deref())
+        })
+        .await;
+        if !matches!(recorded, Ok(Ok(()))) {
+            tracing::warn!(wallet_id = %id, "could not record the automatic backup's outcome");
         }
     }
 
@@ -999,6 +1130,105 @@ impl NetworkSession {
             let Ok(_op) = this.enter().await else { return };
             this.automatic_backup(id).await;
         });
+    }
+
+    /// Starts an automatic backup of every wallet in the background, once
+    /// per session: at open (dash-qt backs a wallet up when it loads,
+    /// QT-116), or while an encrypted vault is locked then, at its first
+    /// unlock. A wallet that finds the vault locked again ends the run, and
+    /// the next unlock starts it over (at once, if one came while the run
+    /// was ending).
+    pub(crate) fn back_up_every_wallet_once(self: &Arc<Self>) {
+        if !matches!(
+            self.vault.lock_state(),
+            LockState::Unlocked | LockState::Unencrypted
+        ) || self.backups.started.swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        #[cfg(test)]
+        self.backups.runs.fetch_add(1, Ordering::SeqCst);
+        let this = Arc::clone(self);
+        self.rt.spawn(async move {
+            let Ok(manager) = this.manager() else {
+                this.backups.started.store(false, Ordering::SeqCst);
+                return;
+            };
+            for id in manager.list_wallet_ids_blocking() {
+                let Ok(_op) = this.enter().await else { return };
+                if this.automatic_backup(WalletId(id)).await == AutomaticRun::Locked {
+                    #[cfg(test)]
+                    crate::coins::pause_at(&this.backups.pause_locked).await;
+                    this.backups.started.store(false, Ordering::SeqCst);
+                    this.back_up_every_wallet_once();
+                    break;
+                }
+            }
+            #[cfg(test)]
+            this.backups.runs_done.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    /// After a call that changed the vault's credential (encrypt, recover,
+    /// passphrase change): the backups made this session are sealed under
+    /// the credential it replaced, so every wallet is backed up again, now
+    /// or at the next unlock.
+    pub(crate) fn back_up_after_credential_change(self: &Arc<Self>) {
+        self.backups.started.store(false, Ordering::SeqCst);
+        self.back_up_every_wallet_once();
+    }
+}
+
+/// What [`NetworkSession::automatic_backup`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutomaticRun {
+    /// Written, failed, or skipped for a reason an unlock does not change.
+    Done,
+    /// Skipped: the data key is not available.
+    Locked,
+}
+
+/// The session's automatic backup state.
+#[derive(Default)]
+pub(crate) struct BackupRuntime {
+    /// [`NetworkSession::back_up_every_wallet_once`] ran.
+    started: AtomicBool,
+    /// Orders `set_backup_policy` with each automatic backup.
+    policy: tokio::sync::Mutex<()>,
+    /// Tests: how often it ran, and how often its run ended.
+    #[cfg(test)]
+    pub(crate) runs: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) runs_done: std::sync::atomic::AtomicUsize,
+    /// Tests: holds the next automatic backup after its same-minute check.
+    #[cfg(test)]
+    pub(crate) pause: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next restore after each wallet it registered.
+    #[cfg(test)]
+    pub(crate) pause_restore: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next run that found the vault locked, before it
+    /// lets the next unlock start one.
+    #[cfg(test)]
+    pub(crate) pause_locked: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: how many wait for `policy`.
+    #[cfg(test)]
+    policy_waiting: std::sync::atomic::AtomicUsize,
+}
+
+impl BackupRuntime {
+    async fn hold_policy(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        #[cfg(test)]
+        self.policy_waiting.fetch_add(1, Ordering::SeqCst);
+        let guard = self.policy.lock().await;
+        #[cfg(test)]
+        self.policy_waiting.fetch_sub(1, Ordering::SeqCst);
+        guard
+    }
+
+    /// Tests: how many wait for the policy lock.
+    #[cfg(test)]
+    pub(crate) fn policy_waiting(&self) -> usize {
+        self.policy_waiting.load(Ordering::SeqCst)
     }
 }
 
@@ -1051,6 +1281,10 @@ fn prune(dir: &Path, wallet: Option<WalletId>, keep: u32) -> Result<(), EngineEr
 }
 
 #[cfg(test)]
+#[path = "backup_tests.rs"]
+mod backup_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1078,17 +1312,63 @@ mod tests {
         let mut bytes = b"DWBACKUP 1\n".to_vec();
         bytes.extend(serde_json::to_vec(&h).unwrap());
         bytes.extend(b"\n{}\n");
-        let (parsed, _) = split_header(&bytes).unwrap();
+        let (parsed, _, _) = split_header(&bytes).unwrap();
         assert_eq!(parsed, h);
         assert_eq!(
             parsed.network(),
             Some(DashNetwork::Devnet { name: "x".into() })
         );
         assert!(matches!(
-            split_header(b"DWBACKUP 2\n{}\n"),
-            Err(EngineError::Backup(BackupFailure::UnsupportedVersion(2)))
+            split_header(b"DWBACKUP 3\n{}\n"),
+            Err(EngineError::Backup(BackupFailure::UnsupportedVersion(3)))
         ));
         assert!(split_header(b"SQLite format 3").is_err());
+
+        // Version 2, and the body after its header line.
+        let v2 = BackupHeader {
+            format_version: 2,
+            ..h.clone()
+        };
+        let mut bytes = b"DWBACKUP 2\n".to_vec();
+        bytes.extend(serde_json::to_vec(&v2).unwrap());
+        bytes.extend(b"\n{\"bundles\":[]}\n");
+        let (parsed, line, body) = split_header(&bytes).unwrap();
+        assert_eq!(parsed, v2);
+        assert_eq!(line, serde_json::to_vec(&v2).unwrap());
+        assert_eq!(body, b"{\"bundles\":[]}\n");
+        let mut mismatched = b"DWBACKUP 2\n".to_vec();
+        mismatched.extend(serde_json::to_vec(&h).unwrap());
+        mismatched.extend(b"\n{}\n");
+        assert!(matches!(
+            split_header(&mismatched),
+            Err(EngineError::Backup(BackupFailure::Corrupt(_)))
+        ));
+    }
+
+    /// A version 2 automatic backup is listed, so it is rotated too.
+    #[test]
+    fn a_version_2_automatic_backup_is_listed() {
+        let dir = dw_testutil::private_tempdir();
+        let id = WalletId([0xab; 32]);
+        let header = BackupHeader {
+            format: "dwbackup".into(),
+            format_version: 2,
+            network: "regtest".into(),
+            created_at: 9,
+            wallet_ids: vec![id.to_string()],
+            automatic: true,
+            app_version: "0".into(),
+        };
+        let mut bytes = b"DWBACKUP 2\n".to_vec();
+        bytes.extend(serde_json::to_vec(&header).unwrap());
+        bytes.extend(b"\n{}\n");
+        let path = dir.path().join(automatic_name(&id, 9));
+        std::fs::write(&path, bytes).unwrap();
+        let listed = list_automatic(dir.path(), Some(id)).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!((listed[0].created_at, &listed[0].path), (9, &path));
+        prune(dir.path(), Some(id), 0).unwrap();
+        assert!(!path.exists());
     }
 
     #[test]
@@ -1098,10 +1378,20 @@ mod tests {
             SqlValue::Integer(-3),
             SqlValue::Real(1.5),
             SqlValue::Text("é".into()),
+            SqlValue::NonUtf8Text(b"ab\xff".to_vec()),
             SqlValue::Blob(vec![0, 255]),
         ] {
             assert_eq!(from_json(&to_json(&v)).unwrap(), v);
         }
+        assert_eq!(
+            to_json(&SqlValue::NonUtf8Text(b"ab\xff".to_vec())),
+            serde_json::json!({ "tb": "YWL/" })
+        );
+        assert_eq!(
+            from_json(&serde_json::json!({ "tb": "w6k=" })).unwrap(),
+            SqlValue::Text("é".into())
+        );
+        assert!(from_json(&serde_json::json!({ "tb": "not base64!" })).is_err());
     }
 
     /// Review M4: a user backup and an automatic backup of the same wallet
@@ -1173,7 +1463,7 @@ mod tests {
                 let s = Arc::clone(&session);
                 let dest = out.join(format!("{n}.dwbackup"));
                 tasks.push(tokio::spawn(async move {
-                    let (user, ()) =
+                    let (user, _) =
                         tokio::join!(s.backup_wallet(id, dest, None), s.automatic_backup(id));
                     user
                 }));
@@ -1200,10 +1490,8 @@ mod tests {
         for r in results {
             let path = r.unwrap().path;
             let bytes = std::fs::read(&path).unwrap();
-            let (_, header_line) = split_header(&bytes).unwrap();
-            let body_start =
-                MAGIC.len() + format!("{FORMAT_VERSION}\n").len() + header_line.len() + 1;
-            let body: Body = serde_json::from_slice(&bytes[body_start..]).unwrap();
+            let (_, header_line, body) = split_header(&bytes).unwrap();
+            let body: Body = serde_json::from_slice(body).unwrap();
             open_bundle(session.vault(), &body.bundles[0], Some(b"pw"), header_line).unwrap();
         }
     }

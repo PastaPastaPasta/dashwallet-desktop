@@ -1398,3 +1398,43 @@ fn dw_fault_aborts_after_the_insert() {
     let db = AppDb::open(&path).unwrap();
     assert_eq!(state(&db, "a"), Signed);
 }
+
+/// #359: a restore's retry, which replaces the rows of the wallet an
+/// interrupted restore left, keeps the withdrawal records it wrote: they
+/// are app-wide, never in a backup or a wallet's rows.
+#[test]
+fn a_restore_replacing_a_wallets_rows_keeps_its_withdrawals() {
+    let db = AppDb::open_in_memory().unwrap();
+    db.insert_withdrawal_durable(&signed("a", 3), 7).unwrap();
+    db.set_setting(W, "coinjoin.salt", Some("left")).unwrap();
+    let mut rows = db.export_wallet_rows(W).unwrap();
+    assert!(rows.iter().all(|t| t.table != "mn_withdrawals"));
+    rows.iter_mut()
+        .flat_map(|t| t.rows.iter_mut())
+        .flatten()
+        .for_each(|v| {
+            if *v == crate::SqlValue::Text("left".into()) {
+                *v = crate::SqlValue::Text("backup".into());
+            }
+        });
+
+    db.write_settings_and_locks(
+        W,
+        &[],
+        &|_, _, new| new.to_owned(),
+        &[],
+        9,
+        Some(crate::BackupRows {
+            tables: &rows,
+            replace: true,
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(db.withdrawals_of_identity(IDENTITY).unwrap().len(), 1);
+    assert_eq!(db.withdrawal("a").unwrap().unwrap().signed, signed("a", 3));
+    assert_eq!(
+        db.setting(W, "coinjoin.salt").unwrap().as_deref(),
+        Some("backup")
+    );
+}

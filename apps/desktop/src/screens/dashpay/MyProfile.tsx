@@ -124,7 +124,7 @@ function Details({ main, contest }: { main: IdentitySummary; contest: string | n
             : headerModel(main, contest).username}
         </DetailRow>
         <DetailRow label={PROFILE_COPY.identity} testId="profile-identity">
-          <CopyValue value={main.identity} label={PROFILE_COPY.identityId} mono />
+          <CopyValue value={main.identity} action={PROFILE_COPY.copyIdentityId} mono />
         </DetailRow>
       </dl>
     </section>

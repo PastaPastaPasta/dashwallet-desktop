@@ -262,7 +262,8 @@ impl EngineEvent {
             // events. Masternodes (MG-03) waits for the same. Governance is
             // bound for the Tauri host only: the Swift host has no
             // governance calls, so the event would name nothing to re-read
-            // (MG-02 D95).
+            // (MG-02 D95). Backups too: the Swift host re-reads its backups
+            // list itself.
             E::Platform { .. }
             | E::Masternodes { .. }
             | E::DashPayNews { .. }
@@ -270,7 +271,8 @@ impl EngineEvent {
             | E::LockProgress { .. }
             | E::DispatchResolved { .. }
             | E::Governance { .. }
-            | E::Rates => return None,
+            | E::Rates
+            | E::Backups { .. } => return None,
         })
     }
 }

@@ -7358,3 +7358,123 @@ fn a_found_fork_drops_a_hidden_registration_key_wallet_no_longer_holds() {
     assert_eq!(guard.unwrap(), 905);
     assert_eq!(after, HashSet::from([kept.txid(), stored.txid()]));
 }
+
+/// #377 (a), a co-signed payment: a coin this wallet signed into a PSBT
+/// is offered again before the PSBT's transaction is seen, with no fault.
+/// Signing reserves nothing, so coin control lists it free and a payment
+/// with automatic selection builds and signs a second spend of it.
+#[test]
+fn pin_377_a_coin_signed_into_a_psbt_is_offered_before_its_transaction_is_seen() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(109, COIN);
+    let coin = OutPoint::new(prev.txid(), 0);
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN - 1_000)]);
+    let signed = f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
+    assert!(
+        dw_psbt::finalize(&mut signed.clone()),
+        "this wallet's signature completes it"
+    );
+
+    let listed = f
+        .engine
+        .block_on(f.session.utxos(f.wallet, CoinFilter::default()))
+        .unwrap();
+    let row = listed.iter().find(|c| c.outpoint == coin);
+    assert!(
+        row.is_some_and(|c| !c.reserved && !c.user_locked),
+        "coin control offers the signed coin: {row:?}"
+    );
+    assert!(f.reserved().is_empty());
+
+    let draft = f.draft(vec![pay(&other_foreign(), 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let inputs: Vec<OutPoint> = prepared
+        .summary()
+        .inputs
+        .iter()
+        .map(|i| i.outpoint)
+        .collect();
+    assert_eq!(inputs, vec![coin], "automatic selection spends it again");
+    let tx: Transaction = dashcore::consensus::deserialize(&prepared.raw().unwrap()).unwrap();
+    assert_ne!(tx.txid(), signed.unsigned_tx.txid(), "a conflicting spend");
+
+    let picked = f.draft(vec![pay(&other_foreign(), 10_000_000)]);
+    f.engine.block_on(draft.abandon(prepared)).unwrap();
+    picked
+        .set_source(CoinSource::Outpoints(vec![coin]))
+        .unwrap();
+    let chosen = f
+        .engine
+        .block_on(picked.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    assert_eq!(
+        chosen.summary().inputs[0].outpoint,
+        coin,
+        "and so does coin control"
+    );
+}
+
+/// #377 / #380, the disclosed way to keep a signed PSBT's coin: Lock
+/// unspent after signing. Neither automatic selection nor coin control
+/// takes the locked coin, and broadcasting the same PSBT passes every
+/// check of its own (a user lock is none of them) up to the network,
+/// which this fixture has none of: it ends at `NoPeers`, nothing sent.
+#[test]
+fn pin_377_a_signed_psbts_coin_locked_by_hand_is_not_spent_and_the_psbt_still_broadcasts() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(110, COIN);
+    let coin = OutPoint::new(prev.txid(), 0);
+    let other = f.credit(111, COIN / 2);
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN - 1_000)]);
+    let signed = f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
+    f.engine
+        .block_on(f.session.lock_outpoints(f.wallet, vec![coin]))
+        .unwrap();
+
+    let listed = f
+        .engine
+        .block_on(f.session.utxos(f.wallet, CoinFilter::default()))
+        .unwrap();
+    assert!(listed.iter().all(|c| c.outpoint != coin), "not offered");
+    let draft = f.draft(vec![pay(&other_foreign(), 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let inputs: Vec<OutPoint> = prepared
+        .summary()
+        .inputs
+        .iter()
+        .map(|i| i.outpoint)
+        .collect();
+    assert_eq!(
+        inputs,
+        vec![other],
+        "automatic selection skips the locked coin"
+    );
+    f.engine.block_on(draft.abandon(prepared)).unwrap();
+    let picked = f.draft(vec![pay(&other_foreign(), 10_000_000)]);
+    picked
+        .set_source(CoinSource::Outpoints(vec![coin]))
+        .unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(picked.estimate())),
+        SendFailure::OutpointUnavailable(coin),
+        "coin control refuses it"
+    );
+
+    assert_eq!(
+        psbt_failure(f.engine.block_on(f.session.broadcast_psbt(signed))),
+        PsbtFailure::NoPeers,
+        "past every check, the lock included: only the missing network stops it"
+    );
+    assert_eq!(
+        f.engine
+            .block_on(f.session.locked_outpoints(f.wallet))
+            .unwrap(),
+        vec![coin]
+    );
+}

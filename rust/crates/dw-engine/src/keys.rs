@@ -63,6 +63,29 @@ pub(crate) fn registration_refused(_: &std::path::Path) -> bool {
     false
 }
 
+/// An import's fault points (dw-appdb `fault`, `after_` stage): its rows
+/// stored (the seed not yet), its seed stored, its wallet registered.
+pub(crate) const IMPORT_ROWS: &str = "import.rows";
+pub(crate) const IMPORT_SECRET: &str = "import.secret";
+pub(crate) const IMPORT_REGISTER: &str = "import.register";
+
+impl NetworkSession {
+    /// The import fault point `point` on this session's app database: armed,
+    /// the step fails; `DW_FAULT` naming it aborts the process.
+    #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+    fn import_fault(&self, point: &str) -> Result<(), EngineError> {
+        (self.live()?.appdb)
+            .fault_point(point, dw_appdb::fault::Stage::After)
+            .map_err(|e| EngineError::Storage(e.to_string()))
+    }
+
+    #[cfg(not(all(debug_assertions, any(test, feature = "fault-inject"))))]
+    #[inline(always)]
+    fn import_fault(&self, _point: &str) -> Result<(), EngineError> {
+        Ok(())
+    }
+}
+
 /// Address lookahead of restores in Dash Core compatibility mode: dash-qt
 /// restores scan 1000 keys ahead (QT-105), which also finds funds Core mixed
 /// on its BIP44 chains (DESIGN.md R2).
@@ -484,20 +507,25 @@ impl NetworkSession {
         let _op = self.enter().await?;
         self.manager()?;
         self.leases.wait_gates().await;
-        let (out, epoch_changed) = self
+        let (out, epoch_changed, unlocked) = self
             .rt
             .spawn_blocking(move || {
                 let before = this.vault.lock_state();
                 let epoch = this.vault.epoch();
                 let out = f(&this.vault);
                 this.emit_lock_state_change(before);
+                let unlocked =
+                    before != LockState::Unlocked && this.vault.lock_state() == LockState::Unlocked;
                 let after = this.vault.epoch();
                 if after != epoch {
                     this.leases.epoch_changed(after);
                 }
-                (out.map_err(EngineError::from), after != epoch)
+                (out.map_err(EngineError::from), after != epoch, unlocked)
             })
             .await?;
+        if unlocked {
+            self.back_up_every_wallet_once();
+        }
         if epoch_changed {
             // Inline: the call returns with no task still holding the
             // session, and an unlock returns with its background leases.
@@ -1036,7 +1064,6 @@ impl NetworkSession {
         // (DEC-210), before its first write.
         let readmit = wallet_id.to_string();
         let readmitted = self.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
-        self.store_fingerprint(wallet_id, fingerprint).await;
 
         // A closed (unloaded) wallet is registered: open it instead.
         if self.live()?.store.is_unloaded(&wallet_id.0) {
@@ -1104,11 +1131,16 @@ impl NetworkSession {
             }
             None
         };
-        // A Dash Core file's range, coin locks and salt are stored, all or
-        // none, before the wallet is registered or its seed is stored, so
-        // nothing can see or spend from it with keys before they are there.
-        // A wallet already there with its keys is left as it is.
-        let prior = match self.write_imported_state(wallet_id, &state).await {
+        // A Dash Core file's range, coin locks and salt, or a backup's rows,
+        // are stored, all or none, before the wallet is registered or its
+        // seed is stored, so nothing can see or spend from it with keys
+        // before they are there, and a stop before it registers leaves it
+        // unregistered for a retry (#359). A wallet already there with its
+        // keys is left as it is.
+        let prior = match self
+            .write_imported_state(wallet_id, &state, registered)
+            .await
+        {
             Ok(prior) => prior,
             Err(e) => {
                 self.undo_attach(wallet_id, undo.0.clone(), undo.1).await;
@@ -1122,17 +1154,21 @@ impl NetworkSession {
         // another derivation flag (the id derives from the seed), counts as
         // one already there. Vault file writes and fsync stay off the async
         // workers.
+        self.store_fingerprint(wallet_id, fingerprint).await;
         let had_secret = had_secret || {
             let vault = self.vault.clone();
-            let stored = tokio::task::spawn_blocking(move || {
-                match vault.store_wallet_secret(&wallet_id.0, &secret) {
-                    Err(VaultError::WalletSecretExists) => Ok(true),
-                    stored => stored.map(|()| false),
-                }
-            })
-            .await
-            .map_err(EngineError::from)
-            .and_then(|r| r.map_err(EngineError::from));
+            let stored = match self.import_fault(IMPORT_ROWS) {
+                Err(e) => Err(e),
+                Ok(()) => tokio::task::spawn_blocking(move || {
+                    match vault.store_wallet_secret(&wallet_id.0, &secret) {
+                        Err(VaultError::WalletSecretExists) => Ok(true),
+                        stored => stored.map(|()| false),
+                    }
+                })
+                .await
+                .map_err(EngineError::from)
+                .and_then(|r| r.map_err(EngineError::from)),
+            };
             match stored {
                 Ok(existed) => existed,
                 Err(e) => {
@@ -1207,6 +1243,7 @@ impl NetworkSession {
         // lookahead it is to scan with and the marker, put back if nothing is
         // registered.
         let pending = async {
+            self.import_fault(IMPORT_SECRET)?;
             let previous = self.wide_scan(wallet_id).await?;
             self.mark_pending(wallet_id, WideScan::Birth).await?;
             // A row an earlier attempt left does not narrow this one; one of
@@ -1250,6 +1287,10 @@ impl NetworkSession {
                 .await
                 .map_err(EngineError::from)
         };
+        let registered = registered.and_then(|wallet| {
+            self.import_fault(IMPORT_REGISTER)?;
+            Ok(wallet)
+        });
         #[cfg(test)]
         let registered = registered.and_then(|wallet| {
             if take_test_failure(&FAIL_AFTER_REGISTRATION_IN, self.data_dir()) {

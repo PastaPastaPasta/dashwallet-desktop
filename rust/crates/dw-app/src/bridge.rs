@@ -220,6 +220,11 @@ pub enum AppEvent {
     /// expiring, mainnet opened or closed): re-read `ratesStatus`. Prices
     /// are the app's, not a network's.
     Rates,
+    /// An automatic backup was written: re-read the automatic backups and
+    /// their failures.
+    Backups {
+        network: String,
+    },
 }
 
 /// The domain of a `platform` event. Identities are Base58.
@@ -445,6 +450,9 @@ impl From<EngineEvent> for AppEvent {
                 network: net(network),
             },
             EngineEvent::Rates => AppEvent::Rates,
+            EngineEvent::Backups { network } => AppEvent::Backups {
+                network: net(network),
+            },
             EngineEvent::DashPayNews {
                 network,
                 wallet_id,
@@ -945,6 +953,7 @@ mod tests {
                 EngineEvent::Masternodes { network: network() },
                 EngineEvent::Governance { network: network() },
                 EngineEvent::Rates,
+                EngineEvent::Backups { network: network() },
                 // More than the engine sends: the bridge cuts too.
                 EngineEvent::DashPayNews {
                     network: network(),
@@ -996,9 +1005,10 @@ mod tests {
                 AppEvent::Masternodes { .. } => 19,
                 AppEvent::Governance { .. } => 20,
                 AppEvent::Rates => 21,
+                AppEvent::Backups { .. } => 22,
             };
             let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
-            assert_eq!(seen, (0..22).collect());
+            assert_eq!(seen, (0..23).collect());
 
             let mut largest = (0, None);
             for event in &events {
