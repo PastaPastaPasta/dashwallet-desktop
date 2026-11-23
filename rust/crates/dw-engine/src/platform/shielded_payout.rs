@@ -18,7 +18,6 @@ use platform_wallet::wallet::shielded::ShieldedDispatchKind;
 use super::VaultContactCrypto;
 use super::errors::{ContactError, PlatformError, ShieldedError};
 use super::flows::FlowKind;
-use super::money_gate::Refusal;
 use super::payment_locks::{ClaimRefused, Pair, PayCall, PayoutEvidence};
 use super::payments::{ContactPayOutcome, ContactPayQuote, PaymentSource, PayoutState};
 use super::registration_flow::b58;
@@ -43,8 +42,9 @@ pub(crate) struct Arm<'a> {
 }
 
 impl Arm<'_> {
-    fn named(&self) -> Option<[u8; 32]> {
-        (guard(&self.session.platform.payments.armed).get(&self.wallet)).and_then(|a| a.named)
+    /// Ends the arm: the transition the hook named, if any.
+    fn disarm(self) -> Option<[u8; 32]> {
+        (guard(&self.session.platform.payments.armed).remove(&self.wallet)).and_then(|a| a.named)
     }
 }
 
@@ -59,8 +59,11 @@ fn new_reference() -> String {
     format!("sh-{}", hex::encode(rand::random::<[u8; 16]>()))
 }
 
-fn gate_refusal(refusal: Refusal) -> ContactError {
-    ContactError::Platform(refusal.platform())
+fn address_went_elsewhere() -> ContactError {
+    PlatformError::InvalidArgument {
+        detail: "the contact's address went to another payment; pay again".into(),
+    }
+    .into()
 }
 
 /// `contact_pay_quote` from the Shielded balance past the payee and the
@@ -123,12 +126,7 @@ pub(crate) async fn pay_gated(
     let in_flight = match session.claim_payment(wallet, pair, &reference, &address) {
         Ok(in_flight) => in_flight,
         Err(ClaimRefused::Locked(e)) => return Err(e),
-        Err(ClaimRefused::Spent) => {
-            return Err(PlatformError::InvalidArgument {
-                detail: "the contact's address went to another payment; pay again".into(),
-            }
-            .into());
-        }
+        Err(ClaimRefused::Spent) => return Err(address_went_elsewhere()),
     };
     let row = DpContactPayoutRow {
         reference: reference.clone(),
@@ -150,8 +148,7 @@ pub(crate) async fn pay_gated(
     let arm = session.arm_payout(wallet, &reference);
     let to = To::Core(address.clone());
     let sent = pool::send_armed(session, wallet, lib, armed, &to, [0; MEMO_BYTES]).await;
-    let named = arm.named();
-    drop(arm);
+    let named = arm.disarm();
     #[cfg(test)]
     if let Some(pause) = session.platform.payments.settle_pause() {
         pause.mark_reached();
@@ -280,11 +277,15 @@ impl NetworkSession {
             }
             Err(e) => e,
         };
-        let journaled = match named {
-            None => Some(false),
-            Some(hash) => self.leases.has_shielded_artifact(wallet, hash).await.ok(),
+        // A read failure is not proof: the contact stays held.
+        let never_journaled = match named {
+            None => true,
+            Some(hash) => matches!(
+                self.leases.has_shielded_artifact(wallet, hash).await,
+                Ok(false)
+            ),
         };
-        if journaled == Some(false) {
+        if never_journaled {
             let state = PayoutState::NotSent;
             let back = Some(address);
             self.settle_payout(wallet, pair, (source, reference), state, back)
@@ -341,17 +342,14 @@ impl NetworkSession {
             Ok(checked) => checked,
             Err(refusal) => {
                 payments.drop_reserved(wallet, pair, &address);
-                return Err(gate_refusal(refusal));
+                return Err(ContactError::Platform(refusal.platform()));
             }
         };
         if fresh {
             payments.keep(wallet, pair, address.clone(), checked);
         }
         if (payments.reserved_checked(wallet, pair)).is_none_or(|(a, _)| a != address) {
-            return Err(PlatformError::InvalidArgument {
-                detail: "the contact's address went to another payment; pay again".into(),
-            }
-            .into());
+            return Err(address_went_elsewhere());
         }
         Ok(address)
     }

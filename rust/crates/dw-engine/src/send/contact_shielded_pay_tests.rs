@@ -158,7 +158,8 @@ fn a_shielded_payout_unshields_to_the_contacts_reserved_address() {
         [(
             paid.reference.clone(),
             "sent".to_string(),
-            Some(hex::encode(FakeShielded::st_hash(0)))
+            Some(hex::encode(FakeShielded::st_hash(0))),
+            f.contact_address(BOB, 0).to_string(),
         )]
     );
     assert!(f.lock(BOB).is_none());

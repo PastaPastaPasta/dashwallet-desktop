@@ -200,9 +200,7 @@ impl Payout {
             "not_sent" => PayoutState::NotSent,
             _ => return None,
         };
-        let script = (row.address.parse::<Address<_>>().ok())
-            .and_then(|a| a.require_network(network).ok())
-            .map(|a| a.script_pubkey());
+        let script = row_address(row, network).map(|a| a.script_pubkey());
         Some(Self {
             pair: pair_of(&row.identity, &row.contact).ok()?,
             source,
@@ -234,6 +232,23 @@ pub(crate) enum PayoutEvidence {
     NotSent { give_back: bool },
     /// Nothing proves either: the lock stays.
     Unknown,
+}
+
+impl PayoutEvidence {
+    /// The state it settles a pending payout in, and whether its address
+    /// goes back to the pair; `None` keeps the lock.
+    fn settles(self) -> Option<(PayoutState, bool)> {
+        match self {
+            Self::Unknown => None,
+            Self::Sent => Some((PayoutState::Sent, false)),
+            Self::NotSent { give_back } => Some((PayoutState::NotSent, give_back)),
+        }
+    }
+}
+
+/// A payout row's Core address on `network`.
+fn row_address(row: &DpContactPayoutRow, network: dashcore::Network) -> Option<Address> {
+    (row.address.parse::<Address<_>>().ok()).and_then(|a| a.require_network(network).ok())
 }
 
 /// The settings key of the Platform move record `reference` names (P6).
@@ -374,13 +389,7 @@ impl NetworkSession {
             let pair = payout.pair;
             let under_way = guard(&payments.in_flight).contains_key(&(id, pair));
             if payout.state == PayoutState::Pending && !under_way {
-                let settled = match self.payout_evidence(id, &row).await {
-                    PayoutEvidence::Unknown => None,
-                    PayoutEvidence::Sent => Some((PayoutState::Sent, false)),
-                    PayoutEvidence::NotSent { give_back } => {
-                        Some((PayoutState::NotSent, give_back))
-                    }
-                };
+                let settled = self.payout_evidence(id, &row).await.settles();
                 if let Some((state, give_back)) = settled {
                     let (wallet, reference) = (id.to_string(), row.reference.clone());
                     let settled = self.appdb_op(move |db| {
@@ -389,10 +398,7 @@ impl NetworkSession {
                     match settled.await {
                         Ok(true) => {
                             payout.state = state;
-                            if give_back
-                                && let Ok(a) = row.address.parse::<Address<_>>()
-                                && let Ok(address) = a.require_network(network)
-                            {
+                            if give_back && let Some(address) = row_address(&row, network) {
                                 payments.keep(id, pair, address, false);
                             }
                             self.signal_payments(id, &pair.0);
@@ -886,18 +892,27 @@ impl NetworkSession {
                 since,
             ),
         };
-        guard(&self.platform.payments.locks)
-            .entry(id)
-            .or_default()
+        self.hold_in_memory(id, pair, (source, &txid), since);
+        Err(ContactError::PaymentLocked { txid })
+    }
+
+    /// Puts `reference`'s lock on `pair` in memory, unless the pair has one.
+    fn hold_in_memory(
+        &self,
+        id: WalletId,
+        pair: Pair,
+        (source, reference): (PaymentSource, &str),
+        since: u64,
+    ) {
+        (guard(&self.platform.payments.locks).entry(id).or_default())
             .entry(pair)
             .or_insert(PaymentLock {
-                txid: txid.clone(),
+                txid: reference.to_owned(),
                 since,
                 source,
-                reference: txid.clone(),
+                reference: reference.to_owned(),
             });
         self.signal_payments(id, &pair.0);
-        Err(ContactError::PaymentLocked { txid })
     }
 
     /// Makes the pending payout `reference` the pair's lock in memory: its
@@ -910,17 +925,7 @@ impl NetworkSession {
         reference: &str,
     ) {
         let _rows = self.platform.payments.rows.lock().await;
-        guard(&self.platform.payments.locks)
-            .entry(id)
-            .or_default()
-            .entry(pair)
-            .or_insert(PaymentLock {
-                txid: reference.to_owned(),
-                since: crate::events::unix_now(),
-                source,
-                reference: reference.to_owned(),
-            });
-        self.signal_payments(id, &pair.0);
+        self.hold_in_memory(id, pair, (source, reference), crate::events::unix_now());
     }
 
     /// Settles the pending payout `reference` as `state` on its evidence
@@ -943,15 +948,7 @@ impl NetworkSession {
         let payments = &self.platform.payments;
         if let Err(e) = written {
             tracing::warn!(wallet_id = %id, %reference, error = %e, "could not settle a payout");
-            (guard(&payments.locks).entry(id).or_default())
-                .entry(pair)
-                .or_insert(PaymentLock {
-                    txid: reference.to_owned(),
-                    since: crate::events::unix_now(),
-                    source,
-                    reference: reference.to_owned(),
-                });
-            self.signal_payments(id, &pair.0);
+            self.hold_in_memory(id, pair, (source, reference), crate::events::unix_now());
             return false;
         }
         if let Some(wallet) = guard(&payments.locks).get_mut(&id)
@@ -992,14 +989,11 @@ impl NetworkSession {
         let Some(source) = row_source(&row.source) else {
             return LockResolution::Unknown;
         };
-        let (state, give_back) = match self.payout_evidence(id, &row).await {
-            PayoutEvidence::Unknown => return LockResolution::Unknown,
-            PayoutEvidence::Sent => (PayoutState::Sent, false),
-            PayoutEvidence::NotSent { give_back } => (PayoutState::NotSent, give_back),
+        let Some((state, give_back)) = self.payout_evidence(id, &row).await.settles() else {
+            return LockResolution::Unknown;
         };
-        let address = (give_back.then(|| row.address.parse::<Address<_>>().ok()))
-            .flatten()
-            .and_then(|a| a.require_network(self.network.core_network()).ok());
+        let network = self.network.core_network();
+        let address = give_back.then(|| row_address(&row, network)).flatten();
         let settled = self
             .settle_payout(id, pair, (source, reference), state, address)
             .await;
