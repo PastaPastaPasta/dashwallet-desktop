@@ -120,6 +120,7 @@ describe("IOS-050 the banner (D6)", () => {
     const request = payBanner(input({ detail: detail({ relation: "pendingIncoming", channel: "notEstablished" }) }));
     expect(request).toMatchObject({ kind: "note", text: expect.stringContaining("Accept and pay") });
     expect(blocks(payBanner(input({ detail: detail({ relation: "pendingIncoming" }), hasKeys: false })))).toBe(true);
+    expect(payBanner(input({ detail: detail({ relation: "pendingIncoming" }), hasKeys: false }))).toMatchObject({ kind: "enable", text: "Enable DashPay first. Then you can accept and pay." });
   });
 
   it("reads the Enable and broken-channel texts in the language in use", () => {
@@ -130,7 +131,7 @@ describe("IOS-050 the banner (D6)", () => {
       const broken = textOf(payBanner(input({ detail: detail({ channel: "broken" }) })));
       const refusal = sendErrorText(err("contact.channel_broken"), "test")?.text ?? "";
       for (const text of [enable, broken, refusal]) expect(text).not.toMatch(/Enable DashPay first|Payments to this contact/);
-      expect(enable).toMatch(/^⟦.*⟧ ⟦.*⟧$/);
+      expect(enable).toMatch(/^⟦[^⟦⟧]*⟧$/);
       expect(broken).toMatch(/^⟦.*⟧$/);
       expect(refusal).toBe(broken);
     } finally {

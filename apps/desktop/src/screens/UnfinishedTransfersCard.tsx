@@ -196,7 +196,7 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
                   {C.sheet.state[lock.state]}
                 </span>
                 <br />
-                <CopyValue value={lock.txid} display={shortId(lock.txid)} label={tr("home.unfinished.txid")} mono />
+                <CopyValue value={lock.txid} display={shortId(lock.txid)} action={tr("home.unfinished.copyTxid")} mono />
                 {result && (
                   <p className={result.kind === "notApplied" ? "form-problem" : "field-hint"} role="status" data-testid="unfinished-row-result">
                     {resultText(result, errorText, lock.kind)}

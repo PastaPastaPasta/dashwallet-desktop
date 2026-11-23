@@ -5,8 +5,9 @@ import { checkArea, PSEUDO } from "./pseudo";
 // Localization (MP-14): CoinJoin under the two pseudo-locales (./pseudo.ts): the CoinJoin page
 // (mixing with expanded Session details, custom level, empty/too-little, error/disabled, status-read failure), the Home
 // card (mixing and locked-stop), the Stop Mixing confirmation sheet, and Move mixed coins (wallet
-// confirm and outcome, Shielded quote, combine >50 coins, and mixing refusal). States are reached
-// as coinjoin.spec.ts and move-mixed.spec.ts reach them.
+// confirm and outcome, Shielded quote, each outcome of a move to Shielded and its refusals, combine
+// >50 coins, and mixing refusal). States are reached as coinjoin.spec.ts and move-mixed.spec.ts
+// reach them.
 
 async function openHome(page: Page, scenario: string, theme: Theme, lang: string) {
   await page.goto(fixtureUrl(scenario, theme, `&lang=${lang}`));
@@ -21,6 +22,24 @@ async function openCoinJoin(page: Page, scenario: string, theme: Theme, lang: st
 
 /** Formatted Dash amounts shown as plain strings (e.g. "0.200002 tDASH", "1,000 tDASH"). */
 const AMOUNTS = [/^[\p{Nd}.,٫٬\s•*]+ (t?DASH|mDASH|μDASH|duffs)(, [\p{Nd}.,٫٬\s•*]+ (t?DASH|mDASH|μDASH|duffs))*$/u];
+
+/** Move mixed coins ▸ Move to Shielded, approved; `prep` sets how the fixture's lock ends. */
+async function shieldMove(page: Page, theme: Theme, lang: string, prep: string) {
+  await openCoinJoin(page, "coinjoin-move", theme, lang);
+  await page.evaluate(prep);
+  await page.getByTestId("coinjoin-move-shield").click();
+  await expect(page.getByTestId("move-mixed-body")).toHaveAttribute("data-step", "confirm");
+  await page.getByTestId("move-mixed-confirm").click();
+  await authorize(page);
+}
+
+/** Each way a move to Shielded ends, after approval: the fixture's lock and the text it shows. */
+const SHIELD_OUTCOMES: Record<string, string> = {
+  added: `window.__dwFixture.world.pending.shielded.shield = "applied"`,
+  waiting: `window.__dwFixture.world.pending.shielded.shield = "proofWaiting"`,
+  checking: `window.__dwFixture.world.pending.shielded.shield = "checking"`,
+  "not-applied": `window.__dwFixture.world.pending.shielded.shield = "notApplied"`,
+};
 
 interface State {
   roots: string[];
@@ -127,6 +146,52 @@ const STATES: Record<string, State> = {
       await page.getByTestId("coinjoin-move-shield").click();
       await expect(page.getByTestId("move-mixed-body")).toHaveAttribute("data-step", "confirm");
       await expect(page.getByTestId("move-mixed-body")).toHaveAttribute("data-destination", "shielded");
+    },
+  },
+  "move-shielded-added": {
+    roots: ["move-mixed-sheet"],
+    data: [/^fixture: .+$/],
+    open: async (page, theme, lang) => {
+      await shieldMove(page, theme, lang, SHIELD_OUTCOMES["added"]);
+      await expect(page.getByTestId("move-mixed-body")).toHaveAttribute("data-outcome", "shielded");
+    },
+  },
+  "move-shielded-waiting": {
+    roots: ["move-mixed-sheet"],
+    data: [/^fixture: .+$/],
+    open: async (page, theme, lang) => {
+      await shieldMove(page, theme, lang, SHIELD_OUTCOMES["waiting"]);
+      await expect(page.getByTestId("move-mixed-body")).toHaveAttribute("data-outcome", "shielded");
+    },
+  },
+  "move-shielded-checking": {
+    roots: ["move-mixed-sheet"],
+    data: [/^fixture: .+$/],
+    open: async (page, theme, lang) => {
+      await shieldMove(page, theme, lang, SHIELD_OUTCOMES["checking"]);
+      await expect(page.getByTestId("move-mixed-body")).toHaveAttribute("data-outcome", "shielded");
+    },
+  },
+  "move-shielded-not-applied": {
+    roots: ["move-mixed-sheet"],
+    data: [/^fixture: .+$/],
+    open: async (page, theme, lang) => {
+      await shieldMove(page, theme, lang, SHIELD_OUTCOMES["not-applied"]);
+      await expect(page.getByTestId("move-mixed-body")).toHaveAttribute("data-outcome", "shielded");
+    },
+  },
+  "move-shielded-possibly-sent": {
+    roots: ["move-mixed-sheet"],
+    open: async (page, theme, lang) => {
+      await shieldMove(page, theme, lang, `window.__dwFixture.world.coinjoin.drainUnknown = "next"`);
+      await expect(page.getByTestId("move-mixed-refusal")).toBeVisible();
+    },
+  },
+  "move-shielded-changed": {
+    roots: ["move-mixed-sheet"],
+    open: async (page, theme, lang) => {
+      await shieldMove(page, theme, lang, `window.__dwFixture.world.coinjoin.drainChanged = true`);
+      await expect(page.getByTestId("move-mixed-replanned")).toBeVisible();
     },
   },
   "move-combine": {
@@ -262,4 +327,14 @@ test.describe("numbers keep their order under ar-XB", () => {
       expect(at, "an amount with a digit group").not.toBeNull();
       expect(at![0]).toBeLessThan(at![1]);
     });
+});
+
+test("the possibly-sent refusal of a move to Shielded follows a language change with no reload", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await shieldMove(page, "light", "en", `window.__dwFixture.world.coinjoin.drainUnknown = "next"`);
+  const refusal = page.getByTestId("move-mixed-refusal");
+  await expect(refusal).toHaveText("The payment may have been sent. Open Tools ▸ Repair to settle it; you can move Dash into Shielded again once it has.");
+  await page.evaluate(() => window.__dwFixture!.setLanguage("en-XA"));
+  await expect(refusal).toHaveText(/^⟦.+⟧$/);
+  expect(errors).toEqual([]);
 });

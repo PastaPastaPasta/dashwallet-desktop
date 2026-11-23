@@ -32,10 +32,10 @@ export function AboutTab() {
             {node.data ? node.data.userAgent : pendingText(node)}
           </DetailRow>
           <DetailRow label={t("settings.about.dataDir")} testId="settings-about-data-dir">
-            {node.data ? <CopyValue value={node.data.dataDir} label={t("settings.about.dataDirValue")} mono /> : pendingText(node)}
+            {node.data ? <CopyValue value={node.data.dataDir} action={t("settings.about.copyDataDir")} mono /> : pendingText(node)}
           </DetailRow>
           <DetailRow label={t("settings.about.backups")} testId="settings-about-backups">
-            {backups.data ? <CopyValue value={backups.data} label={t("settings.about.backupsValue")} mono /> : pendingText(backups)}
+            {backups.data ? <CopyValue value={backups.data} action={t("settings.about.copyBackups")} mono /> : pendingText(backups)}
           </DetailRow>
         </dl>
       </SettingsCard>

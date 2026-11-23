@@ -259,7 +259,7 @@ test("IOS-069 P4: header, usernames, identity id with copy, credits and the cont
   await expect(page.getByTestId("profile-header")).toContainText("Down the rabbit hole");
   await expect(page.getByTestId("profile-edit")).toBeEnabled();
   await expect(page.getByTestId("profile-usernames")).toContainText("@alice");
-  await expect(page.getByTestId("profile-identity").getByRole("button", { name: "Copy identity id" })).toBeVisible();
+  await expect(page.getByTestId("profile-identity").getByRole("button", { name: "Copy identity ID" })).toBeVisible();
   await expect(page.getByTestId("profile-credits-figure")).toHaveText(/^1\.845/);
   await expect(page.getByTestId("profile-credits-estimate")).toHaveText("≈ 1,961 contact requests · 1,537 profile updates");
   // The fixture's journal holds a lost contest for "al" (D12).
