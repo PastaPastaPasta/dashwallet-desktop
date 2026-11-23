@@ -67,6 +67,17 @@ pub fn single_instance<R: Runtime>(root: &Path) -> Option<TauriPlugin<R>> {
 #[cfg(debug_assertions)]
 pub const NO_LAUNCH_DIALOG: &str = "DW_NO_LAUNCH_DIALOG";
 
+/// Gives up the single-instance plugin's claim (its D-Bus name, or its
+/// mutex and message window), so a launch made while this one shows its
+/// refusal no longer hands its links to a process about to exit. Nothing
+/// without the plugin.
+pub fn release_single_instance<R: Runtime, M: tauri::Manager<R>>(app: &M) {
+    #[cfg(not(target_os = "macos"))]
+    tauri_plugin_single_instance::destroy(app);
+    #[cfg(target_os = "macos")]
+    let _ = app;
+}
+
 /// Shows the dialog of a launch the instance lock refused and waits for its
 /// button; the launch exits after it. It runs before the event loop (and,
 /// without the single-instance plugin, before Tauri starts), so it is the

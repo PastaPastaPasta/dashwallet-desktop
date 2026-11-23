@@ -88,6 +88,16 @@ pub struct RefusalDialog {
     pub button: &'static str,
 }
 
+/// A launch refused with `e`: `release` first, giving up what would take
+/// the next launch's links while this one waits on its dialog, then
+/// [`refusal_dialog`]'s dialog through `show`, if there is one.
+pub fn refuse(e: &AppError, release: impl FnOnce(), show: impl FnOnce(RefusalDialog)) {
+    release();
+    if let Some(dialog) = refusal_dialog(e) {
+        show(dialog);
+    }
+}
+
 /// The dialog of a launch refused with `e`: `app.already_running` only. A
 /// lock that cannot be taken at all (`app.data_dir`) is printed only.
 pub fn refusal_dialog(e: &AppError) -> Option<RefusalDialog> {
@@ -199,6 +209,27 @@ mod tests {
         );
         let unlockable = AppError::app(AppCode::DataDir, "cannot lock");
         assert_eq!(refusal_dialog(&unlockable), None);
+    }
+
+    #[test]
+    fn a_refused_launch_gives_up_its_links_before_its_dialog_waits() {
+        let steps = std::cell::RefCell::new(Vec::new());
+        let refused = AppError::app(AppCode::AlreadyRunning, "held");
+        refuse(
+            &refused,
+            || steps.borrow_mut().push("release"),
+            |d| steps.borrow_mut().push(d.title),
+        );
+        assert_eq!(*steps.borrow(), ["release", "Dash Wallet is still closing"]);
+
+        steps.borrow_mut().clear();
+        let unlockable = AppError::app(AppCode::DataDir, "cannot lock");
+        refuse(
+            &unlockable,
+            || steps.borrow_mut().push("release"),
+            |d| steps.borrow_mut().push(d.title),
+        );
+        assert_eq!(*steps.borrow(), ["release"]);
     }
 
     #[test]
