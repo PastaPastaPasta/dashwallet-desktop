@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { seriousAxeViolations } from "./axe";
+import { seriousAxeViolations, settleAnimations } from "./axe";
 import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // QT-036, QT-139: Settings ▸ General ▸ Decimal places, the fewest decimals a compact amount shows.
@@ -13,14 +13,12 @@ async function openGeneral(page: Page, theme: Theme) {
   await expect(page.getByTestId("settings-display")).toBeVisible();
 }
 
-const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)));
-
 async function shootHome(page: Page, path: string) {
   await page.getByTestId("sidebar-home").click();
   await page.getByTestId("hero-amount").waitFor();
   await page.locator(".tx-row-amount").first().waitFor();
   await fontsReady(page);
-  await settled(page);
+  await settleAnimations(page);
   await page.screenshot({ path });
 }
 

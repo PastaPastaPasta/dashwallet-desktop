@@ -18,7 +18,7 @@ import { CopyValue, DetailRow } from "../../components/detail";
 import { QuestionSheet, Sheet } from "../../components/sheet";
 import { byTag, LANGUAGES, systemLanguage, systemLanguages, useT } from "../../i18n";
 import { unitDecimals } from "../../format/amount";
-import { DECIMAL_PLACES, UNIT_OF } from "../../format/display";
+import { DECIMAL_PLACES, decimalPlaces, UNIT_OF } from "../../format/display";
 import { failureText } from "../../onboarding/model";
 import { DEFAULT_DUST, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
 import { savePrefs, settledPending } from "../../settings/prefs";
@@ -129,7 +129,7 @@ export function GeneralTab() {
                     type="button"
                     className="segment"
                     data-testid={`settings-decimals-${n}`}
-                    aria-pressed={Math.min(prefs.decimalDigits, places[places.length - 1]) === n}
+                    aria-pressed={Math.min(decimalPlaces(prefs.decimalDigits), places[places.length - 1]) === n}
                     onClick={() => void save({ decimalDigits: n })}
                   >
                     {n}

@@ -41,7 +41,7 @@ export interface Display {
  * the chosen unit and at most its own decimals. It never cuts digits off (DEC-1058). */
 export const DECIMAL_PLACES = [2, 3, 4, 5, 6, 7, 8] as const;
 
-function decimalPlaces(n: number): number {
+export function decimalPlaces(n: number): number {
   return Math.min(8, Math.max(2, Math.trunc(n) || 2));
 }
 
