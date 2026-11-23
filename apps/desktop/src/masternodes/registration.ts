@@ -9,6 +9,7 @@ import type { MnRegistrationRequest } from "../api/generated/MnRegistrationReque
 import type { MasternodeTypeName } from "../api/generated/MasternodeTypeName";
 import type { ProTxKeys } from "../api/generated/ProTxKeys";
 import { t } from "../i18n";
+import { DUP_NODE, DUP_SERVICE, PAYEE_REUSE } from "./protxReasons";
 
 const P = "masternodes.register";
 
@@ -255,11 +256,11 @@ export function refusalOf(e: unknown, kind: MasternodeTypeName = "regular"): Ref
   const reason = e.data?.kind === "reason" ? e.data.reason : null;
   switch (e.code) {
     case "masternodes.protx_refused":
-      if (reason === "bad-protx-dup-netinfo-entry") return { step: "operator", field: "service", text: t(`${P}.refused.dupService`) };
+      if (reason === DUP_SERVICE) return { step: "operator", field: "service", text: t(`${P}.refused.dupService`) };
       if (reason === "bad-protx-dup-key") return { step: "operator", field: "operatorKey", text: t(`${P}.refused.dupKey`) };
-      if (reason === "bad-protx-dup-platformnodeid") return { step: "operator", field: "nodeId", text: t(`${P}.refused.dupNode`) };
+      if (reason === DUP_NODE) return { step: "operator", field: "nodeId", text: t(`${P}.refused.dupNode`) };
       if (reason === "protx-dup") return { step: "operator", field: null, text: t(`${P}.refused.pendingDup`) };
-      if (reason === "bad-protx-payee-reuse") return { step: "keys", field: "payoutAddress", text: t(`${P}.refused.payeeReuse`) };
+      if (reason === PAYEE_REUSE) return { step: "keys", field: "payoutAddress", text: t(`${P}.refused.payeeReuse`) };
       if (reason === "bad-protx-operator-reward") return { step: "operator", field: "operatorShare", text: t(`${P}.error.share`) };
       if (reason?.startsWith("bad-protx-netinfo")) return { step: "operator", field: "service", text: t(`${P}.error.serviceIpv4`) };
       if (reason?.startsWith("bad-protx-collateral")) return { step: "collateral", field: null, text: t(`${P}.refused.collateral`, { amount: collateralDash(kind) }) };

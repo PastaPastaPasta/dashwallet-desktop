@@ -30,7 +30,7 @@ import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { UpdateRegistrarPreview } from "../api/generated/UpdateRegistrarPreview";
 import type { UpdateRegistrarRequest } from "../api/generated/UpdateRegistrarRequest";
-import { DUP_KEY, PAYEE_REUSE } from "../masternodes/protxReasons";
+import { DUP_KEY, DUP_NODE, DUP_SERVICE as DUP_SERVICE_REASON, PAYEE_REUSE } from "../masternodes/protxReasons";
 import type { Ctx, Handlers } from "./handlers";
 import { FIXTURE_WALLET_ID, type FixtureWallet, type World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
@@ -447,7 +447,7 @@ const PENDING: ProTxOperation["state"]["kind"][] = ["needs_signature", "inputs_s
 const MAX_OPERATOR_REWARD = 10_000;
 
 const refused = (reason: string) => fail("masternodes.protx_refused", reason, { kind: "reason", reason });
-const exhaustedError = (role: MasternodeKeyRoleName) => fail("masternodes.keys_exhausted", `no unused ${role} key`, { kind: "keyRole", role });
+const exhaustedError = (role: MasternodeKeyRoleName) => fail("masternodes.keys_exhausted", `the ${role} keychain is exhausted`, { kind: "keyRole", role });
 const stateError = (state: string) => fail("masternodes.operation_state", `the operation is ${state}`, { kind: "operationState", state });
 const listUnavailable = () => fail("masternodes.list_unavailable", "the masternode list is not synced");
 
@@ -588,11 +588,11 @@ function resolve(world: World, r: MnRegistrationRequest, commit: boolean): ProTx
   const platformNodeIndex = !node || node.kind === "given" ? null : keychainIndex(m, "platform_node", node.kind === "keychain" ? node.index : null);
   const nodeId = !node ? null : node.kind === "given" ? node.nodeId.trim().toLowerCase() : keyInfo("platform_node", platformNodeIndex!).platformNodeId!;
   const payoutAddress = r.payout.kind === "address" ? r.payout.address.trim() : commit ? addr(`pN${issue(m, "", 2)}`) : "";
-  if (payoutAddress === ownerAddress || payoutAddress === votingAddress) throw refused("bad-protx-payee-reuse");
+  if (payoutAddress === ownerAddress || payoutAddress === votingAddress) throw refused(PAYEE_REUSE);
   const listed = m.listed.map((l) => l.facts);
-  if (service === DUP_SERVICE || listed.some((f) => f.service === service)) throw refused("bad-protx-dup-netinfo-entry");
+  if (service === DUP_SERVICE || listed.some((f) => f.service === service)) throw refused(DUP_SERVICE_REASON);
   if (operatorPublicKey === DUP_OPERATOR_KEY || listed.some((f) => f.operatorPublicKey === operatorPublicKey)) throw refused("bad-protx-dup-key");
-  if (nodeId && (nodeId === DUP_NODE_ID || listed.some((f) => f.platformNodeId === nodeId))) throw refused("bad-protx-dup-platformnodeid");
+  if (nodeId && (nodeId === DUP_NODE_ID || listed.some((f) => f.platformNodeId === nodeId))) throw refused(DUP_NODE);
   const terms: ProTxTerms = {
     masternodeType: r.kind,
     version: 2,
@@ -1192,7 +1192,7 @@ function ops(m: MasternodesWorld) {
     scenarioOp(OP_UPDATE, 9, { kind: "sent" }, {
       kind: "update_registrar",
       proTxHash: HOME,
-      terms: scenarioTerms(9, { service: "203.0.113.7:19999", ownerAddress: keyInfo("owner", 0).address!, ownerIndex: 0, collateral: null, collateralOutpoint: null, collateralAddress: null }),
+      terms: scenarioTerms(9, { service: "198.51.100.7:19999", ownerAddress: keyInfo("owner", 0).address!, ownerIndex: 0, collateral: null, collateralOutpoint: null, collateralAddress: null }),
     }),
     scenarioOp(OP_CONFLICTED, 10, { kind: "conflicted" }),
     scenarioOp(OP_CONFIRMED, 11, { kind: "confirmed", height: HEIGHT - 40 }),
