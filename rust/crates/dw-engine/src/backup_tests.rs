@@ -1168,6 +1168,7 @@ fn at_minute(id: WalletId, minute: u32) -> String {
 
 fn private_dir(path: &Path) -> PathBuf {
     std::fs::create_dir(path).unwrap();
+    #[cfg(unix)]
     set_mode(path, 0o700);
     path.to_path_buf()
 }
@@ -1343,7 +1344,9 @@ fn not_at_a_minute_end() {
 
 /// A cut-off file at this minute's name is set aside as `.incomplete`
 /// (kept) and that minute's backup is written; where it cannot be set
-/// aside, the backup's failure is recorded and announced.
+/// aside, the backup's failure is recorded and announced. Unix only: it
+/// stops the setting aside by taking write permission away.
+#[cfg(unix)]
 #[test]
 fn an_incomplete_file_at_this_minutes_name_neither_stops_its_backup_nor_hides_its_failure() {
     let dir = dw_testutil::private_tempdir();
@@ -1657,7 +1660,9 @@ fn run_automatic(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) -
 }
 
 /// A file at this minute's name that cannot be read fails the backup: it
-/// is neither set aside nor taken for a backup.
+/// is neither set aside nor taken for a backup. Unix only: it takes read
+/// permission away.
+#[cfg(unix)]
 #[test]
 fn an_unreadable_file_at_this_minutes_name_fails_the_backup() {
     let dir = dw_testutil::private_tempdir();
