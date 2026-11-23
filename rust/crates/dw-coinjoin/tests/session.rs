@@ -37,7 +37,7 @@ const LARGER: u64 = DENOMINATIONS[1];
 const REBALANCE_VERSION: u32 = 70241;
 
 struct TestWallet {
-    key: SecretKey,
+    keys: Vec<SecretKey>,
     coins: Vec<MixCoin>,
     /// Unspent coins of the wallet that no session offers.
     others: Vec<OutPoint>,
@@ -53,19 +53,25 @@ struct TestWallet {
 
 impl TestWallet {
     fn new(n: u8) -> Self {
-        let key = SecretKey::from_secret_bytes([0x11; 32]).unwrap();
-        let pk = PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&key));
-        let script = ScriptBuf::new_p2pkh(&pk.pubkey_hash());
+        // One key, and so one script, per coin: Dash Core refuses an entry
+        // whose inputs pay one script twice.
+        let keys: Vec<SecretKey> = (0..n)
+            .map(|i| {
+                let mut b = [0x11; 32];
+                b[31] = i.wrapping_add(1);
+                SecretKey::from_secret_bytes(b).unwrap()
+            })
+            .collect();
         let coins = (0..n)
             .map(|i| MixCoin {
                 outpoint: OutPoint::new(Txid::from_byte_array([i + 1; 32]), 0),
                 value: AMOUNT,
-                script_pubkey: script.clone(),
+                script_pubkey: script_of(&keys[i as usize]),
                 rounds: 0,
             })
             .collect();
         Self {
-            key,
+            keys,
             coins,
             others: vec![OutPoint::new(Txid::from_byte_array([0xee; 32]), 2)],
             signs: Mutex::new(0),
@@ -95,9 +101,16 @@ impl TestWallet {
         }
     }
 
-    fn pubkey(&self) -> dashcore::secp256k1::PublicKey {
-        dashcore::secp256k1::PublicKey::from_secret_key(&self.key)
+    fn key_for(&self, script: &ScriptBuf) -> Result<&SecretKey, WalletError> {
+        (self.keys.iter())
+            .find(|k| script_of(k) == *script)
+            .ok_or_else(|| WalletError("no key for the script".into()))
     }
+}
+
+fn script_of(key: &SecretKey) -> ScriptBuf {
+    let pk = PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(key));
+    ScriptBuf::new_p2pkh(&pk.pubkey_hash())
 }
 
 fn p2pkh(seed: u8) -> ScriptBuf {
@@ -176,12 +189,13 @@ impl MixingWallet for TestWallet {
                 let h = cache
                     .legacy_signature_hash(*i, script, MIXING_SIGHASH)
                     .map_err(|e| WalletError(e.to_string()))?;
-                let sig = ecdsa::sign(Message::from_digest(h.to_byte_array()), &self.key);
+                let key = self.key_for(script)?;
+                let sig = ecdsa::sign(Message::from_digest(h.to_byte_array()), key);
                 let mut der = sig.serialize_der().to_vec();
                 der.push(MIXING_SIGHASH as u8);
                 let mut script_sig = vec![der.len() as u8];
                 script_sig.extend_from_slice(&der);
-                let pk = self.pubkey().serialize();
+                let pk = dashcore::secp256k1::PublicKey::from_secret_key(key).serialize();
                 script_sig.push(pk.len() as u8);
                 script_sig.extend_from_slice(&pk);
                 let mut input = tx.input[*i].clone();
@@ -482,6 +496,55 @@ async fn a_stop_after_our_signatures_holds_the_inputs() {
     assert!(wallet.held.lock().unwrap().is_empty());
     assert!(wallet.locked.lock().unwrap().is_empty());
     assert_eq!(wallet.released.lock().unwrap().len(), entry.outputs.len());
+}
+
+/// A masternode that says no after our signatures went out may still
+/// broadcast them: the inputs and scripts stay held, as after a stop.
+#[tokio::test]
+async fn a_refusal_after_our_signatures_holds_the_inputs() {
+    let mn = Mn::new().await;
+    let wallet = TestWallet::new(3);
+    let (_stop_tx, stop) = watch::channel(false);
+    let p = params(&mn);
+    let server = async {
+        let mut conn = mn.peer.accept().await.unwrap();
+        let entry = serve_until_entry(&mn, &mut conn).await;
+        let tx = final_tx(&entry, false);
+        conn.send("dsf", &FinalTx { session_id: 42, tx }.encode())
+            .await
+            .unwrap();
+        conn.recv_command("dss").await.unwrap();
+        conn.send(
+            "dsc",
+            &Complete {
+                session_id: 42,
+                message: PoolMessage::InvalidTx,
+            }
+            .encode(),
+        )
+        .await
+        .unwrap();
+        (conn, entry)
+    };
+    let ((_conn, entry), outcome) = tokio::join!(server, run_session(&wallet, p, |_| {}, stop));
+    let SessionOutcome::SignedUnknown { inputs, failure } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(failure, SessionFailure::Completed(PoolMessage::InvalidTx));
+    assert_eq!(*wallet.held.lock().unwrap(), inputs);
+    assert_eq!(wallet.kept.lock().unwrap().len(), entry.outputs.len());
+    assert!(wallet.released.lock().unwrap().is_empty());
+}
+
+/// Dash Core announces the ready `dsq` of a rebalance session by `inv`,
+/// and only to a peer that asked for transaction relay.
+#[tokio::test]
+async fn a_rebalance_session_asks_for_relay() {
+    let mn = Mn::new().await;
+    let wallet = TestWallet::with_coins(1, DENOMINATIONS[2]);
+    let p = rebalance_params(&mn, wallet.entry(RebalanceKind::Demotion));
+    assert!(p.session_config.relay);
+    assert!(!params(&mn).session_config.relay);
 }
 
 #[tokio::test]

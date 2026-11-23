@@ -33,9 +33,9 @@ use std::time::Duration;
 use dashcore::blockdata::transaction::outpoint::OutPoint;
 use dashcore::hashes::Hash;
 use dashcore::{Network, ScriptBuf, Transaction, TxIn, TxOut};
-use dw_p2p::{PeerEntry, Session, SessionConfig};
+use dw_p2p::{Message, PeerEntry, Session, SessionConfig};
 use rand::Rng;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::denoms::{DENOMINATIONS, ENTRY_MAX_INPUTS, QUEUE_TIMEOUT_SECS, SIGNING_TIMEOUT_SECS};
 use crate::messages::{
@@ -226,6 +226,10 @@ impl RebalanceEntry {
         if distinct.len() != self.inputs.len() {
             return Err("an input twice");
         }
+        let scripts: HashSet<&ScriptBuf> = self.inputs.iter().map(|c| &c.script_pubkey).collect();
+        if scripts.len() != self.inputs.len() {
+            return Err("two inputs pay one script");
+        }
         Ok(output)
     }
 }
@@ -267,6 +271,10 @@ impl SessionParams {
     ) -> Self {
         let mut p = Self::new(network, masternode, denom, collateral, rounds);
         p.session_config.protocol_version = COINJOIN_REBALANCE_VERSION;
+        // From this version Dash Core announces the ready `dsq` by `inv`,
+        // and announces no `dsq` to a peer that asked for no transaction
+        // relay (net_processing.cpp, `MSG_DSQ`).
+        p.session_config.relay = true;
         p.rebalance = Some(entry);
         p
     }
@@ -480,6 +488,13 @@ pub fn check_final_tx(
         else {
             return Err("an input of ours is missing");
         };
+        // The input as we submitted it (Core compares the whole `CTxIn`).
+        if tx.input[i] != unsigned_input(c.outpoint) {
+            return Err("an input of ours was changed");
+        }
+        if !wallet_unspent.contains(&c.outpoint) {
+            return Err("an input of ours is no longer unspent");
+        }
         indices.push(i);
     }
     let offered: HashSet<OutPoint> = our_inputs.iter().map(|c| c.outpoint).collect();
@@ -572,7 +587,7 @@ async fn open_session(
     params: &SessionParams,
     flags: u8,
     stop: &mut watch::Receiver<bool>,
-) -> Result<Session, SessionFailure> {
+) -> Result<(Session, mpsc::UnboundedReceiver<Message>), SessionFailure> {
     let Some(service) = params.masternode.service else {
         return Err(SessionFailure::Connect("no service address".into()));
     };
@@ -587,6 +602,15 @@ async fn open_session(
         session.close();
         return Err(SessionFailure::MasternodeTooOld(version));
     }
+    // Before the `dsa`: the stream holds only what arrives after it, and
+    // the acceptance can be quick.
+    let rx = session.subscribe(&[
+        dw_p2p::commands::DSSTATUSUPDATE,
+        dw_p2p::commands::DSQUEUE,
+        dw_p2p::commands::DSFINALTX,
+        dw_p2p::commands::DSCOMPLETE,
+        INV,
+    ]);
     let accept = Accept {
         denom: params.denom,
         collateral: params.collateral.clone(),
@@ -603,7 +627,7 @@ async fn open_session(
         session.close();
         return Err(SessionFailure::Disconnected);
     }
-    Ok(session)
+    Ok((session, rx))
 }
 
 /// Runs one session to its end. `observe` gets every state change;
@@ -643,7 +667,7 @@ pub async fn run_session<W: MixingWallet>(
         Ok(_) => open_session(&params, flags, &mut stop).await,
     };
     let rebalance_output = rebalance_output.unwrap_or(0);
-    let session = match opened {
+    let (session, mut rx) = match opened {
         Ok(s) => s,
         Err(failure) => {
             run.fail().await;
@@ -652,13 +676,6 @@ pub async fn run_session<W: MixingWallet>(
             return SessionOutcome::Failed(failure);
         }
     };
-    let mut rx = session.subscribe(&[
-        dw_p2p::commands::DSSTATUSUPDATE,
-        dw_p2p::commands::DSQUEUE,
-        dw_p2p::commands::DSFINALTX,
-        dw_p2p::commands::DSCOMPLETE,
-        INV,
-    ]);
     let mut our_outputs: Vec<TxOut> = Vec::new();
     let mut deadline = tokio::time::Instant::now() + params.queue_timeout;
     let mut rng = rand::rngs::OsRng;
@@ -867,12 +884,10 @@ pub async fn run_session<W: MixingWallet>(
         }
     };
 
+    // Once our signatures are out the masternode may still broadcast them,
+    // whatever it said: the inputs and scripts stay held.
     let outcome = match outcome {
-        SessionOutcome::Failed(
-            failure @ (SessionFailure::Cancelled
-            | SessionFailure::Timeout(_)
-            | SessionFailure::Disconnected),
-        ) if signatures_out => SessionOutcome::SignedUnknown {
+        SessionOutcome::Failed(failure) if signatures_out => SessionOutcome::SignedUnknown {
             inputs: run.outpoints(),
             failure,
         },
@@ -902,6 +917,19 @@ pub async fn run_session<W: MixingWallet>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `check_final_tx` with our own inputs still unspent, as at signing.
+    fn check_ours_unspent(
+        tx: &Transaction,
+        denom: u32,
+        ours_in: &[MixCoin],
+        ours_out: &[TxOut],
+        others: &HashSet<OutPoint>,
+    ) -> Result<Vec<usize>, &'static str> {
+        let mut unspent = others.clone();
+        unspent.extend(ours_in.iter().map(|c| c.outpoint));
+        check_final_tx(tx, denom, ours_in, ours_out, &unspent)
+    }
     use dashcore::Txid;
 
     const S: u64 = DENOMINATIONS[2];
@@ -952,7 +980,7 @@ mod tests {
         MixCoin {
             outpoint: OutPoint::new(txid(n), 0),
             value,
-            script_pubkey: ScriptBuf::new(),
+            script_pubkey: ScriptBuf::from_bytes(vec![n]),
             rounds: 4,
         }
     }
@@ -1004,8 +1032,41 @@ mod tests {
         // Inputs: ours (L), a demotion (L), a standard one (S): 3 inputs,
         // 21 session outputs, so 2 larger and 1 session input.
         let t = tx(inputs, outputs);
-        let idx = check_final_tx(&t, 4, &ours_in, &ours_out, &HashSet::new()).unwrap();
+        let idx = check_ours_unspent(&t, 4, &ours_in, &ours_out, &HashSet::new()).unwrap();
         assert_eq!(t.input[idx[0]].previous_output, ours_in[0].outpoint);
+    }
+
+    /// Core compares the whole submitted input; so do we, and the coin must
+    /// still be unspent when we sign.
+    #[test]
+    fn a_changed_or_spent_input_of_ours_is_not_signed() {
+        let (ours_in, ours_out, inputs, outputs) = demotion();
+        let mut t = tx(inputs, outputs);
+        let at = (t.input.iter())
+            .position(|i| i.previous_output == ours_in[0].outpoint)
+            .unwrap();
+        let mut late = t.clone();
+        late.input[at].sequence = 0xffff_fffe;
+        assert_eq!(
+            check_ours_unspent(&late, 4, &ours_in, &ours_out, &HashSet::new()),
+            Err("an input of ours was changed")
+        );
+        t.input[at].script_sig = ScriptBuf::from_bytes(vec![0x51]);
+        assert_eq!(
+            check_ours_unspent(&t, 4, &ours_in, &ours_out, &HashSet::new()),
+            Err("an input of ours was changed")
+        );
+        let (ours_in, ours_out, inputs, outputs) = demotion();
+        assert_eq!(
+            check_final_tx(
+                &tx(inputs, outputs),
+                4,
+                &ours_in,
+                &ours_out,
+                &HashSet::new()
+            ),
+            Err("an input of ours is no longer unspent")
+        );
     }
 
     #[test]
@@ -1019,7 +1080,7 @@ mod tests {
         let mut outputs = ours_out.clone();
         outputs.push(out(0x80, L));
         assert_eq!(
-            check_final_tx(
+            check_ours_unspent(
                 &tx(inputs, outputs),
                 4,
                 &ours_in,
@@ -1035,10 +1096,10 @@ mod tests {
         let (ours_in, ours_out, inputs, outputs) = demotion();
         let t = tx(inputs, outputs);
         let mine: HashSet<OutPoint> = [ours_in[0].outpoint].into();
-        assert!(check_final_tx(&t, 4, &ours_in, &ours_out, &mine).is_ok());
+        assert!(check_ours_unspent(&t, 4, &ours_in, &ours_out, &mine).is_ok());
         let mine: HashSet<OutPoint> = [ours_in[0].outpoint, OutPoint::new(txid(0xf1), 0)].into();
         assert_eq!(
-            check_final_tx(&t, 4, &ours_in, &ours_out, &mine),
+            check_ours_unspent(&t, 4, &ours_in, &ours_out, &mine),
             Err("spends a coin of ours we did not offer")
         );
     }
@@ -1048,7 +1109,7 @@ mod tests {
         let (ours_in, ours_out, mut inputs, outputs) = demotion();
         inputs.push(OutPoint::new(txid(0xf2), 0));
         assert_eq!(
-            check_final_tx(
+            check_ours_unspent(
                 &tx(inputs, outputs),
                 4,
                 &ours_in,
@@ -1065,7 +1126,7 @@ mod tests {
         let dup = inputs[1];
         inputs.push(dup);
         assert_eq!(
-            check_final_tx(
+            check_ours_unspent(
                 &tx(inputs, outputs),
                 4,
                 &ours_in,
@@ -1087,17 +1148,17 @@ mod tests {
         let mut outputs = ours_out.clone();
         outputs.push(out(0xf0, S));
         let t = tx(inputs.clone(), outputs.clone());
-        assert!(check_final_tx(&t, 4, &ours_in, &ours_out, &HashSet::new()).is_ok());
+        assert!(check_ours_unspent(&t, 4, &ours_in, &ours_out, &HashSet::new()).is_ok());
         let alone = tx(inputs[..2].to_vec(), ours_out.clone());
         assert_eq!(
-            check_final_tx(&alone, 4, &ours_in, &ours_out, &HashSet::new()),
+            check_ours_unspent(&alone, 4, &ours_in, &ours_out, &HashSet::new()),
             Err("no other participant's output at the session denomination")
         );
         let mut short = outputs.clone();
         short.remove(0);
         short.push(out(0xf1, S));
         assert_eq!(
-            check_final_tx(&tx(inputs, short), 4, &ours_in, &ours_out, &HashSet::new()),
+            check_ours_unspent(&tx(inputs, short), 4, &ours_in, &ours_out, &HashSet::new()),
             Err("an output of ours is missing")
         );
     }
@@ -1115,7 +1176,7 @@ mod tests {
     }
 
     fn refusal(t: &Transaction, ours_in: &[MixCoin], ours_out: &[TxOut]) -> &'static str {
-        check_final_tx(t, 4, ours_in, ours_out, &HashSet::new()).unwrap_err()
+        check_ours_unspent(t, 4, ours_in, ours_out, &HashSet::new()).unwrap_err()
     }
 
     /// Each structural refusal on an otherwise valid final transaction.
@@ -1123,7 +1184,7 @@ mod tests {
     fn each_structural_refusal_names_its_reason() {
         let (ours_in, ours_out, inputs, outputs) = standard();
         let ok = tx(inputs.clone(), outputs.clone());
-        assert!(check_final_tx(&ok, 4, &ours_in, &ours_out, &HashSet::new()).is_ok());
+        assert!(check_ours_unspent(&ok, 4, &ours_in, &ours_out, &HashSet::new()).is_ok());
 
         let mut unsorted = ok.clone();
         unsorted.output.reverse();
@@ -1252,6 +1313,12 @@ mod tests {
         assert_eq!(
             promote(ten[..9].to_vec()).output_amount(4),
             Err("wrong input count")
+        );
+        let mut same_script = ten.clone();
+        same_script[9].script_pubkey = same_script[0].script_pubkey.clone();
+        assert_eq!(
+            promote(same_script).output_amount(4),
+            Err("two inputs pay one script")
         );
         let mut twice = ten;
         twice[9] = twice[0].clone();

@@ -2142,8 +2142,8 @@ impl NetworkSession {
         // Post-V24 conversions are looked for before the "nothing to do"
         // exits (client.cpp:1035-1062): they matter once everything is
         // mixed.
-        let wanted =
-            !rebalance::opportunities(&view.rebalance_counts(), settings.denoms_goal, true)
+        let wanted = conversions_allowed(&self.network)
+            && !rebalance::opportunities(&view.rebalance_counts(), settings.denoms_goal, true)
                 .is_empty();
         let v24_active = wanted && self.v24_known_active().await;
         let rebalances = view.rebalance_plan(settings.denoms_goal, v24_active);
@@ -4312,6 +4312,15 @@ pub(crate) fn fully_mixed_candidates(view: &MixView) -> Vec<Utxo> {
         .collect()
 }
 
+/// Promotion and demotion run on test networks only for now. On mainnet
+/// mixing stays 1:1: a promotion's check that other participants' inputs
+/// cover ours reads their values from the denominations, not from their
+/// previous outputs, so a coordinator could make our ten inputs the only
+/// ones at their denomination and link them.
+pub(crate) fn conversions_allowed(network: &crate::DashNetwork) -> bool {
+    *network != crate::DashNetwork::Mainnet
+}
+
 #[cfg(test)]
 #[path = "coinjoin_sweep_tests.rs"]
 mod sweep_tests;
@@ -4327,6 +4336,15 @@ mod unload_during_read_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Promotion and demotion stay off on mainnet until a promotion's
+    /// cover is read from the other inputs' previous outputs.
+    #[test]
+    fn conversions_run_on_test_networks_only() {
+        assert!(!conversions_allowed(&crate::DashNetwork::Mainnet));
+        assert!(conversions_allowed(&crate::DashNetwork::Testnet));
+        assert!(conversions_allowed(&crate::DashNetwork::Regtest));
+    }
 
     /// A conversion never enters a coin another owner holds: the session
     /// does not start, its collateral addresses come back, and a session

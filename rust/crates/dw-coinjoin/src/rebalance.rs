@@ -168,14 +168,21 @@ pub fn opportunities(counts: &DenomCounts, goal: u32, v24_active: bool) -> Vec<R
 /// caller): for a promotion ten of the session amount, distinct
 /// transactions first, then siblings (`SelectFullyMixedForPromotion`); for a
 /// demotion one of the larger amount (`SelectTxDSInsByDenomination` cut to
-/// one). `None` when there are not enough.
+/// one). No two inputs pay the same script. `None` when there are not
+/// enough.
 pub fn select_inputs(rebalance: &Rebalance, coins: &[MixCoin]) -> Option<Vec<MixCoin>> {
     let amount = rebalance.input_amount()?;
     let want = rebalance.kind.input_count();
     let mut seen = HashSet::new();
+    let mut scripts = HashSet::new();
     let mut picked = Vec::new();
     let mut siblings = Vec::new();
-    for c in coins.iter().filter(|c| c.value == amount) {
+    // Dash Core refuses an entry whose inputs pay one script twice, and can
+    // take the collateral for it (`IsValidInOuts`): one coin per script.
+    for c in coins
+        .iter()
+        .filter(|c| c.value == amount && scripts.insert(c.script_pubkey.clone()))
+    {
         if seen.insert(c.outpoint.txid) {
             picked.push(c.clone());
         } else {
@@ -365,9 +372,29 @@ mod tests {
         MixCoin {
             outpoint: OutPoint::new(Txid::from_byte_array([tx; 32]), vout),
             value,
-            script_pubkey: ScriptBuf::new(),
+            script_pubkey: ScriptBuf::from_bytes(vec![tx, vout as u8]),
             rounds: 4,
         }
+    }
+
+    /// Dash Core refuses inputs that pay one script twice: a coin whose
+    /// script another picked coin pays is left out.
+    #[test]
+    fn promotion_inputs_pay_distinct_scripts() {
+        let p = Rebalance {
+            denom: 4,
+            kind: RebalanceKind::Promotion,
+        };
+        let a = DENOMINATIONS[2];
+        let mut coins: Vec<MixCoin> = (0..10).map(|t| coin(t + 1, 0, a)).collect();
+        let mut same = coin(20, 0, a);
+        same.script_pubkey = coins[0].script_pubkey.clone();
+        coins[9] = same;
+        assert!(select_inputs(&p, &coins).is_none(), "nine distinct scripts");
+        coins.push(coin(30, 0, a));
+        let picked = select_inputs(&p, &coins).unwrap();
+        let scripts: HashSet<_> = picked.iter().map(|c| &c.script_pubkey).collect();
+        assert_eq!(scripts.len(), 10);
     }
 
     #[test]
