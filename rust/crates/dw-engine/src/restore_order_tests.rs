@@ -565,3 +565,160 @@ fn a_registration_left_without_its_seed_or_rows_is_recovered_by_restoring_again(
     let signed = engine.block_on(session.sign_message(id, address, b"m".to_vec(), grant));
     assert!(signed.is_ok_and(|s| !s.is_empty()));
 }
+
+/// `phrase`'s wallet imported in this data folder and made watch-only (its
+/// seed deleted): registered, without keys.
+fn watch_only(engine: &Engine, session: &Arc<NetworkSession>, phrase: &[u8]) -> WalletId {
+    let id = import_phrase(engine, session, phrase);
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    id
+}
+
+fn masternode_op() -> dw_appdb::MasternodeOpRow {
+    dw_appdb::MasternodeOpRow {
+        id: "op-1".into(),
+        kind: "registration".into(),
+        terms: "{}".into(),
+        request: "{}".into(),
+        unsigned_tx: Some(vec![1]),
+        sign_address: None,
+        sign_message: None,
+        fee_inputs: "[]".into(),
+        signed_tx: None,
+        txid: None,
+        pro_tx_hash: None,
+        locked_collateral: false,
+        fee: 7,
+        created_at: 1,
+        signed_at: None,
+        sent_at: None,
+        last_error: None,
+    }
+}
+
+/// Keys restored to a registered (watch-only) wallet only add the backup's
+/// rows: its own coin lock, label and masternode operation, which the
+/// backup lacks, stay.
+#[test]
+fn a_restore_to_a_registered_wallet_keeps_the_rows_it_has() {
+    let dir = dw_testutil::private_tempdir();
+    let backup = dir.path().join("w.dwbackup");
+    let id = backup_of(dir.path(), PHRASE, TXID, 1, &backup);
+    let (engine, session) = launch(&dir.path().join("data"));
+    assert_eq!(watch_only(&engine, &session, PHRASE), id);
+    let scope = id.to_string();
+    engine
+        .block_on(session.appdb_op(move |db| {
+            db.lock_manual(&scope, OTHER_TXID, 5, 7)?;
+            db.set_label(&scope, LabelKind::Tx, OTHER_TXID, Some("own"), 8)?;
+            db.insert_masternode_op_durable(&scope, &masternode_op(), &[], 9)
+        }))
+        .unwrap();
+
+    assert_eq!(restore(&engine, &session, &backup).unwrap(), vec![id]);
+
+    let scope = id.to_string();
+    let (locks, label, ops) = engine
+        .block_on(session.appdb_op(move |db| {
+            Ok((
+                (db.locks(&scope)?.into_iter())
+                    .map(|l| (l.txid, l.vout))
+                    .collect::<Vec<_>>(),
+                db.label(&scope, LabelKind::Tx, OTHER_TXID)?,
+                db.masternode_ops(&scope)?,
+            ))
+        }))
+        .unwrap();
+    assert!(locks.contains(&(OTHER_TXID.to_owned(), 5)), "{locks:?}");
+    assert!(locks.contains(&(TXID.to_owned(), 3)), "{locks:?}");
+    assert_eq!(label.as_deref(), Some("own"));
+    assert_eq!(ops, vec![masternode_op()]);
+}
+
+/// Keys restored to a registered wallet whose seed then fails to store:
+/// the settings the backup added go again and those it had stay as they
+/// were (the salt it lacked is gone, its own value of a key the backup also
+/// holds is kept), while the backup's other rows, added, stay.
+#[test]
+fn a_restore_to_a_registered_wallet_failing_after_its_rows_puts_its_settings_back() {
+    let dir = dw_testutil::private_tempdir();
+    let backup = dir.path().join("w.dwbackup");
+    let id = {
+        let (engine, session) = launch(&dir.path().join("src"));
+        let id = import_phrase(&engine, &session, PHRASE);
+        store_rows(&engine, &session, id, TXID, 1);
+        let scope = id.to_string();
+        engine
+            .block_on(session.appdb_op(move |db| db.set_setting(&scope, "own.key", Some("backup"))))
+            .unwrap();
+        engine
+            .block_on(session.backup_wallet(id, backup.clone(), None))
+            .unwrap();
+        id
+    };
+    let (engine, session) = launch(&dir.path().join("data"));
+    assert_eq!(watch_only(&engine, &session, PHRASE), id);
+    let scope = id.to_string();
+    engine
+        .block_on(session.appdb_op(move |db| db.set_setting(&scope, "own.key", Some("mine"))))
+        .unwrap();
+    let db = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    dw_appdb::fault::arm(&db, IMPORT_ROWS, Stage::After);
+
+    assert!(restore(&engine, &session, &backup).is_err());
+
+    assert!(registered(&engine, &session, id));
+    assert!(!session.vault().has_wallet_secret(&id.0));
+    let scope = id.to_string();
+    let own = engine
+        .block_on(session.appdb_op(move |db| db.setting(&scope, "own.key")))
+        .unwrap();
+    assert_eq!(own.as_deref(), Some("mine"));
+    let left = rows(&engine, &session, id);
+    assert_eq!(left.salt, None);
+    assert_eq!(left.locks, vec![(TXID.to_owned(), 3)]);
+    assert_eq!(left.labels.len(), 2);
+}
+
+/// A bundle carrying no app rows still replaces the rows a stopped restore
+/// left for its wallet.
+#[test]
+fn a_backup_without_rows_replaces_the_rows_a_stopped_restore_left() {
+    let dir = dw_testutil::private_tempdir();
+    let backup = dir.path().join("w.dwbackup");
+    let id = backup_of(dir.path(), PHRASE, TXID, 1, &backup);
+    let empty = dir.path().join("empty.dwbackup");
+    {
+        let (_engine, session) = launch(&dir.path().join("src-1"));
+        let header = serde_json::json!({
+            "format": "dwbackup", "format_version": 1, "network": "regtest", "created_at": 1,
+            "wallet_ids": [id.to_string()], "automatic": false, "app_version": "test",
+        });
+        let header_line = serde_json::to_vec(&header).unwrap();
+        let payload = serde_json::json!({
+            "name": "A", "birth_height": 0, "created_at": null, "app_rows": [],
+        });
+        let bundle = (session.vault())
+            .backup_bundle(
+                &id.0,
+                None,
+                &serde_json::to_vec(&payload).unwrap(),
+                &header_line,
+            )
+            .unwrap();
+        let mut out = b"DWBACKUP 1\n".to_vec();
+        out.extend_from_slice(&header_line);
+        out.push(b'\n');
+        out.extend(serde_json::to_vec(&serde_json::json!({ "bundles": [bundle] })).unwrap());
+        out.push(b'\n');
+        std::fs::write(&empty, out).unwrap();
+    }
+    let root = dir.path().join("data");
+    stopped_at(&root, &restore_op(&backup), IMPORT_ROWS);
+    let (engine, session) = launch(&root);
+    assert_eq!(rows(&engine, &session, id).locks.len(), 1);
+
+    assert_eq!(restore(&engine, &session, &empty).unwrap(), vec![id]);
+
+    assert_eq!(rows(&engine, &session, id), no_rows());
+}

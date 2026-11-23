@@ -1064,7 +1064,6 @@ impl NetworkSession {
         // (DEC-210), before its first write.
         let readmit = wallet_id.to_string();
         let readmitted = self.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
-        self.store_fingerprint(wallet_id, fingerprint.clone()).await;
 
         // A closed (unloaded) wallet is registered: open it instead.
         if self.live()?.store.is_unloaded(&wallet_id.0) {
@@ -1155,10 +1154,7 @@ impl NetworkSession {
         // another derivation flag (the id derives from the seed), counts as
         // one already there. Vault file writes and fsync stay off the async
         // workers.
-        // Again if a backup's rows replaced it.
-        if !registered && !state.rows.is_empty() {
-            self.store_fingerprint(wallet_id, fingerprint).await;
-        }
+        self.store_fingerprint(wallet_id, fingerprint).await;
         let had_secret = had_secret || {
             let vault = self.vault.clone();
             let stored = match self.import_fault(IMPORT_ROWS) {

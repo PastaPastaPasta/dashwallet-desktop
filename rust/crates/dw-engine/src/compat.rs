@@ -674,7 +674,7 @@ impl NetworkSession {
                             issued,
                             locks,
                             coinjoin_salt: wallet.coinjoin_salt,
-                            rows: Vec::new(),
+                            rows: None,
                         },
                     })
                 })
@@ -909,9 +909,10 @@ pub(crate) struct ImportedState {
     /// Core's persistent coin locks (`lockedutxo`).
     pub(crate) locks: Vec<dashcore::OutPoint>,
     pub(crate) coinjoin_salt: Option<[u8; 32]>,
-    /// A backup's app rows of the wallet (DEC-210 rows: labels, address
-    /// book, notes, local contacts, settings, its salt and coin locks).
-    pub(crate) rows: Vec<dw_appdb::TableRows>,
+    /// A restore's backed-up app rows of the wallet (labels, address book,
+    /// notes, local contacts, settings, its salt and coin locks), perhaps
+    /// none; `None` for any other import.
+    pub(crate) rows: Option<Vec<dw_appdb::TableRows>>,
 }
 
 /// What `import_wallet_dat` carries out of the blocking read.
@@ -993,9 +994,9 @@ impl NetworkSession {
     /// rises, so an older copy of the file does not narrow it; Core's locks
     /// are added to any the wallet has. A backup's rows are added to those
     /// of a `registered` wallet; those of one not registered (an earlier
-    /// restore's, stopped before it registered the wallet) are replaced.
-    /// Returns what the settings and locks replaced, for
-    /// [`Self::restore_imported_state`].
+    /// restore's, stopped before it registered the wallet) are replaced,
+    /// even by none. Returns what the settings replaced or added and what
+    /// the locks replaced, for [`Self::restore_imported_state`].
     pub(crate) async fn write_imported_state(
         self: &Arc<Self>,
         id: WalletId,
@@ -1014,7 +1015,7 @@ impl NetworkSession {
         let locks: Vec<(String, u32)> = (state.locks.iter())
             .map(|o| (o.txid.to_string(), o.vout))
             .collect();
-        if settings.is_empty() && locks.is_empty() && state.rows.is_empty() {
+        if settings.is_empty() && locks.is_empty() && state.rows.is_none() {
             return Ok(None);
         }
         let key = id.to_string();
@@ -1026,8 +1027,8 @@ impl NetworkSession {
                 &widen_issued,
                 &locks,
                 crate::coins::now_secs(),
-                (!rows.is_empty()).then_some(dw_appdb::BackupRows {
-                    tables: &rows,
+                rows.as_deref().map(|tables| dw_appdb::BackupRows {
+                    tables,
                     replace: !registered,
                 }),
             )

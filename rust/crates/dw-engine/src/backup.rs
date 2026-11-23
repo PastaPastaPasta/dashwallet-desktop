@@ -787,7 +787,7 @@ impl NetworkSession {
         };
         let state = crate::compat::ImportedState {
             issued,
-            rows: tables,
+            rows: Some(tables),
             ..Default::default()
         };
         let options = ImportOptions {
@@ -798,7 +798,7 @@ impl NetworkSession {
             // attach would rewind it before the restore commits.
             lookahead: lookahead.filter(|_| !existed),
         };
-        let imported = self
+        match self
             .import_secret_locked(
                 held,
                 Checked::new(options)?,
@@ -807,15 +807,8 @@ impl NetworkSession {
                 Origin::Imported,
                 state,
             )
-            .await;
-        // Its rows were stored before the step that failed: its settings
-        // go back as a later bundle's failure puts them back.
-        if imported.is_err()
-            && let Some(prior) = prior.clone()
+            .await
         {
-            self.restore_imported_state(prior).await;
-        }
-        match imported {
             Ok(_) => done.push((id, !existed, prior)),
             Err(EngineError::WalletAlreadyExists(_)) => {
                 return Err(BackupFailure::AlreadyExists(id).into());

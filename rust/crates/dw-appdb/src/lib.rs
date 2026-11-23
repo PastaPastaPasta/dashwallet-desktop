@@ -518,6 +518,8 @@ pub struct PriorRows {
     wallet_id: String,
     settings: Vec<(String, Option<String>)>,
     locks: Vec<PriorLock>,
+    /// Settings rows a backup's rows added (rowids).
+    added_settings: Vec<i64>,
 }
 
 /// A backup's rows of one wallet, for [`AppDb::write_settings_and_locks`].
@@ -1194,8 +1196,8 @@ impl AppDb {
     /// Sets `settings` in wallet scope `wallet_id` and a manual lock on each
     /// of `locks`, then inserts `backup`'s rows as
     /// [`Self::import_wallet_rows`] does, all in one transaction, and returns
-    /// what the settings and locks replaced for
-    /// [`Self::restore_settings_and_locks`]. Where a key already has a
+    /// what the settings and locks replaced, and the settings rows the
+    /// backup's rows added, for [`Self::restore_settings_and_locks`]. Where a key already has a
     /// value, `merge(key, stored, new)` is what is stored, read and written
     /// in the same transaction.
     pub fn write_settings_and_locks(
@@ -1217,6 +1219,7 @@ impl AppDb {
             wallet_id: wallet_id.to_owned(),
             settings: Vec::with_capacity(settings.len()),
             locks: Vec::with_capacity(locks.len()),
+            added_settings: Vec::new(),
         };
         for (key, value) in settings {
             let old = tx
@@ -1246,7 +1249,17 @@ impl AppDb {
             prior.locks.push((txid.clone(), *vout, old));
         }
         if let Some(backup) = backup {
+            // The settings rows it adds (by rowid: a key need not be
+            // UTF-8), deleted again by the put-back.
+            let rowids = |tx: &rusqlite::Transaction<'_>| -> Result<HashSet<i64>> {
+                let mut stmt = tx.prepare("SELECT rowid FROM settings_kv WHERE scope = ?1")?;
+                let ids = stmt.query_map([wallet_id], |r| r.get(0))?;
+                Ok(ids.collect::<rusqlite::Result<_>>()?)
+            };
+            let before = rowids(&tx)?;
             rows::insert_rows(&tx, wallet_id, backup.tables)?;
+            let added = rowids(&tx)?.into_iter().filter(|id| !before.contains(id));
+            prior.added_settings.extend(added);
         }
         tx.commit()?;
         Ok(prior)
@@ -1271,6 +1284,7 @@ impl AppDb {
             wallet_id: wallet_id.to_owned(),
             settings,
             locks: Vec::new(),
+            added_settings: Vec::new(),
         })
     }
 
@@ -1280,6 +1294,12 @@ impl AppDb {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let id = &prior.wallet_id;
+        for rowid in &prior.added_settings {
+            tx.execute(
+                "DELETE FROM settings_kv WHERE rowid = ?1 AND scope = ?2",
+                params![rowid, id],
+            )?;
+        }
         // Newest first, so a key or outpoint written twice ends as it began.
         for (key, value) in prior.settings.iter().rev() {
             Self::put_setting(&tx, id, key, value.as_deref())?;
