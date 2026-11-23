@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, TxOut, Txid};
@@ -171,6 +172,9 @@ struct Fixture {
     engine: Engine,
     session: Arc<NetworkSession>,
     wallet: WalletId,
+    /// The contacts' records [`Fixture::verify_contacts`] wrote are still
+    /// there.
+    seeded: std::sync::atomic::AtomicBool,
 }
 
 /// Our identity with Bob established (his paying account held) and
@@ -214,6 +218,7 @@ fn fixture(encrypted: bool) -> Fixture {
         engine,
         session,
         wallet,
+        seeded: std::sync::atomic::AtomicBool::new(false),
     };
     f.give_me();
     f.establish(BOB, false);
@@ -226,12 +231,18 @@ fn fixture(encrypted: bool) -> Fixture {
         me.apply_incoming_contact_request(request(CAROL, ME, 3_000_000));
     });
     f.credit(1, COIN);
+    f.verify_contacts();
     f
 }
 
 /// The regtest session, with no Platform (so no DashPay pass rebuilds
 /// anything behind a test's back).
 fn open_session(engine: &Engine) -> Arc<NetworkSession> {
+    open_session_as(engine, false)
+}
+
+/// [`open_session`], as a release build opens it when `release`.
+fn open_session_as(engine: &Engine, release: bool) -> Arc<NetworkSession> {
     engine
         .block_on(engine.open_network(
             DashNetwork::Regtest,
@@ -240,6 +251,7 @@ fn open_session(engine: &Engine) -> Arc<NetworkSession> {
                 quorum_url: Some("http://127.0.0.1:1".into()),
                 spv_peers: vec!["127.0.0.1:1".into()],
                 no_platform: true,
+                as_release_build: release,
                 ..Default::default()
             },
         ))
@@ -1117,7 +1129,7 @@ const FAIL_LOCK_WRITES: &str = "\
 const DROP_FAIL_LOCK_WRITES: &str = "DROP TRIGGER fail_lock_insert; DROP TRIGGER fail_lock_update;";
 
 fn wait_until(mut done: impl FnMut() -> bool) {
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     while !done() {
         assert!(start.elapsed() < std::time::Duration::from_secs(30));
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1176,6 +1188,7 @@ fn accept_and_pay_spends_only_after_the_accept() {
     assert!(f.reserved(CAROL).is_none());
     // The accept, as the library leaves it.
     f.establish(CAROL, false);
+    f.verify_contacts();
     let p = f.engine.block_on(d.prepare(lease.id_string())).unwrap();
     assert_eq!(paid(&p), f.contact_address(CAROL, 0).to_string());
     Seam::install(&d, Net::Accept);
@@ -1236,8 +1249,6 @@ fn a_lock_before_the_hand_off_cancels() {
 #[test]
 #[ignore = "public testnet; set DW_DP301_TESTNET_FIXTURE"]
 fn t2_testnet_pays_a_contact() {
-    use std::time::{Duration, Instant};
-
     use crate::{HistoryFilter, HistoryQuery, HistorySort};
 
     const PAY: u64 = 100_000;
@@ -1448,13 +1459,16 @@ use platform_wallet::changeset::{
 use platform_wallet::wallet::identity::{ContactProfileEntry, DashPayProfile};
 
 use crate::platform::money_gate::{Point, Refusal, Subject};
-use crate::platform::money_gate_tests::{FakePlatform, Proof, gate_session, show_username};
+use crate::platform::money_gate_tests::{
+    FakePlatform, Proof, gate_session, gate_session_unlatched, hide_username, show_username,
+};
 use crate::platform::trust::TrustMode;
 
 impl Fixture {
     /// The latch set, the provider in `mode`, and a Platform that holds
     /// Bob's two requests as the library does, its proofs `proof`.
     fn gated(&self, mode: TrustMode, proof: Proof) -> Arc<FakePlatform> {
+        self.unverify();
         let platform = FakePlatform::new(proof);
         platform.answer_requests(vec![
             request(ME, BOB, 1_000_000),
@@ -1496,6 +1510,38 @@ impl Fixture {
         meanwhile();
         pause.release.notify_one();
         self.engine.block_on(prepare).unwrap()
+    }
+
+    /// Records Bob's and Carol's data as the library holds it now as
+    /// verified (H-09's strict gate needs a record), as an earlier verified
+    /// fetch would have.
+    fn verify_contacts(&self) {
+        self.seeded.store(true, Ordering::SeqCst);
+        for n in [BOB, CAROL] {
+            let subject = Subject::Payee(self.wallet, (id(ME), id(n)));
+            let session = Arc::clone(&self.session);
+            (self.engine)
+                .block_on(session.on_runtime({
+                    let session = Arc::clone(&self.session);
+                    async move {
+                        session.record_verified_for_tests(subject).await;
+                        Ok(())
+                    }
+                }))
+                .unwrap();
+        }
+    }
+
+    /// Drops the records [`Self::verify_contacts`] wrote, once: the contacts'
+    /// data starts unverified, as a test of the gate needs.
+    fn unverify(&self) {
+        if self.seeded.swap(false, Ordering::SeqCst) {
+            (self.sqlite())
+                .execute("DELETE FROM dp_trust_verified", [])
+                .unwrap();
+            let provenance = self.session.live().unwrap().provenance;
+            provenance.forget_records_for_tests();
+        }
     }
 
     /// Queues `op` for Bob in the library's deferred contact crypto.
@@ -1641,27 +1687,428 @@ fn a_mismatched_payee_moves_nothing_in_either_mode() {
         );
         assert!(f.reserved(BOB).is_none());
         assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+        assert!(f.rows().is_empty(), "{mode:?}: no lock row, nothing built");
     }
 }
 
-/// The degraded mode suspends rule 5: an unverified payee is paid on the
-/// trusted provider's word, and so is one with the trusted-only toggle.
+/// H-09: a mismatch the re-check after the reservation meets (the payee
+/// replaced meanwhile, its new request refused as a quorum-key mismatch)
+/// refuses in the degraded default too: no address kept, no lock row,
+/// nothing handed off.
 #[test]
-fn the_degraded_mode_and_the_toggle_pay_an_unverified_payee() {
+fn a_mismatch_at_the_recheck_moves_nothing() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Verified);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Accept);
+    let refused = f.prepare_held_at(&d, Point::Reserved, || {
+        f.replace_bobs_request(2_500_000);
+        platform.set_proof(Proof::Mismatch);
+    });
+    assert_eq!(platform_error(refused), "platform.trust_mismatch");
+    assert!(f.reserved(BOB).is_none(), "the address is not kept");
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+    assert!(f.rows().is_empty());
+}
+
+/// H-09: a payment that never went out gives its address back as checked
+/// as it was taken, so a retry under rule 5 (the degraded default for a
+/// contact) pays the same address rather than the contact's next one, and
+/// retries do not walk the contact's addresses past their gap limit.
+#[test]
+fn a_retry_after_no_peers_pays_the_same_address_under_rule_5() {
+    let f = fixture(false);
+    f.gated(TrustMode::Degraded, Proof::Verified);
+    let d = f.draft(BOB);
+    Seam::install(&d, Net::NoPeers);
+    for _ in 0..3 {
+        let p = f.prepare(&d).unwrap();
+        assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
+        assert_eq!(
+            send_failure(f.engine.block_on(d.broadcast(p))),
+            SendFailure::NoPeers
+        );
+        assert_eq!(
+            f.reserved_checked(BOB),
+            Some((f.contact_address(BOB, 0), true)),
+            "given back checked"
+        );
+    }
+}
+
+/// H-09 (MG's 1.0 ruling, test 1): a contact payment holds rule 5 in the
+/// degraded default too. A payee whose requests only proofs on quorum keys
+/// SPV did not verify back (a quorum SPV does not hold, so a forged request
+/// cannot be told from a real one) waits, then moves nothing.
+#[test]
+fn the_degraded_default_refuses_an_unverified_payee() {
     let f = fixture(false);
     let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
     let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Accept);
+    assert_eq!(
+        platform_error(f.prepare(&d)),
+        "platform.context_unavailable"
+    );
+    assert!(platform.fetches() > 2, "it re-fetched while it waited");
+    assert!(f.reserved(BOB).is_none(), "no address taken");
+    assert_eq!(seam.entered.load(Ordering::SeqCst), 0);
+    assert!(f.bob_unverified());
+}
+
+/// H-09 test 2: once the payee verified against SPV-held keys, the
+/// degraded default pays them, and a later payment fetches nothing.
+#[test]
+fn the_degraded_default_pays_a_verified_payee_without_a_wait() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Verified);
+    let d = f.draft(BOB);
     let p = f.prepare(&d).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
-    assert_eq!(platform.fetches(), 2, "one probe of each request");
-    assert!(f.bob_unverified());
-
+    assert!(!f.bob_unverified(), "the gate recorded what verified");
     f.engine.block_on(d.abandon(p)).unwrap();
-    f.session.trust.set_mode(TrustMode::Enforcing);
+
+    platform.set_proof(Proof::Unverified);
+    let fetched = platform.fetches();
+    let started = Instant::now();
+    f.prepare(&f.draft(BOB)).unwrap();
+    assert_eq!(platform.fetches(), fetched, "recorded: no fetch");
+    assert!(started.elapsed() < Duration::from_secs(2), "no wait");
+}
+
+/// H-09 test 3: a verification is of the request as it was. A replaced
+/// request is unverified again, and the degraded default does not pay it
+/// until it verifies itself.
+#[test]
+fn a_replaced_request_is_unverified_again() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Verified);
+    let d = f.draft(BOB);
+    f.engine
+        .block_on(d.abandon(f.prepare(&d).unwrap()))
+        .unwrap();
+    assert!(!f.bob_unverified());
+
+    f.replace_bobs_request(3_000_000);
+    platform.answer_requests(vec![
+        request(ME, BOB, 1_000_000),
+        request(BOB, ME, 3_000_000),
+    ]);
+    platform.set_proof(Proof::Unverified);
+    assert!(f.bob_unverified(), "the record was of the old request");
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+
+    platform.set_proof(Proof::Verified);
+    f.prepare(&f.draft(BOB)).unwrap();
+    assert!(!f.bob_unverified());
+}
+
+/// H-09 test 4: the verified mark is durable. After a relaunch the
+/// degraded default pays the same payee with no fetch and no wait.
+#[test]
+fn a_verified_payee_stays_verified_across_a_relaunch() {
+    let mut f = fixture(false);
+    f.store(f.bobs_account(contact_xpub(BOB)));
+    f.store_bobs_contact(request(BOB, ME, 2_000_000), Some(0));
+    f.gated(TrustMode::Degraded, Proof::Verified);
+    let d = f.draft(BOB);
+    f.engine
+        .block_on(d.abandon(f.prepare(&d).unwrap()))
+        .unwrap();
+    assert!(!f.bob_unverified());
+
+    f.relaunch();
+    let platform_after = f.gated(TrustMode::Degraded, Proof::Unverified);
+    assert!(!f.bob_unverified(), "the record survived the relaunch");
+    f.credit(1, COIN);
+    let started = Instant::now();
+    f.prepare(&f.draft(BOB)).unwrap();
+    assert_eq!(platform_after.fetches(), 0, "no fetch after the relaunch");
+    assert!(started.elapsed() < Duration::from_secs(2), "no wait");
+}
+
+/// H-09: a wallet store this installation never named (copied in, or
+/// app.sqlite replaced) holds data fetched elsewhere, so its contacts start
+/// unverified and a payment to them is gated.
+#[test]
+fn a_wallet_store_from_elsewhere_starts_unverified() {
+    let mut f = fixture(false);
+    f.unverify();
+    f.store(f.bobs_account(contact_xpub(BOB)));
+    f.store_bobs_contact(request(BOB, ME, 2_000_000), Some(0));
+    assert!(!f.bob_unverified(), "no fallback used here: verified");
+    f.relaunch();
+    let latched = || f.session.live().unwrap().provenance.fallback_used();
+    assert!(!latched(), "every wallet named: a reopen does not latch");
+    assert!(!f.bob_unverified());
+
+    let data_dir = f.session.data_dir().to_path_buf();
+    (f.engine)
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    rusqlite::Connection::open(data_dir.join(dw_appdb::APP_DB_FILE))
+        .unwrap()
+        .execute("DELETE FROM wallets", [])
+        .unwrap();
+    f.session = open_session(&f.engine);
+    assert!(f.bob_unverified(), "latched at open");
+
+    let platform = FakePlatform::new(Proof::Unverified);
+    platform.answer_requests(vec![
+        request(ME, BOB, 1_000_000),
+        request(BOB, ME, 2_000_000),
+    ]);
+    gate_session_unlatched(&f.session, TrustMode::Degraded, platform);
+    f.credit(1, COIN);
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+}
+
+/// H-09, M4: the library keeps our own QR-sent request without its
+/// `autoAcceptProof`, which Platform has. That request still verifies and
+/// the contact is paid; a differing xpub, or a local proof that differs,
+/// still refuses.
+#[test]
+fn a_qr_sent_contact_verifies_only_on_the_missing_proof() {
+    let proof = |p: u8| ContactRequest {
+        auto_accept_proof: Some(vec![p; 38]),
+        ..request(ME, BOB, 1_000_000)
+    };
+    let case = |ours: ContactRequest, on_platform: Vec<ContactRequest>| {
+        let f = fixture(false);
+        let incoming = request(BOB, ME, 2_000_000);
+        let stamp = Some(incoming.account_reference);
+        let mut contact = bobs_contact(incoming, stamp);
+        contact.outgoing_request = ours;
+        f.with_me(move |me| me.apply_established_contact(contact));
+        let platform = FakePlatform::new(Proof::Verified);
+        platform.answer_requests(on_platform);
+        f.unverify();
+        gate_session(&f.session, TrustMode::Degraded, platform);
+        f.prepare(&f.draft(BOB))
+    };
+
+    case(
+        request(ME, BOB, 1_000_000),
+        vec![proof(9), request(BOB, ME, 2_000_000)],
+    )
+    .expect("the QR-sent contact is paid");
+    assert_eq!(
+        platform_error(case(
+            request(ME, BOB, 1_000_000),
+            vec![
+                proof(9),
+                ContactRequest {
+                    encrypted_public_key: vec![7; 96],
+                    ..request(BOB, ME, 2_000_000)
+                },
+            ],
+        )),
+        "platform.context_unavailable",
+        "Bob's xpub differs"
+    );
+    assert_eq!(
+        platform_error(case(proof(1), vec![proof(9), request(BOB, ME, 2_000_000)])),
+        "platform.context_unavailable",
+        "our copy has a proof that differs"
+    );
+}
+
+/// H-09, H3: the payee's data changes while the gate waits for it to
+/// verify. What verifies afterwards is not what the user was shown, so the
+/// gate refuses even though the new data verifies. The refusal does not
+/// stick: a retry pays the payee as now shown.
+#[test]
+fn a_payee_changed_during_the_wait_is_refused() {
+    let f = fixture(false);
+    let profile = |name: &str| DashPayProfile {
+        display_name: Some(name.into()),
+        ..Default::default()
+    };
+    f.cache_profile(BOB, profile("Bob"));
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    platform.answer_profile(id(BOB), &profile("Mallory"));
+    f.credit(1, COIN);
+    let prepare = f.spawn_prepare(&f.draft(BOB));
+    wait_until(|| platform.fetches() > 0);
+    f.cache_profile(BOB, profile("Mallory"));
+    platform.set_proof(Proof::Verified);
+    assert_eq!(
+        platform_error(f.engine.block_on(prepare).unwrap()),
+        "platform.context_unavailable"
+    );
+    f.prepare(&f.draft(BOB)).expect("a retry pays");
+}
+
+/// H-09: a name that lands while the gate waits refuses that attempt; once
+/// its record is written, a retry pays.
+#[test]
+fn a_payee_name_landing_during_the_wait_refuses_once() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    platform.answer_domain("bob", id(BOB));
+    let prepare = f.spawn_prepare(&f.draft(BOB));
+    wait_until(|| platform.fetches() > 0);
+    show_username(&f.session, id(BOB), "bob");
+    platform.set_proof(Proof::Verified);
+    assert_eq!(
+        platform_error(f.engine.block_on(prepare).unwrap()),
+        "platform.context_unavailable"
+    );
+    f.prepare(&f.draft(BOB)).expect("a retry pays");
+}
+
+/// H-09 (Astra re-check H3): the name shown for the payee is dropped while
+/// the gate waits for it to verify. The rest verifies, but the payee is not
+/// what the user was shown, so the gate refuses.
+#[test]
+fn a_payee_name_dropped_during_the_wait_is_refused() {
+    let f = fixture(false);
+    show_username(&f.session, id(BOB), "bob");
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    let prepare = f.spawn_prepare(&f.draft(BOB));
+    wait_until(|| platform.fetches() > 0);
+    hide_username(&f.session, id(BOB));
+    platform.set_proof(Proof::Verified);
+    assert_eq!(
+        platform_error(f.engine.block_on(prepare).unwrap()),
+        "platform.context_unavailable"
+    );
+}
+
+/// H-09 (Astra re-check H1): with no fallback latch, a payee whose data has
+/// no verification record of its content is still gated: the wallet store
+/// may hold data another installation fetched through the fallback, under
+/// a wallet id this installation names.
+#[test]
+fn a_payee_without_a_record_is_gated_without_the_latch() {
+    let f = fixture(false);
+    f.unverify();
+    assert!(!f.session.live().unwrap().provenance.fallback_used());
+    let platform = FakePlatform::new(Proof::Unverified);
+    platform.answer_requests(vec![
+        request(ME, BOB, 1_000_000),
+        request(BOB, ME, 2_000_000),
+    ]);
+    gate_session_unlatched(&f.session, TrustMode::Degraded, Arc::clone(&platform));
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+    platform.set_proof(Proof::Verified);
+    f.prepare(&f.draft(BOB))
+        .expect("paid once its record is written");
+}
+
+/// H-09 (MG's check): the data a payment to Bob verifies is always Bob's.
+/// A request held under Bob that names another identity refuses, even
+/// though Platform verifies that other request.
+#[test]
+fn a_request_held_under_the_payee_naming_another_identity_refuses() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Verified);
+    platform.answer_requests(vec![
+        request(ME, BOB, 1_000_000),
+        request(CAROL, ME, 2_000_000),
+    ]);
+    f.with_me(|me| {
+        me.established_contact_mut(&id(BOB))
+            .unwrap()
+            .incoming_request = request(CAROL, ME, 2_000_000);
+    });
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+    assert!(f.reserved(BOB).is_none());
+    assert_eq!(
+        platform.fetches(),
+        0,
+        "refused by the party check, not a wait"
+    );
+}
+
+/// A contact payment's plan pays a stand-in address until it is signed, so
+/// "Create Unsigned" refuses it rather than return a PSBT paying that.
+#[test]
+fn a_contact_draft_creates_no_unsigned_psbt() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    let refused = f.engine.block_on(d.create_unsigned());
+    assert!(
+        matches!(refused, Err(EngineError::InvalidArgument(_))),
+        "{refused:?}"
+    );
+    assert!(f.reserved(BOB).is_none());
+}
+
+/// H-09: the party check is where the money goes, so a developer build's
+/// trusted-only toggle, which skips verification, still refuses it.
+#[test]
+fn the_toggle_still_refuses_a_request_naming_another_identity() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    f.session.trust.set_trusted_only(true);
+    f.with_me(|me| {
+        me.established_contact_mut(&id(BOB))
+            .unwrap()
+            .incoming_request = request(CAROL, ME, 2_000_000);
+    });
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+    assert!(f.reserved(BOB).is_none());
+    assert_eq!(platform.fetches(), 0);
+}
+
+/// H-09: a release build ignores a trusted-only toggle a developer build
+/// stored, and cannot turn it on, so a contact payment stays gated. A
+/// developer build still reads it.
+#[test]
+fn a_release_build_ignores_the_stored_toggle() {
+    let mut f = fixture(false);
+    f.store(f.bobs_account(contact_xpub(BOB)));
+    f.store_bobs_contact(request(BOB, ME, 2_000_000), Some(0));
+    (f.engine)
+        .block_on(f.session.set_trusted_quorums_only(true))
+        .unwrap();
+
+    f.relaunch_as(true);
+    assert!(!f.session.trusted_quorums_only().unwrap(), "read as off");
+    assert!(matches!(
+        f.engine.block_on(f.session.set_trusted_quorums_only(true)),
+        Err(EngineError::InvalidArgument(_))
+    ));
+    f.session.trust.set_trusted_only(true);
+    assert!(!f.session.trust.trusted_only(), "and cannot be set");
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    f.credit(1, COIN);
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+    assert!(platform.fetches() > 2, "gated: it waited for SPV");
+
+    f.relaunch_as(false);
+    assert!(f.session.trusted_quorums_only().unwrap());
+}
+
+/// The trusted-only toggle (the developer's choice, SPV not consulted)
+/// pays an unverified payee with no fetch.
+#[test]
+fn the_toggle_pays_an_unverified_payee() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
     f.session.trust.set_trusted_only(true);
     let p = f.prepare(&f.draft(BOB)).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
-    assert_eq!(platform.fetches(), 2, "the toggle fetches nothing");
+    assert_eq!(platform.fetches(), 0, "the toggle fetches nothing");
 }
 
 /// D1: what the gate waits on is what the contacts row shows unverified;
@@ -1734,7 +2181,7 @@ fn a_lock_during_the_gate_wait_moves_nothing() {
     let seam = Seam::install(&d, Net::Accept);
     let prepare = f.spawn_prepare(&d);
     wait_until(|| platform.fetches() > 0);
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     f.session.lock_vault_sync().unwrap();
     let refused = f.engine.block_on(prepare).unwrap();
     assert_eq!(send_failure(refused), SendFailure::VaultLocked);
@@ -1779,12 +2226,14 @@ fn a_payee_replaced_after_the_reservation_is_refused() {
     assert!(f.reserved(BOB).is_none(), "the address is not kept");
 }
 
-/// An address kept while rule 5 did not apply is not paid once it does:
-/// the next `prepare` reserves another and keeps it checked.
+/// An address kept while rule 5 did not apply (the trusted-only toggle) is
+/// not paid once it does: the next `prepare` reserves another and keeps it
+/// checked.
 #[test]
 fn an_address_kept_without_rule_5_is_not_paid_under_it() {
     let f = fixture(false);
     let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    f.session.trust.set_trusted_only(true);
     let d = f.draft(BOB);
     let p = f.prepare(&d).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 0).to_string());
@@ -1794,7 +2243,7 @@ fn an_address_kept_without_rule_5_is_not_paid_under_it() {
         Some((f.contact_address(BOB, 0), false))
     );
 
-    f.session.trust.set_mode(TrustMode::Enforcing);
+    f.session.trust.set_trusted_only(false);
     platform.set_proof(Proof::Verified);
     let p = f.prepare(&d).unwrap();
     assert_eq!(paid(&p), f.contact_address(BOB, 1).to_string());
@@ -1858,6 +2307,7 @@ fn an_account_a_crash_left_unrebuilt_is_not_paid() {
     let f = fixture(false);
     f.session.trust.set_mode(TrustMode::Enforcing);
     f.bob_rotated_before_the_sweep();
+    f.verify_contacts();
     assert_eq!(
         platform_error(f.prepare(&f.draft(BOB))),
         "platform.context_unavailable"
@@ -1884,11 +2334,10 @@ fn an_unstamped_account_is_not_paid_in_any_setting() {
             set(&f);
             if rotated {
                 f.bob_rotated_before_the_sweep();
+                f.verify_contacts();
             } else {
                 f.bobs_account_built_from(None);
             }
-            // No latch, so nothing is unverified: the refusal is the
-            // destination's.
             assert_eq!(
                 platform_error(f.prepare(&f.draft(BOB))),
                 "platform.context_unavailable",
@@ -2122,10 +2571,15 @@ impl Fixture {
     /// A close and a reopen of the network: everything in memory is gone,
     /// and the wallet is what its store holds.
     fn relaunch(&mut self) {
+        self.relaunch_as(false);
+    }
+
+    /// [`Self::relaunch`], as a release build when `release`.
+    fn relaunch_as(&mut self, release: bool) {
         (self.engine)
             .block_on(self.engine.close_network(DashNetwork::Regtest))
             .unwrap();
-        self.session = open_session(&self.engine);
+        self.session = open_session_as(&self.engine, release);
     }
 
     /// Bob's request's account reference and his paying account's stamp.
@@ -2219,7 +2673,8 @@ fn an_address_the_rebuilt_account_still_holds_is_paid() {
 /// his new paying account and its stamp from SQLite alone (no Platform, so
 /// no DashPay pass rebuilds anything). In every rule 5 setting the new
 /// account's address is paid, and an address of the account it replaced
-/// is not, however it was kept: refused (D21), or under `Enforce` replaced
+/// is not, however it was kept: refused (D21), or, where rule 5 applies to
+/// contact payments (every setting but the toggle since H-09), replaced
 /// unchecked by a fresh one from the new account (D14).
 #[test]
 fn a_rotation_the_store_kept_is_what_a_relaunch_pays() {
@@ -2248,6 +2703,7 @@ fn a_rotation_the_store_kept_is_what_a_relaunch_pays() {
     assert!(f.bobs_pool_holds(address_at(new, 0)));
     assert!(!f.bobs_pool_holds(address_at(old, 0)));
 
+    f.verify_contacts();
     f.credit(1, COIN);
     let pair = (id(ME), id(BOB));
     let payments = &f.session.platform.payments;
@@ -2267,7 +2723,7 @@ fn a_rotation_the_store_kept_is_what_a_relaunch_pays() {
             payments.keep(f.wallet, pair, address_at(old, 0), checked);
             let d = f.draft(BOB);
             let prepared = f.prepare(&d);
-            if mode == "enforcing" && !checked {
+            if mode != "off" && !checked {
                 // D14: an address kept while rule 5 did not apply is
                 // replaced by a fresh one, from the new account.
                 pays_the_new_account(&d, prepared.unwrap(), "unchecked under enforce");
@@ -2329,8 +2785,8 @@ fn a_fresh_address_displaced_before_it_is_kept_is_not_paid() {
     ));
     assert_eq!(
         f.reserved_checked(BOB),
-        Some((given_back, false)),
-        "the fresh address is not kept"
+        Some((given_back, true)),
+        "the fresh address is not kept; the given-back one is, as checked as it was taken"
     );
     assert_eq!(
         send_failure(f.engine.block_on(broadcast).unwrap()),

@@ -10,19 +10,13 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { UriRejected } from "../api/generated/UriRejected";
 import { inTauri, tauriTools } from "../api/tauri";
+import { messageTable, t } from "../i18n";
 import { showShellToast } from "../components/toast";
 import { NetworkText } from "../network/choice";
 import { noteLiveLink, SavedLinksText } from "./savedLinks";
 import { navigate, openPayForm, ui } from "./ui";
 
-const PAYMENT_REJECTED: Record<UriRejected["kind"], string> = {
-  doubleSlash: "This payment link starts with dash:// — Dash links start with dash: alone",
-  notDashUri: "This is not a Dash payment link",
-  unparsable: "This payment link could not be read",
-  bip70Unsupported: "Payment requests (BIP70) are not supported",
-  invalidAddress: "The address in this payment link is not valid on this network",
-  invalidAmount: "The amount in this payment link is not valid",
-};
+const PAYMENT_REJECTED: Readonly<Record<UriRejected["kind"], string>> = messageTable("app.link.payment", ["doubleSlash", "notDashUri", "unparsable", "bip70Unsupported", "invalidAddress", "invalidAmount"] as const);
 
 /** Why a link was not opened, as the window says it; `null` when it opens. */
 export function linkProblem(route: LinkRoute): string | null {
@@ -30,25 +24,25 @@ export function linkProblem(route: LinkRoute): string | null {
     case "unsupported":
       switch (route.what) {
         case "addressRequest":
-          return "Dash Wallet does not hand addresses to other apps";
+          return t("app.link.addressRequest");
         case "dashConnect":
-          return "DashConnect links are not supported";
+          return t("app.link.dashConnect");
         case "integration":
-          return "Exchange links are not supported";
+          return t("app.link.integration");
         case "paymentRequest":
-          return "Payment requests (BIP70) are not supported";
+          return t("app.link.paymentRequest");
       }
       break;
     case "rejected":
       switch (route.reason.kind) {
         case "notALink":
-          return "This is not a link Dash Wallet can open";
+          return t("app.link.notALink");
         case "tooLong":
-          return "This link is too long to open";
+          return t("app.link.tooLong");
         case "payment":
           return PAYMENT_REJECTED[route.reason.reason.kind];
         case "notSaved":
-          return "This invitation could not be saved. Open the link again once Dash Wallet has started";
+          return t("app.link.notSaved");
       }
   }
   return null;

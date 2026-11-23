@@ -15,7 +15,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::TransactionType as SpecialType;
@@ -900,12 +900,31 @@ pub enum AddressChain {
 }
 
 /// One script the wallet owns.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct Owned {
     pub address: Address,
     pub chain: AddressChain,
     /// Owned by a CoinJoin account (dash-qt treats those outputs as change).
     pub coinjoin: bool,
+    /// `address` as text, encoded once per view: a history read shows one
+    /// owned address on many records (H-06).
+    text: OnceLock<String>,
+}
+
+impl Owned {
+    pub(crate) fn new(address: Address, chain: AddressChain, coinjoin: bool) -> Self {
+        Self {
+            address,
+            chain,
+            coinjoin,
+            text: OnceLock::new(),
+        }
+    }
+
+    /// `address` as text.
+    pub(crate) fn text(&self) -> &str {
+        self.text.get_or_init(|| self.address.to_string())
+    }
 }
 
 /// Inputs to [`decompose`] beyond the transaction itself.
@@ -1137,7 +1156,7 @@ fn decompose_with(entry: &TxEntry, view: &ChainView<'_>, marked_coinjoin_send: b
             };
             parts.push(Part {
                 tx_type,
-                address: Some(owned.address.to_string()),
+                address: Some(owned.text().to_owned()),
                 amount: to_i64(tx.output[vout].value),
                 vout: Some(vout as u32),
             });
@@ -1432,29 +1451,44 @@ struct SortKey {
     index: u32,
 }
 
-fn key_of(r: &TxRecord, sort: HistorySort) -> SortKey {
-    let primary = match sort {
+impl SortKey {
+    fn parts(&self) -> (i128, &str, u32) {
+        (self.primary, &self.txid, self.index)
+    }
+}
+
+fn primary_of(r: &TxRecord, sort: HistorySort) -> i128 {
+    match sort {
         // Unknown times sort as newest: they are fresh mempool arrivals.
         HistorySort::NewestFirst | HistorySort::OldestFirst => {
             i128::from(r.timestamp.unwrap_or(u64::MAX))
         }
         HistorySort::AmountDescending | HistorySort::AmountAscending => i128::from(r.amount),
-    };
+    }
+}
+
+fn key_of(r: &TxRecord, sort: HistorySort) -> SortKey {
     SortKey {
-        primary,
+        primary: primary_of(r, sort),
         txid: r.txid.clone(),
         index: r.record_index,
     }
 }
 
-fn compare(a: &SortKey, b: &SortKey, sort: HistorySort) -> Ordering {
+/// The sort's order of two keys given as (primary, txid, record index).
+fn order(sort: HistorySort, a: (i128, &str, u32), b: (i128, &str, u32)) -> Ordering {
     let primary = match sort {
-        HistorySort::NewestFirst | HistorySort::AmountDescending => b.primary.cmp(&a.primary),
-        HistorySort::OldestFirst | HistorySort::AmountAscending => a.primary.cmp(&b.primary),
+        HistorySort::NewestFirst | HistorySort::AmountDescending => b.0.cmp(&a.0),
+        HistorySort::OldestFirst | HistorySort::AmountAscending => a.0.cmp(&b.0),
     };
     primary
-        .then_with(|| a.txid.cmp(&b.txid))
-        .then_with(|| a.index.cmp(&b.index))
+        .then_with(|| a.1.cmp(b.1))
+        .then_with(|| a.2.cmp(&b.2))
+}
+
+/// `r`'s key in `sort`, borrowed.
+fn parts_of(r: &TxRecord, sort: HistorySort) -> (i128, &str, u32) {
+    (primary_of(r, sort), &r.txid, r.record_index)
 }
 
 /// FNV-1a over the query shape, so a cursor is only accepted by the query
@@ -1550,31 +1584,40 @@ pub fn page(records: Vec<TxRecord>, q: &HistoryQuery) -> Result<HistoryPage, Eng
         .as_deref()
         .map(|c| decode_cursor(c, tag))
         .transpose()?;
-    let keyed = filter_sorted(records, &q.filter, q.sort);
-    let total = u32::try_from(keyed.len()).ok();
-    let start = match &after {
-        Some(k) => keyed.partition_point(|(rk, _)| compare(rk, k, q.sort) != Ordering::Greater),
-        None => 0,
-    };
+    let kept = matching(records, &q.filter);
+    let total = u32::try_from(kept.len()).ok();
+    // Only the page is sorted: the records after the cursor are selected
+    // by index and only the page's are copied out, so a large history is
+    // neither sorted nor moved (H-06).
+    let part = |i: usize| parts_of(&kept[i], q.sort);
+    let by = |a: &usize, b: &usize| order(q.sort, part(*a), part(*b));
+    let mut rest: Vec<usize> = (0..kept.len())
+        .filter(|&i| {
+            (after.as_ref()).is_none_or(|k| order(q.sort, part(i), k.parts()) == Ordering::Greater)
+        })
+        .collect();
     let limit = q.limit as usize;
-    let rest = keyed.len().saturating_sub(start);
-    let take: Vec<(SortKey, TxRecord)> = keyed.into_iter().skip(start).take(limit).collect();
-    let next_cursor = (rest > limit)
-        .then(|| take.last().map(|(k, _)| encode_cursor(tag, k)))
+    let more = rest.len() > limit;
+    if more {
+        rest.select_nth_unstable_by(limit - 1, by);
+        rest.truncate(limit);
+    }
+    rest.sort_unstable_by(by);
+    let next_cursor = more
+        .then(|| {
+            rest.last()
+                .map(|&i| encode_cursor(tag, &key_of(&kept[i], q.sort)))
+        })
         .flatten();
     Ok(HistoryPage {
-        records: take.into_iter().map(|(_, r)| r).collect(),
+        records: rest.iter().map(|&i| kept[i].clone()).collect(),
         next_cursor,
         total_matching: total,
     })
 }
 
-/// The records `filter` keeps, in `sort` order, with their sort keys.
-fn filter_sorted(
-    mut records: Vec<TxRecord>,
-    filter: &HistoryFilter,
-    sort: HistorySort,
-) -> Vec<(SortKey, TxRecord)> {
+/// The records `filter` keeps, in their order.
+fn matching(mut records: Vec<TxRecord>, filter: &HistoryFilter) -> Vec<TxRecord> {
     let text = filter
         .text
         .as_deref()
@@ -1582,10 +1625,7 @@ fn filter_sorted(
         .filter(|t| !t.is_empty())
         .map(str::to_lowercase);
     records.retain(|r| matches(r, filter, text.as_deref()));
-    let mut keyed: Vec<(SortKey, TxRecord)> =
-        records.into_iter().map(|r| (key_of(&r, sort), r)).collect();
-    keyed.sort_by(|a, b| compare(&a.0, &b.0, sort));
-    keyed
+    records
 }
 
 /// Every record `filter` keeps, in `sort` order (the CSV export's rows).
@@ -1595,10 +1635,9 @@ pub(crate) fn filtered(
     sort: HistorySort,
 ) -> Result<Vec<TxRecord>, EngineError> {
     validate_filter(filter)?;
-    Ok(filter_sorted(records, filter, sort)
-        .into_iter()
-        .map(|(_, r)| r)
-        .collect())
+    let mut records = matching(records, filter);
+    records.sort_by(|a, b| order(sort, parts_of(a, sort), parts_of(b, sort)));
+    Ok(records)
 }
 
 /// Push data of an `OP_RETURN` script, hex.
@@ -1802,14 +1841,7 @@ mod tests {
                 (9, AddressChain::Change),
             ] {
                 let a = hash_addr(n);
-                owned.insert(
-                    a.script_pubkey(),
-                    Owned {
-                        address: a,
-                        chain,
-                        coinjoin: false,
-                    },
-                );
+                owned.insert(a.script_pubkey(), Owned::new(a, chain, false));
             }
             Self {
                 owned,
@@ -1869,6 +1901,30 @@ mod tests {
         assert_eq!(status.confirmations, 1);
         assert!(records[0].counts_toward_balance);
         assert_eq!(records[0].timestamp, Some(1_700_000_000));
+    }
+
+    /// One view encodes an owned address once, however many records show
+    /// it (H-06: a 40k wallet's page encoded one per record).
+    #[test]
+    fn a_view_encodes_each_owned_address_once() {
+        let mut f = Fixture::new();
+        let ids: Vec<Txid> = (0..3)
+            .map(|n| {
+                let t = tx(vec![foreign_input(n)], vec![out(1_000, &hash_addr(1))]);
+                f.add(entry(t, in_block(100, 1_700_000_000)))
+            })
+            .collect();
+        let view = f.view(100);
+        let script = hash_addr(1).script_pubkey();
+        assert!(view.owned[&script].text.get().is_none());
+        let mut encoded = Vec::new();
+        for id in &ids {
+            let (records, _, _) = records_of(id, &f.history[id], &view, &Labels::default());
+            let shown = hash_addr(1).to_string();
+            assert_eq!(records[0].address.as_deref(), Some(shown.as_str()));
+            encoded.push(view.owned[&script].text.get().unwrap().as_ptr());
+        }
+        assert!(encoded.windows(2).all(|w| w[0] == w[1]));
     }
 
     fn record(
@@ -2595,6 +2651,60 @@ mod tests {
             page(records, &q),
             Err(EngineError::InvalidQuery(_))
         ));
+    }
+
+    /// Walking every page, for each sort and page size, gives the records
+    /// in the full sort's order, each once, whatever order the history
+    /// arrives in: with tied times and amounts, unknown times and several
+    /// records per transaction.
+    #[test]
+    fn every_page_walk_matches_the_full_sort() {
+        let records: Vec<TxRecord> = (0..40u8)
+            .map(|n| {
+                let ts = (n % 7 != 0).then_some(u64::from(n % 5) * 100);
+                let amount = i64::from(n % 4) * 10 - 15;
+                rec(n / 2, u32::from(n % 2), ts, amount, TxType::RecvWithAddress)
+            })
+            .collect();
+        for sort in [
+            HistorySort::NewestFirst,
+            HistorySort::OldestFirst,
+            HistorySort::AmountDescending,
+            HistorySort::AmountAscending,
+        ] {
+            let full: Vec<(String, u32)> =
+                filtered(records.clone(), &HistoryFilter::default(), sort)
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| (r.txid, r.record_index))
+                    .collect();
+            let reversed: Vec<TxRecord> = records.iter().rev().cloned().collect();
+            let mut interleaved = records.clone();
+            interleaved
+                .sort_by_key(|r| (r.record_index, u32::MAX - u32::from(r.txid.as_bytes()[0])));
+            for (input, shape) in [
+                (&records, "txid order"),
+                (&reversed, "reversed"),
+                (&interleaved, "interleaved"),
+            ] {
+                for limit in [1, 3, 7, 40, 41] {
+                    let mut q = query(limit);
+                    q.sort = sort;
+                    let mut walked = Vec::new();
+                    loop {
+                        let p = page(input.clone(), &q).unwrap();
+                        assert_eq!(p.total_matching, Some(40));
+                        assert!(p.records.len() <= limit as usize);
+                        walked.extend(p.records.into_iter().map(|r| (r.txid, r.record_index)));
+                        match p.next_cursor {
+                            Some(c) => q.cursor = Some(c),
+                            None => break,
+                        }
+                    }
+                    assert_eq!(walked, full, "{sort:?}, limit {limit}, {shape}");
+                }
+            }
+        }
     }
 
     #[test]

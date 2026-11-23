@@ -116,7 +116,7 @@ export function DashPayInfoCard() {
           {info.syncNow.note}
         </p>
       )}
-      {outcome && <Outcome ok={outcome.ok} text={outcome.text} testId="information-dashpay-outcome" />}
+      <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="information-dashpay-outcome" polite />
       {info.state === "error" && (
         <div className="tool-actions">
           <DashButton variant="tintedGray" size="small" data-testid="information-dashpay-retry" onClick={() => void (wallets.isError ? wallets.refetch() : sync.refetch())}>

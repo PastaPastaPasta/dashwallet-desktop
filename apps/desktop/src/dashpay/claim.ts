@@ -8,58 +8,49 @@ import type { InvitationInviter } from "../api/generated/InvitationInviter";
 import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { startErrorText } from "./registration";
-import { CLAIM_REFUSAL } from "./status";
+import { messageTable, t } from "../i18n";
+import { CLAIM_REFUSAL, withTable } from "./status";
 
 /** Where the claim screen was opened from (D2, D3): onboarding's replayed link, or a link opened
  * in a wallet. */
 export type ClaimEntry = "welcome" | "join";
 
-export const CLAIM_COPY = {
-  title: { welcome: "You have been invited to DashPay", join: "DashPay invitation" },
-  checking: "Checking the invitation…",
-  checkFailed: "Could not check the invitation. Your wallet works as usual.",
-  hasIdentity: CLAIM_REFUSAL.hasIdentity,
+const claim = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(prefix ? `dashpay.claim.${prefix}` : "dashpay.claim", keys);
+
+export const CLAIM_COPY = withTable(claim("", ["checking", "checkFailed", "paid", "kept", "accept", "notNow", "dismiss", "retry"]), {
+  title: claim("title", ["welcome", "join"]),
+  get hasIdentity() {
+    return CLAIM_REFUSAL.hasIdentity;
+  },
   claimed: CLAIM_REFUSAL.claimed,
   expired: CLAIM_REFUSAL.expired,
   invalid: {
-    malformed: CLAIM_REFUSAL.invalid,
-    wrongNetwork: (network: string) => `This invitation is for another Dash network than ${network}`,
-    assetLockNotFound: "The network does not know this invitation's funding yet. Try again later.",
+    get malformed() {
+      return CLAIM_REFUSAL.invalid;
+    },
+    wrongNetwork: (network: string) => t("dashpay.claim.wrongNetwork", { network }),
+    get assetLockNotFound() {
+      return t("dashpay.claim.assetLockNotFound");
+    },
   },
-  invited: {
-    from: "Invited by",
+  invited: withTable(claim("invited", ["from", "unnamed"]), {
     // D4 (F7): DPNS proves the name, not who sent the link.
-    checked: (username: string) => `Dash Wallet checked that @${username} is a DashPay username. It cannot check who sent you this link.`,
-    unnamed: "This invitation does not name who sent it.",
-  },
-  paid: "Paid by the invitation: nothing is paid from this wallet.",
-  confirm: {
+    checked: (username: string) => t("dashpay.claim.invited.checked", { username: `@${username}` }),
+  }),
+  confirm: withTable(claim("confirm", ["recipientId", "claim"]), {
     // D6 (Opus-h r1 n3).
     // `who`: "@username", or the identity id of an inviter without one.
-    recipient: (who: string) =>
-      `A contact request will go to ${who}. It carries your new identity's extended public key for payments between you, so ${who} can see the payments you make to each other.`,
-    recipientId: "Their identity",
-    request: (who: string) => `Send a contact request to ${who}`,
-    claim: "Claim invitation",
-  },
+    recipient: (who: string) => t("dashpay.claim.confirm.recipient", { who }),
+    request: (who: string) => t("dashpay.claim.confirm.request", { who }),
+  }),
   name: {
     // D15: invite-limited names.
-    contestedRefused: "This invitation cannot pay for a username the network votes on. Use a number 2–9, or 20 characters or more.",
+    get contestedRefused() {
+      return t("dashpay.claim.contestedRefused");
+    },
   },
-  paste: {
-    open: "Have an invitation?",
-    title: "Open an invitation",
-    field: "Invitation link",
-    refused: "This is not a DashPay invitation link.",
-    cancel: "Cancel",
-    ok: "Open invitation",
-  },
-  kept: "This claim may already be on the network, so it is not cancelled. Continue to finish it.",
-  accept: "Accept invitation",
-  notNow: "Not now",
-  dismiss: "Dismiss invitation",
-  retry: "Try again",
-} as const;
+  paste: claim("paste", ["open", "title", "field", "refused", "cancel", "ok"]),
+});
 
 /** The claim screen's states before a claim (C1 and C2 are the claim row's own screens). */
 export type ClaimState = "hasIdentity" | "checking" | "checkFailed" | "claimed" | "expired" | "invalid" | "invited";
@@ -184,11 +175,11 @@ export const CLAIM_KEPT = Symbol("claimKept");
 /** C12: why a claim's start or resume was refused. */
 export function claimErrorText(e: unknown, amount: (duffs: number) => string): string {
   if (e === CLAIM_KEPT) return CLAIM_COPY.kept;
-  if (hasCode(e, "invitation.claimed")) return `${CLAIM_COPY.claimed.title}. ${CLAIM_COPY.claimed.text}`;
-  if (hasCode(e, "invitation.expired")) return `${CLAIM_COPY.expired.title}. ${CLAIM_COPY.expired.text}`;
+  if (hasCode(e, "invitation.claimed")) return t("dashpay.refusal.claimedSentence");
+  if (hasCode(e, "invitation.expired")) return t("dashpay.refusal.expiredSentence");
   if (hasCode(e, "invitation.invalid")) return CLAIM_COPY.invalid.malformed;
   if (hasCode(e, "invitation.already_has_identity")) return CLAIM_COPY.hasIdentity;
   if (hasCode(e, "name.unavailable_for_invite")) return CLAIM_COPY.name.contestedRefused;
-  if (hasCode(e, "registration.funding_insufficient")) return "This invitation does not cover this username.";
+  if (hasCode(e, "registration.funding_insufficient")) return t("dashpay.claim.notCovered");
   return startErrorText(e, amount);
 }

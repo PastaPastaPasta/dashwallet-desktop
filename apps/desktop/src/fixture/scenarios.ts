@@ -1400,6 +1400,26 @@ const SCENARIOS = {
     w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, hasDashpayKeys: false }));
     return w;
   },
+  /** H-09: a payment to Erin, whose data is unverified, waits in `prepare` and is refused with
+   * `platform.context_unavailable` (`hold=draft_prepare` shows the wait). */
+  "dashpay-contact-unchecked": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), unverifiedPrepare: "contextUnavailable" };
+    return w;
+  },
+  /** H-09: a payment to Erin is refused with `platform.trust_mismatch`. */
+  "dashpay-contact-mismatch": (t) => {
+    const w = base(t);
+    w.dashpay = { ...registered(), unverifiedPrepare: "trustMismatch" };
+    return w;
+  },
+  /** H-09: Grace's request comes from a profile not yet verified: Accept warns and stays on. */
+  "dashpay-unverified-request": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    w.dashpay.contacts = w.dashpay.contacts.map((c) => (c.summary.username === "grace" ? { ...c, summary: { ...c.summary, unverified: true } } : c));
+    return w;
+  },
   /** "alice" with fewer credits than one contact request: Accept is refused (DP2-09 D4). */
   "dashpay-low-credits": (t) => {
     const w = base(t);

@@ -112,6 +112,9 @@ export function ConfirmSheet({
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** A contact payment's prepare is out: it waits, up to a minute, for the contact's data to be
+   * checked (H-09). */
+  const [checkingContact, setCheckingContact] = useState(false);
   /** When the vault takes the next attempt (ms since epoch), as on the lock screen; null: now. */
   const [retryAt, setRetryAt] = useState<number | null>(null);
   const [, tick] = useState(0);
@@ -175,11 +178,24 @@ export function ConfirmSheet({
   useEffect(() => {
     if (policyKnown && prompt === "none") cancel.current?.focus();
   }, [policyKnown, prompt]);
+  const unsignedButton = useRef<HTMLButtonElement>(null);
+  const unsignedFailed = useRef(false);
   // The field was disabled while `authorize` ran: after a refusal, focus goes back to it.
   const field = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    if (!busy && error) field.current?.focus();
+    if (!busy && error && !unsignedFailed.current) field.current?.focus();
   }, [busy, error]);
+  const form = useRef<HTMLFormElement>(null);
+  const dialog = () => form.current?.closest<HTMLElement>('[role="dialog"]');
+  const holdFocus = () => {
+    if (form.current?.contains(document.activeElement)) dialog()?.focus();
+  };
+  useEffect(() => {
+    if (busy || !unsignedFailed.current) return;
+    unsignedFailed.current = false;
+    const a = document.activeElement;
+    if (a === document.body || a === dialog()) unsignedButton.current?.focus();
+  }, [busy]);
 
   // Set before the first await, so a second Send in the same frame (before `busy` renders) does
   // not run the accept, which cannot be undone, twice.
@@ -199,6 +215,7 @@ export function ConfirmSheet({
       setError(t("pay.confirm.needPassphrase"));
       return;
     }
+    holdFocus();
     setBusy(true);
     setError(null);
     const attempt = onSend({ amount: estimate.totalSent, fee: estimate.fee });
@@ -254,14 +271,18 @@ export function ConfirmSheet({
     const notSent = (text: string) => attempt.outcome({ kind: "failed", text: accepted ? `${accepted} ${text}` : text });
     const endLease = () => lease !== null && void b.endFlow(lease).catch(() => null);
 
+    const toContact = isContact(spec.recipient);
     let held;
+    setCheckingContact(toContact);
     try {
       held = await draft.prepare(spec, authId);
     } catch (e) {
       if (grant) void b.revokeGrant(grant.id).catch(() => null);
       endLease();
-      notSent(failureText(e, chain, amountUnit));
+      notSent(failureText(e, chain, amountUnit, toContact));
       return;
+    } finally {
+      setCheckingContact(false);
     }
     const { draft: d, prepared } = held;
     if (!keepsPromise(confirmed, prepared.summary)) {
@@ -272,7 +293,6 @@ export function ConfirmSheet({
     }
     // An accept that went through is said with whatever outcome the payment gets, a retry's too.
     const sent = { amount: estimate.totalSent, fee: prepared.summary.fee, ...(accepted && { note: accepted }) };
-    const toContact = isContact(spec.recipient);
     attempt.broadcasting(sent);
     try {
       const { txid } = await draft.broadcast(d, prepared.handle);
@@ -305,6 +325,7 @@ export function ConfirmSheet({
   // reaches the clipboard nor opens Tools.
   const createUnsigned = async () => {
     if (busy) return;
+    holdFocus();
     setBusy(true);
     setError(null);
     let psbt: string;
@@ -312,6 +333,7 @@ export function ConfirmSheet({
       psbt = await draft.createUnsigned(spec);
     } catch (e) {
       if (!mounted.current) return;
+      unsignedFailed.current = true;
       setBusy(false);
       setError(failureText(e, chain));
       return;
@@ -335,6 +357,7 @@ export function ConfirmSheet({
   return (
     <Sheet title={actions.unsignedFirst ? t("pay.confirm.titleUnsigned") : t("pay.confirm.title")} width="small" testId="pay-confirm" returnFocus={returnFocus} onClose={() => !busy && onCancel()}>
       <form
+        ref={form}
         className="confirm"
         onSubmit={(e) => {
           e.preventDefault();
@@ -458,6 +481,7 @@ export function ConfirmSheet({
           {!contact && (
             <DashButton
               key="unsigned"
+              ref={unsignedButton}
               variant={actions.unsignedFirst ? "filledBlue" : "tintedBlue"}
               size="large"
               data-testid="pay-confirm-unsigned"
@@ -469,7 +493,7 @@ export function ConfirmSheet({
           )}
           {actions.send && (
             <DashButton key="send" type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null} why={busy ? null : retryAt !== null ? t("pay.confirm.waitMoment") : t("pay.confirm.checkingNetwork")}>
-              {busy ? t("pay.confirm.sending") : contact?.acceptsToo ? t("pay.confirm.acceptAndPay") : t("pay.confirm.send")}
+              {busy ? (checkingContact ? t("pay.confirm.checkingContact") : t("pay.confirm.sending")) : contact?.acceptsToo ? t("pay.confirm.acceptAndPay") : t("pay.confirm.send")}
             </DashButton>
           )}
         </div>

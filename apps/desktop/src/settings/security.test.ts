@@ -11,6 +11,7 @@ import { FIXTURE_PASSPHRASE as PASS, SECOND_WALLET_ID, type ScenarioName } from 
 import { LockText } from "../onboarding/lock";
 import { WRONG_PASSPHRASE } from "../onboarding/model";
 import { PassphraseText } from "../onboarding/passphrase";
+import { DEFAULT_PREFS, ui } from "../app/ui";
 import { AUTO_LOCK_CHOICES, ChangePassphraseModel, EncryptModel, PaymentAuthModel, SecurityText, SpendLimitModel, WipeModel } from "./security";
 
 let fixture: FixtureHandle;
@@ -143,6 +144,8 @@ describe("auto lock", () => {
   });
 });
 
+const choose = (language: string | null) => ui.set({ prefs: { ...DEFAULT_PREFS, language } });
+
 /** A wipe at its passphrase step, on `api` (the backend, or one with a call replaced). */
 async function wipeReady(api: Backend = b) {
   const model = new WipeModel(api);
@@ -168,6 +171,46 @@ describe("wipe", () => {
     expect(model.step).toBe("done");
     expect(fixture.world.wallets).toEqual([]);
     expect(fixture.world.lock.state).toBe("noVault");
+  });
+
+  it("the typed sentence is the app language's, read at check time; English always works", async () => {
+    install("two-wallets");
+    const model = new WipeModel(b);
+    await model.load();
+    const english = SecurityText.wipeAcceptPhrase;
+    try {
+      choose("ar-XB");
+      const rtl = SecurityText.wipeAcceptPhrase;
+      expect(rtl).not.toBe(english);
+      model.accept(`\t${rtl.normalize("NFD")}  `);
+      expect(model.step).toBe("passphrase");
+      const other = new WipeModel(b);
+      await other.load();
+      model.cancel();
+      choose("en-XA");
+      other.accept(rtl);
+      expect(other.error).toBe(SecurityText.acceptPhraseMismatch);
+      other.accept(SecurityText.wipeAcceptPhrase);
+      expect(other.step).toBe("passphrase");
+      const third = new WipeModel(b);
+      await third.load();
+      choose("ar-XB");
+      third.accept(english);
+      expect(third.step).toBe("passphrase");
+    } finally {
+      choose(null);
+    }
+  });
+
+  it("case and inner spacing must match the sentence", async () => {
+    install("two-wallets");
+    const model = new WipeModel(b);
+    await model.load();
+    model.accept(SecurityText.wipeAcceptPhrase.toUpperCase());
+    expect(model.step).toBe("sentence");
+    model.accept(SecurityText.wipeAcceptPhrase.replace(" ", "  "));
+    expect(model.step).toBe("sentence");
+    expect(model.error).toBe(SecurityText.acceptPhraseMismatch);
   });
 
   it("IOS109_wipeRemovesClosedWalletsToo", async () => {

@@ -6,6 +6,7 @@
 
 import type { Balances } from "../api/generated/Balances";
 import type { ListArrival } from "../components/emptyStates";
+import { messageTable, t } from "../i18n";
 
 export type Pool = "core" | "shielded" | "platform";
 
@@ -24,14 +25,7 @@ export interface HomeBalance {
 
 export const known = (r: PoolReading): r is number => typeof r === "number";
 
-export const HERO_SYNC = {
-  syncing: "Still syncing, balance may change",
-  stopped: "Syncing has stopped, balance may be out of date",
-  notStarted: "Not synced yet, balance may change",
-  unreadable: "Could not check syncing, balance may change",
-  unknownSyncing: "Syncing Balance",
-  unknownNotSynced: "Not synced yet",
-} as const;
+export const HERO_SYNC = messageTable("home.sync", ["syncing", "stopped", "notStarted", "unreadable", "unknownSyncing", "unknownNotSynced"] as const);
 
 /** How long, from this wallet's Home mounting, its first scan-height read may be out before the
  * hero says the balance may change. */
@@ -154,17 +148,23 @@ export function homeBalance(core: Balances, shielded: PoolReading, platform: Poo
  */
 export function coreSubtitle(core: Balances, fmt: (duffs: number) => string, fallback: string): string {
   const parts: string[] = [];
-  if (core.unconfirmed > 0) parts.push(`${fmt(core.unconfirmed)} pending`);
-  if (core.immature > 0) parts.push(`${fmt(core.immature)} immature`);
-  if (core.locked > 0) parts.push(`${fmt(core.locked)} locked`);
-  return parts.length > 0 ? parts.join(" · ") : fallback;
+  if (core.unconfirmed > 0) parts.push(t("home.core.pending", { amount: fmt(core.unconfirmed) }));
+  if (core.immature > 0) parts.push(t("home.core.immature", { amount: fmt(core.immature) }));
+  if (core.locked > 0) parts.push(t("home.core.locked", { amount: fmt(core.locked) }));
+  return parts.length > 0 ? parts.join(t("home.core.separator")) : fallback;
 }
 
-export const POOL_ROWS: { pool: Pool; title: string; subtitle: string }[] = [
-  { pool: "core", title: "Core", subtitle: "Dash wallet" },
-  { pool: "shielded", title: "Shielded", subtitle: "Private balance" },
-  { pool: "platform", title: "Platform", subtitle: "Platform addresses" },
-];
+const poolRow = (pool: Pool) => ({
+  pool,
+  get title() {
+    return t(`home.pools.${pool}.title`);
+  },
+  get subtitle() {
+    return t(`home.pools.${pool}.subtitle`);
+  },
+});
+
+export const POOL_ROWS: readonly { pool: Pool; readonly title: string; readonly subtitle: string }[] = [poolRow("core"), poolRow("shielded"), poolRow("platform")];
 
 /**
  * The breakdown's rows under the hero. Shielded and Platform show unless the wallet has no such

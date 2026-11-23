@@ -3,8 +3,10 @@
 
 import { Sheet } from "../../components/sheet";
 import { FAQ, VOTING_INFO } from "../../dashpay/status";
+import { useT } from "../../i18n";
 
 export function VotingInfoSheet({ onClose }: { onClose: () => void }) {
+  useT();
   return (
     <Sheet title={VOTING_INFO.title} width="medium" testId="voting-info" onClose={onClose}>
       <p className="about-dashpay-intro">{VOTING_INFO.intro}</p>
@@ -21,6 +23,7 @@ export function VotingInfoSheet({ onClose }: { onClose: () => void }) {
 }
 
 export function DashPayFaqSheet({ onClose }: { onClose: () => void }) {
+  useT();
   return (
     <Sheet title={FAQ.title} width="medium" testId="dashpay-faq" onClose={onClose}>
       <h3 className="about-dashpay-headline">{FAQ.headline}</h3>

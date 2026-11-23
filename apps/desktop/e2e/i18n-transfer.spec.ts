@@ -17,9 +17,6 @@ const DATA = [/^\+?[\p{Nd}.,٫٬\s•*#]+ (t?DASH|mDASH|μDASH|duffs)$/u, /^[Xy]
  * (needs a whole-sentence key). */
 const ROUTE_TO = [/^to$/];
 
-/** Still English, from format/feeWarning.ts (shared with Pay's confirmation). */
-const FEE_WARNING = [/^Fees are \p{Nd}+% of this amount\.$/u, /^Most of this goes to fees\.$/];
-
 /** Still English, from shielded/syncing.ts (shared with Receive): the send form's sync line. */
 const SYNC_LINE = [/^Last checked /, /^Scanning…$/];
 
@@ -148,7 +145,7 @@ const STATES: Record<string, State> = {
       await expect(page.getByTestId("transfer-loading")).toBeVisible();
     },
   },
-  "shielded-confirm": { scenario: "funded", routeHeader: true, data: FEE_WARNING, go: (page) => confirm(page, "coreToShielded") },
+  "shielded-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "coreToShielded") },
   "shielded-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "shielded-refused": { scenario: "transfer-shielded-refused", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "shielded-waiting": { scenario: "transfer-shield-waiting", routeHeader: true, go: (page) => run(page, "coreToShielded") },

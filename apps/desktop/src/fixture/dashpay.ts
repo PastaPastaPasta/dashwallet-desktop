@@ -79,6 +79,11 @@ export interface DashPayWorld {
   /** DP6-03: the pass `dashpay_sync_status` reports; absent: none (the engine's `last_pass` is
    * `None` until passes report, E0-10b §7). */
   lastPass?: SyncPassReport;
+  /** H-09: how a contact payment's `prepare` ends for a contact whose data is `unverified`, under
+   * the default trust mode: the engine waits for it to verify, then refuses with
+   * `platform.context_unavailable`, or `platform.trust_mismatch` when it does not match. Absent:
+   * the data counts as checked and the payment goes on. */
+  unverifiedPrepare?: "contextUnavailable" | "trustMismatch";
 }
 
 /** `platform_loops` as the engine lists them (runtime.rs): session-wide, running while SPV runs

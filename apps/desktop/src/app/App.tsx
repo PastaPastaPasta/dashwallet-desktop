@@ -48,7 +48,7 @@ import { focusPage, useShellBridge } from "./shellBridge";
 import { openFailure, type OpenFailure } from "./openFailure";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
-import { useLanguageAttributes } from "../i18n";
+import { useLanguageAttributes, useT } from "../i18n";
 import { savePrefs } from "../settings/prefs";
 import { updatesModel, useAutomaticUpdateCheck } from "../settings/updates";
 import { UpdateRestartNotice } from "../screens/settings/Updates";
@@ -65,6 +65,7 @@ export const useLaunch = () => useContext(LaunchContext)!;
 /** Splash (UX-SPEC §4.2) while the engine opens the network, or its error, with a retry unless the file is from a newer
  * build (DP3-04b D35). */
 function Splash({ error, onRetry }: { error: OpenFailure | null; onRetry: () => void }) {
+  const tr = useT();
   return (
     <div className="splash" data-testid="splash">
       <DashLogo className="splash-logo" />
@@ -75,7 +76,7 @@ function Splash({ error, onRetry }: { error: OpenFailure | null; onRetry: () => 
           </p>
           {error.retry && (
             <DashButton variant="plainBlue" onClick={onRetry}>
-              Try again
+              {tr("app.tryAgain")}
             </DashButton>
           )}
         </>
@@ -83,7 +84,7 @@ function Splash({ error, onRetry }: { error: OpenFailure | null; onRetry: () => 
         <>
           <span className="splash-bar" aria-hidden="true" />
           <p className="splash-text" role="status">
-            Loading wallet…
+            {tr("app.loadingWallet")}
           </p>
         </>
       )}
@@ -204,7 +205,7 @@ function WalletChrome({
   const bellOwner = wallet && main ? `${wallet.walletId}:${main}` : undefined;
   const bellPanel =
     wallet && main
-      ? (id: string, close: () => void) => <NotificationsPopover key={bellOwner} walletId={wallet.walletId} identity={main} network={network} id={id} close={close} />
+      ? (id: string, close: (o?: { refocus?: boolean }) => void) => <NotificationsPopover key={bellOwner} walletId={wallet.walletId} identity={main} network={network} id={id} close={close} />
       : undefined;
   const joined = !sidebarJoins(dashpay.status);
   const [layer, setLayer] = useState<HTMLDivElement | null>(null);
@@ -245,6 +246,7 @@ function WalletChrome({
 }
 
 function Shell() {
+  const tr = useT();
   const backend = useBackend();
   const client = useQueryClient();
   const launch = useLaunch();
@@ -328,8 +330,8 @@ function Shell() {
   // wallet's flow starts again at Welcome once unlocked.
   const gate = locked ? "loading" : walletListGate(wallets);
   const noWallet = gate === "empty";
-  const walletsError = gate === "error" ? <EmptyState testId="wallets-error" title="Could not load the wallets" message={errorMessage(wallets.error)} /> : null;
-  const walletsLoading = gate === "loading" ? <LoadingState testId="wallets-loading" text="Loading wallet…" /> : null;
+  const walletsError = gate === "error" ? <EmptyState testId="wallets-error" title={tr("app.walletsFailed")} message={errorMessage(wallets.error)} /> : null;
+  const walletsLoading = gate === "loading" ? <LoadingState testId="wallets-loading" text={tr("app.loadingWallet")} /> : null;
   // A wipe in progress holds it back until the vault is gone or its failure was seen (U-04 D33).
   const onboarding = !locked && !wiping && (addWallet || noWallet);
   useEffect(() => {

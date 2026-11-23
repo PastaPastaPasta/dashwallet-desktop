@@ -45,6 +45,11 @@ use crate::events::{EngineEvent, EventSink, NoticeCode};
 /// The developer toggle (global setting, `"1"` = on): quorum keys from the
 /// trusted service only, SPV not consulted.
 pub(crate) const TRUSTED_ONLY_KEY: &str = "trust.trusted_only";
+/// Whether this build may turn the toggle on: developer builds only
+/// (H-09; dw-app refuses the command in a release build too). Unit tests
+/// take it in any profile and model a release build with
+/// `in_release_build`.
+const TRUSTED_ONLY_ALLOWED: bool = cfg!(any(debug_assertions, test));
 
 /// How long an unknown quorum waits for SPV once masternode sync is done
 /// (rule 3).
@@ -68,9 +73,12 @@ const MISMATCH_MARKER: &str = "quorum key mismatch between SPV and the trusted s
 pub(crate) enum TrustMode {
     /// DASHPAY §2.2's degraded mode (DEC-168).
     Degraded,
-    /// R7 in full. H-09 makes it the default once chain anchoring of quorum
-    /// lists (dashpay/rust-dashcore#1117) is in the graph; until then no
-    /// session opens in it, so nothing waits on [`TrustProvider::writes_wait`].
+    /// R7 in full. The default once chain anchoring of quorum lists
+    /// (dashpay/rust-dashcore#1117, fixed by #1200) is in the graph, a 1.0.x
+    /// item; until then no session opens in it, so nothing waits on
+    /// [`TrustProvider::writes_wait`]. H-09 holds contact payments and
+    /// masternode withdrawals to its rule 5 meanwhile
+    /// ([`TrustProvider::strict_rule_5`]).
     Enforcing,
 }
 
@@ -83,7 +91,8 @@ pub(crate) const DEFAULT_MODE: TrustMode = TrustMode::Degraded;
 pub(crate) enum Rule5 {
     /// `Enforcing`: money waits until the data re-verifies against SPV.
     Enforce,
-    /// `Degraded`: rule 5 is suspended, a mismatch still refuses.
+    /// `Degraded`: rule 5 is suspended, a mismatch still refuses. Not for
+    /// contact payments or masternode withdrawals ([`TrustProvider::strict_rule_5`]).
     Probe,
     /// The trusted-only toggle: SPV is not consulted.
     Off,
@@ -205,6 +214,8 @@ pub(crate) struct TrustProvider {
     /// tests switch it ([`Self::set_mode`]).
     enforcing: AtomicBool,
     trusted_only: AtomicBool,
+    /// The toggle may be on: a developer build (tests may say otherwise).
+    trusted_only_allowed: bool,
     trusted: Arc<dyn TrustedQuorums>,
     /// SPV and provenance, attached once the wallet manager exists. Until
     /// then no fallback can be served (the latch cannot be set).
@@ -232,6 +243,7 @@ impl TrustProvider {
         Self {
             enforcing: AtomicBool::new(mode == TrustMode::Enforcing),
             trusted_only: AtomicBool::new(false),
+            trusted_only_allowed: TRUSTED_ONLY_ALLOWED,
             trusted,
             attached: OnceLock::new(),
             synced: watch::Sender::new(false),
@@ -259,6 +271,13 @@ impl TrustProvider {
         self
     }
 
+    /// Tests: the provider as a release build makes it.
+    #[cfg(test)]
+    pub(crate) fn in_release_build(mut self) -> Self {
+        self.trusted_only_allowed = false;
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn set_mode(&self, mode: TrustMode) {
         (self.enforcing).store(mode == TrustMode::Enforcing, Ordering::SeqCst);
@@ -280,8 +299,14 @@ impl TrustProvider {
         }
     }
 
+    /// Whether this build may turn the toggle on (developer builds only).
+    pub(crate) fn trusted_only_allowed(&self) -> bool {
+        self.trusted_only_allowed
+    }
+
+    /// `on` is ignored in a release build.
     pub(crate) fn set_trusted_only(&self, on: bool) {
-        self.trusted_only.store(on, Ordering::SeqCst);
+        (self.trusted_only).store(on && self.trusted_only_allowed, Ordering::SeqCst);
     }
 
     pub(crate) fn trusted_only(&self) -> bool {
@@ -316,7 +341,8 @@ impl TrustProvider {
     /// Platform writes must wait for masternode sync (rule 2). Only in
     /// `Enforcing`: the degraded mode suspends rule 5, and the toggle is the
     /// developer's choice. DP2-02's send reads it for a scan shown on the
-    /// fallback's word; H-09 wires it into every write flow.
+    /// fallback's word; wiring it into every write flow comes with
+    /// `Enforcing` as the default (1.0.x).
     pub(crate) fn writes_wait(&self) -> bool {
         self.mode() == TrustMode::Enforcing && !self.trusted_only() && !self.masternodes_synced()
     }
@@ -327,6 +353,18 @@ impl TrustProvider {
             _ if self.trusted_only() => Rule5::Off,
             TrustMode::Enforcing => Rule5::Enforce,
             TrustMode::Degraded => Rule5::Probe,
+        }
+    }
+
+    /// Rule 5 where Platform data says where money goes or confirms it to
+    /// the user (H-09, MG's 1.0 ruling): a payment to a DashPay contact and
+    /// a masternode credit withdrawal. Enforced in every mode; only the
+    /// toggle, which consults no SPV, turns it off.
+    pub(crate) fn strict_rule_5(&self) -> Rule5 {
+        if self.trusted_only() {
+            Rule5::Off
+        } else {
+            Rule5::Enforce
         }
     }
 
@@ -686,8 +724,14 @@ impl crate::NetworkSession {
 
     /// Sets the developer toggle, stored in app.sqlite (global) and applied
     /// to this session at once; other open sessions take it when reopened.
+    /// A release build refuses to turn it on (`invalid_argument`).
     pub async fn set_trusted_quorums_only(&self, on: bool) -> Result<(), crate::EngineError> {
         let _op = self.enter().await?;
+        if on && !self.trust.trusted_only_allowed() {
+            return Err(crate::EngineError::InvalidArgument(
+                "trusted-only quorum keys are a developer-build setting".into(),
+            ));
+        }
         let value = on.then(|| "1".to_string());
         self.appdb_op(move |db| {
             db.set_setting(dw_appdb::GLOBAL_SCOPE, TRUSTED_ONLY_KEY, value.as_deref())
