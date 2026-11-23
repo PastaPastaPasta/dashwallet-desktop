@@ -1544,6 +1544,14 @@ impl TxDraft {
             .await
     }
 
+    /// Records `prepared` as held this session, by txid, for the ProTx
+    /// Discard (`WalletHistory::held_here`).
+    fn note_held(&self, prepared: &PreparedTx) {
+        if let Ok(txid) = prepared.summary.txid.parse::<dashcore::Txid>() {
+            (self.session.hub.history).with_wallet(self.wallet_id, |h| h.held_here.insert(txid));
+        }
+    }
+
     pub(crate) async fn broadcast_inner(
         &self,
         prepared: Arc<PreparedTx>,
@@ -1596,6 +1604,7 @@ impl TxDraft {
                     other => other.to_string(),
                 };
                 *prepared.held.lock().unwrap() = Some(Held::Storage(message));
+                self.note_held(&prepared);
             }
             self.settle_contact(&prepared, first, next).await;
             *prepared.phase() = next;
@@ -1616,6 +1625,7 @@ impl TxDraft {
         if unsent && !self.drop_mark(&prepared).await {
             next = Phase::Unknown;
             *prepared.held.lock().unwrap() = Some(Held::UntilRestart);
+            self.note_held(&prepared);
             outcome = Err(SendFailure::HeldUntilRestart.into());
         }
         // The contact settles before the phase leaves `Broadcasting`.

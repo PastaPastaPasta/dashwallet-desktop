@@ -165,8 +165,9 @@ pub(crate) fn load_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, bool) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SentRead {
     Complete,
-    /// The marks read but their saved copies' query failed: each mark is
-    /// kept with no copy, so its coins stay claimed as a damaged copy's.
+    /// The marks read but their saved copies' query failed: a mark written
+    /// with its copy is kept with no copy, so its coins stay claimed as a
+    /// damaged copy's.
     CoinsOnly,
     Failed,
 }
@@ -205,6 +206,9 @@ pub(crate) fn read_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, SentRead) {
                 .unwrap_or_default();
             // Unread copies: only a mark written with its copy (one with its
             // coins' values, which an earlier build's lacks) counts as kept.
+            // When the values' query failed too, no mark does, and only a
+            // payment the history lists keeps its coins claimed (each failed
+            // query is logged).
             let kept = match read {
                 SentRead::CoinsOnly => !inputs.is_empty(),
                 _ => txs.contains_key(&txid),
@@ -1325,7 +1329,7 @@ mod tests {
         };
         assert_eq!(kept(&new), Some((true, false, BTreeSet::from([coin]))));
         assert_eq!(kept(&old), Some((false, false, BTreeSet::from([coin]))));
-        assert_eq!(load_sent(&db, wallet).1, true, "read again");
+        assert!(load_sent(&db, wallet).1, "read again");
     }
 
     /// A mark whose txid suffix or value does not parse is skipped and the

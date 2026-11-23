@@ -507,6 +507,10 @@ pub(crate) struct WalletHistory {
     /// them, which it keeps in memory only, so a mempool event of one is
     /// one queued before the Abandon.
     pub abandoned_here: HashSet<Txid>,
+    /// Payments whose first hand-off this session was definitely not sent
+    /// but whose sent marks could not be dropped (`Held`): in memory only,
+    /// like the hold itself.
+    pub held_here: HashSet<Txid>,
     /// The wallet's coins each payment restored from its sent mark
     /// (`add_unrecorded_sends`) signed, which a later record of it may not
     /// name.
