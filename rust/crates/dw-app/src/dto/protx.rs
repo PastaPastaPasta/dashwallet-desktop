@@ -243,7 +243,7 @@ pub struct ProTxTerms {
     pub operator_index: Option<u32>,
     /// Basis points.
     pub operator_reward: u16,
-    /// Empty for a `newAddress` payout before registration.
+    /// Empty for a `new_address` payout before registration.
     pub payout_address: String,
     pub collateral: Option<CollateralKindName>,
     pub collateral_outpoint: Option<String>,

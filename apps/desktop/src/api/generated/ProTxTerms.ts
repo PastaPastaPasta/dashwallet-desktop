@@ -12,6 +12,6 @@ export type ProTxTerms = { masternodeType: MasternodeTypeName, version: number, 
  */
 operatorReward: number,
 /**
- * Empty for a `newAddress` payout before registration.
+ * Empty for a `new_address` payout before registration.
  */
 payoutAddress: string, collateral: CollateralKindName | null, collateralOutpoint: string | null, collateralAddress: string | null, platform: PlatformFacts | null, platformNodeIndex: number | null, };
