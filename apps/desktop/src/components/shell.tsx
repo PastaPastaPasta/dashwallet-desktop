@@ -200,9 +200,9 @@ function chipLabel(t: Translate, name: string | null, names: NamesState): string
 function chipText(t: Translate, chip: Exclude<ChipState, { kind: "identity" } | null>): string {
   switch (chip.kind) {
     case "contest":
-      return t("shell.toolbar.contestPending", { name: chip.label });
+      return t("shell.toolbar.contestPending", { name: `@${chip.label}` });
     case "registering":
-      return chip.label ? t("shell.toolbar.registeringName", { name: chip.label }) : t("shell.toolbar.registering");
+      return chip.label ? t("shell.toolbar.registeringName", { name: `@${chip.label}` }) : t("shell.toolbar.registering");
   }
 }
 
@@ -223,7 +223,7 @@ function IdentityChip({ chip }: { chip: ChipState }) {
       type="button"
       className="identity-chip"
       data-testid="toolbar-chip"
-      aria-label={name ? t("shell.toolbar.myProfileNamed", { name }) : t("shell.toolbar.myProfile")}
+      aria-label={name ? t("shell.toolbar.myProfileNamed", { name: `@${name}` }) : t("shell.toolbar.myProfile")}
       onClick={() => navigate("profile")}
     >
       <Avatar letters={(name ?? "?").slice(0, 1).toUpperCase()} size="chip" identity={chip.identity} own />
