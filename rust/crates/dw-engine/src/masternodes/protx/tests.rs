@@ -941,6 +941,68 @@ fn mg10_a_discard_that_cannot_drop_the_mark_is_refused() {
     assert!(f.locked().is_empty());
 }
 
+/// After a restart the held hand-off's payment is listed pending from its
+/// mark, its coin claimed: Discard is refused until the payment is
+/// abandoned, then goes through, and after another restart the coin is
+/// free.
+#[test]
+fn mg10_a_held_hand_off_listed_after_a_restart_is_abandoned_before_its_discard() {
+    let (mut f, op, txid) = refused_hand_off_with_its_mark();
+    let funding = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    f.restart(&[]);
+    assert_discard_waits_for_the_abandon(&f, &op, txid);
+    let (s, id) = (Arc::clone(&f.session), f.wallet);
+    f.engine
+        .block_on(f.session.on_runtime(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, id, txid).await
+        }))
+        .unwrap();
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id))
+        .unwrap();
+    assert!(f.rows().is_empty());
+
+    f.restart(&[(1, MASTERNODE_COLLATERAL + COIN)]);
+    assert!(
+        f.held().contains(&(funding, false, false)),
+        "the coin is held: {:?}",
+        f.held()
+    );
+}
+
+/// The same payment resent after the restart: Discard is still refused and
+/// its marks stay.
+#[test]
+fn mg10_a_held_hand_off_resent_after_a_restart_keeps_its_marks_at_discard() {
+    let (mut f, op, txid) = refused_hand_off_with_its_mark();
+    f.restart(&[]);
+    let _ = f
+        .engine
+        .block_on(f.session.resend_transaction(f.wallet, txid));
+    assert_discard_waits_for_the_abandon(&f, &op, txid);
+}
+
+fn assert_discard_waits_for_the_abandon(f: &Fx, op: &ProTxOperation, txid: Txid) {
+    let refused = f
+        .engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id.clone()));
+    match &refused {
+        Err(MasternodesError::Engine(crate::EngineError::Wallet(m))) => assert_eq!(
+            m,
+            "discarding the operation: its payment is still listed in History; abandon it there first, then discard again"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.rows().len(), 1, "the row went");
+    assert!(
+        crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the marks went"
+    );
+}
+
 /// A registration whose first hand-off was refused for want of peers and
 /// whose sent mark could not be dropped: the fixture, the row and its txid.
 fn refused_hand_off_with_its_mark() -> (Fx, ProTxOperation, Txid) {

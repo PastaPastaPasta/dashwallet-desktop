@@ -2297,10 +2297,13 @@ fn remove_unconfirmed_fails_when_the_sent_marks_do_not_read() {
     );
 }
 
-/// Whether the app database holds `txid`'s abandoned mark.
+/// Whether the app database holds `txid`'s abandoned mark, matched by key
+/// as `tx_facts` does.
 fn abandon_marked(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
+    let key = format!("abandoned:{txid}");
     (session.live().unwrap().appdb)
-        .setting_lossy(&id.to_string(), &format!("abandoned:{txid}"))
+        .settings_with_prefix_lossy(&id.to_string(), &key)
         .unwrap()
-        .is_some()
+        .iter()
+        .any(|(k, _)| *k == key)
 }

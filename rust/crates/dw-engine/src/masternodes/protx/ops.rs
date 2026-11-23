@@ -30,6 +30,9 @@ use crate::history::TxEntry;
 use crate::send::{PreparedSummary, SpendCharge};
 use crate::{EngineError, NetworkSession, WalletId};
 
+/// Discard's refusal while the history lists its payment pending.
+const DISCARD_LISTED: &str = "discarding the operation: its payment is still listed in History; abandon it there first, then discard again";
+
 /// `masternodes.collateral_released:<outpoint>`, wallet-scoped: the user
 /// released this collateral, so the follower doesn't lock it again (D9).
 pub(crate) const RELEASED: &str = "masternodes.collateral_released:";
@@ -715,10 +718,18 @@ impl NetworkSession {
         let marked = (state == ProTxOperationState::NotSent)
             .then(|| row.txid.as_deref().and_then(|t| Txid::from_str(t).ok()))
             .flatten();
+        // Listed from its mark after a restart, its coins are claimed: the
+        // payment is abandoned first (or settles), never dropped here.
+        if let Some(txid) = marked
+            && (self.hub.history.get(&wallet, &txid)).is_some_and(|e| !e.is_abandoned())
+        {
+            return Err(EngineError::Wallet(DISCARD_LISTED.into()).into());
+        }
         let (w, id) = (wallet.to_string(), id.to_string());
         let deleted = self
             .appdb_op(move |db| {
                 if let Some(txid) = marked
+                    && crate::tx_actions::has_sent_mark(db, wallet, txid)?
                     && let Err(e) = crate::tx_actions::forget_sent(db, wallet, &[txid])
                 {
                     return Ok(Err(e.to_string()));

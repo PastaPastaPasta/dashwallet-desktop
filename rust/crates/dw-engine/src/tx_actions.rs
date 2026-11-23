@@ -200,7 +200,15 @@ pub(crate) fn read_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, SentRead) {
     let mut inputs = rows(SENT_IN_PREFIX).unwrap_or_default();
     let sent = (marks.into_iter())
         .filter_map(|(txid, coins)| {
-            let kept = read == SentRead::CoinsOnly || txs.contains_key(&txid);
+            let inputs = (inputs.remove(&txid).flatten())
+                .map(|v| parse_inputs(&v))
+                .unwrap_or_default();
+            // Unread copies: only a mark written with its copy (one with its
+            // coins' values, which an earlier build's lacks) counts as kept.
+            let kept = match read {
+                SentRead::CoinsOnly => !inputs.is_empty(),
+                _ => txs.contains_key(&txid),
+            };
             let tx = (txs.get(&txid).cloned().flatten())
                 .and_then(|hex| hex::decode(hex).ok())
                 .and_then(|b| deserialize::<Transaction>(&b).ok())
@@ -208,9 +216,6 @@ pub(crate) fn read_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, SentRead) {
             if kept && tx.is_none() && read == SentRead::Complete {
                 tracing::warn!(%wallet, "a sent payment's stored transaction does not read back");
             }
-            let inputs = (inputs.remove(&txid).flatten())
-                .map(|v| parse_inputs(&v))
-                .unwrap_or_default();
             let read = coins.and_then(|coins| {
                 (coins.split(',').filter(|c| !c.is_empty()))
                     .map(OutPoint::from_str)
@@ -288,6 +293,21 @@ pub(crate) fn forget_sent(
     #[cfg(all(test, debug_assertions))]
     appdb.fault_point(FORGET_SENT_FAULT, dw_appdb::fault::Stage::Before)?;
     appdb.set_settings_durable(&wallet.to_string(), &writes)
+}
+
+/// Whether `wallet` keeps a sent mark of `txid` (its coins or its copy).
+pub(crate) fn has_sent_mark(
+    appdb: &AppDb,
+    wallet: WalletId,
+    txid: Txid,
+) -> Result<bool, dw_appdb::AppDbError> {
+    let scope = wallet.to_string();
+    Ok(appdb
+        .setting_lossy(&scope, &format!("{SENT_PREFIX}{txid}"))?
+        .is_some()
+        || appdb
+            .setting_lossy(&scope, &format!("{SENT_TX_PREFIX}{txid}"))?
+            .is_some())
 }
 
 /// A test's fault point on [`forget_sent`]'s delete.
@@ -1264,6 +1284,48 @@ mod tests {
             (bad, mark(None, true)),
         ]);
         assert_eq!(load_sent(&db, wallet), (want, true));
+    }
+
+    /// The saved copies' query fails: the marks still read, a mark written
+    /// with its copy (it has its coins' values) is kept with no copy, and an
+    /// earlier build's mark, which has neither, is not.
+    #[test]
+    fn a_failed_read_of_the_copies_keeps_only_marks_written_with_them() {
+        use dashcore::hashes::Hash;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(dw_appdb::APP_DB_FILE);
+        let db = AppDb::open(&path).unwrap();
+        let wallet = WalletId([7; 32]);
+        let scope = wallet.to_string();
+        let coin = OutPoint::new(Txid::from_byte_array([3; 32]), 1);
+        let (new, old) = (
+            Txid::from_byte_array([4; 32]),
+            Txid::from_byte_array([5; 32]),
+        );
+        let set = |key: &str, value: &str| db.set_setting(&scope, key, Some(value)).unwrap();
+        for t in [new, old] {
+            set(&format!("{SENT_PREFIX}{t}"), &coin.to_string());
+        }
+        set(&format!("{SENT_TX_PREFIX}{new}"), "00");
+        set(
+            &format!("{SENT_IN_PREFIX}{new}"),
+            &format!("{coin} 1000 yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd"),
+        );
+        dw_appdb::fault::arm(
+            &path,
+            "settings.read_senttx:",
+            dw_appdb::fault::Stage::Before,
+        );
+        let (sent, read) = read_sent(&db, wallet);
+        dw_appdb::fault::disarm(&path);
+        assert_eq!(read, SentRead::CoinsOnly);
+        let kept = |t: &Txid| {
+            sent.get(t)
+                .map(|m| (m.kept, m.tx.is_some(), m.coins.clone()))
+        };
+        assert_eq!(kept(&new), Some((true, false, BTreeSet::from([coin]))));
+        assert_eq!(kept(&old), Some((false, false, BTreeSet::from([coin]))));
+        assert_eq!(load_sent(&db, wallet).1, true, "read again");
     }
 
     /// A mark whose txid suffix or value does not parse is skipped and the
