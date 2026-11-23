@@ -186,6 +186,7 @@ export class IpcBackend implements Backend {
   backupWallet = cmd.backupWallet;
   restoreBackup = cmd.restoreBackup;
   automaticBackups = cmd.automaticBackups;
+  automaticBackupFailures = () => cmd.automaticBackupFailures();
   backupDirectory = () => cmd.backupDirectory();
   backupPolicy = () => cmd.backupPolicy();
   setBackupPolicy = cmd.setBackupPolicy;

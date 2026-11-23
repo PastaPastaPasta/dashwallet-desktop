@@ -57,6 +57,15 @@ impl From<BackupInfo> for BackupSummary {
     }
 }
 
+/// A wallet whose latest automatic backup failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomaticBackupFailure {
+    pub wallet_id: String,
+    /// UNIX seconds.
+    pub failed_at: u64,
+}
+
 /// How many automatic backups to keep per wallet, and where they go.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -400,6 +409,21 @@ commands! {
         let id = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         let backups = state.session().await?.automatic_backups(id).await?;
         Ok(backups.into_iter().map(Into::into).collect())
+    }
+
+    /// Wallets whose latest automatic backup failed, and when. A wallet's
+    /// entry goes when one succeeds, when automatic backups are turned off
+    /// and with the wallet.
+    #[facade("NetworkSession::automatic_backup_failures")]
+    fn automatic_backup_failures(state) -> Vec<AutomaticBackupFailure> {
+        let failures = state.session().await?.automatic_backup_failures().await?;
+        Ok(failures
+            .into_iter()
+            .map(|(id, failed_at)| AutomaticBackupFailure {
+                wallet_id: id.to_string(),
+                failed_at,
+            })
+            .collect())
     }
 
     /// The directory of the network's automatic backups.

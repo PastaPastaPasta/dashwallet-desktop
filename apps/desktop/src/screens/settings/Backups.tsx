@@ -6,7 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 import type { CoreExportFormatName } from "../../api/generated/CoreExportFormatName";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
-import { keys, useAutomaticBackups, useBackend, useBackupDirectory, useBackupPolicy, useLockStatus, useWallets } from "../../api/queries";
+import { keys, useAutomaticBackupFailures, useAutomaticBackups, useBackend, useBackupDirectory, useBackupPolicy, useLockStatus, useWallets } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { keptAcrossLock, useAcrossLock } from "../../app/acrossLock";
 import { useSecretScreen } from "../../app/ui";
@@ -16,6 +16,7 @@ import { NewPassphraseForm, PassphrasePrompt } from "../../components/passphrase
 import { ProtectionPending, ProtectionText } from "../../components/phrase";
 import { Sheet } from "../../components/sheet";
 import { detailDate } from "../../format/tx";
+import { useT } from "../../i18n";
 import { failureText, useModel } from "../../onboarding/model";
 import { BackupModel, deletedByKeep, ExportModel, FilesText, ImportFileModel, ImportKeysModel, keepAsks, KEY_KINDS, type ImportDone, type KeyKind } from "../../settings/files";
 import { useLockTimer } from "../LockScreen";
@@ -72,7 +73,7 @@ export function BackupsTab() {
           </>
         )}
       </SettingsCard>
-      <AutomaticBackupsCard names={new Map((wallets.data ?? []).map((w) => [w.walletId, w.name]))} />
+      <AutomaticBackupsCard names={new Map((wallets.data ?? []).map((w) => [w.walletId, w.name]))} own={own} onBackUp={(wallet) => setSheet({ kind: "backup", wallet })} />
       <SettingsCard title="Import" testId="settings-import-card">
         <Hint>A Dash Wallet backup, a Dash Core dumpwallet file or wallet.dat, or raw keys.</Hint>
         <DashButton variant="plainBlue" data-testid="settings-import-file" onClick={() => setSheet({ kind: "importFile" })}>
@@ -90,7 +91,7 @@ export function BackupsTab() {
   );
 }
 
-function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
+function AutomaticBackupsCard({ names, own, onBackUp }: { names: Map<string, string>; own: WalletSummary[]; onBackUp: (wallet: WalletSummary) => void }) {
   const backend = useBackend();
   const client = useQueryClient();
   const policy = useBackupPolicy();
@@ -121,6 +122,7 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
   };
   return (
     <SettingsCard title="Automatic backups" testId="settings-automatic-backups">
+      <AutomaticBackupFailures own={own} onBackUp={onBackUp} />
       <div className="settings-row">
         <label className="settings-row-title" htmlFor={`${id}-keep`}>
           Backups to keep for each wallet
@@ -178,6 +180,27 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
       {backups.isError && <Problem text={failureText(backups.error)} testId="settings-backup-list-error" />}
     </SettingsCard>
   );
+}
+
+/** Each wallet whose latest automatic backup failed, until one succeeds (issue 340). */
+function AutomaticBackupFailures({ own, onBackUp }: { own: WalletSummary[]; onBackUp: (wallet: WalletSummary) => void }) {
+  const t = useT();
+  const backend = useBackend();
+  const failures = useAutomaticBackupFailures();
+  return (failures.data ?? []).map(({ walletId, failedAt }) => {
+    const wallet = own.find((w) => w.walletId === walletId);
+    if (!wallet) return null;
+    const date = detailDate(new Date(failedAt * 1000), backend.locale);
+    return (
+      <div key={walletId} className="settings-backup-failed" data-testid="settings-backup-failed">
+        <p className="settings-backup-failed-title">{t("settings.backups.automaticFailed.title")}</p>
+        <p>{t("settings.backups.automaticFailed.body", { wallet: wallet.name, date })}</p>
+        <DashButton variant="plainBlue" data-testid="settings-backup-failed-back-up" onClick={() => onBackUp(wallet)}>
+          {t("settings.backups.backUp")}
+        </DashButton>
+      </div>
+    );
+  });
 }
 
 function BackupSheet({ wallet, onClose }: { wallet: WalletSummary; onClose: () => void }) {
