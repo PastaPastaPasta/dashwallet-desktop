@@ -2254,3 +2254,6 @@ fn a_top_up_lock_of_51_needed_coins_is_refused_before_its_first_signature() {
     assert!(next.is_ok(), "the next top-up is not held: {next:?}");
     assert!(detail.contains("would use 51 coins"), "{detail}");
 }
+
+#[cfg(unix)]
+mod kill9;
