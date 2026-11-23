@@ -235,7 +235,9 @@ const locked = (world: World) => world.lock.state === "locked" || world.lock.sta
 function withAttached(world: World, r: MasternodeRow): MasternodeRow {
   const keys = world.masternodes.attached[r.proTxHash] ?? [];
   const attached: AttachedKey[] | null = locked(world) ? null : keys.map((k) => ({ role: k.role, keyId: keyId(k.secret), check: k.check }));
-  return { ...copy(r), roles: { ...r.roles, attached } };
+  // An attached voting key holds the role only when it matches the list (reads.rs `roles`, records.rs `holds`).
+  const voting = r.roles.voting || (attached?.some((k) => k.role === "voting" && k.check === "matched") ?? false);
+  return { ...copy(r), roles: { ...r.roles, voting, attached } };
 }
 
 /** The engine's order: shared → registration unavailable → keychain → vault locked → matched attached → no owner key. */
@@ -710,6 +712,19 @@ export function masternodesScenarios(base: Base) {
         trackOnly(m);
         m.registrations.push(CLUB);
         w.lock = { ...w.lock, state: "locked" };
+      }),
+    /** Track with Club's voting key added (MG-00 D13, amended for 1.0): listed under Keys you added, and Club votes. */
+    "mn-track-voting": (t: ThemeName | null) =>
+      mnBase(base, t, (m) => {
+        trackOnly(m);
+        m.attached[CLUB] = [{ role: "voting", secret: KEY_VOTING, check: "matched" }];
+      }),
+    /** `mn-track-voting` unlocked for mixing only: Keys you added asks to unlock, and so does adding a key. */
+    "mn-track-voting-locked": (t: ThemeName | null) =>
+      mnBase(base, t, (m, w) => {
+        trackOnly(m);
+        m.attached[CLUB] = [{ role: "voting", secret: KEY_VOTING, check: "matched" }];
+        w.lock = { ...w.lock, state: "unlockedMixingOnly" };
       }),
     /** `mn-track` locked: Club still reads `registration_unavailable`. */
     "mn-track-locked": (t: ThemeName | null) =>

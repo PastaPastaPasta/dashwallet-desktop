@@ -295,7 +295,8 @@ pub struct VotingMasternode {
     pub weight: u32,
     /// PoSe-banned masternodes still vote (MG-02 D16).
     pub valid: bool,
-    pub key_index: u32,
+    /// The key it votes with: the keychain's, else its attached one.
+    pub key: NameVotingKey,
     /// This masternode's own current vote on the proposal: a vote under its
     /// key whose collateral is resolved to it, or any vote under a key no
     /// other masternode of the list holds (MG-02 D49).
@@ -384,7 +385,8 @@ pub struct ContestedName {
     pub contenders_complete: bool,
 }
 
-/// Which of the wallet's keys a masternode votes with (MG-07 D3).
+/// Which of the wallet's keys a masternode votes with, on proposals and
+/// on names (MG-07 D3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum NameVotingKey {

@@ -170,10 +170,12 @@ export const masternodes = {
       none: "None",
       banned: "PoSe banned: a banned masternode can't vote",
       recent: "Voted {outcome} {ago} · can change after {time}",
-      eligible: "key in this wallet · voting key {index}",
+      /** The key a masternode votes with: the keychain's, or a key added to a tracked masternode. */
+      keychain: "key in this wallet · voting key {index}",
+      added: "key you added",
       eligibleShared: {
-        one: "key in this wallet · voting key {index} · {count} masternode uses this key",
-        other: "key in this wallet · voting key {index} · {count} masternodes use this key",
+        one: "{custody} · {count} masternode uses this key",
+        other: "{custody} · {count} masternodes use this key",
       },
     },
     /** The vote sheet's footer: the checked masternodes, their weight, and that a vote costs nothing. */
@@ -624,6 +626,73 @@ export const masternodes = {
       elsewhere:
         "This wallet holds neither the owner key nor the collateral. Whoever holds the owner key can replace the operator, and whoever holds the collateral can end the masternode.",
       close: "Close",
+    },
+    /** Track a masternode (MG-10 §1.3). */
+    track: {
+      menu: "Track a masternode…",
+      title: "Track a masternode",
+      query: "IP address or ProTx hash",
+      queryHelp: "Find any masternode on the network to follow it here.",
+      find: "Find",
+      results: "Masternodes found",
+      votingAddress: "voting address {address}",
+      alreadyTracked: "Already tracked",
+      label: "Name (optional)",
+      labelHelp: "Only this wallet sees it.",
+      submit: "Track",
+      invalid: "Enter an IP address and port, or a 64-character ProTx hash.",
+      none: "No masternode with this address or ProTx hash is in the masternode list.",
+      already: "Already tracked as {name}.",
+      list_unavailable: "The masternode list is still loading. Try again in a moment.",
+    },
+    /** Add keys and Keys you added (MG-10 §1.4; MG-00 D13, amended for 1.0: voting keys too). */
+    keys: {
+      menu: "Add keys…",
+      title: "Add a key",
+      role: "Key",
+      roles: {
+        voting: { title: "Voting key", help: "Lets this wallet vote on proposals and usernames with this masternode." },
+        owner: {
+          title: "Owner key",
+          evonode:
+            "Lets you withdraw this evonode's credits. Changing its keys from here also needs its registration, which this wallet has only when a wallet loaded here holds it.",
+          regular: "Lets you change its keys from here once a wallet loaded here holds its registration.",
+        },
+        payout: { title: "Payout key", help: "Lets you withdraw this evonode's credits to any address." },
+      },
+      input: "Private key",
+      inputHelp: "WIF or 64 hex characters. The wallet keeps it encrypted and never shows it again.",
+      submit: "Add key",
+      done: "Done",
+      matched: {
+        owner: "Matches this masternode's owner key.",
+        payout: "Matches this masternode's payout address.",
+        voting: "Matches this masternode's voting key.",
+      },
+      unchecked: {
+        ownerEvonode:
+          "Saved. No wallet loaded here holds this masternode's registration, so it can't be checked here. Platform checks it when you withdraw.",
+        ownerRegular: "Saved. No wallet loaded here holds this masternode's registration, so it can't be checked or used to change keys yet.",
+        payout: "Saved. Platform checks it when you withdraw.",
+        voting: "Saved. This masternode isn't in the masternode list now, so the key can't be checked. It votes once the key matches.",
+      },
+      mismatch: "This key doesn't belong to this masternode.",
+      invalid: "Enter the private key as a compressed WIF for this network, or as 64 hex characters.",
+      locked: "Unlock to add a key.",
+      added: "Keys you added",
+      addedLocked: "Keys you added: unlock to see",
+      remove: "Remove",
+      removeLabel: "Remove {role}",
+      check: { matched: "matches", unchecked: "not checked", key_mismatch: "doesn't match" },
+      line: "{role} · {check}",
+    },
+    /** Stop tracking (MG-10 §1.2). */
+    untrack: {
+      menu: "Stop tracking",
+      title: "Stop tracking",
+      text: "{name} leaves My masternodes.",
+      keys: { one: "The {count} key you added for it is deleted from this wallet.", other: "The {count} keys you added for it are deleted from this wallet." },
+      submit: "Stop tracking",
     },
     errors: {
       list_unavailable: "The masternode list isn't loaded yet. Try again once the wallet has synced.",

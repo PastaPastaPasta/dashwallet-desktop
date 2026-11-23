@@ -29,6 +29,8 @@ const SCENARIOS: ScenarioName[] = [
   "mn-track-registration",
   "mn-track-registration-locked",
   "mn-track-locked",
+  "mn-track-voting",
+  "mn-track-voting-locked",
   "mn-keys",
   "mn-update-not-sent",
 ];
@@ -245,6 +247,14 @@ describe("fixture masternodes: track and keys", () => {
     expect(await cmd.mnDetachKey(CLUB, "voting")).toBe(true);
     expect(await cmd.mnUntrack(CLUB)).toEqual({ keysDeleted: 1 });
     await expect(cmd.mnUntrack(CLUB)).rejects.toMatchObject({ code: "masternodes.not_tracked" });
+  });
+
+  it("mn-track-voting: Club's added voting key matches, so it holds the voting role (records.rs `holds`)", async () => {
+    install("mn-track-voting");
+    const club = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!;
+    expect(club.roles).toMatchObject({ voting: true, attached: [{ role: "voting", check: "matched" }] });
+    expect(await cmd.mnDetachKey(CLUB, "voting")).toBe(true);
+    expect((await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!.roles.voting).toBe(false);
   });
 
   it("matches an owner key only where a loaded wallet holds the registration", async () => {

@@ -42,7 +42,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("mn-vote")).toBeDisabled();
     await expect(pane(page)).toContainText("A banned masternode can't vote");
     await expect(page.getByTestId("sidebar-masternodes-badge")).toHaveText("1");
-    for (const hidden of ["Set up a masternode", "Track a masternode", "Release", "Withdraw", "In progress", "Masternode keys", "Keys you added", "Add keys"])
+    for (const hidden of ["Set up a masternode", "Release", "Withdraw", "In progress", "Masternode keys"])
       await expect(page.getByText(hidden, { exact: false })).toHaveCount(0);
     await fontsReady(page);
     expect(await seriousAxeViolations(page)).toEqual([]);
@@ -70,7 +70,7 @@ test("list → pane → rename → copy", async ({ page }) => {
   // A tracked evonode's collateral isn't resolved: no outpoint to copy.
   await row(page, CLUB).click();
   await page.getByTestId("mn-more").click();
-  await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash", "Service update or revoke…"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash", "Service update or revoke…", "Add keys…", "Stop tracking"]);
   await page.keyboard.press("Escape");
   await row(page, HOME).click();
   // Vote goes to Governance, filtered to what needs a vote.

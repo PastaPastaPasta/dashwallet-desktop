@@ -430,7 +430,10 @@
         "kind": "regular",
         "weight": 1,
         "valid": true,
-        "keyIndex": 0,
+        "key": {
+          "kind": "keychain",
+          "index": 0
+        },
         "currentVote": "yes",
         "voteTime": 1789000000,
         "keyHolders": 1,
@@ -442,7 +445,9 @@
         "kind": "evonode",
         "weight": 4,
         "valid": false,
-        "keyIndex": 3,
+        "key": {
+          "kind": "attached"
+        },
         "currentVote": null,
         "voteTime": null,
         "keyHolders": 2,

@@ -448,11 +448,8 @@ export function voteRows(nodes: VotingMasternode[], now: number, locale?: string
       const after = formatDate(v.time + VOTE_CHANGE_SECS, locale, HOUR_MINUTE);
       return { ...base, sub: t("masternodes.governance.node.recent", { outcome: outcomeText(v.outcome), ago: ago(v.time, now, locale), time: after }), eligible: false };
     }
-    const index = String(n.keyIndex + 1);
-    const sub =
-      n.keyHolders > 1
-        ? t("masternodes.governance.node.eligibleShared", { index, count: n.keyHolders })
-        : t("masternodes.governance.node.eligible", { index });
+    const custody = n.key.kind === "keychain" ? t("masternodes.governance.node.keychain", { index: n.key.index + 1 }) : t("masternodes.governance.node.added");
+    const sub = n.keyHolders > 1 ? t("masternodes.governance.node.eligibleShared", { custody, count: n.keyHolders }) : custody;
     return { ...base, sub, eligible: true };
   });
 }

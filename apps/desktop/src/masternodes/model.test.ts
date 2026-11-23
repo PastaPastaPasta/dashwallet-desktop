@@ -14,10 +14,14 @@ import { compact } from "../format/amount";
 import { nodeName, voteRows } from "../governance/model";
 import {
   activityChip,
+  attachedLines,
   bannedCount,
   formatCredits,
   groups,
   heldRoles,
+  keyErrorText,
+  keyResultText,
+  keyRoles,
   lastPayoutTitle,
   MnText,
   mnErrorText,
@@ -31,6 +35,7 @@ import {
   sharesPayoutAddress,
   statusChip,
   summary,
+  trackErrorText,
   voteBlocked,
 } from "./model";
 
@@ -181,6 +186,54 @@ describe("pane", () => {
   });
 });
 
+describe("track and keys (MG-10 §1.3, §1.4; MG-00 D13 amended for 1.0)", () => {
+  it("offers a voting key and an owner key, and an evonode's payout key", () => {
+    expect(keyRoles({ kind: "regular" }).map((r) => r.title)).toEqual(["Voting key", "Owner key"]);
+    const evonode = keyRoles({ kind: "evonode" });
+    expect(evonode.map((r) => r.role)).toEqual(["voting", "owner", "payout"]);
+    expect(evonode[0].help).toBe("Lets this wallet vote on proposals and usernames with this masternode.");
+    expect(evonode[1].help).toMatch(/^Lets you withdraw this evonode's credits\./);
+    expect(keyRoles({ kind: "regular" })[1].help).toBe("Lets you change its keys from here once a wallet loaded here holds its registration.");
+  });
+
+  it("says what each attach answered", () => {
+    expect(keyResultText("voting", "matched", "evonode")).toBe("Matches this masternode's voting key.");
+    expect(keyResultText("owner", "matched", "regular")).toBe("Matches this masternode's owner key.");
+    expect(keyResultText("payout", "matched", "evonode")).toBe("Matches this masternode's payout address.");
+    expect(keyResultText("payout", "unchecked", "evonode")).toBe("Saved. Platform checks it when you withdraw.");
+    expect(keyResultText("owner", "unchecked", "evonode")).toMatch(/Platform checks it when you withdraw\.$/);
+    expect(keyResultText("owner", "unchecked", "regular")).toMatch(/can't be checked or used to change keys yet\.$/);
+    expect(keyResultText("voting", "unchecked", "regular")).toMatch(/^Saved\. This masternode isn't in the masternode list now/);
+    expect(keyResultText("voting", "key_mismatch", "regular")).toBe("This key doesn't belong to this masternode.");
+  });
+
+  it("turns attach and track refusals into sentences, never echoing the key", () => {
+    const err = (code: string, message = "the key 33333333 is not this masternode's") => ({ code, message, data: null });
+    expect(keyErrorText(err("masternodes.key_mismatch"))).toBe("This key doesn't belong to this masternode.");
+    expect(keyErrorText(err("invalid_argument"))).toBe("Enter the private key as a compressed WIF for this network, or as 64 hex characters.");
+    expect(keyErrorText(err("vault.locked"))).toBe("Unlock to add a key.");
+    expect(trackErrorText(err("invalid_argument"), null)).toBe("Enter an IP address and port, or a 64-character ProTx hash.");
+    expect(trackErrorText(err("masternodes.already_tracked"), "Friend's evonode")).toBe("Already tracked as Friend's evonode.");
+    expect(trackErrorText(err("masternodes.list_unavailable"), null)).toBe("The masternode list is still loading. Try again in a moment.");
+  });
+
+  it("lists every added key, voting included, or nothing while locked", () => {
+    const club = rowOf(CLUB);
+    const keys = { ...club, roles: { ...club.roles, attached: [{ role: "voting" as const, keyId: null, check: "matched" as const }, { role: "owner" as const, keyId: null, check: "unchecked" as const }] } };
+    expect(attachedLines(keys)?.map((l) => [l.text, l.removeLabel])).toEqual([
+      ["Voting key · matches", "Remove Voting key"],
+      ["Owner key · not checked", "Remove Owner key"],
+    ]);
+    expect(attachedLines({ ...club, roles: { ...club.roles, attached: null } })).toBeNull();
+  });
+
+  it("lets a tracked masternode vote once its added voting key holds the role", () => {
+    const club = rowOf(CLUB);
+    expect(voteBlocked(club, false)).toBe(MnText.voteNoKey);
+    expect(voteBlocked({ ...club, roles: { ...club.roles, voting: true } }, false)).toBeNull();
+  });
+});
+
 describe("Activity and errors", () => {
   it("titles the Activity chip by attribution", () => {
     expect(activityChip("Home node", false)).toBe("Payouts of Home node");
@@ -210,7 +263,7 @@ describe("governance vote rows (MG-09 F3)", () => {
     expect(nodeName(home, unlabelled)).toBe(`${rowName({ ...rowOf(HOME), label: null, typeIndex: 2 })} · 203.0.113.7:19999`);
     expect(nodeName(home, unlabelled)).toBe("Masternode 2 · 203.0.113.7:19999");
     expect(nodeName(home)).toBe(`Masternode ${HOME.slice(0, 8)}`);
-    const rows = voteRows([{ proTxHash: HOME, kind: "regular", weight: 1, valid: true, keyIndex: 0, currentVote: null, voteTime: null, keyHolders: 1, keyLastVote: null, keyLastVoteTime: null }], 0, "en-US", names);
+    const rows = voteRows([{ proTxHash: HOME, kind: "regular", weight: 1, valid: true, key: { kind: "keychain", index: 0 }, currentVote: null, voteTime: null, keyHolders: 1, keyLastVote: null, keyLastVoteTime: null }], 0, "en-US", names);
     expect(rows[0].name).toBe("Home node · 203.0.113.7:19999");
   });
 });

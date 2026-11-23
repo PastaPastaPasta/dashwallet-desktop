@@ -491,9 +491,10 @@ pub enum MasternodeTypeName {
 
 mirror_enum!(engine::MasternodeType => MasternodeTypeName { Regular, Evonode });
 
-/// A masternode of the tip list whose voting key the wallet derives. Show a
-/// shared key's vote neutrally ("Last vote seen with this shared key"),
-/// never as each masternode's own (mg-engine §2.4).
+/// A masternode of the tip list the wallet votes for, with its keychain
+/// voting key or its attached one. Show a shared key's vote neutrally
+/// ("Last vote seen with this shared key"), never as each masternode's own
+/// (mg-engine §2.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct VotingMasternode {
@@ -502,7 +503,8 @@ pub struct VotingMasternode {
     pub weight: u32,
     /// PoSe-banned masternodes still vote (MG-02 D16).
     pub valid: bool,
-    pub key_index: u32,
+    /// The key it votes with: the keychain's, else its attached one.
+    pub key: NameVotingKey,
     /// This masternode's own current vote on the proposal (MG-02 D49).
     pub current_vote: Option<VoteOutcomeName>,
     pub vote_time: Option<i64>,
@@ -521,7 +523,7 @@ impl From<engine::VotingMasternode> for VotingMasternode {
             kind,
             weight,
             valid,
-            key_index,
+            key,
             current_vote,
             vote_time,
             key_holders,
@@ -533,7 +535,7 @@ impl From<engine::VotingMasternode> for VotingMasternode {
             kind: kind.into(),
             weight,
             valid,
-            key_index,
+            key: key.into(),
             current_vote: current_vote.map(Into::into),
             vote_time,
             key_holders,
@@ -662,7 +664,8 @@ impl From<engine::ContestedName> for ContestedName {
     }
 }
 
-/// Which of the wallet's keys a masternode votes names with (MG-07 D3).
+/// Which of the wallet's keys a masternode votes with, on proposals and on
+/// names (MG-07 D3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(
     tag = "kind",

@@ -10,6 +10,7 @@ import type { AppEvent } from "../api/generated/commands";
 import type { ProposalDraft } from "../api/generated/ProposalDraft";
 import { FEE_NETWORK, MN_A, MN_B, MN_C, PROPOSAL_FEE } from "./governance";
 import { installFixture } from "./index";
+import { CLUB, KEY_VOTING } from "./masternodes";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 
@@ -94,6 +95,23 @@ describe("fixture governance", () => {
     // The evonode voted just now: a change waits an hour.
     const again = await cmd.authorize({ kind: "governance" }, W, PASS);
     expect((await cmd.governanceVote(W, hash, "yes", [MN_B], again.id))[0].rejected).toBe("too_often");
+  });
+
+  it("offers a tracked masternode once its added voting key matches, after the keychain's, and votes with it", async () => {
+    const hash = await hashOf("dashcon-2027-venue");
+    const offered = async () => (await cmd.governanceVotingMasternodes(W, hash)).map((n) => [n.proTxHash, n.key, n.weight]);
+    expect(await offered()).toEqual([
+      [MN_A, { kind: "keychain", index: 0 }, 1],
+      [MN_B, { kind: "keychain", index: 1 }, 4],
+      [MN_C, { kind: "keychain", index: 2 }, 1],
+    ]);
+    expect(await cmd.mnAttachKey(CLUB, "voting", KEY_VOTING)).toBe("matched");
+    expect((await offered()).at(-1)).toEqual([CLUB, { kind: "attached" }, 4]);
+    const grant = await cmd.authorize({ kind: "governance" }, W, PASS);
+    expect((await cmd.governanceVote(W, hash, "yes", [CLUB], grant.id))[0].rejected).toBeNull();
+    expect((await cmd.governanceVotingMasternodes(W, hash)).find((n) => n.proTxHash === CLUB)?.currentVote).toBe("yes");
+    expect(await cmd.mnDetachKey(CLUB, "voting")).toBe(true);
+    expect((await offered()).map(([h]) => h)).toEqual([MN_A, MN_B, MN_C]);
   });
 
   it("refuses a vote whose voting key changed (governance-vote-refused)", async () => {

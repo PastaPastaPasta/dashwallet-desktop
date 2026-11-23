@@ -2,6 +2,8 @@
 // summary, the pane's role and payout lines, credits, and the errors as sentences.
 
 import { isAppError } from "../api/backend";
+import type { AttachedKeyRoleName } from "../api/generated/AttachedKeyRoleName";
+import type { KeyCheckName } from "../api/generated/KeyCheckName";
 import type { MasternodeDetail } from "../api/generated/MasternodeDetail";
 import type { MasternodeOverview } from "../api/generated/MasternodeOverview";
 import type { MasternodePayout } from "../api/generated/MasternodePayout";
@@ -165,6 +167,75 @@ export function voteBlocked(r: MasternodeRow, watchOnly: boolean): string | null
   if (r.status === "removed") return MnText.voteRetired;
   if (r.status === "unconfirmed") return MnText.voteRegistering;
   return r.roles.voting ? null : MnText.voteNoKey;
+}
+
+// ---------------------------------------------------------------- track and keys (§1.3, §1.4)
+
+const K = `${P}.keys`;
+
+const roleTitle = (role: AttachedKeyRoleName) => t(`${K}.roles.${role}.title`);
+
+export interface KeyRoleView {
+  role: AttachedKeyRoleName;
+  title: string;
+  help: string;
+}
+
+/** The keys Add keys offers: voting (MG-00 D13, amended for 1.0), owner, and for an evonode payout. */
+export function keyRoles(r: Pick<MasternodeRow, "kind">): KeyRoleView[] {
+  const evonode = r.kind === "evonode";
+  const roles: KeyRoleView[] = [
+    { role: "voting", title: roleTitle("voting"), help: t(`${K}.roles.voting.help`) },
+    { role: "owner", title: roleTitle("owner"), help: t(evonode ? `${K}.roles.owner.evonode` : `${K}.roles.owner.regular`) },
+  ];
+  if (evonode) roles.push({ role: "payout", title: roleTitle("payout"), help: t(`${K}.roles.payout.help`) });
+  return roles;
+}
+
+/** What `mn_attach_key` answered, as §1.4's result line. */
+export function keyResultText(role: AttachedKeyRoleName, check: KeyCheckName, kind: MasternodeTypeName | null): string {
+  if (check === "matched") return t(`${K}.matched.${role}`);
+  if (check === "key_mismatch") return t(`${K}.mismatch`);
+  if (role === "owner") return t(kind === "evonode" ? `${K}.unchecked.ownerEvonode` : `${K}.unchecked.ownerRegular`);
+  return t(`${K}.unchecked.${role}`);
+}
+
+/** An attach refusal as a sentence: a key that isn't this masternode's, a malformed key, a locked vault. */
+export function keyErrorText(e: unknown): string {
+  if (isAppError(e)) {
+    if (e.code === "masternodes.key_mismatch") return t(`${K}.mismatch`);
+    if (e.code === "invalid_argument") return t(`${K}.invalid`);
+    if (e.code === "vault.locked") return t(`${K}.locked`);
+  }
+  return mnErrorText(e);
+}
+
+export const isVaultLocked = (e: unknown) => isAppError(e) && e.code === "vault.locked";
+
+export interface AttachedKeyLine {
+  role: AttachedKeyRoleName;
+  text: string;
+  removeLabel: string;
+}
+
+/** The pane's "Keys you added", every role (voting included); `null` while the vault is locked. */
+export function attachedLines(r: MasternodeRow): AttachedKeyLine[] | null {
+  if (r.roles.attached === null) return null;
+  return r.roles.attached.map((k) => ({
+    role: k.role,
+    text: t(`${K}.line`, { role: roleTitle(k.role), check: t(`${K}.check.${k.check}`) }),
+    removeLabel: t(`${K}.removeLabel`, { role: roleTitle(k.role) }),
+  }));
+}
+
+/** A Track refusal as §1.3's sentence; `name` is the already-tracked masternode's. */
+export function trackErrorText(e: unknown, name: string | null): string {
+  if (isAppError(e)) {
+    if (e.code === "invalid_argument") return t(`${P}.track.invalid`);
+    if (e.code === "masternodes.list_unavailable") return t(`${P}.track.list_unavailable`);
+    if (e.code === "masternodes.already_tracked" && name) return t(`${P}.track.already`, { name });
+  }
+  return mnErrorText(e);
 }
 
 /** §1.7's line in place of Change keys or payout, which shows only while the registrar is `available`. */

@@ -76,6 +76,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   const [showEnded, setShowEnded] = useState(false);
   const [filter, setFilter] = useState<ListFilter>("all");
   const [sheet, setSheet] = useState<"create" | "numbers" | null>(null);
+  const [tracking, setTracking] = useState(false);
   /** The proposal the vote sheet is open on, as it was when Vote was pressed. */
   const [voteOn, setVoteOn] = useState<ProposalRow | null>(null);
   const walletId = wallet.walletId;
@@ -180,6 +181,11 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
               </DashButton>
             </span>
           )}
+          {tab === "myMasternodes" && (
+            <span className="mg-header-actions" data-testid="mn-actions">
+              <MoreMenu testId="mn-page-more" items={[{ id: "track", title: t("masternodes.myMasternodes.track.menu"), onSelect: () => setTracking(true) }]} />
+            </span>
+          )}
         </header>
         <Tabs label={GovText.title} tabs={tabs} current={tab} onSelect={setTab} testId="masternodes-tabs">
           {!mnList.isError && mnList.data?.synced && mnList.data.height !== null && (
@@ -191,6 +197,8 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
             <MyMasternodes
               wallet={wallet}
               network={network}
+              tracking={tracking}
+              onTrackClose={() => setTracking(false)}
               onVote={() => {
                 setFilter("needsVote");
                 setTab("governance");
