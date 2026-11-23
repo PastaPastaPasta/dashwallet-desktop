@@ -34,7 +34,9 @@ impl From<CollateralChoice> for engine::CollateralChoice {
         match x {
             CollateralChoice::FundNew => Self::FundNew,
             CollateralChoice::ExistingUtxo { outpoint } => Self::ExistingUtxo { outpoint },
-            CollateralChoice::External { outpoint, address } => Self::External { outpoint, address },
+            CollateralChoice::External { outpoint, address } => {
+                Self::External { outpoint, address }
+            }
         }
     }
 }
@@ -48,8 +50,12 @@ impl From<CollateralChoice> for engine::CollateralChoice {
 )]
 pub enum OperatorChoice {
     /// 96 hex characters, basic serialization.
-    Given { public_key: String },
-    Keychain { index: u32 },
+    Given {
+        public_key: String,
+    },
+    Keychain {
+        index: u32,
+    },
     NextUnused,
 }
 
@@ -88,14 +94,14 @@ impl From<VotingChoice> for engine::VotingChoice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlatformNodeChoice {
-    Given {
-        node_id: String,
-    },
-    Keychain {
-        index: u32,
-    },
+    Given { node_id: String },
+    Keychain { index: u32 },
     NextUnused,
 }
 
