@@ -281,8 +281,13 @@ pub(super) fn spendable(
 }
 
 /// Waits up to 20 s for `done`.
-pub(super) fn eventually(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+pub(super) fn eventually(what: &str, done: impl FnMut() -> bool) {
+    eventually_within(what, std::time::Duration::from_secs(20), done);
+}
+
+/// Waits up to `limit` for `done`.
+fn eventually_within(what: &str, limit: std::time::Duration, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + limit;
     while std::time::Instant::now() < deadline {
         if done() {
             return;
@@ -290,6 +295,16 @@ pub(super) fn eventually(what: &str, mut done: impl FnMut() -> bool) {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     panic!("never: {what}");
+}
+
+/// Starts SPV and waits for it to run. Its bring-up comes first, the
+/// shielded store's open with it, which takes up to minutes under load
+/// (#399).
+pub(super) fn start_offline_spv(engine: &Engine, session: &Arc<NetworkSession>) {
+    engine.block_on(session.start_spv()).unwrap();
+    eventually_within("SPV runs", std::time::Duration::from_secs(300), || {
+        session.spv_state().unwrap() == crate::SpvState::Running
+    });
 }
 
 pub(super) fn synced(engine: &Engine, session: &NetworkSession, id: WalletId) -> u32 {
@@ -476,10 +491,7 @@ fn a_payment_locked_apart_from_its_record_is_not_abandoned_after_a_restart() {
     );
     let spent: BTreeSet<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
     assert!(held(&engine, &session, id).is_disjoint(&spent));
-    engine.block_on(session.start_spv()).unwrap();
-    eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
+    start_offline_spv(&engine, &session);
 
     let abandoned = engine.block_on(session.abandon_transaction(id, tx.txid()));
     assert!(

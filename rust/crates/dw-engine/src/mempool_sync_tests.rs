@@ -29,6 +29,8 @@ mod own_spend_disk_tests;
 const PHRASE: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const BIRTH: u32 = 500;
+/// How long [`reopen`]'s close waits for a wallet load in flight (#399).
+const LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
 const PAID: u64 = 25 * 100_000_000;
 const CHANGE: u64 = 10 * 100_000_000;
 
@@ -126,8 +128,11 @@ fn engine_wallet() -> (tempfile::TempDir, Engine, Arc<NetworkSession>, WalletId)
 }
 
 /// Closes the network and opens it again: the wallet comes back from its
-/// store.
+/// store. The close waits out a wallet load in flight as the app's does,
+/// and longer: an SPV start's bring-up opens the shielded store as a load,
+/// which takes up to minutes under load (#399).
 fn reopen(engine: &Engine, session: Arc<NetworkSession>) -> Arc<NetworkSession> {
+    *session.close_load_wait.lock().unwrap() = Some(LOAD_WAIT);
     drop(session);
     assert!(
         engine
