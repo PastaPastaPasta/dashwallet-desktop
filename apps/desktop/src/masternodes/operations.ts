@@ -5,6 +5,7 @@ import type { ProTxOperation } from "../api/generated/ProTxOperation";
 import type { ProTxOperationKindName } from "../api/generated/ProTxOperationKindName";
 import { sendErrorText } from "../screens/pay/model";
 import { t } from "../i18n";
+import { REGISTRAR_UPDATE_SENDS } from "./changeKeys";
 import { REGISTRATION_SENDS } from "./registration";
 
 const P = "masternodes.inProgress";
@@ -23,8 +24,9 @@ export function lastErrorText(code: string | null): string | null {
   return sendErrorText(e, "test")?.text ?? t(`${P}.unknownError`, { code });
 }
 
-/** A registration row is acted on only while registrations send (D14); Discard always stays. */
-export const actsOn = (o: ProTxOperation, sends: boolean = REGISTRATION_SENDS) => o.kind !== "registration" || sends;
+/** A registration or registrar update row is acted on only while its kind sends (D14); Discard always stays. */
+export const actsOn = (o: ProTxOperation, sends: Partial<Record<ProTxOperationKindName, boolean>> = { registration: REGISTRATION_SENDS, update_registrar: REGISTRAR_UPDATE_SENDS }) =>
+  sends[o.kind] ?? true;
 
 /** A fee-input row can be abandoned in Activity; a dissolve row locks no coin (MG-04 D49, mn §2.4). */
 const hasFeeInputs = (o: ProTxOperation) => o.kind !== "dissolve";

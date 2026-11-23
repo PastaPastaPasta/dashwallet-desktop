@@ -70,7 +70,8 @@ describe("In progress (§1.10)", () => {
     expect(REGISTRATION_SENDS).toBe(false);
     const sent = op("s", { kind: "sent" });
     expect(actsOn(sent)).toBe(false);
-    expect(actsOn(sent, true)).toBe(true);
+    expect(actsOn(sent, { registration: true })).toBe(true);
+    expect(opRow(op("u", { kind: "not_sent" }, { kind: "update_registrar" }))).toMatchObject({ primary: null, more: ["discard"] });
     for (const state of [{ kind: "needs_signature" }, { kind: "inputs_spent" }, { kind: "not_sent" }] as const) expect(opRow(op("r", state))).toMatchObject({ primary: null, more: ["discard"] });
     expect(opRow(op("d", { kind: "sent" }, { kind: "dissolve" })).primary).toBe("resend");
     expect(opRow(op("d", { kind: "not_sent" }, { kind: "dissolve" })).primary).toBe("resend");
