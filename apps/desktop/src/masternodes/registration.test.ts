@@ -6,7 +6,7 @@ import type { CollateralCoin } from "../api/generated/CollateralCoin";
 import type { MnRegistrationPreview } from "../api/generated/MnRegistrationPreview";
 import type { ProTxKeys } from "../api/generated/ProTxKeys";
 import { t } from "../i18n";
-import { buildRequest, coinsFor, newDraft, normalOutpoint, refusalOf, registerCap, samePreview, serviceError, shareBasisPoints, stepErrors, type Ports, type RegDraft } from "./registration";
+import { REGISTRATION_SENDS, buildRequest, coinsFor, finalAction, newDraft, normalOutpoint, refusalOf, registerCap, samePreview, serviceError, shareBasisPoints, stepErrors, type Ports, type RegDraft } from "./registration";
 
 const R = "masternodes.register";
 const COIN = 100_000_000;
@@ -162,5 +162,21 @@ describe("refusals go to their step and field (§1.6)", () => {
     expect(refusalOf(err("invalid_argument", null, "something else"))).toBeNull();
     expect(refusalOf(err("send.amount_exceeds_balance"))).toBeNull();
     expect(refusalOf(new Error("x"))).toBeNull();
+  });
+});
+
+describe("sending is off (D14)", () => {
+  it("has no Register at Review or Prove while REGISTRATION_SENDS is off", () => {
+    expect(REGISTRATION_SENDS).toBe(false);
+    expect(finalAction("review", false)).toBe("sendOff");
+    expect(finalAction("prove", true)).toBe("sendOff");
+    expect(finalAction("review", true)).toBe("continue");
+    expect(finalAction("keys", false)).toBe("continue");
+  });
+
+  it("brings Register back when the constant turns on", () => {
+    expect(finalAction("review", false, true)).toBe("register");
+    expect(finalAction("prove", true, true)).toBe("submit");
+    expect(finalAction("review", true, true)).toBe("continue");
   });
 });

@@ -16,6 +16,20 @@ export const STEPS = ["type", "collateral", "operator", "keys", "review"] as con
 export type Step = (typeof STEPS)[number] | "prove" | "done";
 
 export type Runner = "hosted" | "self";
+
+/** Off until a sent registration that never confirms can give its coins back (D14): the wizard
+ * reviews, and saves an External one to In progress, but nothing is sent. */
+export const REGISTRATION_SENDS = false;
+
+/** The step's main button: Continue, Register (Review), Register (Prove), or, while sending is
+ * off, none and the send-off line in its place. */
+export type FinalAction = "continue" | "register" | "submit" | "sendOff";
+
+export function finalAction(step: Step, external: boolean, sends: boolean = REGISTRATION_SENDS): FinalAction {
+  if (step === "prove") return sends ? "submit" : "sendOff";
+  if (step === "review" && !external) return sends ? "register" : "sendOff";
+  return "continue";
+}
 export type CollateralPick = "fund_new" | "existing" | "external";
 
 /** Everything the wizard asks, as typed. */

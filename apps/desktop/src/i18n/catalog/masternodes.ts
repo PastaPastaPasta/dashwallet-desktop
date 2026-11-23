@@ -547,6 +547,7 @@ export const masternodes = {
   /** The registration wizard (MG-10 §1.6, MG-00 `reg-*`). Amounts and fees are funds copy. */
   register: {
     setUp: "Set up a masternode",
+    sendOff: "You can review this registration, but this version can't send it yet. Nothing has been sent.",
     watchOnly: "To register a masternode, open the wallet that holds its keys. This wallet is watch-only.",
     titleRegular: "Set up a masternode",
     titleEvonode: "Set up an evonode",

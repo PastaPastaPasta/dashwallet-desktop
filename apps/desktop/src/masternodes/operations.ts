@@ -5,6 +5,7 @@ import type { ProTxOperation } from "../api/generated/ProTxOperation";
 import type { ProTxOperationKindName } from "../api/generated/ProTxOperationKindName";
 import { sendErrorText } from "../screens/pay/model";
 import { t } from "../i18n";
+import { REGISTRATION_SENDS } from "./registration";
 
 const P = "masternodes.inProgress";
 
@@ -21,6 +22,9 @@ export function lastErrorText(code: string | null): string | null {
   const e: AppError = { code: code as AppError["code"], message: code, data: null };
   return sendErrorText(e, "test")?.text ?? t(`${P}.unknownError`, { code });
 }
+
+/** Send again, except on a registration while registrations don't send (D14). */
+export const resends = (o: ProTxOperation, sends: boolean = REGISTRATION_SENDS) => o.kind !== "registration" || sends;
 
 /** A fee-input row can be abandoned in Activity; a dissolve row locks no coin (MG-04 D49, mn §2.4). */
 const hasFeeInputs = (o: ProTxOperation) => o.kind !== "dissolve";
@@ -50,14 +54,14 @@ export function opRow(o: ProTxOperation): OpRowView {
       return { ...base, status: t(`${P}.status.inputsSpent`), primary: "refresh", more: ["discard"] };
     case "signed":
     case "not_sent":
-      return { ...base, status: error ? t(`${P}.status.notSent`, { reason: error }) : t(`${P}.status.notSentPlain`), primary: "resend", more: ["discard"] };
+      return { ...base, status: error ? t(`${P}.status.notSent`, { reason: error }) : t(`${P}.status.notSentPlain`), primary: resends(o) ? "resend" : null, more: ["discard"] };
     case "sent":
       return {
         title,
         status: t(`${P}.status.sent`, { title }),
         overdueLine: o.overdue ? t(hasFeeInputs(o) ? `${P}.overdue` : `${P}.overdueDissolve`) : null,
         activityTxid: o.overdue && hasFeeInputs(o) ? o.txid : null,
-        primary: "resend",
+        primary: resends(o) ? "resend" : null,
         more: [],
       };
     default:

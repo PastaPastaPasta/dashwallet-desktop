@@ -44,6 +44,7 @@ import {
   type Ports,
   type RegDraft,
   type Step,
+  finalAction,
 } from "../../masternodes/registration";
 import { failureText } from "../pay/model";
 import { CredentialField, useCredential } from "./credential";
@@ -557,6 +558,8 @@ export function RegisterSheet({
 
   const reviewing = step === "review";
   const proving = step === "prove";
+  const action = finalAction(step, external);
+  const sendOff = action === "sendOff";
   const notSent = step === "done" && op?.state.kind === "not_sent";
   const title = d.kind === "evonode" || op?.terms.masternodeType === "evonode" ? t(`${R}.titleEvonode`) : t(`${R}.titleRegular`);
   const count = external || proving ? STEPS.length + 1 : STEPS.length;
@@ -566,6 +569,7 @@ export function RegisterSheet({
         className="mg-sheet-body"
         onSubmit={(e) => {
           e.preventDefault();
+          if (sendOff) return;
           void (proving || notSent ? submitOrResend() : next());
         }}
       >
@@ -582,7 +586,7 @@ export function RegisterSheet({
           <div className="mg-step" data-testid={`reg-step-${step}`}>
             <h3 className="mg-step-title">{stepHeading(step, d.kind, d.runner === "self", t)}</h3>
             {body}
-            {(reviewing || proving || notSent) && <CredentialField c={credential} busy={busy} testId="reg" />}
+            {(reviewing || proving || notSent) && !sendOff && <CredentialField c={credential} busy={busy} testId="reg" />}
             <p className="form-problem" role="alert" data-testid="reg-general">
               {general}
             </p>
@@ -636,15 +640,21 @@ export function RegisterSheet({
                       {t(`${R}.back`)}
                     </DashButton>
                   )}
-                  <DashButton
-                    type="submit"
-                    variant="filledBlue"
-                    size="medium"
-                    data-testid={reviewing && !external ? "reg-register" : proving ? "reg-submit" : "reg-continue"}
-                    disabled={busy || (reviewing && !figures) || ((reviewing && !external) || proving ? !credential.ready : false) || (proving && inputsSpent) || (step === "keys" && !keys.data)}
-                  >
-                    {busy && (reviewing || proving) ? t(`${R}.registering`) : (reviewing && !external) || proving ? t(`${R}.register`) : t(`${R}.continue`)}
-                  </DashButton>
+                  {sendOff ? (
+                    <span className="mg-small mg-muted" role="note" data-testid="reg-send-off">
+                      {t(`${R}.sendOff`)}
+                    </span>
+                  ) : (
+                    <DashButton
+                      type="submit"
+                      variant="filledBlue"
+                      size="medium"
+                      data-testid={action === "register" ? "reg-register" : action === "submit" ? "reg-submit" : "reg-continue"}
+                      disabled={busy || (reviewing && !figures) || (action !== "continue" ? !credential.ready : false) || (proving && inputsSpent) || (step === "keys" && !keys.data)}
+                    >
+                      {busy && (reviewing || proving) ? t(`${R}.registering`) : action !== "continue" ? t(`${R}.register`) : t(`${R}.continue`)}
+                    </DashButton>
+                  )}
                 </>
               )}
             </span>
