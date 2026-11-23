@@ -163,6 +163,80 @@ pub(crate) fn reply_from(
     }
 }
 
+/// How long [`proved_spent`] waits for Platform's proved answer.
+pub(crate) const SPENT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What Platform's proved state says of an asset lock's outpoint: drive's
+/// `SpentAssetLockTransactions` tree, keyed by the 36-byte outpoint,
+/// holds an empty item once the lock is used up and the remaining value
+/// otherwise (`add_asset_lock_outpoint_operations/v0`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpentRead {
+    /// No element: not consumed as of the proof's block.
+    Unspent,
+    /// An empty item: consumed, for good.
+    Consumed,
+    /// Any other item: a remaining value. Its bytes are not read.
+    Remaining,
+    /// No proved answer: an error, no proof, a timeout, or an element of
+    /// another sort.
+    Unread,
+}
+
+/// The tree's key of `outpoint`: its consensus bytes, as drive-abci keys it.
+pub(crate) fn spent_key(outpoint: OutPoint) -> Vec<u8> {
+    <[u8; 36]>::from(outpoint).to_vec()
+}
+
+/// [`SpentRead`] of a verified read of `key`: `None` is the SDK's answer
+/// when nothing at all came back.
+pub(crate) fn read_spent(
+    elements: Option<&dash_sdk::query_types::Elements>,
+    key: &[u8],
+) -> SpentRead {
+    use drive::grovedb::Element;
+    let Some(elements) = elements else {
+        return SpentRead::Unread;
+    };
+    match elements.get(key) {
+        None => SpentRead::Unread,
+        Some(None) => SpentRead::Unspent,
+        Some(Some(Element::Item(bytes, _))) if bytes.is_empty() => SpentRead::Consumed,
+        Some(Some(Element::Item(..))) => SpentRead::Remaining,
+        Some(Some(_)) => SpentRead::Unread,
+    }
+}
+
+/// Platform's proved answer for the lock at `outpoint`
+/// ([`SPENT_READ_TIMEOUT`]); [`SpentRead::Unread`] on any failure, and
+/// from an SDK that does not ask for proofs.
+pub(crate) async fn proved_spent(sdk: &dash_sdk::Sdk, outpoint: OutPoint) -> SpentRead {
+    use dash_sdk::platform::FetchMany;
+    use dash_sdk::query_types::KeysInPath;
+    use drive::drive::RootTree;
+    use drive::grovedb::Element;
+    if !sdk.prove() {
+        tracing::warn!(%outpoint, "the SDK does not ask for proofs: a lock's spent read is not made");
+        return SpentRead::Unread;
+    }
+    let key = spent_key(outpoint);
+    let query = KeysInPath {
+        path: vec![vec![RootTree::SpentAssetLockTransactions as u8]],
+        keys: vec![key.clone()],
+    };
+    match tokio::time::timeout(SPENT_READ_TIMEOUT, Element::fetch_many(sdk, query)).await {
+        Ok(Ok(elements)) => read_spent(Some(&elements), &key),
+        Ok(Err(e)) => {
+            tracing::warn!(%outpoint, error = %e, "a lock's spent read failed");
+            SpentRead::Unread
+        }
+        Err(_) => {
+            tracing::warn!(%outpoint, "a lock's spent read timed out");
+            SpentRead::Unread
+        }
+    }
+}
+
 /// Whether a kind's lock can be applied now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Readiness {
@@ -248,17 +322,19 @@ pub(crate) enum Mark {
     Settled,
     /// An apply that may have executed, unproved.
     Unknown,
-    /// Platform's "already consumed" for the exact outpoint, unproved, by a
-    /// kind that takes it as finished elsewhere
-    /// ([`LockKind::reported_locks`]); neither proved nor settled.
-    Reported,
+    /// Platform's proof that the outpoint is consumed ([`SpentRead::Consumed`]),
+    /// kept by a kind that takes it as finished elsewhere
+    /// ([`LockKind::reported_locks`]); not settled. Earlier versions kept
+    /// an unproved "already consumed" under `reported`, which is no longer
+    /// read: such a lock lists again until a proved read settles it.
+    Used,
 }
 
 fn mark_prefix(kind: LockKindId, mark: Mark) -> String {
     let sort = match mark {
         Mark::Settled => "settled",
         Mark::Unknown => "unknown",
-        Mark::Reported => "reported",
+        Mark::Used => "used",
     };
     format!("recovery.{}.{sort}.", kind.label())
 }

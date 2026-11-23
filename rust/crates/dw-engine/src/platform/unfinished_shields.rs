@@ -7,9 +7,11 @@
 //! is restored. The runner's records are by outpoint ([`locks::record`]);
 //! 0.1's by txid are kept for a lock alone in its transaction, so 0.1's
 //! pending shields agree. Platform's "already consumed" for a restored
-//! lock's exact outpoint is kept ([`Mark::Reported`]): the kind takes it as
-//! finished elsewhere, as type 4 does, so it leaves the card. This device's
-//! own lock keeps 0.1's Checking (SR1), as its pending shield does.
+//! lock's exact outpoint counts only when Platform's proved state says the
+//! same ([`locks::SpentRead::Consumed`], [`ShieldedLib::spent`]); then it is
+//! kept ([`Mark::Used`]): the kind takes it as finished elsewhere, as type 4
+//! does, so it leaves the card. Otherwise, and for this device's own lock
+//! (0.1's Checking, SR1, as its pending shield), the lock reads Checking.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -24,7 +26,7 @@ use super::shielded::SHIELDED_ACTIVATION_VERSION;
 use super::shielded_pool::{self as pool, Applied, ShieldedLib};
 use super::unfinished_locks::{
     self as locks, ApplyReply, KindLock, LockKeySigner, LockKind, LockKindId, LockOrigin, Mark,
-    Marks, Minimum, Readiness,
+    Marks, Minimum, Readiness, SpentRead,
 };
 use crate::{NetworkSession, PlatformChange, WalletId};
 
@@ -81,7 +83,7 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
     }
 
     async fn reported_locks(&self) -> HashSet<OutPoint> {
-        self.marks(Mark::Reported).await
+        self.marks(Mark::Used).await
     }
 
     async fn mark_unknown(&self, lock: &KindLock) {
@@ -159,8 +161,22 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
             Applied::Unknown => ApplyReply::Unknown,
         };
         if reply == ApplyReply::AlreadyConsumed && self.restored(outpoint).await {
-            let (session, wallet, kind) = (self.session, self.wallet, LockKindId::Shielded);
-            locks::record(session, wallet, kind, Mark::Reported, outpoint).await;
+            // After the signature the answer is Platform's, unproved;
+            // before it, the library's own row, which only a proved apply
+            // makes `Consumed`.
+            let spent = match signer.signed() {
+                true => self.lib.spent(outpoint).await,
+                false => SpentRead::Consumed,
+            };
+            match spent {
+                SpentRead::Consumed => {
+                    let (session, wallet, kind) = (self.session, self.wallet, LockKindId::Shielded);
+                    locks::record(session, wallet, kind, Mark::Used, outpoint).await;
+                }
+                spent => {
+                    tracing::warn!(%outpoint, ?spent, "Platform's unproved \"already consumed\" for a shield lock: Checking");
+                }
+            }
         }
         Ok(reply)
     }

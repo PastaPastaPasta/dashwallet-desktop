@@ -27,7 +27,8 @@ use platform_wallet::{
 use super::errors::PlatformError;
 use super::lease::{FlowOutcome, Lease};
 use super::unfinished_locks::{
-    self as locks, KindLock, LockFinish, Mark, Marks, Minimum, UnfinishedLock, UnfinishedState,
+    self as locks, KindLock, LockFinish, Mark, Marks, Minimum, SpentRead, UnfinishedLock,
+    UnfinishedState,
 };
 
 /// How the kind's next apply ends, as its library would end it.
@@ -86,6 +87,9 @@ pub(crate) trait Rig {
     fn reports_used(&self) -> bool {
         false
     }
+    /// Platform's proved state reads `read` for the lock at `outpoint`
+    /// (unread until set).
+    fn prove_spent(&self, _outpoint: OutPoint, _read: SpentRead) {}
 }
 
 /// A lock transaction `n` of `outputs` credit outputs of `duffs` each, every
@@ -191,29 +195,55 @@ pub(crate) fn conformance(rig: &impl Rig) {
     // unproved answer, or a failure after the signature however the kind
     // returns it, reads Checking, recorded by outpoint, its call
     // `MaybeSent` (each on a lock of its own, so no earlier record answers
-    // for it). A kind that takes "already consumed" as finished elsewhere
-    // reads it as reported used instead: the lock leaves the list, settled
-    // nowhere.
-    let ends = [End::Unknown, End::AlreadyConsumed, End::SignedThenFailed];
-    for (n, end) in (0xE1..).zip(ends) {
+    // for it). "Already consumed" is unproved whatever Platform's proved
+    // state says, unless that says consumed: then a kind that takes it as
+    // finished elsewhere reads it as reported used, the lock leaving the
+    // list, settled nowhere.
+    let ends = [
+        (End::Unknown, None),
+        (End::AlreadyConsumed, None),
+        (End::AlreadyConsumed, Some(SpentRead::Unread)),
+        (End::AlreadyConsumed, Some(SpentRead::Unspent)),
+        (End::AlreadyConsumed, Some(SpentRead::Remaining)),
+        (End::AlreadyConsumed, Some(SpentRead::Consumed)),
+        (End::SignedThenFailed, None),
+    ];
+    for (n, (end, read)) in (0xE1..).zip(ends) {
         let lock = proved(&proved_tx(n, 1), 0);
         let at = lock.out_point;
         rig.track(vec![lock.clone()]);
-        assert_eq!(state(rig, at), Some(UnfinishedState::Ready), "{end:?}");
+        if let Some(read) = read {
+            rig.prove_spent(at, read);
+        }
+        assert_eq!(
+            state(rig, at),
+            Some(UnfinishedState::Ready),
+            "{end:?} {read:?}"
+        );
         rig.next(end);
         let (finished, asked) = rig.finish(at);
-        assert!(asked, "{end:?}");
-        assert_eq!(rig.outcomes(), [FlowOutcome::MaybeSent], "{end:?}");
+        assert!(asked, "{end:?} {read:?}");
+        assert_eq!(rig.outcomes(), [FlowOutcome::MaybeSent], "{end:?} {read:?}");
         let (settled, unknown) = rig.marks();
-        assert!(!settled.holds(&row(&lock)), "{end:?} settles nothing");
-        if end == End::AlreadyConsumed && rig.reports_used() {
+        assert!(
+            !settled.holds(&row(&lock)),
+            "{end:?} {read:?} settles nothing"
+        );
+        if read == Some(SpentRead::Consumed) && rig.reports_used() {
             assert_eq!(finished.unwrap(), LockFinish::ReportedUsed);
             assert_eq!(state(rig, at), None, "reported used leaves the list");
             continue;
         }
-        assert_eq!(finished.unwrap(), LockFinish::Checking, "{end:?}");
-        assert_eq!(state(rig, at), Some(UnfinishedState::Checking), "{end:?}");
-        assert!(unknown.outpoints.contains(&at), "{end:?} is recorded");
+        assert_eq!(finished.unwrap(), LockFinish::Checking, "{end:?} {read:?}");
+        assert_eq!(
+            state(rig, at),
+            Some(UnfinishedState::Checking),
+            "{end:?} {read:?}"
+        );
+        assert!(
+            unknown.outpoints.contains(&at),
+            "{end:?} {read:?} is recorded"
+        );
     }
 
     // A Checking lock settles on a proved apply, once.

@@ -86,8 +86,8 @@ use super::shield_drain::DrainCoin;
 use super::shielded_pool::{MAX_LOCK_INPUTS, shield_funding};
 use super::unfinished_funds::FundLocks;
 use super::unfinished_locks::{
-    self as locks, ApplyAuthority, FundedLease, KindLock, LockFinish, LockOrigin, UnfinishedLock,
-    UnfinishedState,
+    self as locks, ApplyAuthority, FundedLease, KindLock, LockFinish, LockOrigin, SpentRead,
+    UnfinishedLock, UnfinishedState,
 };
 use crate::coins::CoinFence;
 use crate::{NetworkSession, WalletId};
@@ -113,6 +113,9 @@ pub(crate) trait FundLib: Send + Sync {
     /// The script of the tracked lock's credit output at `outpoint` (its
     /// payload's `credit_outputs[vout]`); `None` when it is not tracked.
     fn credit_script(&self, outpoint: OutPoint) -> impl Future<Output = Option<ScriptBuf>> + Send;
+    /// Platform's proved answer whether the lock at `outpoint` is spent
+    /// ([`super::unfinished_locks::proved_spent`]).
+    fn spent(&self, outpoint: OutPoint) -> impl Future<Output = SpentRead> + Send;
     /// The values of the coins a funding may select (those
     /// [`Spendable::duffs`] counts).
     fn coin_values(&self) -> impl Future<Output = Result<Vec<u64>, PlatformError>> + Send;
@@ -800,6 +803,10 @@ impl FundLib for PwFund {
     async fn credit_script(&self, outpoint: OutPoint) -> Option<ScriptBuf> {
         let locks = self.pw.wallet.asset_locks().list_tracked_locks().await;
         credit_script_of(&locks, outpoint)
+    }
+
+    async fn spent(&self, outpoint: OutPoint) -> SpentRead {
+        locks::proved_spent(&self.pw.sdk, outpoint).await
     }
 
     async fn coin_values(&self) -> Result<Vec<u64>, PlatformError> {

@@ -56,6 +56,7 @@ use super::shielded::{
 use super::shielded_pool::{
     self as pool, Applied, Ledger, MAX_LOCK_INPUTS, ShieldedLib, SpendError, SyncState, on_pool,
 };
+use super::unfinished_locks::SpentRead;
 use super::withdrawal::{Rules, expected_duffs};
 use crate::{DashNetwork, ImportOptions, NetworkSession};
 
@@ -283,6 +284,8 @@ struct FakeShielded {
     /// consumed" (`PlatformWalletError::AssetLockAlreadyConsumed`), after
     /// its transition was signed.
     consumed: AtomicBool,
+    /// Platform's proved spent read of each outpoint; unread when unset.
+    pub(super) spent_reads: Mutex<std::collections::HashMap<OutPoint, SpentRead>>,
     /// The next applies end with these library errors, in order, after
     /// their transitions were signed, mapped as `PwShielded::apply` maps
     /// them.
@@ -464,6 +467,7 @@ impl Default for FakeShielded {
             fund_end: Mutex::default(),
             rest: Mutex::new(Some(pool::RestClock::default())),
             drops_rest: AtomicBool::new(false),
+            spent_reads: Mutex::default(),
         }
     }
 }
@@ -799,6 +803,10 @@ impl ShieldedLib for FakeShielded {
             return self.real().await.settled_locks().await;
         }
         self.settled.lock().unwrap().clone()
+    }
+
+    async fn spent(&self, outpoint: OutPoint) -> SpentRead {
+        (self.spent_reads.lock().unwrap().get(&outpoint)).map_or(SpentRead::Unread, |r| *r)
     }
 
     async fn settle(&self, txid: Txid) -> Result<(), PlatformError> {
