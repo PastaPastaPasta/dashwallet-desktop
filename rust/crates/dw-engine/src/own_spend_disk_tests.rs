@@ -2029,6 +2029,85 @@ fn an_override_abandon_cut_before_its_sweep_ends_with_the_next() {
     }
 }
 
+/// A payment and its child, the child's first store held in the
+/// persistence adapter with what it read before the abandon: an abandon
+/// of the payment takes both, and the held store then commits the child's
+/// record and change after the sweep. The child is never credited: not in
+/// the session, and after a restart the open's sweep of marked payments
+/// takes it again before the wallet loads.
+#[test]
+fn a_child_stored_after_its_abandons_sweep_is_never_credited() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change]),
+        COIN / 8,
+        false,
+    );
+    let child_txid = child.txid();
+    let barriers = Arc::new((std::sync::Barrier::new(2), std::sync::Barrier::new(2)));
+    *session.live().unwrap().store.hold_store.lock().unwrap() = Some((
+        Box::new(
+            move |cs: &platform_wallet::changeset::PlatformWalletChangeSet| {
+                (cs.core.as_ref()).is_some_and(|c| c.records.iter().any(|r| r.txid == child_txid))
+            },
+        ),
+        Arc::clone(&barriers),
+    ));
+    mempool(&engine, &session, id, &child);
+    barriers.0.wait();
+    let child_change = change_of(&child, &own_scripts(&engine, &session, id));
+    start_spv(&engine, &session);
+    let abandoned = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(abandoned.is_ok(), "{abandoned:?}");
+    barriers.1.wait();
+    eventually("the held store commits", || {
+        super::own_spend_balance_tests::record_stored(&session, id, child_txid)
+    });
+    assert!(
+        !held(&engine, &session, id).contains(&child_change),
+        "the session"
+    );
+    let session = reopen(&engine, session);
+    assert!(
+        !super::own_spend_balance_tests::record_stored(&session, id, child_txid),
+        "the child's record survives the open"
+    );
+    assert!(
+        !held(&engine, &session, id).contains(&child_change),
+        "the child's change is credited after a restart"
+    );
+    assert!(!spendable(&engine, &session, id, child_change));
+    assert!(abandoned_or_gone(&engine, &session, id, child_txid));
+}
+
+fn abandoned_or_gone(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) -> bool {
+    match engine.block_on(session.tx_detail_extras(id, txid)) {
+        Ok(x) => x.abandoned,
+        Err(crate::EngineError::TxNotFound(_)) => true,
+        Err(e) => panic!("{e:?}"),
+    }
+}
+
 /// An unlocked payment and its child, the child abandoned; after a
 /// restart the child comes back InstantSend-locked, stored before the
 /// history hears of it. Abandoning the payment then is refused as locked:
@@ -3398,6 +3477,85 @@ fn abandoning_a_spend_of_a_coin_an_abandoned_payment_locked_later_spends_keeps_i
         row.is_some_and(|(spent, _)| spent),
         "A is released although P's lock spends it: {row:?}"
     );
+}
+
+/// A payment of the wallet's coins A and U, and another device's pending
+/// spend of U, both pending across a restart. Abandoning the payment
+/// releases A and rescans from their funding block; the replay of that
+/// block credits U too, which the other device's spend still holds: U is
+/// counted in the balance (#378), but never offered, and A is held and
+/// offered.
+#[test]
+fn abandons_rescan_counts_but_never_offers_a_coin_a_pending_payment_from_elsewhere_spends() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let (u, a) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, u]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let owner =
+        Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let spend = super::spend_of(
+        u,
+        vec![
+            (
+                fresh_address(&engine, &session, id).script_pubkey(),
+                COIN / 4,
+            ),
+            (elsewhere(), COIN * 3 / 4 - 2_000),
+        ],
+    );
+    let other = super::signed_by_wallet(&engine, &session, id, &owner, spend);
+    mempool(&engine, &session, id, &other);
+    wait_stored(&session, id, &[other.txid()]);
+
+    let session = reopen(&engine, session);
+    start_spv(&engine, &session);
+    abandon(&engine, &session, id, payment.txid());
+    scan_if_pending(&engine, &session, id, &paid);
+    store_settled(&engine, &session, id);
+    let counted =
+        |s: &Arc<NetworkSession>, o: OutPoint| coins(&engine, s, id).iter().any(|(c, _)| *c == o);
+    let mut session = session;
+    for state in ["the abandon's rescan", "a restart after it"] {
+        if state != "the abandon's rescan" {
+            session = reopen(&engine, session);
+            start_spv(&engine, &session);
+            store_settled(&engine, &session, id);
+        }
+        assert!(counted(&session, a), "{state}: A is not counted");
+        assert!(
+            spendable(&engine, &session, id, a),
+            "{state}: A is not offered"
+        );
+        // #378: the balance counts U while the other payment is pending;
+        // once it no longer does, flip this to "not counted".
+        assert!(counted(&session, u), "{state}: U is not counted");
+        assert!(
+            !spendable(&engine, &session, id, u),
+            "{state}: U is offered"
+        );
+        let (_draft, any) = prepare(
+            &engine,
+            &session,
+            id,
+            CoinSource::Any,
+            COIN * 9,
+            false,
+            &Arc::new(Accept::default()),
+        );
+        assert!(
+            any.is_ok_and(|p| !(p.summary().inputs.iter()).any(|i| i.outpoint == u)),
+            "{state}: the automatic choice takes U"
+        );
+    }
 }
 
 /// A coin U of the wallet that only a pending payment from elsewhere
