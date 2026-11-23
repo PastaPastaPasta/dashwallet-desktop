@@ -964,3 +964,64 @@ fn known_gap_money_an_overturned_payment_sent_stays_offered_after_a_restart_when
  {
     money_stays_offered(false, true);
 }
+
+/// D, which beats C, is mined but its ChainLock has not landed when the
+/// user resets the chain data. The reset forgets D: its ChainLock alone then
+/// overturns nothing. Once D's block is fetched again, under that lock, C
+/// goes and P's change comes back.
+#[test]
+fn reset_chain_data_forgets_a_conflict_kept_for_its_chain_lock_until_its_block_is_fetched_again() {
+    let other = OutPoint::new(Txid::from_byte_array([0x56; 32]), 0);
+    let Abandoned {
+        _dir,
+        engine,
+        session,
+        id,
+        payment,
+        child,
+        ..
+    } = abandoned_change_and_its_spend(vec![other]);
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    spend_first_then_payment(&engine, &session, id, &payment, &child, true);
+    wait_stored(&session, id, &[payment.txid(), child.txid()]);
+    let fetcher = engine
+        .block_on(session.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    let both = [id, fetcher];
+    let winner = super::spend_of(other, vec![(elsewhere(), 500_000)]);
+    let height = TIP + 2;
+    block_for(
+        &engine,
+        &session,
+        &both,
+        &[fetcher],
+        height,
+        vec![winner.clone()],
+    );
+    assert!(
+        !held(&engine, &session, id).contains(&change),
+        "a plain block overturns no lock"
+    );
+
+    engine.block_on(session.reset_chain_data()).unwrap();
+    let chain_lock = ChainLock {
+        block_height: height,
+        block_hash: block_with(vec![winner.clone()]).block_hash(),
+        signature: BLSSignature::from([0; 96]),
+    };
+    deliver_all(&engine, &session, &both, move |wm| {
+        Box::pin(async move {
+            wm.apply_chain_lock(chain_lock);
+        })
+    });
+    assert!(
+        !held(&engine, &session, id).contains(&change),
+        "the reset forgot D"
+    );
+    assert!(records(&session, id, child.txid()));
+
+    block_for(&engine, &session, &both, &[fetcher], height, vec![winner]);
+    assert!(held(&engine, &session, id).contains(&change), "D beat C");
+    assert!(spendable(&engine, &session, id, change));
+}
