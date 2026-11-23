@@ -28,8 +28,13 @@ test("the choices are a labelled group with no legend, as tall as their content"
   await expect(choices(page)).toBeVisible();
   await expect(sheet.locator("legend")).toHaveCount(0);
   await expect(sheet.locator("fieldset")).toHaveCount(0);
-  const gap = await choices(page).evaluate((group) => group.getBoundingClientRect().bottom - group.lastElementChild!.getBoundingClientRect().bottom);
-  expect(Math.abs(gap)).toBeLessThan(1);
+  // A fieldset's doubled legend made its box taller than the title and rows in it.
+  const [top, bottom] = await choices(page).evaluate((group) => {
+    const box = group.getBoundingClientRect();
+    return [group.firstElementChild!.getBoundingClientRect().top - box.top, box.bottom - group.lastElementChild!.getBoundingClientRect().bottom];
+  });
+  expect(Math.abs(top)).toBeLessThan(1);
+  expect(Math.abs(bottom)).toBeLessThan(1);
 });
 
 test("the sheet keeps its height when the close button loses focus", async ({ page }) => {

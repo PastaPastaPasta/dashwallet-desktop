@@ -3,7 +3,7 @@
 // `governance_vote_name`; the result lists each masternode's vote, an `unconfirmed` one as not
 // confirmed until Check again re-reads Platform and finds its choice there (MG-07 D7).
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { errorMessage } from "../../api/backend";
 import type { ContestedName } from "../../api/generated/ContestedName";
 import type { ContestedNames } from "../../api/generated/ContestedNames";
@@ -115,6 +115,7 @@ function NameVoteForm({
   const t = useT();
   const b = useBackend();
   const shown = useDisplay(network);
+  const choicesTitle = useId();
   const nodeNames = useNodeNames(wallet.walletId);
   const now = useNowSecs();
   const { label } = contest;
@@ -184,8 +185,8 @@ function NameVoteForm({
       }}
     >
       <p className="mg-muted mg-small mg-flush">{endsText(contest, now)}</p>
-      <div className="mg-choices" role="group" aria-labelledby="name-vote-choices-title" data-testid="name-vote-choices">
-        <span id="name-vote-choices-title" className="mg-section-title">
+      <div className="mg-choices" role="group" aria-labelledby={choicesTitle} data-testid="name-vote-choices">
+        <span id={choicesTitle} className="mg-section-title">
           {t("masternodes.names.sheet.yourVote")}
         </span>
         {choiceOptions(contest).map((o) => {
