@@ -70,8 +70,10 @@ pub(crate) const IMPORT_SECRET: &str = "import.secret";
 pub(crate) const IMPORT_REGISTER: &str = "import.register";
 /// Tests: runs at each import fault point with its name, before the point.
 #[cfg(test)]
-pub(crate) static AT_IMPORT_POINT: std::sync::Mutex<Option<Box<dyn Fn(&str) + Send>>> =
+pub(crate) static AT_IMPORT_POINT: std::sync::Mutex<Option<ImportPointHook>> =
     std::sync::Mutex::new(None);
+#[cfg(test)]
+pub(crate) type ImportPointHook = Box<dyn Fn(&str) + Send>;
 
 impl NetworkSession {
     /// The import fault point `point` on this session's app database: armed,
