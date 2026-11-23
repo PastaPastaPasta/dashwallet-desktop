@@ -16,8 +16,8 @@ use tokio::time::Instant;
 use super::drive::{Window, identity_key, key_hashes, window};
 use super::net::{MnWithdrawNet, Proved};
 use super::{Env, HeldKey, PayoutChange, WalletKeys, WithdrawalError, on_db};
-use crate::masternodes::WithdrawalCheckingReason;
 use crate::masternodes::protx_records::ProTxOperationState;
+use crate::masternodes::{WithdrawalCheckingReason, WithdrawalKeyChoice};
 use crate::platform::trust::Rule5;
 use crate::platform::withdrawal::{READ_BACK_TRIES, Rules, expected_duffs};
 use crate::platform::{PlatformError, WithdrawAmount};
@@ -116,6 +116,10 @@ pub(crate) struct Seen {
     pub(crate) header_tip: Option<u32>,
     /// `None` when (a)–(c) hold.
     pub(crate) reason: Option<WithdrawalCheckingReason>,
+    /// The latest payout in the wallets' history is P2SH: Drive would pay
+    /// an owner-key withdrawal to the P2PKH of its 20 bytes, which nobody
+    /// can spend.
+    pub(crate) payout_p2sh: bool,
 }
 
 impl Seen {
@@ -135,6 +139,21 @@ impl Seen {
             Some(reason) => Err(WithdrawalError::DestinationChecking { reason }),
         }
     }
+
+    /// [`Self::holds`] for a withdrawal by `key`; an owner key is refused
+    /// too while the payout is P2SH.
+    pub(crate) fn holds_for(&self, key: WithdrawalKeyChoice) -> Result<(), WithdrawalError> {
+        self.holds()?;
+        match self.owner_reason(key) {
+            None => Ok(()),
+            Some(reason) => Err(WithdrawalError::DestinationChecking { reason }),
+        }
+    }
+
+    fn owner_reason(&self, key: WithdrawalKeyChoice) -> Option<WithdrawalCheckingReason> {
+        (key == WithdrawalKeyChoice::Owner && self.payout_p2sh)
+            .then_some(WithdrawalCheckingReason::OwnerPayoutP2sh)
+    }
 }
 
 /// One look (P4): the identity read under rule 5, the barriers' clearing
@@ -151,7 +170,8 @@ pub(crate) async fn look(
     let identity = gated(env.rule_5(), env.waits().probe, || net.identity(id)).await?;
     let header_tip = env.chain().header_tip;
     let pending = pending_barriers(env, pro_tx_hash, &identity).await?;
-    let (unconfirmed, unapplied) = unpaid_changes(&env.payout_changes(pro_tx_hash), &identity.read);
+    let changes = env.payout_changes(pro_tx_hash);
+    let (unconfirmed, unapplied) = unpaid_changes(&changes, &identity.read);
     let core = identity.read.core_height;
     let reason = if header_tip.is_none() {
         Some(WithdrawalCheckingReason::SpvUnsynced)
@@ -170,6 +190,7 @@ pub(crate) async fn look(
         identity,
         header_tip,
         reason,
+        payout_p2sh: latest_is_p2sh(&changes),
     })
 }
 
@@ -185,7 +206,7 @@ pub(super) fn unpaid_changes(
         _ => None,
     };
     let unpaid = || {
-        (changes.iter()).filter(|c| {
+        (changes.iter().filter(|c| !c.registration)).filter(|c| {
             paid.as_ref()
                 .is_none_or(|p| c.script.as_deref() != Some(p.as_bytes()))
         })
@@ -194,6 +215,21 @@ pub(super) fn unpaid_changes(
         unpaid().any(|c| c.height.is_none()),
         unpaid().any(|c| c.height.is_some_and(|h| h > read.core_height)),
     )
+}
+
+/// Whether the latest payout of `changes` is P2SH: the unconfirmed
+/// changes, else those in the highest block, else the registration's.
+fn latest_is_p2sh(changes: &[PayoutChange]) -> bool {
+    let rank = |c: &PayoutChange| match (c.registration, c.height) {
+        (true, _) => 0,
+        (false, Some(h)) => u64::from(h) + 1,
+        (false, None) => u64::MAX,
+    };
+    let Some(top) = changes.iter().map(rank).max() else {
+        return false;
+    };
+    (changes.iter().filter(|c| rank(c) == top))
+        .any(|c| (c.script.as_deref()).is_some_and(|s| dashcore::Script::from_bytes(s).is_p2sh()))
 }
 
 /// Whether a payout-change barrier of the masternode is still pending
@@ -403,7 +439,12 @@ pub(crate) async fn quote(
         },
     };
     let owner_destination = match (&owner_key, window(identity)) {
-        (Some(_), Window::Pays { script, .. }) => Some(fixed(&script)),
+        (Some(_), Window::Pays { script, .. }) => {
+            Some(match seen.owner_reason(WithdrawalKeyChoice::Owner) {
+                Some(reason) if seen.reason.is_none() => Destination::Checking { reason },
+                _ => fixed(&script),
+            })
+        }
         _ => None,
     };
     let payout_destination = payout_keys.first().and_then(|k| {

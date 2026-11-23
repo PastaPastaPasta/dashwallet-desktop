@@ -1125,6 +1125,7 @@ fn with_no_window_every_payout_change_counts() {
         vec![PayoutChange {
             script: paid.clone(),
             height,
+            registration: false,
         }]
     };
     let paying = proved(Some(masternode_identity(&PRO_TX, vec![payout_key(0)])));
