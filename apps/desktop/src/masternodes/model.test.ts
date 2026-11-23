@@ -1,6 +1,8 @@
 // My masternodes' view model (model.ts, MG-10 §1.2, §1.7, §1.9, §3.8).
 
 import { describe, expect, it } from "vitest";
+import { DEFAULT_PREFS, ui } from "../app/ui";
+import { LANGUAGES, type Language } from "../i18n";
 import type { MasternodeDetail } from "../api/generated/MasternodeDetail";
 import type { MasternodeOverview } from "../api/generated/MasternodeOverview";
 import type { MasternodePayout } from "../api/generated/MasternodePayout";
@@ -208,5 +210,21 @@ describe("governance vote rows (MG-09 F3)", () => {
     expect(nodeName(home)).toBe(`Masternode ${HOME.slice(0, 8)}`);
     const rows = voteRows([{ proTxHash: HOME, kind: "regular", weight: 1, valid: true, keyIndex: 0, currentVote: null, voteTime: null, keyHolders: 1, keyLastVote: null, keyLastVoteTime: null }], 0, "en-US", names);
     expect(rows[0].name).toBe("Home node · 203.0.113.7:19999");
+  });
+});
+
+describe("the masternode list's height", () => {
+  it("reads as before in English, and is grouped for the display language", () => {
+    expect(MnText.listHeight(2_358_432)).toBe("Masternode list at block 2,358,432");
+    expect(MnText.listHeight(999)).toBe("Masternode list at block 999");
+    const de: Language = { tag: "de-x-dwtest", name: "Deutsch", dir: "ltr", messages: new Map() };
+    LANGUAGES.push(de);
+    try {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: "de-x-dwtest" } });
+      expect(MnText.listHeight(2_358_432)).toBe("Masternode list at block 2.358.432");
+    } finally {
+      LANGUAGES.pop();
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
+    }
   });
 });
