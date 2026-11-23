@@ -105,6 +105,8 @@ export class OnboardingModel extends Model {
   walletId: string | null = null;
   /** How many wallets the file restored (a backup can hold several). */
   restoredCount = 0;
+  /** What a Dash Core file's import left out: keys outside its HD wallet, and scripts. */
+  restoredSkipped: { keys: number; scripts: number } | null = null;
   failure: string | null = null;
 
   /** Restore from a file: `null` when the app gave no file commands. */
@@ -295,6 +297,7 @@ export class OnboardingModel extends Model {
   async restoreFromFile(passphrase: string | null, nameText: string) {
     const file = this.file;
     if (this.step !== "restoreFile" || this.busy || !file || file.step !== "details") return;
+    if (file.plan?.passphrase && !passphrase) return file.refuse(t("onboarding.file.passphraseMissing"));
     const problem = file.problem(passphrase, nameText);
     if (problem) return file.refuse(problem);
     this.#fileInputs = { passphrase, name: nameText };
@@ -398,11 +401,16 @@ export class OnboardingModel extends Model {
         return;
       case "choosePassphrase":
         if (this.flow === "restore") this.#go("restoreOptions");
-        else if (this.flow === "file") this.#go("restoreFile");
-        else this.cancel();
+        else if (this.flow === "file") {
+          this.#fileInputs = null;
+          this.#go("restoreFile");
+        } else this.cancel();
         return;
       case "unlockVault":
-        if (this.#afterUnlock === "finish" && this.flow === "file") this.#go("restoreFile");
+        if (this.#afterUnlock === "finish" && this.flow === "file") {
+          this.#fileInputs = null;
+          this.#go("restoreFile");
+        }
         else if (this.#afterUnlock === "finish" && this.flow === "restore") this.#go("restoreOptions");
         else if (this.#afterUnlock === "finish") this.#showPhrase();
         else this.cancel();
@@ -508,13 +516,20 @@ export class OnboardingModel extends Model {
     this.#go("working");
     await file.run(inputs.passphrase, inputs.name);
     if (this.#stale) return;
-    if (file.step === "done" && file.done) {
-      const ids = file.done.walletIds;
+    if (file.step === "done" && file.done && file.done.walletIds.length > 0) {
+      const { walletIds: ids, report } = file.done;
       this.#clear();
-      this.walletId = ids[0] ?? null;
+      this.walletId = ids[0];
       this.restoredCount = ids.length;
+      this.restoredSkipped = report && (report.keysNotImported > 0 || report.scriptsNotImported > 0) ? { keys: report.keysNotImported, scripts: report.scriptsNotImported } : null;
       this.#go("done");
-    } else if (hasCode(file.failure, "vault.locked") || hasCode(file.failure, "vault.mixing_only")) {
+    } else if (file.step === "done") {
+      // A backup that held no wallet: nothing to open. Back to the file, the vault kept.
+      this.#fileInputs = null;
+      file.back();
+      file.refuse(t("onboarding.file.emptyBackup"));
+      this.#go("restoreFile");
+    } else if (hasCode(file.failure, "vault.locked") || hasCode(file.failure, "vault.mixing_only") || hasCode(file.failure, "backup.vault_locked")) {
       this.vaultState = "locked";
       await this.#askUnlock("finish");
     } else {
@@ -619,6 +634,7 @@ export class OnboardingModel extends Model {
   #clear() {
     this.#fileInputs = null;
     this.restoredCount = 0;
+    this.restoredSkipped = null;
     this.file?.reset();
     this.#phrase = null;
     this.#bip39 = null;

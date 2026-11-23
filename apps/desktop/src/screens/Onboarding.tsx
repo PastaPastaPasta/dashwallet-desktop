@@ -68,7 +68,7 @@ export function Onboarding({
   useEffect(() => {
     const target = body.current?.querySelector<HTMLElement>("[data-autofocus]") ?? body.current?.querySelector<HTMLElement>("h1");
     target?.focus();
-  }, [step, ready]);
+  }, [step, ready, model.file?.step]);
 
   return (
     <div className="onboarding" data-testid="onboarding" inert={inert}>
@@ -176,7 +176,7 @@ function Step({
     case "restoreOptions":
       return <RestoreOptions model={model} />;
     case "restoreFile":
-      return <RestoreFile model={model} />;
+      return <RestoreFile model={model} network={network.dirName} />;
     case "working":
       return (
         <>
@@ -231,6 +231,13 @@ function Done({ model, network, onDone }: { model: OnboardingModel; network: Net
             ? t("onboarding.ready.created")
             : t("onboarding.ready.restored")}
       </p>
+      {model.restoredSkipped && (
+        <p className="onboarding-text" role="status" data-testid="onboarding-file-skipped">
+          {model.restoredSkipped.keys > 0 && t("onboarding.file.keysSkipped", { count: model.restoredSkipped.keys })}
+          {model.restoredSkipped.keys > 0 && model.restoredSkipped.scripts > 0 && " "}
+          {model.restoredSkipped.scripts > 0 && t("onboarding.file.scriptsSkipped", { count: model.restoredSkipped.scripts })}
+        </p>
+      )}
       {consent.needed && <OnboardingRatesChoice consent={consent} on={ratesOn} setOn={setRatesOn} />}
       {listFailed && (
         <p className="form-problem" role="alert" data-testid="onboarding-list-error">
@@ -311,24 +318,34 @@ function fileKindText(t: ReturnType<typeof useT>, info: WalletFileInfo): string 
   }
 }
 
+/** Why the file stops here, in the catalog's words (the plan's own sentence is Settings' English). */
+function refusalText(t: ReturnType<typeof useT>, info: WalletFileInfo, network: string): string {
+  if (info.kind === "psbt") return t("onboarding.file.psbtRefusal");
+  if (info.kind === "unknown") return t("onboarding.file.unknownRefusal");
+  if (info.kind === "dwBackup" && info.network === null) return t("onboarding.file.unknownNetwork");
+  const theirs = info.kind === "dwBackup" || info.kind === "dumpWallet" ? info.network?.dirName : undefined;
+  if (theirs && theirs !== network) return t("onboarding.file.otherNetwork", { network: theirs });
+  return t("onboarding.file.emptyBackup");
+}
+
 /** Restore from a file: a path (typed or chosen), then the file's passphrase or a name when it
  * needs one. The passphrase lives in this step's state only until Restore takes it. */
-function RestoreFile({ model }: { model: OnboardingModel }) {
+function RestoreFile({ model, network }: { model: OnboardingModel; network: string }) {
   const t = useT();
   const backend = useBackend();
   const id = useId();
   const file = model.file!;
   const [path, setPath] = useState(file.path);
-  const [passphrase, setPassphrase] = useState("");
-  const [name, setName] = useState("");
   const [chooseError, setChooseError] = useState<string | null>(null);
   const reading = file.step === "inspecting";
   const plan = file.plan;
   const choose = async () => {
     setChooseError(null);
+    const generation = file.generation;
     try {
       const chosen = await chooseFilePath(backend, "walletFile", false, null);
-      if (chosen === null) return;
+      // The user left this selection while the dialog was open.
+      if (chosen === null || generation !== file.generation || model.step !== "restoreFile") return;
       setPath(chosen);
       await file.inspect(chosen);
     } catch (e) {
@@ -378,12 +395,25 @@ function RestoreFile({ model }: { model: OnboardingModel }) {
         </form>
       </>
     );
+  return <FileDetails key={`${file.generation} ${file.path}`} model={model} network={network} />;
+}
+
+/** The inspected file: what it is, then its passphrase or a name. Keyed by the selection, so a
+ * passphrase typed for one file is never sent for another. */
+function FileDetails({ model, network }: { model: OnboardingModel; network: string }) {
+  const t = useT();
+  const id = useId();
+  const file = model.file!;
+  const plan = file.plan!;
+  const info = file.info!;
+  const [passphrase, setPassphrase] = useState("");
+  const [name, setName] = useState("");
   const backup = plan.kind === "dwBackup";
   return (
     <>
       <Title>{t("onboarding.file.title")}</Title>
       <p className="onboarding-text" data-testid="restore-file-kind">
-        {fileKindText(t, file.info)}
+        {fileKindText(t, info)}
       </p>
       <p className="form-hint mono" data-testid="restore-file-chosen">
         {file.path}
@@ -399,7 +429,7 @@ function RestoreFile({ model }: { model: OnboardingModel }) {
       >
         {plan.refusal ? (
           <p className="form-problem" role="alert" data-testid="restore-file-refusal">
-            {plan.refusal}
+            {refusalText(t, info, network)}
           </p>
         ) : (
           <>

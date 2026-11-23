@@ -47,6 +47,19 @@ export const onboarding = {
     name: "Wallet name (optional)",
     restore: "Restore",
     otherFile: "Choose another file",
+    passphraseMissing: "Enter the file's passphrase.",
+    /** `network`: the file's network, as the engine names it (mainnet, testnet). */
+    otherNetwork: "This file is for {network}, not for the network this window uses.",
+    unknownNetwork: "This file is for a network this version of Dash Wallet doesn't know.",
+    emptyBackup: "This backup holds no wallet.",
+    psbtRefusal: "Open a partially signed transaction in Tools ▸ PSBT once a wallet is set up.",
+    unknownRefusal: "Dash Wallet reads Dash Wallet backups, Dash Core wallet.dat files and dumpwallet files.",
+    /** On Done, after a Dash Core import that left keys out (QT-107). */
+    keysSkipped: {
+      one: "1 key outside the HD wallet was not imported. Move its coins to this wallet from Dash Core.",
+      other: "{count} keys outside the HD wallet were not imported. Move their coins to this wallet from Dash Core.",
+    },
+    scriptsSkipped: { one: "1 script was not imported.", other: "{count} scripts were not imported." },
   },
   working: {
     title: "Adding the wallet",
