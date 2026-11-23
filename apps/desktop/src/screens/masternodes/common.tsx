@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { VoteTally } from "../../api/generated/VoteTally";
 import { DashButton } from "../../components/basics";
 import { GovText, voteBar, type ChipView } from "../../governance/model";
+import { useT } from "../../i18n";
 
 const TICK_MS = 30_000;
 
@@ -19,6 +20,7 @@ export function useNowSecs(): number {
 }
 
 export function StatusChip({ chip, testId }: { chip: ChipView; testId?: string }) {
+  useT();
   return (
     <span className={`chip chip-${chip.tone}`} title={chip.tooltip || undefined} data-testid={testId}>
       {chip.text}
@@ -47,6 +49,7 @@ export interface MenuItem {
 
 /** "More": a menu button whose items close it; Escape and a click elsewhere close it too. */
 export function MoreMenu({ items, testId }: { items: MenuItem[]; testId: string }) {
+  useT();
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);

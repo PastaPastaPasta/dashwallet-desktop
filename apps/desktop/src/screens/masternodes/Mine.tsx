@@ -11,14 +11,16 @@ import { EmptyState } from "../../components/history";
 import { chainOf } from "../../format/display";
 import { GovText, governanceErrorText, mineRow } from "../../governance/model";
 import { useGovernanceRefresh, useTurnOnGovernance } from "../../governance/queries";
+import { useT } from "../../i18n";
 import { failureText } from "../pay/model";
 import { StatusChip } from "./common";
 
 export function MineList({ walletId, network, mine, heading = false }: { walletId: string; network: NetworkInfo; mine: MyProposal[]; heading?: boolean }) {
+  const t = useT();
   if (mine.length === 0) return <EmptyState testId="mine-empty" title={GovText.emptyMine} message={GovText.mineNote} />;
   return (
     <>
-      {heading && <h2 className="mg-section-title">Mine</h2>}
+      {heading && <h2 className="mg-section-title">{t("masternodes.governance.mine.title")}</h2>}
       <section className="tx-group card-l1">
         <ul className="mg-list" data-testid="mine-list">
           {mine.map((p) => (
@@ -32,6 +34,7 @@ export function MineList({ walletId, network, mine, heading = false }: { walletI
 }
 
 function MineRow({ walletId, network, p }: { walletId: string; network: NetworkInfo; p: MyProposal }) {
+  const t = useT();
   const b = useBackend();
   const refresh = useGovernanceRefresh();
   const { turnOn, busy: turningOn } = useTurnOnGovernance();
@@ -70,7 +73,7 @@ function MineRow({ walletId, network, p }: { walletId: string; network: NetworkI
       </span>
       {view.submit && (
         <DashButton variant="tintedBlue" size="small" data-testid={`mine-submit-${p.name}`} disabled={busy} onClick={() => void submit()}>
-          {busy ? GovText.submitting : "Submit"}
+          {busy ? GovText.submitting : t("masternodes.governance.mine.submit")}
         </DashButton>
       )}
       {view.turnOn && (

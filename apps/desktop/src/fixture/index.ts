@@ -24,6 +24,7 @@ import { restarted } from "./registration";
 import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type ScenarioName, type World } from "./scenarios";
 import { receivePayment, type PaymentSource } from "./send";
 import { FIXTURE_NOW } from "./wallet";
+import { ui } from "../app/ui";
 import { isLanguage } from "../i18n";
 import { isLanguageTag } from "./settings";
 
@@ -72,6 +73,8 @@ export interface FixtureHandle {
   deliverLinks(routes: LinkRoute[]): void;
   /** A native menu or tray command. */
   shellCommand(command: ShellCommand): void;
+  /** The app's language as Settings ▸ General sets it, with no navigation: what is open stays open. */
+  setLanguage(tag: string | null): void;
   /** Makes `command` reject with a sample of `cls` from now on (`null` clears it). */
   fail(command: CommandName, cls: ErrorClass | null): void;
   /** Holds the next call of `command`: it answers from the world as it is when called, a result
@@ -191,6 +194,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       void emit(SHELL_EVENT, { kind: "linksPending" } satisfies ShellEvent);
     },
     shellCommand: (command) => void emit(SHELL_EVENT, { kind: "command", command } satisfies ShellEvent),
+    setLanguage: (language) => ui.set({ prefs: { ...ui.get().prefs, language } }),
     fail: (command, cls) => (cls ? failures.set(command, cls) : failures.delete(command)),
     hold: startHold,
     release: (command) => void startReleases.get(command)?.(),

@@ -18,7 +18,7 @@ import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { sendMax, sendMaxLine } from "../shielded/sendMax";
-import { SHIELDED_SYNC_COPY, SHIELDED_SYNCING_TEXT, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
+import { SHIELDED_SYNC_COPY, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
 import { TRANSFER_COPY } from "../transfer/model";
 import { useNowSecs } from "./masternodes/common";
 import { Qr } from "./Receive";
@@ -63,9 +63,9 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   // What Next waits for, said beside it: the same text the card gives while Shielded syncs.
   const syncing = shieldedSyncing(status);
   const maxRefusal = line.state.kind === "refused" ? shieldedErrorText(line.state.error, credits, fmt, "send", syncing) : null;
-  const maxWhy = syncing ? SHIELDED_SYNCING_TEXT : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
+  const maxWhy = syncing ? SHIELDED_SYNC_COPY.syncing : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
   const nextWhy = syncing
-    ? SHIELDED_SYNCING_TEXT
+    ? SHIELDED_SYNC_COPY.syncing
     : amountProblem ?? (amount === null || amount <= 0 ? C.form.why.amount : kind === "send" && to === "" ? C.form.why.to : memoTooLong ? C.form.why.memo : null);
   const amountField = (
     <label className="form-field">
@@ -258,7 +258,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
         <DashButton variant="tintedGray" size="large" data-testid="shielded-back" disabled={flow.running} onClick={() => flow.back()}>
           {C.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={syncing ? SHIELDED_SYNCING_TEXT : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing} onClick={() => q && (unrecorded ? setAsking(true) : void flow.run(q.quote.grant))}>
+        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={syncing ? SHIELDED_SYNC_COPY.syncing : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing} onClick={() => q && (unrecorded ? setAsking(true) : void flow.run(q.quote.grant))}>
           {C.confirm.go}
         </DashButton>
       </div>
@@ -435,7 +435,7 @@ export function ShieldedReceiveCard({ walletId, network }: { walletId: string; n
         aria-expanded={open && !syncing}
         aria-controls={`${id}-body`}
         disabled={syncing}
-        title={syncing ? SHIELDED_SYNCING_TEXT : undefined}
+        title={syncing ? SHIELDED_SYNC_COPY.syncing : undefined}
         aria-describedby={syncing ? `${id}-why` : undefined}
         onClick={() => setOpen(!open)}
       >
@@ -443,7 +443,7 @@ export function ShieldedReceiveCard({ walletId, network }: { walletId: string; n
       </button>
       {syncing && (
         <p className="field-hint disclosure-why" id={`${id}-why`} data-testid="shielded-receive-why">
-          {SHIELDED_SYNCING_TEXT}
+          {SHIELDED_SYNC_COPY.syncing}
         </p>
       )}
       {open && !syncing && (
@@ -465,7 +465,7 @@ export function ShieldedSendLink({ walletId, network }: { walletId: string; netw
   const sheet = <ShieldedSheet flow={flow} walletId={walletId} network={network} status={status} />;
   if (!status?.active) return sheet;
   const syncing = shieldedSyncing(status);
-  const why = syncing ? SHIELDED_SYNCING_TEXT : flow.running ? C.card.why.busy : !shieldedDuffs(status) ? C.card.why.empty : null;
+  const why = syncing ? SHIELDED_SYNC_COPY.syncing : flow.running ? C.card.why.busy : !shieldedDuffs(status) ? C.card.why.empty : null;
   return (
     <>
       <p className="pay-shielded" data-testid="pay-shielded">

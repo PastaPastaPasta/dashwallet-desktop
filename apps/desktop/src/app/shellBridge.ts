@@ -102,13 +102,13 @@ export function focusPage() {
 }
 
 /** Said when a link arrives while the wipe sheet is open (D38). */
-export const WIPE_OPEN = "The link was not opened: close “Delete all wallet data?” first";
+export const wipeOpenText = () => t("app.link.whileWiping");
 
 /** Opens what `route` leads to. Links open while the vault is locked too: the page is there
  * once it unlocks. While the wipe sheet is open nothing opens: the page would go from under it,
  * and a wipe that then failed would say so nowhere (D38). */
 export function applyLink(route: LinkRoute) {
-  if (ui.get().wiping) return showShellToast(WIPE_OPEN);
+  if (ui.get().wiping) return showShellToast(wipeOpenText());
   noteLiveLink();
   ui.set({ dialog: null });
   switch (route.kind) {
@@ -279,7 +279,7 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
         }
         apply(routes);
       } catch (e) {
-        showShellToast(`Could not open the link: ${errorMessage(e)}`);
+        showShellToast(t("app.link.failed", { error: errorMessage(e) }));
       }
     };
     const take = () => (drains = drains.then(drain));
