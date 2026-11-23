@@ -680,7 +680,7 @@ test.describe("Export CSV", () => {
 });
 
 test.describe("Show Masternodes", () => {
-  test("hides Masternodes until the setting is on, and sends the route home", async ({ page }) => {
+  test("hides Masternodes on Automatic with nothing there, and sends the route home", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();
     await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
@@ -688,10 +688,10 @@ test.describe("Show Masternodes", () => {
     await expect(page.getByTestId("page-masternodes")).toHaveCount(0);
     await expect(page.getByTestId("page-home")).toBeVisible();
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
-    await page.getByTestId("settings-show-masternodes").check();
+    await page.getByTestId("settings-masternodes-item").selectOption("on");
     await page.getByTestId("settings-governance-turn-on").click();
     await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
-    await page.getByTestId("settings-show-masternodes").uncheck();
+    await page.getByTestId("settings-masternodes-item").selectOption("off");
     await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
   });
 
@@ -701,7 +701,7 @@ test.describe("Show Masternodes", () => {
     await page.getByTestId("hero").waitFor();
     await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
-    await page.getByTestId("settings-show-masternodes").uncheck();
+    await page.getByTestId("settings-masternodes-item").selectOption("off");
     await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
     await expect(page.getByTestId("status-governance")).toHaveCount(0);
   });

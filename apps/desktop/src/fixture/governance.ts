@@ -521,11 +521,11 @@ const EVERY_STATE: MyProposal[] = [
 
 type Base = (theme: ThemeName | null) => World;
 
-/** Governance with the sample proposals and the main wallet's masternodes, the item shown. */
+/** Governance with the sample proposals, the item shown. `scenarios.ts` gives these worlds the main wallet's masternodes. */
 function governanceBase(base: Base, theme: ThemeName | null, patch: Partial<GovernanceWorld> = {}): World {
   const w = base(theme);
   w.governance = { ...syncedGovernance(), ...patch };
-  w.settings.ui = { ...w.settings.ui, showMasternodes: true, masternodesTab: "governance" };
+  w.settings.ui = { ...w.settings.ui, masternodesItem: "on", masternodesTab: "governance" };
   return w;
 }
 

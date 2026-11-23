@@ -6,6 +6,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
 import type { ThemeName } from "../../api/generated/ThemeName";
+import type { MasternodesItem } from "../../api/generated/MasternodesItem";
 import type { UiSettings } from "../../api/generated/UiSettings";
 import { keys, useBackend, useDustProtection, useNodeInfo } from "../../api/queries";
 import { useLaunch } from "../../app/App";
@@ -121,7 +122,7 @@ export function GeneralTab() {
           {t("settings.general.subtractFee")}
         </label>
         <LanguageRow choice={prefs.language} save={save} />
-        <ShowMasternodesRow checked={prefs.showMasternodes} save={save} />
+        <ShowMasternodesRow choice={prefs.masternodesItem} save={save} />
       </SettingsCard>
       <LocalCurrencyCard />
       <DustCard />
@@ -269,8 +270,6 @@ function NetworkCard() {
   );
 }
 
-/** Show Masternodes (MG-00 D2): the sidebar item whatever the wallet holds. Turning it on while
- * governance data is off asks once to load it too (MG-09 D6). */
 /** The language of the app's own screens (MP-14): the system's, or one this build ships, each
  * named in its own language. */
 function LanguageRow({ choice, save }: { choice: string | null; save: (patch: Partial<UiSettings>) => Promise<boolean> }) {
@@ -309,22 +308,40 @@ function LanguageRow({ choice, save }: { choice: string | null; save: (patch: Pa
   );
 }
 
-function ShowMasternodesRow({ checked, save }: { checked: boolean; save: (patch: Partial<UiSettings>) => Promise<boolean> }) {
+/** Show Masternodes (MG-10 §3.6, Q5): the sidebar item always, never, or while the wallet has
+ * something there. Choosing Always while governance data is off asks once to load it too (MG-09 D6). */
+function ShowMasternodesRow({ choice, save }: { choice: MasternodesItem; save: (patch: Partial<UiSettings>) => Promise<boolean> }) {
   const t = useT();
+  const id = useId();
   const backend = useBackend();
   const { turnOn } = useTurnOnGovernance();
   const [ask, setAsk] = useState(false);
-  const change = async (on: boolean) => {
-    if (!(await save({ showMasternodes: on })) || !on) return;
+  const change = async (item: MasternodesItem) => {
+    if (!(await save({ masternodesItem: item })) || item !== "on") return;
     if (!(await backend.governanceSyncEnabled().catch(() => true))) setAsk(true);
   };
   return (
     <>
-      <label className="checkbox-row">
-        <input type="checkbox" data-testid="settings-show-masternodes" checked={checked} onChange={(e) => void change(e.target.checked)} />
-        {t("settings.general.showMasternodes")}
-      </label>
-      <Hint>{t("settings.general.showMasternodesHint")}</Hint>
+      <div className="settings-row">
+        <label className="settings-row-title" htmlFor={`${id}-mn-item`}>
+          {t("settings.general.showMasternodes")}
+        </label>
+        <select
+          id={`${id}-mn-item`}
+          className="settings-select"
+          data-testid="settings-masternodes-item"
+          aria-describedby={`${id}-mn-item-hint`}
+          value={choice}
+          onChange={(e) => void change(e.target.value as MasternodesItem)}
+        >
+          {(["auto", "on", "off"] as const).map((v) => (
+            <option key={v} value={v}>
+              {t(`settings.general.masternodesItem.${v}`)}
+            </option>
+          ))}
+        </select>
+      </div>
+      <Hint id={`${id}-mn-item-hint`}>{t("settings.general.showMasternodesHint")}</Hint>
       {ask && (
         <QuestionSheet
           title={t("settings.general.governanceAskTitle")}
