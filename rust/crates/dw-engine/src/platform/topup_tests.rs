@@ -225,6 +225,10 @@ impl Fixture {
     }
 
     fn finish(&self, lib: &Fake) -> FinishReport {
+        self.try_finish(lib).unwrap()
+    }
+
+    fn try_finish(&self, lib: &Fake) -> Result<FinishReport, PlatformError> {
         let grant = self.grant(1_000);
         let lease = self
             .engine
@@ -240,8 +244,8 @@ impl Fixture {
             lib,
             &lease,
             &mut report,
-        ));
-        report
+        ))?;
+        Ok(report)
     }
 
     fn fee_bound(&self) -> u64 {
@@ -419,6 +423,8 @@ enum FundScript {
 struct World {
     locks: Vec<LockInfo>,
     identities: Vec<(u32, String)>,
+    /// The wallet left the manager: the identities read fails.
+    identities_gone: bool,
     spendable: Spendable,
     /// Platform's balances.
     balances: BTreeMap<Identifier, u64>,
@@ -655,7 +661,11 @@ fn credited(duffs: u64) -> u64 {
 
 impl TopUpLib for Fake {
     async fn identities(&self) -> Result<Vec<(u32, String)>, PlatformError> {
-        Ok(self.w().identities.clone())
+        let w = self.w();
+        if w.identities_gone {
+            return Err(PlatformError::WalletNotFound);
+        }
+        Ok(w.identities.clone())
     }
 
     async fn top_up_locks(&self) -> Vec<LockInfo> {
@@ -1026,6 +1036,24 @@ fn a_grant_below_the_quote_funds_nothing_and_stays_usable() {
         applied(Some(credited(smaller)), START_BALANCE + credited(smaller))
     );
     assert_eq!(lib.counts(), (1, 1));
+}
+
+/// #412: "Finish transfers" on a wallet whose identities it cannot read
+/// (the wallet left the manager) fails, not "nothing pending".
+#[test]
+fn finish_fails_when_the_identities_cannot_be_read() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::IsTimeout);
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    assert_eq!(out.state, TopUpState::ProofWaiting);
+    lib.w().identities_gone = true;
+    assert!(matches!(
+        f.try_finish(&lib),
+        Err(PlatformError::WalletNotFound)
+    ));
+    lib.w().identities_gone = false;
+    assert_eq!(counted(f.finish(&lib)), (0, 0, 1));
 }
 
 /// No InstantSend lock in the window: the lock waits for its proof, a new

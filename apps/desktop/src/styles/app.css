@@ -2118,6 +2118,15 @@ input[type="radio"]:disabled {
   border-radius: var(--dw-radius-card);
 }
 
+.pay-scan-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-xs) var(--dw-space-m);
+  margin-top: calc(-1 * var(--dw-space-xs));
+}
+
 .amount-entry {
   display: flex;
   align-items: center;
