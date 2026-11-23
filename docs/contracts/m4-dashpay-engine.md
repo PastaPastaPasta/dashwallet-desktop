@@ -962,7 +962,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 9422d9117ef77de4c54b66c358d9f93dce8c5491a8825cce8627e9e9a13a66c9 version: 74 -->
+<!-- surface-sha256: 7c1edd2270a1fbc5cb67291cec4618d7de9960e068751a544e3bc0a1abf215d3 version: 75 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2499,6 +2499,8 @@ impl DashPay {
     pub async fn shielded_send(&self, to: String, credits: u64, memo: Option<String>, grant: String, confirm_unrecorded: bool) -> Result<ShieldedSpendOutcome, ShieldedError>;
     pub async fn unshield_quote(&self, credits: u64, to: Option<String>) -> Result<ShieldedSpendQuote, ShieldedError>;
     pub async fn unshield_to_core(&self, credits: u64, to: Option<String>, grant: String, confirm_unrecorded: bool) -> Result<ShieldedSpendOutcome, ShieldedError>;
+    pub async fn unshield_to_platform_quote(&self, credits: u64, to: Option<String>) -> Result<ShieldedSpendQuote, ShieldedError>;
+    pub async fn unshield_to_platform(&self, credits: u64, to: Option<String>, grant: String, confirm_unrecorded: bool) -> Result<ShieldedSpendOutcome, ShieldedError>;
     pub async fn shielded_history(&self, offset: u32, limit: u32) -> Result<Vec<ShieldedActivity>, ShieldedError>;
 }
 // src/platform/startup.rs

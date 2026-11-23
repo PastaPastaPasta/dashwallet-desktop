@@ -623,8 +623,7 @@ impl DashPay {
         let wallet = self.wallet_id;
         on_pool_signing(&self.session, wallet, move |session, lib| async move {
             let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
-            pool::unshield_to_platform(&session, wallet, &lib, credits, to, &grant, confirmed)
-                .await
+            pool::unshield_to_platform(&session, wallet, &lib, credits, to, &grant, confirmed).await
         })
         .await
     }

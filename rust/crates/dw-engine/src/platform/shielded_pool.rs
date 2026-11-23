@@ -914,7 +914,9 @@ async fn own_platform_address(
     lib: &impl ShieldedLib,
     to: Option<&str>,
 ) -> Result<PlatformAddress, ShieldedError> {
-    let to = to.map(|to| platform_address(lib.network(), to)).transpose()?;
+    let to = to
+        .map(|to| platform_address(lib.network(), to))
+        .transpose()?;
     let pool = lib.platform_pool().await?;
     match to {
         None => Ok(pool.receive),
@@ -2721,7 +2723,10 @@ impl ShieldedLib for PwShielded {
                 detail: "the receive address does not parse".into(),
             }
         })?;
-        let addresses = super::platform_moves::pool(wallet).await?.into_keys().collect();
+        let addresses = super::platform_moves::pool(wallet)
+            .await?
+            .into_keys()
+            .collect();
         Ok(PlatformPool { receive, addresses })
     }
 

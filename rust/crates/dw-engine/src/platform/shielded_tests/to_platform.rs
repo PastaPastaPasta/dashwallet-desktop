@@ -61,8 +61,7 @@ fn unshield_to_platform_quote_follows_platforms_unshield_rules() {
             pool::unshield_to_platform_quote(lib, NOTE, Some(&foreign())).await,
             pool::unshield_to_platform_quote(lib, NOTE, Some(&mainnet)).await,
             pool::unshield_to_platform_quote(lib, NOTE, Some(&payee_text())).await,
-            pool::unshield_to_platform_quote(lib, NOTE, Some(&core_address(3).to_string()))
-                .await,
+            pool::unshield_to_platform_quote(lib, NOTE, Some(&core_address(3).to_string())).await,
             pool::unshield_to_platform_quote(lib, 2 * NOTE, None).await,
         ]
     });
@@ -96,7 +95,10 @@ fn unshield_to_platform_pays_the_receive_address_or_an_own_one() {
     let fvk = fx.s.vault.shielded_viewing_key(&fx.wallet.0).unwrap();
     for (to, want) in [
         (None, own_platform(0)),
-        (Some(format!(" {} ", platform_text(own_platform(2)))), own_platform(2)),
+        (
+            Some(format!(" {} ", platform_text(own_platform(2)))),
+            own_platform(2),
+        ),
     ] {
         let l = lease(&fx);
         let out = unshield(&fx, &lib, NOTE, to, &l, false).unwrap();
@@ -237,7 +239,9 @@ fn unshield_to_platform_failures_after_signing() {
     assert_eq!(fx.credits_spent(&l), charged);
 
     *lib.after_failure.lock().unwrap() = AfterFailure::Armed;
-    lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed("rejected".into()));
+    lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed(
+        "rejected".into(),
+    ));
     let out = unshield(&fx, &lib, NOTE / 4, None, &lease(&fx), false).unwrap();
     assert_eq!(
         (out.state, out.unresolved),
@@ -264,7 +268,9 @@ fn unshield_to_platform_failures_after_signing() {
     );
     let pool_text = "state transition broadcast failed: Shielded pool has insufficient notes \
                      for outgoing transition: pool has 3 notes but minimum 250 required";
-    lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed(pool_text.into()));
+    lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed(
+        pool_text.into(),
+    ));
     let l = lease(&fx);
     assert_eq!(
         unshield(&fx, &lib, NOTE / 4, None, &l, false).unwrap_err(),
@@ -276,7 +282,9 @@ fn unshield_to_platform_failures_after_signing() {
     assert_eq!(fx.credits_spent(&l), charged);
 
     *lib.after_failure.lock().unwrap() = AfterFailure::Unreadable;
-    lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed("rejected".into()));
+    lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed(
+        "rejected".into(),
+    ));
     match unshield(&fx, &lib, NOTE / 4, None, &lease(&fx), false) {
         Err(ShieldedError::Platform(PlatformError::BroadcastUnknown { artifact })) => {
             assert_eq!(artifact, "shielded unshield")
@@ -285,10 +293,9 @@ fn unshield_to_platform_failures_after_signing() {
     }
 }
 
-/// A double submit: two unshields under one grant that covers one. The
-/// wallet's lock runs them one at a time and the second finds the grant
-/// spent, `platform.grant_exceeded` with no key out, so the library sends
-/// one.
+/// A double submit: two unshields under one grant. The wallet's lock runs
+/// them one at a time and the second finds the grant already redeemed,
+/// `platform.grant_invalid` with no key out, so the library sends one.
 #[test]
 fn unshield_to_platform_double_submit_sends_once() {
     let fx = Fixture::new(0);
@@ -309,6 +316,6 @@ fn unshield_to_platform_double_submit_sends_once() {
     let done = results.iter().filter(|r| r.is_ok()).count();
     assert_eq!(done, 1, "{results:?}");
     let refused = results.into_iter().find_map(Result::err).unwrap();
-    assert_eq!(refused.code(), "platform.grant_exceeded");
+    assert_eq!(refused.code(), "platform.grant_invalid");
     assert_eq!(lib.spent().len(), 1, "the library sent one unshield");
 }
