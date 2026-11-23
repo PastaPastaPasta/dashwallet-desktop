@@ -1532,7 +1532,8 @@ pub fn page(records: Vec<TxRecord>, q: &HistoryQuery) -> Result<HistoryPage, Eng
     let kept = matching(records, &q.filter);
     let total = u32::try_from(kept.len()).ok();
     // Only the page is sorted: the records after the cursor are selected
-    // by index, so a large history is neither sorted nor moved whole (H-06).
+    // by index and only the page's are copied out, so a large history is
+    // neither sorted nor moved (H-06).
     let part = |i: usize| parts_of(&kept[i], q.sort);
     let by = |a: &usize, b: &usize| order(q.sort, part(*a), part(*b));
     let mut rest: Vec<usize> = (0..kept.len())
@@ -1553,9 +1554,8 @@ pub fn page(records: Vec<TxRecord>, q: &HistoryQuery) -> Result<HistoryPage, Eng
                 .map(|&i| encode_cursor(tag, &key_of(&kept[i], q.sort)))
         })
         .flatten();
-    let mut slots: Vec<Option<TxRecord>> = kept.into_iter().map(Some).collect();
     Ok(HistoryPage {
-        records: rest.iter().filter_map(|&i| slots[i].take()).collect(),
+        records: rest.iter().map(|&i| kept[i].clone()).collect(),
         next_cursor,
         total_matching: total,
     })
@@ -2599,8 +2599,9 @@ mod tests {
     }
 
     /// Walking every page, for each sort and page size, gives the records
-    /// in the full sort's order, each once: with tied times and amounts,
-    /// unknown times and several records per transaction.
+    /// in the full sort's order, each once, whatever order the history
+    /// arrives in: with tied times and amounts, unknown times and several
+    /// records per transaction.
     #[test]
     fn every_page_walk_matches_the_full_sort() {
         let records: Vec<TxRecord> = (0..40u8)
@@ -2622,21 +2623,31 @@ mod tests {
                     .into_iter()
                     .map(|r| (r.txid, r.record_index))
                     .collect();
-            for limit in [1, 3, 7, 40, 41] {
-                let mut q = query(limit);
-                q.sort = sort;
-                let mut walked = Vec::new();
-                loop {
-                    let p = page(records.clone(), &q).unwrap();
-                    assert_eq!(p.total_matching, Some(40));
-                    assert!(p.records.len() <= limit as usize);
-                    walked.extend(p.records.into_iter().map(|r| (r.txid, r.record_index)));
-                    match p.next_cursor {
-                        Some(c) => q.cursor = Some(c),
-                        None => break,
+            let reversed: Vec<TxRecord> = records.iter().rev().cloned().collect();
+            let mut interleaved = records.clone();
+            interleaved
+                .sort_by_key(|r| (r.record_index, u32::MAX - u32::from(r.txid.as_bytes()[0])));
+            for (input, shape) in [
+                (&records, "txid order"),
+                (&reversed, "reversed"),
+                (&interleaved, "interleaved"),
+            ] {
+                for limit in [1, 3, 7, 40, 41] {
+                    let mut q = query(limit);
+                    q.sort = sort;
+                    let mut walked = Vec::new();
+                    loop {
+                        let p = page(input.clone(), &q).unwrap();
+                        assert_eq!(p.total_matching, Some(40));
+                        assert!(p.records.len() <= limit as usize);
+                        walked.extend(p.records.into_iter().map(|r| (r.txid, r.record_index)));
+                        match p.next_cursor {
+                            Some(c) => q.cursor = Some(c),
+                            None => break,
+                        }
                     }
+                    assert_eq!(walked, full, "{sort:?}, limit {limit}, {shape}");
                 }
-                assert_eq!(walked, full, "{sort:?}, limit {limit}");
             }
         }
     }
