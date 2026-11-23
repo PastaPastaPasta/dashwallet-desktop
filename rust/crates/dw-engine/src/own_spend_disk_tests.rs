@@ -1820,13 +1820,17 @@ fn a_locked_payment_a_chainlock_beat_is_not_abandoned_while_a_replaced_block_spe
 }
 
 /// The payment InstantSend-locked; in the same session another device's
-/// spend of B is mined in a plain block and ChainLocked after. key-wallet
-/// keeps the payment's locked record, so Abandon is not offered and
-/// refuses.
+/// spend of B, W, is mined in a plain block, and the payment stays: a plain
+/// block can't overturn a lock, so A and B stay spent. Once a ChainLock
+/// covers W's block, key-wallet drops the payment: it leaves the history
+/// and key-wallet, with nothing to abandon; B, which W spent, is never
+/// held or offered; A comes back, held and offered, and so does W's
+/// change. So at once, after SPV starts and after a restart.
 #[test]
-fn a_locked_payment_a_chainlock_beat_in_its_own_session_is_not_offered() {
+fn a_locked_payment_a_chainlock_beat_in_its_own_session_leaves_at_the_chainlock() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let funded = balances(&session, id).total;
     let payment = send(
         &engine,
         &session,
@@ -1839,25 +1843,112 @@ fn a_locked_payment_a_chainlock_beat_in_its_own_session_is_not_offered() {
     instant_lock(&engine, &session, id, &payment);
     wait_stored(&session, id, &[payment.txid()]);
     let winner = rival(&engine, &session, id, &paid, 1);
-    let named = [payment.txid(), winner.txid()];
+    let (p, w, change) = (
+        payment.txid(),
+        winner.txid(),
+        OutPoint::new(winner.txid(), 1),
+    );
+    let offered = |session: &Arc<NetworkSession>, coin: OutPoint| {
+        let (_draft, prepared) = prepare(
+            &engine,
+            session,
+            id,
+            CoinSource::Outpoints(vec![coin]),
+            COIN / 4,
+            false,
+            &Arc::new(Accept::default()),
+        );
+        prepared.is_ok_and(|p| (p.summary().inputs.iter()).any(|i| i.outpoint == coin))
+    };
     mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
-    wait_stored(&session, id, &[winner.txid()]);
+    wait_stored(&session, id, &[w]);
+    let held_now = held(&engine, &session, id);
+    assert!(
+        session.hub.history.snapshot(&id).contains_key(&p),
+        "a plain block took the payment: {}",
+        wallet_story(&engine, &session, id, &[p, w], None)
+    );
+    assert!(
+        !held_now.contains(&a) && !held_now.contains(&b),
+        "a plain block gave back the payment's coins: {held_now:?}"
+    );
+
     let won = block_hash(&[winner]);
+    let mut events = events_from(&engine, &session);
     chain_lock(&engine, &session, id, TIP + 1, won);
     header_chain(&session, &[(TIP + 1, won)]);
     mined(&engine, &session, id, TIP, vec![paid.clone()]);
-    let mut events = events_from(&engine, &session);
-    start_spv(&engine, &session);
-    let extras = match engine.block_on(session.tx_detail_extras(id, payment.txid())) {
-        Ok(extras) => extras,
-        Err(e) => panic!(
-            "the payment's details: {e:?}{}",
-            wallet_story(&engine, &session, id, &named, Some(&mut events))
-        ),
-    };
-    assert!(!extras.can_abandon, "Abandon is offered");
-    refused(&engine, &session, id, payment.txid(), "its own session");
-    assert!(!abandoned(&engine, &session, id, payment.txid()));
+    let mut session = session;
+    for state in ["the ChainLock", "SPV started", "a restart"] {
+        match state {
+            "SPV started" => start_spv(&engine, &session),
+            "a restart" => {
+                session = reopen(&engine, session);
+                events = events_from(&engine, &session);
+                header_chain(&session, &[(TIP + 1, won)]);
+                start_spv(&engine, &session);
+            }
+            _ => {}
+        }
+        let mut story = || wallet_story(&engine, &session, id, &[p, w], Some(&mut events));
+        assert!(
+            !session.hub.history.snapshot(&id).contains_key(&p),
+            "{state}: the payment is in the history{}",
+            story()
+        );
+        assert!(
+            matches!(
+                engine.block_on(session.tx_detail_extras(id, p)),
+                Err(crate::EngineError::TxNotFound(_))
+            ),
+            "{state}: the payment's details read{}",
+            story()
+        );
+        if state != "the ChainLock" {
+            assert!(
+                matches!(
+                    engine.block_on(session.abandon_transaction(id, p)),
+                    Err(crate::EngineError::TxNotFound(_))
+                ),
+                "{state}: the payment can be abandoned{}",
+                story()
+            );
+        }
+        let appdb = Arc::clone(&session.live().unwrap().appdb);
+        let (marks, read) = crate::tx_actions::load_abandoned(&appdb, id);
+        assert!(
+            read && !marks.iter().any(|(t, _)| *t == p),
+            "{state}: marked abandoned"
+        );
+        let held_now = held(&engine, &session, id);
+        assert!(
+            !held_now.contains(&b),
+            "{state}: B, which W spent, held{}",
+            story()
+        );
+        assert!(!spendable(&engine, &session, id, b), "{state}: B offered");
+        assert!(held_now.contains(&a), "{state}: A not held{}", story());
+        assert!(
+            spendable(&engine, &session, id, a),
+            "{state}: A not offered"
+        );
+        assert!(
+            held_now.contains(&change),
+            "{state}: W's change not held{}",
+            story()
+        );
+        assert!(offered(&session, change), "{state}: W's change not offered");
+        assert!(
+            (0..payment.output.len() as u32).all(|v| !held_now.contains(&OutPoint::new(p, v))),
+            "{state}: the payment's outputs held: {held_now:?}"
+        );
+        assert_eq!(
+            balances(&session, id).total,
+            funded - COIN + (COIN / 2 - 1_000),
+            "{state}: the balance{}",
+            story()
+        );
+    }
 }
 
 /// The abandon of a locked payment a ChainLock beat, with its unlocked
