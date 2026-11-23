@@ -355,6 +355,13 @@ impl NetworkSession {
             };
             // Marked first, so a concurrent load cannot bring it back.
             live.store.set_unloaded(id.0, true);
+            #[cfg(test)]
+            let pause = this.hub.pause_unload.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause.mark_reached();
+                pause.release.notified().await;
+            }
             // Its discoveries end first, as for a removal: none may apply
             // what it finds to the wallet once it is loaded again.
             let _discoveries = this.platform.recovery.end_discoveries(id).await;

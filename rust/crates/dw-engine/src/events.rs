@@ -582,6 +582,9 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next resume between its record read and its rewind.
     #[cfg(test)]
     pub(crate) pause_resume: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next unload once it has marked its wallet unloaded.
+    #[cfg(test)]
+    pub(crate) pause_unload: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next rescan's publication, after its rewind.
     #[cfg(test)]
     pub(crate) pause_publish: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -728,6 +731,8 @@ impl SessionHub {
             pause_metadata: Mutex::new(None),
             #[cfg(test)]
             pause_resume: Mutex::new(None),
+            #[cfg(test)]
+            pause_unload: Mutex::new(None),
             #[cfg(test)]
             pause_publish: Mutex::new(None),
             #[cfg(test)]

@@ -646,7 +646,9 @@ fn a_load_rescans_a_batch_spv_committed_before_the_coinjoin_gap_was_widened() {
 }
 
 /// A rescan waits for an unload in flight, then widens and rewinds the
-/// wallets still open.
+/// wallets still open. The unload is held once it has marked its wallet
+/// unloaded; the test holds no guard of the wallet manager, so a writer of
+/// it (dash-spv's reservation sweep) cannot stall the unload behind one.
 #[test]
 fn a_rescan_waits_for_an_unload_and_widens_the_wallets_left() {
     let dir = tempfile::tempdir().unwrap();
@@ -663,23 +665,24 @@ fn a_rescan_waits_for_an_unload_and_widens_the_wallets_left() {
     start_offline_spv(&engine, &session);
     narrow_coinjoin(&engine, &session, w2);
 
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_unload.lock().unwrap() = Some(Arc::clone(&pause));
+    let unload = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move { s.unload_wallet(w1).await })
+    };
+    let bound = std::time::Duration::from_secs(60);
+    assert!(pause.wait_reached(bound), "the unload began");
     engine.block_on(async {
         let live = session.live().unwrap();
+        assert!(live.store.is_unloaded(&w1.0));
         let wm = live.manager.wallet_manager_arc();
-        let hold = wm.read().await;
-        let unload = {
-            let s = Arc::clone(&session);
-            session.rt.spawn(async move { s.unload_wallet(w1).await })
-        };
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !live.store.is_unloaded(&w1.0) {
-            assert!(tokio::time::Instant::now() < deadline, "the unload began");
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        drop(wm.write().await);
         let rescan = {
             let s = Arc::clone(&session);
             (session.rt).spawn(async move { s.rescan(crate::RescanFrom::Genesis).await })
         };
+        let deadline = tokio::time::Instant::now() + bound;
         while session.wallet_lifecycle.waiting() == 0 {
             assert!(
                 tokio::time::Instant::now() < deadline,
@@ -687,7 +690,7 @@ fn a_rescan_waits_for_an_unload_and_widens_the_wallets_left() {
             );
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        drop(hold);
+        pause.release.notify_one();
         unload.await.unwrap().unwrap();
         rescan.await.unwrap().unwrap();
     });
