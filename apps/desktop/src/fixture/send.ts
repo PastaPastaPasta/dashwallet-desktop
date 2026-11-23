@@ -407,10 +407,11 @@ function rowOf(wallet: FixtureWallet, txid: string): TxRow {
   return row;
 }
 
-/** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`). */
+/** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`); the rescanFirst steps
+ * are marked as the fixture's, so only the renderer's catalog text can show them unmarked. */
 const refusalMessage = (refusal: TxActionRefusalName) =>
   refusal === "rescanFirst"
-    ? "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+    ? "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
     : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
 const refused = (refusal: TxActionRefusalName) => fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal });
 

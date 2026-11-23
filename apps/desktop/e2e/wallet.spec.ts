@@ -830,6 +830,17 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
   });
 
+  test("a rescanFirst refusal shows the catalog's steps", async ({ page }) => {
+    const errors = await open(page, "abandon-rescan-first");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5e".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
   test("abandons an unconfirmed incoming payment with its own warning and no Resend", async ({ page }) => {
     const errors = await open(page);
     await page.getByTestId("sidebar-activity").click();
