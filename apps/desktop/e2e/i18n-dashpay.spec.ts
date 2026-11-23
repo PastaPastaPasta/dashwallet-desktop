@@ -135,6 +135,16 @@ export const STATES: Record<string, State> = {
       await page.getByTestId("claim-paste-error").waitFor();
     },
   },
+  "pay-with": {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await page.getByTestId("join-pay-another").click();
+      await page.getByTestId("pay-with-shielded-reason").waitFor();
+      await page.getByTestId("pay-with-core-balance").waitFor();
+    },
+  },
   "name-rules": {
     scenario: "dashpay-no-identity",
     roots: ["page-joinDashPay"],

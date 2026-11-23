@@ -5272,6 +5272,15 @@ button.bell-row-open:focus-visible {
   line-height: var(--dw-type-footnote-line);
 }
 
+/* C-funding F19: a source that cannot pay shows why and cannot be chosen. */
+.pay-with-source[data-disabled] {
+  cursor: default;
+}
+
+.pay-with-source[data-disabled] .topup-choice-amount {
+  color: var(--dw-role-text-secondary);
+}
+
 .topup-title {
   display: flex;
   align-items: center;
