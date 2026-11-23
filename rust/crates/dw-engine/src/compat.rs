@@ -1142,16 +1142,16 @@ fn check_destination(dest: &Path) -> Result<(), EngineError> {
     }
 }
 
-/// Creates `dest` (failing if it exists) with mode 0600 and writes `bytes`.
-/// A failed write removes the partial file.
+/// Writes `bytes` to `dest` (failing if it exists) with mode 0600 through
+/// [`publish_new_private`]: a stop mid-write leaves nothing at `dest`.
 pub(crate) fn write_new_private(dest: &Path, bytes: &[u8]) -> Result<(), EngineError> {
-    write_new_private_io(dest, bytes)
+    publish_new_private(dest, bytes)
         .map_err(|e| CompatFailure::DestinationUnwritable(e.to_string()).into())
 }
 
-/// [`write_new_private`] with the I/O error, whose kind is `AlreadyExists`
-/// when `dest` exists.
-pub(crate) fn write_new_private_io(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Creates `dest` (failing `AlreadyExists` if it exists) with mode 0600, and
+/// writes and syncs `bytes`. A failed write removes the partial file.
+fn write_new_private_io(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -1236,9 +1236,9 @@ fn move_new_with(
     }
 }
 
-/// The fault point `backup.publish` between a backup's sync and its
-/// publish, armed for its directory; `DW_FAULT=backup.before_publish`
-/// aborts there.
+/// The fault point `backup.publish` between the sync and the publish of a
+/// backup or a Dash Core export, armed for its directory;
+/// `DW_FAULT=backup.before_publish` aborts there.
 #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
 fn publish_fault(dir: &Path) -> std::io::Result<()> {
     dw_appdb::fault::hit(dir, "backup.publish", dw_appdb::fault::Stage::Before)
@@ -1788,6 +1788,7 @@ mod tests {
         ));
         assert!(write_new_private(&f, b"y").is_err());
         assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(dir.path()), ["out.txt"]);
         assert!(check_destination(&dir.path().join("missing/out.txt")).is_err());
         #[cfg(unix)]
         {
@@ -1842,6 +1843,18 @@ mod tests {
         );
         assert_eq!(std::fs::read(&f).unwrap(), b"x");
         assert_eq!(names(dir.path()), ["out.dwbackup"]);
+    }
+
+    #[test]
+    fn an_export_stopped_before_it_names_the_file_leaves_nothing_at_the_name() {
+        let dir = dw_testutil::private_tempdir();
+        let f = dir.path().join("wallet.txt");
+        dw_appdb::fault::arm(dir.path(), "backup.publish", dw_appdb::fault::Stage::Before);
+        assert!(matches!(
+            write_new_private(&f, b"x"),
+            Err(EngineError::Compat(CompatFailure::DestinationUnwritable(_)))
+        ));
+        assert!(names(dir.path()).is_empty());
     }
 
     #[test]
