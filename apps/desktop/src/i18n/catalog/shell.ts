@@ -58,9 +58,9 @@ export const shell = {
     /** `current` and `target` are block heights; `percent` is formatted. */
     progress: "{current} of {target} ({percent})",
     latestBlock: "Latest block",
-    latestBlockValue: "{height}, {time}",
+    latestBlockValue: "{height} · {time}",
     chainlock: "Latest ChainLocked block",
     peers: "Connected peers",
-    stalled: { one: "No progress for {count} minute. Check the network connection; Tools ▸ Peers can change peers.", other: "No progress for {count} minutes. Check the network connection; Tools ▸ Peers can change peers." },
+    stalled: { one: "No progress for {count} minute. Check your network connection, or choose Change peers in Tools ▸ Peers.", other: "No progress for {count} minutes. Check your network connection, or choose Change peers in Tools ▸ Peers." },
   },
 } as const satisfies Tree;
