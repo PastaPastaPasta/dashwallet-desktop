@@ -958,10 +958,15 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
                 .filter(|&i| exits.get(&moves[i].id) == Some(&true))
                 .collect();
             let known = (exit_moves.iter()).all(|&i| exits.contains_key(&moves[i].id));
+            // Exits paying one address share one document: whichever of
+            // them executed, the history is the same (moves' rule for
+            // equal terms).
             let winner = match present.as_slice() {
-                [exit] => Some(*exit),
                 [] if known => top_ups.iter().copied().max_by_key(|&i| order(i)),
-                _ => None,
+                [] => None,
+                _ => (present.iter().copied().filter(|&i| moves[i].answered))
+                    .max_by_key(|&i| order(i))
+                    .or_else(|| present.iter().copied().min_by_key(|&i| order(i))),
             };
             let Some(winner) = winner else {
                 continue;
@@ -1504,6 +1509,43 @@ pub(crate) fn top_up_plan(
     }
 }
 
+/// A top-up that may stay held (C3-9) is released only by a "Move to Dash
+/// wallet" of exactly its inputs at its nonces: one the inputs' balances
+/// must be able to pay, else the top-up is refused before anything is
+/// recorded, so no hold is left without a way out.
+fn exit_possible(
+    planned: &Plan,
+    balances: &BTreeMap<PlatformAddress, u64>,
+    version: &PlatformVersion,
+) -> Result<(), CreditsError> {
+    let exit = Limits::at(version)?;
+    let inputs: BTreeMap<PlatformAddress, u64> = (planned.inputs.keys())
+        .filter_map(|a| Some((*a, *balances.get(a)?)))
+        .collect();
+    match plan(&inputs, WithdrawAmount::All, &exit) {
+        Ok(p) if p.inputs.len() == planned.inputs.len() => Ok(()),
+        _ => Err(PlatformError::InsufficientCredits {
+            needed: exit.min.saturating_add(exit.keep(planned.inputs.len())),
+            available: inputs.values().sum(),
+        }
+        .into()),
+    }
+}
+
+/// A read behind one this wallet already settled on: an input's nonce
+/// below one a done record signed. Planning on it would sign a nonce
+/// Platform already took, and the next read would show it "reached".
+fn behind(moves: &[MoveRecord], seen: &Seen) -> Result<(), PlatformError> {
+    let stale = (moves.iter())
+        .filter(|m| m.state == PlatformActivityState::Done)
+        .flat_map(|m| &m.inputs)
+        .any(|i| seen.nonce(&i.address).is_some_and(|n| n < i.nonce));
+    if stale {
+        return Err(PlatformError::Unavailable);
+    }
+    Ok(())
+}
+
 /// An input-0 plan's refusal as the quote returns it.
 fn input0_refusal(refused: Input0Refused) -> CreditsError {
     match refused {
@@ -1534,6 +1576,17 @@ fn never_valid(e: &PlatformWalletError) -> bool {
             **ce,
             ConsensusError::BasicError(_) | ConsensusError::SignatureError(_)
         ),
+        _ => false,
+    }
+}
+
+/// A transition the SDK's structure check refused (consensus basic
+/// errors, raised before the broadcast or by every node).
+fn structure_refused(e: &PlatformWalletError) -> bool {
+    match e {
+        PlatformWalletError::Sdk(dash_sdk::Error::Protocol(
+            dpp::ProtocolError::ConsensusError(ce),
+        )) => matches!(**ce, ConsensusError::BasicError(_)),
         _ => false,
     }
 }
@@ -2084,8 +2137,10 @@ async fn observe(
     let mut rows = 0;
     // A proof older than the baseline's (a node behind) decides nothing.
     if baseline.as_ref().is_none_or(|b| seen.height >= b.height) {
+        // A pending move's inputs, and those of a group whose nonces are
+        // taken while no evidence names its member yet (C3-9).
         let held: BTreeSet<String> = (moves.iter())
-            .filter(|m| m.state == PlatformActivityState::Pending)
+            .filter(|m| m.state == PlatformActivityState::Pending || (m.holds() && m.reached(seen)))
             .flat_map(|m| m.inputs.iter().map(|i| i.address.clone()))
             .chain(held_funds)
             .collect();
@@ -2637,14 +2692,20 @@ pub(crate) async fn top_up_quote(
     sends_active(version)?;
     let network = session.vault.network();
     let pool = pool(wallet).await?;
-    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let mut moves = Store::of(session, wallet_id)?.moves().await?;
     let seen = read(session, net, covered(&pool, &moves), true).await?;
-    // A top-up signs no other record's terms, so any hold refuses it.
-    if let Some(h) = (moves.iter()).find(|m| m.holds() && !m.reached(&seen)) {
+    // A top-up signs no other record's terms, so any hold refuses it, as
+    // the submit will decide it: settled by this read and its evidence.
+    let evidence = exits(session, net, &moves, &seen).await;
+    settle_with(&mut moves, &seen, &evidence);
+    if let Some(h) = moves.iter().find(|m| m.holds()) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
+    behind(&moves, &seen)?;
     let limits = Limits::top_up_at(version);
-    let planned = top_up_plan(&proved_balances(&pool, &seen, network), amount, &limits)?;
+    let balances = proved_balances(&pool, &seen, network);
+    let planned = top_up_plan(&balances, amount, &limits)?;
+    exit_possible(&planned, &balances, version)?;
     let debit = planned.may_lose();
     Ok(TopUpFromPlatformQuote {
         credits: planned.credits(),
@@ -2839,6 +2900,7 @@ async fn run(
     let version = net.version();
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
+    behind(&moves, &seen)?;
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
     // only its exact retry, and a retry of one that landed pays nothing.
@@ -2867,7 +2929,7 @@ async fn run(
                 // no other record's terms (C-routes C3-9).
                 return Err(CreditsError::MovePending { id: h.id.clone() });
             }
-            let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
+            let planned = plan_beside(&target, balances.clone(), amount, &limits, held, network)?;
             // A new send signs the fee its Confirm showed or nothing: the
             // read since the quote may pick another fee source.
             if quoted.is_some_and(|q| !q.takes_fee_as(&planned)) {
@@ -2876,6 +2938,9 @@ async fn run(
             (held, planned)
         }
     };
+    if let Target::Identity(_) = target {
+        exit_possible(&planned, &balances, version)?;
+    }
     let mut inputs = BTreeMap::new();
     for (address, credits) in &planned.inputs {
         let nonce = seen
@@ -3025,8 +3090,15 @@ async fn run(
     permit.finish(call.is_ok());
     record.signed = released > 0;
     record.answered = call.is_ok();
+    let definitive = |e: &PlatformWalletError| match target {
+        // A top-up signs no identity key: only the SDK's structure check,
+        // before the broadcast, says it never executes. A signature error
+        // can come back from a node and proves nothing.
+        Target::Identity(_) => structure_refused(e),
+        _ => never_valid(e),
+    };
     let cannot_land =
-        released < record.inputs.len() as u64 || call.as_ref().err().is_some_and(never_valid);
+        released < record.inputs.len() as u64 || call.as_ref().err().is_some_and(definitive);
     if let Err(e) = &call {
         tracing::info!(id = %record.id, cannot_land, "a move's call failed: {e}");
     }

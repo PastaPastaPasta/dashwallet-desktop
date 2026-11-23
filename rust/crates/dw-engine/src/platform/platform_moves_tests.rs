@@ -427,6 +427,8 @@ enum Act {
     /// The transition sent `n`-th (from 0) executes instead of this one,
     /// which is answered with the addresses' snapshot.
     EarlierExecutes(usize),
+    /// Signed and broadcast; a node answers with a signature error.
+    SignatureRefused,
     /// The signer refuses every input: the transition, short of its
     /// witnesses, is refused as Platform's checks refuse a malformed one
     /// (an error `never_valid` reads as definitive), with nothing signed.
@@ -463,6 +465,8 @@ pub(crate) struct FakeMoves {
     effects: Mutex<Vec<Effect>>,
     /// The withdrawal documents executed withdrawals created.
     documents: Mutex<BTreeSet<Identifier>>,
+    /// Reads of a withdrawal document fail.
+    documents_down: AtomicBool,
     /// What executed top-ups added to the identity.
     topped_up: AtomicU64,
     pub(crate) read_entered: tokio::sync::Notify,
@@ -489,6 +493,7 @@ impl FakeMoves {
             block_read: AtomicBool::new(false),
             effects: Mutex::default(),
             documents: Mutex::default(),
+            documents_down: AtomicBool::new(false),
             topped_up: AtomicU64::new(0),
             read_entered: tokio::sync::Notify::new(),
             read_release: tokio::sync::Notify::new(),
@@ -675,6 +680,13 @@ impl FakeMoves {
                     TransitionNoInputsError::new().into(),
                 ))
             }
+            Act::SignatureRefused => {
+                use dpp::consensus::signature::InvalidStateTransitionSignatureError;
+                Err(PlatformWalletError::Sdk(
+                    ConsensusError::from(InvalidStateTransitionSignatureError::new("node".into()))
+                        .into(),
+                ))
+            }
             Act::StopsBeforeSigning | Act::StopsAfterSigning => panic!("the process stops"),
             Act::Unsigned => unreachable!("returned before signing"),
             Act::StopsAfterBroadcast => {
@@ -765,6 +777,9 @@ impl MoveNet for FakeMoves {
     }
 
     async fn withdrawal_document(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        if self.documents_down.load(Ordering::SeqCst) {
+            return Err(PlatformError::Unavailable);
+        }
         trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
         let present = self.documents.lock().unwrap().contains(&id);
         Ok((present, self.height.load(Ordering::SeqCst)))

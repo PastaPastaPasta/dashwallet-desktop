@@ -359,7 +359,8 @@ fn top_up_fee_shortfall_holds_and_to_core_exits() {
         "never replaced"
     );
     // The hold is gone.
-    w.top_up_quote(&me(), credits(DASH / 1_000)).unwrap();
+    w.net.fund(a, 5 * DASH);
+    w.top_up_quote(&me(), credits(DASH)).unwrap();
 }
 
 /// The other branch: the top-up executes after the exit was signed. The
@@ -405,6 +406,144 @@ fn an_undecided_exit_and_top_up_both_hold() {
         (moves[1].state, moves[1].can_land),
         (PlatformActivityState::Failed, false)
     );
+}
+
+/// A node's signature error proves nothing about a top-up (it signs no
+/// identity key, and the SDK checked its witnesses): it stays pending and
+/// able to land. Only the SDK's structure check releases it.
+#[test]
+fn a_node_signature_error_holds_the_top_up() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    w.net.then(Act::SignatureRefused);
+    let out = w.top_up(credits(DASH)).unwrap();
+    assert_eq!(
+        (out.state, out.may_land),
+        (PlatformActivityState::Pending, true)
+    );
+    assert_eq!(
+        w.top_up(credits(DASH)).unwrap_err().code(),
+        "credits.move_pending"
+    );
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    w.net.then(Act::Invalid);
+    assert!(w.top_up(credits(DASH)).is_err());
+    let moves = w.moves();
+    assert_eq!(
+        (moves[0].state, moves[0].can_land),
+        (PlatformActivityState::Failed, false)
+    );
+    w.top_up_quote(&me(), credits(DASH)).unwrap();
+}
+
+/// A top-up whose inputs could not pay their own "Move to Dash wallet"
+/// would leave a hold with no way out: refused before anything is written,
+/// with the grant unredeemed.
+#[test]
+fn a_top_up_its_exit_cannot_pay_is_refused() {
+    let w = World::new();
+    let l = limits();
+    let a = w.address(0);
+    let balance = l.keep(1) + 2 * l.min;
+    w.net.fund(a, balance);
+    let exit = Limits::at(PlatformVersion::latest()).unwrap();
+    assert!(plan(&[(a, balance)].into(), WithdrawAmount::All, &exit).is_err());
+    let refused = w.top_up_quote(&me(), credits(l.min)).unwrap_err();
+    assert_eq!(refused.code(), "platform.insufficient_credits");
+    let grant = w.f.grant(10 * DASH);
+    let refused = w.top_up_as(&me(), credits(l.min), &grant).unwrap_err();
+    assert_eq!(refused.code(), "platform.insufficient_credits");
+    assert!(w.f.unused(&grant));
+    assert!(w.moves().is_empty(), "nothing written");
+    assert_eq!(w.sent(), 0);
+}
+
+/// Exits at one key and one payout share a document id: when it is
+/// present, one of them is done (the newest answered, else the oldest),
+/// the rest and the top-up failed, none replaced.
+#[test]
+fn several_present_exits_settle_one() {
+    let failed_top_up = || {
+        let mut m = record_of(MoveKind::ToIdentity, "t", 1);
+        m.state = PlatformActivityState::Failed;
+        m.seen_at = Some(5);
+        m
+    };
+    let present: Exits = [("x".to_owned(), true), ("y".to_owned(), true)].into();
+    let states = |moves: &[MoveRecord]| -> Vec<_> { moves.iter().map(|m| m.state).collect() };
+    let (done, failed) = (PlatformActivityState::Done, PlatformActivityState::Failed);
+
+    let mut moves = vec![
+        failed_top_up(),
+        record_of(MoveKind::ToCore, "x", 2),
+        record_of(MoveKind::ToCore, "y", 3),
+    ];
+    settle_with(&mut moves, &seen_at(20, 4), &present);
+    assert_eq!(states(&moves), [failed, done, failed]);
+
+    let mut moves = vec![
+        failed_top_up(),
+        record_of(MoveKind::ToCore, "x", 2),
+        record_of(MoveKind::ToCore, "y", 3),
+    ];
+    moves[2].answered = true;
+    settle_with(&mut moves, &seen_at(20, 4), &present);
+    assert_eq!(states(&moves), [failed, failed, done]);
+    assert!(moves.iter().all(|m| !m.holds()));
+    assert!(moves.iter().all(|m| m.state == done || !m.can_land));
+}
+
+/// A read whose nonce is below one a done record signed is behind what
+/// this wallet already settled on: nothing is planned on it.
+#[test]
+fn a_read_behind_a_settled_move_is_refused() {
+    let mut done = record_of(MoveKind::ToIdentity, "t", 1);
+    done.state = PlatformActivityState::Done;
+    let moves = [done];
+    assert_eq!(
+        behind(&moves, &seen_at(20, 3)),
+        Err(PlatformError::Unavailable)
+    );
+    assert_eq!(behind(&moves, &seen_at(20, 4)), Ok(()));
+    assert_eq!(behind(&moves, &seen(20, &[("a", None)])), Ok(()));
+}
+
+/// The top-up executed beside its exit, and the exit's document cannot be
+/// read: both hold. The quote decides the hold as the submit does and
+/// refuses; the inputs' fall is no `outgoing` row. Once the document is
+/// read absent, the top-up is done and the hold clears.
+#[test]
+fn an_undecided_group_holds_the_quote() {
+    let (w, _) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    w.net.documents_down.store(true, Ordering::SeqCst);
+    w.net.then(Act::EarlierExecutes(0));
+    let exit = w.move_all(&w.f.grant(10 * DASH)).unwrap();
+    assert_eq!(exit.state, PlatformActivityState::Pending);
+    let held = |code: &str| assert_eq!(code, "credits.move_pending");
+    held(
+        w.top_up_quote(&me(), credits(DASH / 1_000))
+            .unwrap_err()
+            .code(),
+    );
+    held(w.top_up(credits(DASH / 1_000)).unwrap_err().code());
+    let rows = w.activity();
+    assert!(
+        !rows
+            .iter()
+            .any(|r| r.kind == PlatformActivityKind::Outgoing),
+        "{rows:?}"
+    );
+    assert_eq!(w.sent(), 2);
+
+    w.net.documents_down.store(false, Ordering::SeqCst);
+    let rows = w.activity();
+    assert_eq!(
+        find(&rows, PlatformActivityKind::ToIdentity).state,
+        PlatformActivityState::Done
+    );
+    w.top_up_quote(&me(), credits(DASH / 1_000)).unwrap();
 }
 
 /// The identity's write lock is taken before the move lock, and no path
