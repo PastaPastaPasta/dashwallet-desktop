@@ -84,6 +84,29 @@ pub enum RegistrationFunding {
     Shielded {
         denomination: u64,
     },
+    /// Paid from the wallet's Platform addresses (C-funding F4, F8–F10):
+    /// the quote's `platform.funding_credits` and
+    /// `platform.fee_reserve_credits`; the start refuses others
+    /// (`registration.quote_changed`).
+    PlatformAddresses {
+        funding_credits: u64,
+        fee_reserve_credits: u64,
+    },
+}
+
+/// What a registration from the Platform addresses takes (C-funding F9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformRegistrationQuote {
+    /// What the identity receives, exactly.
+    pub funding_credits: u64,
+    /// dpp's minimum fee, shown as "about": Platform meters it from the
+    /// first input.
+    pub fee_credits: u64,
+    /// What the first input keeps for that fee (three times the minimum).
+    pub fee_reserve_credits: u64,
+    /// `funding_credits + fee_reserve_credits`: the most the addresses may
+    /// lose, the grant's cap, not what the copy shows.
+    pub debit_credits: u64,
 }
 
 /// Whether the Shielded balance can pay a registration now (C-funding F16).
@@ -155,6 +178,8 @@ pub struct RegistrationQuote {
     pub grant: GrantRequest,
     /// `Shielded` funding only.
     pub readiness: Option<ShieldedReadiness>,
+    /// `PlatformAddresses` funding only.
+    pub platform: Option<PlatformRegistrationQuote>,
 }
 
 /// One `dp_registration` row.
@@ -470,6 +495,7 @@ struct Plan {
     /// Coins the funding could spend that the engine keeps from selection.
     protected_coins: usize,
     readiness: Option<ShieldedReadiness>,
+    platform: Option<PlatformRegistrationQuote>,
 }
 
 /// What `req` costs and how it is funded, for the quote and the start.
@@ -520,6 +546,7 @@ async fn plan<L: RegistrationLib>(
         available_duffs: 0,
         protected_coins: 0,
         readiness: None,
+        platform: None,
     };
     match &req.funding {
         RegistrationFunding::CoreBalance => {
@@ -563,6 +590,53 @@ async fn plan<L: RegistrationLib>(
         } => invitation_plan(lib, link_id, *request_inviter, credits, base).await,
         RegistrationFunding::FaucetAssetLock { .. } => unreachable!("refused above"),
         RegistrationFunding::Shielded { .. } => shielded_plan(lib, base).await,
+        RegistrationFunding::PlatformAddresses { .. } => platform_plan(lib, base).await,
+    }
+}
+
+/// A Platform-funded plan (C-funding F9): the identity receives what its
+/// names and profile take, at least dpp's funding minimum; Platform meters
+/// the create's fee from the first input, which keeps the reserve for it.
+async fn platform_plan<L: RegistrationLib>(lib: &L, base: Plan) -> Result<Plan, RegistrationError> {
+    let planned = lib.platform_plan(base.credits).await?;
+    let quote = PlatformRegistrationQuote {
+        funding_credits: planned.funding_credits,
+        fee_credits: planned.fee_credits,
+        fee_reserve_credits: planned.fee_reserve_credits,
+        debit_credits: planned.debit_credits(),
+    };
+    Ok(Plan {
+        funding: Funding::PlatformAddresses {
+            funding_credits: quote.funding_credits,
+            fee_reserve_credits: quote.fee_reserve_credits,
+            plan: None,
+        },
+        credits_held: quote.funding_credits,
+        platform: Some(quote),
+        ..base
+    })
+}
+
+/// The start of a Platform-funded request, before anything is written:
+/// the numbers the quote showed, then refused until the flow step that
+/// funds it exists (C4a-2).
+fn platform_start(
+    quote: &PlatformRegistrationQuote,
+    funding: &RegistrationFunding,
+) -> Result<(), RegistrationError> {
+    match funding {
+        RegistrationFunding::PlatformAddresses {
+            funding_credits,
+            fee_reserve_credits,
+        } if *funding_credits == quote.funding_credits
+            && *fee_reserve_credits == quote.fee_reserve_credits =>
+        {
+            Err(PlatformError::FeatureOff {
+                feature: "platform_registration".into(),
+            }
+            .into())
+        }
+        _ => Err(RegistrationError::QuoteChanged),
     }
 }
 
@@ -792,9 +866,11 @@ pub(crate) async fn quote<L: RegistrationLib>(
         Funding::CoreBalance { .. } => flow::PROOF_AUTHORITY_DUFFS,
         _ => 0,
     };
-    // F5: the notes spent, then the names and the profile.
-    let spent_credits = match plan.funding {
-        Funding::Shielded { denomination, .. } => denomination,
+    // F5: the notes spent, or what the addresses may lose; then the names
+    // and the profile.
+    let spent_credits = match (&plan.funding, &plan.platform) {
+        (Funding::Shielded { denomination, .. }, _) => *denomination,
+        (_, Some(platform)) => platform.debit_credits,
         _ => 0,
     };
     Ok(RegistrationQuote {
@@ -809,6 +885,7 @@ pub(crate) async fn quote<L: RegistrationLib>(
             max_credits: plan.credits.saturating_add(spent_credits),
         },
         readiness: plan.readiness,
+        platform: plan.platform,
     })
 }
 
@@ -967,6 +1044,9 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
     let plan = plan(&*lib, &req).await?;
     if let Some(readiness) = &plan.readiness {
         shielded_start(readiness, &req.funding)?;
+    }
+    if let Some(quote) = &plan.platform {
+        platform_start(quote, &req.funding)?;
     }
     let past = past
         .iter()

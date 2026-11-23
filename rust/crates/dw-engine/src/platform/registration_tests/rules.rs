@@ -110,6 +110,16 @@ impl RegistrationLib for Hooked {
         self.fake.shielded_facts().await
     }
 
+    async fn platform_plan(
+        &self,
+        funding: u64,
+    ) -> Result<
+        crate::platform::registration_platform::RegisterPlan,
+        crate::platform::errors::CreditsError,
+    > {
+        self.fake.platform_plan(funding).await
+    }
+
     async fn funding_permit(
         &self,
         lease: &Lease,

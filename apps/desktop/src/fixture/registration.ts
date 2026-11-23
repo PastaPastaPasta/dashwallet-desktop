@@ -251,6 +251,8 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     if (request.funding.kind === "invitation") return startClaim(ctx, walletId, request, grantId);
     if (request.funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     if (request.funding.kind === "shielded") throw shieldedOff();
+    if (request.funding.kind === "platformAddresses")
+      throw fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
     validLabel(request.label);
     const blocker = dp.registrations.find((r) => blocks(r) && !(past.includes(r.draft) && reported(world, walletId, dp, r).waiting === "fundingUnknown"));
     if (blocker) throw fail("registration.in_progress", "a registration is in progress", { kind: "draft", draft: blocker.draft });

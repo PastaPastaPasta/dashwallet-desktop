@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 74
+Contract-Version: 75
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -215,8 +215,8 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, what the funding can spend now (`available_duffs`, item 52), and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. A `Shielded` request's quote also carries `readiness`, and ignores the request's `denomination` (§7 item 94). | `RegistrationError` |
-| `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. `Shielded` is checked again before anything is written and refused (§7 item 94): a readiness check that does not hold is `registration.shielded_not_ready{reason, ready_at}` (no override), another denomination than the quote's is `registration.quote_changed`, and a ready one is `platform.feature_off{feature: "shielded_registration"}` until its flow step lands. | `RegistrationError` |
+| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, what the funding can spend now (`available_duffs`, item 52), and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. A `Shielded` request's quote also carries `readiness`, and ignores the request's `denomination` (§7 item 94). A `PlatformAddresses` request's quote carries `platform`, from one proved read of the Platform addresses, and ignores the request's numbers (§7 item 96). | `RegistrationError` |
+| `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. `Shielded` is checked again before anything is written and refused (§7 item 94): a readiness check that does not hold is `registration.shielded_not_ready{reason, ready_at}` (no override), another denomination than the quote's is `registration.quote_changed`, and a ready one is `platform.feature_off{feature: "shielded_registration"}` until its flow step lands. `PlatformAddresses` is planned again before anything is written: other numbers than the plan's are `registration.quote_changed`, and the quoted ones are `platform.feature_off{feature: "platform_registration"}` until its flow step lands (§7 item 96). | `RegistrationError` |
 | `start_registration_past_unknown_funding(req, grant, past)` | async | `start_registration` past earlier registrations whose funding is unknown (DEC-197, "In progress" below). `past` names each blocker the user confirmed, as `registration.in_progress` names it. Call it only after the user confirmed the wedge copy. A named blocker passes only if every funding step it waits on is wedged; anything else still returns `registration.in_progress`. SPV must be synced (`registration.not_synced`), and each passed step's funding must have been released at least an hour ago (`registration.funding_unknown_recent { draft, wait_secs }`). A malformed name is `invalid_argument`; a well-formed one that blocks nothing is ignored. | `RegistrationError` |
 | `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5), and, read-only, every outstanding funding step whose row is gone (draft `registration/<n>/funding`; §2.2 "The registration ledger"). | `RegistrationError` |
 | `registration_resume_grant(draft)` | async | An invitation claim row's resume grant (item 64): no duffs, and the credits of the steps it has left (the identity's creation while it has no identity, the name until it is registered, a pending profile, and the request while one is asked), from the row alone: never from `invitation_status`, which reads `Claimed` once the row's own claim landed. Another row is `invalid_argument`. | `RegistrationError` |
@@ -960,7 +960,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 9422d9117ef77de4c54b66c358d9f93dce8c5491a8825cce8627e9e9a13a66c9 version: 74 -->
+<!-- surface-sha256: 082f8d8687ddfeebd8fe699302d3b8f78cc56c1d0cb2542f890b63d843c701bb version: 75 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1328,6 +1328,7 @@ pub enum RegistrationError {
     QuoteChanged,
     Name(NameError),
     Invitation(InvitationError),
+    Credits(CreditsError),
     Platform(PlatformError),
 }
 impl RegistrationError {
@@ -1336,6 +1337,7 @@ impl RegistrationError {
 }
 impl From<NameError> for RegistrationError;
 impl From<InvitationError> for RegistrationError;
+impl From<CreditsError> for RegistrationError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NameError {
     Invalid { rules: Vec<UsernameRule> },
@@ -2198,6 +2200,14 @@ pub enum RegistrationFunding {
     ExistingIdentity { identity: String },
     FaucetAssetLock { key: String, proof: String },
     Shielded { denomination: u64 },
+    PlatformAddresses { funding_credits: u64, fee_reserve_credits: u64 },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformRegistrationQuote {
+    pub funding_credits: u64,
+    pub fee_credits: u64,
+    pub fee_reserve_credits: u64,
+    pub debit_credits: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedReadiness {
@@ -2236,6 +2246,7 @@ pub struct RegistrationQuote {
     pub available_duffs: u64,
     pub grant: GrantRequest,
     pub readiness: Option<ShieldedReadiness>,
+    pub platform: Option<PlatformRegistrationQuote>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrationStatus {
@@ -2957,7 +2968,8 @@ The shapes are in §3. What they mean, where the name does not say:
 - **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id, request_inviter}` (a `stash_invitation` id; DP5-02,
   below; `request_inviter` false sends the inviter no contact request, item 64),
   `ExistingIdentity{identity}` (the id goes to the row's `identity` column), `Shielded{denomination}` (the quote's
-  `readiness.denomination` in credits, item 94), and `FaucetAssetLock{key, proof}` for developer builds:
+  `readiness.denomination` in credits, item 94), `PlatformAddresses{funding_credits, fee_reserve_credits}` (the
+  quote's `platform` numbers, item 96), and `FaucetAssetLock{key, proof}` for developer builds:
   - The faucet's `POST /api/asset-lock-proof` takes only a compressed public key and returns the `assetLockProof`
     (hex), the txid and the credits. So the engine keeps the key: `prepare_faucet_lock` derives a fresh registration
     asset-lock key (`m/9'/c'/5'/1'/…`, the `PlatformFunding` scope) and returns its id and public key; the host posts
@@ -2979,7 +2991,8 @@ The shapes are in §3. What they mean, where the name does not say:
   to ask for: `max_duffs` covers the lock and fee, `max_credits` the identity creation, the name and the profile.
   An invitation's quote has `lock_duffs` the invitation's funding, `fee_duffs`, `total_duffs`, `available_duffs`
   and `max_duffs` 0, and `max_credits` with the request to the inviter (item 63). `readiness` is set for `Shielded`
-  funding only (`ShieldedReadiness`, item 94); that quote has every duff field 0.
+  funding only (`ShieldedReadiness`, item 94); that quote has every duff field 0. `platform` is set for
+  `PlatformAddresses` funding only (`PlatformRegistrationQuote`, item 96); that quote has every duff field 0 too.
 - **`PlatformShieldQuote`** (1.0 C1a-1). `debit_credits = credits + pool_fee_credits + fee_reserve_credits`, and
   `grant.max_credits = debit_credits`, `grant.max_duffs = 0`. `inputs[0]` is input 0, the address the fee comes from,
   its claim with `pool_fee_credits`; its proved balance less that claim is at least `fee_reserve_credits -
@@ -4560,6 +4573,34 @@ renames or reshapes them takes the next version bump:
     `shielded` (`denomination`, `fallback` the wallet's own Platform receive address, which C4b-2's start reads, and
     `identity` once known; funding version 1) is decoded, and a row of it reads `registration.unsupported` here: never
     funded, advanced or discarded until C4b-2.
+
+96. **Registration from the Platform addresses: the quote and the start's checks (C4a-1; F2–F5, F9; version 75).**
+    `RegistrationFunding` gains `PlatformAddresses{funding_credits, fee_reserve_credits}`, `RegistrationQuote` gains
+    `platform: Option<PlatformRegistrationQuote>`, set for that funding only, and `RegistrationError` gains
+    `Credits(CreditsError)`, which carries a Platform plan's `credits.move_pending{id}` (a Platform error inside it is
+    `Platform`). `PlatformRegistrationQuote{funding_credits, fee_credits, fee_reserve_credits, debit_credits}`: the
+    plan reads the payment account's addresses once under rule 5 and is refused with `credits.move_pending` while a
+    move of the wallet holds nonces the read shows unused (a registration signs no other record's terms). The identity
+    receives `funding_credits`, exactly: what its names and profile take, at least dpp's
+    `min_identity_funding_amount`. The inputs follow C-routes C1-4's input-0 planner: input 0 is the first funded
+    address in `PlatformAddress` order whose balance is above the reserve, and keeps `fee_reserve_credits` unclaimed;
+    later addresses below `min_input_amount` are left out; the claims are `funding_credits` with no change output
+    (when a later input's last claim is raised to `min_input_amount`, `funding_credits` is the claims' sum).
+    `fee_credits` is dpp's `calculate_min_required_fee` of an identity create from those inputs with the six
+    registration keys and no output, shown as "about": Platform meters the fee from input 0.
+    `fee_reserve_credits` is three times that fee for as many inputs as the plan takes (the top-up's band).
+    `debit_credits = funding_credits + fee_reserve_credits`, the most the addresses may lose; the quote's `grant` is
+    `max_duffs` 0 and `max_credits` the debit plus the names and the profile; `remaining_credits` is
+    `funding_credits` less the names and the profile. No address above the reserve, or too little in all, is
+    `platform.insufficient_credits`; Platform off, `platform.feature_off{feature: "platform"}`; a protocol version
+    without address funds, `platform.feature_off{feature: "platform_addresses"}`. `start_registration` with
+    `PlatformAddresses` plans again before anything is read for the ledger, written or redeemed: numbers other than
+    the plan's are `registration.quote_changed` (C-funding F4); the plan's are still
+    `platform.feature_off{feature: "platform_registration"}`: C4a-2 adds the flow step. The stored `funding` kind
+    `platform_addresses` (`funding_credits`, `fee_reserve_credits`, and, written together by the funding step, `inputs`
+    with each address, the nonce it signs at and its claim, and `identity`, the id those inputs and nonces give;
+    funding version 1) is decoded, and a row of it reads `registration.unsupported` here: never funded, advanced or
+    discarded until C4a-2.
 
 **From H-09** (the trust release gate; MG's 1.0 ruling, no surface change):
 
