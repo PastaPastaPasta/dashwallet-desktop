@@ -42,8 +42,12 @@ mirror_struct!(engine::SharedCapability => SharedCapability {
 )]
 pub enum OperatorChoice {
     /// 96 hex characters, basic serialization.
-    Given { public_key: String },
-    Keychain { index: u32 },
+    Given {
+        public_key: String,
+    },
+    Keychain {
+        index: u32,
+    },
     NextUnused,
 }
 
