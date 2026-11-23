@@ -23,6 +23,8 @@ for (const theme of THEMES) {
   test(`shared masternode detail ${theme}: the operator's share line follows the registration`, async ({ page }, info) => {
     const errors = await open(page, "sh-detail", theme);
     await expect(page.getByTestId("sh-detail-operator-share")).toContainText("5%");
+    await expect(page.getByTestId("mn-fact-operator-share")).toContainText("5%");
+    await expect(page.getByTestId("mn-fact-operator-share")).not.toContainText("of each payout");
     await expect(page.getByTestId("sh-detail").getByRole("button", { name: /send/i })).toHaveCount(0);
     if (SHOTS && info.project.name === "chromium") await page.screenshot({ path: `${SHOTS}/after-sh-detail-full-${theme}.png`, fullPage: true });
     await page.goto(fixtureUrl("sh-detail-no-operator-share", theme));
@@ -31,6 +33,7 @@ for (const theme of THEMES) {
     await page.getByTestId(SH_ROW).click();
     await expect(page.getByTestId("sh-detail")).toBeVisible();
     await expect(page.getByTestId("sh-detail-operator-share")).toHaveCount(0);
+    await expect(page.getByTestId("mn-fact-operator-share")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 

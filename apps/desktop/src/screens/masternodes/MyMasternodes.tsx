@@ -39,7 +39,7 @@ import {
   voteBlocked,
 } from "../../masternodes/model";
 import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh } from "../../masternodes/queries";
-import { isSharedRow } from "../../masternodes/shared";
+import { isSharedRow, percentText } from "../../masternodes/shared";
 import { useT } from "../../i18n";
 import { MoreMenu, Notice, StatusChip } from "./common";
 import { SharedSection } from "./SharedPane";
@@ -271,7 +271,7 @@ function Facts({ row, detail, shown }: { row: MasternodeRow; detail: MasternodeD
       {row.mine && reg?.payoutAddress && fact("payout", t("masternodes.myMasternodes.fact.payout"), <>
         <span className="mono">{shortAddress(reg.payoutAddress)}</span> <span className="mg-muted">{MnText.payoutProvenance}</span>
       </>)}
-      {reg?.operatorReward ? fact("operator-share", t("masternodes.myMasternodes.fact.operatorShare"), operatorShare(reg.operatorReward)) : null}
+      {reg?.operatorReward ? fact("operator-share", t("masternodes.myMasternodes.fact.operatorShare"), isSharedRow(row) ? t("masternodes.shared.session.operatorShareValue", { share: percentText(reg.operatorReward / 100) }) : operatorShare(reg.operatorReward)) : null}
       {list && fact("voting", t("masternodes.myMasternodes.fact.voting"), <span className="mono">{shortAddress(list.votingAddress)}</span>)}
       {list?.platformNodeId &&
         fact(
