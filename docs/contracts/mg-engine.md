@@ -408,6 +408,7 @@ pub enum NameChoice {
 pub struct NameContender {
     pub identity: String,
     pub votes: Option<u32>,
+    pub name: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContestedName {

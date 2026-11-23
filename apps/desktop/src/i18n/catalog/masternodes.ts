@@ -621,6 +621,8 @@ export const masternodes = {
       lock: "Most lock votes",
     },
     noMatch: "No username matches “{search}”",
+    /** A contender by its own spelling of the name and its identity, shortened (F1). */
+    contender: "{name} ({identity})",
     voterLine: "{present} · {left}",
     votesChoice: "Votes {choice}",
     noVoteYet: "No vote yet",

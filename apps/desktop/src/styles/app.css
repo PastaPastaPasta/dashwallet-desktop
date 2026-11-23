@@ -6010,6 +6010,11 @@ button.bell-row-open:focus-visible {
   text-align: end;
 }
 
+/* A username vote's present choice names its contender: "Alice (8ZtW…R97P)". */
+.mg-nodes-names .mg-node {
+  grid-template-columns: 20px minmax(0, 1fr) 64px 160px;
+}
+
 /* A "More" button's menu (mg-00.css's .mg-menu, with real menu items). */
 .mg-menu-anchor {
   position: relative;
