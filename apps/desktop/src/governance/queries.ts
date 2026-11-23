@@ -85,14 +85,17 @@ export function autoShowsMasternodes(overview: MasternodeOverview | undefined, m
 
 /** The sidebar's Masternodes item and its badge (MG-09 D3, D5), from Settings ▸ General ▸ Show
  * Masternodes: On always shows it, Off hides it and reads nothing, Auto reads in the background and
- * shows it once the wallet holds something a masternode owner needs (`autoShowsMasternodes`). */
-export function useMasternodesItem(walletId: string | null): { shown: boolean; badge: number } {
+ * shows it once the wallet holds something a masternode owner needs (`autoShowsMasternodes`);
+ * `settled` is false while Auto's reads have no answer yet. */
+export function useMasternodesItem(walletId: string | null): { shown: boolean; badge: number; settled: boolean } {
   const setting = useUi((s) => s.prefs.masternodesItem);
   const reads = walletId !== null && setting !== "off";
   const mine = useMyProposals(walletId ?? "", reads);
   const nodes = useMasternodes(walletId ?? "", reads);
   const shown = reads && (setting === "on" || autoShowsMasternodes(nodes.data, mine.data));
-  return { shown, badge: shown ? badgeCount(mine.data) + bannedCount(nodes.data) : 0 };
+  // Auto has no answer until both reads have one: a link to Masternodes waits instead of going home.
+  const settled = setting !== "auto" || walletId === null || (!nodes.isPending && !mine.isPending);
+  return { shown, badge: shown ? badgeCount(mine.data) + bannedCount(nodes.data) : 0, settled };
 }
 
 export function useUpcomingSuperblocks() {
