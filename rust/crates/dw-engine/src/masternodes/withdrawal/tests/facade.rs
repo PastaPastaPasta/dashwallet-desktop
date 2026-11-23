@@ -56,10 +56,14 @@ impl Fa {
     }
 
     fn tip(&self, header_tip: Option<u32>) {
+        self.seam(header_tip, FACADE_WAITS);
+    }
+
+    fn seam(&self, header_tip: Option<u32>, waits: Waits) {
         *self.f.session.masternodes.withdrawals.seam.lock().unwrap() = Some(Seam {
             platform: Arc::clone(&self.plat),
             header_tip,
-            waits: FACADE_WAITS,
+            waits,
         });
     }
 
@@ -808,10 +812,19 @@ fn an_unverified_quote_signals_once_its_read_verifies() {
 
 /// H-09 (Astra M5): an identity read that is unverified at first, and
 /// verified a moment later, withdraws in the same call: `withdraw` waits
-/// for SPV within its bound rather than refusing on the first read.
+/// for SPV within its bound rather than refusing on the first read. The
+/// sign wait is long here so a loaded machine cannot run it out before the
+/// verified read (#344).
 #[test]
 fn an_identity_read_verified_during_the_wait_withdraws() {
     let fa = Fa::new(true);
+    fa.seam(
+        Some(TIP),
+        Waits {
+            sign: Duration::from_secs(10),
+            ..FACADE_WAITS
+        },
+    );
     fa.f.session
         .trust
         .set_mode(crate::platform::trust::TrustMode::Degraded);
