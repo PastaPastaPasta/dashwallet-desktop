@@ -176,7 +176,10 @@ pub(crate) async fn look(
 /// Of the payout changes Drive's window in `read` doesn't pay (all of
 /// them, with no window): whether one is out of a block, and whether one
 /// is in a block above the proof's core height.
-fn unpaid_changes(changes: &[PayoutChange], read: &Proved<Option<Identity>>) -> (bool, bool) {
+pub(super) fn unpaid_changes(
+    changes: &[PayoutChange],
+    read: &Proved<Option<Identity>>,
+) -> (bool, bool) {
     let paid = match read.value.as_ref().map(window) {
         Some(Window::Pays { script, .. }) => Some(script),
         _ => None,

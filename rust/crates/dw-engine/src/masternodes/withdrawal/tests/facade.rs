@@ -999,9 +999,71 @@ fn in_block(height: u32) -> TransactionContext {
     ))
 }
 
+/// `pro_tx`'s ProUpRegTx at version 3, paying `to` in DIP-0026 shares.
+fn payout_change_v3(pro_tx: &[u8; 32], to: &[&CoreScript], spends: OutPoint) -> Transaction {
+    use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    use dashcore::blockdata::transaction::special_transaction::provider_registration::MasternodePayoutShare;
+    let mut tx = payout_change(pro_tx, to[0], spends);
+    let Some(TransactionPayload::ProviderUpdateRegistrarPayloadType(p)) =
+        &mut tx.special_transaction_payload
+    else {
+        unreachable!()
+    };
+    p.version = 3;
+    p.script_payout = dashcore::ScriptBuf::new();
+    p.payouts = Some(
+        (to.iter())
+            .map(|s| MasternodePayoutShare {
+                script_payout: dashcore::ScriptBuf::from_bytes(s.as_bytes().to_vec()),
+                reward: (10_000 / to.len()) as u16,
+            })
+            .collect(),
+    );
+    tx
+}
+
+/// A ProUpRegTx of `pro_tx` whose payload this version does not decode
+/// (a newer payload version): its version, then the ProTx hash.
+fn undecoded_payout_change(pro_tx: &[u8; 32], spends: OutPoint) -> Transaction {
+    use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    let mut bytes = 9u16.to_le_bytes().to_vec();
+    bytes.extend_from_slice(pro_tx);
+    bytes.extend_from_slice(&[0xee; 40]);
+    let mut tx = payout_change(pro_tx, &payout_script(), spends);
+    tx.special_transaction_payload = Some(TransactionPayload::RawPayloadType(3, bytes));
+    tx
+}
+
+fn in_chain_locked_block(height: u32) -> TransactionContext {
+    TransactionContext::InChainLockedBlock(key_wallet::transaction_checking::BlockInfo::new(
+        height,
+        dashcore::BlockHash::all_zeros(),
+        0,
+    ))
+}
+
+/// A transaction spending `tx`'s inputs.
+fn rival_of(tx: &Transaction) -> Transaction {
+    Transaction {
+        version: 2,
+        lock_time: 0,
+        input: tx.input.clone(),
+        output: vec![],
+        special_transaction_payload: None,
+    }
+}
+
+/// Another wallet loaded beside the fixture's.
+const OTHER_WALLET: crate::WalletId = crate::WalletId([0x50; 32]);
+
 impl Fa {
     /// `tx` in the wallet's history at `context`, as SPV hands it over.
     fn seen(&self, tx: &Transaction, context: TransactionContext) {
+        self.seen_in(self.f.wallet, tx, context);
+    }
+
+    /// `tx` in `wallet`'s history at `context`.
+    fn seen_in(&self, wallet: crate::WalletId, tx: &Transaction, context: TransactionContext) {
         let entry = crate::history::TxEntry {
             tx: tx.clone(),
             context,
@@ -1010,7 +1072,7 @@ impl Fa {
             own_inputs: Default::default(),
             abandoned: false,
         };
-        (self.f.session.hub.history).with_wallet(self.f.wallet, |h| {
+        (self.f.session.hub.history).with_wallet(wallet, |h| {
             h.txs.insert(tx.txid(), entry);
         });
     }
@@ -1134,16 +1196,118 @@ fn a_conflicted_payout_change_holds_nothing() {
         let change = payout_change(&PRO_TX, &moved, coin(1));
         fa.seen(&change, TransactionContext::Mempool);
         // A rival of its input seen unconfirmed conflicts with nothing yet.
-        let rival = Transaction {
-            version: 2,
-            lock_time: 0,
-            input: change.input.clone(),
-            output: vec![],
-            special_transaction_payload: None,
-        };
+        let rival = rival_of(&change);
         fa.seen(&rival, TransactionContext::Mempool);
         fa.held_by(key, UNCONFIRMED);
         fa.seen(&rival, in_block(TIP - 3));
         fa.released(key);
+    }
+}
+
+/// A wallet the change only pays (or names a key of) records it with
+/// nothing of its own to abandon: the paying wallet's abandon, or a block
+/// in the paying wallet's history spending its input, releases it.
+#[test]
+fn a_payout_change_in_several_wallets_is_released_by_any_wallets_abandon_or_conflict() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    for key in [Key::Owner, Key::Payout] {
+        let fa = Fa::new(true);
+        let change = payout_change(&PRO_TX, &moved, coin(1));
+        fa.seen_in(OTHER_WALLET, &change, TransactionContext::Mempool);
+        fa.held_by(key, UNCONFIRMED);
+        fa.seen(&change, TransactionContext::Mempool);
+        fa.held_by(key, UNCONFIRMED);
+        fa.abandoned(&change);
+        fa.released(key);
+
+        let fa = Fa::new(true);
+        let change = payout_change(&PRO_TX, &moved, coin(1));
+        fa.seen_in(OTHER_WALLET, &change, TransactionContext::Mempool);
+        fa.seen(&rival_of(&change), in_block(TIP - 3));
+        fa.released(key);
+    }
+    // Mined as one wallet sees it, out of a block as the other still does.
+    let fa = Fa::new(true);
+    let change = payout_change(&PRO_TX, &moved, coin(1));
+    fa.seen_in(OTHER_WALLET, &change, TransactionContext::Mempool);
+    fa.seen(&change, in_block(TIP));
+    fa.released(Key::Owner);
+}
+
+#[test]
+fn an_undecoded_payout_change_of_the_masternode_holds() {
+    for key in [Key::Owner, Key::Payout] {
+        let fa = Fa::new(true);
+        fa.seen(
+            &undecoded_payout_change(&PRO_TX, coin(1)),
+            TransactionContext::Mempool,
+        );
+        fa.held_by(key, UNCONFIRMED);
+    }
+    let fa = Fa::new(true);
+    fa.seen(
+        &undecoded_payout_change(&pro_tx(0x70), coin(1)),
+        TransactionContext::Mempool,
+    );
+    fa.released(Key::Owner);
+}
+
+/// key-wallet's finality order: only a ChainLocked block beats an
+/// InstantSend lock.
+#[test]
+fn an_instant_send_locked_payout_change_is_conflicted_only_by_a_chain_locked_block() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let fa = Fa::new(true);
+    let change = payout_change(&PRO_TX, &moved, coin(1));
+    fa.seen(&change, TransactionContext::InstantSend(Default::default()));
+    let rival = rival_of(&change);
+    fa.seen(&rival, in_block(TIP - 3));
+    fa.held_by(Key::Owner, UNCONFIRMED);
+    fa.seen(&rival, in_chain_locked_block(TIP - 3));
+    fa.released(Key::Owner);
+    // Locked as another wallet saw it: still locked.
+    let fa = Fa::new(true);
+    fa.seen_in(
+        OTHER_WALLET,
+        &change,
+        TransactionContext::InstantSend(Default::default()),
+    );
+    fa.seen(&change, TransactionContext::Mempool);
+    fa.abandoned(&change);
+    fa.seen(&rival, in_block(TIP - 3));
+    fa.held_by(Key::Owner, UNCONFIRMED);
+}
+
+/// In the wallet's own history a version-3 change makes the masternode
+/// shared (D25), refused before any hold; another loaded wallet's holds
+/// unless its one payee is the paid script.
+#[test]
+fn a_v3_payout_change_holds_unless_its_one_payee_is_the_paid_script() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let paid = payout_script();
+    let fa = Fa::new(true);
+    fa.seen(
+        &payout_change_v3(&PRO_TX, &[&paid], coin(1)),
+        TransactionContext::Mempool,
+    );
+    assert_eq!(
+        code(fa.withdraw(Key::Owner, AMOUNT, None)),
+        "masternodes.withdrawal_shared"
+    );
+    for (to, holds) in [
+        (vec![&moved], true),
+        (vec![&paid], false),
+        (vec![&paid, &moved], true),
+    ] {
+        let fa = Fa::new(true);
+        fa.seen_in(
+            OTHER_WALLET,
+            &payout_change_v3(&PRO_TX, &to, coin(1)),
+            TransactionContext::Mempool,
+        );
+        match holds {
+            true => fa.held_by(Key::Owner, UNCONFIRMED),
+            false => fa.released(Key::Owner),
+        }
     }
 }

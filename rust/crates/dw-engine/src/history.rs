@@ -431,7 +431,7 @@ pub(crate) fn unmined_own_spends(
 
 /// Whether the history knows an InstantSend lock of `e`: its flag or its
 /// context.
-fn instant_locked(e: &TxEntry) -> bool {
+pub(crate) fn instant_locked(e: &TxEntry) -> bool {
     e.instant_locked || matches!(e.context, TransactionContext::InstantSend(_))
 }
 
@@ -714,11 +714,11 @@ impl HistoryStore {
         Arc::clone(&self.collateral_wake)
     }
 
-    /// `f` over every wallet's entries under the store's read lock, its
-    /// results together.
-    pub fn read_each<R>(&self, f: impl FnMut(&HashMap<Txid, TxEntry>) -> Vec<R>) -> Vec<R> {
+    /// Runs `f` over every wallet's entries together, under the store's
+    /// read lock.
+    pub fn read_all<R>(&self, f: impl FnOnce(&[&HashMap<Txid, TxEntry>]) -> R) -> R {
         let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
-        map.values().map(|h| &h.txs).flat_map(f).collect()
+        f(&map.values().map(|h| &h.txs).collect::<Vec<_>>())
     }
 
     /// A copy of one wallet's entries (empty when unknown).

@@ -220,11 +220,12 @@ pub(crate) struct Alarm {
     pub(crate) what: String,
 }
 
-/// A ProUpRegTx of the masternode in a loaded wallet's history, neither
-/// conflicted nor abandoned.
+/// A ProUpRegTx of the masternode in the loaded wallets' history, once per
+/// txid, neither conflicted in any of them nor abandoned in one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PayoutChange {
-    /// Its new payout script; `None` for several payees.
+    /// Its new payout script; `None` for several payees or a payload this
+    /// version does not decode.
     pub(crate) script: Option<Vec<u8>>,
     /// Its block's height; `None` while out of a block.
     pub(crate) height: Option<u32>,

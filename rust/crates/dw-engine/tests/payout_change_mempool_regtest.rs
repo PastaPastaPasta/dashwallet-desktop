@@ -10,6 +10,13 @@
 //! ProUpRegTx with `protx update_registrar` funded from that address, as the
 //! app funds one from the wallet's coins.
 //!
+//! A wallet the change only pays records it too, with nothing of its own
+//! in it. When the network forgets such a change, Tools ▸ Repair ▸ Rescan
+//! keeps it, and a restore from the phrase drops it, in a new folder or
+//! after removing the wallet; a block spending its input drops it. Remove
+//! unconfirmed transactions abandons a live one, and it stays abandoned
+//! while the network still has it.
+//!
 //! Runs only with `DASHD_PATH` set to a dashd binary with `dash-cli` next to
 //! it (e.g. `~/.rust-dashcore-test/dashcore-24.0.2/bin/dashd`); skipped
 //! otherwise.
@@ -26,15 +33,19 @@ use dashcore::consensus::deserialize;
 use dashcore::{Address, Network, PrivateKey, Transaction};
 use dw_engine::{
     DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, ImportOptions, NetworkSession,
-    SessionOptions, SpvState, TxStatusKind, WalletId,
+    RescanFrom, SessionOptions, SpvState, TxStatusKind, WalletId,
 };
-use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use key_wallet::DerivationPath;
 use key_wallet::bip32::ExtendedPrivKey;
 use zeroize::Zeroizing;
 
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+/// A second wallet, the one a payout change pays.
+const PAYOUT_PHRASE: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
 
 /// How long an eventual wait (SPV, a scan, a relay) may take on a loaded
 /// host.
@@ -58,9 +69,22 @@ fn free_port() -> u16 {
 
 impl Dashd {
     fn start(dashd: &Path, datadir: &Path) -> Self {
-        let (p2p_port, rpc_port) = (free_port(), free_port());
-        let log = std::fs::File::create(datadir.join("dashd.stdout")).unwrap();
+        Self::start_on(dashd, datadir, (free_port(), free_port()), &[])
+    }
+
+    fn start_on(
+        dashd: &Path,
+        datadir: &Path,
+        (p2p_port, rpc_port): (u16, u16),
+        extra: &[&str],
+    ) -> Self {
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(datadir.join("dashd.stdout"))
+            .unwrap();
         let child = Command::new(dashd)
+            .args(extra.iter().map(|a| a.to_string()))
             .args([
                 "-regtest".to_owned(),
                 format!("-datadir={}", datadir.display()),
@@ -98,6 +122,50 @@ impl Dashd {
             std::thread::sleep(Duration::from_millis(250));
         }
         node
+    }
+
+    /// Restarts dashd on the same ports with an empty mempool, its wallet
+    /// broadcasting nothing, and abandons `txid` there: the network no
+    /// longer has it.
+    fn forget(&mut self, dashd: &Path, txid: &str) {
+        self.stop();
+        let _ = std::fs::remove_file(self.datadir.join("regtest").join("mempool.dat"));
+        let ports = (self.p2p_port, self.rpc_port);
+        let flags = ["-persistmempool=0", "-walletbroadcast=0"];
+        let restarted = Self::start_on(dashd, &self.datadir.clone(), ports, &flags);
+        // Dropping the stopped one would stop the restarted one on its ports.
+        std::mem::forget(std::mem::replace(self, restarted));
+        self.cli(&["loadwallet", "miner"]);
+        assert!(!self.in_mempool(txid));
+        self.cli(&["abandontransaction", txid]);
+    }
+
+    /// A transaction of the miner spending `outpoint`, mined.
+    fn spend_and_mine(&self, outpoint: &dashcore::OutPoint) {
+        let (txid, vout) = (outpoint.txid.to_string(), outpoint.vout);
+        let out: serde_json::Value =
+            serde_json::from_str(&self.cli(&["gettxout", &txid, &vout.to_string()])).unwrap();
+        let value = out["value"].as_f64().unwrap() - 0.001;
+        let inputs = format!(r#"[{{"txid":"{txid}","vout":{vout}}}]"#);
+        let outputs = format!(r#"{{"{}":{value:.8}}}"#, self.cli(&["getnewaddress"]));
+        let raw = self.cli(&["createrawtransaction", &inputs, &outputs]);
+        let signed: serde_json::Value =
+            serde_json::from_str(&self.cli(&["signrawtransactionwithwallet", &raw])).unwrap();
+        self.cli(&["sendrawtransaction", signed["hex"].as_str().unwrap()]);
+        self.mine(1);
+    }
+
+    fn stop(&mut self) {
+        let _ = self.try_cli(&["stop"]);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     fn try_cli(&self, args: &[&str]) -> Result<String, String> {
@@ -163,18 +231,28 @@ impl Dashd {
     /// of the miner, its fee paid from `fee_source`, left in the mempool:
     /// its txid and the new payout.
     fn change_payout(&self, pro_tx_hash: &str, fee_source: &str) -> (String, Address) {
-        let payout = self.cli(&["getnewaddress"]);
+        self.change_payout_to(pro_tx_hash, &self.cli(&["getnewaddress"]), fee_source)
+    }
+
+    /// A ProUpRegTx of `pro_tx_hash` changing its payout to `payout`, its
+    /// fee paid from `fee_source`, left in the mempool.
+    fn change_payout_to(
+        &self,
+        pro_tx_hash: &str,
+        payout: &str,
+        fee_source: &str,
+    ) -> (String, Address) {
         let txid = self.cli(&[
             "protx",
             "update_registrar",
             pro_tx_hash,
             "",
             "",
-            &payout,
+            payout,
             fee_source,
         ]);
         assert!(self.in_mempool(&txid));
-        let payout = Address::from_str(&payout)
+        let payout = Address::from_str(payout)
             .unwrap()
             .require_network(Network::Regtest)
             .unwrap();
@@ -184,16 +262,7 @@ impl Dashd {
 
 impl Drop for Dashd {
     fn drop(&mut self) {
-        let _ = self.try_cli(&["stop"]);
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while Instant::now() < deadline {
-            if let Ok(Some(_)) = self.child.try_wait() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.stop();
     }
 }
 
@@ -227,8 +296,22 @@ fn first_receive_key() -> (String, String) {
     (key.to_wif(), address.to_string())
 }
 
-/// One installation of the wallet: its own engine and data root, the wallet
-/// imported from [`PHRASE`].
+fn import(engine: &Engine, session: &Arc<NetworkSession>, phrase: &str) -> WalletId {
+    engine
+        .block_on(session.import_wallet(
+            Zeroizing::new(phrase.as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                core_compat: false,
+                ..Default::default()
+            },
+        ))
+        .unwrap()
+}
+
+/// One installation of a wallet: its own engine and data root, the wallet
+/// imported from a phrase.
 struct Installation {
     engine: Engine,
     session: Arc<NetworkSession>,
@@ -237,6 +320,10 @@ struct Installation {
 
 impl Installation {
     fn new(root: &Path, node: &Dashd) -> Self {
+        Self::of(PHRASE, root, node)
+    }
+
+    fn of(phrase: &str, root: &Path, node: &Dashd) -> Self {
         let engine = Engine::new(
             EngineConfig {
                 data_root: root.to_owned(),
@@ -256,22 +343,28 @@ impl Installation {
         engine
             .block_on(session.vault_op(|v| v.create(None)))
             .unwrap();
-        let wallet = engine
-            .block_on(session.import_wallet(
-                Zeroizing::new(PHRASE.as_bytes().to_vec()),
-                Zeroizing::new(Vec::new()),
-                ImportOptions {
-                    birth_height: Some(0),
-                    core_compat: false,
-                    ..Default::default()
-                },
-            ))
-            .unwrap();
+        let wallet = import(&engine, &session, phrase);
         Self {
             engine,
             session,
             wallet,
         }
+    }
+
+    /// Removes the wallet and imports `phrase` again in this installation's
+    /// data folder.
+    fn remove_and_restore(&mut self, phrase: &str) {
+        let id = self.wallet;
+        let wipe =
+            (self.engine)
+                .block_on(self.session.vault_op(move |v| {
+                    v.authorize(GrantPurpose::Wipe, Some(&id.0), Credential::None)
+                }))
+                .unwrap();
+        (self.engine)
+            .block_on(self.session.remove_wallet(id, wipe.id))
+            .unwrap();
+        self.wallet = import(&self.engine, &self.session, phrase);
     }
 
     fn start_spv(&self) {
@@ -318,6 +411,29 @@ impl Installation {
                 Instant::now() < deadline,
                 "{txid} never reached the history"
             );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
+    /// The status of `txid` in the history now, `None` when it has none.
+    fn status_now(&self, txid: &str) -> Option<TxStatusKind> {
+        (self.engine)
+            .block_on(self.session.tx_detail(self.wallet, txid.to_owned()))
+            .ok()
+            .map(|d| d.status.kind)
+    }
+
+    /// The status of `txid` once it is other than unconfirmed, or after
+    /// `wait`.
+    fn status_after(&self, txid: &str, wait: Duration) -> Option<TxStatusKind> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let status = self.status_now(txid);
+            if Instant::now() >= deadline
+                || !matches!(status, None | Some(TxStatusKind::Unconfirmed))
+            {
+                return status;
+            }
             std::thread::sleep(Duration::from_millis(250));
         }
     }
@@ -404,4 +520,130 @@ fn another_installations_unmined_payout_change_is_in_the_history() {
     let c = Installation::new(&dir.path().join("c"), &node);
     c.start_spv();
     c.holds_unmined_change(&node, &txid, &payout, "restored after the broadcast");
+}
+
+/// A wallet the change only pays: what a restore, a rescan, a block and
+/// Remove unconfirmed transactions do to the change, live and forgotten.
+#[test]
+fn a_change_only_the_payout_wallet_records_and_its_ways_out() {
+    let Some(dashd) = std::env::var_os("DASHD_PATH").map(PathBuf::from) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let dir = dw_testutil::private_tempdir();
+    let node_dir = dir.path().join("dashd");
+    std::fs::create_dir(&node_dir).unwrap();
+    let mut node = Dashd::start(&dashd, &node_dir);
+    node.cli(&[
+        "createwallet",
+        "miner",
+        "false",
+        "false",
+        "",
+        "false",
+        "false",
+        "false",
+    ]);
+    node.mine(600);
+    let pro_tx_hash = node.register_masternode();
+    let fee_source = node.cli(&["getnewaddress"]);
+    for _ in 0..2 {
+        node.cli(&["sendtoaddress", &fee_source, "1"]);
+    }
+    node.mine(1);
+
+    // The payout wallet: none of the change's coins are its own.
+    let mut p = Installation::of(PAYOUT_PHRASE, &dir.path().join("p"), &node);
+    let to = (p.engine)
+        .block_on(p.session.next_receive_address(p.wallet, None))
+        .unwrap()
+        .address;
+    p.start_spv();
+    p.wait_scanned(node.height());
+
+    // A live change, then mined.
+    let (txid, payout) = node.change_payout_to(&pro_tx_hash, &to, &fee_source);
+    p.holds_unmined_change(&node, &txid, &payout, "the payout wallet");
+    node.mine(1);
+    p.wait_scanned(node.height());
+    let mined = p.status_after(&txid, Duration::from_secs(60));
+    eprintln!("mined: the payout wallet reads {mined:?}");
+
+    // A live change: a restore sees it again; Remove unconfirmed abandons
+    // it while the network still has it.
+    let (txid, payout) = node.change_payout_to(&pro_tx_hash, &to, &fee_source);
+    p.holds_unmined_change(&node, &txid, &payout, "the payout wallet, again");
+    let q = Installation::of(PAYOUT_PHRASE, &dir.path().join("q"), &node);
+    q.start_spv();
+    q.holds_unmined_change(&node, &txid, &payout, "restored while live");
+    let held = Installation::of(PAYOUT_PHRASE, &dir.path().join("held"), &node);
+    held.start_spv();
+    held.holds_unmined_change(&node, &txid, &payout, "another installation");
+    held.stop_spv();
+    let dropped = (q.engine)
+        .block_on(q.session.drop_unconfirmed(Some(q.wallet)))
+        .unwrap();
+    assert!(node.in_mempool(&txid));
+    let live_dropped = q.status_now(&txid);
+    q.stop_spv();
+    q.start_spv();
+    q.wait_scanned(node.height());
+    let live_reconnected = q.status_after(&txid, Duration::from_secs(30));
+    eprintln!(
+        "remove unconfirmed while live: {dropped} dropped, {live_dropped:?}, after a reconnect {live_reconnected:?}"
+    );
+    q.stop_spv();
+
+    // The change never mines: the network forgets it.
+    p.stop_spv();
+    let (_, change) = p.wait_in_history(&txid);
+    node.forget(&dashd, &txid);
+    node.mine(1);
+    p.start_spv();
+    p.wait_scanned(node.height());
+    std::thread::sleep(Duration::from_secs(30));
+    let forgotten = p.status_now(&txid);
+
+    // Tools ▸ Repair ▸ Rescan from the wallet's birth.
+    (p.engine)
+        .block_on(p.session.rescan(RescanFrom::WalletBirth))
+        .unwrap();
+    let deadline = Instant::now() + LOAD_WAIT;
+    while p.session.rescan_progress().unwrap().is_some() {
+        assert!(Instant::now() < deadline, "the rescan never finished");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    p.wait_scanned(node.height());
+    let rescanned = p.status_now(&txid);
+
+    // A restore from the phrase.
+    let r = Installation::of(PAYOUT_PHRASE, &dir.path().join("r"), &node);
+    r.start_spv();
+    r.wait_scanned(node.height());
+    let restored = r.status_after(&txid, Duration::from_secs(30));
+
+    // The wallet removed and restored from the phrase in the same folder.
+    p.remove_and_restore(PAYOUT_PHRASE);
+    p.wait_scanned(node.height());
+    let restored_in_place = p.status_after(&txid, Duration::from_secs(30));
+
+    // A block spends its input; the payout wallet's filters match no part
+    // of it.
+    held.start_spv();
+    held.wait_scanned(node.height());
+    let held_forgotten = held.status_now(&txid);
+    node.spend_and_mine(&change.input[0].previous_output);
+    held.wait_scanned(node.height());
+    let spent = held.status_after(&txid, Duration::from_secs(30));
+    eprintln!(
+        "forgotten: {forgotten:?}; rescan {rescanned:?}; restore {restored:?}; removed and restored in place {restored_in_place:?}; another installation {held_forgotten:?}, then its input spent in a block {spent:?}"
+    );
+    assert_eq!(live_dropped, Some(TxStatusKind::Abandoned));
+    assert_eq!(live_reconnected, Some(TxStatusKind::Abandoned));
+    assert_eq!(forgotten, Some(TxStatusKind::Unconfirmed));
+    assert_eq!(rescanned, Some(TxStatusKind::Unconfirmed));
+    assert_eq!(restored, None);
+    assert_eq!(restored_in_place, None);
+    assert_eq!(held_forgotten, Some(TxStatusKind::Unconfirmed));
+    assert_eq!(spent, None);
 }
