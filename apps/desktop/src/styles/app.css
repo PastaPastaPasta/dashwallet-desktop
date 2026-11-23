@@ -5987,6 +5987,7 @@ button.bell-row-open:focus-visible {
 
 .mg-node-name {
   font-weight: var(--dw-type-footnote-medium-weight);
+  overflow-wrap: anywhere;
 }
 
 .mg-node-sub {

@@ -269,7 +269,9 @@ export function nameScenarios(base: (theme: ThemeName | null, patch?: (n: NamesW
     "names-labelled": (t: ThemeName | null) => {
       const w = base(t);
       const [home, , club] = w.masternodes.rows;
-      w.masternodes.rows.push({ ...home, proTxHash: VOTER_A }, { ...club, proTxHash: VOTER_B });
+      // Only the name, service and kind are this fixture's: the voters own no payouts.
+      const own = { payouts30d: 0, payoutsIncomplete: false, lastPayout: null };
+      w.masternodes.rows.push({ ...home, ...own, proTxHash: VOTER_A }, { ...club, ...own, proTxHash: VOTER_B });
       return w;
     },
     /** A watch-only wallet browses. */

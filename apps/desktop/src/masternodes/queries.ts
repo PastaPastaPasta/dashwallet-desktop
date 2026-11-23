@@ -7,6 +7,7 @@ import { useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
 import { keys, useBackend } from "../api/queries";
+import { useUi } from "../app/ui";
 import type { NodeNames } from "../governance/model";
 import { nodeNames } from "./model";
 
@@ -67,7 +68,9 @@ export function useMasternodeKeys(walletId: string, role: MasternodeKeyRoleName,
 /** The wallet's masternode labels and services for governance's vote rows (MG-09 F3). */
 export function useNodeNames(walletId: string): NodeNames {
   const list = useMasternodes(walletId);
-  return useMemo(() => nodeNames(list.data), [list.data]);
+  // An unlabelled row's fallback name ("Evonode b2b2…") is translated: a language change re-reads it.
+  const language = useUi((s) => s.prefs.language);
+  return useMemo(() => nodeNames(list.data), [list.data, language]);
 }
 
 /** Re-reads every engine-local masternode query (after a command, before its event lands). */
