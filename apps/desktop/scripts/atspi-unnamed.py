@@ -2,20 +2,33 @@
 """Interactive nodes without an accessible name, as Orca sees the running app (AT-SPI).
 
 Walks the AT-SPI tree of the application named --app (default dash-wallet) on the accessibility
-bus of the current session and checks every node that is SHOWING and VISIBLE. A node is
-interactive when its role is one a user operates (INTERACTIVE below), when it is editable, or
-when it is FOCUSABLE and its role is not a plain container or text (PASSIVE). An interactive node
-fails when its accessible name is empty after trimming.
+bus of the current session and checks every node that is VISIBLE and either SHOWING or inside
+the web view's document: a control scrolled out of view is checked too (WebKit drops SHOWING for
+it), while the window's own menu items, VISIBLE but not SHOWING, are not. A node is
+interactive when its role is one a user operates (INTERACTIVE below), when it offers an action a
+user operates (click, press, activate, jump), when it is editable, or when it is FOCUSABLE and its
+role is not a plain container, text or live region (PASSIVE). An interactive node fails when its
+accessible name is empty after trimming.
 
-Prints JSON lines: one {"unnamed": {...}} per failing node (its role, states, the path of its
-ancestors' roles and names, its own text or description, its parent's name, its siblings' names
-and WebKit's object attributes, such as the tag), then one {"summary": {...}}. --redact drops
-every name and text from the failures (screens that show a recovery phrase). Exit status: 0 when
-the walk ran (failures or not), 2 when the application is not on the bus.
+The tree follows the DOM a moment later, so the walk repeats until the tree has caught up with the
+state: every --expect node is showing, there are at least --min-interactive interactive nodes,
+every read succeeded (each read is retried once), and two walks in a row agree. Otherwise it gives
+up after --wait seconds with "settled": false.
+
+Prints JSON lines: one {"unnamed": {...}} per failing node (its role, states, actions, the path of
+its ancestors' roles and names, its own text or description, its parent's name, its siblings'
+names and WebKit's object attributes, such as the tag), then one {"summary": {...}} with
+"settled", "interactive", "missing" (the --expect nodes not found), "truncated" (parents with more
+children than it reads, or a walk stopped at its node limit) and "read_failures" (nodes or subtrees
+left unread). --redact drops every name and text from the failures (screens that show a recovery
+phrase). Exit status: 0 when the walk ran (failures or not), 2 when the application is not on the
+bus.
 
     python3 -I scripts/atspi-unnamed.py [--app NAME] [--wait SECONDS] [--redact]
+        [--expect ROLE=NAME]... [--min-interactive N]
 
 Needs python3-gi and gir1.2-atspi-2.0, and the AT-SPI bus (at-spi-bus-launcher) of the session.
+scripts/test_atspi_unnamed.py checks the rules on synthetic trees.
 """
 
 import argparse
@@ -93,6 +106,26 @@ PASSIVE = {
 
 MAX_NODES = 50_000
 MAX_CHILDREN = 2_000
+# Action names that make a node something a user operates, whatever its role.
+OPERATE = {"click", "press", "activate", "jump"}
+
+
+class Reader:
+    """Reads from the tree, retrying a read once; counts the reads that still fail."""
+
+    def __init__(self):
+        self.failures = 0
+
+    def __call__(self, read):
+        for attempt in (0, 1):
+            try:
+                value = read()
+            except Exception:
+                value = None
+            if value is not None:
+                return value
+        self.failures += 1
+        return None
 
 
 def text_of(node, limit=160):
@@ -100,15 +133,25 @@ def text_of(node, limit=160):
         iface = node.get_text_iface()
         if iface is None:
             return ""
-        count = Atspi.Text.get_character_count(node)
-        return (Atspi.Text.get_text(node, 0, min(count, limit)) or "").replace("￼", "").strip()
+        count = iface.get_character_count()
+        return (iface.get_text(0, min(count, limit)) or "").replace("\ufffc", "").strip()
     except Exception:
         return ""
 
 
 def states_of(node):
-    st = node.get_state_set()
-    return st, sorted(Atspi.StateType(s).value_nick for s in st.get_states())
+    return set(node.get_state_set().get_states())
+
+
+def state_nicks(states):
+    return sorted(Atspi.StateType(s).value_nick for s in states)
+
+
+def actions_of(node):
+    iface = node.get_action_iface()
+    if iface is None:
+        return []
+    return [(iface.get_action_name(i) or "").lower() for i in range(iface.get_n_actions())]
 
 
 def name_of(node):
@@ -141,13 +184,17 @@ def attributes_of(node):
     return {k: v for k, v in attrs.items() if k in keep}
 
 
-def is_interactive(role, st):
-    """`role`: an Atspi.Role."""
+def is_interactive(role, states, actions):
+    """`role`: an Atspi.Role; `states`: a set of Atspi.StateType; `actions`: the action names.
+    A plain container, text or live region that takes focus only to be read is not interactive,
+    unless it offers an action a user operates (click, press, activate, jump)."""
     if role in INTERACTIVE:
         return True
-    if st.contains(Atspi.StateType.EDITABLE) and st.contains(Atspi.StateType.FOCUSABLE):
+    if any(a in OPERATE for a in actions):
         return True
-    return st.contains(Atspi.StateType.FOCUSABLE) and role not in PASSIVE
+    if Atspi.StateType.EDITABLE in states and Atspi.StateType.FOCUSABLE in states:
+        return True
+    return Atspi.StateType.FOCUSABLE in states and role not in PASSIVE
 
 
 def node_key(node):
@@ -178,36 +225,71 @@ def siblings_of(parent, node, redact):
     return out
 
 
-def walk(app, redact):
+def squash(text):
+    return " ".join(text.split())
+
+
+def parse_expect(spec):
+    """`ROLE=NAME`: ROLE an Atspi.Role name (HEADING, DIALOG, PUSH_BUTTON…), NAME the node's
+    accessible name or, failing that, its text."""
+    role, sep, name = spec.partition("=")
+    if not sep or not hasattr(R, role.strip().upper()) or not squash(name):
+        raise argparse.ArgumentTypeError(f"--expect {spec!r}: want ROLE=NAME with ROLE an Atspi.Role name")
+    return (getattr(R, role.strip().upper()), squash(name))
+
+
+DOCUMENTS = {R.DOCUMENT_WEB, R.DOCUMENT_FRAME}
+
+
+def checked(states, in_document):
+    """Whether a node is one a user can reach: VISIBLE, and SHOWING or inside the web document."""
+    return Atspi.StateType.VISIBLE in states and (in_document or Atspi.StateType.SHOWING in states)
+
+
+def walk(app, redact, expect=()):
+    """Every node below `app` that `checked` accepts. Returns (failures, stats, found): `found` is the
+    set of `expect` entries seen. stats["truncated"] counts parents with more than MAX_CHILDREN
+    children (and a walk stopped at MAX_NODES); stats["read_failures"] counts reads that failed
+    twice, each a node or subtree left unchecked."""
+    read = Reader()
     failures = []
-    stats = {"walked": 0, "showing": 0, "interactive": 0}
+    found = set()
+    stats = {"walked": 0, "checked": 0, "interactive": 0, "truncated": 0}
     seen = set()
-    stack = [(app, [])]
-    while stack and stats["walked"] < MAX_NODES:
-        node, path = stack.pop()
+    stack = [(app, [], False)]
+    while stack:
+        if stats["walked"] >= MAX_NODES:
+            stats["truncated"] += 1
+            break
+        node, path, in_document = stack.pop()
         key = node_key(node)
         if key in seen:
             continue
         seen.add(key)
         stats["walked"] += 1
-        try:
-            st, states = states_of(node)
-        except Exception:
+        states = read(lambda: states_of(node))
+        if states is None:
             continue
-        if st.contains(Atspi.StateType.DEFUNCT):
+        if Atspi.StateType.DEFUNCT in states:
             continue
         role = role_of(node)
         name = name_of(node)
-        if st.contains(Atspi.StateType.SHOWING) and st.contains(Atspi.StateType.VISIBLE):
-            stats["showing"] += 1
-            if is_interactive(role_id(node), st):
+        rid = role_id(node)
+        if checked(states, in_document):
+            stats["checked"] += 1
+            for want in expect:
+                if rid == want[0] and want[1] in (squash(name), squash(text_of(node, 400))):
+                    found.add(want)
+            actions = [] if rid in INTERACTIVE else read(lambda: actions_of(node))
+            if actions is not None and is_interactive(rid, states, actions):
                 stats["interactive"] += 1
                 if not name:
                     parent = node.get_parent()
                     failures.append(
                         {
                             "role": role,
-                            "states": states,
+                            "states": state_nicks(states),
+                            "actions": actions,
                             "path": [{"role": r, "name": "…" if redact and n else n} for r, n in path],
                             "text": "" if redact else (text_of(node) or (node.get_description() or "").strip()),
                             "parent": "" if redact or parent is None else name_of(parent),
@@ -215,20 +297,20 @@ def walk(app, redact):
                             "attributes": attributes_of(node),
                         }
                     )
-        try:
-            count = min(node.get_child_count(), MAX_CHILDREN)
-        except Exception:
+        count = read(lambda: node.get_child_count())
+        if count is None:
             continue
+        if count > MAX_CHILDREN:
+            stats["truncated"] += 1
+            count = MAX_CHILDREN
         child_path = path + [(role, name)]
+        child_in_document = in_document or rid in DOCUMENTS
         for i in reversed(range(count)):
-            try:
-                child = node.get_child_at_index(i)
-            except Exception:
-                continue
+            child = read(lambda: node.get_child_at_index(i))
             if child is not None:
-                stack.append((child, child_path))
-    stats["truncated"] = stats["walked"] >= MAX_NODES
-    return failures, stats
+                stack.append((child, child_path, child_in_document))
+    stats["read_failures"] = read.failures
+    return failures, stats, found
 
 
 def find_apps(want):
@@ -267,7 +349,7 @@ def has_document(app):
 
 
 def signature(failures, stats):
-    return (stats["interactive"], json.dumps(failures, sort_keys=True))
+    return (stats["interactive"], stats["truncated"], stats["read_failures"], json.dumps(failures, sort_keys=True))
 
 
 def main():
@@ -275,6 +357,15 @@ def main():
     parser.add_argument("--app", default="dash-wallet")
     parser.add_argument("--wait", type=float, default=30.0, help="seconds to wait for the app and a settled tree")
     parser.add_argument("--redact", action="store_true", help="drop names and text from the failures")
+    parser.add_argument(
+        "--expect",
+        action="append",
+        type=parse_expect,
+        default=[],
+        metavar="ROLE=NAME",
+        help="a node the state shows (repeatable): the tree has not caught up until every one is there",
+    )
+    parser.add_argument("--min-interactive", type=int, default=1, help="fewer interactive nodes than this: not caught up")
     args = parser.parse_args()
 
     until = time.monotonic() + args.wait
@@ -293,27 +384,32 @@ def main():
         print(json.dumps({"error": f"no application {args.app!r} with a web document on the AT-SPI bus", "apps": names}))
         return 2
 
-    # The tree follows the DOM a moment later: walk until two walks in a row agree.
+    # The tree follows the DOM a moment later: walk until it holds every expected node, has
+    # enough interactive nodes, every read succeeded, and two walks in a row agree.
+    expect = set(args.expect)
     until = time.monotonic() + args.wait
     last = None
     while True:
-        failures, stats = [], {"walked": 0, "showing": 0, "interactive": 0, "truncated": False}
+        failures, found = [], set()
+        stats = {"walked": 0, "checked": 0, "interactive": 0, "truncated": 0, "read_failures": 0}
         for app in apps:
-            f, s = walk(app, args.redact)
+            f, s, seen = walk(app, args.redact, expect)
             failures += f
-            for k in ("walked", "showing", "interactive"):
+            found |= seen
+            for k in stats:
                 stats[k] += s[k]
-            stats["truncated"] = stats["truncated"] or s["truncated"]
         sig = signature(failures, stats)
-        if sig == last or time.monotonic() >= until:
-            stats["settled"] = sig == last
+        ready = found == expect and stats["interactive"] >= args.min_interactive and stats["read_failures"] == 0
+        if (ready and sig == last) or time.monotonic() >= until:
+            stats["settled"] = ready and sig == last
             break
-        last = sig
+        last = sig if ready else None
         time.sleep(0.4)
 
+    missing = sorted(f"{R(r).value_nick.upper().replace('-', '_')}={n}" for r, n in expect - found)
     for f in failures:
         print(json.dumps({"unnamed": f}, ensure_ascii=False))
-    print(json.dumps({"summary": {**stats, "unnamed": len(failures)}}))
+    print(json.dumps({"summary": {**stats, "missing": missing, "unnamed": len(failures)}}, ensure_ascii=False))
     return 0
 
 
