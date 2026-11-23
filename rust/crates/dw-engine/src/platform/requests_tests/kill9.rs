@@ -7,6 +7,11 @@
 //! R4: a profile edit killed before Platform has the document or once it
 //! accepted it, before the wallet remembers it; made again after the
 //! relaunch, Platform holds the edit once and the wallet shows it.
+//!
+//! "Before Platform has it" and "once Platform accepted it" kill the child
+//! at the same moment, during the write (nothing local is written between
+//! Platform accepting and the write returning); they differ in whether the
+//! fake Platform kept the write for the relaunch.
 
 use std::sync::Arc;
 
@@ -122,7 +127,7 @@ fn request_child() {
     let Some(child) = kill9::child(ROW) else {
         return;
     };
-    let f = fixture_at(dw_testutil::private_tempdir(), &child.root, true, false);
+    let f = fixture_at(kill9::scratch(&child), &child.root, true, false);
     let child = Arc::new(child);
     let park = |landed: bool| -> Box<dyn Fn() + Send + Sync> {
         let child = Arc::clone(&child);
@@ -177,11 +182,12 @@ fn killed(op: &str, point: &str) {
             "{done:?}"
         ),
     }
-    let new_on_platform = if landed { 0 } else { f.net.writes() };
-    assert_eq!(
-        u32::from(landed) + new_on_platform,
-        1,
-        "one request on Platform"
+    // One request on Platform: a write after the relaunch is needed if it
+    // had not landed, and refused as a duplicate if it had.
+    let writes = f.net.writes();
+    assert!(
+        if landed { writes <= 1 } else { writes == 1 },
+        "{writes} writes after the relaunch (landed: {landed})"
     );
     assert_eq!(f.eligibility(contact).unwrap(), after);
     let writes = f.net.writes();
@@ -253,7 +259,7 @@ fn profile_child() {
     let Some(child) = kill9::child(PROFILE_ROW) else {
         return;
     };
-    let f = fixture_at(dw_testutil::private_tempdir(), &child.root, true, false);
+    let f = fixture_at(kill9::scratch(&child), &child.root, true, false);
     let landed = match child.point.as_str() {
         "before_write" => false,
         "accepted" => true,

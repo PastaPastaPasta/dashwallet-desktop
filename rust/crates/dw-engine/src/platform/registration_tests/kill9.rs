@@ -122,7 +122,7 @@ fn registration_child() {
         return;
     };
     let (call, when) = point(&child.point);
-    let f = fixture_at(dw_testutil::private_tempdir(), &child.root, true);
+    let f = fixture_at(kill9::scratch(&child), &child.root, true);
     let lib = f.fake();
     lib.hang_at(call, when);
     let draft = f.insert(core_row(PLAIN));

@@ -70,7 +70,7 @@ fn sync_child() {
     let Some(child) = kill9::child(ROW) else {
         return;
     };
-    let f = fixture_at(dw_testutil::private_tempdir(), &child.root, true);
+    let f = fixture_at(kill9::scratch(&child), &child.root, true);
     let live = f.s.live().unwrap();
     let pause = Arc::new(TestPause::default());
     *live.tap.pause_record.lock().unwrap() = Some(Arc::clone(&pause));
@@ -87,8 +87,9 @@ fn sync_child() {
 }
 
 /// R7 at `point`; with `control`, the same store run to its end, then
-/// the engine closed and opened again.
-fn killed(point: &str, control: bool) {
+/// the engine closed and opened again. With `journal`, its journal row is
+/// checked too (#381: a kill before it leaves none).
+fn killed(point: &str, control: bool, journal: bool) {
     let f = if control {
         let dir = dw_testutil::private_tempdir();
         let root = dir.path().to_path_buf();
@@ -122,6 +123,9 @@ fn killed(point: &str, control: bool) {
         });
     });
     assert_eq!(*held.lock().unwrap(), Some(true), "wallet.sqlite has it");
+    if !journal {
+        return;
+    }
     let reference = if request { b58(DAVE) } else { TXID.into() };
     kill9::eventually("its journal row", || {
         f.journal()
@@ -133,19 +137,28 @@ fn killed(point: &str, control: bool) {
 #[test]
 #[ignore = "finding #381"]
 fn kill9_finding_381_request_stored_before_its_journal_row_is_journaled() {
-    killed("request", false);
+    killed("request", false, true);
 }
 
 #[test]
 #[ignore = "finding #381"]
 fn kill9_finding_381_payment_stored_before_its_journal_row_is_journaled() {
-    killed("payment", false);
+    killed("payment", false, true);
 }
 
 /// The rows' check, on stores that were not killed: each makes its row.
 #[test]
 #[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r7_control_stores_that_finish_are_journaled() {
-    killed("request", true);
-    killed("payment", true);
+    killed("request", true, true);
+    killed("payment", true, true);
+}
+
+/// A request or payment stored before a kill is in the wallet after the
+/// relaunch (its journal row is #381's finding).
+#[test]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
+fn kill9_r7_stores_killed_before_their_journal_row_are_in_the_wallet() {
+    killed("request", false, false);
+    killed("payment", false, false);
 }

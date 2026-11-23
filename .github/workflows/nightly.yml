@@ -306,9 +306,6 @@ jobs:
             .fuzz/logs/
           if-no-files-found: warn
 
-  # While a scheduled run is red, one open issue labelled nightly-failure names its failed jobs;
-  # the next green run closes it. A cancelled job counts as red: a job that runs out of time may
-  # be reported so. crossui-linux is non-blocking and is left out.
   # Blocking: the kill -9 matrix (H-03). Each row runs an operation in a child process (this test
   # binary), kills it with SIGKILL at a named point and checks what the relaunch finds.
   kill9:
@@ -321,18 +318,20 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
-      - name: protoc
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+      - uses: ./.github/actions/pinned-sources
       - name: kill -9 rows
         working-directory: rust
         run: cargo test -p dw-engine --lib --locked kill9 -- --ignored --skip kill9_finding
 
+  # While a scheduled run is red, one open issue labelled nightly-failure names its failed jobs;
+  # the next green run closes it. A cancelled job counts as red: a job that runs out of time may
+  # be reported so. crossui-linux is non-blocking and is left out.
   report:
     name: Report the nightly's result
     if: ${{ always() && github.event_name == 'schedule' }}

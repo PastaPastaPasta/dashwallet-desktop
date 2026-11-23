@@ -102,9 +102,18 @@ pub(crate) fn reached(child: &Child, report: &str) -> ! {
     let tmp = child.root.join("reached.tmp");
     std::fs::write(&tmp, report).unwrap();
     std::fs::rename(&tmp, child.root.join("reached")).unwrap();
-    loop {
-        std::thread::park();
+    // A parent that died never kills it: it ends on its own.
+    let start = Instant::now();
+    while start.elapsed() < 2 * WAIT {
+        std::thread::park_timeout(WAIT);
     }
+    std::process::abort();
+}
+
+/// A temporary folder inside the child's data folder, removed with it (a
+/// killed child removes nothing itself).
+pub(crate) fn scratch(child: &Child) -> tempfile::TempDir {
+    tempfile::tempdir_in(&child.root).unwrap()
 }
 
 /// Runs the child test `test` (its full path in this binary) for `row` up

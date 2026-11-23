@@ -47,7 +47,7 @@ fn topup_child() {
         return;
     };
     assert_eq!(child.point, "fund_tracked");
-    let f = fixture_at(dw_testutil::private_tempdir(), &child.root, true);
+    let f = fixture_at(kill9::scratch(&child), &child.root, true);
     let lib = f.stored_fake(None);
     lib.w().hang = Some((Call::Fund, When::Tracked));
     let grant = f.grant(DUFFS + f.fee_bound());

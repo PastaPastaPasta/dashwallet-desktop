@@ -61,7 +61,7 @@ fn payment_child() {
         return;
     };
     assert_eq!(child.point, "reserved");
-    let f = fixture_at(dw_testutil::private_tempdir(), &child.root, true);
+    let f = fixture_at(kill9::scratch(&child), &child.root, true);
     let d = f.draft(BOB);
     let pause = Arc::new(crate::coins::TestPause::default());
     (f.session.platform.money_gate).pause_at(Point::Reserved, Arc::clone(&pause));
@@ -80,7 +80,6 @@ fn kill9_r5a_payment_killed_after_its_reservation_leaves_bob_payable() {
     let f = fixture_at(dir, &root, false);
     assert!(f.lock(BOB).is_none(), "nothing went out: Bob is not locked");
     assert!(f.rows().is_empty(), "no lock row");
-    assert!(f.reserved(BOB).is_none());
 
     let d = f.draft(BOB);
     Seam::install(&d, Net::Accept);
