@@ -1637,6 +1637,20 @@ impl AppDb {
         Ok(out)
     }
 
+    /// `key`'s value in `scope`, `None` when there is none or it isn't
+    /// text: only a failed query is an error.
+    pub fn setting_lossy(&self, scope: &str, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                params![scope, key],
+                |r| Ok(r.get_ref(0)?.as_str().ok().map(str::to_owned)),
+            )
+            .optional()?
+            .flatten())
+    }
+
     // ---- DashPay identity choices ----
 
     /// The wallet's chosen main identity (DASHPAY §3.4 `dp_main_identity`).
@@ -2338,6 +2352,25 @@ mod tests {
     }
 
     /// Several settings commit together or not at all, durably.
+    #[test]
+    fn a_lossy_setting_reads_only_its_key_and_skips_a_value_that_is_not_text() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting("g", "a", Some("1")).unwrap();
+        db.set_setting("g", "ab", Some("2")).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO settings_kv (scope, key, value) VALUES ('g', 'bin', CAST(X'ff' AS TEXT)),
+                     ('g', CAST(X'61ff' AS TEXT), 'x')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(db.setting_lossy("g", "a").unwrap().as_deref(), Some("1"));
+        assert_eq!(db.setting_lossy("g", "bin").unwrap(), None);
+        assert_eq!(db.setting_lossy("g", "none").unwrap(), None);
+        assert_eq!(db.setting_lossy("h", "a").unwrap(), None);
+        assert!(db.setting("g", "bin").is_err(), "the strict read takes it");
+    }
+
     #[test]
     fn settings_in_one_batch_commit_together() {
         let dir = tempfile::tempdir().unwrap();

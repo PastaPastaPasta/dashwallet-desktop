@@ -57,6 +57,9 @@ struct FakeLibrary {
     sent: Mutex<Vec<Transaction>>,
     saved_first: Mutex<Vec<bool>>,
     db: Mutex<Option<(Arc<dw_appdb::AppDb>, String)>>,
+    /// The app database whose next sent-mark write fails once a hand-off
+    /// is made: the mark of a refused hand-off cannot be dropped.
+    break_marks: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl FakeLibrary {
@@ -66,6 +69,7 @@ impl FakeLibrary {
             sent: Mutex::default(),
             saved_first: Mutex::default(),
             db: Mutex::default(),
+            break_marks: Mutex::default(),
         })
     }
 
@@ -98,6 +102,10 @@ impl TestBroadcaster for FakeLibrary {
             self.saved_first.lock().unwrap().push(saved);
         }
         self.sent.lock().unwrap().push(tx.clone());
+        if let Some(path) = self.break_marks.lock().unwrap().take() {
+            let stage = dw_appdb::fault::Stage::Before;
+            dw_appdb::fault::arm(&path, crate::send::SENT_MARK_FAULT, stage);
+        }
         let mode = *self.mode.lock().unwrap();
         Box::pin(async move {
             match mode {
@@ -775,10 +783,6 @@ fn mg10_a_failed_sent_mark_on_a_first_hand_off_is_not_sent() {
     assert_eq!(op.state, ProTxOperationState::NotSent);
     assert_eq!(op.sent_at, None);
     assert!(op.last_error.is_some());
-    assert!(
-        f.reserved().is_empty(),
-        "the hand-off's reservation released"
-    );
 
     f.engine
         .block_on(f.mn().discard_operation(f.wallet, op.id))
@@ -849,6 +853,52 @@ fn mg10_a_resend_keeps_the_sent_mark_of_an_input_spent_since() {
         after.inputs.contains_key(&funding),
         "its details are gone: {after:?}"
     );
+}
+
+/// A first hand-off refused for want of peers whose sent mark can't be
+/// dropped never left: the row reads `not_sent` and Discard releases what
+/// it locked. After a restart its mark lists it pending, and abandoning it
+/// frees its coin.
+#[test]
+fn mg10_a_refused_hand_off_whose_mark_stays_reads_not_sent_and_can_be_discarded() {
+    let f = fx(Library::NoPeers);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    *f.lib.break_marks.lock().unwrap() = Some(path.clone());
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    dw_appdb::fault::disarm(&path);
+    assert_eq!(op.state, ProTxOperationState::NotSent, "{op:?}");
+    assert!(op.sent_at.is_none());
+    let txid = f.lib.sent()[0].txid();
+    assert!(
+        crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the mark was dropped"
+    );
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id.clone()))
+        .unwrap();
+    assert!(f.locked().is_empty(), "still locked: {:?}", f.locked());
+
+    let mut f = f;
+    f.restart(&[]);
+    let extras = f
+        .engine
+        .block_on(f.session.tx_detail_extras(f.wallet, txid))
+        .unwrap();
+    assert!(extras.can_abandon, "{extras:?}");
+    let (s, id) = (Arc::clone(&f.session), f.wallet);
+    let abandoned = f
+        .engine
+        .block_on(f.session.on_runtime(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, id, txid).await
+        }))
+        .unwrap();
+    assert!(abandoned.contains(&txid));
 }
 
 /// Control: the sent mark written, a hand-off without a verdict stays

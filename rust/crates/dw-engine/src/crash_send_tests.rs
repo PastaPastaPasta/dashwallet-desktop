@@ -934,14 +934,21 @@ fn a_spend_the_store_dropped_as_unsigned_is_not_restored_from_its_mark() {
     assert!(spendable(&engine, &session, id, a), "A is held");
 }
 
-/// key-wallet can record a payment before its event reaches the history.
-/// An Abandon of its parent marks it abandoned too, so after a restart it
-/// isn't restored pending from its saved copy, and its other coin is free
-/// once its funding is scanned.
-#[test]
-fn an_abandon_marks_a_child_key_wallet_recorded_before_the_history_did() {
+/// A child of a pending payment's change that key-wallet recorded while its
+/// event was still queued for the history: the wallet, the funding, the
+/// parent, the child and the queued events.
+fn child_recorded_before_its_event() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+    Transaction,
+    Transaction,
+    Vec<platform_wallet::key_wallet_manager::WalletEvent>,
+) {
     use platform_wallet::key_wallet_manager::WalletInterface;
-    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (dir, engine, session, id, paid) = wallet_funded_unmined();
     let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
     let parent = send(
         &engine,
@@ -964,19 +971,33 @@ fn an_abandon_marks_a_child_key_wallet_recorded_before_the_history_did() {
     );
     let manager = session.manager().unwrap();
     let recorded = child.clone();
-    engine.block_on(async move {
+    let queued = engine.block_on(async move {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
+        let mut rx = wm.subscribe_events();
         assert!(
             wm.process_mempool_transaction(&recorded, None)
                 .await
                 .is_relevant
         );
+        std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>()
     });
     assert!(
         session.hub.history.get(&id, &child.txid()).is_none(),
         "the history has the child"
     );
+    (dir, engine, session, id, paid, parent, child, queued)
+}
+
+/// key-wallet can record a payment before its event reaches the history.
+/// An Abandon of its parent marks it abandoned too, so after a restart it
+/// isn't restored pending from its saved copy, and its other coin is free
+/// once its funding is scanned.
+#[test]
+fn an_abandon_marks_a_child_key_wallet_recorded_before_the_history_did() {
+    let (_dir, engine, session, id, paid, parent, child, _queued) =
+        child_recorded_before_its_event();
+    let b = OutPoint::new(paid.txid(), 1);
     abandon(&engine, &session, id, parent.txid());
 
     let session = reopen(&engine, session);
@@ -986,6 +1007,121 @@ fn an_abandon_marks_a_child_key_wallet_recorded_before_the_history_did() {
     );
     mined(&engine, &session, id, TIP, vec![paid.clone()]);
     assert!(spendable(&engine, &session, id, b), "B stays held");
+}
+
+/// What an abandoned child must read like: abandoned, not resent, and none
+/// of its outputs offered.
+fn assert_child_gone(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    child: &Transaction,
+    state: &str,
+) {
+    assert!(
+        (session.hub.history.get(&id, &child.txid())).is_none_or(|e| e.is_abandoned()),
+        "{state}: the child reads pending"
+    );
+    let extras = engine
+        .block_on(session.tx_detail_extras(id, child.txid()))
+        .ok();
+    assert!(
+        extras.as_ref().is_none_or(|x| !x.can_resend),
+        "{state}: {extras:?}"
+    );
+    let resent = engine.block_on(session.resend_transaction(id, child.txid()));
+    assert!(
+        matches!(
+            resent,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::AlreadyAbandoned
+            ))
+        ),
+        "{state}: {resent:?}"
+    );
+    for o in outputs(child) {
+        assert!(
+            !spendable(engine, session, id, o),
+            "{state}: {o} is offered"
+        );
+    }
+}
+
+/// The child's event, queued before the Abandon and delivered after it,
+/// doesn't bring it back: it reads abandoned and can't be resent, its
+/// outputs are neither counted nor offered, and its inputs aren't claimed
+/// again. The same holds after a restart.
+#[test]
+fn a_queued_event_of_an_abandoned_child_does_not_bring_it_back() {
+    use dash_spv::EventHandler;
+    let (_dir, engine, session, id, paid, parent, child, queued) =
+        child_recorded_before_its_event();
+    assert!(!queued.is_empty(), "no event was queued");
+    abandon(&engine, &session, id, parent.txid());
+    let abandoned_coins = held(&engine, &session, id);
+    let abandoned = assert_holds(&engine, &session, id, &abandoned_coins, "abandoned");
+    for event in &queued {
+        session.hub.on_wallet_event(event);
+    }
+    assert_child_gone(&engine, &session, id, &child, "the event delivered");
+    assert_eq!(
+        assert_holds(
+            &engine,
+            &session,
+            id,
+            &abandoned_coins,
+            "the event delivered"
+        ),
+        abandoned,
+        "the event changed the balance"
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let want = outputs(&paid);
+    assert_holds(&engine, &session, id, &want, "the funding scanned");
+    assert_child_gone(&engine, &session, id, &child, "the funding scanned");
+
+    let session = reopen(&engine, session);
+    assert_child_gone(&engine, &session, id, &child, "reopened");
+    assert_holds(&engine, &session, id, &want, "reopened");
+}
+
+/// The child's queued event arrives after a restart, with the Abandon
+/// stored: the child stays abandoned and can't be resent, and nothing of it
+/// is counted, claimed again or offered.
+#[test]
+fn a_queued_event_of_an_abandoned_child_after_a_restart_does_not_bring_it_back() {
+    use dash_spv::EventHandler;
+    let (_dir, engine, session, id, paid, parent, child, queued) =
+        child_recorded_before_its_event();
+    abandon(&engine, &session, id, parent.txid());
+
+    let session = reopen(&engine, session);
+    let restarted_coins = held(&engine, &session, id);
+    let restarted = assert_holds(&engine, &session, id, &restarted_coins, "reopened");
+    for event in &queued {
+        session.hub.on_wallet_event(event);
+    }
+    assert_child_gone(&engine, &session, id, &child, "the event delivered");
+    assert_eq!(
+        assert_holds(
+            &engine,
+            &session,
+            id,
+            &restarted_coins,
+            "the event delivered"
+        ),
+        restarted,
+        "the event changed the balance"
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert_holds(
+        &engine,
+        &session,
+        id,
+        &outputs(&paid),
+        "the funding scanned",
+    );
+    assert_child_gone(&engine, &session, id, &child, "the funding scanned");
 }
 
 /// A height-only row without a height (an unconfirmed coin's) beside a
@@ -1062,5 +1198,129 @@ fn an_abandoned_payment_of_a_coin_funded_without_a_record_stays_a_payment_two_st
     assert!(
         second.as_ref().is_some_and(|r| r.3 < 0),
         "second start: {second:?}"
+    );
+}
+
+/// A lone payment whose saved copy is damaged, with no other payment
+/// pending, keeps its coin out after a restart and a scan of its funding
+/// block (the damaged-copy fallback did nothing when no readable payment
+/// was pending).
+#[test]
+fn a_lone_damaged_copy_keeps_its_coin_out() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let damaged = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    let scope = id.to_string();
+    (session.live().unwrap().appdb)
+        .set_setting(&scope, &format!("senttx:{}", damaged.txid()), Some("zz"))
+        .unwrap();
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+    assert!(!held(&engine, &session, id).contains(&a), "A is counted");
+}
+
+/// A sent mark whose coin list doesn't read (not text, or a coin that
+/// doesn't parse) still holds the payment's coin: it is read from the
+/// payment's input details, or else its saved copy. After a restart and a
+/// scan of the funding block, A is neither offered nor counted.
+#[test]
+fn a_sent_mark_whose_coins_do_not_read_keeps_its_coin_out() {
+    for (damage, lose_inputs) in [
+        ("CAST(X'ff' AS TEXT)", false),
+        ("'zz'", false),
+        ("CAST(X'ff' AS TEXT)", true),
+    ] {
+        let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+        let a = OutPoint::new(paid.txid(), 0);
+        let payment = send(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(vec![a]),
+            COIN / 2,
+            false,
+        );
+        let conn =
+            rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let key = format!("sent:{}", payment.txid());
+        conn.execute(
+            &format!("UPDATE settings_kv SET value = {damage} WHERE scope = ?1 AND key = ?2"),
+            [id.to_string(), key],
+        )
+        .unwrap();
+        if lose_inputs {
+            conn.execute(
+                "DELETE FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                [id.to_string(), format!("sentin:{}", payment.txid())],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let session = reopen(&engine, session);
+        mined(&engine, &session, id, TIP, vec![paid.clone()]);
+        let state = format!("{damage}, input details lost: {lose_inputs}");
+        assert!(
+            !spendable(&engine, &session, id, a),
+            "{state}: A is offered"
+        );
+        assert!(
+            !held(&engine, &session, id).contains(&a),
+            "{state}: A is counted"
+        );
+    }
+}
+
+/// Remove unconfirmed transactions whose delete of a damaged payment's
+/// marks fails says so and doesn't count it: the marks stay, so after a
+/// restart its coin is still held, as the payment is still recorded.
+#[test]
+fn remove_unconfirmed_counts_a_damaged_payment_only_once_its_marks_are_gone() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let damaged = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    let scope = id.to_string();
+    (session.live().unwrap().appdb)
+        .set_setting(&scope, &format!("senttx:{}", damaged.txid()), Some("zz"))
+        .unwrap();
+    let session = reopen(&engine, session);
+    engine.block_on(session.start_spv()).unwrap();
+    super::own_spend_disk_tests::eventually("SPV runs", || {
+        session.spv_state().unwrap() == crate::SpvState::Running
+    });
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::Before;
+    dw_appdb::fault::arm(&path, crate::tx_actions::FORGET_SENT_FAULT, stage);
+    let removed = engine.block_on(session.drop_unconfirmed(Some(id)));
+    dw_appdb::fault::disarm(&path);
+    assert!(removed.is_err(), "counted as removed: {removed:?}");
+    assert!(
+        sent_marks(&session, id).contains(&damaged.txid()),
+        "the marks went"
+    );
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "A is offered after a restart"
     );
 }

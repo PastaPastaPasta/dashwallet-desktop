@@ -128,8 +128,10 @@ fn engine_wallet() -> (tempfile::TempDir, Engine, Arc<NetworkSession>, WalletId)
 }
 
 /// Closes the network and opens it again: the wallet comes back from its
-/// store.
+/// store. What holds the load fence (a wallet load, the shielded start) can
+/// outlast the close's 30 s wait on a loaded machine.
 fn reopen(engine: &Engine, session: Arc<NetworkSession>) -> Arc<NetworkSession> {
+    *session.close_load_wait.lock().unwrap() = Some(std::time::Duration::from_secs(180));
     drop(session);
     assert!(
         engine

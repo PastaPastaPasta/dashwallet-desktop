@@ -579,6 +579,10 @@ pub(crate) struct SessionHub {
     pub(crate) unreadable_record: Mutex<(Option<dashcore::Txid>, Option<dashcore::Txid>)>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next abandon after its marks are written, before
+    /// its sweep.
+    #[cfg(test)]
+    pub(crate) pause_abandon_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: the next abandon's write of its abandoned marks fails.
     #[cfg(test)]
     pub(crate) fail_abandon_mark: std::sync::atomic::AtomicBool,
@@ -734,6 +738,8 @@ impl SessionHub {
             unreadable_record: Mutex::default(),
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
+            #[cfg(test)]
+            pause_abandon_sweep: Mutex::new(None),
             #[cfg(test)]
             fail_abandon_mark: Default::default(),
             #[cfg(test)]
@@ -1390,7 +1396,12 @@ impl SessionHub {
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
-                if self.update_balance(id, balance, account_balances) {
+                // Queued before an Abandon took it: its balance is older.
+                let abandoned = matches!(record.context, TransactionContext::Mempool)
+                    && (self.history).read_wallet(&id, |h| {
+                        h.txs.get(&record.txid).is_some_and(|e| e.abandoned)
+                    });
+                if !abandoned && self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
                 }
                 // First seen through its InstantSend lock: evidence. In
@@ -1446,8 +1457,10 @@ impl SessionHub {
                         h.swept.insert(*t);
                     }
                 });
-                if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
-                    crate::tx_actions::forget_sent(&appdb, id, txids);
+                if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade)
+                    && let Err(e) = crate::tx_actions::forget_sent(&appdb, id, txids)
+                {
+                    tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments");
                 }
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {
@@ -1790,7 +1803,9 @@ impl PumpTarget for SessionPump {
                 let marked: Vec<Txid> = (txids.into_iter())
                     .filter(|t| sent.contains_key(t))
                     .collect();
-                crate::tx_actions::forget_sent(&appdb, wallet_id, &marked);
+                if let Err(e) = crate::tx_actions::forget_sent(&appdb, wallet_id, &marked) {
+                    tracing::warn!(wallet = %wallet_id, error = %e, "could not drop the marks of settled payments");
+                }
             }
         };
         #[cfg(test)]

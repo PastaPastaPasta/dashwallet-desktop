@@ -403,9 +403,6 @@ pub(crate) fn unmined_own_spends(
         .filter_map(|(t, mark)| Some((t, &mark.coins, txs.get(t)?)))
         .filter(|(_, _, e)| e.context.block_info().is_none() && !e.is_abandoned())
         .collect();
-    if candidates.is_empty() {
-        return Vec::new();
-    }
     let mut spenders: HashMap<OutPoint, Vec<(&Txid, &TxEntry)>> = HashMap::new();
     for (w, we) in txs {
         for i in &we.tx.input {

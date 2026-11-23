@@ -552,7 +552,13 @@ impl NetworkSession {
         let code = error_code;
         // An error before the hand-off (the sent mark's write) leaves the
         // transaction pending: nothing was handed off.
-        let end = if prepared.released() || (outcome.is_err() && prepared.pending()) {
+        let held = matches!(
+            &outcome,
+            Err(EngineError::Send(
+                crate::send::SendFailure::HeldUntilRestart
+            ))
+        );
+        let end = if prepared.released() || (outcome.is_err() && prepared.pending()) || held {
             AttemptEnd::NotSent {
                 first: !earlier,
                 error: outcome

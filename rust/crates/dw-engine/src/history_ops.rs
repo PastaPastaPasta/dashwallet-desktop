@@ -380,7 +380,10 @@ impl NetworkSession {
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
                     let (mut sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
-                    sent.retain(|t, _| !persisted.dropped.contains(t));
+                    sent.retain(|t, _| {
+                        !persisted.dropped.contains(t) && !abandoned.unread.contains(t)
+                    });
+                    let abandoned = abandoned.copies;
                     let stored: HashSet<Txid> = match clean {
                         true => (persisted.records.into_iter())
                             .chain(persisted.recordless)
@@ -537,10 +540,7 @@ impl NetworkSession {
         let settled = self.proven_settled(candidates, own).await;
         if !settled.is_empty() {
             let forgotten = self
-                .appdb_op(move |db| {
-                    crate::tx_actions::forget_sent(db, wallet, &settled);
-                    Ok(())
-                })
+                .appdb_op(move |db| crate::tx_actions::forget_sent(db, wallet, &settled))
                 .await;
             if let Err(e) = forgotten {
                 tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments");
@@ -714,9 +714,9 @@ impl NetworkSession {
                 history.upsert(r, None);
             }
             let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
-            history.mark_abandoned(&abandoned);
+            history.mark_abandoned(&abandoned.copies);
             let (mut sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
-            sent.retain(|t, _| !persisted.dropped.contains(t));
+            sent.retain(|t, _| !persisted.dropped.contains(t) && !abandoned.unread.contains(t));
             if !(read && marks_read && sent_read) {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
                 return (history, crate::tx_actions::Sent::new());

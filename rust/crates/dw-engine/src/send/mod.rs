@@ -1905,11 +1905,14 @@ pub(crate) fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) ->
     match result {
         Ok(_) => Outcome::Sent,
         // `Cancelled`: a First past its deadline, never dispatched (L5).
+        // `HeldUntilRestart`: one of these whose sent mark could not be
+        // dropped.
         Err(EngineError::Send(
             SendFailure::NoPeers
             | SendFailure::BroadcastRejected { .. }
             | SendFailure::PreparedTxSpent
-            | SendFailure::Cancelled,
+            | SendFailure::Cancelled
+            | SendFailure::HeldUntilRestart,
         ))
         | Err(EngineError::NetworkNotOpen(_) | EngineError::WalletNotFound(_)) => Outcome::NotSent,
         Err(_) => Outcome::MaybeSent,
@@ -1918,20 +1921,28 @@ pub(crate) fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) ->
 
 /// How a stored hand-off code reads (MG-10 §4.4 rule 3): `Refused` exactly
 /// for the codes of the errors [`attempt_outcome`] calls `NotSent`
-/// (dw-appdb `INHERITED_REFUSED_CODES`); anything else, the resend marker
-/// included, may have left.
+/// (dw-appdb `INHERITED_REFUSED_CODES`, and [`REFUSED_SINCE_INHERITED`]); anything else, the
+/// resend marker included, may have left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HandoffOutcome {
     Refused,
     Unknown,
 }
 
+/// Refusal codes newer than the migration that rewrote the inherited ones.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "read by the shared recovery read (MG-10 EP 4)")
+)]
+pub(crate) const REFUSED_SINCE_INHERITED: &[&str] = &["send.held_until_restart"];
+
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "read by the shared recovery read (MG-10 EP 4)")
 )]
 pub(crate) fn outcome_of_code(code: &str) -> HandoffOutcome {
-    if dw_appdb::INHERITED_REFUSED_CODES.contains(&code) {
+    if dw_appdb::INHERITED_REFUSED_CODES.contains(&code) || REFUSED_SINCE_INHERITED.contains(&code)
+    {
         HandoffOutcome::Refused
     } else {
         HandoffOutcome::Unknown
@@ -2350,14 +2361,9 @@ impl TxDraft {
                 db.fault_point(SENT_MARK_FAULT, dw_appdb::fault::Stage::Before)?;
                 // A repeat's summary can lack coins spent since: what an
                 // earlier write saved of `ours` stays.
-                let stored = |key: &str| -> Result<Option<String>, dw_appdb::AppDbError> {
-                    Ok((db.settings_with_prefix_lossy(&scope, key)?.into_iter())
-                        .find(|(k, _)| k == key)
-                        .and_then(|(_, v)| v))
-                };
                 let merged = |key: &str, new: Option<String>| {
                     let Some(new) = new else { return Ok(None) };
-                    let old = stored(key)?.unwrap_or_default();
+                    let old = db.setting_lossy(&scope, key)?.unwrap_or_default();
                     let kept = (old.split(',')).filter(|e| {
                         let outpoint = e.split(' ').next().and_then(|o| OutPoint::from_str(o).ok());
                         outpoint.is_some_and(|o| ours.contains(&o))

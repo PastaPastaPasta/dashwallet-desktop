@@ -1020,20 +1020,27 @@ fn stored_unspent(session: &NetworkSession, id: WalletId, outpoint: OutPoint) ->
 
 /// wallet.sqlite's `spent` flag of `outpoint` for `id`; `None` without a row.
 fn stored_spent(session: &NetworkSession, id: WalletId, outpoint: OutPoint) -> Option<bool> {
-    use dashcore::hashes::Hash;
     use platform_wallet::changeset::PlatformWalletPersistence;
-    use rusqlite::OptionalExtension;
     session.live().unwrap().persister.flush(id.0).unwrap();
+    stored_spent_at(
+        &session.data_dir().join(crate::session::WALLET_DB_FILE),
+        id,
+        outpoint,
+    )
+}
+
+/// [`stored_spent`] read from the wallet store at `db`, with no session.
+fn stored_spent_at(db: &std::path::Path, id: WalletId, outpoint: OutPoint) -> Option<bool> {
+    use dashcore::hashes::Hash;
+    use rusqlite::OptionalExtension;
     assert!(outpoint.vout < 251);
     let key: Vec<u8> = (std::iter::once(32))
         .chain(outpoint.txid.to_byte_array())
         .chain([outpoint.vout as u8])
         .collect();
-    let conn = rusqlite::Connection::open_with_flags(
-        session.data_dir().join(crate::session::WALLET_DB_FILE),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .unwrap();
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
     conn.query_row(
         "SELECT spent FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
         rusqlite::params![&id.0[..], key],
@@ -1197,7 +1204,9 @@ fn try_abandon(
 }
 
 fn abandoned_marks(session: &NetworkSession, id: WalletId) -> BTreeSet<Txid> {
-    (crate::tx_actions::load_abandoned(&session.live().unwrap().appdb, id).0)
+    (crate::tx_actions::load_abandoned(&session.live().unwrap().appdb, id)
+        .0
+        .copies)
         .into_iter()
         .map(|(t, _)| t)
         .collect()
@@ -1875,6 +1884,12 @@ fn a_failed_read_of_the_sent_marks_fails_the_start_until_it_reads() {
         engine.block_on(engine.open_network(crate::DashNetwork::Regtest, super::offline()));
     assert!(failed.is_err(), "the start swept with nothing released");
     dw_appdb::fault::disarm(&path);
+    let wallet_db = path.with_file_name(crate::session::WALLET_DB_FILE);
+    assert_eq!(
+        stored_spent_at(&wallet_db, id, a),
+        Some(true),
+        "the failed start released A"
+    );
 
     let session = super::open(&engine);
     assert_eq!(
@@ -2119,4 +2134,92 @@ fn opening_a_wallet_finishes_its_half_done_abandon() {
         &paid_outputs(&paid),
         "opened, then scanned",
     );
+}
+
+/// One payment's damaged abandoned mark doesn't drop the claims of the
+/// others: a healthy pending payment's coin stays out of coin selection
+/// and the balance after a restart and a scan of its funding block.
+#[test]
+fn a_bad_abandoned_mark_leaves_a_healthy_payments_coin_out() {
+    let (_dir, engine, session, id, payment, a, paid) = pending_payment_of_one_coin();
+    let c = change_of(&payment, &own_scripts(&engine, &session, id));
+    let conn = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    conn.execute(
+        "INSERT INTO settings_kv (scope, key, value) VALUES (?1, CAST(X'6162616e646f6e65643aff' AS TEXT), '')",
+        [id.to_string()],
+    )
+    .unwrap();
+    drop(conn);
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+    let mut want = paid_outputs(&paid);
+    want.remove(&a);
+    want.insert(c);
+    assert_holds(&engine, &session, id, &want, "A is counted");
+}
+
+/// Resend is never offered or done for a payment whose Abandon committed
+/// its mark: while the Abandon is between its mark and its sweep, and
+/// after a sweep that failed, also after a restart.
+#[test]
+fn a_payment_marked_abandoned_is_never_resent() {
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    let refused = |session: &Arc<NetworkSession>| {
+        let extras = engine.block_on(session.tx_detail_extras(id, txid)).ok();
+        assert!(extras.as_ref().is_none_or(|x| !x.can_resend), "{extras:?}");
+        let resent = engine.block_on(session.resend_transaction(id, txid));
+        assert!(
+            matches!(
+                resent,
+                Err(crate::EngineError::TxActionRefused(
+                    crate::tx_actions::TxActionRefusal::AlreadyAbandoned
+                ))
+            ),
+            "{resent:?}"
+        );
+    };
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_abandon_sweep.lock().unwrap() = Some(Arc::clone(&pause));
+    let abandoning = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, id, txid).await
+        })
+    };
+    eventually("the abandon reached its sweep", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    refused(&session);
+    fail_the_next_sweep(&session);
+    pause.release.notify_one();
+    assert!(
+        engine.block_on(abandoning).unwrap().is_err(),
+        "the sweep was stored"
+    );
+    refused(&session);
+
+    let session = reopen(&engine, session);
+    refused(&session);
+}
+
+/// Remove unconfirmed transactions whose read of the sent marks fails says
+/// so, rather than reporting nothing removed.
+#[test]
+fn remove_unconfirmed_fails_when_the_sent_marks_do_not_read() {
+    let (_dir, engine, session, id, _payment, _a, _paid) = pending_payment_of_one_coin();
+    engine.block_on(session.start_spv()).unwrap();
+    eventually("SPV runs", || {
+        session.spv_state().unwrap() == crate::SpvState::Running
+    });
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    dw_appdb::fault::arm(&path, "settings.read_sent:", dw_appdb::fault::Stage::Before);
+    let removed = engine.block_on(session.drop_unconfirmed(Some(id)));
+    dw_appdb::fault::disarm(&path);
+    assert!(removed.is_err(), "{removed:?}");
 }

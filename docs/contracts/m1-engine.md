@@ -420,6 +420,13 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
     outcome). The `PreparedTx` stays pending: it can be broadcast again as a first dispatch or abandoned, and
     dropping it releases its inputs. Hosts treat these as definite failures; only `send.broadcast_unknown` means
     the outcome of a first broadcast is unknown.
+  - held until a restart: when a first `broadcast` was definitely not sent (any of the rejections above) but the
+    payment's sent record could not be removed, it returns `send.held_until_restart`. When the sent record's first
+    write and its removal both failed, it returns `storage`. Either way the handle is held for the session: a
+    repeated `broadcast` and `abandon` are refused with that same error, nothing is handed to the network, and its
+    inputs stay reserved. After a restart, a payment whose record was stored is listed pending from it (Abandon
+    frees its coins); one whose record never reached the disk is not listed and its coins are free, so an Activity
+    entry is not guaranteed.
 
   An unknown-outcome payment's inputs stay `reserved` (excluded from selection and from `max_spendable`) until
   the wallet sees them spent, by the payment itself or by a conflicting transaction: every coin read drops the
