@@ -2014,7 +2014,7 @@ fn a_grandchild_credited_between_the_plan_and_the_sweep_is_never_left_credited()
     let manager_held = engine.block_on(async {
         let manager = session.manager().unwrap();
         let wm = manager.wallet_manager_arc();
-        wm.try_write().is_err()
+        wm.try_read().is_err()
     });
     pause.release.notify_one();
     let result = engine.block_on(abandoning).unwrap();
@@ -2410,27 +2410,36 @@ fn abandoning_an_unlocked_payment_takes_a_grandchild_the_history_has_not_heard()
     assert!(spendable(&engine, &session, id, u), "U is not offered");
 }
 
-/// A payment to a contact, and the contact's spend of it to another of
-/// their addresses, which key-wallet holds in the wallet's account for
-/// that contact: abandoning the payment
-/// leaves the contact's spend alone, with no abandoned mark and out of the
-/// history, after a restart too.
-#[test]
-fn abandoning_a_payment_to_a_contact_leaves_the_contacts_spend_of_it() {
+/// The key of a DashPay contact's account paid by this wallet (a test key).
+fn contact_key() -> key_wallet::bip32::ExtendedPrivKey {
+    key_wallet::bip32::ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[101; 32]).unwrap()
+}
+
+/// The contact's address at `index`, of the account [`contact_key`] holds.
+fn contact_address(index: u32) -> Address {
+    let xpub = key_wallet::bip32::ExtendedPubKey::from_priv(&contact_key());
+    let child = xpub
+        .derive_pub(&[key_wallet::bip32::ChildNumber::Normal { index }])
+        .unwrap();
+    Address::p2pkh(
+        &dashcore::PublicKey::new(child.public_key),
+        dashcore::Network::Regtest,
+    )
+}
+
+/// Adds to wallet `id` its account for the contact of [`contact_key`], as
+/// an accepted contact request leaves it.
+fn add_contact_account(engine: &Engine, session: &NetworkSession, id: WalletId) {
     use key_wallet::account::AccountType;
     use key_wallet::managed_account::ManagedCoreFundsAccount;
-    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
-    let master =
-        key_wallet::bip32::ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[101; 32])
-            .unwrap();
-    let xpub = key_wallet::bip32::ExtendedPubKey::from_priv(&master);
+    let xpub = key_wallet::bip32::ExtendedPubKey::from_priv(&contact_key());
     let account_type = AccountType::DashpayExternalAccount {
         index: 0,
         user_identity_id: [1; 32],
         friend_identity_id: [2; 32],
     };
     let manager = session.manager().unwrap();
-    engine.block_on(async {
+    engine.block_on(async move {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
         let (w, info) = wm.get_wallet_mut_and_info_mut(&id.0).unwrap();
@@ -2446,63 +2455,107 @@ fn abandoning_a_payment_to_a_contact_leaves_the_contacts_spend_of_it() {
             .insert_funds_bearing_account(managed)
             .unwrap();
     });
-    let contact_at = |index| {
-        let child = xpub
-            .derive_pub(&[key_wallet::bip32::ChildNumber::Normal { index }])
-            .unwrap();
-        Address::p2pkh(
-            &dashcore::PublicKey::new(child.public_key),
-            dashcore::Network::Regtest,
+}
+
+/// `tx` with input `input` signed by the contact's key for their address
+/// at `index`, the address the coin it spends pays.
+fn signed_by_contact(mut tx: Transaction, input: usize, index: u32) -> Transaction {
+    let sighash = dashcore::sighash::SighashCache::new(&tx)
+        .legacy_signature_hash(
+            input,
+            &contact_address(index).script_pubkey(),
+            dashcore::sighash::EcdsaSighashType::All.to_u32(),
         )
-    };
-    let contact = contact_at(0);
+        .unwrap();
+    let key = (contact_key().derive_priv(&[key_wallet::bip32::ChildNumber::Normal { index }]))
+        .unwrap()
+        .private_key;
+    let sig = key.sign_ecdsa(dashcore::secp256k1::Message::from_digest(
+        *sighash.as_byte_array(),
+    ));
+    tx.input[input].script_sig = dashcore::blockdata::script::Builder::new()
+        .push_slice(dashcore::ecdsa::Signature::sighash_all(sig).serialize())
+        .push_key(&dashcore::PublicKey::new(
+            dashcore::secp256k1::PublicKey::from_secret_key(&key),
+        ))
+        .into_script();
+    tx
+}
+
+/// Whether key-wallet holds `txid` in a contact's account, or in one of
+/// the wallet's own.
+fn held_in(engine: &Engine, session: &NetworkSession, id: WalletId, txid: Txid) -> (bool, bool) {
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm.get_wallet_info(&id.0).unwrap();
+        let (contacts, own): (Vec<_>, Vec<_>) = (info.core_wallet.accounts.all_accounts())
+            .into_iter()
+            .partition(|a| a.managed_account_type().is_contact_owned());
+        let holds = |accounts: &[_]| {
+            accounts
+                .iter()
+                .any(|a: &key_wallet::managed_account::ManagedAccountRef<'_>| {
+                    a.transactions().contains_key(&txid)
+                })
+        };
+        (holds(&contacts), holds(&own))
+    })
+}
+
+/// The wallet's payment of coin 0 of `paid` to the contact's address 0,
+/// in the mempool and stored; and the contact's spend of it to their
+/// address 1, signed, which key-wallet holds in the contact's account
+/// only.
+fn paid_to_a_contact_who_spends_it(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    paid: &Transaction,
+) -> (Transaction, Transaction) {
+    add_contact_account(engine, session, id);
+    let contact = contact_address(0);
     let payment = send_to(
-        &engine,
-        &session,
+        engine,
+        session,
         id,
         CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 0)]),
         &contact.to_string(),
         COIN / 2,
         false,
     );
-    mempool(&engine, &session, id, &payment);
-    wait_stored(&session, id, &[payment.txid()]);
+    mempool(engine, session, id, &payment);
+    wait_stored(session, id, &[payment.txid()]);
     let to_contact = (payment.output.iter())
         .position(|o| o.script_pubkey == contact.script_pubkey())
         .unwrap();
-    let mut theirs = super::spend_of(
-        OutPoint::new(payment.txid(), to_contact as u32),
-        vec![(contact_at(1).script_pubkey(), COIN / 2 - 1_000)],
+    let theirs = signed_by_contact(
+        super::spend_of(
+            OutPoint::new(payment.txid(), to_contact as u32),
+            vec![(contact_address(1).script_pubkey(), COIN / 2 - 1_000)],
+        ),
+        0,
+        0,
     );
-    let sighash = dashcore::sighash::SighashCache::new(&theirs)
-        .legacy_signature_hash(
-            0,
-            &contact.script_pubkey(),
-            dashcore::sighash::EcdsaSighashType::All.to_u32(),
-        )
-        .unwrap();
-    let key = (master.derive_priv(&[key_wallet::bip32::ChildNumber::Normal { index: 0 }]))
-        .unwrap()
-        .private_key;
-    let sig = key.sign_ecdsa(dashcore::secp256k1::Message::from_digest(
-        *sighash.as_byte_array(),
-    ));
-    theirs.input[0].script_sig = dashcore::blockdata::script::Builder::new()
-        .push_slice(dashcore::ecdsa::Signature::sighash_all(sig).serialize())
-        .push_key(&dashcore::PublicKey::new(
-            dashcore::secp256k1::PublicKey::from_secret_key(&key),
-        ))
-        .into_script();
-    credited_unheard(&engine, &session, id, &theirs);
-    let in_contacts = engine.block_on(async {
-        let wm = manager.wallet_manager_arc();
-        let wm = wm.read().await;
-        let info = wm.get_wallet_info(&id.0).unwrap();
-        (info.core_wallet.accounts.all_accounts().into_iter())
-            .filter(|a| a.managed_account_type().is_contact_owned())
-            .any(|a| a.transactions().contains_key(&theirs.txid()))
-    });
-    assert!(in_contacts, "key-wallet does not hold the contact's spend");
+    credited_unheard(engine, session, id, &theirs);
+    assert_eq!(
+        held_in(engine, session, id, theirs.txid()),
+        (true, false),
+        "key-wallet holds the contact's spend in their account only"
+    );
+    (payment, theirs)
+}
+
+/// A payment to a contact, and the contact's spend of it to another of
+/// their addresses, which key-wallet holds in the wallet's account for
+/// that contact. Abandoning the payment writes no abandoned mark for the
+/// contact's spend and leaves it out of Activity, after a restart too.
+/// (key-wallet and the store's sweep still drop it with the payment.)
+#[test]
+fn abandoning_a_payment_to_a_contact_marks_nothing_of_the_contacts_spend() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (payment, theirs) = paid_to_a_contact_who_spends_it(&engine, &session, id, &paid);
     start_spv(&engine, &session);
 
     abandon(&engine, &session, id, payment.txid());
@@ -2516,14 +2569,68 @@ fn abandoning_a_payment_to_a_contact_leaves_the_contacts_spend_of_it() {
         "the contact's spend is marked abandoned"
     );
     assert!((session.hub.history).get(&id, &theirs.txid()).is_none());
-    drop(manager);
     let session = reopen(&engine, session);
     assert!(abandoned(&engine, &session, id, payment.txid()));
     assert_eq!(mark(&session), None);
     assert!(
         (session.hub.history).get(&id, &theirs.txid()).is_none(),
-        "the contact's spend is in the history after a restart"
+        "the contact's spend is in Activity after a restart"
     );
+}
+
+/// The shape above, and a spend E of the contact's output and the
+/// wallet's coin U (signed by both), which key-wallet credits and stores
+/// in the wallet's own account and the history has not heard of.
+/// key-wallet's walk reaches E only through the contact's spend, so the
+/// abandon of the payment takes E: E is Abandoned and U is released in
+/// the store at once and after a restart, then offered once its funding
+/// is mined.
+#[test]
+fn abandoning_a_payment_to_a_contact_releases_a_coin_of_a_spend_behind_the_contacts() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (payment, theirs) = paid_to_a_contact_who_spends_it(&engine, &session, id, &paid);
+    let u = OutPoint::new(paid.txid(), 5);
+    let to = fresh_address(&engine, &session, id);
+    let mut spend = super::spend_of(u, vec![(to.script_pubkey(), COIN)]);
+    spend.input.push(TxIn {
+        previous_output: OutPoint::new(theirs.txid(), 0),
+        ..Default::default()
+    });
+    let owner = Address::from_script(
+        &paid.output[u.vout as usize].script_pubkey,
+        dashcore::Network::Regtest,
+    )
+    .unwrap();
+    let mut both = super::signed_by_wallet(&engine, &session, id, &owner, spend);
+    both = signed_by_contact(both, 1, 1);
+    let late = credited_with_late_events(&engine, &session, id, &both);
+    wait_stored(&session, id, &[both.txid()]);
+    assert!(held_in(&engine, &session, id, both.txid()).1);
+    assert!((session.hub.history).get(&id, &both.txid()).is_none());
+    assert!((session.hub.history).get(&id, &theirs.txid()).is_none());
+    start_spv(&engine, &session);
+
+    abandon(&engine, &session, id, payment.txid());
+    for event in &late {
+        session.hub.apply_wallet_event(event);
+    }
+    let mut session = session;
+    for state in ["the abandon", "a restart after"] {
+        if state != "the abandon" {
+            session = reopen(&engine, session);
+        }
+        let row = stored_row(&session, id, u);
+        assert!(
+            row.is_some_and(|(spent, _)| !spent),
+            "{state}: U is not released in the store: {row:?}"
+        );
+        assert!(
+            abandoned(&engine, &session, id, both.txid()),
+            "{state}: the spend behind the contact's"
+        );
+    }
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(spendable(&engine, &session, id, u), "U is not offered");
 }
 
 /// A single Abandon of a locked payment a ChainLock beat, stopped after

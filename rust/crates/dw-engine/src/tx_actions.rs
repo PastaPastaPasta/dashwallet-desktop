@@ -211,8 +211,7 @@ struct Facts {
     /// transaction pays one of this wallet's change addresses: a payment of
     /// this wallet whose coins it does not know yet.
     debit_unknown: bool,
-    /// Some inputs are not known to be this wallet's coins or another's
-    /// (their funding transaction is not known).
+    /// Some inputs are not known to be this wallet's.
     inputs_unresolved: bool,
     matures_in: Option<u32>,
 }
@@ -635,17 +634,18 @@ impl NetworkSession {
             let (descendants, links) = (self.hub.history).read(&wallet, |txs| {
                 unmined_descendants(txs, &info.core_wallet, root)
             });
-            // A descendant the history has not heard of is marked from
-            // key-wallet's copy.
+            let (planned, overridden) =
+                self.plan_abandon(wallet, root, &descendants, &proof, &info.core_wallet)?;
+            // What key-wallet abandons and the history has not heard of is
+            // marked, and its coins released, from key-wallet's copy in this
+            // wallet's own accounts.
             let copies: HashMap<Txid, Transaction> = (info.core_wallet.accounts.all_accounts())
                 .into_iter()
                 .filter(|a| !a.managed_account_type().is_contact_owned())
                 .flat_map(|a| a.transactions().iter())
-                .filter(|(t, _)| descendants.contains(t))
+                .filter(|(t, _)| planned.contains(*t))
                 .map(|(t, r)| (*t, r.transaction.clone()))
                 .collect();
-            let (planned, overridden) =
-                self.plan_abandon(wallet, root, &descendants, &proof, &info.core_wallet)?;
             let checkpoint = self.abandon_rewind(wallet, &planned, &links, &info.core_wallet);
             if let Some(checkpoint) = checkpoint {
                 self.record_rewind_locked(wallet, info, checkpoint).await?;
