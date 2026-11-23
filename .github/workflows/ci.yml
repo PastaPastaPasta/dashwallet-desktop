@@ -13,8 +13,9 @@
 #   the fixture sources' literals in production), the guard's negative control, and the test of
 #   tauri-selftest.yml's report judge.
 # - ui-playwright: Playwright on the fixture backend in Chromium and WebKit, light and dark, with
-#   axe, inside the pinned Playwright image and without Rust or the engine (U-07). Same commands
-#   locally: apps/desktop/scripts/e2e-docker.sh.
+#   axe, inside the pinned Playwright image and without Rust or the engine (U-07), in two shards
+#   (ui-playwright-shard) whose reports it merges. Same commands locally:
+#   apps/desktop/scripts/e2e-docker.sh.
 # - e2e-tauri-linux: tauri-driver drives the real app on the real engine (a dwcli regtest wallet)
 #   under Xvfb: apps/desktop/scripts/e2e-tauri.sh (launch link, second-launch forwarding, U-01).
 # - deep-links: on Linux, macOS and Windows, the packaged app (a debug bundle with the
@@ -342,12 +343,19 @@ jobs:
         working-directory: rust
         run: cargo test -p dw-protx --test no_operator_signing --locked
 
-  ui-playwright:
-    name: UI tests (Playwright, axe)
+  # The suite in two shards (`--shard`), each a blob report; `ui-playwright` merges them into the one
+  # HTML report and is the required check. Each shard's limit is about twice its slowest run on a
+  # slow hosted runner (docs/ci.md, "UI tests"); Playwright's own timeouts catch a hung test.
+  ui-playwright-shard:
+    name: UI tests (Playwright, axe), shard ${{ matrix.shard }} of 2
     needs: changes
     if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.ui == 'false') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 110
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     # The browsers and their libraries, pinned to @playwright/test in package.json (bump both).
     # No Rust and no engine: the renderer runs on the fixture backend.
     container:
@@ -371,14 +379,24 @@ jobs:
           have=$(pnpm exec playwright --version)
           [[ "$have" == "Version $want" ]] || { echo "::error::image has $have, package.json pins $want"; exit 1; }
       - run: pnpm build:fixture
+      # Half of each project's tests, a project at a time: a single --shard cuts the run's list in
+      # two in order, which gave one shard most of Chromium and the other most of WebKit (slower).
       - name: playwright test (scenarios, light and dark, axe, errors, lock report, security)
         env:
           CI: "1"
-        run: pnpm exec playwright test
-      # Non-blocking until the baselines (made with scripts/e2e-docker.sh) have proven stable on the
-      # hosted runners (docs/ci.md, "UI tests"); a mismatch uploads the actual and diff images.
+          SHARD: ${{ matrix.shard }}
+        run: |
+          status=0
+          for project in chromium webkit; do
+            PLAYWRIGHT_BLOB_OUTPUT_DIR="blob-report/$project" PLAYWRIGHT_BLOB_OUTPUT_NAME="report-$project-$SHARD.zip" \
+              pnpm exec playwright test --project="$project" --shard="$SHARD/2" --reporter=list,blob --output "test-results/$project" || status=1
+          done
+          exit "$status"
+      # Once, in the first shard. Non-blocking until the baselines (made with scripts/e2e-docker.sh)
+      # have proven stable on the hosted runners (docs/ci.md, "UI tests"); a mismatch uploads the
+      # actual and diff images.
       - name: Visual baselines (non-blocking)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         continue-on-error: true
         timeout-minutes: 15
         env:
@@ -388,11 +406,64 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
+          name: ui-playwright-shard-${{ matrix.shard }}
+          path: |
+            apps/desktop/blob-report/
+            apps/desktop/test-results/
+          if-no-files-found: warn
+          retention-days: 3
+
+  # The required check. Green only when both shards passed: a failed, cancelled or skipped shard
+  # fails it. It skips where the shards do (a pull request that changes no UI).
+  ui-playwright:
+    name: UI tests (Playwright, axe)
+    needs: [changes, ui-playwright-shard]
+    if: ${{ always() && !(needs.changes.result == 'success' && needs.changes.outputs.ui == 'false') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.0-noble
+      options: --ipc=host --init
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !cancelled() }}
+        with:
+          pattern: ui-playwright-shard-*
+          path: apps/desktop/shards
+      - name: One HTML report from both shards
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p blob-report test-results
+          find shards -path '*/blob-report/*' -name '*.zip' -exec cp {} blob-report/ \;
+          for d in shards/*/; do
+            if [[ -d "$d/test-results" ]]; then cp -r "$d"/test-results/. test-results/; fi
+          done
+          pnpm exec playwright merge-reports --reporter html blob-report
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
           name: ui-playwright
           path: |
             apps/desktop/test-results/
             apps/desktop/playwright-report/
           if-no-files-found: warn
+      - name: Both shards passed
+        if: always()
+        env:
+          SHARDS: ${{ needs.ui-playwright-shard.result }}
+        run: |
+          [[ "$SHARDS" == success ]] || { echo "::error::the Playwright shards ended '$SHARDS', not success"; exit 1; }
 
   e2e-tauri-linux:
     name: Tauri E2E (tauri-driver, Linux)
@@ -531,6 +602,8 @@ jobs:
           [[ -n "$bundle" ]] || { echo "::error::no $kind bundle"; exit 1; }
           echo "BUNDLE=$bundle" >> "$GITHUB_ENV"
       - name: Links through the OS
+        # It takes under a minute; a hang fails here, and the upload below still keeps its trace.
+        timeout-minutes: 10
         run: |
           export DW_LINKS_OUT=$PWD/deep-links-out
           if [[ "$MATRIX_OS" == linux ]]; then

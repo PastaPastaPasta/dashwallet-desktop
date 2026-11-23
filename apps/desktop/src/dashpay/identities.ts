@@ -11,80 +11,66 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { KeyPurposeName } from "../api/generated/KeyPurposeName";
 import type { KeyTypeName } from "../api/generated/KeyTypeName";
 import type { SecurityLevelName } from "../api/generated/SecurityLevelName";
+import { messageTable, t } from "../i18n";
 import { Model } from "../onboarding/model";
 import { GrantModel } from "../tools/grant";
 import { headerModel } from "./profile";
+import { withTable } from "./status";
 
-export const IDENTITIES_COPY = {
-  title: "Identities",
-  intro: "The Dash Platform identities of this wallet. The main identity is the one DashPay uses.",
-  loading: "Loading identities…",
-  readFailed: "Could not read this wallet's identities.",
-  tryAgain: "Try again",
-  none: "This wallet has no identities.",
-  main: "Main",
-  index: (n: number) => `Index ${n}`,
-  setMain: "Set as main",
-  keys: "Keys",
-  refresh: "Refresh",
-  refreshAll: "Refresh all",
-  findMine: "Find my identities",
-  lookUp: "Look up",
-  unknown: "Unknown",
-  updating: "Updating…",
-  unverified: "Unverified",
-  refreshed: (n: number) => (n === 1 ? "Refreshed 1 identity" : `Refreshed ${n} identities`),
-  refreshFailed: (n: number) => (n === 1 ? "1 identity could not be refreshed" : `${n} identities could not be refreshed`),
-  refreshedOne: "Identity refreshed",
-  found: (n: number) => (n === 1 ? "Found 1 new identity" : `Found ${n} new identities`),
-  foundNone: "No new identities found",
-  mainSet: "Main identity changed",
-  detail: {
-    title: "Identity",
-    identity: "Identity ID",
-    index: "Index",
-    revision: "Revision",
-    usernames: "Usernames",
-    mainName: "Main name",
-    setMainName: "Set as main name",
-    notOwned: "This identity no longer owns that name.",
-    keys: "Public keys",
-    noKeys: "No public keys",
-    loading: "Loading keys…",
-    close: "Close",
+const id = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(prefix ? `settings.identities.${prefix}` : "settings.identities", keys);
+
+export const IDENTITIES_COPY = withTable(
+  id("", [
+    "title",
+    "intro",
+    "loading",
+    "readFailed",
+    "tryAgain",
+    "none",
+    "main",
+    "setMain",
+    "keys",
+    "refresh",
+    "refreshAll",
+    "findMine",
+    "lookUp",
+    "unknown",
+    "updating",
+    "unverified",
+    "refreshedOne",
+    "foundNone",
+    "mainSet",
+    "boundDashPay",
+  ]),
+  {
+    index: (n: number) => t("settings.identities.index", { index: String(n) }),
+    refreshed: (n: number) => t("settings.identities.refreshed", { count: n }),
+    found: (n: number) => t("settings.identities.found", { count: n }),
+    detail: id("detail", ["title", "identity", "index", "revision", "usernames", "mainName", "setMainName", "notOwned", "keys", "noKeys", "loading", "close"]),
+    table: id("table", ["id", "purpose", "level", "type", "status", "bound"]),
+    status: id("status", ["enabled", "disabled", "readOnly"]),
+    find: withTable(id("find", ["title", "field", "submit", "invalid", "searching", "notFound", "byId", "noUsername", "own", "balance"]), {
+      byName: (label: string) => t("settings.identities.find.byName", { username: `@${label}` }),
+    }),
   },
-  table: { id: "ID", purpose: "Purpose", level: "Security level", type: "Type", status: "Status", bound: "Bound to" },
-  status: { enabled: "Enabled", disabled: "Disabled", readOnly: "Read-only" },
-  boundDashPay: "DashPay contact requests",
-  find: {
-    title: "Look up an identity",
-    field: "Identity ID or username",
-    submit: "Find",
-    invalid: "Enter an identity ID or a username",
-    searching: "Searching…",
-    notFound: "No identity with this ID or username",
-    byId: "Found by identity ID",
-    byName: (label: string) => `Found by username @${label}`,
-    noUsername: "No username",
-    own: "This is one of your identities",
-    balance: "Credit balance",
-  },
-} as const;
+);
 
 /** The copy of a failed identity read or action, by code. */
-const BY_CODE: Record<string, string> = {
-  "platform.unavailable": "Dash Platform did not answer. Try again.",
-  "platform.context_unavailable": "Waiting for the network to sync and verify this identity. Try again shortly.",
-  "platform.trust_mismatch": "This identity's data could not be verified against the network.",
-  "identity.not_found": "This identity is not on Dash Platform.",
-  "platform.timeout": "Dash Platform took too long to answer. Try again.",
-  "platform.proof_invalid": "Dash Platform's answer could not be verified. Try again.",
+const BY_CODE: Record<string, keyof typeof ERRORS> = {
+  "platform.unavailable": "unavailable",
+  "platform.context_unavailable": "context",
+  "platform.trust_mismatch": "trust",
+  "identity.not_found": "notFound",
+  "platform.timeout": "timeout",
+  "platform.proof_invalid": "proof",
 };
 
-const codeText = (code: string) => BY_CODE[code] ?? `Something went wrong (${code}).`;
+const ERRORS = id("errors", ["unavailable", "context", "trust", "notFound", "timeout", "proof"]);
+
+const codeText = (code: string) => (Object.hasOwn(BY_CODE, code) ? ERRORS[BY_CODE[code]] : t("settings.identities.errors.code", { code }));
 
 export function identityErrorText(e: unknown): string {
-  return isAppError(e) ? codeText(e.code) : "Something went wrong.";
+  return isAppError(e) ? codeText(e.code) : t("settings.identities.errors.unknown");
 }
 
 export const shortId = (id: string) => (id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-6)}` : id);
@@ -130,25 +116,11 @@ export function listModel(q: { data?: IdentitySummary[]; isError: boolean }): Li
   return { kind: "rows", rows: [...q.data].sort((a, b) => a.index - b.index).map(identityRow) };
 }
 
-const PURPOSE: Record<KeyPurposeName, string> = {
-  authentication: "Authentication",
-  encryption: "Encryption",
-  decryption: "Decryption",
-  transfer: "Transfer",
-  system: "System",
-  voting: "Voting",
-  owner: "Owner",
-};
+const PURPOSE: Readonly<Record<KeyPurposeName, string>> = id("purpose", ["authentication", "encryption", "decryption", "transfer", "system", "voting", "owner"]);
 
-const LEVEL: Record<SecurityLevelName, string> = { master: "Master", critical: "Critical", high: "High", medium: "Medium" };
+const LEVEL: Readonly<Record<SecurityLevelName, string>> = id("level", ["master", "critical", "high", "medium"]);
 
-const KEY_TYPE: Record<KeyTypeName, string> = {
-  ecdsaSecp256k1: "ECDSA secp256k1",
-  bls12381: "BLS12-381",
-  ecdsaHash160: "ECDSA Hash160",
-  bip13ScriptHash: "BIP13 script hash",
-  eddsaHash160: "EdDSA Hash160",
-};
+const KEY_TYPE: Readonly<Record<KeyTypeName, string>> = id("keyType", ["ecdsaSecp256k1", "bls12381", "ecdsaHash160", "bip13ScriptHash", "eddsaHash160"]);
 
 /** DashPay's system contract, the same id on every network (dpp `dashpay_contract::ID`). */
 export const DASHPAY_CONTRACT_ID = "Bwr4WHCPz5rFVAD87RqTs3izo4zpzwsEdKPWUT1NS1C7";
@@ -215,7 +187,7 @@ export function foundModel(f: FoundIdentity): FoundModel {
   return {
     identity: f.identity,
     how: f.foundBy.kind === "name" ? C.byName(f.foundBy.label) : C.byId,
-    usernames: f.names.length > 0 ? f.names.map((n) => `@${n}`).join(", ") : C.noUsername,
+    usernames: f.names.length > 0 ? f.names.map((n) => `@${n}`).join(t("common.listSeparator")) : C.noUsername,
     credits: f.balance,
     revision: f.revision === null ? IDENTITIES_COPY.unknown : String(f.revision),
     keys: keyRows(f.publicKeys),
@@ -229,7 +201,7 @@ export function refreshAllText(results: IdentityRefresh[]): { ok: boolean; text:
   const failed = results.filter((r) => r.failureCode !== null);
   if (failed.length === 0) return { ok: true, text: IDENTITIES_COPY.refreshed(results.length) };
   const first = codeText(failed[0].failureCode!);
-  return { ok: false, text: `${IDENTITIES_COPY.refreshFailed(failed.length)}: ${first}` };
+  return { ok: false, text: t("settings.identities.refreshFailed", { count: failed.length, reason: first }) };
 }
 
 export const discoverText = (n: number) => (n === 0 ? IDENTITIES_COPY.foundNone : IDENTITIES_COPY.found(n));

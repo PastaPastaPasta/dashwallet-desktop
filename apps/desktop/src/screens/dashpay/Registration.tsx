@@ -4,6 +4,7 @@
 // dashpay/wizard.ts; the passphrase prompt is U-05's GrantSheet.
 
 import { useEffect, useId, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { RegistrationQuote } from "../../api/generated/RegistrationQuote";
 import { myQr } from "../../contacts/add";
 import { useMyUserLink } from "../../contacts/queries";
@@ -370,6 +371,8 @@ export function RegistrationScreen({
   const title = useRef<HTMLHeadingElement>(null);
   const [announced, setAnnounced] = useState("");
   const shown = useRef<boolean | null>(null);
+  const latest = useRef(model);
+  latest.current = model;
   // The progress screen's controls go when it turns into the welcome, and focus with them; start
   // keyboard users at the title then, and on any screen that appears with focus lost. Focus still
   // somewhere else stays, and the welcome is announced instead, as it is when the title already
@@ -379,9 +382,35 @@ export function RegistrationScreen({
     const from = shown.current;
     shown.current = welcome;
     if (!welcome) return setAnnounced("");
-    const active = document.activeElement;
-    if (active !== title.current && (lost() || section.current?.contains(active))) title.current?.focus();
-    else if (active !== title.current || from === false) setAnnounced(REG_COPY.announced(model.title, model.lines));
+    // `kept`: the title may hold focus from before, with no new focus event to read it.
+    // `late`: from a frame, where the text is committed at once, before a sheet can cover it again.
+    const announce = (kept: boolean, late = false) => {
+      const active = document.activeElement;
+      if (active !== title.current && (lost() || section.current?.contains(active))) title.current?.focus();
+      else if (active !== title.current || kept) {
+        const say = () => setAnnounced(REG_COPY.announced(latest.current.title, latest.current.lines));
+        if (late) flushSync(say);
+        else say();
+      }
+    };
+    // Behind a sheet the screen is inert, so neither reaches a reader: once it is not, a frame
+    // later (after the sheet gave focus back).
+    const covered = () => section.current?.closest("[inert]") != null;
+    if (!covered()) return announce(from === false);
+    let frame = 0;
+    const watch = new MutationObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (covered()) return;
+        watch.disconnect();
+        announce(false, true);
+      });
+    });
+    watch.observe(document.body, { attributes: true, attributeFilter: ["inert"], subtree: true });
+    return () => {
+      watch.disconnect();
+      cancelAnimationFrame(frame);
+    };
     // Only the switch to the welcome moves focus or speaks, not a later change of its text.
   }, [welcome]);
   return (

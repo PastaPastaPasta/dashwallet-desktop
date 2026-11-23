@@ -1,5 +1,7 @@
 //! Test helpers shared by the workspace's test suites. Dev-dependency only.
 
+pub mod perf;
+
 /// A temporary directory that only the current user can write to, whatever
 /// the process umask.
 ///
