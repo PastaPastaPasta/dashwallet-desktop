@@ -6509,3 +6509,7 @@ button.bell-row-open:focus-visible {
 .mg-row .chip-danger {
   background: linear-gradient(var(--dw-role-danger-tint), var(--dw-role-danger-tint)), var(--dw-role-card);
 }
+
+.sync-phase-active {
+  font-weight: 600;
+}

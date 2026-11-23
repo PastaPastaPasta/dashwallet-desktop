@@ -42,5 +42,25 @@ export const shell = {
       unlockedMixingOnly: "Unlocked for mixing only",
       unlocked: "Unlocked",
     },
+    /** The status bar's sync item is a button that opens Sync progress. */
+    showSync: "Show sync progress",
+  },
+  /** Sync progress (IOS-023): each SPV phase, the latest block, the peers. */
+  sync: {
+    phase: {
+      headers: "Block headers",
+      filterHeaders: "Filter headers",
+      filters: "Block filters",
+      masternodes: "Masternode list",
+    },
+    done: "Done",
+    waiting: "Waiting",
+    /** `current` and `target` are block heights; `percent` is formatted. */
+    progress: "{current} of {target} ({percent})",
+    latestBlock: "Latest block",
+    latestBlockValue: "{height}, {time}",
+    chainlock: "Latest ChainLocked block",
+    peers: "Connected peers",
+    stalled: { one: "No progress for {count} minute. Check the network connection; Tools ▸ Peers can change peers.", other: "No progress for {count} minutes. Check the network connection; Tools ▸ Peers can change peers." },
   },
 } as const satisfies Tree;
