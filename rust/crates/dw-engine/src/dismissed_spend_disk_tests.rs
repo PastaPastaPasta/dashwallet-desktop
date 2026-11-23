@@ -615,8 +615,8 @@ enum Restart {
 /// so nothing can overturn C: Reset chain data and Rescan from the wallet's
 /// birth replay D's block under its ChainLock, and C stays, with P's change
 /// spent. Removing the wallet and restoring it from its recovery phrase
-/// releases the change once P is found again, at once and after a restart.
-/// The other wallet keeps C until it is restored too.
+/// releases the change once P is found again, relayed or mined, at once and
+/// after a restart. The other wallet keeps C until it is restored too.
 fn restart_before_the_conflicts_chain_lock(restart: Restart) {
     use crate::ImportOptions;
     let (_dir, engine, session, id) = engine_wallet();
@@ -676,6 +676,7 @@ fn restart_before_the_conflicts_chain_lock(restart: Restart) {
         })
     });
     wait_stored(&session, id, &[payment.txid(), child.txid()]);
+    wait_stored(&session, other, &[child.txid()]);
 
     let winner = super::spend_of(x, vec![(elsewhere(), COIN - 1_000)]);
     let height = TIP + 2;
@@ -716,8 +717,11 @@ fn restart_before_the_conflicts_chain_lock(restart: Restart) {
     let overturned_stays = |session: &Arc<NetworkSession>| {
         assert!(!held(&engine, session, id).contains(&change), "C spends it");
         assert!(records(session, id, child.txid()), "C stays");
-        assert!(records(session, other, child.txid()));
-        assert!(!held(&engine, session, other).contains(&x), "D spends X");
+        assert!(
+            records(session, other, child.txid()),
+            "the other wallet keeps C too"
+        );
+        assert!(!held(&engine, session, other).contains(&x), "X stays spent");
     };
     overturned_stays(&session);
 
@@ -804,6 +808,18 @@ fn restart_before_the_conflicts_chain_lock(restart: Restart) {
     released(&session);
     let session = reopen(&engine, session);
     released(&session);
+
+    block_for(
+        &engine,
+        &session,
+        &both,
+        &[id],
+        height + 1,
+        vec![payment.clone()],
+    );
+    released(&session);
+    let session = reopen(&engine, session);
+    released(&session);
 }
 
 #[test]
@@ -815,4 +831,136 @@ fn a_restart_after_a_conflicts_block_keeps_the_overturned_spend_through_a_rescan
 fn a_restart_before_a_conflicts_block_keeps_the_overturned_spend_through_a_rescan_until_a_restore()
 {
     restart_before_the_conflicts_chain_lock(Restart::BeforeTheBlock);
+}
+
+/// C, locked, spends the wallet's coin A0 and a foreign X and pays the
+/// wallet back: C:0 is money C sent to this wallet. D, mined and then
+/// ChainLocked, spends A0 when `fetched`, so the wallet fetches its block,
+/// and X only otherwise, so no wallet does. With `restart`, Dash Wallet
+/// restarts between C and D. Returns C, C:0 and the session after D's lock.
+fn money_an_overturned_payment_sent(
+    fetched: bool,
+    restart: bool,
+) -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+    OutPoint,
+) {
+    let (dir, engine, session, id) = engine_wallet();
+    let to: Vec<Address> = (0..COINS)
+        .map(|_| fresh_address(&engine, &session, id))
+        .collect();
+    let funded = funding(7, &to, COIN);
+    block_for(
+        &engine,
+        &session,
+        &[id],
+        &[id],
+        FUNDED_AT,
+        vec![funded.clone()],
+    );
+    block_for(&engine, &session, &[id], &[], TIP, vec![foreign()]);
+    let a0 = OutPoint::new(funded.txid(), 0);
+    let x = OutPoint::new(Txid::from_byte_array([0x57; 32]), 0);
+    let back_to = fresh_address(&engine, &session, id);
+    let mut c = super::spend_of(a0, vec![(back_to.script_pubkey(), COIN * 3 / 4)]);
+    c.input.push(TxIn {
+        previous_output: x,
+        ..Default::default()
+    });
+    let c = super::signed_by_wallet(&engine, &session, id, &to[0], c);
+    let back = OutPoint::new(c.txid(), 0);
+    let locked = c.clone();
+    deliver_all(&engine, &session, &[id], move |wm| {
+        Box::pin(async move {
+            wm.process_mempool_transaction(&locked, Some(lock_for(&locked)))
+                .await;
+        })
+    });
+    wait_stored(&session, id, &[c.txid()]);
+    assert!(held(&engine, &session, id).contains(&back));
+
+    let session = if restart {
+        reopen(&engine, session)
+    } else {
+        session
+    };
+    let d = super::spend_of(if fetched { a0 } else { x }, vec![(elsewhere(), 500_000)]);
+    let height = TIP + 2;
+    let chain_lock = ChainLock {
+        block_height: height,
+        block_hash: block_with(vec![d.clone()]).block_hash(),
+        signature: BLSSignature::from([0; 96]),
+    };
+    let fetched_for: &[WalletId] = if fetched { &[id] } else { &[] };
+    block_for(&engine, &session, &[id], fetched_for, height, vec![d]);
+    deliver_all(&engine, &session, &[id], move |wm| {
+        Box::pin(async move {
+            wm.apply_chain_lock(chain_lock);
+        })
+    });
+    (dir, engine, session, id, c, back)
+}
+
+/// The usual order, D's block and then its ChainLock, in a wallet that
+/// fetches the block: C's money to the wallet goes, at once and after a
+/// restart. On main it stayed offered for good.
+#[test]
+fn money_an_overturned_payment_sent_goes_once_the_conflicts_chain_lock_lands() {
+    let (_dir, engine, session, id, c, back) = money_an_overturned_payment_sent(true, false);
+    assert!(
+        !held(&engine, &session, id).contains(&back),
+        "C:0 never existed"
+    );
+    assert_eq!(
+        total(&engine, &session, id),
+        (COINS as u64 - 1) * COIN,
+        "D spends A0"
+    );
+    let session = reopen(&engine, session);
+    assert!(!held(&engine, &session, id).contains(&back));
+    assert!(!records(&session, id, c.txid()), "C is gone");
+}
+
+fn money_stays_offered(fetched: bool, restart: bool) {
+    let (_dir, engine, session, id, c, back) = money_an_overturned_payment_sent(fetched, restart);
+    let offered = |session: &Arc<NetworkSession>| {
+        assert!(
+            held(&engine, session, id).contains(&back),
+            "known gap: C:0 shows"
+        );
+        assert!(
+            spendable(&engine, session, id, back),
+            "known gap: C:0 is offered"
+        );
+        assert!(records(session, id, c.txid()), "C stays pending");
+    };
+    offered(&session);
+    let session = reopen(&engine, session);
+    offered(&session);
+}
+
+/// Pins a known gap (#338): a restart between C and D leaves C's money to
+/// the wallet offered for good, although the wallet fetches D's block. The
+/// same on main.
+#[test]
+fn known_gap_after_a_restart_money_an_overturned_payment_sent_stays_offered() {
+    money_stays_offered(true, true);
+}
+
+/// Pins a known gap (#327): no wallet fetches D's block, so C's money to the
+/// wallet stays offered for good. The same on main.
+#[test]
+fn known_gap_money_an_overturned_payment_sent_stays_offered_when_no_wallet_fetches_the_conflict() {
+    money_stays_offered(false, false);
+}
+
+/// Pins the same known gap (#327, #338) across a restart between C and D.
+#[test]
+fn known_gap_money_an_overturned_payment_sent_stays_offered_after_a_restart_when_no_wallet_fetches_the_conflict()
+ {
+    money_stays_offered(false, true);
 }
