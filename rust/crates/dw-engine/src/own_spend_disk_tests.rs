@@ -2117,6 +2117,11 @@ fn a_child_stored_after_its_abandons_sweep_is_never_credited() {
     );
     assert!(!spendable(&engine, &session, id, child_change));
     assert!(abandoned_or_gone(&engine, &session, id, child_txid));
+    assert!(
+        !held(&engine, &session, id).contains(&change),
+        "the payment's change is credited after a restart"
+    );
+    assert!(!spendable(&engine, &session, id, change));
 }
 
 fn abandoned_or_gone(
@@ -2198,6 +2203,60 @@ fn abandoning_a_payment_under_a_child_locked_before_the_history_heard_is_refused
     assert!(
         super::own_spend_balance_tests::record_stored(&session, id, child.txid()),
         "the child's record is gone"
+    );
+    assert!(
+        held(&engine, &session, id).contains(&child_change),
+        "the child's change is not held"
+    );
+    assert!(
+        !abandoned(&engine, &session, id, payment.txid()),
+        "the payment"
+    );
+}
+
+/// As above, but the abandoned child comes back in a block, which
+/// key-wallet records before the history hears of it. Abandoning the
+/// payment is refused as confirmed, and the child's change stays held.
+#[test]
+fn abandoning_a_payment_under_a_child_mined_before_the_history_heard_is_refused() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change]),
+        COIN / 8,
+        false,
+    );
+    mempool(&engine, &session, id, &child);
+    wait_stored(&session, id, &[payment.txid(), child.txid()]);
+    start_spv(&engine, &session);
+    abandon(&engine, &session, id, child.txid());
+
+    let session = reopen(&engine, session);
+    unheard(&engine, &session, id, &child, Some(TIP + 1));
+    let child_change = change_of(&child, &own_scripts(&engine, &session, id));
+    start_spv(&engine, &session);
+    let refused = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(
+        matches!(
+            refused,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::Confirmed
+            ))
+        ),
+        "{refused:?}"
     );
     assert!(
         held(&engine, &session, id).contains(&child_change),
