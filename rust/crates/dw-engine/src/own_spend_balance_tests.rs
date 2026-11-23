@@ -1395,10 +1395,14 @@ fn an_abandon_whose_sweep_fails_offers_no_change_in_the_session() {
     let (_dir, engine, session, id, payment, _a, paid) = pending_payment_of_one_coin();
     let txid = payment.txid();
     let c = change_of(&payment, &own_scripts(&engine, &session, id));
+    let probe = |session: &Arc<NetworkSession>| {
+        super::own_spend_disk_tests::spendable_for(&engine, session, id, c, COIN / 10)
+    };
+    assert!(probe(&session), "C isn't offered before the Abandon");
     fail_the_next_sweep(&session);
     assert!(try_abandon(&engine, &session, id, txid).is_err());
     assert!(!held(&engine, &session, id).contains(&c), "C is held");
-    assert!(!spendable(&engine, &session, id, c), "C is offered");
+    assert!(!probe(&session), "C is offered");
     assert!(
         (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned()),
         "listed pending in the session"
@@ -1442,7 +1446,7 @@ fn abandoning_again_after_a_failed_sweep_stores_it() {
         "the record is swept"
     );
     drop(persister);
-    assert!(!stored_unspent(&session, id, c), "C stays stored");
+    assert_eq!(stored_spent(&session, id, c), None, "C stays stored");
     assert!(
         (session.hub.history.get(&id, &txid)).is_some_and(|e| e.is_abandoned()),
         "listed abandoned"
@@ -1592,6 +1596,10 @@ fn a_payment_abandoned_and_then_locked_is_left_by_the_load() {
     assert!(
         (session.hub.history.get(&id, &p.txid())).is_some_and(|e| !e.is_abandoned()),
         "listed abandoned"
+    );
+    assert!(
+        (session.hub.history.get(&id, &p.txid())).is_some_and(|e| e.instant_locked),
+        "its InstantSend lock is gone"
     );
 }
 
@@ -2159,7 +2167,7 @@ fn opening_a_wallet_finishes_its_half_done_abandon() {
     assert!(try_abandon(&engine, &session, id, payment.txid()).is_err());
     engine.block_on(session.unload_wallet(id)).unwrap();
     engine.block_on(session.load_wallet(id)).unwrap();
-    assert!(!stored_unspent(&session, id, c), "C stays stored");
+    assert_eq!(stored_spent(&session, id, c), None, "C stays stored");
     assert!(
         (session.hub.history.get(&id, &payment.txid())).is_some_and(|x| x.is_abandoned()),
         "abandoned once opened"
@@ -2265,6 +2273,10 @@ fn remove_unconfirmed_fails_when_the_sent_marks_do_not_read() {
         (session.hub.history.get(&id, &payment.txid())).is_some_and(|e| !e.is_abandoned()),
         "the payment was abandoned"
     );
+    assert!(
+        !abandon_marked(&session, id, payment.txid()),
+        "its mark was written"
+    );
 
     let other = super::own_spend_disk_tests::second_wallet(&engine, &session);
     let order: Vec<WalletId> = (session.manager().unwrap().list_wallet_ids_blocking())
@@ -2279,4 +2291,16 @@ fn remove_unconfirmed_fails_when_the_sent_marks_do_not_read() {
         (session.hub.history.get(&id, &payment.txid())).is_some_and(|e| !e.is_abandoned()),
         "all wallets: the payment was abandoned"
     );
+    assert!(
+        !abandon_marked(&session, id, payment.txid()),
+        "all wallets: its mark was written"
+    );
+}
+
+/// Whether the app database holds `txid`'s abandoned mark.
+fn abandon_marked(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
+    (session.live().unwrap().appdb)
+        .setting_lossy(&id.to_string(), &format!("abandoned:{txid}"))
+        .unwrap()
+        .is_some()
 }

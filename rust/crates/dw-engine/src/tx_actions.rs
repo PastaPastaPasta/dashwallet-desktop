@@ -155,6 +155,25 @@ pub(crate) const SENT_IN_PREFIX: &str = "sentin:";
 /// signed and its transaction when the mark holds it ([`SENT_PREFIX`]),
 /// and whether every mark was read.
 pub(crate) fn load_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, bool) {
+    match read_sent(appdb, wallet) {
+        (sent, SentRead::Complete) => (sent, true),
+        _ => (Sent::new(), false),
+    }
+}
+
+/// How much of a wallet's sent marks [`read_sent`] read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SentRead {
+    Complete,
+    /// The marks read but their saved copies' query failed: each mark is
+    /// kept with no copy, so its coins stay claimed as a damaged copy's.
+    CoinsOnly,
+    Failed,
+}
+
+/// The sent marks for a history load: [`load_sent`], except that a failed
+/// query of the saved copies keeps the marks that read ([`SentRead::CoinsOnly`]).
+pub(crate) fn read_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, SentRead) {
     let scope = wallet.to_string();
     let rows = |prefix: &str| match appdb.settings_with_prefix_lossy(&scope, prefix) {
         Ok(rows) => Some(
@@ -169,18 +188,24 @@ pub(crate) fn load_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, bool) {
             None
         }
     };
-    let (Some(marks), Some(txs)) = (rows(SENT_PREFIX), rows(SENT_TX_PREFIX)) else {
-        return (Sent::new(), false);
+    let Some(marks) = rows(SENT_PREFIX) else {
+        return (Sent::new(), SentRead::Failed);
     };
+    let txs = rows(SENT_TX_PREFIX);
+    let read = match txs {
+        Some(_) => SentRead::Complete,
+        None => SentRead::CoinsOnly,
+    };
+    let txs = txs.unwrap_or_default();
     let mut inputs = rows(SENT_IN_PREFIX).unwrap_or_default();
     let sent = (marks.into_iter())
         .filter_map(|(txid, coins)| {
-            let kept = txs.contains_key(&txid);
+            let kept = read == SentRead::CoinsOnly || txs.contains_key(&txid);
             let tx = (txs.get(&txid).cloned().flatten())
                 .and_then(|hex| hex::decode(hex).ok())
                 .and_then(|b| deserialize::<Transaction>(&b).ok())
                 .filter(|tx| tx.txid() == txid);
-            if kept && tx.is_none() {
+            if kept && tx.is_none() && read == SentRead::Complete {
                 tracing::warn!(%wallet, "a sent payment's stored transaction does not read back");
             }
             let inputs = (inputs.remove(&txid).flatten())
@@ -218,7 +243,7 @@ pub(crate) fn load_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, bool) {
             Some((txid, mark))
         })
         .collect();
-    (sent, true)
+    (sent, read)
 }
 
 /// A `sentin:` value: each coin's outpoint, value and address.

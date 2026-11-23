@@ -709,23 +709,40 @@ impl NetworkSession {
         {
             unlock.push(o);
         }
+        // A first hand-off refused before it left whose sent marks could not
+        // be dropped (`send.held_until_restart`) still has them: they go
+        // first, or a restart would list its transaction for Resend.
+        let marked = (state == ProTxOperationState::NotSent)
+            .then(|| row.txid.as_deref().and_then(|t| Txid::from_str(t).ok()))
+            .flatten();
         let (w, id) = (wallet.to_string(), id.to_string());
         let deleted = self
             .appdb_op(move |db| {
+                if let Some(txid) = marked
+                    && let Err(e) = crate::tx_actions::forget_sent(db, wallet, &[txid])
+                {
+                    return Ok(Err(e.to_string()));
+                }
                 // The row and its payout-change barrier go in one
                 // transaction, only while `sent_at IS NULL` (MG-13 P16,
                 // r4 m1): a row that may be out keeps both.
                 if !db.discard_unsent_masternode_op_durable(&w, &id)? {
-                    return Ok(false);
+                    return Ok(Ok(false));
                 }
                 let now = now_secs();
                 for o in &unlock {
                     let holder = Holder::Operation(&id);
                     db.release_lock(&w, holder, &o.txid.to_string(), o.vout, now)?;
                 }
-                Ok(true)
+                Ok(Ok(true))
             })
-            .await?;
+            .await?
+            .map_err(|e| {
+                tracing::warn!(%wallet, error = %e, "could not drop a discarded operation's sent marks");
+                EngineError::Storage(
+                    "discarding the operation: its payment's saved copy could not be removed; restart Dash Wallet, then discard it again".into(),
+                )
+            })?;
         if !deleted {
             // `sent_at` was set: the bytes may be out (D6).
             return Err(MasternodesError::OperationState {

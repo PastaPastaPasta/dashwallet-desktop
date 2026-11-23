@@ -95,10 +95,13 @@ fn a_payment_sent_before_a_crash_stays_pending_and_keeps_its_coin_out() {
     assert!(!spendable(&engine, &session, id, a), "again: A is offered");
 }
 
-/// The payment never left (the app quit just before the hand-off, which
-/// the next start cannot tell apart). Abandoning it frees A once the scan
-/// passes its funding block. Its mark stays (an abandoned payment's does
-/// until it is ChainLocked) and claims nothing.
+/// A payment restored from its mark after a restart, which the next start
+/// can't tell from one that never left (the app quit just before the
+/// hand-off); the fixture's was handed off. The quit before the hand-off is
+/// `h03_kill9_core_tests::h03_core_send_killed_before_the_hand_off_keeps_its_coins_spent`.
+/// Abandoning it frees A once the scan passes its funding block. Its mark
+/// stays (an abandoned payment's does until it is ChainLocked) and claims
+/// nothing.
 #[test]
 fn a_payment_marked_before_a_crash_can_be_abandoned() {
     let (_dir, engine, session, id, paid, payment) = sent_unrecorded();
@@ -1217,6 +1220,43 @@ fn a_lone_damaged_copy_keeps_its_coin_out() {
     assert!(!held(&engine, &session, id).contains(&a), "A is counted");
 }
 
+/// The saved copies' query fails while the wallet opens: the sent marks
+/// still read, so a payment sent before a crash keeps its coin out. After
+/// the restart and a scan of its funding block, A is neither offered nor
+/// counted, and its mark stays. Once the copies read again, the payment is
+/// listed pending from its copy as usual.
+#[test]
+fn a_failed_read_of_the_saved_copies_keeps_a_sent_payments_coin_out() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::Before;
+    for _ in 0..2 {
+        dw_appdb::fault::arm(&path, "settings.read_senttx:", stage);
+    }
+    let session = reopen(&engine, session);
+    dw_appdb::fault::disarm(&path);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+    assert!(!held(&engine, &session, id).contains(&a), "A is counted");
+    assert!(
+        sent_marks(&session, id).contains(&payment.txid()),
+        "the mark went"
+    );
+
+    let session = reopen(&engine, session);
+    assert!(listed(&engine, &session, id, payment.txid()), "not listed");
+    assert!(!spendable(&engine, &session, id, a), "again: A is offered");
+}
+
 /// A sent mark whose coin list doesn't read (not text, or a coin that
 /// doesn't parse) still holds the payment's coin: it is read from the
 /// payment's input details, or else its saved copy. After a restart and a
@@ -1276,7 +1316,67 @@ fn a_sent_mark_whose_coins_do_not_read_keeps_its_coin_out() {
 /// restart its coin is still held, as the payment is still recorded.
 #[test]
 fn remove_unconfirmed_counts_a_damaged_payment_only_once_its_marks_are_gone() {
-    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (_dir, engine, session, id, paid, _damaged) = damaged_payment_whose_marks_did_not_delete();
+    let a = OutPoint::new(paid.txid(), 0);
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "A is offered after a restart"
+    );
+}
+
+/// Remove unconfirmed transactions run again in the session after its
+/// delete failed deletes the damaged payment's marks and counts it, though
+/// the payment is already abandoned: after a restart, A is free once its
+/// funding is scanned.
+#[test]
+fn remove_unconfirmed_run_again_in_the_session_deletes_the_marks() {
+    let (_dir, engine, session, id, paid, damaged) = damaged_payment_whose_marks_did_not_delete();
+    let a = OutPoint::new(paid.txid(), 0);
+    let removed = engine.block_on(session.drop_unconfirmed(Some(id)));
+    assert_eq!(removed.ok(), Some(1), "run again");
+    assert!(
+        !sent_marks(&session, id).contains(&damaged.txid()),
+        "the marks stay"
+    );
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(spendable(&engine, &session, id, a), "A is held");
+}
+
+/// The same, run again after a restart.
+#[test]
+fn remove_unconfirmed_run_again_after_a_restart_deletes_the_marks() {
+    let (_dir, engine, session, id, paid, damaged) = damaged_payment_whose_marks_did_not_delete();
+    let a = OutPoint::new(paid.txid(), 0);
+    let session = reopen(&engine, session);
+    spv_running(&engine, &session);
+    let removed = engine.block_on(session.drop_unconfirmed(Some(id)));
+    assert_eq!(removed.ok(), Some(1), "run again");
+    assert!(
+        !sent_marks(&session, id).contains(&damaged.txid()),
+        "the marks stay"
+    );
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(spendable(&engine, &session, id, a), "A is held");
+}
+
+/// A payment of A whose saved copy is damaged, after a restart and a
+/// Remove unconfirmed transactions whose delete of its marks failed: the
+/// error is returned and the marks stay.
+fn damaged_payment_whose_marks_did_not_delete() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+    Transaction,
+) {
+    let (dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
     let damaged = send(
         &engine,
@@ -1291,10 +1391,7 @@ fn remove_unconfirmed_counts_a_damaged_payment_only_once_its_marks_are_gone() {
         .set_setting(&scope, &format!("senttx:{}", damaged.txid()), Some("zz"))
         .unwrap();
     let session = reopen(&engine, session);
-    engine.block_on(session.start_spv()).unwrap();
-    super::own_spend_disk_tests::eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
+    spv_running(&engine, &session);
     let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
     let stage = dw_appdb::fault::Stage::Before;
     dw_appdb::fault::arm(&path, crate::tx_actions::FORGET_SENT_FAULT, stage);
@@ -1305,11 +1402,12 @@ fn remove_unconfirmed_counts_a_damaged_payment_only_once_its_marks_are_gone() {
         sent_marks(&session, id).contains(&damaged.txid()),
         "the marks went"
     );
+    (dir, engine, session, id, paid, damaged)
+}
 
-    let session = reopen(&engine, session);
-    mined(&engine, &session, id, TIP, vec![paid.clone()]);
-    assert!(
-        !spendable(&engine, &session, id, a),
-        "A is offered after a restart"
-    );
+fn spv_running(engine: &Engine, session: &Arc<NetworkSession>) {
+    engine.block_on(session.start_spv()).unwrap();
+    super::own_spend_disk_tests::eventually("SPV runs", || {
+        session.spv_state().unwrap() == crate::SpvState::Running
+    });
 }

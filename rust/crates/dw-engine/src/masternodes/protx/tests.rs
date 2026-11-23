@@ -860,11 +860,90 @@ fn mg10_a_resend_keeps_the_sent_mark_of_an_input_spent_since() {
 }
 
 /// A first hand-off refused for want of peers whose sent mark can't be
-/// dropped never left: the row reads `not_sent` and Discard releases what
-/// it locked. After a restart its mark lists it pending, and abandoning it
-/// frees its coin.
+/// dropped never left: the row reads `not_sent`, and Discard drops the
+/// mark with the row and releases what it locked. After a restart the
+/// discarded registration isn't listed, and Resend can't send it.
 #[test]
 fn mg10_a_refused_hand_off_whose_mark_stays_reads_not_sent_and_can_be_discarded() {
+    let (f, op, txid) = refused_hand_off_with_its_mark();
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id.clone()))
+        .unwrap();
+    assert!(f.locked().is_empty(), "still locked: {:?}", f.locked());
+    assert!(
+        !crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the mark stays"
+    );
+
+    let mut f = f;
+    f.restart(&[]);
+    let sent = f.lib.sent().len();
+    let extras = f
+        .engine
+        .block_on(f.session.tx_detail_extras(f.wallet, txid));
+    assert!(
+        matches!(extras, Err(crate::EngineError::TxNotFound(_))),
+        "{extras:?}"
+    );
+    let resent = f
+        .engine
+        .block_on(f.session.resend_transaction(f.wallet, txid));
+    assert!(
+        matches!(resent, Err(crate::EngineError::TxNotFound(_))),
+        "{resent:?}"
+    );
+    assert_eq!(f.lib.sent().len(), sent, "handed off again");
+}
+
+/// The same hand-off, whose sent mark still can't be deleted at Discard:
+/// Discard is refused with `storage`, saying to restart and discard again,
+/// and the row, its locks and the mark stay. Once the mark deletes,
+/// Discard goes through.
+#[test]
+fn mg10_a_discard_that_cannot_drop_the_mark_is_refused() {
+    let (f, op, txid) = refused_hand_off_with_its_mark();
+    let locked = f.locked();
+    assert!(!locked.is_empty());
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    dw_appdb::fault::arm(
+        &path,
+        crate::tx_actions::FORGET_SENT_FAULT,
+        dw_appdb::fault::Stage::Before,
+    );
+    let refused = f
+        .engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id.clone()));
+    dw_appdb::fault::disarm(&path);
+    match &refused {
+        Err(MasternodesError::Engine(crate::EngineError::Storage(m))) => {
+            assert!(
+                m.contains("restart Dash Wallet, then discard it again"),
+                "{m}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.rows().len(), 1, "the row went");
+    assert_eq!(f.locked(), locked, "the locks went");
+    assert!(
+        crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the mark went"
+    );
+
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id))
+        .unwrap();
+    assert!(f.rows().is_empty());
+    assert!(f.locked().is_empty());
+}
+
+/// A registration whose first hand-off was refused for want of peers and
+/// whose sent mark could not be dropped: the fixture, the row and its txid.
+fn refused_hand_off_with_its_mark() -> (Fx, ProTxOperation, Txid) {
     let f = fx(Library::NoPeers);
     f.credit(1, MASTERNODE_COLLATERAL + COIN);
     let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
@@ -882,27 +961,7 @@ fn mg10_a_refused_hand_off_whose_mark_stays_reads_not_sent_and_can_be_discarded(
             .contains_key(&txid),
         "the mark was dropped"
     );
-    f.engine
-        .block_on(f.mn().discard_operation(f.wallet, op.id.clone()))
-        .unwrap();
-    assert!(f.locked().is_empty(), "still locked: {:?}", f.locked());
-
-    let mut f = f;
-    f.restart(&[]);
-    let extras = f
-        .engine
-        .block_on(f.session.tx_detail_extras(f.wallet, txid))
-        .unwrap();
-    assert!(extras.can_abandon, "{extras:?}");
-    let (s, id) = (Arc::clone(&f.session), f.wallet);
-    let abandoned = f
-        .engine
-        .block_on(f.session.on_runtime(async move {
-            let manager = s.manager()?;
-            s.abandon_inner(&manager, id, txid).await
-        }))
-        .unwrap();
-    assert!(abandoned.contains(&txid));
+    (f, op, txid)
 }
 
 /// Control: the sent mark written, a hand-off without a verdict stays

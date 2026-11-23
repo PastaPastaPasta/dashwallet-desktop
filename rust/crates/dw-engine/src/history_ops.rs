@@ -309,9 +309,11 @@ struct LoadedHistory {
     /// The payments this app sent (#88).
     sent: crate::tx_actions::Sent,
     /// Every stored record was listed and read, and so were the abandoned
-    /// and sent marks: the spend claims and the pruning of marks need all
-    /// three.
+    /// and sent marks: the pruning of marks needs all three.
     complete: bool,
+    /// As `complete`, but the sent marks' saved copies may not have read
+    /// (`SentRead::CoinsOnly`): enough to restore the spend claims.
+    claims: bool,
     /// Every stored transaction of the wallet, with a record or not, when
     /// every stored record was listed and read; else none.
     stored: HashSet<Txid>,
@@ -387,7 +389,7 @@ impl NetworkSession {
                         Vec::new()
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
-                    let (mut sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
+                    let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
                     sent.retain(|t, _| persisted.keeps_mark(t, &abandoned.unread));
                     let abandoned = abandoned.copies;
                     let stored: HashSet<Txid> = match clean {
@@ -406,7 +408,12 @@ impl NetworkSession {
                         seen,
                         abandoned,
                         sent,
-                        complete: clean && marks_read && sent_read,
+                        complete: clean
+                            && marks_read
+                            && sent_read == crate::tx_actions::SentRead::Complete,
+                        claims: clean
+                            && marks_read
+                            && sent_read != crate::tx_actions::SentRead::Failed,
                         stored,
                         settled,
                     }
@@ -434,6 +441,7 @@ impl NetworkSession {
             abandoned,
             sent,
             complete,
+            claims,
             stored,
             settled,
         } in loaded
@@ -489,11 +497,11 @@ impl NetworkSession {
                     }
                 }
             });
-            sends.push((wallet, sent, complete, settled));
+            sends.push((wallet, sent, complete, claims, settled));
         }
         drop(wm);
-        for (wallet, sent, complete, stored) in sends {
-            self.restore_unmined_spends(&live.manager, wallet, &sent, complete, &stored)
+        for (wallet, sent, complete, claims, stored) in sends {
+            self.restore_unmined_spends(&live.manager, wallet, &sent, (complete, claims), &stored)
                 .await;
         }
         Ok(())
@@ -511,16 +519,18 @@ impl NetworkSession {
     /// Then the marks of payments gone from the history go, and of those
     /// the SPV header chain proves final: it holds their block, at or below the
     /// block of this wallet's own applied ChainLock, which it holds too. A
-    /// load that did not read every stored record and mark does neither.
+    /// load that did not read every stored record and mark does neither,
+    /// except that one whose sent marks read without their saved copies
+    /// still restores the claims.
     async fn restore_unmined_spends(
         &self,
         manager: &Manager,
         wallet: WalletId,
         sent: &crate::tx_actions::Sent,
-        complete: bool,
+        (complete, claims): (bool, bool),
         stored: &HashSet<Txid>,
     ) {
-        if !complete {
+        if !claims {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
             return;
         }
@@ -543,6 +553,10 @@ impl NetworkSession {
             })
         })
         .await;
+        if !complete {
+            tracing::warn!(%wallet, "history load incomplete: no sent mark settled");
+            return;
+        }
         let settled = self.proven_settled(candidates, own).await;
         if !settled.is_empty() {
             let forgotten = self
@@ -721,9 +735,9 @@ impl NetworkSession {
             }
             let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
             history.mark_abandoned(&abandoned.copies);
-            let (mut sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
+            let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
             sent.retain(|t, _| persisted.keeps_mark(t, &abandoned.unread));
-            if !(read && marks_read && sent_read) {
+            if !(read && marks_read && sent_read != crate::tx_actions::SentRead::Failed) {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
                 return (history, crate::tx_actions::Sent::new());
             }
