@@ -33,7 +33,7 @@ use std::time::Duration;
 use dashcore::blockdata::transaction::outpoint::OutPoint;
 use dashcore::hashes::Hash;
 use dashcore::{Network, ScriptBuf, Transaction, TxIn, TxOut};
-use dw_p2p::{Message, PeerEntry, Session, SessionConfig};
+use dw_p2p::{Delivery, PeerEntry, Session, SessionConfig};
 use rand::Rng;
 use tokio::sync::{mpsc, watch};
 
@@ -46,6 +46,10 @@ use crate::messages::{
 use crate::rebalance::{PROMOTION_RATIO, Rebalance, RebalanceKind};
 use crate::rounds::RANDOM_ROUNDS;
 use crate::status::{PoolMessage, PoolState, StatusCode};
+
+/// A session's message stream holds at most this many frames, and bytes.
+const SUBSCRIPTION_FRAMES: usize = 64;
+const SUBSCRIPTION_BYTES: usize = 4 << 20;
 
 /// Extra seconds the client waits beyond the masternode's timeout
 /// (`nLagTime`, client.cpp:317).
@@ -111,6 +115,14 @@ pub trait MixingWallet: Send + Sync {
     fn unspent_outpoints(
         &self,
     ) -> impl Future<Output = Result<HashSet<OutPoint>, WalletError>> + Send;
+
+    /// Whether any of `outpoints` was locked by the user, or left the
+    /// wallet, since the session took it: such a coin is not submitted or
+    /// signed.
+    fn any_withdrawn(
+        &self,
+        outpoints: &[OutPoint],
+    ) -> impl Future<Output = Result<bool, WalletError>> + Send;
 
     /// Signs the inputs at the given indices of `tx` (with each one's
     /// previous output script) with [`MIXING_SIGHASH`] and returns them
@@ -587,7 +599,7 @@ async fn open_session(
     params: &SessionParams,
     flags: u8,
     stop: &mut watch::Receiver<bool>,
-) -> Result<(Session, mpsc::UnboundedReceiver<Message>), SessionFailure> {
+) -> Result<(Session, mpsc::Receiver<Delivery>), SessionFailure> {
     let Some(service) = params.masternode.service else {
         return Err(SessionFailure::Connect("no service address".into()));
     };
@@ -604,13 +616,19 @@ async fn open_session(
     }
     // Before the `dsa`: the stream holds only what arrives after it, and
     // the acceptance can be quick.
-    let rx = session.subscribe(&[
-        dw_p2p::commands::DSSTATUSUPDATE,
-        dw_p2p::commands::DSQUEUE,
-        dw_p2p::commands::DSFINALTX,
-        dw_p2p::commands::DSCOMPLETE,
-        INV,
-    ]);
+    // Bounded: with relay on, the masternode announces transactions too,
+    // and a stream that only grows would hold them all.
+    let rx = session.subscribe_bounded(
+        &[
+            dw_p2p::commands::DSSTATUSUPDATE,
+            dw_p2p::commands::DSQUEUE,
+            dw_p2p::commands::DSFINALTX,
+            dw_p2p::commands::DSCOMPLETE,
+            INV,
+        ],
+        SUBSCRIPTION_FRAMES,
+        SUBSCRIPTION_BYTES,
+    );
     let accept = Accept {
         denom: params.denom,
         collateral: params.collateral.clone(),
@@ -690,7 +708,7 @@ pub async fn run_session<W: MixingWallet>(
             }
             _ = stop.wait_for(|s| *s) => break SessionOutcome::Failed(SessionFailure::Cancelled),
         };
-        let Some(msg) = msg else {
+        let Some(Delivery { message: msg, .. }) = msg else {
             break SessionOutcome::Failed(SessionFailure::Disconnected);
         };
         match msg.command.as_str() {
@@ -701,10 +719,11 @@ pub async fn run_session<W: MixingWallet>(
                 let Ok(hashes) = decode_dsq_inv(&msg.payload) else {
                     continue;
                 };
+                // Never waits for room: a stop or the deadline must still
+                // be heard. A full send queue closes the session.
                 if !hashes.is_empty()
                     && session
-                        .send(GETDATA, encode_dsq_inventory(&hashes))
-                        .await
+                        .try_send(GETDATA, encode_dsq_inventory(&hashes))
                         .is_err()
                 {
                     break SessionOutcome::Failed(SessionFailure::Disconnected);
@@ -762,6 +781,15 @@ pub async fn run_session<W: MixingWallet>(
                             break SessionOutcome::Failed(SessionFailure::BadRebalance(
                                 "an input is no longer unspent",
                             ));
+                        }
+                        match wallet.any_withdrawn(&run.outpoints()).await {
+                            Ok(false) => {}
+                            Ok(true) => {
+                                break SessionOutcome::Failed(SessionFailure::BadRebalance(
+                                    "an input was locked or left the wallet",
+                                ));
+                            }
+                            Err(e) => break SessionOutcome::Failed(SessionFailure::Wallet(e.0)),
                         }
                         (rebalance_output, entry.kind.output_count())
                     }
@@ -839,6 +867,15 @@ pub async fn run_session<W: MixingWallet>(
                     Ok(i) => i,
                     Err(why) => break SessionOutcome::Failed(SessionFailure::BadFinalTx(why)),
                 };
+                match wallet.any_withdrawn(&run.outpoints()).await {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        break SessionOutcome::Failed(SessionFailure::BadFinalTx(
+                            "an input of ours was locked or left the wallet",
+                        ));
+                    }
+                    Err(e) => break SessionOutcome::Failed(SessionFailure::Wallet(e.0)),
+                }
                 let to_sign: Vec<(usize, ScriptBuf)> = indices
                     .iter()
                     .zip(&run.inputs)

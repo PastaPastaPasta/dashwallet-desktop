@@ -4108,6 +4108,17 @@ impl MixingWallet for EngineMixingWallet {
         Ok(view.coins.iter().map(|c| c.coin.utxo.outpoint).collect())
     }
 
+    async fn any_withdrawn(&self, outpoints: &[OutPoint]) -> Result<bool, WalletError> {
+        let s = self.session()?;
+        let fence = (s.coin_fence(self.wallet_id).await).map_err(|e| WalletError(e.to_string()))?;
+        let view = (s.pass_view(&fence).await)
+            .map_err(|e| WalletError(e.to_string()))?
+            .ok_or_else(|| WalletError("the wallet's coins are not readable".into()))?;
+        Ok(outpoints.iter().any(|o| {
+            !(view.coins.iter()).any(|c| c.coin.utxo.outpoint == *o && !c.coin.user_locked)
+        }))
+    }
+
     async fn reserve_scripts(&self, count: usize) -> Result<Vec<ScriptBuf>, WalletError> {
         let s = self.session()?;
         let addrs = s

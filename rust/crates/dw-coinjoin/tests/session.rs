@@ -49,6 +49,8 @@ struct TestWallet {
     script_limit: usize,
     released: Mutex<Vec<ScriptBuf>>,
     kept: Mutex<Vec<ScriptBuf>>,
+    /// Coins the user locked, or that left the wallet, mid-session.
+    withdrawn: Mutex<HashSet<OutPoint>>,
 }
 
 impl TestWallet {
@@ -81,6 +83,7 @@ impl TestWallet {
             script_limit: usize::MAX,
             released: Mutex::new(Vec::new()),
             kept: Mutex::new(Vec::new()),
+            withdrawn: Mutex::new(HashSet::new()),
         }
     }
 
@@ -174,6 +177,11 @@ impl MixingWallet for TestWallet {
             .map(|c| c.outpoint)
             .chain(self.others.iter().copied())
             .collect())
+    }
+
+    async fn any_withdrawn(&self, outpoints: &[OutPoint]) -> Result<bool, WalletError> {
+        let withdrawn = self.withdrawn.lock().unwrap();
+        Ok(outpoints.iter().any(|o| withdrawn.contains(o)))
     }
 
     async fn sign_inputs(
@@ -496,6 +504,38 @@ async fn a_stop_after_our_signatures_holds_the_inputs() {
     assert!(wallet.held.lock().unwrap().is_empty());
     assert!(wallet.locked.lock().unwrap().is_empty());
     assert_eq!(wallet.released.lock().unwrap().len(), entry.outputs.len());
+}
+
+/// A coin the user locked while the session waited is not signed.
+#[tokio::test]
+async fn a_coin_locked_mid_session_is_not_signed() {
+    let mn = Mn::new().await;
+    let wallet = TestWallet::new(3);
+    let (_stop_tx, stop) = watch::channel(false);
+    let p = params(&mn);
+    let server = async {
+        let mut conn = mn.peer.accept().await.unwrap();
+        let entry = serve_until_entry(&mn, &mut conn).await;
+        wallet
+            .withdrawn
+            .lock()
+            .unwrap()
+            .insert(entry.inputs[0].previous_output);
+        let tx = final_tx(&entry, false);
+        conn.send("dsf", &FinalTx { session_id: 42, tx }.encode())
+            .await
+            .unwrap();
+        conn
+    };
+    let (_conn, outcome) = tokio::join!(server, run_session(&wallet, p, |_| {}, stop));
+    assert_eq!(
+        outcome,
+        SessionOutcome::Failed(SessionFailure::BadFinalTx(
+            "an input of ours was locked or left the wallet"
+        ))
+    );
+    assert_eq!(*wallet.signs.lock().unwrap(), 0);
+    assert!(wallet.locked.lock().unwrap().is_empty());
 }
 
 /// A masternode that says no after our signatures went out may still
