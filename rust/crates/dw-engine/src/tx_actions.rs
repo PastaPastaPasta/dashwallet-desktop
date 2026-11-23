@@ -822,6 +822,7 @@ impl NetworkSession {
             h.mark_abandoned(&copies);
             h.abandoned_here.extend(abandoned.iter().copied());
         });
+        (self.hub.history).drop_claims(&wallet, abandoned.iter().copied());
         // Each abandoned transaction's own claim (DEC-179); a coin another
         // owner holds stays reserved.
         for t in &abandoned {
@@ -1138,6 +1139,7 @@ impl NetworkSession {
                             // load.
                             this.appdb_op(move |db| forget_sent(db, id, &[txid]))
                                 .await?;
+                            this.hub.history.drop_claims(&id, [txid]);
                             dropped += set.len() as u32;
                         }
                         Err(EngineError::TxActionRefused(_)) => {}

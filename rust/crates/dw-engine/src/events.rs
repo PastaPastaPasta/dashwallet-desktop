@@ -1468,10 +1468,13 @@ impl SessionHub {
                         h.swept.insert(*t);
                     }
                 });
-                if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade)
-                    && let Err(e) = crate::tx_actions::forget_sent(&appdb, id, txids)
-                {
-                    tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments");
+                if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
+                    match crate::tx_actions::forget_sent(&appdb, id, txids) {
+                        Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
+                        Err(e) => {
+                            tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
+                        }
+                    }
                 }
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {

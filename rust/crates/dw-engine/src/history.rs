@@ -897,6 +897,17 @@ impl HistoryStore {
         }
     }
 
+    /// Forgets a load's claims of `txids` once their marks are gone or
+    /// they're abandoned (WalletHistory's `claimed_at_load`).
+    pub(crate) fn drop_claims(&self, wallet: &WalletId, txids: impl IntoIterator<Item = Txid>) {
+        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        if let Some(h) = map.get_mut(wallet) {
+            for t in txids {
+                h.claimed_at_load.remove(&t);
+            }
+        }
+    }
+
     pub fn remove_wallet(&self, wallet: &WalletId) {
         self.wallets
             .write()

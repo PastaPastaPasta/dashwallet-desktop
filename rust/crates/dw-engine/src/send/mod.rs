@@ -2316,7 +2316,8 @@ impl TxDraft {
     async fn drop_mark(&self, prepared: &PreparedTx) -> bool {
         // A load this session claimed the payment's coins from its marks:
         // they're all that holds those coins, so they stay, and the payment
-        // stays pending (Abandon frees the coins after a restart).
+        // stays pending (Abandon frees the coins in History, after a restart
+        // when the load couldn't read the payment).
         let claimed = (prepared.summary.txid.parse::<dashcore::Txid>()).is_ok_and(|t| {
             (self.session.hub.history)
                 .read_wallet(&self.wallet_id, |h| h.claimed_at_load.contains(&t))

@@ -559,11 +559,15 @@ impl NetworkSession {
         }
         let settled = self.proven_settled(candidates, own).await;
         if !settled.is_empty() {
+            let gone = settled.clone();
             let forgotten = self
                 .appdb_op(move |db| crate::tx_actions::forget_sent(db, wallet, &settled))
                 .await;
-            if let Err(e) = forgotten {
-                tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments");
+            match forgotten {
+                Ok(()) => self.hub.history.drop_claims(&wallet, gone),
+                Err(e) => {
+                    tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments")
+                }
             }
         }
     }

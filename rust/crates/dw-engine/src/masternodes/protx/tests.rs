@@ -755,6 +755,21 @@ fn mg04_maybe_sent_stays_sent_and_is_never_discarded() {
 }
 
 impl Fx {
+    /// Whether this session's load of the wallet claimed `txid`'s coins.
+    fn claimed_at_load(&self, txid: Txid) -> bool {
+        (self.session.hub.history).read_wallet(&self.wallet, |h| h.claimed_at_load.contains(&txid))
+    }
+
+    /// Starts SPV and waits until it runs.
+    fn run_spv(&self) {
+        self.engine.block_on(self.session.start_spv()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while self.session.spv_state().unwrap() != crate::SpvState::Running {
+            assert!(std::time::Instant::now() < deadline, "SPV never ran");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     /// Fails the next sent-mark write, before the hand-off.
     fn fail_sent_mark(&self) {
         let path = self.session.data_dir().join(dw_appdb::APP_DB_FILE);
@@ -1135,12 +1150,12 @@ fn mg10_a_discard_after_a_load_whose_copies_did_not_read_is_refused() {
     assert_discard_waits_for_a_restart(&f, &op, txid);
 }
 
-/// After that load, a resend of the row is refused before it leaves, with
-/// its marks again unable to be dropped: the payment isn't held this
-/// session, since its marks stay on purpose (a load claimed its coin from
-/// them), and Discard still refuses.
+/// After that load, a resend of the row isn't sent, with its marks again
+/// unable to be dropped: the payment isn't held this session, since its
+/// marks stay on purpose (a load claimed its coin from them), and Discard
+/// still waits.
 #[test]
-fn mg10_a_discard_after_a_resend_of_a_payment_claimed_at_the_load_is_refused() {
+fn mg10_discard_still_waits_after_a_not_sent_resend_of_a_payment_claimed_at_the_load() {
     let (mut f, op, txid) = held_hand_off(true);
     let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
     for _ in 0..2 {
@@ -1236,6 +1251,83 @@ fn mg10_a_resend_not_sent_after_a_load_claimed_its_coin_keeps_the_marks() {
     }
 }
 
+/// A load claimed the held hand-off's coin from its marks, and the
+/// resend's own write of its marks fails before it leaves: the marks stay,
+/// and the payment isn't held this session.
+#[test]
+fn mg10_a_resend_whose_mark_write_fails_after_a_load_claimed_its_coin_keeps_the_marks() {
+    let (mut f, op, txid) = held_hand_off(true);
+    f.restart(&[]);
+    assert!(f.claimed_at_load(txid), "not claimed");
+    f.fail_sent_mark();
+    let resent = f.engine.block_on(
+        f.mn()
+            .resend_operation(f.wallet, op.id.clone(), f.grant(COIN)),
+    );
+    assert_eq!(
+        resent.as_ref().map(|r| r.state).ok(),
+        Some(ProTxOperationState::NotSent),
+        "{resent:?}"
+    );
+    assert!(
+        crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the marks went"
+    );
+    assert!(
+        !(f.session.hub.history).read_wallet(&f.wallet, |h| h.held_here.contains(&txid)),
+        "held this session"
+    );
+    assert_eq!(f.lib.sent().len(), 1, "handed off");
+}
+
+/// A load claimed a held hand-off's coin from its damaged copy, and Remove
+/// unconfirmed transactions retired the payment and its marks. A resend
+/// then writes fresh marks and isn't sent: they're dropped, as for any
+/// payment no load claimed, so a restart lists nothing and Discard goes
+/// through.
+#[test]
+fn mg10_a_resend_after_remove_unconfirmed_retired_a_claimed_payment_drops_its_new_marks() {
+    let (mut f, op, txid) = held_hand_off(true);
+    (f.db())
+        .set_setting(&f.wallet.to_string(), &format!("senttx:{txid}"), Some("zz"))
+        .unwrap();
+    f.restart(&[]);
+    assert!(f.claimed_at_load(txid), "not claimed");
+    f.run_spv();
+    let removed = f
+        .engine
+        .block_on(f.session.drop_unconfirmed(Some(f.wallet)));
+    assert_eq!(removed.ok(), Some(1), "Remove unconfirmed");
+    let resent = f.engine.block_on(
+        f.mn()
+            .resend_operation(f.wallet, op.id.clone(), f.grant(COIN)),
+    );
+    assert_eq!(
+        resent.as_ref().map(|r| r.state).ok(),
+        Some(ProTxOperationState::NotSent),
+        "{resent:?}"
+    );
+    assert_eq!(f.lib.sent().len(), 2, "not resent");
+    assert!(
+        !crate::tx_actions::load_sent(&f.db(), f.wallet)
+            .0
+            .contains_key(&txid),
+        "the new marks stay"
+    );
+    assert!(!f.claimed_at_load(txid), "still claimed");
+    f.restart(&[]);
+    assert!(
+        f.session.hub.history.get(&f.wallet, &txid).is_none(),
+        "listed again"
+    );
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id))
+        .unwrap();
+    assert!(f.rows().is_empty(), "the row stays");
+}
+
 /// A held hand-off whose saved copy is damaged is listed nowhere after a
 /// restart, and Discard refuses it while its mark holds its coin. Tools ▸
 /// Repair ▸ Remove unconfirmed transactions retires the payment and its
@@ -1253,12 +1345,7 @@ fn mg10_a_held_hand_off_with_a_damaged_copy_is_discarded_after_remove_unconfirme
     );
     assert!(!f.locked().is_empty(), "nothing locked");
     assert_discard_waits_for_a_restart(&f, &op, txid);
-    f.engine.block_on(f.session.start_spv()).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while f.session.spv_state().unwrap() != crate::SpvState::Running {
-        assert!(std::time::Instant::now() < deadline, "SPV never ran");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    f.run_spv();
     let removed = f
         .engine
         .block_on(f.session.drop_unconfirmed(Some(f.wallet)));
@@ -1277,7 +1364,7 @@ fn assert_discard_waits_for_a_restart(f: &Fx, op: &ProTxOperation, txid: Txid) {
     match &refused {
         Err(MasternodesError::Engine(crate::EngineError::Wallet(m))) => assert_eq!(
             m,
-            "discarding the operation: its payment may still be on its way; restart Dash Wallet, abandon the payment in History, then discard again"
+            "discarding the operation: its payment may still be on its way; restart Dash Wallet, abandon the payment in History, then discard again; if History doesn't list it, run Tools ▸ Repair ▸ Remove unconfirmed transactions, then discard again"
         ),
         other => panic!("{other:?}"),
     }

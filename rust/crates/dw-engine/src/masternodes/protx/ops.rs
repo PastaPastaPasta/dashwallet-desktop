@@ -35,7 +35,7 @@ const DISCARD_LISTED: &str = "discarding the operation: its payment is still lis
 
 /// Discard's refusal when a sent mark may be all that claims the payment's
 /// coins (not this session's held hand-off, not listed).
-const DISCARD_UNCERTAIN: &str = "discarding the operation: its payment may still be on its way; restart Dash Wallet, abandon the payment in History, then discard again";
+const DISCARD_UNCERTAIN: &str = "discarding the operation: its payment may still be on its way; restart Dash Wallet, abandon the payment in History, then discard again; if History doesn't list it, run Tools ▸ Repair ▸ Remove unconfirmed transactions, then discard again";
 
 /// `masternodes.collateral_released:<outpoint>`, wallet-scoped: the user
 /// released this collateral, so the follower doesn't lock it again (D9).
@@ -774,6 +774,9 @@ impl NetworkSession {
                     )
                 }
             })?;
+        if let Some(t) = marked {
+            self.hub.history.drop_claims(&wallet, [t]);
+        }
         if !deleted {
             // `sent_at` was set: the bytes may be out (D6).
             return Err(MasternodesError::OperationState {
