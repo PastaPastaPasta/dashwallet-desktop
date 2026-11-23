@@ -30,6 +30,8 @@ extension L10n {
         public static let cancelled =
             "The wallet was locked before the payment was sent. The transaction was not sent. Review the payment again."
         public static let broadcastRejected = "The transaction was rejected by the network."
+        public static let heldUntilRestart =
+            "The payment was not sent, but its coins stay reserved until you restart Dash Wallet. After the restart it's listed as pending in Activity; abandon it there to get the coins back."
         public static let grantExceeded = "The amount is larger than this authorization allows. Enter your passphrase."
         public static let syncing = "Please wait until the wallet has finished synchronizing."
         public static let offline = "The wallet is offline. Connect to the network to send."

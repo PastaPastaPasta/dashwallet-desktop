@@ -120,6 +120,7 @@ describe("IOS-050 the banner (D6)", () => {
     const request = payBanner(input({ detail: detail({ relation: "pendingIncoming", channel: "notEstablished" }) }));
     expect(request).toMatchObject({ kind: "note", text: expect.stringContaining("Accept and pay") });
     expect(blocks(payBanner(input({ detail: detail({ relation: "pendingIncoming" }), hasKeys: false })))).toBe(true);
+    expect(payBanner(input({ detail: detail({ relation: "pendingIncoming" }), hasKeys: false }))).toMatchObject({ kind: "enable", text: "Enable DashPay first. Then you can accept and pay." });
   });
 
   it("reads the Enable and broken-channel texts in the language in use", () => {
@@ -130,7 +131,7 @@ describe("IOS-050 the banner (D6)", () => {
       const broken = textOf(payBanner(input({ detail: detail({ channel: "broken" }) })));
       const refusal = sendErrorText(err("contact.channel_broken"), "test")?.text ?? "";
       for (const text of [enable, broken, refusal]) expect(text).not.toMatch(/Enable DashPay first|Payments to this contact/);
-      expect(enable).toMatch(/^⟦.*⟧ ⟦.*⟧$/);
+      expect(enable).toMatch(/^⟦[^⟦⟧]*⟧$/);
       expect(broken).toMatch(/^⟦.*⟧$/);
       expect(refusal).toBe(broken);
     } finally {
@@ -276,8 +277,11 @@ describe("IOS-050 U-03's promise and refusals for a contact (D9, D13)", () => {
     const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 1_000_000, fee: 226 };
     expect(broadcastFailure(err("contact.payment_locked"), "test", held, true, "DASH", true)).toMatchObject({ kind: "failed" });
     expect(broadcastFailure(err("storage"), "test", held, true, "DASH", true)).toMatchObject({ kind: "failed" });
-    // To an address, or on a retry, it stays unknown.
-    expect(broadcastFailure(err("storage"), "test", held, true)).toMatchObject({ kind: "unknown" });
+    // A first broadcast to an address whose record could not be written was not sent either; on a
+    // retry it stays unknown.
+    expect(broadcastFailure(err("storage"), "test", held, true)).toMatchObject({ kind: "failed" });
+    expect(broadcastFailure(err("storage"), "test", held, false, "DASH", true)).toMatchObject({ kind: "unknown" });
+    expect(broadcastFailure(err("contact.payment_locked"), "test", held, true)).toMatchObject({ kind: "unknown" });
     expect(broadcastFailure(err("contact.payment_locked"), "test", held, false, "DASH", true)).toMatchObject({ kind: "unknown" });
   });
 });

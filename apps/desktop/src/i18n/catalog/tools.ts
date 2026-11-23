@@ -343,7 +343,7 @@ export const tools = {
     showQr: "Show the QR code of {label}",
     qrLabel: "QR code of {address}",
     qrLoading: "Drawing the QR code",
-    paymentLink: "payment link",
+    copyPaymentLink: "Copy payment link",
     edit: "Edit",
     editEntry: "Edit {label}",
     delete: "Delete",

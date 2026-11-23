@@ -56,14 +56,13 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
-      - name: protoc
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+      - uses: ./.github/actions/pinned-sources
       # `mix-shield-test` adds only test_move_mixed.py's `coinjoin-test-addresses` (debug builds
       # only; the release-check job proves it absent from a release build).
       - name: Build dwcli
@@ -214,14 +213,13 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
-      - name: protoc
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+      - uses: ./.github/actions/pinned-sources
       - name: Build the warm-up example
         working-directory: rust
         run: cargo build -p dw-engine --example shielded_warmup --locked
@@ -245,14 +243,13 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
-      - name: protoc
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+      - uses: ./.github/actions/pinned-sources
       - name: mg04b_release_check (release)
         working-directory: rust
         run: cargo test --release -p dw-engine --features test-support --test mg04b_release_check --locked
@@ -275,8 +272,6 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
-      - name: protoc
-        run: ci/github/install-protoc.sh
       - name: Rust toolchains (rust-toolchain.toml, and the pinned nightly) and cargo-fuzz
         working-directory: rust
         run: |
@@ -286,6 +281,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+      - uses: ./.github/actions/pinned-sources
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .fuzz/corpus

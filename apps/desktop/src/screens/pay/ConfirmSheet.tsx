@@ -11,7 +11,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
-import { isAppError } from "../../api/backend";
+import { hasCode, isAppError } from "../../api/backend";
 import { refusedWhileLocked } from "../../api/lockGate";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
@@ -39,7 +39,9 @@ import {
   failureText,
   isContact,
   keepsPromise,
+  settleNotSent,
   subtractsFee,
+  UNRECORDED,
   unsignedKeepsPromise,
   type Advanced,
   type Confirmed,
@@ -298,14 +300,14 @@ export function ConfirmSheet({
       const { txid } = await draft.broadcast(d, prepared.handle);
       attempt.outcome({ kind: "sent", txid, ...sent });
     } catch (e) {
-      // "Not sent" only when the engine released it, held a contact payment back before its
-      // hand-off, or the window locked before it was asked (then it is abandoned here); nothing
-      // else is abandoned after a broadcast.
+      // "Not sent" only when the engine released it, held it back before its hand-off, or the
+      // window locked before it was asked (then it is abandoned here); nothing else is abandoned
+      // after a broadcast.
       const never = refusedWhileLocked(e);
       const o = never ? ({ kind: "failed", text: t("pay.error.lockedBeforeSend") } as const) : broadcastFailure(e, chain, { txid: prepared.summary.txid, draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
       if (o.kind === "failed") {
-        if (toContact || never) await draft.abandon(d, prepared.handle);
-        notSent(o.text);
+        const engineHolds = toContact || never || hasCode(e, UNRECORDED);
+        await settleNotSent(engineHolds ? () => draft.abandon(d, prepared.handle) : null, () => notSent(o.text));
       } else attempt.outcome(accepted && o.kind === "unknown" ? { ...o, text: `${accepted} ${o.text}` } : o);
     } finally {
       // The lease ends with the first broadcast (dwcli's point): a retry needs none.

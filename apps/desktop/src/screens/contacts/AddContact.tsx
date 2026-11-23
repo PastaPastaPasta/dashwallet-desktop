@@ -229,7 +229,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
         </div>
       </header>
       <p className="add-contact-identity" data-testid="add-contact-identity">
-        <CopyValue value={c.identity} label={t("contacts.addContact.identity")} mono />
+        <CopyValue value={c.identity} action={t("contacts.addContact.copyIdentity")} mono />
       </p>
       <p className="add-contact-meta" data-testid="add-contact-verified">
         {c.unverified ? <Chip tone="warning">{t("contacts.unverified")}</Chip> : <Chip tone="info">{t("contacts.addContact.verified")}</Chip>}
