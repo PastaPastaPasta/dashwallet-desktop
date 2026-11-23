@@ -9,7 +9,7 @@ failure issues (`issues: write`: the nightly's `report` and `main-result.yml`).
 | Workflow | Triggers | What it runs |
 |---|---|---|
 | [`ci.yml`](../.github/workflows/ci.yml) | pull requests (fast Linux checks only: see "Pull request checks"); push to `main`, 02:47 UTC daily and manual (every job but Windows Swift, which runs only daily and manually) | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
-| [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the shielded prover warm-up; the MG-04b release check; fuzzing (H-02); the Linux GUI (AT-SPI) demo |
+| [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the shielded prover warm-up; the MG-04b release check; fuzzing (H-02); the kill -9 matrix (H-03); the Linux GUI (AT-SPI) demo |
 | [`main-result.yml`](../.github/workflows/main-result.yml) | a `ci.yml` or `release.yml` run on `main` finishing | opens, updates or closes the red-main issue (see "A red main is a stop") |
 | [`gate.yml`](../.github/workflows/gate.yml) | manual only | G-02 / G-03 measurement scripts on the chosen OSes |
 | [`tauri-selftest.yml`](../.github/workflows/tauri-selftest.yml) | manual only | the Tauri app (G-01) built, run with `--selftest` and launched for a screenshot on macOS and Windows |
@@ -288,20 +288,21 @@ purpose. The per-state screenshots of the other suites are artifacts only.
 | Release check (MG-04b sending override) | The release leg of `dw-engine`'s `tests/mg04b_release_check.rs` (MG-04b D71): `cargo test --release -p dw-engine --features test-support --test mg04b_release_check --locked`. Its `const` assert fails the build if the shared-masternode sending override is compiled into a release build; PR CI runs only the debug legs. |
 | Release check (dwcli `mix-shield-test`) | The release leg of `dw-engine`'s `tests/mix_shield_release_check.rs`: `cargo test --release -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked`. Its `const` assert fails the build if the regtest suite's test-only CoinJoin calls (`mix_shield_test`) are compiled into a release build; the nightly builds its `dwcli` with `--features mix-shield-test` (debug) for `move-mixed`. |
 | Fuzz the untrusted-input parsers (H-02) | `scripts/fuzz.sh .fuzz 600`: every libFuzzer target of `rust/fuzz` for 10 minutes, Linux only, never on pull requests (see "Fuzzing" below). The corpus carries over from night to night in the Actions cache (`fuzz-corpus-*`); findings and logs are uploaded as `fuzz-findings`. |
+| Kill -9 matrix (H-03) | `cargo test -p dw-engine --lib --locked kill9 -- --ignored --skip kill9_finding`: each row runs a wallet operation in a child process (the test binary again), kills it with SIGKILL at a named point, opens the same data folder again and checks what it finds (`rust/crates/dw-engine/src/kill9/mod.rs`). A `kill9_finding_<issue>` row reproduces an open issue and is skipped until its fix; run one by hand with `cargo test -p dw-engine --lib kill9_finding_<issue> -- --ignored`. |
 | SwiftCrossUI AT-SPI demo (GUI, Linux) | **non-blocking** (see "Known gaps"): `scripts/crossui-linux-demo.sh` with `DWD_CROSSUI_SUITE=m2` (the M1 flows, then the M2 flows), uploaded as `crossui-linux-demo` |
 
 GitHub runs `schedule` triggers only from the repository's default branch, which is `main`. To start a run by
 hand: `gh workflow run nightly.yml --ref main`. The nightly's overall status is the regtest,
-shielded, release-check and fuzz jobs': the AT-SPI demo shows its own red X without failing the run, so check its log
+shielded, release-check, fuzz and kill -9 jobs': the AT-SPI demo shows its own red X without failing the run, so check its log
 separately.
 
 A scheduled run ends with the job "Report the nightly's result" (not in the table: it tests nothing). If one of
-those four jobs failed or was cancelled, it opens the issue "Nightly failure: GitHub Actions", labelled
-`nightly-failure`, or adds a comment to the open one; if all four passed, it closes it
+those five jobs failed or was cancelled, it opens the issue "Nightly failure: GitHub Actions", labelled
+`nightly-failure`, or adds a comment to the open one; if all five passed, it closes it
 (`ci/github/nightly-issue.sh`). A run started by hand reports nothing, and neither does a rerun of a night
 that is no longer the latest scheduled run. If a rerun cannot read which scheduled run is the latest, it
 fails and leaves the issue as it is. The job can fail on its own (the checkout, or the issue API), which also
-turns the run red: then the four jobs' results say whether the night passed.
+turns the run red: then the five jobs' results say whether the night passed.
 
 ### Fuzzing (H-02)
 
