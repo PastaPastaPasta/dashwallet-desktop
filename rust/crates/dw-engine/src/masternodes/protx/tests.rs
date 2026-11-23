@@ -930,36 +930,54 @@ fn mg10_a_resend_keeps_the_sent_mark_of_an_input_spent_since() {
 /// discarded registration isn't listed, and Resend can't send it.
 #[test]
 fn mg10_a_refused_hand_off_whose_mark_stays_reads_not_sent_and_can_be_discarded() {
-    let (f, op, txid) = refused_hand_off_with_its_mark();
-    f.engine
-        .block_on(f.mn().discard_operation(f.wallet, op.id.clone()))
-        .unwrap();
-    assert!(f.locked().is_empty(), "still locked: {:?}", f.locked());
-    assert!(
-        !crate::tx_actions::load_sent(&f.db(), f.wallet)
-            .0
-            .contains_key(&txid),
-        "the mark stays"
-    );
+    for existing in [false, true] {
+        let (f, op, txid) = held_hand_off_of(false, existing);
+        let outside = f.locked().iter().filter(|o| o.txid != txid).count();
+        assert_eq!(
+            outside,
+            1 + existing as usize,
+            "{existing}: {:?}",
+            f.locked()
+        );
+        f.engine
+            .block_on(f.mn().discard_operation(f.wallet, op.id.clone()))
+            .unwrap();
+        assert!(
+            f.locked().is_empty(),
+            "{existing}: still locked: {:?}",
+            f.locked()
+        );
+        assert!(
+            !crate::tx_actions::load_sent(&f.db(), f.wallet)
+                .0
+                .contains_key(&txid),
+            "{existing}: the mark stays"
+        );
 
-    let mut f = f;
-    f.restart(&[]);
-    let sent = f.lib.sent().len();
-    let extras = f
-        .engine
-        .block_on(f.session.tx_detail_extras(f.wallet, txid));
-    assert!(
-        matches!(extras, Err(crate::EngineError::TxNotFound(_))),
-        "{extras:?}"
-    );
-    let resent = f
-        .engine
-        .block_on(f.session.resend_transaction(f.wallet, txid));
-    assert!(
-        matches!(resent, Err(crate::EngineError::TxNotFound(_))),
-        "{resent:?}"
-    );
-    assert_eq!(f.lib.sent().len(), sent, "handed off again");
+        let mut f = f;
+        f.restart(&[]);
+        assert!(
+            f.locked().is_empty(),
+            "{existing}: locked again: {:?}",
+            f.locked()
+        );
+        let sent = f.lib.sent().len();
+        let extras = f
+            .engine
+            .block_on(f.session.tx_detail_extras(f.wallet, txid));
+        assert!(
+            matches!(extras, Err(crate::EngineError::TxNotFound(_))),
+            "{existing}: {extras:?}"
+        );
+        let resent = f
+            .engine
+            .block_on(f.session.resend_transaction(f.wallet, txid));
+        assert!(
+            matches!(resent, Err(crate::EngineError::TxNotFound(_))),
+            "{existing}: {resent:?}"
+        );
+        assert_eq!(f.lib.sent().len(), sent, "{existing}: handed off again");
+    }
 }
 
 /// The same hand-off, whose sent mark still can't be deleted at Discard:
@@ -1406,16 +1424,26 @@ fn refused_hand_off_with_its_mark() -> (Fx, ProTxOperation, Txid) {
 /// [`refused_hand_off_with_its_mark`], its funding coin (seed 1) also in
 /// the wallet store when `stored`, so a load claims it there.
 fn held_hand_off(stored: bool) -> (Fx, ProTxOperation, Txid) {
+    held_hand_off_of(stored, false)
+}
+
+/// [`held_hand_off`], its collateral an existing 1000 DASH coin of the
+/// wallet (seed 2) when `existing`, else a new one.
+fn held_hand_off_of(stored: bool, existing: bool) -> (Fx, ProTxOperation, Txid) {
     let f = fx(Library::NoPeers);
     let funding = f.credit(1, MASTERNODE_COLLATERAL + COIN);
     if stored {
         f.store_coin(funding);
     }
+    let collateral = match existing {
+        true => CollateralChoice::ExistingUtxo {
+            outpoint: format!("{}-0", f.credit(2, MASTERNODE_COLLATERAL).txid),
+        },
+        false => CollateralChoice::FundNew,
+    };
     let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
     *f.lib.break_marks.lock().unwrap() = Some(path.clone());
-    let op = f
-        .register(request(CollateralChoice::FundNew), f.grant(COIN))
-        .unwrap();
+    let op = f.register(request(collateral), f.grant(COIN)).unwrap();
     dw_appdb::fault::disarm(&path);
     assert_eq!(op.state, ProTxOperationState::NotSent, "{op:?}");
     assert!(op.sent_at.is_none());

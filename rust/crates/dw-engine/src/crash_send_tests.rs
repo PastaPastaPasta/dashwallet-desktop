@@ -1346,6 +1346,35 @@ fn remove_unconfirmed_run_again_in_the_session_deletes_the_marks() {
     assert!(spendable(&engine, &session, id, a), "A is held");
 }
 
+/// The same, when the rerun's sweep fails before the marks' delete: it
+/// returns the storage error and the marks stay; running it again deletes
+/// them, and after a restart A is free once its funding is scanned.
+#[test]
+fn remove_unconfirmed_whose_sweep_fails_keeps_the_marks_until_run_again() {
+    let (_dir, engine, session, id, paid, damaged) = damaged_payment_whose_marks_did_not_delete();
+    let a = OutPoint::new(paid.txid(), 0);
+    (session.hub.fail_abandon_sweep).store(true, std::sync::atomic::Ordering::SeqCst);
+    let removed = engine.block_on(session.drop_unconfirmed(Some(id)));
+    assert!(
+        matches!(removed, Err(crate::EngineError::Storage(_))),
+        "{removed:?}"
+    );
+    assert!(
+        sent_marks(&session, id).contains(&damaged.txid()),
+        "the marks went"
+    );
+    let removed = engine.block_on(session.drop_unconfirmed(Some(id)));
+    assert_eq!(removed.ok(), Some(1), "run again");
+    assert!(
+        !sent_marks(&session, id).contains(&damaged.txid()),
+        "the marks stay"
+    );
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(spendable(&engine, &session, id, a), "A is held");
+}
+
 /// The same, run again after a restart.
 #[test]
 fn remove_unconfirmed_run_again_after_a_restart_deletes_the_marks() {
