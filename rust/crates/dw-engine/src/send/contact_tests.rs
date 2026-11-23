@@ -3158,11 +3158,14 @@ fn killed_contact_payment(point: &str) -> (Fixture, Txid, std::collections::BTre
         .collect();
     let engine = engine_at(dir.path());
     let session = open_session(&engine);
+    // The child's fixture recorded the contacts as verified (stored, so
+    // kept across the kill).
     let f = Fixture {
         _dir: Some(dir),
         engine,
         session,
         wallet,
+        seeded: std::sync::atomic::AtomicBool::new(true),
     };
     (f, txid, inputs)
 }
@@ -3175,6 +3178,7 @@ impl Fixture {
             engine,
             session,
             wallet,
+            seeded,
         } = self;
         drop(session);
         assert!(
@@ -3188,6 +3192,7 @@ impl Fixture {
             engine,
             session,
             wallet,
+            seeded,
         }
     }
 
