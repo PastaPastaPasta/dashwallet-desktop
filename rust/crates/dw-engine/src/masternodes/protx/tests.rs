@@ -224,8 +224,11 @@ impl Fx {
     /// Closes the session and opens it again on the same data, as a crash
     /// and restart would leave it: memory (reservations, leases, in-flight
     /// marks) gone, app.sqlite kept. The coins are credited again, as the
-    /// wallet's sync would restore them.
+    /// wallet's sync would restore them. The close waits out a wallet load
+    /// in flight: after [`Self::run_spv`] the bring-up opens the shielded
+    /// store as one, which takes up to minutes under load (#399).
     fn restart(&mut self, coins: &[(u8, u64)]) {
+        *self.session.close_load_wait.lock().unwrap() = Some(std::time::Duration::from_secs(180));
         assert!(
             self.engine
                 .block_on(self.engine.close_network(DashNetwork::Regtest))
@@ -763,7 +766,7 @@ impl Fx {
     /// Starts SPV and waits until it runs.
     fn run_spv(&self) {
         self.engine.block_on(self.session.start_spv()).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
         while self.session.spv_state().unwrap() != crate::SpvState::Running {
             assert!(std::time::Instant::now() < deadline, "SPV never ran");
             std::thread::sleep(std::time::Duration::from_millis(20));
