@@ -52,8 +52,12 @@ export interface AddContext {
   listed: Listed<ContactSummaryInfo> | undefined;
 }
 
-/** Selects `contact` in the list, closing Add Contact (D4's Show). */
-const select = (contact: string) => ui.set({ contact, addContact: null, contactPrefill: null });
+/** Selects `contact` in the list, closing Add Contact (D4's Show); the button pressed goes with
+ * the slot, so the contact's detail takes focus at its name. */
+function select(contact: string) {
+  ui.set({ contact, addContact: null, contactPrefill: null });
+  requestAnimationFrame(() => focusContact(document.getElementById("contact-detail-name")));
+}
 
 /** Closes the slot; focus goes back to the header's Add contact (D15). */
 function close() {

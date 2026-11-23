@@ -231,6 +231,31 @@ test("keyboard only: send a contact request", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test("keyboard only: Show Request in Add contact moves focus to the sender's detail (#407)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  await goTo(page, "contacts");
+  await expect(page.getByTestId("page-contacts")).toBeVisible();
+  await tabTo(page, page.getByTestId("contacts-add"));
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("searchbox", { name: "Search username" })).toBeFocused();
+  await page.keyboard.type("grace");
+  await tabTo(page, namedRow(page, "add-contact-hit", "Grace Hopper"));
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("add-contact-line")).toHaveText("They sent you a contact request.");
+  const show = page.getByTestId("add-contact-show");
+  await expect(show).toHaveText("Show Request");
+  await tabTo(page, show);
+  await page.keyboard.press("Enter");
+
+  // Add contact closes with the button that had focus; the sender's detail takes it at its name.
+  await expect(page.getByTestId("add-contact")).toHaveCount(0);
+  const heading = page.getByTestId("contact-detail").getByRole("heading", { level: 2 });
+  await expect(heading).toHaveText("Grace Hopper");
+  await expect.poll(async () => ((await heading.evaluate((el) => el === document.activeElement)) ? "the detail heading" : await focusName(page))).toBe("the detail heading");
+  await expectAxeClean(page);
+  expect(errors).toEqual([]);
+});
+
 /** Opens the bell's popover from the keyboard; its heading takes focus. */
 async function openBell(page: Page, key = "Enter") {
   const bell = page.getByTestId("toolbar-bell");

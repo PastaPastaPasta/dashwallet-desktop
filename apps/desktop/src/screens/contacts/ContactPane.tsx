@@ -67,7 +67,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
       <header className="contact-detail-header">
         <Avatar letters={avatarLetters(c)} size="pane" identity={c.contact} />
         <div className="contact-detail-names">
-          <h2 id="contact-detail-name" className="add-contact-title">
+          <h2 id="contact-detail-name" className="add-contact-title" tabIndex={-1}>
             {shownName(c)}
           </h2>
           {sub && (
