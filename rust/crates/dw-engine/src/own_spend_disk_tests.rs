@@ -292,8 +292,13 @@ pub(super) fn spendable_for(
 }
 
 /// Waits up to 20 s for `done`.
-pub(super) fn eventually(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+pub(super) fn eventually(what: &str, done: impl FnMut() -> bool) {
+    eventually_within(what, std::time::Duration::from_secs(20), done);
+}
+
+/// Waits up to `limit` for `done`.
+fn eventually_within(what: &str, limit: std::time::Duration, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + limit;
     while std::time::Instant::now() < deadline {
         if done() {
             return;
@@ -361,6 +366,25 @@ pub(super) fn wallet_story(
         "\nhistory txids: {:?}\nhistory: {shown:#?}\nkey-wallet records: {records:#?}\nevents: {caught:#?}",
         history.keys().collect::<Vec<_>>()
     )
+}
+
+/// Starts SPV and waits up to 300 s for it to run: `Running` waits for the
+/// wallets' DashPay bring-up and then dash-spv's own start, which take
+/// minutes on a loaded machine. A start that failed takes its supervisor
+/// back, so the state reads `Stopped` again: that fails at once. The
+/// shielded store opens after `Running`, as a wallet load (#399), which
+/// [`super::reopen`]'s close waits out.
+pub(super) fn start_offline_spv(engine: &Engine, session: &Arc<NetworkSession>) {
+    engine.block_on(session.start_spv()).unwrap();
+    eventually_within(
+        "SPV runs",
+        std::time::Duration::from_secs(300),
+        || match session.spv_state().unwrap() {
+            crate::SpvState::Running => true,
+            crate::SpvState::Starting => false,
+            crate::SpvState::Stopped => panic!("SPV did not start: Notice SpvError says why"),
+        },
+    );
 }
 
 pub(super) fn synced(engine: &Engine, session: &NetworkSession, id: WalletId) -> u32 {

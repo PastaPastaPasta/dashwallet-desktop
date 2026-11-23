@@ -16,7 +16,7 @@ use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
     COIN, COINS, FUNDED_AT, TIP, abandon, change_of, coins, foreign, fresh_address, funding,
-    own_scripts, send, spendable, wait_stored,
+    own_scripts, send, spendable, start_offline_spv, wait_stored,
 };
 use super::{block_with, deliver, elsewhere, engine_wallet, mempool, mined, reopen};
 use crate::send::CoinSource;
@@ -712,13 +712,6 @@ fn restore(engine: &Engine, session: &Arc<NetworkSession>, phrase: &[u8]) -> Wal
             },
         ))
         .unwrap()
-}
-
-fn start_offline_spv(engine: &Engine, session: &Arc<NetworkSession>) {
-    engine.block_on(session.start_spv()).unwrap();
-    super::own_spend_disk_tests::eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
 }
 
 #[derive(Clone, Copy, PartialEq)]

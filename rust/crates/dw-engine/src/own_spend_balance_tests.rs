@@ -14,7 +14,7 @@ use platform_wallet::key_wallet_manager::WalletInterface;
 use super::own_spend_disk_tests::{
     COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, change_of, coins, eventually, foreign,
     fresh_address, funding, own_scripts, rival, second_wallet, send, sent_marks, spendable,
-    store_raw, synced, utxo, wait_stored, wallet_funded_unmined,
+    start_offline_spv, store_raw, synced, utxo, wait_stored, wallet_funded_unmined,
 };
 use super::{balances, engine_wallet, instant_lock, mempool, mined, reopen, wait_stored_locked};
 use crate::send::CoinSource;
@@ -2036,10 +2036,7 @@ fn a_half_done_abandon_whose_own_mark_key_is_damaged_can_be_abandoned_again() {
     );
     let extras = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
     assert!(extras.can_abandon, "Abandon is not offered: {extras:?}");
-    engine.block_on(session.start_spv()).unwrap();
-    eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
+    start_offline_spv(&engine, &session);
     engine
         .block_on(session.abandon_transaction(id, txid))
         .unwrap();
@@ -2130,10 +2127,7 @@ fn a_rescan_from_the_birth_frees_a_coin_a_half_done_abandon_could_not_name() {
     );
     assert_eq!(stored_spent(&session, id, a), Some(true), "A is released");
     assert!(!spendable(&engine, &session, id, a), "A is offered");
-    engine.block_on(session.start_spv()).unwrap();
-    eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
+    start_offline_spv(&engine, &session);
     engine
         .block_on(session.rescan(crate::RescanFrom::WalletBirth))
         .unwrap();
@@ -2278,10 +2272,7 @@ fn a_payment_marked_abandoned_is_never_resent() {
 #[test]
 fn remove_unconfirmed_fails_when_the_sent_marks_do_not_read() {
     let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
-    engine.block_on(session.start_spv()).unwrap();
-    eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
+    start_offline_spv(&engine, &session);
     let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
     dw_appdb::fault::arm(&path, "settings.read_sent:", dw_appdb::fault::Stage::Before);
     let removed = engine.block_on(session.drop_unconfirmed(Some(id)));

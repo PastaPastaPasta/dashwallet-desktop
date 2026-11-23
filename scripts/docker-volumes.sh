@@ -1,6 +1,7 @@
-# Sourced by scripts/linux-docker-test.sh and scripts/crossui-linux-demo.sh
-# (expects ROOT): names the Docker volumes holding the Linux cargo target dir
-# and the SwiftPM scratch dir.
+# Sourced by scripts/linux-docker-test.sh, scripts/crossui-linux-demo.sh and
+# apps/desktop/scripts/atspi-walk-docker.sh (expects ROOT): names the Docker
+# volumes holding the Linux cargo target dir and the SwiftPM scratch dir, and
+# the screen-reader check's target dir and pnpm cache.
 #
 # On macOS every checkout shares one pair, like the dev Mac's single shared
 # target dir (DESIGN.md R3). Elsewhere each checkout gets its own pair, keyed by
@@ -20,6 +21,9 @@ if [[ -z "${DWD_DOCKER_VOLUME_TAG+set}" ]]; then
 fi
 DWD_VOLUME_TARGET="dwd-linux-swift-target${DWD_DOCKER_VOLUME_TAG:+-$DWD_DOCKER_VOLUME_TAG}"
 DWD_VOLUME_SWIFTPM="dwd-linux-swiftpm${DWD_DOCKER_VOLUME_TAG:+-$DWD_DOCKER_VOLUME_TAG}"
+# The screen-reader check builds in Ubuntu 24.04 (ci/linux/Dockerfile.atspi): a target of its own.
+DWD_VOLUME_ATSPI_TARGET="dwd-atspi-target${DWD_DOCKER_VOLUME_TAG:+-$DWD_DOCKER_VOLUME_TAG}"
+DWD_VOLUME_ATSPI_CACHE="dwd-atspi-cache${DWD_DOCKER_VOLUME_TAG:+-$DWD_DOCKER_VOLUME_TAG}"
 # Cargo jobs inside the container: DWD_LINUX_JOBS, else 8 on macOS (Docker runs in a smaller VM
 # there), else the host's CARGO_BUILD_JOBS, else 8.
 if [[ "$(uname -s)" == Darwin ]]; then

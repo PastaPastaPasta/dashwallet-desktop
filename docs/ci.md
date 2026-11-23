@@ -294,6 +294,7 @@ every app binary passes the check. dw-app has no fixture mode (`--fixture` is an
 | `e2e/security.spec.ts` | Chromium, WebKit | hostile strings render as text |
 | `e2e/visual.spec.ts` | Chromium, `DW_VISUAL=1` only | `toHaveScreenshot` baselines (below) |
 | `e2e-tauri/smoke.ts` | WebKitGTK via tauri-driver | the real app on the real engine: lock screen, wrong passphrase refused, unlock, Overview and Transactions of a new regtest wallet, lock again |
+| `e2e-tauri/atspi-walk.ts` | WebKitGTK via tauri-driver, read over AT-SPI | local only, not in CI yet: every screen reachable without funds or a network, onboarding included; fails if any interactive node Orca sees has no accessible name ([`qa/screen-reader-linux.md`](qa/screen-reader-linux.md)) |
 
 Run them locally with the CI commands:
 
@@ -302,6 +303,7 @@ cd apps/desktop
 pnpm e2e                          # host browsers (pnpm exec playwright install chromium webkit)
 scripts/e2e-docker.sh             # the CI job: same image, same commands, as the calling user
 xvfb-run -a pnpm e2e:tauri        # the tauri-driver smoke (or DISPLAY from `agent-gui start N`)
+scripts/atspi-walk-docker.sh OUT  # the screen-reader check (AT-SPI names), built and run in Docker
 ```
 
 **Two shards.** The suite runs as two jobs, `UI tests (Playwright, axe), shard 1 of 2` and `2 of 2`.

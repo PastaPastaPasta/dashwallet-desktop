@@ -71,3 +71,33 @@ export function useRefocus(present: (key: string) => boolean, target: (index: nu
   });
   return useCallback((key: string, index = 0) => setArmed({ key, index }), []);
 }
+
+/** Focuses `target` without a scroll jump, scrolling it into view only when it is outside the window. */
+export function focusInView(target: HTMLElement | null) {
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  const box = target.getBoundingClientRect();
+  if (box.top < 0 || box.bottom > window.innerHeight || box.left < 0 || box.right > window.innerWidth) target.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+/** The contact whose detail takes focus at its name when it next shows: Add contact's Show left
+ * with the button that had focus, and the detail may show only once the list has read it. */
+let detailFocus: string | null = null;
+
+/** Asks the detail of `contact` to take focus when it shows. */
+export function focusDetailWhenShown(contact: string) {
+  detailFocus = contact;
+}
+
+/** Drops the request unless it is for `contact` (`null`: drops it): another selection, Close or
+ * leaving Contacts supersedes it. */
+export function dropDetailFocusUnless(contact: string | null) {
+  if (detailFocus !== contact) detailFocus = null;
+}
+
+/** Whether the detail of `contact`, now shown, should take focus; answers true once. */
+export function takeDetailFocus(contact: string): boolean {
+  if (detailFocus !== contact) return false;
+  detailFocus = null;
+  return true;
+}
