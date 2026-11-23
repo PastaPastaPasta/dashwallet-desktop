@@ -1236,7 +1236,7 @@ fn path_of_record(record: &str) -> Option<PathBuf> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt;
-        if record.len() % 4 != 0 {
+        if !record.len().is_multiple_of(4) {
             return None;
         }
         let units = (0..record.len())
