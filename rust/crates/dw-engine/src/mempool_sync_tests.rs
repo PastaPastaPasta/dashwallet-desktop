@@ -25,6 +25,8 @@ mod dismissed_spend_disk_tests;
 mod own_spend_balance_tests;
 #[path = "own_spend_disk_tests.rs"]
 mod own_spend_disk_tests;
+#[path = "signed_coin_pin_tests.rs"]
+mod signed_coin_pin_tests;
 
 const PHRASE: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
