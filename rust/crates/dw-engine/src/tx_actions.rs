@@ -876,15 +876,16 @@ impl NetworkSession {
             let live = this.live()?;
             let (entry, f) = this.tx_facts(&live.manager, wallet, txid, true).await?;
             // A payment this app sent whose coins are not resolved yet (one
-            // with no change too): its debit is unknown. A failed read is
-            // taken as one.
+            // with no change too): its debit is unknown. Its mark or the
+            // mark's copy of it says so. A failed read is taken as one.
             let debit_unknown = f.debit_unknown
                 || (f.debit == 0 && f.inputs_unresolved && {
-                    let (scope, key) = (wallet.to_string(), format!("{SENT_PREFIX}{txid}"));
-                    !matches!(
-                        this.appdb_op(move |db| db.setting(&scope, &key)).await,
-                        Ok(None)
-                    )
+                    let scope = wallet.to_string();
+                    let marked = this.appdb_op(move |db| {
+                        let read = |p: &str| db.setting(&scope, &format!("{p}{txid}"));
+                        Ok(read(SENT_PREFIX)?.is_some() || read(SENT_TX_PREFIX)?.is_some())
+                    });
+                    !matches!(marked.await, Ok(false))
                 });
             let txid_s = txid.to_string();
             let id = wallet.to_string();

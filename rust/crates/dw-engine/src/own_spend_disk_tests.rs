@@ -2589,6 +2589,24 @@ fn a_payment_seen_by_its_change_before_its_inputs_has_an_unknown_debit() {
     let appdb = Arc::clone(&session.live().unwrap().appdb);
     appdb.set_setting(&scope, &key, Some(&coin)).unwrap();
     assert_eq!(debit(to_self.txid()), None, "a self-transfer this app sent");
+
+    // A sent mark that keeps only its copy of the signed transaction.
+    let copy_only = Transaction {
+        output: vec![TxOut {
+            value: COIN,
+            script_pubkey: fresh_address(&engine, &session, id).script_pubkey(),
+        }],
+        ..funding(12, &[], 0)
+    };
+    mempool(&engine, &session, id, &copy_only);
+    assert_eq!(debit(copy_only.txid()), Some(0), "no sent mark yet");
+    let key = format!("{}{}", crate::tx_actions::SENT_TX_PREFIX, copy_only.txid());
+    appdb.set_setting(&scope, &key, Some("00")).unwrap();
+    assert_eq!(
+        debit(copy_only.txid()),
+        None,
+        "a payment whose sent mark keeps only its copy"
+    );
 }
 
 /// How long an abandon holds the wallet manager, through its sweep's
