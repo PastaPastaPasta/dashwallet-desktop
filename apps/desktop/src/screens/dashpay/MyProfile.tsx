@@ -5,7 +5,7 @@
 // dashpay/profile.ts, dashpay/topup.ts and dashpay/withdraw.ts;
 // the Settings card (D20) is here too. Edit Profile (DP4-03) is a sheet over the page.
 
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { Backend } from "../../api/backend";
 import type { IdentitySummary } from "../../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../../api/generated/PendingTopUp";
@@ -25,6 +25,7 @@ import { outcomeText, topUpErrorText, topUpFor, type TopUpFlow } from "../../das
 import { withdrawFor } from "../../dashpay/withdraw";
 import { wizardFor } from "../../dashpay/wizard";
 import { useDisplay } from "../../format/display";
+import { t, useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { Avatar } from "../contacts/Avatar";
 import { Page } from "../Routes";
@@ -55,6 +56,7 @@ export function buyCredits(b: Backend, walletId: string, main: IdentitySummary) 
 }
 
 export function ProfileHeader({ main, contest, walletId, onEdit }: { main: IdentitySummary; contest: string | null; walletId: string; onEdit: () => void }) {
+  useT();
   const b = useBackend();
   const h = headerModel(main, contest);
   const [sharing, setSharing] = useState(false);
@@ -73,7 +75,7 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
           {h.title}
         </h2>
         <p className="profile-username" data-testid="profile-username" data-names={h.names}>
-          {h.username}
+          {h.names === "named" ? <bdi dir="ltr">{h.username}</bdi> : h.username}
         </p>
         {h.message && <p className="profile-message">{h.message}</p>}
         {h.names === "none" && contest === null && (
@@ -107,14 +109,22 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
 }
 
 function Details({ main, contest }: { main: IdentitySummary; contest: string | null }) {
+  useT();
   return (
     <section className="card-l1 profile-details" data-testid="profile-details" aria-label={PROFILE_COPY.identity}>
       <dl className="detail-list">
         <DetailRow label={PROFILE_COPY.usernames} testId="profile-usernames">
-          {main.names.length > 0 ? main.names.map((n) => `@${n}`).join(", ") : headerModel(main, contest).username}
+          {main.names.length > 0
+            ? main.names.map((n, i) => (
+                <Fragment key={n}>
+                  {i > 0 && t("common.listSeparator")}
+                  <bdi dir="ltr">{`@${n}`}</bdi>
+                </Fragment>
+              ))
+            : headerModel(main, contest).username}
         </DetailRow>
         <DetailRow label={PROFILE_COPY.identity} testId="profile-identity">
-          <CopyValue value={main.identity} label="identity id" mono />
+          <CopyValue value={main.identity} label={PROFILE_COPY.identityId} mono />
         </DetailRow>
       </dl>
     </section>
@@ -137,6 +147,7 @@ function Credits({
   onTopUp: () => void;
   withdraw: { button: ReactNode; rows: ReactNode };
 }) {
+  useT();
   const id = useId();
   const C = PROFILE_COPY.credits;
   const result = flow.rowResult;
@@ -150,7 +161,7 @@ function Credits({
       ) : (
         <>
           <p className="profile-credits-figure" data-testid="profile-credits-figure">
-            {model.figure}
+            <bdi>{model.figure}</bdi>
             {model.updating && <span className="profile-credits-updating">{C.updating}</span>}
           </p>
           {model.estimate && (
@@ -237,6 +248,7 @@ function Credits({
 }
 
 function RequestCard({ walletId, main, contest, inputs }: { walletId: string; main: IdentitySummary; contest: ContestRef; inputs: StatusInputs }) {
+  useT();
   const b = useBackend();
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
@@ -288,6 +300,7 @@ function RequestCard({ walletId, main, contest, inputs }: { walletId: string; ma
 }
 
 function Outcomes({ walletId, identity, date }: { walletId: string; identity: string; date: (secs: number) => string }) {
+  useT();
   const events = useOutcomeEvents(walletId, identity);
   const rows = outcomeRows(events.data);
   if (rows.length === 0) return null;
@@ -307,6 +320,7 @@ function Outcomes({ walletId, identity, date }: { walletId: string; identity: st
 }
 
 function Ready({ walletId, network, main, contest, inputs }: { walletId: string; network: NetworkInfo; main: IdentitySummary; contest: ContestRef | null; inputs: StatusInputs }) {
+  useT();
   const b = useBackend();
   const flow = useModel(topUpFor(b, walletId));
   const withdraw = useModel(withdrawFor(b, walletId));
@@ -367,6 +381,7 @@ function useEditor(walletId: string): EditProfileModel {
 }
 
 export function MyProfilePage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  useT();
   const b = useBackend();
   const { inputs, retry } = useStatusInputs(walletId, network);
   const page = pageModel(inputs);
@@ -397,6 +412,7 @@ export function MyProfilePage({ walletId, network }: { walletId: string; network
 
 /** Settings ▸ General's DashPay card (D20): My Profile with the identity's name, else Join. */
 export function SettingsDashPayCard() {
+  useT();
   const walletId = useUi((s) => s.walletId);
   const wallets = useWallets();
   const wallet = wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0];
@@ -407,7 +423,7 @@ export function SettingsDashPayCard() {
     <SettingsCard title={PROFILE_COPY.settings.title} testId="settings-dashpay">
       <div className="settings-row">
         <span className="settings-row-title" data-testid="settings-dashpay-who">
-          {joined ? (name ? `@${name}` : PROFILE_COPY.settings.joined) : PROFILE_COPY.settings.notJoined}
+          {joined ? (name ? <bdi dir="ltr">{`@${name}`}</bdi> : PROFILE_COPY.settings.joined) : PROFILE_COPY.settings.notJoined}
         </span>
         <DashButton variant="tintedBlue" size="small" data-testid="settings-dashpay-open" disabled={!wallet} onClick={() => navigate(joined ? "profile" : "joinDashPay")}>
           {joined ? PROFILE_COPY.settings.profile : PROFILE_COPY.settings.join}
