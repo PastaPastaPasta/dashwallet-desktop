@@ -740,10 +740,12 @@ fn a_locked_payment_a_mined_spend_beat_frees_its_other_coin_after_a_restart() {
 
 /// The same locked payment and plain winner (#170 case 14): Abandon and
 /// Remove Unconfirmed refuse it while the winner's block is not
-/// ChainLocked. Once it is, and the header chain holds it, Remove
-/// Unconfirmed abandons the payment: its change goes, and once the funding
-/// block and the winner's are scanned again the wallet holds A and the
-/// winner's change, never B, in the session and after a restart.
+/// ChainLocked. Once it is, and the header chain holds it, Abandon asks
+/// for a restart and a rescan (the payment's claim, restored at the load,
+/// keeps A out); after them Remove Unconfirmed abandons the payment: its
+/// change goes, and once the funding block and the winner's are scanned
+/// again the wallet holds A and the winner's change, never B, in the
+/// session and after a restart.
 #[test]
 fn a_locked_payment_a_chainlocked_spend_beat_is_abandoned_and_its_change_goes() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
@@ -790,6 +792,24 @@ fn a_locked_payment_a_chainlocked_spend_beat_is_abandoned_and_its_change_goes() 
         TIP + 1,
         block_hash(std::slice::from_ref(&winner)),
     );
+    let first = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(
+        matches!(
+            first,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::RescanFirst
+            ))
+        ),
+        "{first:?}"
+    );
+    let session = reopen(&engine, session);
+    header_chain(
+        &session,
+        &[(TIP + 1, block_hash(std::slice::from_ref(&winner)))],
+    );
+    start_spv(&engine, &session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
     assert_eq!(
         engine.block_on(session.drop_unconfirmed(Some(id))).unwrap(),
         1
@@ -1185,6 +1205,70 @@ fn a_locked_payment_a_chainlock_beat_is_not_abandoned_while_its_other_coin_is_un
     );
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
     assert!(held(&engine, &session, id).contains(&change));
+}
+
+/// A payment of A and B, InstantSend-locked; after a restart another
+/// device's spend of B is mined and ChainLocked beside a spend of A that
+/// pays only someone else. The payment's claim, restored at the load,
+/// keeps A from the wallet's coins, so Abandon asks for a restart and a
+/// rescan; after them the scan records the spend of A in the ChainLocked
+/// block and Abandon goes through, A and B staying spent.
+#[test]
+fn a_locked_payment_whose_other_coin_a_chainlocked_block_spent_goes_after_a_restart_and_a_rescan() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    let owner =
+        Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let winner = rival(&engine, &session, id, &paid, 1);
+    let elsewhere_spend = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(a, vec![(elsewhere(), COIN - 1_000)]),
+    );
+    let block = [winner.clone(), elsewhere_spend];
+    let won = block_hash(&block);
+    mined(&engine, &session, id, TIP + 1, block.to_vec());
+    wait_stored(&session, id, &[winner.txid()]);
+    chain_lock(&engine, &session, id, TIP + 1, won);
+    header_chain(&session, &[(TIP + 1, won)]);
+    start_spv(&engine, &session);
+    let refused = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(
+        matches!(
+            refused,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::RescanFirst
+            ))
+        ),
+        "A held by the payment's claim: {refused:?}"
+    );
+
+    let session = reopen(&engine, session);
+    header_chain(&session, &[(TIP + 1, won)]);
+    start_spv(&engine, &session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, block.to_vec());
+    engine
+        .block_on(session.abandon_transaction(id, payment.txid()))
+        .unwrap();
+    assert!(abandoned(&engine, &session, id, payment.txid()));
+    assert!(!held(&engine, &session, id).contains(&a), "A stays spent");
+    assert!(!held(&engine, &session, id).contains(&b), "B stays spent");
 }
 
 /// A payment of A and B, InstantSend-locked, and its child spending its
@@ -1757,6 +1841,120 @@ fn an_override_abandon_cut_before_its_sweep_ends_with_the_next() {
         assert!(
             !spendable(&engine, &session, id, child_change),
             "{state}: the child's output is offered"
+        );
+    }
+}
+
+/// A payment of A and B, InstantSend-locked, and its child spending its
+/// change, abandoned; after a restart a grandchild spending the child's
+/// change pays the wallet. Another device's spend of B is mined and
+/// ChainLocked: abandoning the payment takes the grandchild too, through
+/// the abandoned child, and the grandchild's output leaves, after a
+/// restart too.
+#[test]
+fn abandoning_a_locked_payment_a_chainlock_beat_takes_a_grandchild_behind_an_abandoned_child() {
+    let (_dir, engine, session, id, paid, payment, child) = payment_and_child(false);
+    abandon(&engine, &session, id, child.txid());
+    let session = reopen(&engine, session);
+    let left = change_of(&child, &own_scripts(&engine, &session, id));
+    let owner = Address::from_script(
+        &child.output[left.vout as usize].script_pubkey,
+        dashcore::Network::Regtest,
+    )
+    .unwrap();
+    let to = fresh_address(&engine, &session, id);
+    let value = child.output[left.vout as usize].value - 1_000;
+    let grandchild = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(left, vec![(to.script_pubkey(), value)]),
+    );
+    mempool(&engine, &session, id, &grandchild);
+    wait_stored(&session, id, &[grandchild.txid()]);
+    let paid_back = OutPoint::new(grandchild.txid(), 0);
+
+    let (session, _) = beaten_on_b(&engine, session, id, &paid);
+    assert!(held(&engine, &session, id).contains(&paid_back));
+    engine
+        .block_on(session.abandon_transaction(id, payment.txid()))
+        .unwrap();
+    let mut session = session;
+    for state in ["the abandon", "a restart after it"] {
+        if state != "the abandon" {
+            session = reopen(&engine, session);
+        }
+        assert!(abandoned(&engine, &session, id, payment.txid()), "{state}");
+        assert!(
+            abandoned(&engine, &session, id, grandchild.txid()),
+            "{state}: the grandchild"
+        );
+        assert!(
+            !held(&engine, &session, id).contains(&paid_back),
+            "{state}: the grandchild's output is counted"
+        );
+    }
+}
+
+/// Two payments of two coins each, InstantSend-locked; after a restart
+/// another device's spends of one coin of each are mined in one block
+/// and ChainLocked. One Remove Unconfirmed drops both: the rescan the
+/// first one's abandon needs does not stop the second, and once the
+/// funding block and the winners' are scanned again each payment's other
+/// coin is spendable, never the one its winner spent.
+#[test]
+fn removing_unconfirmed_drops_every_locked_payment_a_chainlock_beat() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let coin = |vout| OutPoint::new(paid.txid(), vout);
+    let payments: Vec<Transaction> = [(0, 1), (2, 3)]
+        .into_iter()
+        .map(|(a, b)| {
+            let payment = send(
+                &engine,
+                &session,
+                id,
+                CoinSource::Outpoints(vec![coin(a), coin(b)]),
+                COIN * 3 / 2,
+                false,
+            );
+            mempool(&engine, &session, id, &payment);
+            instant_lock(&engine, &session, id, &payment);
+            payment
+        })
+        .collect();
+    let txids: Vec<Txid> = payments.iter().map(|p| p.txid()).collect();
+    wait_stored(&session, id, &txids);
+
+    let session = reopen(&engine, session);
+    let winners: Vec<Transaction> = [1, 3]
+        .into_iter()
+        .map(|vout| rival(&engine, &session, id, &paid, vout))
+        .collect();
+    mined(&engine, &session, id, TIP + 1, winners.clone());
+    let won_txids: Vec<Txid> = winners.iter().map(|w| w.txid()).collect();
+    wait_stored(&session, id, &won_txids);
+    let won = block_hash(&winners);
+    chain_lock(&engine, &session, id, TIP + 1, won);
+    let session = reopen(&engine, session);
+    header_chain(&session, &[(TIP + 1, won)]);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    start_spv(&engine, &session);
+
+    assert_eq!(
+        engine.block_on(session.drop_unconfirmed(Some(id))).unwrap(),
+        2
+    );
+    for txid in &txids {
+        assert!(abandoned(&engine, &session, id, *txid));
+    }
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, winners);
+    for (free, spent) in [(0, 1), (2, 3)] {
+        assert!(spendable(&engine, &session, id, coin(free)), "{free} is");
+        assert!(
+            !spendable(&engine, &session, id, coin(spent)),
+            "{spent} is not"
         );
     }
 }
