@@ -1026,16 +1026,22 @@ impl NetworkSession {
                     .map(WalletId)
                     .collect(),
             };
-            let mut dropped = 0u32;
+            // Every wallet's marks are read before anything is abandoned:
+            // when one doesn't read, no wallet is touched.
+            let mut marked = Vec::with_capacity(wallets.len());
             for id in wallets {
-                // Read before anything is abandoned: a wallet whose marks
-                // don't read is left as it is.
                 let (sent, complete) = this.appdb_op(move |db| Ok(load_sent(db, id))).await?;
+                #[cfg(test)]
+                let complete = complete && *this.hub.fail_sent_read.lock().unwrap() != Some(id);
                 if !complete {
                     return Err(EngineError::Storage(
                         "removing unconfirmed transactions: the sent marks do not read".into(),
                     ));
                 }
+                marked.push((id, sent));
+            }
+            let mut dropped = 0u32;
+            for (id, sent) in marked {
                 let candidates: Vec<Txid> = this
                     .with_view(&manager, id, |view| {
                         view.history

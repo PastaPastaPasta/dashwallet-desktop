@@ -2247,7 +2247,8 @@ fn a_payment_marked_abandoned_is_never_resent() {
 }
 
 /// Remove unconfirmed transactions whose read of the sent marks fails says
-/// so, rather than reporting nothing removed, and abandons nothing.
+/// so, rather than reporting nothing removed, and abandons nothing: also
+/// across wallets, when a wallet read after the payment's fails.
 #[test]
 fn remove_unconfirmed_fails_when_the_sent_marks_do_not_read() {
     let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
@@ -2263,5 +2264,19 @@ fn remove_unconfirmed_fails_when_the_sent_marks_do_not_read() {
     assert!(
         (session.hub.history.get(&id, &payment.txid())).is_some_and(|e| !e.is_abandoned()),
         "the payment was abandoned"
+    );
+
+    let other = super::own_spend_disk_tests::second_wallet(&engine, &session);
+    let order: Vec<WalletId> = (session.manager().unwrap().list_wallet_ids_blocking())
+        .into_iter()
+        .map(WalletId)
+        .collect();
+    assert_eq!(order, [id, other], "the payment's wallet is read first");
+    *session.hub.fail_sent_read.lock().unwrap() = Some(other);
+    let removed = engine.block_on(session.drop_unconfirmed(None));
+    assert!(removed.is_err(), "all wallets: {removed:?}");
+    assert!(
+        (session.hub.history.get(&id, &payment.txid())).is_some_and(|e| !e.is_abandoned()),
+        "all wallets: the payment was abandoned"
     );
 }

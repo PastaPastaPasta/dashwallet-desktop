@@ -589,6 +589,10 @@ pub(crate) struct SessionHub {
     /// Tests: the next abandon's store of its sweep fails.
     #[cfg(test)]
     pub(crate) fail_abandon_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: Remove unconfirmed transactions reads this wallet's sent marks
+    /// as not read.
+    #[cfg(test)]
+    pub(crate) fail_sent_read: Mutex<Option<WalletId>>,
     /// Tests: holds the next payment's metadata write after its wallet read.
     #[cfg(test)]
     pub(crate) pause_metadata: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -744,6 +748,8 @@ impl SessionHub {
             fail_abandon_mark: Default::default(),
             #[cfg(test)]
             fail_abandon_sweep: Default::default(),
+            #[cfg(test)]
+            fail_sent_read: Mutex::new(None),
             #[cfg(test)]
             pause_metadata: Mutex::new(None),
             #[cfg(test)]

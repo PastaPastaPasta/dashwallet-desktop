@@ -306,8 +306,8 @@ export function ConfirmSheet({
       const never = refusedWhileLocked(e);
       const o = never ? ({ kind: "failed", text: t("pay.error.lockedBeforeSend") } as const) : broadcastFailure(e, chain, { txid: prepared.summary.txid, draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
       if (o.kind === "failed") {
-        const held = toContact || never || hasCode(e, UNRECORDED);
-        await settleNotSent(held ? () => draft.abandon(d, prepared.handle) : null, () => notSent(o.text));
+        const engineHolds = toContact || never || hasCode(e, UNRECORDED);
+        await settleNotSent(engineHolds ? () => draft.abandon(d, prepared.handle) : null, () => notSent(o.text));
       } else attempt.outcome(accepted && o.kind === "unknown" ? { ...o, text: `${accepted} ${o.text}` } : o);
     } finally {
       // The lease ends with the first broadcast (dwcli's point): a retry needs none.
