@@ -1054,6 +1054,91 @@ for (const theme of THEMES) {
   }
 }
 
+// MG-10 S2: the registration wizard's steps, Release collateral and the In progress group, under
+// MG-00's frame names. `reg-review` and `reg-done` are the hosted FundNew masternode, `reg-operator-evo`
+// the self-run evonode, `reg-prove` the saved External registration reopened from In progress.
+async function openMasternodes(page: Page, scenario: string, theme: Theme) {
+  await page.clock.setFixedTime(FIXTURE_NOW);
+  await page.goto(fixtureUrl(scenario, theme));
+  await page.getByTestId("toolbar").waitFor();
+  await page.getByTestId("sidebar-masternodes").click();
+  await page.getByTestId("page-masternodes").waitFor();
+}
+
+async function shootStep(page: Page, name: string, theme: Theme) {
+  await page.mouse.move(0, 0);
+  await shoot(page, name, theme);
+}
+
+for (const theme of THEMES) {
+  test(`visual reg-wizard ${theme}`, async ({ page }) => {
+    await openMasternodes(page, "reg", theme);
+    await page.getByTestId("mn-set-up").click();
+    await page.getByTestId("reg-step-type").waitFor();
+    await shootStep(page, "reg-type", theme);
+    await page.getByTestId("reg-continue").click();
+    await page.getByTestId("reg-collateral-existing").click();
+    await page.getByTestId("reg-coins").waitFor();
+    await shootStep(page, "reg-collateral", theme);
+    await page.getByTestId("reg-collateral-fund-new").click();
+    await page.getByTestId("reg-continue").click();
+    await page.getByTestId("reg-operator-key").fill("ab".repeat(48));
+    await page.getByTestId("reg-service").fill("203.0.113.20:19999");
+    await page.getByTestId("reg-share").fill("2.5");
+    await page.getByTestId("reg-share").blur();
+    await shootStep(page, "reg-operator", theme);
+    await page.getByTestId("reg-continue").click();
+    await page.getByTestId("reg-owner").waitFor();
+    await shootStep(page, "reg-keys", theme);
+    await page.getByTestId("reg-continue").click();
+    await page.getByTestId("reg-review").waitFor();
+    await shootStep(page, "reg-review", theme);
+    await page.getByTestId("reg-passphrase").fill("demo");
+    await page.getByTestId("reg-register").click();
+    await page.getByTestId("reg-done-body").waitFor();
+    await shootStep(page, "reg-done", theme);
+  });
+
+  test(`visual reg-operator-evo ${theme}`, async ({ page }) => {
+    await openMasternodes(page, "reg", theme);
+    await page.getByTestId("mn-set-up").click();
+    await page.getByTestId("reg-kind-evonode").click();
+    await page.getByTestId("reg-runner-self").click();
+    await page.getByTestId("reg-continue").click();
+    await page.getByTestId("reg-step-collateral").waitFor();
+    await page.getByTestId("reg-continue").click();
+    await expect(page.getByTestId("reg-node-wallet")).not.toHaveText("…");
+    await page.getByTestId("reg-service").fill("203.0.113.20:19999");
+    await page.getByTestId("reg-service").blur();
+    await shootStep(page, "reg-operator-evo", theme);
+  });
+
+  test(`visual reg-prove ${theme}`, async ({ page }) => {
+    await openMasternodes(page, "reg-prepared", theme);
+    await page.locator("[data-testid^=mn-op-continue-]").click();
+    await page.getByTestId("reg-sign-request").waitFor();
+    await page.getByTestId("reg-signature").blur();
+    await shootStep(page, "reg-prove", theme);
+  });
+
+  test(`visual upd-release ${theme}`, async ({ page }) => {
+    await openMasternodes(page, "mn-list", theme);
+    await page.getByTestId(`mn-row-${"4e".repeat(32)}`).click();
+    await page.getByTestId("mn-facts").waitFor();
+    await page.getByTestId("mn-more").click();
+    await page.getByTestId("mn-more-release").click();
+    await page.getByTestId("mn-release-sheet").waitFor();
+    await shootStep(page, "upd-release", theme);
+  });
+
+  test(`visual mn-inprogress ${theme}`, async ({ page }) => {
+    await openMasternodes(page, "mn-ops", theme);
+    await page.getByTestId("mn-facts").waitFor();
+    await page.getByTestId("mn-group-in-progress").scrollIntoViewIfNeeded();
+    await shootStep(page, "mn-inprogress", theme);
+  });
+}
+
 // Unfinished transfers on Home: the card for a restored Core → Shielded lock in each state, and
 // the Details sheet with a lock this version can't finish.
 for (const theme of THEMES) {
