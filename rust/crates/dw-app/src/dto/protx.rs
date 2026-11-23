@@ -1,7 +1,7 @@
-//! The ProTx owner flows' records (MG-04 §3, mn-engine §5) as the renderer
-//! sees them (MG-10 §3.1): registration and registrar-update requests and
-//! previews, the keychain picks, and the wallet's ProTx operations. Shared
-//! masternode calls take and return the same choices and operations. Enum
+//! A masternode registration's records (MG-04 §3, mn-engine §5) as the
+//! renderer sees them (MG-10 §3.1): the request and its choices, the
+//! preview, and the keychain picks. Shared masternode calls take the same
+//! operator and voting choices. Enum
 //! values are snake_case and data enums are tagged by `kind`, as the engine
 //! writes them; field names are camelCase. Duffs are numbers.
 
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::governance::MasternodeTypeName;
-use super::mirror_enum;
+use super::masternodes::{PayoutChoice, ProTxTerms};
 
 impl From<MasternodeTypeName> for engine::MasternodeType {
     fn from(x: MasternodeTypeName) -> Self {
@@ -38,16 +38,6 @@ impl From<CollateralChoice> for engine::CollateralChoice {
         }
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum CollateralKindName {
-    FundNew,
-    ExistingUtxo,
-    External,
-}
-
-mirror_enum!(engine::CollateralKind => CollateralKindName { FundNew, ExistingUtxo, External });
 
 /// The operator's BLS public key: given, the keychain's, or the next unused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -93,22 +83,6 @@ impl From<VotingChoice> for engine::VotingChoice {
             VotingChoice::Keychain { index } => Self::Keychain { index },
             VotingChoice::Address { address } => Self::Address { address },
             VotingChoice::NextUnused => Self::NextUnused,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PayoutChoice {
-    NewAddress,
-    Address { address: String },
-}
-
-impl From<PayoutChoice> for engine::PayoutChoice {
-    fn from(x: PayoutChoice) -> Self {
-        match x {
-            PayoutChoice::NewAddress => Self::NewAddress,
-            PayoutChoice::Address { address } => Self::Address { address },
         }
     }
 }
@@ -205,94 +179,6 @@ impl From<MnRegistrationRequest> for engine::RegistrationRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct PlatformFacts {
-    pub node_id: String,
-    pub p2p_port: u16,
-    pub http_port: u16,
-}
-
-impl From<engine::PlatformFacts> for PlatformFacts {
-    fn from(x: engine::PlatformFacts) -> Self {
-        let engine::PlatformFacts {
-            node_id,
-            p2p_port,
-            http_port,
-        } = x;
-        Self {
-            node_id,
-            p2p_port,
-            http_port,
-        }
-    }
-}
-
-/// What a ProTx carries, for display. No secret, no signature.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct ProTxTerms {
-    pub masternode_type: MasternodeTypeName,
-    pub version: u16,
-    pub service: String,
-    pub owner_address: String,
-    pub owner_index: Option<u32>,
-    pub voting_address: String,
-    pub voting_index: Option<u32>,
-    pub operator_public_key: String,
-    pub operator_index: Option<u32>,
-    /// Basis points.
-    pub operator_reward: u16,
-    /// Empty for a `new_address` payout before registration.
-    pub payout_address: String,
-    pub collateral: Option<CollateralKindName>,
-    pub collateral_outpoint: Option<String>,
-    pub collateral_address: Option<String>,
-    pub platform: Option<PlatformFacts>,
-    pub platform_node_index: Option<u32>,
-}
-
-impl From<engine::ProTxTerms> for ProTxTerms {
-    fn from(x: engine::ProTxTerms) -> Self {
-        let engine::ProTxTerms {
-            masternode_type,
-            version,
-            service,
-            owner_address,
-            owner_index,
-            voting_address,
-            voting_index,
-            operator_public_key,
-            operator_index,
-            operator_reward,
-            payout_address,
-            collateral,
-            collateral_outpoint,
-            collateral_address,
-            platform,
-            platform_node_index,
-        } = x;
-        Self {
-            masternode_type: masternode_type.into(),
-            version,
-            service,
-            owner_address,
-            owner_index,
-            voting_address,
-            voting_index,
-            operator_public_key,
-            operator_index,
-            operator_reward,
-            payout_address,
-            collateral: collateral.map(Into::into),
-            collateral_outpoint,
-            collateral_address,
-            platform: platform.map(Into::into),
-            platform_node_index,
-        }
-    }
-}
-
 /// A registration's plan before anything is locked or signed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -322,126 +208,7 @@ impl From<engine::RegistrationPreview> for MnRegistrationPreview {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum KeepOrOperator {
-    Keep,
-    Set(OperatorChoice),
-}
-
-impl From<KeepOrOperator> for engine::KeepOr<engine::OperatorChoice> {
-    fn from(x: KeepOrOperator) -> Self {
-        match x {
-            KeepOrOperator::Keep => Self::Keep,
-            KeepOrOperator::Set(c) => Self::Set(c.into()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum KeepOrVoting {
-    Keep,
-    Set(VotingChoice),
-}
-
-impl From<KeepOrVoting> for engine::KeepOr<engine::VotingChoice> {
-    fn from(x: KeepOrVoting) -> Self {
-        match x {
-            KeepOrVoting::Keep => Self::Keep,
-            KeepOrVoting::Set(c) => Self::Set(c.into()),
-        }
-    }
-}
-
-/// A ProUpRegTx to build: operator and voting kept or set; the payout
-/// always named.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateRegistrarRequest {
-    pub pro_tx_hash: String,
-    pub operator: KeepOrOperator,
-    pub voting: KeepOrVoting,
-    pub payout: PayoutChoice,
-}
-
-impl From<UpdateRegistrarRequest> for engine::UpdateRegistrarRequest {
-    fn from(x: UpdateRegistrarRequest) -> Self {
-        let UpdateRegistrarRequest {
-            pro_tx_hash,
-            operator,
-            voting,
-            payout,
-        } = x;
-        Self {
-            pro_tx_hash,
-            operator: operator.into(),
-            voting: voting.into(),
-            payout: payout.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum OwnerKeySource {
-    Keychain { index: u32 },
-    Attached,
-}
-
-impl From<engine::OwnerKeySource> for OwnerKeySource {
-    fn from(x: engine::OwnerKeySource) -> Self {
-        match x {
-            engine::OwnerKeySource::Keychain { index } => Self::Keychain { index },
-            engine::OwnerKeySource::Attached => Self::Attached,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateRegistrarPreview {
-    pub terms: ProTxTerms,
-    pub version: u16,
-    pub fee: u64,
-    pub total_debit: u64,
-    pub owner_key: OwnerKeySource,
-    pub operator_changes: bool,
-    pub voting_changes: bool,
-    /// `null` when the wallet holds no payout of the masternode.
-    pub payout_changes: Option<bool>,
-    /// A new operator key bans the masternode until the operator's service
-    /// update.
-    pub pose_bans: bool,
-}
-
-impl From<engine::UpdateRegistrarPreview> for UpdateRegistrarPreview {
-    fn from(x: engine::UpdateRegistrarPreview) -> Self {
-        let engine::UpdateRegistrarPreview {
-            terms,
-            version,
-            fee,
-            total_debit,
-            owner_key,
-            operator_changes,
-            voting_changes,
-            payout_changes,
-            pose_bans,
-        } = x;
-        Self {
-            terms: terms.into(),
-            version,
-            fee,
-            total_debit,
-            owner_key: owner_key.into(),
-            operator_changes,
-            voting_changes,
-            payout_changes,
-            pose_bans,
-        }
-    }
-}
-
+/// A keychain key: its index and its address, public key or node id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyPick {
@@ -492,121 +259,6 @@ impl From<engine::ProTxKeys> for ProTxKeys {
             voting: voting.into(),
             operator: operator.into(),
             platform_node: platform_node.map(Into::into),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum ProTxOperationKindName {
-    Registration,
-    UpdateRegistrar,
-    UpdateShare,
-    Dissolve,
-}
-
-mirror_enum!(engine::ProTxOperationKind => ProTxOperationKindName {
-    Registration, UpdateRegistrar, UpdateShare, Dissolve,
-});
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ProTxOperationStateName {
-    NeedsSignature,
-    InputsSpent,
-    Signed,
-    NotSent,
-    Sent,
-    Confirmed { height: u32 },
-    Conflicted,
-}
-
-impl From<engine::ProTxOperationState> for ProTxOperationStateName {
-    fn from(x: engine::ProTxOperationState) -> Self {
-        use engine::ProTxOperationState as S;
-        match x {
-            S::NeedsSignature => Self::NeedsSignature,
-            S::InputsSpent => Self::InputsSpent,
-            S::Signed => Self::Signed,
-            S::NotSent => Self::NotSent,
-            S::Sent => Self::Sent,
-            S::Confirmed { height } => Self::Confirmed { height },
-            S::Conflicted => Self::Conflicted,
-        }
-    }
-}
-
-/// What the collateral key signs (External): Core's `signmessage
-/// <address> <message>`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct SignRequest {
-    pub address: String,
-    pub message: String,
-}
-
-impl From<engine::SignRequest> for SignRequest {
-    fn from(x: engine::SignRequest) -> Self {
-        let engine::SignRequest { address, message } = x;
-        Self { address, message }
-    }
-}
-
-/// One of the wallet's ProTx operations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct ProTxOperation {
-    pub id: String,
-    pub kind: ProTxOperationKindName,
-    pub pro_tx_hash: Option<String>,
-    pub txid: Option<String>,
-    pub state: ProTxOperationStateName,
-    pub sign_request: Option<SignRequest>,
-    pub fee: u64,
-    /// The cap a resend's `masternodeOp` grant takes.
-    pub debit: u64,
-    pub overdue: bool,
-    pub created_at: u64,
-    pub signed_at: Option<u64>,
-    pub sent_at: Option<u64>,
-    /// The last attempt's failure code.
-    pub last_error: Option<String>,
-    pub terms: ProTxTerms,
-}
-
-impl From<engine::ProTxOperation> for ProTxOperation {
-    fn from(x: engine::ProTxOperation) -> Self {
-        let engine::ProTxOperation {
-            id,
-            kind,
-            pro_tx_hash,
-            txid,
-            state,
-            sign_request,
-            fee,
-            debit,
-            overdue,
-            created_at,
-            signed_at,
-            sent_at,
-            last_error,
-            terms,
-        } = x;
-        Self {
-            id,
-            kind: kind.into(),
-            pro_tx_hash,
-            txid,
-            state: state.into(),
-            sign_request: sign_request.map(Into::into),
-            fee,
-            debit,
-            overdue,
-            created_at,
-            signed_at,
-            sent_at,
-            last_error,
-            terms: terms.into(),
         }
     }
 }

@@ -391,12 +391,6 @@ pub enum ErrorData {
     MasternodeKey {
         role: crate::dto::masternodes::AttachedKeyRoleName,
     },
-    /// `masternodes.protx_refused`: Core's reject reason (`bad-protx-…`,
-    /// `protx-dup`), and the operation that already uses a key.
-    ProtxRefused {
-        reason: String,
-        operation: Option<String>,
-    },
     /// `masternodes.operation_state`: the operation's state now.
     OperationState { state: String },
     /// `masternodes.keys_exhausted`: the keychain role with no unused key.
