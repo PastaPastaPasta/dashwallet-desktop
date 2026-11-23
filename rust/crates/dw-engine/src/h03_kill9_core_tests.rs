@@ -264,6 +264,7 @@ fn killed_at(point: Point) -> (tempfile::TempDir, Report) {
     }
     // `Child::kill` is SIGKILL on Unix: no destructor, close or flush runs.
     child.kill().unwrap();
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let status = child.wait().unwrap();
     #[cfg(unix)]
     {

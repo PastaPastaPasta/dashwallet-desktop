@@ -108,6 +108,16 @@ export const pay = {
     messageHint: "Kept with the transaction in this wallet; not sent to the payee.",
     reviewPsbt: "Review PSBT",
   },
+  /** Pay ▸ To an address: a QR code from an image or the screen (IOS-043 on a desktop without a camera). */
+  scan: {
+    openImage: "Open QR Code Image…",
+    screen: "Scan a Screen Region",
+    cancel: "Cancel",
+    hint: "You can also paste or drop a QR code image into Pay to.",
+    reading: "Reading the image…",
+    capturing: "Select a region of the screen…",
+    noPayment: "There is no Dash address or payment link in this QR code.",
+  },
   psbt: {
     summary: "Advanced: unsigned transaction (PSBT)",
     watchOnly:
