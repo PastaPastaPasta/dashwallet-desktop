@@ -306,6 +306,158 @@ export const dashpay = {
     unread: "{kinds} transfers couldn't be checked; try again.",
     kind: { shielded: "Shielded", platformAddress: "Platform" },
   },
+  /** Credits as My Profile and the top-up and withdraw sheets show them. `credits` is a number of credits. */
+  credits: {
+    only: "{credits} credits",
+    /** What a balance buys. `requests` and `updates` are counts. */
+    estimate: "≈ {requests} contact requests · {updates} profile updates",
+    pendingFirst: "Finish the pending top-up first.",
+  },
+  /** The top-up sheet. `amount` and `min` are amounts with their unit. */
+  topUp: {
+    title: "Top up credits",
+    amount: {
+      intro: "Credits pay for contact requests and profile changes on Dash Platform.",
+      custom: "Other amount",
+      field: "Amount",
+      /** `unit` is the unit's name ("tDASH"). */
+      fieldUnit: "Amount ({unit})",
+      below: "The smallest top-up is {min}.",
+      invalid: "Enter an amount.",
+      first: "Enter an amount first.",
+      next: "Continue",
+      cancel: "Cancel",
+    },
+    confirm: {
+      message: "You have chosen to top up your identity. The following amount will be deducted from your balance.",
+      amount: "Amount",
+      fee: "Top-up fee",
+      total: "Total",
+      /** `estimate` is what the credits buy. */
+      adds: "Adds about {credits} credits: {estimate}",
+      quoting: "Working out the fee…",
+      back: "Back",
+      pay: "Confirm & pay",
+    },
+    running: {
+      title: "Adding credits…",
+      text: "The network confirms the payment first. This can take a minute. You can close this: My Profile shows the top-up.",
+    },
+    done: "Done",
+    close: "Close",
+    /** The outcomes. `balance` is the credit balance as shown. */
+    outcome: {
+      added: "Credits added",
+      plus: "+{credits} credits.",
+      balance: "Your balance is {balance}.",
+      plusBalance: "+{credits} credits. Your balance is {balance}.",
+      sent: { title: "Payment sent", text: "The network has not confirmed the payment yet. Your credits are added once it does; My Profile shows the top-up until then." },
+      notApplied: { title: "The credits were not added yet", text: "Your payment is safe. Finish the top-up from My Profile." },
+      unknown: {
+        title: "Check your credit balance",
+        text: "The network says this payment was already used. If your credits went up, choose 'Credits arrived' in My Profile; otherwise Finish tries again.",
+      },
+    },
+    /** Why a top-up was refused. `needed` and `available` are amounts; `code` is the engine's. */
+    error: {
+      short: "Not enough Dash.",
+      needed: "Not enough Dash: {needed} needed.",
+      neededAvailable: "Not enough Dash: {needed} needed, {available} available.",
+      belowMin: "The smallest top-up is {min}.",
+      below: "The amount is below the smallest top-up.",
+      coinsLocked: "The coins to pay with are held by another payment.",
+      maybeSent: "The payment may have been sent. Open Tools ▸ Repair to settle it; you can top up again once it has.",
+      willBeSent: "The payment is still being sent. Try again in a minute.",
+      context: "Waiting for the network to sync and verify this identity. Try again shortly.",
+      trust: "This identity's data could not be verified against the network. Nothing was paid.",
+      unavailable: "Dash Platform did not answer. Try again.",
+      signer: "Unlock the wallet fully and try again.",
+      grantExceeded: "The cost went above what you approved.",
+      stoppedWith: "It stopped with {code}.",
+    },
+  },
+  /** The withdraw sheet and My Profile's withdrawals. `amount` is an amount with its unit. */
+  withdraw: {
+    title: "Withdraw credits",
+    action: "Withdraw",
+    form: {
+      intro: "Turn credits back into Dash. Dash Platform sends it to a Dash address.",
+      amount: "Amount",
+      /** `unit` is the unit's name ("tDASH"). */
+      amountUnit: "Amount ({unit})",
+      max: "Max",
+      maxLine: "Everything but the network's fee.",
+      to: "To",
+      toHint: "Your wallet's receive address. You can paste another Dash address.",
+      invalidAmount: "Enter an amount.",
+      first: "Enter an amount first.",
+      noCosts: "Waiting for the network's prices. Try Max, or wait a moment.",
+      invalidTo: "Enter a Dash address.",
+      platformTo: "This is a Dash Platform address. Withdraw to a Dash address.",
+      unconfirmed: "Your last withdrawal is not on Dash Platform yet and may still go through. If you withdraw again, at most one of the two goes through.",
+      next: "Continue",
+      cancel: "Cancel",
+    },
+    confirm: {
+      message: "The following credits leave your identity. Dash Platform pays the Dash to the address below.",
+      withdraw: "Withdraw",
+      fee: "Network fee",
+      total: "Taken from credits",
+      receive: "You receive about",
+      to: "To",
+      quoting: "Working out the fee…",
+      back: "Back",
+      go: "Confirm & withdraw",
+    },
+    /** Followed by the document id. */
+    document: "Withdrawal document:",
+    running: {
+      title: "Withdrawing…",
+      text: "Dash Platform confirms the withdrawal. You can close this: My Profile shows it.",
+    },
+    done: {
+      title: "Withdrawal queued",
+      /** `to` is a Dash address. */
+      text: "{amount} is on its way to {to}. Dash Platform sends it to the Dash chain, usually within minutes, or hours later when Platform's daily withdrawal limit is reached.",
+      balance: "Your credit balance is {balance}.",
+      landed: "Your credit balance updates shortly.",
+    },
+    recent: {
+      title: "Withdrawals",
+      row: "Withdrawal of {amount}",
+      rowUnknown: "Withdrawal of an unknown amount",
+      unconfirmed: "Withdrawal not on Dash Platform yet",
+      /** Followed by the document id. */
+      unconfirmedText: "It may have been sent, and shows here once Dash Platform takes it. Document:",
+      status: {
+        pending: "Pending",
+        complete: "Sent",
+        failed: "Failed: the credits were not returned",
+        unknown: "Status unknown",
+      },
+    },
+    unseen: "Your withdrawal has an update.",
+    show: "Show",
+    ok: "Done",
+    close: "Close",
+    /** Why a withdrawal was refused. `min`, `max`, `needed` and `available` are credit figures as shown. */
+    error: {
+      range: "Withdraw between {min} and {max}.",
+      rangeUnknown: "Dash Platform does not take a withdrawal of this amount.",
+      credits: "Not enough credits: {needed} needed with the fee, {available} available.",
+      creditsShort: "Not enough credits.",
+      keysMissing: "This identity has no transfer key in this wallet, so it cannot withdraw.",
+      address: "Enter a Dash address of this network.",
+      maybeSent: "It may have been sent. Check your withdrawals in My Profile before trying again.",
+      landed: "Your last withdrawal went through after all, so this one does not. Withdraw again only if you want a second one.",
+      context: "Waiting for the network to sync and verify this identity. Try again shortly.",
+      trust: "This identity's data could not be verified against the network. Nothing was withdrawn.",
+      unavailable: "Dash Platform did not answer. Try again.",
+      signer: "Unlock the wallet fully and try again.",
+      grantExceeded: "The cost went above what you approved.",
+      stoppedWith: "It stopped with {code}.",
+    },
+  },
   /** An invitation's claim. `username` is "@" and the name; `who` is that, or an identity id. */
   claim: {
     title: { welcome: "You have been invited to DashPay", join: "DashPay invitation" },

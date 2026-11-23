@@ -12,15 +12,17 @@ import { useDebounced } from "../../app/useDebounced";
 import { navigate, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
-import { creditBalance, estimateText } from "../../dashpay/profile";
+import { creditBalance, creditCount, estimateText } from "../../dashpay/profile";
 import { useTopUpQuote } from "../../dashpay/profileQueries";
 import { amountCanChange, minTopUp, outcomeText, PRESETS, routesToRepair, TOPUP_COPY, topUpCredits, topUpErrorText, type TopUpFlow } from "../../dashpay/topup";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 
 /** T1: the presets and "Other amount", each with what it buys. */
 function AmountStep({ flow, costs, network, amount }: { flow: TopUpFlow; costs: CostTable | undefined; network: NetworkInfo; amount: (duffs: number) => string }) {
+  useT();
   const b = useBackend();
   const id = useId();
   const shown = useDisplay(network);
@@ -53,7 +55,9 @@ function AmountStep({ flow, costs, network, amount }: { flow: TopUpFlow; costs: 
         {PRESETS.map((p) => (
           <label key={p} className="topup-choice" data-testid={`topup-preset-${p}`}>
             <input type="radio" name={`${id}-amount`} checked={choice.kind === "preset" && choice.duffs === p} onChange={() => flow.choose({ kind: "preset", duffs: p })} />
-            <span className="topup-choice-amount">{amount(p)}</span>
+            <span className="topup-choice-amount">
+              <bdi dir="ltr">{amount(p)}</bdi>
+            </span>
             {buys(p) && <span className="topup-choice-buys">{buys(p)}</span>}
           </label>
         ))}
@@ -65,7 +69,7 @@ function AmountStep({ flow, costs, network, amount }: { flow: TopUpFlow; costs: 
       </fieldset>
       {choice.kind === "other" && (
         <label className="form-field">
-          {TOPUP_COPY.amount.field} ({shown.name})
+          {TOPUP_COPY.amount.fieldUnit(shown.name)}
           <input
             data-testid="topup-other-field"
             inputMode="decimal"
@@ -85,7 +89,7 @@ function AmountStep({ flow, costs, network, amount }: { flow: TopUpFlow; costs: 
         <DashButton variant="tintedGray" size="large" type="button" data-testid="topup-cancel" onClick={() => flow.close()}>
           {TOPUP_COPY.amount.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="topup-next" disabled={duffs === null} why="Enter an amount first.">
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="topup-next" disabled={duffs === null} why={TOPUP_COPY.amount.first}>
           {TOPUP_COPY.amount.next}
         </DashButton>
       </div>
@@ -95,6 +99,7 @@ function AmountStep({ flow, costs, network, amount }: { flow: TopUpFlow; costs: 
 
 /** T2: the quote, Android's confirm copy, Confirm & pay under the quote's grant. */
 function ConfirmStep({ flow, walletId, costs, amount, discreet }: { flow: TopUpFlow; walletId: string; costs: CostTable | undefined; amount: (duffs: number) => string; discreet: boolean }) {
+  useT();
   const quote = useTopUpQuote(walletId, flow.identity, flow.duffs);
   const q = quote.data;
   return (
@@ -113,18 +118,24 @@ function ConfirmStep({ flow, walletId, costs, amount, discreet }: { flow: TopUpF
           <dl className="detail-list topup-quote" data-testid="topup-quote">
             <div className="detail-row">
               <dt className="detail-label">{TOPUP_COPY.confirm.amount}</dt>
-              <dd className="detail-value">{amount(flow.duffs ?? 0)}</dd>
+              <dd className="detail-value">
+                <bdi dir="ltr">{amount(flow.duffs ?? 0)}</bdi>
+              </dd>
             </div>
             <div className="detail-row">
               <dt className="detail-label">{TOPUP_COPY.confirm.fee}</dt>
-              <dd className="detail-value">{amount(q.feeDuffs)}</dd>
+              <dd className="detail-value">
+                <bdi dir="ltr">{amount(q.feeDuffs)}</bdi>
+              </dd>
             </div>
             <div className="detail-row topup-total">
               <dt className="detail-label">{TOPUP_COPY.confirm.total}</dt>
-              <dd className="detail-value">{amount(q.totalDuffs)}</dd>
+              <dd className="detail-value">
+                <bdi dir="ltr">{amount(q.totalDuffs)}</bdi>
+              </dd>
             </div>
           </dl>
-          {costs && <p className="sheet-text">{TOPUP_COPY.confirm.adds(BigInt(q.credits).toLocaleString("en-US"), estimateText(q.credits, costs))}</p>}
+          {costs && <p className="sheet-text">{TOPUP_COPY.confirm.adds(creditCount(q.credits), estimateText(q.credits, costs))}</p>}
         </>
       )}
       <div className="sheet-actions">
@@ -140,6 +151,7 @@ function ConfirmStep({ flow, walletId, costs, amount, discreet }: { flow: TopUpF
 }
 
 export function TopUpSheet({ flow, walletId, network, costs }: { flow: TopUpFlow; walletId: string; network: NetworkInfo; costs: CostTable | undefined }) {
+  useT();
   useModel(flow);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
