@@ -19,6 +19,8 @@ use crate::history::{HistoryFilter, HistoryQuery, HistorySort, TxStatusKind};
 use crate::session::NetworkSession;
 use crate::{DashNetwork, Engine, WalletBalances, WalletId};
 
+#[path = "dismissed_spend_disk_tests.rs"]
+mod dismissed_spend_disk_tests;
 #[path = "own_spend_balance_tests.rs"]
 mod own_spend_balance_tests;
 #[path = "own_spend_disk_tests.rs"]
