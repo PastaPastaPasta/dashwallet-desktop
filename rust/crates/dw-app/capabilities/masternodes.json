@@ -24,6 +24,14 @@
     "allow-mn-update-registrar",
     "allow-mn-operations",
     "allow-mn-resend-operation",
-    "allow-mn-discard-operation"
+    "allow-mn-discard-operation",
+    "allow-mn-registration-keys",
+    "allow-mn-preview-registration",
+    "allow-mn-register",
+    "allow-mn-prepare-external-registration",
+    "allow-mn-refresh-external-registration",
+    "allow-mn-submit-external-registration",
+    "allow-mn-release-collateral",
+    "allow-mn-lock-collateral"
   ]
 }

@@ -21,6 +21,7 @@ pub mod governance;
 pub mod history;
 pub mod masternodes;
 pub mod platform;
+pub mod protx;
 
 use dw_engine::{
     DashNetwork, SyncPhase, SyncPhaseProgress, SyncSnapshot, WalletBalances, WalletInfo,
