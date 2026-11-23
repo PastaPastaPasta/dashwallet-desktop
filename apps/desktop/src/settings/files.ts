@@ -199,7 +199,7 @@ export function importLines(report: CoreImportReport): string[] {
   return lines;
 }
 
-type ImportApi = Pick<Backend, "inspectWalletFile" | "restoreBackup" | "importDumpWallet" | "importWalletDat">;
+export type ImportApi = Pick<Backend, "inspectWalletFile" | "restoreBackup" | "importDumpWallet" | "importWalletDat">;
 
 const options = (name: string | null): ImportOptions => ({ name, birthHeight: null, coreCompat: false, lookahead: null });
 
@@ -207,7 +207,11 @@ export class ImportFileModel extends Model {
   step: ImportStep = "path";
   path = "";
   plan: ImportPlan | null = null;
+  /** What `inspect` detected. */
+  info: WalletFileInfo | null = null;
   error: string | null = null;
+  /** The last run's refusal as the engine gave it (its code), `null` after a success. */
+  failure: unknown = null;
   done: ImportDone | null = null;
 
   constructor(
@@ -225,7 +229,8 @@ export class ImportFileModel extends Model {
     this.error = null;
     this.#go("inspecting");
     try {
-      this.plan = importPlan(await this.api.inspectWalletFile(p), this.network);
+      this.info = await this.api.inspectWalletFile(p);
+      this.plan = importPlan(this.info, this.network);
       this.#go("details");
     } catch (e) {
       this.error = failureText(e);
@@ -235,7 +240,40 @@ export class ImportFileModel extends Model {
 
   back() {
     this.plan = null;
+    this.info = null;
     this.error = null;
+    this.#go("path");
+  }
+
+  /** Why `run` would refuse these inputs before reading the file, or `null`. */
+  problem(passphrase: string | null, nameText: string): string | null {
+    const plan = this.plan;
+    if (!plan || plan.refusal) return plan?.refusal ?? null;
+    if (plan.passphrase && !passphrase) return `Enter the ${plan.passphrase.toLowerCase()}.`;
+    if (plan.named && optionalName(nameText) === undefined) return WalletsText.nameRule;
+    return null;
+  }
+
+  /** A field changed: the last refusal no longer applies. */
+  edited() {
+    if (this.error === null) return;
+    this.error = null;
+    this.changed();
+  }
+
+  /** Shows a refusal found before `run` (onboarding checks first, then makes the vault). */
+  refuse(message: string) {
+    this.#fail(message);
+  }
+
+  /** Back to an empty path, as when the sheet opens. */
+  reset() {
+    this.path = "";
+    this.plan = null;
+    this.info = null;
+    this.error = null;
+    this.failure = null;
+    this.done = null;
     this.#go("path");
   }
 
@@ -243,10 +281,11 @@ export class ImportFileModel extends Model {
   async run(passphrase: string | null, nameText: string) {
     const plan = this.plan;
     if (this.step !== "details" || !plan || plan.refusal) return;
-    if (plan.passphrase && !passphrase) return this.#fail(`Enter the ${plan.passphrase.toLowerCase()}.`);
-    const name = plan.named ? optionalName(nameText) : null;
-    if (name === undefined) return this.#fail(WalletsText.nameRule);
+    const problem = this.problem(passphrase, nameText);
+    if (problem) return this.#fail(problem);
+    const name = plan.named ? (optionalName(nameText) ?? null) : null;
     this.error = null;
+    this.failure = null;
     this.#go("working");
     try {
       if (plan.kind === "dwBackup") {
@@ -261,6 +300,7 @@ export class ImportFileModel extends Model {
       }
       this.#go("done");
     } catch (e) {
+      this.failure = e;
       this.error = failureText(e);
       this.#go("details");
     }

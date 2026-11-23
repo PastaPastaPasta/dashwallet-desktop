@@ -9,9 +9,10 @@ export const onboarding = {
   welcome: {
     title: "Welcome to Dash Wallet",
     addTitle: "Add a wallet",
-    text: "Create a new wallet, or restore one with its recovery phrase.",
+    text: "Create a new wallet, or restore one with its recovery phrase or a backup file.",
     create: "Create a new wallet",
     restore: "Restore from recovery phrase",
+    restoreFile: "Restore from a file",
     words24: "Create a 24-word recovery phrase",
   },
   unlock: {
@@ -23,6 +24,30 @@ export const onboarding = {
     title: "Restore a wallet",
     text: "Enter the wallet's recovery phrase: 12, 15, 18, 21 or 24 words.",
   },
+  /** Restore from a file: a Dash Wallet backup, or a Dash Core wallet.dat or dumpwallet file. */
+  file: {
+    title: "Restore from a file",
+    text: "Choose a Dash Wallet backup (.dwbackup), or a Dash Core wallet.dat or dumpwallet file.",
+    path: "File",
+    choose: "Choose File…",
+    pathHelp: "Or type the file's full path.",
+    inspect: "Continue",
+    inspecting: "Reading the file…",
+    kind: {
+      dwBackup: { one: "A Dash Wallet backup of {count} wallet.", other: "A Dash Wallet backup of {count} wallets." },
+      dumpWallet: "A Dash Core dumpwallet file.",
+      walletDat: "A Dash Core wallet.dat.",
+      walletDatEncrypted: "An encrypted Dash Core wallet.dat.",
+      psbt: "A partially signed transaction, not a wallet.",
+      unknown: "Dash Wallet can't read this file as a wallet.",
+    },
+    backupPassphrase: "Backup passphrase",
+    backupPassphraseHelp: "The passphrase the backup was made with: the old wallet's passphrase, or the backup passphrase you chose.",
+    walletDatPassphrase: "wallet.dat passphrase",
+    name: "Wallet name (optional)",
+    restore: "Restore",
+    otherFile: "Choose another file",
+  },
   working: {
     title: "Adding the wallet",
     text: "Adding the wallet…",
@@ -33,6 +58,8 @@ export const onboarding = {
   ready: {
     title: "Your wallet is ready",
     restored: "Dash Wallet now scans the blockchain for the wallet's transactions. This can take a while.",
+    /** A backup that held several wallets. */
+    restoredMany: "{count} wallets were restored. Dash Wallet now scans the blockchain for their transactions. This can take a while.",
     created: "Keep your recovery phrase safe. It is the only way to restore this wallet.",
     listFailed: "The wallet was saved, but the list of wallets could not be read.",
     retry: "Try again",
