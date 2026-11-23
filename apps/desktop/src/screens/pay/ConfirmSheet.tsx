@@ -429,17 +429,17 @@ export function ConfirmSheet({
             {feeWarningText(feeWarn)}
           </p>
         )}
-        {mixed?.manyCoins && (
-          <p className="fee-warning" role="alert" data-testid="pay-confirm-mixed-warning">
-            {t("pay.confirm.mixed.manyCoins")}
-          </p>
-        )}
         {subtractsFee(recipient) && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
         {mixed && (
           <>
             <p className="placeholder-note" data-testid="pay-confirm-mixed-coins">
               {t("pay.confirm.mixed.coins", { count: mixed.inputCount })}
             </p>
+            {mixed.manyCoins && (
+              <p className="fee-warning" role="alert" data-testid="pay-confirm-mixed-warning">
+                {t("pay.confirm.mixed.manyCoins")}
+              </p>
+            )}
             {mixed.leftOver !== null && (
               <p className="placeholder-note" data-testid="pay-confirm-mixed-change">
                 {t.rich("pay.confirm.mixed.noChange", { amount: <AmountText text={shown.full(mixed.leftOver)} unitName={unit} glyph={false} /> })}
