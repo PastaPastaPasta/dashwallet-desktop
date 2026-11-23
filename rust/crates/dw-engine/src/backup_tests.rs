@@ -840,6 +840,8 @@ fn wait_finished_or_held<T>(session: &NetworkSession, task: &tokio::task::JoinHa
 
 /// "Backups to keep" None set while an automatic backup is being written
 /// waits for it, then deletes what it wrote, or the failure it recorded.
+/// Unix only: it fails the backup by taking write permission away.
+#[cfg(unix)]
 #[test]
 fn turning_backups_off_during_an_automatic_backup_leaves_no_backup_and_no_record() {
     let dir = dw_testutil::private_tempdir();
@@ -890,6 +892,7 @@ fn turning_backups_off_during_an_automatic_backup_leaves_no_backup_and_no_record
     assert_eq!(failures(&engine, &session), []);
 }
 
+#[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
