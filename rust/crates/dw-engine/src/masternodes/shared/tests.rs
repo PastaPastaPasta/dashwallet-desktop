@@ -38,6 +38,7 @@ mod dissolve;
 mod key_change;
 mod marker;
 mod reads;
+mod recovery;
 mod standby;
 mod together;
 
@@ -161,6 +162,7 @@ fn seam_for(session: &NetworkSession, net: &Arc<Net>) -> Arc<Seam> {
         list_height: Mutex::new(100),
         shared_mined: Mutex::default(),
         shared_locked: Mutex::default(),
+        spv: Mutex::default(),
     });
     session.masternodes.set_protx_seam(Some(seam.clone()));
     seam
@@ -591,8 +593,13 @@ fn three_approved_with_reward(
     reward: RewardChoice,
     seed: u8,
 ) -> String {
-    f.credit(0, seed, 401 * COIN);
     f.credit(1, seed + 1, 300 * COIN + 50_000);
+    three_approved_after_b(f, early_penalty, reward, seed)
+}
+
+/// [`three_approved_with_reward`] with B's coins already credited.
+fn three_approved_after_b(f: &Fx, early_penalty: u64, reward: RewardChoice, seed: u8) -> String {
+    f.credit(0, seed, 401 * COIN);
     f.credit(2, seed + 2, 350 * COIN);
     let mut req = request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
     req.terms.early_penalty = early_penalty;
@@ -2485,10 +2492,11 @@ fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
     assert!(spend.special_transaction_payload.is_none());
     assert_eq!(f.locked(1), reserved, "kept until a block settles it");
     // Its one coin is the abandon's (the wallet's record of it, as the
-    // test network records nothing): no coin left, refused at the
-    // participant's out stage (review r1 of 1b, n-2).
+    // test network records nothing). The spend may be out, so a new one is
+    // refused `abandoning` (MG-10 §4.4 change 4), not at the participant's
+    // out stage as before.
     f.spend(1, spend.input[0].previous_output);
-    assert_stage(f.abandon(1, &id).unwrap_err(), "funding_signed");
+    assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
     assert_eq!(f.net.sent().len(), 1);
 
     f.mine(spend, 60);
@@ -2501,6 +2509,52 @@ fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
     f.follow();
     assert!(f.locked(1).is_empty());
     assert_eq!(f.row(1, &id).reserved, "[]");
+}
+
+/// The control of QT-126's abandon: a first spend the network refused
+/// can't be out, so a second abandon passes and spends the same coin.
+#[test]
+fn test_QT_126_a_refused_abandon_spend_is_abandoned_again() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.net.reject_next();
+    f.abandon(1, &id).unwrap();
+    assert!(f.net.sent().is_empty());
+    let first: Transaction =
+        dashcore::consensus::deserialize(&f.row(1, &id).abandon_tx.unwrap()).unwrap();
+    f.abandon(1, &id).unwrap();
+    let sent = f.net.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].input[0].previous_output,
+        first.input[0].previous_output
+    );
+}
+
+/// QT-126's abandon with several reserved coins (MG-10 §4.4 change 4, the
+/// same-coin bound): one spend of every coin, charged the n-input fee.
+#[test]
+fn test_QT_126_abandon_spends_every_reserved_coin() {
+    let f = fx(3, true);
+    f.credit(1, 40, 150 * COIN);
+    f.credit(1, 41, 150 * COIN + 50_000);
+    let id = three_approved_after_b(&f, COIN, RewardChoice::Refund, 1);
+    f.imported(1, &f.message(0, &id));
+    f.sign(1, &id, 301 * COIN).unwrap();
+    let reserved = f.locked(1);
+    assert_eq!(reserved.len(), 2);
+    f.abandon(1, &id).unwrap();
+    let spend = f.net.sent()[0].clone();
+    assert_eq!(spend.input.len(), reserved.len());
+    let spent: HashSet<OutPoint> = spend.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(spent, reserved);
+    assert_eq!(spend.output.len(), 1);
+    let fee = super::recovery::spend_fee(2);
+    assert_eq!(spend.output[0].value, 300 * COIN + 50_000 - fee);
+    let log: serde_json::Value =
+        serde_json::from_str(f.row(1, &id).abandon_log.as_deref().unwrap()).unwrap();
+    assert_eq!(log[0]["fee"].as_u64(), Some(fee));
+    assert_eq!(log[0]["inputs"].as_array().unwrap().len(), 2);
 }
 
 /// `(txid, outcome, code)` of each entry of a row's abandon log.
@@ -2617,9 +2671,11 @@ fn test_an_abandon_crash_after_its_hand_off_keeps_the_spend_without_an_outcome()
 }
 
 /// Review r1 M1, first probe: a spend handed off and the engine gone, then
-/// signed again after a restart (the same txid) and refused, never reads
-/// `not_sent`: its first hand-off may be out. The second hand-off runs as a
-/// later one, so its refusal reads unknown and its coin stays held (r2-n1).
+/// sent again after a restart (`resend_shared_abandon`, the same bytes:
+/// MG-10 §4.4 change 4 refuses a new abandon while it may be out) and
+/// refused, never reads `not_sent`: its first hand-off may be out. The
+/// second hand-off runs as a later one, so its refusal reads unknown and
+/// its coin stays held (r2-n1).
 #[test]
 fn test_an_abandon_signed_again_after_a_crash_never_reads_refused() {
     let mut f = fx(3, true);
@@ -2629,8 +2685,14 @@ fn test_an_abandon_signed_again_after_a_crash_never_reads_refused() {
     *f.seam.crash.lock().unwrap() = None;
     f.restart();
     let txid = f.net.sent()[0].txid().to_string();
+    assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
     f.net.reject_next();
-    f.abandon(1, &id).unwrap();
+    let grant = f.grant(1, COIN);
+    f.run(
+        f.mn()
+            .resend_shared_abandon(f.wallets[1], id.clone(), grant),
+    )
+    .unwrap();
     assert_eq!(f.net.sent().len(), 1, "refused");
     let log = abandon_log(&f.row(1, &id));
     assert_eq!(log.len(), 1, "the same spend");
@@ -2641,11 +2703,14 @@ fn test_an_abandon_signed_again_after_a_crash_never_reads_refused() {
         Some("send.broadcast_unknown"),
         "handed off as a later hand-off"
     );
-    let e = f.abandon(1, &id).unwrap_err();
     assert!(
-        matches!(e, MasternodesError::SharedStage { ref stage } if stage == "funding_signed"),
-        "the coin stays held: {e:?}"
+        f.session
+            .spends
+            .snapshot(&f.wallets[1])
+            .contains(&f.net.sent()[0].input[0].previous_output),
+        "the coin stays held"
     );
+    assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
 }
 
 /// Review r1 M1, second probe: a refused spend signed again (the same

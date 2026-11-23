@@ -713,6 +713,7 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
         created_at: l.row.created_at,
         updated_at: l.row.updated_at,
         last_error: l.row.last_error.clone(),
+        recovery: Default::default(),
     }
 }
 

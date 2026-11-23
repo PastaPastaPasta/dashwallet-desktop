@@ -340,6 +340,9 @@ pub(crate) struct Seam {
     pub shared_mined: std::sync::Mutex<Vec<(Txid, dashcore::Transaction, u32)>>,
     /// Which of `shared_mined` are in a ChainLocked block.
     pub shared_locked: std::sync::Mutex<std::collections::HashSet<Txid>>,
+    /// Stands in for the SPV client's state as the shared recovery read
+    /// sees it: running, and connected peers.
+    pub spv: std::sync::Mutex<Option<(bool, u32)>>,
 }
 
 #[cfg(test)]

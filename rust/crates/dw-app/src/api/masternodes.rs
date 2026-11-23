@@ -36,6 +36,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("Masternodes::preview_dissolve", "deferred (MG-10 S6)"),
     ("Masternodes::preview_update_share", "deferred (MG-10 S6)"),
     ("Masternodes::recheck_withdrawal", "deferred (MG-10 S4)"),
+    ("Masternodes::resend_shared_abandon", "deferred (MG-10 S5)"),
     (
         "Masternodes::resolve_collateral",
         "not bound: always refuses collateral_lookup (MG-03 D11)",

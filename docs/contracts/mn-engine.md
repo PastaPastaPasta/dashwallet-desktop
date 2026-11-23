@@ -1,6 +1,6 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 24
+Contract-Version: 25
 
 Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32; version 4 adds MG-04's ProTx owner flows, §2.3, citing
 [`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on; version 7, after the slice's validator review, binds `lock_shared_terms` to a revision and `approve_shared` to a consent hash, and adds `SharedSession.consent_hash`, MG-04b D56; version 8 adds `sign_shared_funding`'s consent-hash refusal, MG-04b D65; version 9 adds slice 1b's sending: `can_send` true, `send_shared_registration`, `abandon_shared_session`, `update_share` and `ProTxOperationKind::UpdateShare`, `SharedSession.debit`, `MasternodeRow.shares`, MG-04b D68–D75; version 10, after its review r1, puts sending behind one switch that is off until slice 1c, `can_send` false and the four sending calls refusing `unsupported`, DEC-678, MG-04b D71); version 11, after its review r2, says where `resend_operation` of an `update_share` row refuses (MG-04b D71); version 12 turns sending on (slice 1c: D39 closed by MG-04b D75, M9 by D78); version 13 adds `ShareTermsView.service_read`, Core's reading of a service written in another form (MG-04b D78); version 14 adds MG-04b slice 2a's dissolve now: `preview_dissolve`, `dissolve`, `ProTxOperationKind::Dissolve`, `DissolveRequest`, `DissolvePreview` and `ShareReturn`, a `dissolve` row's resend and state, MG-04b D79–D83; version 15 adds MG-04b slice 2b's standby: `create_standby`, `standby`, `export_standby`, `send_standby`, `Standby`, `StandbyDescription`, `StandbyFile`, `StandbySource`, `StandbyVariant`, `SharedImport::Standby` (and `SharedImport::Session`'s session boxed, its JSON unchanged), `SharedNext::CreateStandby`, a `dissolve` row of another share's standby, MG-04b D84–D91; version 16 adds MG-04b slice 2c's dissolve together: `start_dissolve_together`, `approve_maintenance`, `send_maintenance`, `masternodes.shared_actor_fee{fee}`, `SharedWarning::SkippedSignatures` and `NoApprovals`, the import of a `dissolve` sigs envelope and of a targeted bare array, a dissolve-together session's stages, and a `dissolve` row it sends, MG-04b D92–D98; version 17 adds MG-04b slice 2d's key change: `start_key_change`, `KeyChangeRequest`, `KeyChangeView` and `SharedSession.key_change`, `SharedWarning::OperatorReset` and `UsableByFunder`, `DeadReason::Abandoned`, the import of a `registrar` sigs envelope and of a bare array targeting a key change, a key-change session's stages, its abandon before `out_at`, `shared_message{reason}`'s `not_key_change`, `inputs_hash` and `stale`, and `update_pending{operation}` naming a key-change session; and it breaks `send_maintenance`, which returned a `ProTxOperation` and now returns `MaintenanceSent` (`operation` for a dissolution, `session` for a key change, each boxed, which the JSON doesn't show), MG-04b D99–D105. Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
@@ -10,6 +10,7 @@ The `registered` and conflict-scan refactors preserve existing call behavior. Sh
 Version 19 adds MG-13's evonode credit withdrawal, §2.5, citing MG-13's plan decisions (`MG-13-evonode-withdrawal.md`) as "MG-13 P1" and so on: `withdrawal_quote`, `withdraw_credits`, `retry_withdrawal`, `withdrawals`, `recheck_withdrawal`, `mark_withdrawal`, their records (`WithdrawalQuote`, `CreditWithdrawal` and the rest), the `masternodes.withdrawal_*` codes, the records' states, the `withdrawal_ready` event, the `MasternodeWithdraw` signer, and the payout-change barriers MG-04's ProUpRegTx writes and its discard deletes (MG-13 P16); version 20, after MG-13's code review round 1 (Sol M1), gives `retry_withdrawal` the `pro_tx_hash` the user acted on, binds the `MasternodeWithdraw` grant to it (m4 item 86, version 64), and adds `masternodes.withdraw_target_mismatch`; version 21, after its code review round 2, has a final record's recheck raise the group's floor too (P5) and names `retry_withdrawal`'s two refusals of `id`. Version 22 adds `SharedWarning::AbandonHint` for a funder's key change that has sat at `signing` for the overdue quiet period, includes a mined copy with the same payload in a funder's `confirmed` stage reading (ranked with the sent transaction as a registration's copies), and has a key change's prepare, send and resend refuse a voting key that any reward script this wallet has seen a share hold pays (`bad-proupsharedreg-payee-reuse`).
 Version 23 adds MG-10 EP-b1's shared abandon storage (MG-10 §4.4): an abandon spend's bytes and log entry are written durably before its hand-off and its outcome is recorded in that entry; a resend of a session's own bytes is marked `send.resend_in_progress` before its hand-off; an inherited refusal code on an out session reads `send.broadcast_unknown` after the upgrade; and a funder's abandoned key change is never resent (`shared_stage{stage: "abandoned"}`). The abandon spend's coins and its refusals are unchanged.
 Version 24 adds `WithdrawalCheckingReason::PayoutChangeUnconfirmed` (`payout_change_unconfirmed`): a payout change in any loaded wallet's history, which another installation of the wallet may have sent, holds a withdrawal as a barrier does while it is out of a block, and as `platform_behind` while its block is above the proof's Core height.
+Version 25 adds MG-10 EP 4's shared recovery (MG-10 §4.4, D12, D17): `SharedSession.recovery` (`SharedRecovery`, with `Settlement`, `SettledBy`, `HandoffError`, `HandoffTx`, `HandoffErrorOutcome`, `AbandonSpend`, `AbandonSpendState`, `Blocked`, `BlockedReason` and `RecoveryAction`), filled by `shared_sessions`, `shared_session`, `abandon_shared_session` and the new `resend_shared_abandon`, which hands the latest abandon spend's saved bytes off again; `abandon_shared_session` now runs the shared coin test: it spends every reserved coin the wallet holds unspent (an n-input spend at its relay minimum), only when they include every input an earlier abandon spend took (the whole reservation for a session an older build abandoned), and refuses while a pending spend holds a reserved coin or one held has no ownership path; and it refuses `shared_stage{stage: "abandoning"}` while the latest abandon spend may be out.
 
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
@@ -156,7 +157,7 @@ coordinator or participant, and the coordinator signs last and sends the registr
 text (`SharedMessage.text`, Core's file name with it). A session id is 64 lower-case hex. The calls that produce bytes the network accepts
 (`sign_shared_funding`, `send_shared_registration`, `abandon_shared_session`, `update_share`, `dissolve`,
 `create_standby`, `export_standby`, `send_standby`, `start_dissolve_together`, `approve_maintenance`,
-`send_maintenance`, and `resend_operation` of an `update_share` or `dissolve` row)
+`send_maintenance`, `resend_shared_abandon`, and `resend_operation` of an `update_share` or `dissolve` row)
 are behind one switch, on since MG-04b slice 1c (DEC-678,
 MG-04b D71): turned off, `can_send` is false and each of them refuses `masternodes.unsupported{feature: "shared_masternodes"}` right after
 the wallet check; `resend_operation` refuses it once it has read the row (§2.3). On, they hold the
@@ -188,8 +189,8 @@ unlocks it: another row's release skips it, and m1's `unlock_outpoints` refuses 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `shared_capability(wallet: WalletId)` | async | `SharedCapability`: `v24` `active` once a version-3 list entry was seen (`masternodes.any_shared_seen`, MG-03 D30), else `unknown`; `evonode_shares` always `inactive` (MG-04b D4); `can_send` (§2.4's lead). **Implemented.** | `MasternodesError` |
-| `shared_sessions(wallet: WalletId)` | async | Every `SharedSession` of the wallet, newest first, its stage derived now (§5). **Implemented.** | `MasternodesError` |
-| `shared_session(wallet: WalletId, session: String)` | async | One `SharedSession`. **Implemented.** | `MasternodesError` |
+| `shared_sessions(wallet: WalletId)` | async | Every `SharedSession` of the wallet, newest first, its stage and `recovery` derived now (§5). **Implemented.** | `MasternodesError` |
+| `shared_session(wallet: WalletId, session: String)` | async | One `SharedSession`, its `recovery` derived now (§5). **Implemented.** | `MasternodesError` |
 | `start_shared(wallet: WalletId, request: StartSharedRequest)` | async | Coordinator: checks the request (2 to 8 shares, distinct trimmed labels, an IPv4 service, Core's share rules), picks the keychain owner, voting and operator keys (§2.3's rule), selects and locks confirmed coins for its share and the fee, issues its refund address, saves the draft and returns it with its Invitation. **Implemented.** | `MasternodesError` |
 | `set_shared_fee(wallet: WalletId, session: String, fee: u64)` | async | Coordinator, `draft`, while no other party's contribution is in (else `shared_stage{stage: "replied"}`, MG-04b D33): re-selects its coins for share + the new fee (the old locks released in the same write), `revision` + 1. **Implemented.** | `MasternodesError` |
 | `import_shared_message(wallet: WalletId, text: String, target: Option<String>)` | async | Applies a pasted or opened message by MG-04b §3.0's table: a new participant session from an Invitation (`invited`, no coin touched), or the next copy of a held one; a re-pasted copy changes nothing (`changed: false`). Signs nothing. A standby (one hex line of a type-10 transaction) is checked as MG-04b D89 lists, against the registration in the wallet's history and the synced list (`shared_message{reason: "not_standby"}` first for a payload that doesn't decode, which names the masternode; `shared_registration_unknown`, `shared_too_early`, then `not_standby`, Core's rules as `protx_refused{reason}` with `bad-prodis-sig` for its signature, `shared_message{reason: "outputs"}`, then `invalid_argument` for a fee below the relay minimum), stored (`source: imported`, D84) and described (`SharedImport::Standby{description, stored}`; `stored: false` when the wallet holds that variant already). A `dissolve` sigs envelope, or a bare signature array for the dissolve-together session named by `target`, is checked as MG-04b D92 lists against the registration in the wallet's history and the synced list (`shared_registration_unknown`, `shared_too_early`, or `shared_stage` with the stored session's stage when it is past `signing` and `combined`, a late reply; then `shared_message{reason}`: `not_dissolution`, `other_masternode`, `signed`, `outputs`, `other_session` for another request or masternode than the target's; then `invalid_argument` below the relay minimum of the combined size, D96); its signatures are taken one by one, each verified by its share's owner key, and the rest skipped with `SharedWarning::SkippedSignatures` (§2.5's rules; `NoApprovals` for a `signatures` value that isn't an array); the session is created (`participant`) or updated, `changed` saying whether the stored session changed (a signature taken, or this wallet's shares of it). A bare array's `received_code` is its own JSON's fingerprint. A `registrar` sigs envelope, or a bare signature array for the key-change session named by `target`, is checked as MG-04b D104 lists: `shared_message{reason: "other_session"}` first for another request (another sign hash: keys or fee inputs) or masternode than the target's; then against the registration in the wallet's history and the synced list (`shared_registration_unknown`, `shared_too_early`, or a late reply's stage as a dissolution's; then `shared_message{reason}`: `not_key_change` for a transaction that isn't a version-3 type-12 ProUpSharedRegTx, `other_masternode`, Core's trivial rules as `protx_refused{reason}`, a signature count other than the share count as `protx_refused{reason: "bad-proupsharedreg-sig-count"}`, and `inputs_hash` when the payload's `inputsHash` isn't its inputs'); its signatures are taken as a dissolution's, verified over `SerializeHash` of the payload without them; the session is created (`participant`, its `base_keys` the synced list's keys at that import, D25) or updated. A bare array without a target is `shared_message{reason: "parse"}`, and a target of another kind `invalid_argument`. **Implemented.** | `MasternodesError` |
@@ -200,7 +201,8 @@ unlocks it: another row's release skips it, and m1's `unlock_outpoints` refuses 
 | `approve_shared(wallet: WalletId, session: String, consent_hash: String, grant: String)` | async | Participant, `signing`, of `consent_hash`: the `SharedSession.consent_hash` the participant reviewed, from the session record (64 hex, compared ignoring case; another shape is `invalid_argument`). It binds what is signed: a re-lock that changes only envelope-side text keeps the hash; another one now (a re-locked copy imported since, MG-04b M-1 case 2) is `shared_message{reason: "conflict"}` and signs nothing (MG-04b D56). Then MG-04b §4's checks on the frozen registration against its recorded side, then its shares' consent signatures (charged 0), returns the Approval; approving again returns the same. **Implemented.** | `MasternodesError` |
 | `sign_shared_funding(wallet: WalletId, session: String, grant: String)` | async | Participant, `combined`: §4's checks and every approval verified, and a copy whose consent hash isn't the one this wallet approved refused `masternodes.shared_message{reason: "conflict"}` (MG-04b D65), then its inputs signed (charged `SharedSession.debit`, refunded if signing fails), `out_at` written durably with the signed copy before anything returns, and the Signed Contribution returned. Nothing is handed to the network: the coordinator sends. **Implemented.** | `MasternodesError` |
 | `send_shared_registration(wallet: WalletId, session: String, grant: String)` | async | Coordinator, `combined`: §4's checks, every participant's input signed (else `shared_stage{stage: "unsigned"}`, MG-04b D24, D71), then its own inputs signed last (charged `SharedSession.debit`: its share and the whole fee), `out_at` written durably with the signed registration, and the registration handed off as MG-04's rows are (`TxDraft`'s fence). A failed hand-off keeps `out_at` and records its code in `last_error`. At `sent`, a resend of the stored bytes, charged `debit` (refunded when the fence runs it as a resend of bytes that may be out), refused `shared_stage{stage: "abandoned"}` once the session was abandoned. Immediately before a resend's hand-off, after its checks and its charge, `last_error` is set to `send.resend_in_progress` and the session is marked as resent (`resend_marked`, never cleared), both durably; the resend's own outcome then replaces the marker in `last_error`, its code included, so a crash in the hand-off reads `send.resend_in_progress`. On upgrade (MG-10 EP-b), an inherited refusal code on an out session reads `send.broadcast_unknown`: an older build can't show whether it came from a first hand-off. Returns the Final Record. **Implemented.** | `MasternodesError` |
-| `abandon_shared_session(wallet: WalletId, session: String, grant: String)` | async | A session with `out_at` set, not `confirmed` or `conflicted` (else `shared_stage`): spends its largest unspent reserved coin back to a new change address of the wallet at the relay-minimum fee (charged), `abandon_txid`, the spend's bytes and a new entry in the session's abandon log (its txid, fee, inputs and signing time, no outcome yet) written durably first, so the registration can no longer be mined; earlier entries are kept. A spend signed again with a txid already logged (the same coin and address give the same bytes) keeps that entry, whose missing or `not_sent` outcome then becomes `maybe_sent` in the same write, and is handed off as a later hand-off. The hand-off's outcome is then recorded durably in that entry (`sent`; `not_sent` only for a definite refusal of the spend's first hand-off, an error before any hand-off included; else `maybe_sent`), its code in `last_error`. An entry's outcome only moves forward (`not_sent` → `maybe_sent` → `sent`); a later hand-off of the same spend that is refused updates `last_error` and leaves the entry's outcome as it is. On upgrade (MG-10 EP-b), a session abandoned by an older build has one legacy entry, `maybe_sent`, with no bytes. The row and its locks stay until the follower settles it. A coordinator whose registration the wallet recorded abandons that transaction first (MG-04 D49). With no reserved coin unspent and free of other pending spends, `shared_stage` naming the caller's stage while out (`sent` for the coordinator, `funding_signed` for a participant); a coin worth no more than the fee and dust, `send.amount_with_fee_exceeds_balance`. Returns the session. Reads the stored row, so a session whose envelope no longer parses can be abandoned. A key-change session (MG-04b D102): only its funder's (`shared_stage{stage: "participant"}` otherwise), and not `confirmed`, `conflicted` or `dead` (`shared_stage`); before `out_at` nothing is spent and nothing charged: its reservation and locks are released in one durable write, the row kept, reading `dead{reason: abandoned}` (no other wallet can finish the request: its fee inputs are signed by the funder alone, after the signatures are inserted, R3); with `out_at` set, as a registration's above. **Implemented.** | `MasternodesError` |
+| `abandon_shared_session(wallet: WalletId, session: String, grant: String)` | async | A session with `out_at` set, not `confirmed` or `conflicted` (else `shared_stage`), then `shared_stage{stage: "abandoning"}` while its latest abandon spend may be out (recorded in the history unconfirmed, or of unknown outcome: only its bytes go again, `resend_shared_abandon`; MG-10 §4.4 change 4). Then the coin test (MG-10 §4.4 change 2), first match: a pending spend holds a reserved coin, a reserved coin the wallet holds has no ownership path, no reserved coin is held, or an abandon spend was signed and the held coins don't include every input the latest one took (every outpoint of the original reservation for a session an older build abandoned, until a spend takes all of it) refuse `shared_stage` naming the caller's stage while out (`sent` for the coordinator, `funding_signed` for a participant); held coins worth no more than the fee and dust are `send.amount_with_fee_exceeds_balance`. Otherwise it spends every reserved coin the wallet holds unspent, in outpoint order, to one new change address of the wallet at the relay-minimum fee of that spend (charged), so every abandon spend it signs conflicts with every earlier one; `abandon_txid`, the spend's bytes and a new entry in the session's abandon log (its txid, fee, inputs and signing time, no outcome yet) are written durably first, so the registration can no longer be mined; earlier entries are kept. A spend signed again with a txid already logged (the same coins and address give the same bytes) keeps that entry, whose missing or `not_sent` outcome then becomes `maybe_sent` in the same write, and is handed off as a later hand-off. The hand-off's outcome is then recorded durably in that entry (`sent`; `not_sent` only for a definite refusal of the spend's first hand-off, an error before any hand-off included; else `maybe_sent`), its code in `last_error`. An entry's outcome only moves forward (`not_sent` → `maybe_sent` → `sent`); a later hand-off of the same spend that is refused updates `last_error` and leaves the entry's outcome as it is. On upgrade (MG-10 EP-b), a session abandoned by an older build has one legacy entry, `maybe_sent`, with no bytes. The row and its locks stay until the follower settles it. A coordinator whose registration the wallet recorded abandons that transaction first (MG-04 D49). Returns the session with its `recovery`. Reads the stored row, so a session whose envelope no longer parses can be abandoned. A key-change session (MG-04b D102): only its funder's (`shared_stage{stage: "participant"}` otherwise), and not `confirmed`, `conflicted` or `dead` (`shared_stage`); before `out_at` nothing is spent and nothing charged: its reservation and locks are released in one durable write, the row kept, reading `dead{reason: abandoned}` (no other wallet can finish the request: its fee inputs are signed by the funder alone, after the signatures are inserted, R3); with `out_at` set, as a registration's above. **Implemented.** | `MasternodesError` |
+| `resend_shared_abandon(wallet: WalletId, session: String, grant: String)` | async | The latest abandon spend's saved bytes handed off again (MG-10 §4.4 change 4), in `abandon_shared_session`'s order: a dissolve-together session is `invalid_argument`, a key change's approver `shared_stage{stage: "participant"}`; a session `confirmed` or `conflicted` (a key change also `dead`) is `shared_stage{stage}`, checked before anything about the spend, and so is one not out; then `shared_stage` naming the caller's out stage (`sent` / `funding_signed`) with no abandon spend signed, `legacy` for a spend an older build saved with no bytes, `abandon_cancelled` once the wallet's record of the spend was abandoned in Activity, `abandon_refused` after a definite refusal of its first hand-off (each of those three takes `abandon_shared_session`'s new spend instead); then the coin fence and `send.outpoint_unavailable` while another pending spend holds one of its inputs (MG-04 D7). Under a `SharedMasternode` lease charged the spend's fee, its log entry's missing outcome becomes `maybe_sent` durably, then the bytes are handed off as a later hand-off: its outcome folds into the entry forward only and a refusal never reads `not_sent`, its code in `last_error`. Returns the session with its `recovery`. **Implemented.** | `MasternodesError` |
 | `discard_shared_session(wallet: WalletId, session: String)` | async | Deletes a session nothing of which may be out and unlocks its coins; one with `out_at` set is `shared_stage` (MG-04b D17). Both read the stored row, so a session whose envelope no longer parses can be discarded (MG-04b D57). A dissolve-together session is `shared_too_early` while its masternode is out of the synced list and the wallet's filter scan is below the list's height (the dissolution may be its own, MG-04b D94); one marked out is deleted when no operation holds its txid (never handed off), else `shared_stage` (MG-04b D95). A key-change session with `out_at` set is `shared_stage` with its stage (MG-04b D102). **Implemented.** | `MasternodesError` |
 | `preview_update_share(wallet: WalletId, request: UpdateShareRequest)` | async | `UpdateSharePreview`: the ProUpShareTx this wallet would build for one of its shares of a confirmed registration of its sessions, Core's §5.1 rules run on it, its fee. `share_not_mine`, `shared_too_early` (tip ≤ the registration's height, or the masternode not in the synced list, MG-04b m-16), `shared_registration_unknown`. Issues, locks and signs nothing. **Implemented.** | `MasternodesError` |
 | `update_share(wallet: WalletId, request: UpdateShareRequest, grant: String)` | async | The ProUpShareTx `preview_update_share` shows, under a `SharedMasternode` lease charged its fee: a `NewAddress` reward issued, the payload signed by the share's keychain owner key, its fee inputs by the wallet's, saved as a `ProTxOperation` of kind `update_share` with its input locks and handed off as §2.3's rows are. Refuses as `preview_update_share`, except that `masternodes.update_pending{operation}`, while another `update_share` or a `dissolve` of the masternode is `signed`, `not_sent` or `sent`, or `confirmed` in a block not yet buried (ChainLocked or 6 confirmations), comes after `list_unavailable` and before `shared_too_early`, `shared_registration_unknown` and `share_not_mine` (MG-04b D23, D73, D80); `share_not_mine` also when the keychain key's signature isn't the share's owner key. **Implemented.** | `MasternodesError` |
@@ -295,7 +297,7 @@ Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BL
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: 80272bc097c7c56b9688bdb563ddb08ca4ca07d766fc12946e11c320d9afa96d version: 24 -->
+<!-- surface-sha256: d7c4c2a98bc45fc7f1c22ae1115e26466c5f87487be339beea4f08b55f100270 version: 25 -->
 
 ```rust
 // src/masternodes/errors.rs
@@ -355,7 +357,7 @@ pub use shared::standby_file_transactions;
 pub use errors::MasternodesError;
 pub use protx_records::{ CollateralChoice, CollateralKind, EvonodeTerms, KeepOr, KeyPick, OperatorChoice, OwnerKeySource, PayoutChoice, PlatformFacts, PlatformNodeChoice, ProTxKeys, ProTxOperation, ProTxOperationKind, ProTxOperationState, ProTxTerms, RegistrationPreview, RegistrationRequest, SignRequest, UpdateRegistrarPreview, UpdateRegistrarRequest, VotingChoice, };
 pub use records::{ AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, HeldShares, KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType, RegistrarCapability, RegistrarSigner, RegistrationFacts, UntrackOutcome, };
-pub use shared_records::{ Activation, DeadReason, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyBase, KeyChangeRequest, KeyChangeView, MaintenanceSent, RewardAttempt, RewardAttemptState, RewardChoice, RewardDestination, RewardUpdate, ShareFact, ShareReturn, ShareRow, ShareSlot, ShareTerms, ShareTermsView, SharedCapability, SharedEligibility, SharedImport, SharedKind, SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedShares, SharedStage, SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource, StandbyVariant, StartSharedRequest, UpdateSharePreview, UpdateShareRequest, };
+pub use shared_records::{ AbandonSpend, AbandonSpendState, Activation, Blocked, BlockedReason, DeadReason, DissolvePreview, DissolveRequest, HandoffError, HandoffErrorOutcome, HandoffTx, JoinSharedRequest, KeyBase, KeyChangeRequest, KeyChangeView, MaintenanceSent, RecoveryAction, RewardAttempt, RewardAttemptState, RewardChoice, RewardDestination, RewardUpdate, SettledBy, Settlement, ShareFact, ShareReturn, ShareRow, ShareSlot, ShareTerms, ShareTermsView, SharedCapability, SharedEligibility, SharedImport, SharedKind, SharedMessage, SharedNext, SharedOutcome, SharedRecovery, SharedRole, SharedSession, SharedShares, SharedStage, SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource, StandbyVariant, StartSharedRequest, UpdateSharePreview, UpdateShareRequest, };
 pub use tracking::MAX_MASTERNODE_LABEL;
 pub use withdrawal_records::{ CreditWithdrawal, CreditWithdrawalState, HeldWithdrawalKey, NotExecutedFacts, WithdrawalCheckingReason, WithdrawalDestinationCheck, WithdrawalIdentityKey, WithdrawalKeyChoice, WithdrawalKeySource, WithdrawalMark, WithdrawalPlatformStatus, WithdrawalProofFacts, WithdrawalQuote, WithdrawalRules, };
 #[derive(Clone)]
@@ -771,6 +773,7 @@ impl Masternodes {
     pub async fn sign_shared_funding(&self, wallet: WalletId, session: String, grant: String) -> Result<SharedOutcome, MasternodesError>;
     pub async fn send_shared_registration(&self, wallet: WalletId, session: String, grant: String) -> Result<SharedOutcome, MasternodesError>;
     pub async fn abandon_shared_session(&self, wallet: WalletId, session: String, grant: String) -> Result<SharedSession, MasternodesError>;
+    pub async fn resend_shared_abandon(&self, wallet: WalletId, session: String, grant: String) -> Result<SharedSession, MasternodesError>;
     pub async fn discard_shared_session(&self, wallet: WalletId, session: String) -> Result<(), MasternodesError>;
     pub async fn preview_update_share(&self, wallet: WalletId, request: UpdateShareRequest) -> Result<UpdateSharePreview, MasternodesError>;
     pub async fn update_share(&self, wallet: WalletId, request: UpdateShareRequest, grant: String) -> Result<ProTxOperation, MasternodesError>;
@@ -956,6 +959,94 @@ pub struct SharedSession {
     pub created_at: u64,
     pub updated_at: u64,
     pub last_error: Option<String>,
+    pub recovery: SharedRecovery,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedRecovery {
+    pub out_at: Option<u64>,
+    pub overdue: bool,
+    pub settlement: Settlement,
+    pub handoff_error: Option<HandoffError>,
+    pub abandon_spend: Option<AbandonSpend>,
+    pub attributed: Vec<String>,
+    pub blocked: Option<Blocked>,
+    pub actions: Vec<RecoveryAction>,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Settlement {
+    None,
+    Pending { txid: String },
+    Confirming { by: SettledBy, confirmations: u32, chainlocked: bool },
+    Settled { by: SettledBy, released: bool },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettledBy {
+    AbandonTx,
+    OtherSpend,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffError {
+    pub tx: HandoffTx,
+    pub outcome: HandoffErrorOutcome,
+    pub code: Option<String>,
+    pub resend_refused: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffTx {
+    Registration,
+    Abandon,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffErrorOutcome {
+    Refused,
+    Unknown,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbandonSpend {
+    pub txid: String,
+    pub signed_at: u64,
+    pub legacy: bool,
+    pub overdue: bool,
+    pub state: Option<AbandonSpendState>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AbandonSpendState {
+    Refused,
+    Uncertain,
+    InHistory,
+    AbandonedInActivity,
+    Legacy,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Blocked {
+    pub txid: Option<String>,
+    pub reason: BlockedReason,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockedReason {
+    InFlight,
+    InstantLocked,
+    SpvStopped,
+    Rescanning,
+    CoinElsewhere,
+    NoOwnershipPath,
+    TooSmall,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RecoveryAction {
+    Resend { charge: u64 },
+    Abandon { charge: u64, spends: bool, replaces: Option<String> },
+    ResendAbandon { charge: u64 },
+    AbandonWalletTx { txid: String },
+    ResendWalletTx { txid: String },
+    Discard { releases: u64 },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedMessage {
@@ -1508,6 +1599,40 @@ changes (Core resets the operator fields and PoSe-bans the masternode until a Pr
 key written in the basic scheme, one operator change per masternode in the mempool, MG-04b §3.3) and
 `usable_by_funder` (a complete request stays usable by the funder's keys until one of its fee inputs is spent: an
 abandon once it is out spends one; before, an abandon only releases them, MG-04b D25, D102) and, for the funder at `signing` once the session has been quiet for the overdue period, `abandon_hint` (the abandon spends nothing before `out_at`; `next` stays `copy`).
+
+`SharedSession.recovery` (MG-10 §4.4 EP 4, D12, D17) is filled by `shared_sessions`, `shared_session`,
+`abandon_shared_session` and `resend_shared_abandon`; other calls return it empty (read the session again), and so does
+a read that fails (no action listed), so a call that acted still returns its session. Each field
+uses the predicate its call runs, and nothing is inferred from `updated_at`, `stale`, the stage alone or what the
+history doesn't hold. Terminal state comes first: a `confirmed` session, an out session with a spend of its inputs in
+a block, or a key change's `dead` lists no action but `discard` where the call accepts it.
+- `out_at`; `overdue` (advisory): out, not settled, the list synced and at most one block behind the tip, and three
+  hours of tip time since `out_at`.
+- `settlement`: `confirming{by, confirmations, chainlocked}` while a spend of an input is in a block that is neither
+  ChainLocked nor six deep, then `settled{by, released}` (`released` once the follower cleared the reservation);
+  `by` is `abandon_tx` for any abandon spend the session signed, else `other_spend`; else `pending{txid}` with an
+  abandon spend signed; else `none`. A reorg moves it back.
+- `handoff_error{tx, outcome, code, resend_refused}`, on an out session not settled: with no abandon spend, the
+  session's own `last_error` (`tx: registration`; `outcome: refused` only for a refusal-class code of a first hand-off,
+  `unknown` once a resend was marked, `resend_refused` when that resend's own code is refusal-class); with one, the
+  latest spend's log entry when it has a code (`tx: abandon`, `refused` for `not_sent`).
+- `abandon_spend{txid, signed_at, legacy, overdue, state}` exactly when an abandon spend was signed; `overdue` is tip
+  time alone (three hours since `signed_at`); `state`, only while `pending` and not settled, first match:
+  `abandoned_in_activity` (its history entry abandoned), `in_history` (recorded, unconfirmed), `refused` (`not_sent`),
+  `uncertain` (bytes kept), `legacy`. `attributed`: every abandon spend's txid, oldest first.
+- `actions`, a safe subset of what the calls accept now: `resend{charge}` (at `sent`, no abandon spend, the SPV client
+  running, the resend's checks passing; the debit or the key change's fee); `abandon{charge, spends, replaces}` (the
+  coin test usable, with no abandon spend or the latest `refused`, `abandoned_in_activity`, or `legacy` and overdue;
+  a funder's key change before `out_at`: `charge: 0, spends: false`); `resend_abandon{charge}` (the latest spend
+  `uncertain`, or `in_history` with its bytes; the SPV client running; its inputs free of other pending spends);
+  `abandon_wallet_tx{txid}` (Activity's Abandon accepts it: the session's own recorded transaction blocking the coin
+  test, or the latest spend `in_history`); `resend_wallet_tx{txid}` (the latest spend `in_history` with no bytes kept,
+  Activity's Resend accepting it); `discard{releases}` (nothing out). No call that hands bytes off is listed while
+  sending is off.
+- `blocked{txid, reason}` when neither `abandon` nor `abandon_wallet_tx` is listed, first match: `spv_stopped`,
+  `instant_locked`, then while a new spend is what the latest spend's state allows: `in_flight`, `no_ownership_path`,
+  `rescanning` (the coins of a transaction abandoned in Activity not back yet), `coin_elsewhere` (a required coin
+  spent by another unconfirmed transaction, named when identified), `too_small`.
 
 Evonode credit withdrawals (§2.5, MG-13 P6): `CreditWithdrawalState`, stored and moved by compare-and-set writes. A
 **nonce group** is every record of one identity at one nonce, decided together; at most one record of a group is open,
