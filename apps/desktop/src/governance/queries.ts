@@ -10,8 +10,8 @@ import { errorMessage } from "../api/backend";
 import { keys, useBackend } from "../api/queries";
 import { useUi } from "../app/ui";
 import { showToast } from "../components/toast";
-import { bannedCount } from "../masternodes/model";
-import { useMasternodes } from "../masternodes/queries";
+import { autoShows, masternodesBadge } from "../masternodes/operations";
+import { useMasternodes, useOperations } from "../masternodes/queries";
 import { badgeCount, GovText, governanceErrorText, SUPERBLOCK_CHOICES } from "./model";
 
 const g = keys.governanceAll;
@@ -75,14 +75,21 @@ export function useMyProposals(walletId: string, enabled = true) {
   return useQuery({ queryKey: govKeys.mine(walletId), queryFn: () => b.governanceMyProposals(walletId), refetchInterval: TIP_REFRESH_MS, enabled });
 }
 
-/** The sidebar's Masternodes item and its badge (MG-09 D3, D5). 0.1 release plan: Masternodes,
- * Governance and Username voting stay out of the sidebar and off their route until Settings ▸
- * General ▸ Show Masternodes is on, whatever the wallet holds; nothing is read while it is off. */
-export function useMasternodesItem(walletId: string | null): { shown: boolean; badge: number } {
-  const setting = useUi((s) => s.prefs.showMasternodes);
-  const mine = useMyProposals(walletId ?? "", walletId !== null && setting);
-  const nodes = useMasternodes(walletId ?? "", walletId !== null && setting);
-  return { shown: setting, badge: setting ? badgeCount(mine.data) + bannedCount(nodes.data) : 0 };
+/** The sidebar's Masternodes item and its badge (MG-09 D3, D5; MG-10 §3.6, Q5). Settings ▸ General
+ * ▸ Show Masternodes: Always, Never (nothing is read), or Automatic, which reads the wallet's
+ * masternodes and ProTx operations without the page open and shows the item while it has or tracks
+ * a masternode, holds a collateral-shaped coin, or has unsettled operations. Shared sessions join
+ * that rule and the badge in S5. `settled`: Automatic's reads have answered, so a hidden item
+ * means hidden, not loading. */
+export function useMasternodesItem(walletId: string | null): { shown: boolean; settled: boolean; badge: number } {
+  const item = useUi((s) => s.prefs.masternodesItem);
+  const reads = walletId !== null && item !== "off";
+  const nodes = useMasternodes(walletId ?? "", reads);
+  const ops = useOperations(walletId ?? "", reads);
+  const shown = item === "on" || (item === "auto" && autoShows(nodes.data, ops.data));
+  const mine = useMyProposals(walletId ?? "", walletId !== null && shown);
+  const settled = item !== "auto" || walletId === null || (!nodes.isPending && !ops.isPending);
+  return { shown, settled, badge: shown ? badgeCount(mine.data) + masternodesBadge(nodes.data, ops.data) : 0 };
 }
 
 export function useUpcomingSuperblocks() {

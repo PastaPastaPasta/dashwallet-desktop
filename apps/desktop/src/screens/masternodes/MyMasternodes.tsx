@@ -1,8 +1,8 @@
-// Masternodes ▸ My masternodes (MG-10 §1.2, S1): the summary, the groups, the read-only pane and
-// the page's states. Setting up, tracking, keys, changing keys, release and withdraw come with
-// later slices; nothing of theirs shows here yet.
+// Masternodes ▸ My masternodes (MG-10 §1.2): the summary, the groups with In progress (S2), the
+// pane with Release collateral / Lock it again (S2), and the page's states. Tracking, keys,
+// changing keys and withdraw come with later slices; nothing of theirs shows here yet.
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { MasternodeDetail } from "../../api/generated/MasternodeDetail";
 import type { MasternodeRow } from "../../api/generated/MasternodeRow";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -37,7 +37,11 @@ import {
   summary,
   voteBlocked,
 } from "../../masternodes/model";
-import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh } from "../../masternodes/queries";
+import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh, useOperations } from "../../masternodes/queries";
+import { inProgress } from "../../masternodes/operations";
+import type { ProTxOperation } from "../../api/generated/ProTxOperation";
+import { InProgressGroup } from "./InProgress";
+import { collateralErrorText, ReleaseSheet } from "./ReleaseSheet";
 import { useT } from "../../i18n";
 import { MoreMenu, Notice, StatusChip } from "./common";
 
@@ -45,8 +49,19 @@ const DAY = 86_400;
 /** mn-engine's `MAX_MASTERNODE_LABEL`. */
 const MAX_LABEL = 64;
 
-export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSummary; network: NetworkInfo; onVote: () => void }) {
+export function MyMasternodes({
+  wallet,
+  network,
+  onVote,
+  onContinue,
+}: {
+  wallet: WalletSummary;
+  network: NetworkInfo;
+  onVote: () => void;
+  onContinue: (op: ProTxOperation) => void;
+}) {
   const list = useMasternodes(wallet.walletId);
+  const ops = useOperations(wallet.walletId);
   const refresh = useMasternodesRefresh();
   const t = useT();
   const shown = useDisplay(network);
@@ -74,7 +89,9 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
       <strong>{MnText.watchOnly}</strong> {MnText.watchOnlyText}
     </Notice>
   );
-  if (isEmpty(o))
+  const work = ops.data ?? [];
+  const progress = <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />;
+  if (isEmpty(o) && inProgress(work).length === 0)
     return (
       <>
         {watchNotice}
@@ -129,7 +146,8 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
       </div>
       <div className="contacts-split">
         <div className="contacts-list">
-          {all.map((g) => (
+          {all.flatMap((g, i) => [
+            g.id !== "attention" && (i === 0 || all[i - 1].id === "attention") ? <Fragment key="in-progress">{progress}</Fragment> : null,
             <section key={g.id} className="tx-group card-l1" data-testid={`mn-group-${g.id}`}>
               <h2 className="contacts-group-title">
                 {g.id === "retired" ? (
@@ -164,8 +182,9 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
                   ))}
                 </ul>
               )}
-            </section>
-          ))}
+            </section>,
+          ])}
+          {all.every((g) => g.id === "attention") && progress}
         </div>
         {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} shown={shown} onVote={onVote} />}
       </div>
@@ -176,7 +195,21 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
 function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: MasternodeRow[]; wallet: WalletSummary; shown: Display; onVote: () => void }) {
   const t = useT();
   const detail = useMasternode(wallet.walletId, row.proTxHash);
+  const backend = useBackend();
+  const refresh = useMasternodesRefresh();
   const [renaming, setRenaming] = useState(false);
+  const [releasing, setReleasing] = useState(false);
+  const [lockError, setLockError] = useState<string | null>(null);
+  const holdsCollateral = row.mine && row.roles.collateral && row.status !== "removed" && !wallet.watchOnly;
+  const lockAgain = async () => {
+    setLockError(null);
+    try {
+      await backend.mnLockCollateral(wallet.walletId, row.proTxHash);
+    } catch (e) {
+      setLockError(collateralErrorText(e, t));
+    }
+    void refresh();
+  };
   const d = detail.isError ? undefined : detail.data;
   const name = rowName(row);
   const blocked = voteBlocked(row, wallet.watchOnly);
@@ -200,6 +233,19 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
           </p>
         )}
         {detail.isError && <p className="mg-field-error" data-testid="mn-detail-failed">{mnErrorText(detail.error)}</p>}
+        {holdsCollateral && row.collateralReleased && (
+          <p className="mg-notice mg-notice-warning mg-notice-row" data-testid="mn-released">
+            <span>{t("masternodes.release.released")}</span>
+            <DashButton variant="tintedBlue" size="small" data-testid="mn-lock-again" onClick={() => void lockAgain()}>
+              {t("masternodes.release.lockAgain")}
+            </DashButton>
+          </p>
+        )}
+        {lockError && (
+          <p className="mg-field-error" role="alert" data-testid="mn-lock-error">
+            {lockError}
+          </p>
+        )}
         <dl className="mg-facts" data-testid="mn-facts">
           <Facts row={row} detail={d} shown={shown} />
         </dl>
@@ -236,11 +282,19 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
               { id: "rename", title: MnText.rename, onSelect: () => setRenaming(true) },
               { id: "copy-hash", title: MnText.copyHash, onSelect: () => void copyWithToast(row.proTxHash) },
               ...(outpoint ? [{ id: "copy-outpoint", title: MnText.copyOutpoint, onSelect: () => void copyWithToast(outpoint) }] : []),
+              ...(holdsCollateral
+                ? [
+                    row.collateralReleased
+                      ? { id: "lock-again", title: t("masternodes.release.lockAgain"), onSelect: () => void lockAgain() }
+                      : { id: "release", title: t("masternodes.release.action"), onSelect: () => setReleasing(true) },
+                  ]
+                : []),
             ]}
           />
         </div>
       </section>
       {renaming && <RenameSheet row={row} onClose={() => setRenaming(false)} />}
+      {releasing && <ReleaseSheet row={row} wallet={wallet} onClose={() => setReleasing(false)} />}
     </aside>
   );
 }

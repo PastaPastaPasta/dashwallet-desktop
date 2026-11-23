@@ -2,7 +2,8 @@
 //! engine's `code()`s; `tests::codes_match_the_engine` holds them equal. The
 //! common codes come through `Engine`, and a lease's refusals through
 //! `Platform`. Codes of calls no command binds yet carry no `data`; the slice
-//! that binds the call adds it.
+//! that binds the call adds it (S2: `protx_refused`, `keys_exhausted`,
+//! `operation_state`).
 
 use dw_engine::masternodes::MasternodesError;
 
@@ -80,13 +81,18 @@ impl From<MasternodesError> for AppError {
             M::NotEvonode => (C::NotEvonode, None),
             M::NoIdentity => (C::NoIdentity, None),
             M::PlatformUnavailable { .. } => (C::PlatformUnavailable, None),
-            M::ProtxRefused { .. } => (C::ProtxRefused, None),
+            M::ProtxRefused { reason, operation } => (
+                C::ProtxRefused,
+                Some(ErrorData::ProtxRefused { reason, operation }),
+            ),
             M::CollateralUnavailable => (C::CollateralUnavailable, None),
             M::SignatureMismatch => (C::SignatureMismatch, None),
             M::OperationNotFound => (C::OperationNotFound, None),
-            M::OperationState { .. } => (C::OperationState, None),
+            M::OperationState { state } => {
+                (C::OperationState, Some(ErrorData::OperationState { state }))
+            }
             M::InFlight => (C::InFlight, None),
-            M::KeysExhausted { .. } => (C::KeysExhausted, None),
+            M::KeysExhausted { role } => (C::KeysExhausted, Some(ErrorData::KeyRole { role })),
             M::NoOwnerKey => (C::NoOwnerKey, None),
             M::UpdatePending { .. } => (C::UpdatePending, None),
             M::UpdateSuperseded { .. } => (C::UpdateSuperseded, None),
@@ -232,6 +238,25 @@ mod tests {
                 call: "Masternodes.list".into()
             }),
             serde_json::json!({ "kind": "call", "call": "Masternodes.list" })
+        );
+        assert_eq!(
+            data(MasternodesError::ProtxRefused {
+                reason: "protx-dup".into(),
+                operation: Some("op1".into())
+            }),
+            serde_json::json!({ "kind": "protxRefused", "reason": "protx-dup", "operation": "op1" })
+        );
+        assert_eq!(
+            data(MasternodesError::OperationState {
+                state: "inputs_spent".into()
+            }),
+            serde_json::json!({ "kind": "operationState", "state": "inputs_spent" })
+        );
+        assert_eq!(
+            data(MasternodesError::KeysExhausted {
+                role: "platform_node".into()
+            }),
+            serde_json::json!({ "kind": "keyRole", "role": "platform_node" })
         );
         assert_eq!(
             data(MasternodesError::PlatformUnavailable {

@@ -208,7 +208,7 @@ test("the sidebar shows Masternodes only with the setting", async ({ page }) => 
   await page.getByTestId("toolbar").waitFor();
   await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
   await command(page, { kind: "navigate", route: "settings" });
-  await page.getByTestId("settings-show-masternodes").check();
+  await page.getByTestId("settings-masternodes-item").selectOption("on");
   await expect(page.getByTestId("settings-governance-ask")).toBeVisible();
   await page.getByTestId("settings-governance-turn-on").click();
   await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();

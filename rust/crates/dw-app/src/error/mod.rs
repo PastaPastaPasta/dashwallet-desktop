@@ -391,6 +391,19 @@ pub enum ErrorData {
     MasternodeKey {
         role: crate::dto::masternodes::AttachedKeyRoleName,
     },
+    /// `masternodes.protx_refused`: Core's reject reason (`bad-protx-dup-key`,
+    /// …, or `protx-dup`), and the wallet's operation holding the clashing
+    /// key or service, when one does.
+    ProtxRefused {
+        reason: String,
+        operation: Option<String>,
+    },
+    /// `masternodes.operation_state`: the operation's state (snake case)
+    /// the call doesn't apply to.
+    OperationState { state: String },
+    /// `masternodes.keys_exhausted`: the keychain role with no unused key
+    /// (`owner`, `voting`, `operator`, `platform_node`).
+    KeyRole { role: String },
     /// `masternodes.unsupported`: what the call needs that the libraries
     /// lack, and the field that needs it.
     Unsupported {

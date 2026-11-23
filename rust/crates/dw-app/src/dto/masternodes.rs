@@ -46,7 +46,7 @@ macro_rules! mirror_both {
     };
 }
 
-mirror_enum!(engine::MasternodeType => MasternodeTypeName { Regular, Evonode });
+mirror_both!(engine::MasternodeType => MasternodeTypeName { Regular, Evonode });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -408,6 +408,335 @@ impl TryFrom<dw_engine::RevealedMasternodeKey> for RevealedMasternodeKey {
         })
     }
 }
+
+/// Where a registration's 1,000 (or 4,000) Dash collateral comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CollateralChoiceName {
+    FundNew,
+    ExistingUtxo { outpoint: String },
+    External { outpoint: String, address: String },
+}
+
+impl From<CollateralChoiceName> for engine::CollateralChoice {
+    fn from(c: CollateralChoiceName) -> Self {
+        match c {
+            CollateralChoiceName::FundNew => Self::FundNew,
+            CollateralChoiceName::ExistingUtxo { outpoint } => Self::ExistingUtxo { outpoint },
+            CollateralChoiceName::External { outpoint, address } => {
+                Self::External { outpoint, address }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CollateralKindName {
+    FundNew,
+    ExistingUtxo,
+    External,
+}
+
+mirror_enum!(engine::CollateralKind => CollateralKindName { FundNew, ExistingUtxo, External });
+
+/// The operator's BLS public key: given by the operator (basic scheme, 96
+/// hex), or one of this wallet's keychain keys for a self-run node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum OperatorChoiceName {
+    Given { public_key: String },
+    Keychain { index: u32 },
+    NextUnused,
+}
+
+impl From<OperatorChoiceName> for engine::OperatorChoice {
+    fn from(c: OperatorChoiceName) -> Self {
+        match c {
+            OperatorChoiceName::Given { public_key } => Self::Given { public_key },
+            OperatorChoiceName::Keychain { index } => Self::Keychain { index },
+            OperatorChoiceName::NextUnused => Self::NextUnused,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VotingChoiceName {
+    Keychain { index: u32 },
+    Address { address: String },
+    NextUnused,
+}
+
+impl From<VotingChoiceName> for engine::VotingChoice {
+    fn from(c: VotingChoiceName) -> Self {
+        match c {
+            VotingChoiceName::Keychain { index } => Self::Keychain { index },
+            VotingChoiceName::Address { address } => Self::Address { address },
+            VotingChoiceName::NextUnused => Self::NextUnused,
+        }
+    }
+}
+
+/// Always named: a new address of this wallet, or any address (MG-04 D10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PayoutChoiceName {
+    NewAddress,
+    Address { address: String },
+}
+
+impl From<PayoutChoiceName> for engine::PayoutChoice {
+    fn from(c: PayoutChoiceName) -> Self {
+        match c {
+            PayoutChoiceName::NewAddress => Self::NewAddress,
+            PayoutChoiceName::Address { address } => Self::Address { address },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum PlatformNodeChoiceName {
+    Given { node_id: String },
+    Keychain { index: u32 },
+    NextUnused,
+}
+
+impl From<PlatformNodeChoiceName> for engine::PlatformNodeChoice {
+    fn from(c: PlatformNodeChoiceName) -> Self {
+        match c {
+            PlatformNodeChoiceName::Given { node_id } => Self::Given { node_id },
+            PlatformNodeChoiceName::Keychain { index } => Self::Keychain { index },
+            PlatformNodeChoiceName::NextUnused => Self::NextUnused,
+        }
+    }
+}
+
+/// An evonode's Platform node; the ports default to the network's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EvonodeTerms {
+    pub node: PlatformNodeChoiceName,
+    pub p2p_port: Option<u16>,
+    pub http_port: Option<u16>,
+}
+
+impl From<EvonodeTerms> for engine::EvonodeTerms {
+    fn from(t: EvonodeTerms) -> Self {
+        let EvonodeTerms {
+            node,
+            p2p_port,
+            http_port,
+        } = t;
+        Self {
+            node: node.into(),
+            p2p_port,
+            http_port,
+        }
+    }
+}
+
+/// A ProRegTx's terms as the wizard sends them. `ownerIndex` `null` takes
+/// the first unused owner key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MasternodeRegistrationRequest {
+    pub kind: MasternodeTypeName,
+    pub collateral: CollateralChoiceName,
+    pub service: String,
+    pub operator: OperatorChoiceName,
+    /// Basis points.
+    pub operator_reward: u16,
+    pub owner_index: Option<u32>,
+    pub voting: VotingChoiceName,
+    pub payout: PayoutChoiceName,
+    pub evonode: Option<EvonodeTerms>,
+}
+
+impl From<MasternodeRegistrationRequest> for engine::RegistrationRequest {
+    fn from(r: MasternodeRegistrationRequest) -> Self {
+        let MasternodeRegistrationRequest {
+            kind,
+            collateral,
+            service,
+            operator,
+            operator_reward,
+            owner_index,
+            voting,
+            payout,
+            evonode,
+        } = r;
+        Self {
+            kind: kind.into(),
+            collateral: collateral.into(),
+            service,
+            operator: operator.into(),
+            operator_reward,
+            owner_index,
+            voting: voting.into(),
+            payout: payout.into(),
+            evonode: evonode.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformFacts {
+    pub node_id: String,
+    pub p2p_port: u16,
+    pub http_port: u16,
+}
+
+mirror_struct!(engine::PlatformFacts => PlatformFacts { node_id, p2p_port, http_port });
+
+/// What a ProTx says, as built: addresses, keys and the indices of the
+/// keychain keys it uses. An empty `payoutAddress` or `collateralAddress`
+/// in a preview is issued at registration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProTxTerms {
+    pub masternode_type: MasternodeTypeName,
+    pub version: u16,
+    pub service: String,
+    pub owner_address: String,
+    pub owner_index: Option<u32>,
+    pub voting_address: String,
+    pub voting_index: Option<u32>,
+    pub operator_public_key: String,
+    pub operator_index: Option<u32>,
+    /// Basis points.
+    pub operator_reward: u16,
+    pub payout_address: String,
+    pub collateral: Option<CollateralKindName>,
+    pub collateral_outpoint: Option<String>,
+    pub collateral_address: Option<String>,
+    pub platform: Option<PlatformFacts>,
+    pub platform_node_index: Option<u32>,
+}
+
+mirror_struct!(engine::ProTxTerms => ProTxTerms {
+    masternode_type: into, version, service, owner_address, owner_index, voting_address,
+    voting_index, operator_public_key, operator_index, operator_reward, payout_address,
+    collateral: opt, collateral_outpoint, collateral_address, platform: opt, platform_node_index,
+});
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MasternodeRegistrationPreview {
+    pub terms: ProTxTerms,
+    pub fee: u64,
+    pub total_debit: u64,
+    pub collateral_amount: u64,
+}
+
+mirror_struct!(engine::RegistrationPreview => MasternodeRegistrationPreview {
+    terms: into, fee, total_debit, collateral_amount,
+});
+
+/// One keychain key a registration would use: an address (owner, voting),
+/// a basic-scheme BLS public key (operator) or a node id (platform node).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyPick {
+    pub index: u32,
+    pub address: Option<String>,
+    pub public_key: Option<String>,
+    pub node_id: Option<String>,
+}
+
+mirror_struct!(engine::KeyPick => KeyPick { index, address, public_key, node_id });
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProTxKeys {
+    pub owner: KeyPick,
+    pub voting: KeyPick,
+    pub operator: KeyPick,
+    pub platform_node: Option<KeyPick>,
+}
+
+mirror_struct!(engine::ProTxKeys => ProTxKeys {
+    owner: into, voting: into, operator: into, platform_node: opt,
+});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProTxOperationKindName {
+    Registration,
+    UpdateRegistrar,
+    UpdateShare,
+    Dissolve,
+}
+
+mirror_enum!(engine::ProTxOperationKind => ProTxOperationKindName {
+    Registration, UpdateRegistrar, UpdateShare, Dissolve,
+});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProTxOperationStateName {
+    NeedsSignature,
+    InputsSpent,
+    Signed,
+    NotSent,
+    Sent,
+    Confirmed { height: u32 },
+    Conflicted,
+}
+
+impl From<engine::ProTxOperationState> for ProTxOperationStateName {
+    fn from(s: engine::ProTxOperationState) -> Self {
+        use engine::ProTxOperationState as S;
+        match s {
+            S::NeedsSignature => Self::NeedsSignature,
+            S::InputsSpent => Self::InputsSpent,
+            S::Signed => Self::Signed,
+            S::NotSent => Self::NotSent,
+            S::Sent => Self::Sent,
+            S::Confirmed { height } => Self::Confirmed { height },
+            S::Conflicted => Self::Conflicted,
+        }
+    }
+}
+
+/// Core's `signmessage` request for an external collateral's key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SignRequest {
+    pub address: String,
+    pub message: String,
+}
+
+mirror_struct!(engine::SignRequest => SignRequest { address, message });
+
+/// A saved ProTx of the wallet, its state derived on read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProTxOperation {
+    pub id: String,
+    pub kind: ProTxOperationKindName,
+    pub pro_tx_hash: Option<String>,
+    pub txid: Option<String>,
+    pub state: ProTxOperationStateName,
+    pub sign_request: Option<SignRequest>,
+    pub fee: u64,
+    /// What a resend is charged: the grant cap for Send again.
+    pub debit: u64,
+    /// `sent` and not in a block well past its expected time.
+    pub overdue: bool,
+    pub created_at: u64,
+    pub signed_at: Option<u64>,
+    pub sent_at: Option<u64>,
+    pub last_error: Option<String>,
+    pub terms: ProTxTerms,
+}
+
+mirror_struct!(engine::ProTxOperation => ProTxOperation {
+    id, kind: into, pro_tx_hash, txid, state: into, sign_request: opt, fee, debit, overdue,
+    created_at, signed_at, sent_at, last_error, terms: into,
+});
 
 #[cfg(test)]
 mod tests {
