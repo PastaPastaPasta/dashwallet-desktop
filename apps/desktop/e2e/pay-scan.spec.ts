@@ -37,6 +37,18 @@ test("IOS-043 Scan QR on Pay: an image's payment link prefills Pay; a bare addre
   await expect(page.getByTestId("pay-address")).toHaveValue(ADDRESS);
   await expect(page.getByTestId("pay-label")).toHaveValue("Rent");
   expect(await page.evaluate(() => window.__dwFixture!.world.tools.files.dialogs.map((d) => d.purpose))).toEqual(["qrImage"]);
+  // Scanning only fills the form: the amount stays editable, and nothing goes without Confirm.
+  const amount = page.getByTestId("pay-amount");
+  await expect(amount).toHaveValue("0.25000000");
+  await amount.fill("0.3");
+  const sent = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "draft_prepare" || c === "draft_broadcast").length);
+  const before = await sent();
+  await page.getByTestId("pay-continue").click();
+  await expect(page.getByTestId("pay-confirm-address")).toContainText(ADDRESS);
+  await expect(page.getByTestId("pay-confirm-amount")).toContainText("0.3");
+  expect(await sent()).toBe(before);
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("pay-confirm")).toHaveCount(0);
 
   await page.getByTestId("pay-address").fill("");
   await pasteImage(page, ["not a code", ADDRESS]);

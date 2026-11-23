@@ -43,10 +43,10 @@ export class PayScanModel extends Model {
 
   /** A pasted or dropped image file; one too large is refused unread. */
   imageFile(file: Pick<Blob, "size" | "arrayBuffer">): Promise<void> {
-    if (file.size > MAX_IMAGE_BYTES) return Promise.resolve(this.#fail(t("pay.scan.tooLarge")));
+    if (file.size > MAX_IMAGE_BYTES) return Promise.resolve(this.#fail(t("contacts.scan.imageTooLarge")));
     return this.#read("reading", async () => {
       const buffer = await file.arrayBuffer();
-      if (buffer.byteLength > MAX_IMAGE_BYTES) throw new TooLarge(t("pay.scan.tooLarge"));
+      if (buffer.byteLength > MAX_IMAGE_BYTES) throw new TooLarge(t("contacts.scan.imageTooLarge"));
       return this.api.scanQrImage(bytesToBase64(new Uint8Array(buffer)));
     });
   }
