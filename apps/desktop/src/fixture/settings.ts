@@ -63,6 +63,9 @@ export const FIXTURE_FILES = {
   walletDat: "/home/user/Documents/core-sqlite-wallet.dat",
   walletDatBdb: "/home/user/Documents/core-berkeley-wallet.dat",
   walletDatBdbLocked: "/home/user/Documents/core-berkeley-locked.dat",
+  /** Legacy wallet.dat files the import reads and refuses on purpose (#81 item 1). */
+  walletDatTooLarge: "/home/user/Documents/core-mixing-for-years.dat",
+  walletDatTwoAccounts: "/home/user/Documents/core-two-accounts.dat",
   psbt: "/home/user/Documents/unsigned-payment.psbt",
   unknown: "/home/user/Documents/shopping-list.txt",
   mainnetDump: "/home/user/Documents/mainnet-dumpwallet.txt",
@@ -78,6 +81,8 @@ export interface FixtureFile {
   /** A backup's wallets and their phrases (`null`: watch-only). */
   wallets?: { walletId: string; name: string; phrase: string | null }[];
   automatic?: boolean;
+  /** A wallet.dat read and refused on purpose: inspecting it fails with this code. */
+  refusal?: "compat.wallet_too_large" | "compat.extra_hd_account";
   /** What a Dash Core import reports for it. */
   report?: Pick<CoreImportReport, "labelsImported" | "keysNotImported" | "scriptsNotImported">;
 }
@@ -139,6 +144,8 @@ export function newSettingsWorld(): SettingsWorld {
         info: { kind: "walletDatBdb", encrypted: true },
         passphrase: CORE_WALLET_PASSPHRASE,
       },
+      [FIXTURE_FILES.walletDatTooLarge]: { info: { kind: "walletDatBdb", encrypted: true }, refusal: "compat.wallet_too_large" },
+      [FIXTURE_FILES.walletDatTwoAccounts]: { info: { kind: "walletDatBdb", encrypted: false }, refusal: "compat.extra_hd_account" },
       [FIXTURE_FILES.psbt]: { info: { kind: "psbt" } },
       [FIXTURE_FILES.unknown]: { info: { kind: "unknown" } },
     },
@@ -396,7 +403,11 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     },
 
     // Dash Core imports and exports (QT-106 to QT-109)
-    inspect_wallet_file: ({ path }, { world }) => file(world, path, "compat.file_unreadable").info,
+    inspect_wallet_file: ({ path }, { world }) => {
+      const f = file(world, path, "compat.file_unreadable");
+      if (f.refusal) throw fail(f.refusal, "fixture: refused on purpose");
+      return f.info;
+    },
     import_dump_wallet: ({ path, options }, ctx) => {
       const f = file(ctx.world, path, "compat.file_unreadable");
       if (f.info.kind !== "dumpWallet") throw fail("compat.unsupported_format", "not a dumpwallet file");
@@ -408,6 +419,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     import_wallet_dat: ({ path, walletPassphrase, options }, ctx) => {
       const f = file(ctx.world, path, "compat.file_unreadable");
       if (f.info.kind !== "walletDatSqlite" && f.info.kind !== "walletDatBdb") throw fail("compat.unsupported_format", "not a wallet.dat");
+      if (f.refusal) throw fail(f.refusal, "fixture: refused on purpose");
       const encrypted = f.info.kind === "walletDatSqlite" ? f.info.encrypted : f.info.encrypted === true;
       if (encrypted) {
         if (walletPassphrase === null) throw fail("compat.passphrase_required", "the wallet.dat is encrypted");
