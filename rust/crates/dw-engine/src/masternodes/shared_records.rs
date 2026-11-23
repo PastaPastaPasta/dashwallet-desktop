@@ -291,6 +291,10 @@ pub struct SharedSession {
     /// This wallet's locked outpoints.
     pub reserved: Vec<String>,
     pub next: SharedNext,
+    /// `discard_shared_session` would delete it now and release its coins:
+    /// nothing of it may be out (D17). Computed by the rule that call
+    /// refuses by, so the two can't differ.
+    pub discardable: bool,
     pub warnings: Vec<SharedWarning>,
     /// The terms this wallet last approved (M-1 case 2's diff base).
     pub approved_terms: Option<ShareTermsView>,

@@ -57,8 +57,8 @@ use super::flow::signer_refusal;
 use super::send::typed;
 use super::standby::{in_history, p2pkh_address, registration_of};
 use super::store::{
-    ChainView, copy_rank, decode_outpoints, encode_outpoints, json, message_refusal, reserved_of,
-    role_name, role_of, stage_refusal,
+    ChainView, copy_rank, decode_outpoints, encode_outpoints, json, may_discard, message_refusal,
+    reserved_of, role_name, role_of, stage_refusal,
 };
 use super::together::{TogetherView, absorb, known_mn, unsigned};
 use crate::coins::now_secs;
@@ -1277,7 +1277,7 @@ impl NetworkSession {
         wallet: WalletId,
         row: &SharedSessionRow,
     ) -> Result<(), MasternodesError> {
-        if row.out_at.is_none() {
+        if may_discard(row) {
             return Ok(());
         }
         let stage = match KeyChange::of(row.clone(), self.network.core_network()) {
@@ -1451,6 +1451,7 @@ fn view(
         txid: k.row.txid.clone(),
         reserved: reserved_of(&k.row).iter().map(outpoint_string).collect(),
         next,
+        discardable: may_discard(&k.row),
         warnings,
         approved_terms: None,
         base_keys: Some(k.base.clone()),

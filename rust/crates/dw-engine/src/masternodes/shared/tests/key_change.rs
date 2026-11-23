@@ -455,6 +455,7 @@ fn test_QT_127_an_unsent_key_change_is_abandoned_without_a_spend() {
     );
     assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
     // The row stays until discarded.
+    assert!(f.session_of(0, &id).discardable);
     f.run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
         .unwrap();
     assert!(
@@ -472,7 +473,16 @@ fn test_QT_127_a_sent_key_change_is_abandoned_by_a_spend_to_the_wallet() {
     let f = fx(3, true);
     let (_, txid) = keyed(&f);
     let (id, _) = complete(&f, txid);
-    send(&f, 0, &id, COIN).unwrap();
+    assert!(f.session_of(0, &id).discardable, "combined, not out");
+    let sent = send(&f, 0, &id, COIN).unwrap();
+    assert!(!sent.discardable, "out");
+    assert_eq!(
+        code(
+            f.run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
+                .unwrap_err()
+        ),
+        "masternodes.shared_stage"
+    );
     let reserved = reserved_of(&f.row(0, &id));
     let s = abandon(&f, 0, &id, COIN).unwrap();
     assert_eq!(s.stage, SharedStage::Sent);
