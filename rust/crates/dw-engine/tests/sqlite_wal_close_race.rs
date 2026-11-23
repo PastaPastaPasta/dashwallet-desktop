@@ -9,8 +9,9 @@
 #![cfg(unix)]
 
 use std::ffi::{c_char, c_int, c_void};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Once, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
@@ -20,8 +21,9 @@ use rusqlite::{Connection, ffi};
 const THREADS: usize = 4;
 const RUN: Duration = Duration::from_secs(3);
 const FINISH: Duration = Duration::from_secs(60);
+const READY: Duration = Duration::from_secs(30);
 const STAT_DELAY: Duration = Duration::from_millis(2);
-const STEPS: [&str; 4] = ["between cycles", "the open", "a read", "the drop"];
+const STEPS: [&str; 4] = ["between cycles", "the open", "a schema read", "the drop"];
 
 type Stat = unsafe extern "C" fn(*const c_char, *mut c_void) -> c_int;
 
@@ -66,41 +68,65 @@ fn journal_mode(path: &Path) -> String {
         .unwrap()
 }
 
-/// Four threads open `path`, read from it and drop the connection, over and
-/// over for [`RUN`]; every one of them must then stop within [`FINISH`]. A
-/// hang ends the process: the stuck thread holds SQLite's global VFS mutex,
-/// which would block the other test of this binary with no timeout.
-fn race_opens_and_closes(path: PathBuf) {
+/// Four threads open `path`, read its schema (which opens the connection's
+/// WAL, so the drop closes it) and drop the connection, over and over for
+/// [`RUN`]; every one of them must run at least one cycle and then stop
+/// within [`FINISH`]. A hang ends the process: the stuck thread holds
+/// SQLite's global VFS mutex, which would block the other test of this binary
+/// with no timeout.
+fn race_opens_and_closes(fixture: &str, path: PathBuf) {
     assert_eq!(journal_mode(&path), "wal");
     let path = Arc::new(path);
+    let go = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
-    let cycles = Arc::new(AtomicU64::new(0));
+    let ready = Arc::new(AtomicUsize::new(0));
+    let cycles: Arc<[AtomicU64; THREADS]> = Arc::new(Default::default());
     let steps: Arc<[AtomicU8; THREADS]> = Arc::new(Default::default());
     let (done, finished) = mpsc::channel();
     for i in 0..THREADS {
-        let (path, stop, cycles, steps, done) = (
+        let (path, go, stop, ready, cycles, steps, done) = (
             Arc::clone(&path),
+            Arc::clone(&go),
             Arc::clone(&stop),
+            Arc::clone(&ready),
             Arc::clone(&cycles),
             Arc::clone(&steps),
             done.clone(),
         );
         std::thread::spawn(move || {
+            ready.fetch_add(1, Ordering::SeqCst);
+            while !go.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
             while !stop.load(Ordering::Relaxed) {
                 steps[i].store(1, Ordering::Relaxed);
                 let conn = Connection::open(path.as_path()).unwrap();
                 steps[i].store(2, Ordering::Relaxed);
-                let one: i64 = conn.query_row("SELECT 1", [], |row| row.get(0)).unwrap();
-                assert_eq!(one, 1);
+                let tables: i64 = conn
+                    .query_row("SELECT count(*) FROM main.sqlite_schema", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert!(tables > 0);
                 steps[i].store(3, Ordering::Relaxed);
                 drop(conn);
                 steps[i].store(0, Ordering::Relaxed);
-                cycles.fetch_add(1, Ordering::Relaxed);
+                cycles[i].fetch_add(1, Ordering::Relaxed);
             }
             let _ = done.send(());
         });
     }
     drop(done);
+    let ready_by = Instant::now() + READY;
+    while ready.load(Ordering::SeqCst) < THREADS {
+        assert!(
+            Instant::now() < ready_by,
+            "{fixture}: only {} of {THREADS} threads started within {READY:?}",
+            ready.load(Ordering::SeqCst)
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    go.store(true, Ordering::SeqCst);
     std::thread::sleep(RUN);
     stop.store(true, Ordering::Relaxed);
     let deadline = Instant::now() + FINISH;
@@ -117,16 +143,24 @@ fn race_opens_and_closes(path: PathBuf) {
                 .iter()
                 .map(|s| STEPS[usize::from(s.load(Ordering::Relaxed))])
                 .collect();
-            eprintln!(
-                "hung on SQLite {}: threads not done {FINISH:?} after the stop, {} cycles; \
-                 threads in {in_flight:?}",
+            let per_thread: Vec<_> = cycles.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+            let mut err = std::io::stderr().lock();
+            let _ = writeln!(
+                err,
+                "{fixture}: hung on SQLite {}: threads not done {FINISH:?} after the stop; \
+                 cycles per thread {per_thread:?}; threads in {in_flight:?}",
                 rusqlite::version(),
-                cycles.load(Ordering::Relaxed)
             );
+            let _ = err.flush();
             std::process::exit(101);
         }
     }
-    assert!(cycles.load(Ordering::Relaxed) > 0);
+    for (i, c) in cycles.iter().enumerate() {
+        assert!(
+            c.load(Ordering::Relaxed) > 0,
+            "{fixture}: thread {i} ran no cycle in {RUN:?}"
+        );
+    }
 }
 
 #[test]
@@ -151,7 +185,7 @@ fn raw_opens_and_closes_of_a_wal_file_racing_on_many_threads_never_hang() {
         assert_eq!(mode, "wal");
         conn.execute_batch("CREATE TABLE t (x INTEGER)").unwrap();
     }
-    race_opens_and_closes(path);
+    race_opens_and_closes("plain WAL file", path);
 }
 
 #[test]
@@ -160,5 +194,5 @@ fn raw_opens_and_closes_of_a_wallet_store_racing_on_many_threads_never_hang() {
     let dir = dw_testutil::private_tempdir();
     let path = dir.path().join("wallet.sqlite");
     drop(SqlitePersister::open(SqlitePersisterConfig::new(path.clone())).unwrap());
-    race_opens_and_closes(path);
+    race_opens_and_closes("wallet store", path);
 }
