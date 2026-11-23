@@ -390,7 +390,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
           <DetailRow label="Size">{`${d.sizeBytes} bytes`}</DetailRow>
           {d.rawHex && (
             <DetailRow label={t("activity.detail.rawTransaction")} testId="tx-detail-raw">
-              <CopyValue value={d.rawHex} label={t("activity.detail.rawTransactionNoun")} mono display={d.rawHex.length > 32 ? `${d.rawHex.slice(0, 32)}…` : d.rawHex} />
+              <CopyValue value={d.rawHex} action={t("activity.detail.copyRawTransaction")} mono display={d.rawHex.length > 32 ? `${d.rawHex.slice(0, 32)}…` : d.rawHex} />
             </DetailRow>
           )}
         </dl>

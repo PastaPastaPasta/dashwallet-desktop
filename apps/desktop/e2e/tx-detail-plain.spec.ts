@@ -72,7 +72,16 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("tx-detail-outputs")).toBeVisible();
     const raw = page.getByTestId("tx-detail-raw");
     await expect(raw).toContainText("Raw transaction");
-    await expect(raw.getByRole("button", { name: "Copy raw transaction" })).toBeVisible();
+    const copyRaw = raw.getByRole("button", { name: "Copy raw transaction" });
+    await expect(copyRaw).toBeVisible();
+    // The row shows the start; the button copies the whole hex (clipboard reads: Chromium only).
+    if (test.info().project.name === "chromium") {
+      await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+      await copyRaw.click();
+      const copied = await page.evaluate(() => navigator.clipboard.readText());
+      expect(copied.length).toBeGreaterThan(32);
+      await expect(raw).toContainText(`${copied.slice(0, 32)}…`);
+    }
 
     const received = await openKind(page, "received", theme);
     await expect(page.getByTestId("tx-detail-title")).toHaveText("Received");
