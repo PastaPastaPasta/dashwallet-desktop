@@ -292,6 +292,66 @@ pub(super) fn eventually(what: &str, mut done: impl FnMut() -> bool) {
     panic!("never: {what}");
 }
 
+/// The wallet events key-wallet emits from now on, for [`wallet_story`].
+pub(super) fn events_from(
+    engine: &Engine,
+    session: &NetworkSession,
+) -> tokio::sync::broadcast::Receiver<platform_wallet::key_wallet_manager::WalletEvent> {
+    let manager = session.manager().unwrap();
+    engine.block_on(async move { manager.wallet_manager_arc().read().await.subscribe_events() })
+}
+
+/// For a failure's message: the history's txids, what the history and
+/// key-wallet hold of `txids`, and the events `events` caught.
+pub(super) fn wallet_story(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    txids: &[Txid],
+    events: Option<
+        &mut tokio::sync::broadcast::Receiver<platform_wallet::key_wallet_manager::WalletEvent>,
+    >,
+) -> String {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let history = session.hub.history.snapshot(&id);
+    let shown: Vec<String> = (txids.iter())
+        .map(|t| match history.get(t) {
+            Some(e) => format!(
+                "{t}: {:?} locked={} abandoned={}",
+                e.context, e.instant_locked, e.abandoned
+            ),
+            None => format!("{t}: absent"),
+        })
+        .collect();
+    let manager = session.manager().unwrap();
+    let wanted = txids.to_vec();
+    let records: Vec<String> = engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let Some(info) = wm.get_wallet_info(&id.0) else {
+            return vec!["no wallet".into()];
+        };
+        let held = info.core_wallet.transaction_history();
+        (wanted.iter())
+            .map(|t| match held.iter().find(|r| r.txid == *t) {
+                Some(r) => format!("{t}: {:?}", r.context),
+                None => format!("{t}: absent"),
+            })
+            .collect()
+    });
+    let caught: Vec<String> = events
+        .map(|rx| {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .map(|e| e.to_string().chars().take(300).collect())
+                .collect()
+        })
+        .unwrap_or_default();
+    format!(
+        "\nhistory txids: {:?}\nhistory: {shown:#?}\nkey-wallet records: {records:#?}\nevents: {caught:#?}",
+        history.keys().collect::<Vec<_>>()
+    )
+}
+
 pub(super) fn synced(engine: &Engine, session: &NetworkSession, id: WalletId) -> u32 {
     use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let manager = session.manager().unwrap();
@@ -1779,16 +1839,22 @@ fn a_locked_payment_a_chainlock_beat_in_its_own_session_is_not_offered() {
     instant_lock(&engine, &session, id, &payment);
     wait_stored(&session, id, &[payment.txid()]);
     let winner = rival(&engine, &session, id, &paid, 1);
+    let named = [payment.txid(), winner.txid()];
     mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
     wait_stored(&session, id, &[winner.txid()]);
     let won = block_hash(&[winner]);
     chain_lock(&engine, &session, id, TIP + 1, won);
     header_chain(&session, &[(TIP + 1, won)]);
     mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let mut events = events_from(&engine, &session);
     start_spv(&engine, &session);
-    let extras = engine
-        .block_on(session.tx_detail_extras(id, payment.txid()))
-        .unwrap();
+    let extras = match engine.block_on(session.tx_detail_extras(id, payment.txid())) {
+        Ok(extras) => extras,
+        Err(e) => panic!(
+            "the payment's details: {e:?}{}",
+            wallet_story(&engine, &session, id, &named, Some(&mut events))
+        ),
+    };
     assert!(!extras.can_abandon, "Abandon is offered");
     refused(&engine, &session, id, payment.txid(), "its own session");
     assert!(!abandoned(&engine, &session, id, payment.txid()));
@@ -2910,28 +2976,45 @@ fn coin_state(
 ) -> Arc<NetworkSession> {
     let mut session = session;
     for after in ["", " and a restart"] {
+        let mut events = events_from(engine, &session);
         if !after.is_empty() {
             session = reopen(engine, session);
+            events = events_from(engine, &session);
             start_spv(engine, &session);
         }
         scan_if_pending(engine, &session, id, paid);
         store_settled(engine, &session, id);
+        let mut story = || {
+            let spenders: Vec<Txid> = (session.hub.history.snapshot(&id).into_iter())
+                .filter(|(_, e)| e.tx.input.iter().any(|i| i.previous_output == u))
+                .map(|(t, _)| t)
+                .collect();
+            let replay = Arc::clone(&session.live().unwrap().replay);
+            let record = engine.block_on(replay.get(id));
+            format!(
+                "\nrewind record: {record:?}{}",
+                wallet_story(engine, &session, id, &spenders, Some(&mut events))
+            )
+        };
         let row = stored_row(&session, id, u);
         assert_eq!(
             row.map(|(spent, _)| spent),
             Some(held),
-            "{state}{after}: U stored spent: {row:?}"
+            "{state}{after}: U stored spent: {row:?}{}",
+            story()
         );
         if held || !after.is_empty() {
             assert_eq!(
                 coins(engine, &session, id).iter().any(|(o, _)| *o == u),
                 !held,
-                "{state}{after}: U counted"
+                "{state}{after}: U counted{}",
+                story()
             );
             assert_eq!(
                 spendable(engine, &session, id, u),
                 !held,
-                "{state}{after}: U offered"
+                "{state}{after}: U offered{}",
+                story()
             );
         }
     }
