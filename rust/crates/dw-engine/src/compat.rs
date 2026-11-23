@@ -73,6 +73,14 @@ pub enum CompatFailure {
     WatchOnly,
     /// The export file exists or cannot be written.
     DestinationUnwritable(String),
+    /// A legacy `wallet.dat` read and refused on purpose: more keys on one
+    /// chain than the import restores. Its funds move by sending them from
+    /// Dash Core.
+    WalletTooLarge,
+    /// A legacy `wallet.dat` with keys on an HD account other than 0.
+    ExtraHdAccount {
+        account: u32,
+    },
 }
 
 impl std::fmt::Display for CompatFailure {
@@ -98,6 +106,10 @@ impl std::fmt::Display for CompatFailure {
             Self::InvalidKeyMaterial(d) => write!(f, "invalid key material: {d}"),
             Self::WatchOnly => f.write_str("watch-only wallet"),
             Self::DestinationUnwritable(d) => write!(f, "cannot write: {d}"),
+            Self::WalletTooLarge => f.write_str("wallet too large to restore"),
+            Self::ExtraHdAccount { account } => {
+                write!(f, "HD account {account} cannot be restored")
+            }
         }
     }
 }
@@ -276,6 +288,11 @@ pub fn inspect_wallet_file(path: &Path) -> Result<WalletFileKind, EngineError> {
                     encrypted: w.encrypted(),
                     has_mnemonic: w.has_mnemonic(),
                 },
+                // Legacy records in a SQLite file (`createfromdump
+                // -format=sqlite`) are refused as the import refuses them.
+                Err(e @ (WalletDatError::RangeTooLarge | WalletDatError::ExtraHdAccount(_))) => {
+                    return Err(walletdat_failure(e));
+                }
                 _ => WalletFileKind::Unknown,
             });
         }
@@ -606,16 +623,10 @@ impl NetworkSession {
                     let mut issued = None;
                     for (account, external, internal) in wallet.hd_accounts() {
                         if account != 0 {
-                            return Err(CompatFailure::UnsupportedFormat(format!(
-                                "HD account {account} cannot be restored; only account 0 is"
-                            ))
-                            .into());
+                            return Err(CompatFailure::ExtraHdAccount { account }.into());
                         }
                         if external > MAX_ISSUED || internal > MAX_ISSUED {
-                            return Err(CompatFailure::UnsupportedFormat(
-                                "the wallet's address range is too large to restore".into(),
-                            )
-                            .into());
+                            return Err(CompatFailure::WalletTooLarge.into());
                         }
                         issued = Some((external, internal));
                     }
@@ -674,6 +685,7 @@ impl NetworkSession {
                             issued,
                             locks,
                             coinjoin_salt: wallet.coinjoin_salt,
+                            rows: None,
                         },
                     })
                 })
@@ -908,6 +920,10 @@ pub(crate) struct ImportedState {
     /// Core's persistent coin locks (`lockedutxo`).
     pub(crate) locks: Vec<dashcore::OutPoint>,
     pub(crate) coinjoin_salt: Option<[u8; 32]>,
+    /// A restore's backed-up app rows of the wallet (labels, address book,
+    /// notes, local contacts, settings, its salt and coin locks), perhaps
+    /// none; `None` for any other import.
+    pub(crate) rows: Option<Vec<dw_appdb::TableRows>>,
 }
 
 /// What `import_wallet_dat` carries out of the blocking read.
@@ -984,15 +1000,19 @@ impl NetworkSession {
 
     /// Stores `state` for wallet `id` in one transaction: the range
     /// setting, Core's coin locks and its CoinJoin salt, so the same coins
-    /// count as fully mixed (QT-043, m3-engine.md §5). The salt replaces a
-    /// stored one; each stored counter of the range only rises, so an older
-    /// copy of the file does not narrow it; Core's locks are added to any
-    /// the wallet has. Returns what was replaced, for
-    /// [`Self::restore_imported_state`].
+    /// count as fully mixed (QT-043, m3-engine.md §5), then a backup's rows.
+    /// The salt replaces a stored one; each stored counter of the range only
+    /// rises, so an older copy of the file does not narrow it; Core's locks
+    /// are added to any the wallet has. A backup's rows are added to those
+    /// of a `registered` wallet; those of one not registered (an earlier
+    /// restore's, stopped before it registered the wallet) are replaced,
+    /// even by none. Returns what the settings replaced or added and what
+    /// the locks replaced, for [`Self::restore_imported_state`].
     pub(crate) async fn write_imported_state(
         self: &Arc<Self>,
         id: WalletId,
         state: &ImportedState,
+        registered: bool,
     ) -> Result<Option<dw_appdb::PriorRows>, EngineError> {
         let mut settings = Vec::new();
         if let Some((external, internal)) = state.issued {
@@ -1006,10 +1026,11 @@ impl NetworkSession {
         let locks: Vec<(String, u32)> = (state.locks.iter())
             .map(|o| (o.txid.to_string(), o.vout))
             .collect();
-        if settings.is_empty() && locks.is_empty() {
+        if settings.is_empty() && locks.is_empty() && state.rows.is_none() {
             return Ok(None);
         }
         let key = id.to_string();
+        let rows = state.rows.clone();
         self.appdb_op(move |db| {
             db.write_settings_and_locks(
                 &key,
@@ -1017,6 +1038,10 @@ impl NetworkSession {
                 &widen_issued,
                 &locks,
                 crate::coins::now_secs(),
+                rows.as_deref().map(|tables| dw_appdb::BackupRows {
+                    tables,
+                    replace: !registered,
+                }),
             )
         })
         .await
@@ -1111,6 +1136,8 @@ fn walletdat_failure(e: WalletDatError) -> EngineError {
         WalletDatError::PassphraseRequired => CompatFailure::PassphraseRequired,
         WalletDatError::WrongPassphrase => CompatFailure::WrongPassphrase,
         WalletDatError::NoHdChain => CompatFailure::NoHdChain,
+        WalletDatError::RangeTooLarge => CompatFailure::WalletTooLarge,
+        WalletDatError::ExtraHdAccount(account) => CompatFailure::ExtraHdAccount { account },
         WalletDatError::SeedLength(n) => {
             return EngineError::NotImplemented(format!("import_wallet_dat.seed_length.{n}"));
         }

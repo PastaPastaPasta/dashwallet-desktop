@@ -56,7 +56,7 @@ pub(crate) fn too_many(needs: Option<usize>) -> PlatformError {
 /// no selection of the wallet's coins funds within the bound.
 pub(crate) async fn check(wallet: &PlatformWallet, duffs: u64) -> Result<(), PlatformError> {
     let values: Vec<u64> = {
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(wallet).await?;
         let snapshot = crate::coins::read_coins(&state.core_wallet);
         snapshot
             .coins

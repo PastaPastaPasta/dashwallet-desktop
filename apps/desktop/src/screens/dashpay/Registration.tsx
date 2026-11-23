@@ -11,7 +11,11 @@ import { useMyUserLink } from "../../contacts/queries";
 import { CLAIM_COPY, claimErrorText } from "../../dashpay/claim";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
-import { useLabelQuote, useNameChecks, useNameCredits, useUsernameCheck } from "../../dashpay/queries";
+import { useBackend, usePoolBalances } from "../../api/queries";
+import { PAY_WITH_COPY, payWithRows } from "../../dashpay/payWith";
+import { timeText } from "../../fiat/rates";
+import { known } from "../../format/homeBalance";
+import { useLabelQuote, useNameChecks, useNameCredits, useShieldedReadiness, useUsernameCheck, useUsernameQuote } from "../../dashpay/queries";
 import {
   availabilityLine,
   canChoose,
@@ -122,9 +126,15 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
           </div>
         )}
         <div className="registration-actions">
-          <DashButton variant="tintedGray" data-testid="registration-cancel" onClick={() => wiz.close()}>
-            {REG_COPY.name.cancel}
-          </DashButton>
+          {wiz.picked ? (
+            <DashButton variant="tintedGray" data-testid="registration-back" onClick={() => wiz.back()}>
+              {REG_COPY.confirm.back}
+            </DashButton>
+          ) : (
+            <DashButton variant="tintedGray" data-testid="registration-cancel" onClick={() => wiz.close()}>
+              {REG_COPY.name.cancel}
+            </DashButton>
+          )}
           <DashButton variant="filledBlue" type="submit" data-testid="registration-next" disabled={!ok}>
             {REG_COPY.name.next}
           </DashButton>
@@ -317,13 +327,87 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   );
 }
 
-/** Steps 1 and 2, and the passphrase prompt their grants ask for. */
+/** "Pay with" (C-funding F19): each source with its balance and, when it cannot pay, its one
+ * reason; Dash wallet selected each time. A source that cannot pay cannot be chosen. */
+function PayWithStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
+  useT();
+  const id = useId();
+  const b = useBackend();
+  const core = useUsernameQuote(walletId, true) ?? null;
+  const pools = usePoolBalances(walletId);
+  const readiness = useShieldedReadiness(walletId);
+  const rows = payWithRows({
+    core,
+    platformDuffs: known(pools.platform) ? pools.platform : null,
+    shieldedDuffs: known(pools.shielded) ? pools.shielded : null,
+    readiness,
+    amount: inputs.amount,
+    clock: (secs) => timeText(secs, b.locale),
+    discreet: inputs.discreet,
+  });
+  const chosen = rows.find((r) => r.source === wiz.source);
+  return (
+    <section className="registration card-l1" data-testid="registration-pay-with" aria-labelledby={`${id}-title`}>
+      <header className="registration-header">
+        <h2 className="registration-title" id={`${id}-title`}>
+          {PAY_WITH_COPY.title}
+        </h2>
+      </header>
+      <form
+        className="registration-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (chosen?.reason === null) wiz.pickSource();
+        }}
+      >
+        <fieldset className="topup-choices pay-with-sources" aria-labelledby={`${id}-title`}>
+          {rows.map((r) => (
+            <label key={r.source} className="topup-choice pay-with-source" data-testid={`pay-with-${r.source}`} data-disabled={r.reason !== null || undefined}>
+              <input
+                type="radio"
+                name={`${id}-source`}
+                checked={wiz.source === r.source}
+                disabled={r.reason !== null}
+                aria-describedby={r.reason !== null ? `${id}-${r.source}-reason` : undefined}
+                onChange={() => wiz.setSource(r.source)}
+              />
+              <span className="topup-choice-amount">{r.label}</span>
+              {r.balance !== null && (
+                <span className="topup-choice-buys" data-testid={`pay-with-${r.source}-balance`}>
+                  <bdi dir="ltr">{r.balance}</bdi>
+                </span>
+              )}
+              {r.reason !== null && (
+                <span className="topup-choice-buys pay-with-reason" id={`${id}-${r.source}-reason`} data-testid={`pay-with-${r.source}-reason`}>
+                  {r.reason}
+                </span>
+              )}
+            </label>
+          ))}
+        </fieldset>
+        <div className="registration-actions">
+          <DashButton variant="tintedGray" data-testid="registration-cancel" onClick={() => wiz.close()}>
+            {REG_COPY.name.cancel}
+          </DashButton>
+          <DashButton variant="filledBlue" type="submit" data-testid="registration-next" disabled={chosen?.reason !== null}>
+            {REG_COPY.name.next}
+          </DashButton>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+/** Steps 1 and 2 (after "Pay with" when it was opened), and the passphrase prompt their grants
+ * ask for. */
 export function WizardSteps({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
   useT();
   useModel(wiz);
   return (
     <>
-      {wiz.step === "name" ? <NameStep wiz={wiz} walletId={walletId} /> : <ConfirmStep wiz={wiz} walletId={walletId} inputs={inputs} />}
+      {wiz.step === "source" && <PayWithStep wiz={wiz} walletId={walletId} inputs={inputs} />}
+      {wiz.step === "name" && <NameStep wiz={wiz} walletId={walletId} />}
+      {wiz.step === "confirm" && <ConfirmStep wiz={wiz} walletId={walletId} inputs={inputs} />}
       <GrantSheet grants={wiz.grants} />
     </>
   );

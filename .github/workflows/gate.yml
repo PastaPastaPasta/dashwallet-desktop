@@ -78,8 +78,6 @@ jobs:
       - name: Free disk space (Linux)
         if: ${{ matrix.os == 'linux' }}
         run: ci/github/linux-free-disk.sh
-      - name: protoc
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
@@ -87,6 +85,7 @@ jobs:
         with:
           workspaces: rust -> target
           key: gate-${{ inputs.candidate }}
+      - uses: ./.github/actions/pinned-sources
       - name: Linux packages (WebKitGTK or GTK 4, Xvfb, AT-SPI)
         if: ${{ matrix.os == 'linux' }}
         run: ci/github/linux-host-deps.sh "$GATE_CANDIDATE"

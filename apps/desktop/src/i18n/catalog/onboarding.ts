@@ -9,9 +9,10 @@ export const onboarding = {
   welcome: {
     title: "Welcome to Dash Wallet",
     addTitle: "Add a wallet",
-    text: "Create a new wallet, or restore one with its recovery phrase.",
+    text: "Create a new wallet, or restore one with its recovery phrase or a backup file.",
     create: "Create a new wallet",
     restore: "Restore from recovery phrase",
+    restoreFile: "Restore from a file",
     words24: "Create a 24-word recovery phrase",
   },
   unlock: {
@@ -23,6 +24,43 @@ export const onboarding = {
     title: "Restore a wallet",
     text: "Enter the wallet's recovery phrase: 12, 15, 18, 21 or 24 words.",
   },
+  /** Restore from a file: a Dash Wallet backup, or a Dash Core wallet.dat or dumpwallet file. */
+  file: {
+    title: "Restore from a file",
+    text: "Choose a Dash Wallet backup (.dwbackup), or a Dash Core wallet.dat or dumpwallet file.",
+    path: "File",
+    choose: "Choose File…",
+    pathHelp: "Or type the file's full path.",
+    inspect: "Continue",
+    inspecting: "Reading the file…",
+    kind: {
+      dwBackup: { one: "A Dash Wallet backup of {count} wallet.", other: "A Dash Wallet backup of {count} wallets." },
+      dumpWallet: "A Dash Core dumpwallet file.",
+      walletDat: "A Dash Core wallet.dat.",
+      walletDatEncrypted: "An encrypted Dash Core wallet.dat.",
+      psbt: "A partially signed transaction, not a wallet.",
+      unknown: "Dash Wallet can't read this file as a wallet.",
+    },
+    backupPassphrase: "Backup passphrase",
+    backupPassphraseHelp: "The passphrase the backup was made with: the old wallet's passphrase, or the backup passphrase you chose.",
+    walletDatPassphrase: "wallet.dat passphrase",
+    name: "Wallet name (optional)",
+    restore: "Restore",
+    otherFile: "Choose another file",
+    passphraseMissing: "Enter the file's passphrase.",
+    /** `network`: the file's network, as the engine names it (mainnet, testnet). */
+    otherNetwork: "This file is for {network}, not for the network this window uses.",
+    unknownNetwork: "This file is for a network this version of Dash Wallet doesn't know.",
+    emptyBackup: "This backup holds no wallet.",
+    psbtRefusal: "Open a partially signed transaction in Tools ▸ PSBT once a wallet is set up.",
+    unknownRefusal: "Dash Wallet reads Dash Wallet backups, Dash Core wallet.dat files and dumpwallet files.",
+    /** On Done, after a Dash Core import that left keys out (QT-107). */
+    keysSkipped: {
+      one: "1 key outside the HD wallet was not imported. Move its coins to this wallet from Dash Core.",
+      other: "{count} keys outside the HD wallet were not imported. Move their coins to this wallet from Dash Core.",
+    },
+    scriptsSkipped: { one: "1 script was not imported.", other: "{count} scripts were not imported." },
+  },
   working: {
     title: "Adding the wallet",
     text: "Adding the wallet…",
@@ -33,6 +71,8 @@ export const onboarding = {
   ready: {
     title: "Your wallet is ready",
     restored: "Dash Wallet now scans the blockchain for the wallet's transactions. This can take a while.",
+    /** A backup that held several wallets. */
+    restoredMany: "{count} wallets were restored. Dash Wallet now scans the blockchain for their transactions. This can take a while.",
     created: "Keep your recovery phrase safe. It is the only way to restore this wallet.",
     listFailed: "The wallet was saved, but the list of wallets could not be read.",
     retry: "Try again",
@@ -132,6 +172,7 @@ export const onboarding = {
     invalid_xpub: "This is not an extended public key (tpub or xpub) of this network.",
     not_implemented: "Dash Wallet cannot do this yet.",
     io: "The file could not be read or written.",
+    storage: "Dash Wallet could not read or write its data folder. Check that the disk has free space, then try again or restart Dash Wallet.",
     vault: {
       wallet_secret_exists: "This wallet's keys are already in the wallet.",
       locked: "Unlock the wallet and try again.",
@@ -168,6 +209,8 @@ export const onboarding = {
       passphrase_required: "This wallet.dat is encrypted: enter its passphrase.",
       unsupported_format: "Dash Wallet cannot read this kind of file.",
       watch_only: "A watch-only wallet has no keys to export.",
+      wallet_too_large: "This wallet.dat uses more than 10,000 addresses in a row, more than Dash Wallet imports. Open it in Dash Core, then send its funds to an address from Receive in Dash Wallet.",
+      extra_hd_account: "This wallet.dat uses an HD account other than the first one, and Dash Wallet imports only the first. Open it in Dash Core, then send its funds to an address from Receive in Dash Wallet.",
       wrong_passphrase: "The passphrase does not open this wallet.dat.",
     },
   },

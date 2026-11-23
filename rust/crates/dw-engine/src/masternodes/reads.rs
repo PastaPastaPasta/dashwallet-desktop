@@ -120,7 +120,7 @@ impl WalletView {
         let attached = attached_roles(session, hashes).await?;
 
         let coins = {
-            let state = pw.state().await;
+            let state = crate::wallet_read::info_of(&pw).await?;
             read_coins(&state.core_wallet)
         };
         let unspent = coins.coins.iter().map(|c| c.utxo.outpoint).collect();

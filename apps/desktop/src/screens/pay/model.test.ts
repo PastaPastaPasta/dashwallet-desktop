@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AppError } from "../../api/generated/AppError";
+import type { CoinJoinStatus } from "../../api/generated/CoinJoinStatus";
+import type { Utxo } from "../../api/generated/Utxo";
 import type { LockStatus } from "../../api/generated/LockStatus";
 import type { PreparedTxSummary } from "../../api/generated/PreparedTxSummary";
 import type { PsbtAnalysis } from "../../api/generated/PsbtAnalysis";
@@ -15,6 +17,7 @@ import {
   contactConfirmActions,
   contactDataText,
   failureText,
+  paysWithUnmixed,
   PAY_CHECKING,
   PAY_INCOMPLETE,
   PAY_INCOMPLETE_CONTACT,
@@ -30,6 +33,7 @@ import {
   recipientOf,
   mixedFeeText,
   sendErrorText,
+  settleNotSent,
   withSubtractFee,
 } from "./model";
 
@@ -172,8 +176,37 @@ describe("the engine's refusals", () => {
     });
     for (const code of ["send.no_peers", "send.prepared_tx_spent", "send.cancelled", "app.unknown_handle"] as const)
       expect(broadcastFailure(err(code), "test", held, true).kind).toBe("failed");
+    // Its record not written: refused before the hand-off, and a retry would be refused too.
+    expect(broadcastFailure(err("storage"), "test", held, true)).toEqual({
+      kind: "failed",
+      text: "The payment could not be recorded in this wallet.",
+    });
+    expect(broadcastFailure(err("storage"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
     // A code the renderer does not know may come after the bytes left: unknown, never abandoned.
     expect(broadcastFailure(err("internal"), "test", held, true)).toMatchObject({ kind: "unknown", retry: true });
+  });
+
+  it("reports a payment not sent even when its abandon is refused", async () => {
+    const shown: string[] = [];
+    await settleNotSent(() => Promise.reject(err("send.held_until_restart")), () => shown.push("refused"));
+    let abandoned = false;
+    await settleNotSent(
+      async () => {
+        abandoned = true;
+      },
+      () => shown.push("abandoned"),
+    );
+    await settleNotSent(null, () => shown.push("released"));
+    expect(shown).toEqual(["refused", "abandoned", "released"]);
+    expect(abandoned).toBe(true);
+  });
+
+  it("says a payment not sent whose coins stay reserved needs a restart, with no retry", () => {
+    const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 5, fee: 1 };
+    const text =
+      "The payment was not sent, but its coins stay reserved until you restart Dash Wallet. After the restart it's listed as pending in Activity; abandon it there to get the coins back.";
+    expect(sendErrorText(err("send.held_until_restart"), "test")).toEqual({ text, field: null });
+    for (const first of [true, false]) expect(broadcastFailure(err("send.held_until_restart"), "test", held, first)).toEqual({ kind: "failed", text });
   });
 
   it("never turns an unknown payment into not sent on a retry", () => {
@@ -412,5 +445,38 @@ describe("why a payment cannot be reviewed yet (P15)", () => {
     expect(reviewBlockedReason(false, [null], false, "contact")).toBe(PAY_INCOMPLETE_CONTACT);
     expect(reviewBlockedReason(false, [null], false, "address")).toBe(PAY_INCOMPLETE);
     expect(reviewBlockedReason(false, [null], true, "contact")).toBe(PAY_CHECKING);
+  });
+});
+
+describe("paysWithUnmixed", () => {
+  const status = (state: CoinJoinStatus["state"], fullyMixed: number) =>
+    ({ state, balances: { fullyMixed }, amountAndRounds: { rounds: 4 } }) as unknown as CoinJoinStatus;
+  const coin = (vout: number, denominated: boolean, rounds: number | null) =>
+    ({ outpoint: { txid: "aa".repeat(32), vout }, coinjoinDenominated: denominated, coinjoinRounds: rounds }) as unknown as Utxo;
+  const key = (vout: number) => `${"aa".repeat(32)}:${vout}`;
+  const coins = [coin(0, false, null), coin(1, true, 4), coin(2, true, 7), coin(3, true, 2), coin(4, true, null)];
+  const selected = (...vouts: number[]) => ({ ...DEFAULT_ADVANCED, coins: "selected" as const, selected: vouts.map(key) });
+
+  it("says Any available funds is unmixed while mixing runs or mixed coins are held: it never spends a denomination", () => {
+    expect(paysWithUnmixed(DEFAULT_ADVANCED, undefined, status("mixing", 0))).toBe(true);
+    expect(paysWithUnmixed(DEFAULT_ADVANCED, undefined, status("idle", 1))).toBe(true);
+  });
+
+  it("says nothing in a wallet that does not mix, with an unknown status, or for a fully mixed payment", () => {
+    expect(paysWithUnmixed(DEFAULT_ADVANCED, coins, status("idle", 0))).toBe(false);
+    expect(paysWithUnmixed(DEFAULT_ADVANCED, coins, undefined)).toBe(false);
+    expect(paysWithUnmixed({ ...DEFAULT_ADVANCED, coins: "mixed" }, coins, status("mixing", 5))).toBe(false);
+  });
+
+  it("says nothing for a selection of mixed coins, and says it once one selected coin is not mixed", () => {
+    expect(paysWithUnmixed(selected(1, 2), coins, status("mixing", 5))).toBe(false);
+    expect(paysWithUnmixed(selected(1, 0), coins, status("mixing", 5))).toBe(true);
+    expect(paysWithUnmixed(selected(0), undefined, status("mixing", 5))).toBe(false);
+  });
+
+  it("does not call a partly mixed denomination, or one whose rounds are unknown, unmixed", () => {
+    expect(paysWithUnmixed(selected(3), coins, status("mixing", 5))).toBe(false);
+    expect(paysWithUnmixed(selected(4), coins, status("mixing", 5))).toBe(false);
+    expect(paysWithUnmixed(selected(3, 4, 0), coins, status("mixing", 5))).toBe(true);
   });
 });

@@ -16,7 +16,7 @@ use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
     COIN, COINS, FUNDED_AT, TIP, abandon, change_of, coins, foreign, fresh_address, funding,
-    own_scripts, send, spendable, wait_stored,
+    own_scripts, send, spendable, start_offline_spv, wait_stored,
 };
 use super::{block_with, deliver, elsewhere, engine_wallet, mempool, mined, reopen};
 use crate::send::CoinSource;
@@ -487,6 +487,47 @@ fn a_change_a_conflict_no_wallet_fetches_frees_is_spendable_once_the_wallet_is_r
     assert!(spendable(&engine, &session, id, change));
 }
 
+/// For a failure's message: which of `coins` key-wallet holds, and what
+/// the history and key-wallet hold of each named transaction.
+fn known_gap_story(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    (a, b): (OutPoint, OutPoint),
+    named: &[(&str, Txid)],
+) -> String {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let held: Vec<&str> = (coins(engine, session, id).iter())
+        .filter_map(|(o, _)| (*o == a).then_some("A").or((*o == b).then_some("B")))
+        .collect();
+    let history = session.hub.history.snapshot(&id);
+    let manager = session.manager().unwrap();
+    let txids: Vec<Txid> = named.iter().map(|(_, t)| *t).collect();
+    let records: Vec<Option<String>> = engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm.get_wallet_info(&id.0);
+        let records = info
+            .map(|i| i.core_wallet.transaction_history())
+            .unwrap_or_default();
+        (txids.iter())
+            .map(|t| (records.iter().find(|r| r.txid == *t)).map(|r| format!("{:?}", r.context)))
+            .collect()
+    });
+    let each: Vec<String> = (named.iter().zip(records))
+        .map(|((name, t), record)| {
+            let shown = (history.get(t)).map(|e| {
+                format!(
+                    "{:?} locked={} abandoned={}",
+                    e.context, e.instant_locked, e.abandoned
+                )
+            });
+            format!("{name} {t}: history {shown:?}, key-wallet {record:?}")
+        })
+        .collect();
+    format!("held {held:?} (A {a}, B {b})\n{}", each.join("\n"))
+}
+
 /// Pins a known gap. L, which the user abandoned, spends coins A and B;
 /// another payment E, as another device on the same recovery phrase would
 /// make, spends B. L then comes back locked, so E loses to it, and a
@@ -542,6 +583,11 @@ fn known_gap_a_coin_another_device_spent_shows_again_when_the_abandoned_payment_
             (fresh_address(&engine, &session, id).script_pubkey(), 10_000),
         ],
     );
+    let named = [
+        ("L", loser.txid()),
+        ("W", winner.txid()),
+        ("E", other_device.txid()),
+    ];
     let height = TIP + 1;
     deliver(&engine, &session, id, move |wm| {
         Box::pin(async move {
@@ -577,7 +623,8 @@ fn known_gap_a_coin_another_device_spent_shows_again_when_the_abandoned_payment_
     let coins = coins(&engine, &session, id);
     assert!(
         !coins.iter().any(|(coin, _)| *coin == a || *coin == b),
-        "E is in a block"
+        "E is in a block: {}",
+        known_gap_story(&engine, &session, id, (a, b), &named)
     );
     let total: u64 = coins.iter().map(|(_, value)| value).sum();
     assert_eq!(
@@ -588,7 +635,8 @@ fn known_gap_a_coin_another_device_spent_shows_again_when_the_abandoned_payment_
     let session = reopen(&engine, session);
     assert!(
         !held(&engine, &session, id).contains(&b),
-        "E is in a block, after a restart"
+        "E is in a block, after a restart: {}",
+        known_gap_story(&engine, &session, id, (a, b), &named)
     );
 }
 
@@ -664,13 +712,6 @@ fn restore(engine: &Engine, session: &Arc<NetworkSession>, phrase: &[u8]) -> Wal
             },
         ))
         .unwrap()
-}
-
-fn start_offline_spv(engine: &Engine, session: &Arc<NetworkSession>) {
-    engine.block_on(session.start_spv()).unwrap();
-    super::own_spend_disk_tests::eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
 }
 
 #[derive(Clone, Copy, PartialEq)]

@@ -187,6 +187,23 @@ export const dashpay = {
       next: "Continue",
       cancel: "Cancel",
     },
+    /** The "Pay with" step before the name (C-funding F19): where the registration's payment
+     * comes from. */
+    payWith: {
+      /** The Join page's secondary link to the step. */
+      link: "Pay another way",
+      title: "Pay with",
+      core: "Dash wallet",
+      platform: "Platform balance",
+      shielded: "Shielded balance",
+      /** `amount` is the least the source must hold, with its unit. */
+      short: "Not enough here. You need at least {amount}.",
+      notOffered: "Not available on this network yet.",
+      /** `time` is a clock time, HH:MM. */
+      resting: "Your shielded funds arrived less than 3 hours ago. For your privacy, you can use them from {time}.",
+      unsettled: "An earlier shielded payment is still being checked. Try again when it is settled.",
+      syncing: "Your shielded balance is still syncing.",
+    },
     /** The name's checklist. */
     rule: {
       minLength: "At least 3 characters",
@@ -338,7 +355,7 @@ export const dashpay = {
     share: "Share Username",
     usernames: "Usernames",
     identity: "Identity",
-    identityId: "identity id",
+    copyIdentityId: "Copy identity ID",
     noUsername: "No username",
     /** The requested name while its vote runs and no other name is held. */
     contested: "{username} · Pending",
@@ -632,8 +649,7 @@ export const dashpay = {
     confirm: {
       recipient: "A contact request will go to {who}. It carries your new identity's extended public key for payments between you, so {who} can see the payments you make to each other.",
       recipientId: "Their identity",
-      /** Read in "Copy {label}". */
-      identityId: "identity id",
+      copyIdentityId: "Copy identity ID",
       request: "Send a contact request to {who}",
       claim: "Claim invitation",
     },

@@ -412,6 +412,14 @@ impl NetworkSession {
             // (`ReplayRecords::committed`).
             // Read first so they are restored as soon as the wallet is
             // registered, not after the history load (#88).
+            {
+                let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+                let db_path = this.data_dir().join(crate::session::WALLET_DB_FILE);
+                tokio::task::spawn_blocking(move || {
+                    crate::tx_actions::finish_marked_abandons(&persister, &appdb, &db_path, &[id])
+                })
+                .await??;
+            }
             let stored = this.stored_spends(id).await?;
             this.hub.admit(id);
             this.hub.update_wallet_state(id, |s| s.loading = true);

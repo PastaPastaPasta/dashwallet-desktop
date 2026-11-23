@@ -11,6 +11,7 @@ if [[ -z "$path" ]]; then
     path=/System/Volumes/Data
   else
     path="${CARGO_TARGET_DIR:-$PWD}"
+    if command -v cygpath > /dev/null; then path=$(cygpath -u "$path"); fi
     [[ -e "$path" ]] || path=/
   fi
 fi

@@ -78,7 +78,8 @@ if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
     export CARGO_TARGET_DIR="$RUST_DIR/target"
   fi
 fi
-[[ "$CARGO_TARGET_DIR" == /* ]] || export CARGO_TARGET_DIR="$PWD/$CARGO_TARGET_DIR"
+# A Windows path (D:\a\…, as .github/actions/pinned-sources exports it) is absolute too.
+[[ "$CARGO_TARGET_DIR" == /* || "$CARGO_TARGET_DIR" =~ ^[A-Za-z]:[\\/] ]] || export CARGO_TARGET_DIR="$PWD/$CARGO_TARGET_DIR"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 
 "$ROOT/scripts/disk-guard.sh"

@@ -66,6 +66,9 @@ codes! {
         /// A lease ended before the hand-off; nothing was sent (dw-ffi
         /// folds it into `send.prepared_tx_spent`).
         Cancelled = "send.cancelled",
+        /// Not sent, but its saved copy could not be removed: its coins stay
+        /// reserved until a restart.
+        HeldUntilRestart = "send.held_until_restart",
     }
 }
 
@@ -93,6 +96,8 @@ codes! {
         InvalidKeyMaterial = "compat.invalid_key_material",
         WatchOnly = "compat.watch_only",
         DestinationUnwritable = "compat.destination_unwritable",
+        WalletTooLarge = "compat.wallet_too_large",
+        ExtraHdAccount = "compat.extra_hd_account",
     }
 }
 
@@ -305,6 +310,7 @@ impl From<SendFailure> for AppError {
                 Some(ErrorData::Reason { reason }),
             ),
             F::Cancelled => (SendCode::Cancelled.into(), None),
+            F::HeldUntilRestart => (SendCode::HeldUntilRestart.into(), None),
         };
         build(message, mapped)
     }
@@ -343,6 +349,8 @@ impl From<CompatFailure> for AppError {
             F::InvalidKeyMaterial(_) => (CompatCode::InvalidKeyMaterial.into(), None),
             F::WatchOnly => (CompatCode::WatchOnly.into(), None),
             F::DestinationUnwritable(_) => (CompatCode::DestinationUnwritable.into(), None),
+            F::WalletTooLarge => (CompatCode::WalletTooLarge.into(), None),
+            F::ExtraHdAccount { .. } => (CompatCode::ExtraHdAccount.into(), None),
         };
         build(message, mapped)
     }
@@ -546,6 +554,7 @@ mod tests {
                 "send.broadcast_unknown",
             ),
             (SendFailure::Cancelled, "send.cancelled"),
+            (SendFailure::HeldUntilRestart, "send.held_until_restart"),
         ];
         assert_eq!(send.len(), SendCode::ALL.len());
         for (f, expected) in send {
@@ -611,6 +620,11 @@ mod tests {
             (
                 CompatFailure::DestinationUnwritable(s()),
                 "compat.destination_unwritable",
+            ),
+            (CompatFailure::WalletTooLarge, "compat.wallet_too_large"),
+            (
+                CompatFailure::ExtraHdAccount { account: 1 },
+                "compat.extra_hd_account",
             ),
         ];
         assert_eq!(compat.len(), CompatCode::ALL.len());
