@@ -1,0 +1,98 @@
+import { mkdirSync } from "node:fs";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { fixtureUrl, fontsReady, type Theme } from "./helpers";
+
+const OUT = `${import.meta.dirname}/../.e2e-cache/o5b-out`;
+test.describe.configure({ timeout: 120_000 });
+
+async function tabTo(page: Page, target: Locator, back = false) {
+  await target.waitFor();
+  for (let i = 0; i <= 80; i++) {
+    if (await target.evaluate((el) => el === document.activeElement)) return;
+    await page.keyboard.press(back ? "Shift+Tab" : "Tab");
+  }
+  throw new Error("never reached");
+}
+
+const frames = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+
+async function shoot(page: Page, name: string) {
+  mkdirSync(OUT, { recursive: true });
+  await frames(page);
+  await page.waitForTimeout(400);
+  await page.mouse.move(1279, 819);
+  await page.screenshot({ path: `${OUT}/${name}.png` });
+  await page.evaluate(() => {
+    const a = document.activeElement;
+    const body = !a || a === document.body;
+    const r = body ? { left: 8, top: 8, width: innerWidth - 16, height: innerHeight - 16 } : a.getBoundingClientRect();
+    const id = body ? "<body>" : (a.getAttribute("data-testid") ?? `${a.tagName.toLowerCase()}${a.getAttribute("role") ? `[role=${a.getAttribute("role")}]` : ""} "${(a.textContent ?? "").trim().slice(0, 40)}"`);
+    const box = document.createElement("div");
+    box.className = "o5b-mark";
+    Object.assign(box.style, { position: "fixed", left: `${r.left - 4}px`, top: `${r.top - 4}px`, width: `${r.width + 8}px`, height: `${r.height + 8}px`, outline: "3px dashed #ff00ff", zIndex: "2147483647", pointerEvents: "none", boxSizing: "border-box" });
+    const label = document.createElement("div");
+    label.className = "o5b-mark";
+    label.textContent = `document.activeElement: ${id}`;
+    const said = document.createElement("div");
+    said.className = "o5b-mark";
+    const bell = document.querySelector('[data-testid="toolbar-bell"]');
+    said.textContent = `bell aria-expanded=${bell?.getAttribute("aria-expanded")} · popover ${document.querySelector('[data-testid="bell-popover"]') ? "open" : "closed"}`;
+    const tag = { background: "#ff00ff", color: "#fff", font: "600 13px/1.2 system-ui, sans-serif", padding: "4px 8px", borderRadius: "3px", zIndex: "2147483647", pointerEvents: "none" };
+    Object.assign(label.style, tag, { position: "fixed", left: `${Math.max(4, r.left - 4)}px`, top: `${body ? 10 : Math.max(4, r.top - 30)}px` });
+    Object.assign(said.style, tag, { position: "fixed", left: "8px", bottom: "8px", maxWidth: `${innerWidth - 32}px` });
+    label.style.whiteSpace = "nowrap";
+    document.body.append(box, label, said);
+    label.style.left = `${Math.max(4, Math.min(r.left - 4, innerWidth - label.offsetWidth - 4))}px`;
+    if (!body && r.top < 40) label.style.top = `${r.top + r.height + 8}px`;
+  });
+  await page.screenshot({ path: `${OUT}/${name}-focus.png` });
+  await page.evaluate(() => document.querySelectorAll(".o5b-mark").forEach((e) => e.remove()));
+}
+
+async function openBell(page: Page, theme: Theme) {
+  await page.goto(fixtureUrl("dashpay-registered", theme));
+  await page.getByTestId("toolbar").waitFor();
+  await fontsReady(page);
+  const bell = page.getByTestId("toolbar-bell");
+  await tabTo(page, bell);
+  await page.keyboard.press("Enter");
+  await expect(bell).toHaveAttribute("aria-expanded", "true");
+  const popover = page.getByTestId("bell-popover");
+  await expect(popover.getByRole("heading", { name: "Notifications" })).toBeFocused();
+  return { bell, popover };
+}
+
+for (const theme of ["light", "dark"] as const) {
+  test(`capture tab-out ${theme}`, async ({ page }) => {
+    const { popover } = await openBell(page, theme);
+    await tabTo(page, popover.getByTestId("bell-see-all"));
+    await shoot(page, `1-see-all-focused-${theme}`);
+    await page.keyboard.press("Tab");
+    await expect(page.getByTestId("toolbar-discreet")).toBeFocused();
+    await page.waitForTimeout(400);
+    await shoot(page, `2-after-tab-${theme}`);
+  });
+
+  test(`capture shift-tab-to-bell ${theme}`, async ({ page }) => {
+    const { bell } = await openBell(page, theme);
+    await page.keyboard.press("Shift+Tab");
+    await expect(bell).toBeFocused();
+    await shoot(page, `3-shift-tab-to-bell-${theme}`);
+  });
+
+  test(`capture ignore-then-tab-out ${theme}`, async ({ page }) => {
+    const { popover } = await openBell(page, theme);
+    const ignore = popover.getByTestId("bell-request").filter({ hasText: "heidi" }).getByTestId("bell-ignore");
+    await tabTo(page, ignore);
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("dashpay_ignore_contact"));
+    await page.keyboard.press("Enter");
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("dashpay_ignore_contact"))).toBe(true);
+    await tabTo(page, popover.getByTestId("bell-see-all"));
+    await page.keyboard.press("Tab");
+    await expect(page.getByTestId("toolbar-discreet")).toBeFocused();
+    await release.evaluate((r) => r());
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "dashpay_ignore_contact").length)).toBe(1);
+    await page.waitForTimeout(600);
+    await shoot(page, `4-ignore-ended-after-tab-out-${theme}`);
+  });
+}
