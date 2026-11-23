@@ -583,6 +583,8 @@ export const masternodes = {
       poseExplain: "It earns nothing until the new operator sends a service update from the node.",
       nothing: "Nothing would change. Choose a new key or a different payout address.",
       ask: "Enter your passphrase to sign this change.",
+      /** Shown in place of Send while this version can't send registrar updates. */
+      held: "You can review this change, but this version can't send it yet. Nothing has been sent.",
       send: "Send change",
       sending: "Sending…",
       sent: "Change sent. It applies once it's in a block.",
