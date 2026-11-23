@@ -1,7 +1,7 @@
 // The CoinJoin page (U-06), after Android's CoinJoin screens: the wallet's mixing state with Start
 // and Stop Mixing, the mixing level (D2), what keeps mixing running (the lock, D5/D6), and dash-qt's
 // panel and advanced view in a collapsed "Session details" (QT-042, D10). The numbers behind the
-// level are on Settings ▸ CoinJoin.
+// level are on Settings ▸ CoinJoin. "How CoinJoin works" is dash-qt's CoinJoin information.
 
 import { useId, useState } from "react";
 import type { CoinJoinStatus } from "../../api/generated/CoinJoinStatus";
@@ -11,6 +11,7 @@ import { MOVE_COPY, moveMixedFor, showsMoveCard } from "../../coinjoin/move";
 import { navigate, useUi } from "../../app/ui";
 import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
+import { Sheet } from "../../components/sheet";
 import { CoinJoinText, LEVELS, levelOf, lockLine, poolMessageText, POOL_STATE_TEXT, settingsFailureText } from "../../coinjoin/model";
 import { useCoinJoinAmount, useCoinJoinSettings, useCoinJoinView, useMaskedAmount, useSaveCoinJoinSettings } from "../../coinjoin/queries";
 import { useT } from "../../i18n";
@@ -31,9 +32,14 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
   const id = useId();
   const { action } = view;
   const lockText = lockLine(lock.data?.state);
+  const [explainer, setExplainer] = useState(false);
   return (
     <Page route="coinJoin" badge={<ExperimentalBadge testId="coinjoin-experimental" />}>
       <p className="coinjoin-subtitle">{CoinJoinText.subtitle}</p>
+      <DashButton variant="plainBlue" className="coinjoin-explainer-link" data-testid="coinjoin-explainer-open" onClick={() => setExplainer(true)}>
+        {t("coinjoin.explainer.link")}
+      </DashButton>
+      {explainer && <CoinJoinExplainer onClose={() => setExplainer(false)} />}
       <section className="coinjoin-status card-l1" data-testid="coinjoin-status" data-state={view.state} aria-labelledby={`${id}-title`}>
         <Icon id="coinjoin" size={56} className="coinjoin-status-icon" />
         <div className="coinjoin-card-body">
@@ -75,6 +81,25 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
         {t("coinjoin.settingsButton")}
       </DashButton>
     </Page>
+  );
+}
+
+/** dash-qt's CoinJoin information (QT-018, QT-153): what mixing does, in a few lines. */
+function CoinJoinExplainer({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  return (
+    <Sheet title={t("coinjoin.explainer.title")} width="small" testId="coinjoin-explainer" onClose={onClose}>
+      <div className="coinjoin-explainer">
+        {(["what", "rounds", "control", "cost", "pay"] as const).map((k) => (
+          <p key={k}>{t(`coinjoin.explainer.${k}`)}</p>
+        ))}
+      </div>
+      <div className="sheet-actions">
+        <DashButton variant="filledBlue" size="large" data-testid="coinjoin-explainer-close" onClick={onClose}>
+          {t("coinjoin.explainer.close")}
+        </DashButton>
+      </div>
+    </Sheet>
   );
 }
 
