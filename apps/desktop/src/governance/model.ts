@@ -467,7 +467,7 @@ export function presetOutcome(nodes: VotingMasternode[]): VoteOutcomeName | null
 /** "2 masternodes · weight 8 · no fee", for the checked eligible rows. */
 export function selectionNote(picked: Pick<NodeRowView, "weight">[]): string {
   const weight = picked.reduce((s, r) => s + r.weight, 0);
-  return t("masternodes.governance.selection", { count: picked.length, weight: String(weight) });
+  return t("masternodes.governance.selection", { count: picked.length, weight });
 }
 
 /** The engine's refusal of a PoSe-banned masternode's vote (`VoteRejection::Banned`, Core's wording). */
@@ -494,14 +494,14 @@ export function voteResult(casts: VoteCast[], nodes: VotingMasternode[], outcome
   const total = casts.reduce((s, c) => s + weightOf(c.proTxHash), 0);
   const sentWeight = sent.reduce((s, c) => s + weightOf(c.proTxHash), 0);
   return {
-    title: t("masternodes.governance.result.title", { sent: String(sent.length), count: casts.length }),
-    line: t("masternodes.governance.result.line", { outcome: outcomeText(outcome), sent: String(sentWeight), total: String(total) }),
+    title: t("masternodes.governance.result.title", { sent: sent.length, count: casts.length }),
+    line: t("masternodes.governance.result.line", { outcome: outcomeText(outcome), sent: sentWeight, total }),
     rows: casts.map((c) => {
       const n = byHash.get(c.proTxHash);
       const name = n ? nodeName(n, names) : t("masternodes.governance.masternodeNamed", { hash: shortHash(c.proTxHash) });
       if (c.rejected !== null) return { proTxHash: c.proTxHash, name, sub: rejectedText(c.rejected), sent: false };
       const peers = c.peers === 0 ? t("masternodes.governance.result.reconnects") : t("masternodes.governance.result.peers", { count: c.peers });
-      return { proTxHash: c.proTxHash, name, sub: t("masternodes.governance.result.sent", { weight: String(weightOf(c.proTxHash)), peers }), sent: true };
+      return { proTxHash: c.proTxHash, name, sub: t("masternodes.governance.result.sent", { weight: weightOf(c.proTxHash), peers }), sent: true };
     }),
   };
 }

@@ -39,7 +39,6 @@ import {
   type SortOrder,
 } from "../../governance/model";
 import { useGovernanceInfo, useGovernanceRefresh, useGovernanceSyncState, useMyProposals, useProposals, useTurnOnGovernance, useVotingByProposal } from "../../governance/queries";
-import { NameText } from "../../governance/names";
 import { useT } from "../../i18n";
 import { MnText } from "../../masternodes/model";
 import { useMasternodeListState } from "../../masternodes/queries";
@@ -62,9 +61,9 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   const backend = useBackend();
   const launch = useLaunch();
   const tabs: Tab<MasternodesTab>[] = [
-    { id: "myMasternodes", title: MnText.tab },
+    { id: "myMasternodes", title: t("masternodes.myMasternodes.tab") },
     { id: "governance", title: t("masternodes.governance.tab") },
-    { id: "names", title: NameText.tab },
+    { id: "names", title: t("masternodes.names.tab") },
   ];
   const saved = useUi((s) => s.prefs.masternodesTab);
   // Shown at once; the setting follows (a failed save keeps the page on the chosen tab this time).
