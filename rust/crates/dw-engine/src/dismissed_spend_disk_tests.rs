@@ -6,7 +6,7 @@
 //! beats the spend. A restart before that conflict's ChainLock is pinned as
 //! it is: the spend stays until the wallet is restored from its phrase.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use dashcore::bls_sig_utils::BLSSignature;
@@ -190,8 +190,12 @@ struct Beaten {
     session: Arc<NetworkSession>,
     id: WalletId,
     change: OutPoint,
+    /// P's change output's value, from P itself.
+    change_value: u64,
     winner: Txid,
     before: u64,
+    /// The wallet's coins before D.
+    coins_before: BTreeMap<OutPoint, u64>,
 }
 
 fn total(engine: &Engine, session: &NetworkSession, id: WalletId) -> u64 {
@@ -201,13 +205,54 @@ fn total(engine: &Engine, session: &NetworkSession, id: WalletId) -> u64 {
         .sum()
 }
 
+/// Whether the wallet store holds `txid`'s record. A read error fails the
+/// test, so it never passes for an absent record.
 fn records(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
     use platform_wallet::changeset::PlatformWalletPersistence;
     let persister = Arc::clone(&session.live().unwrap().persister);
     persister.flush(id.0).unwrap();
     persister
         .get_core_tx_record(id.0, &txid)
-        .is_ok_and(|r| r.is_some())
+        .expect("read the core transaction record")
+        .is_some()
+}
+
+/// The wallet's coins as the wallet store holds them.
+fn stored_coins(session: &NetworkSession, id: WalletId) -> BTreeSet<OutPoint> {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let store = Arc::clone(&session.live().unwrap().store);
+    let stored = store.load().unwrap();
+    (stored.wallets.get(&id.0).into_iter())
+        .flat_map(|w| w.wallet_info.accounts.all_funding_accounts())
+        .flat_map(|a| a.utxos.keys().copied().collect::<Vec<_>>())
+        .collect()
+}
+
+/// Waits for the wallet store to hold the wallet's sync height at `height`
+/// or above. The store takes the wallet's events in the order they were
+/// emitted, and a block's events end with its sync height, so every event
+/// before it is in the store too.
+fn wait_synced(session: &NetworkSession, id: WalletId, height: u32) {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let store = Arc::clone(&session.live().unwrap().store);
+    super::own_spend_disk_tests::eventually("the store reaches the block's height", || {
+        (store.load().unwrap().wallets.get(&id.0))
+            .is_some_and(|w| w.wallet_info.metadata.synced_height >= height)
+    });
+}
+
+/// The wallet's sync height as key-wallet holds it.
+fn synced_height(engine: &Engine, session: &NetworkSession, id: WalletId) -> u32 {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        wm.get_wallet_info(&id.0)
+            .unwrap()
+            .core_wallet
+            .synced_height()
+    })
 }
 
 fn beaten_spend(fetched_by_wallet: bool, lock: Lock) -> Beaten {
@@ -229,6 +274,8 @@ fn beaten_spend(fetched_by_wallet: bool, lock: Lock) -> Beaten {
     );
     wait_stored(&session, id, &[payment.txid(), child.txid()]);
     let before = total(&engine, &session, id);
+    let coins_before: BTreeMap<OutPoint, u64> = coins(&engine, &session, id).into_iter().collect();
+    let change_value = payment.output[change.vout as usize].value;
 
     let mut outputs = vec![(elsewhere(), 500_000)];
     let fetched_for = if fetched_by_wallet {
@@ -270,14 +317,23 @@ fn beaten_spend(fetched_by_wallet: bool, lock: Lock) -> Beaten {
             }
         })
     });
+    wait_synced(&session, id, height);
+    if lock != Lock::Never {
+        // The sweep that gives the change back is the last event.
+        super::own_spend_disk_tests::eventually("the store holds the change again", || {
+            stored_coins(&session, id).contains(&change)
+        });
+    }
     Beaten {
         _dir,
         engine,
         session,
         id,
         change,
+        change_value,
         winner: winner_txid,
         before,
+        coins_before,
     }
 }
 
@@ -342,26 +398,25 @@ fn a_chain_locked_conflict_another_wallet_fetches_gives_back_only_the_abandoned_
         session,
         id,
         change,
+        change_value,
         winner,
-        before,
+        coins_before,
+        ..
     } = beaten_spend(false, lock);
-    let value = coins(&engine, &session, id)
-        .into_iter()
-        .find(|(coin, _)| *coin == change)
-        .expect("D beat C")
-        .1;
-    assert_eq!(total(&engine, &session, id), before + value);
-    assert!(spendable(&engine, &session, id, change));
-    assert!(!records(&session, id, winner), "D is not the wallet's");
-
-    let session = reopen(&engine, session);
+    let mut expected = coins_before;
     assert!(
-        held(&engine, &session, id).contains(&change),
-        "after a restart"
+        expected.insert(change, change_value).is_none(),
+        "C spent the change"
     );
-    assert_eq!(total(&engine, &session, id), before + value);
-    assert!(spendable(&engine, &session, id, change));
-    assert!(!records(&session, id, winner));
+    let after = |session: &Arc<NetworkSession>| {
+        let held: BTreeMap<OutPoint, u64> = coins(&engine, session, id).into_iter().collect();
+        assert_eq!(held, expected, "D beat C: only P's change comes back");
+        assert!(spendable(&engine, session, id, change));
+        assert!(!records(session, id, winner), "D is not the wallet's");
+    };
+    after(&session);
+    let session = reopen(&engine, session);
+    after(&session);
 }
 
 /// A plain block never overturns an InstantSend lock: with D fetched by
@@ -377,6 +432,7 @@ fn a_conflict_another_wallet_fetches_without_a_chain_lock_leaves_the_change_spen
         change,
         winner,
         before,
+        ..
     } = beaten_spend(false, Lock::Never);
     assert!(!held(&engine, &session, id).contains(&change));
     assert_eq!(total(&engine, &session, id), before);
@@ -566,6 +622,9 @@ fn block_for(
 ) {
     let ids: BTreeSet<[u8; 32]> = fetched_for.iter().map(|id| id.0).collect();
     let all: Vec<[u8; 32]> = wallets.iter().map(|id| id.0).collect();
+    let advancing: Vec<WalletId> = (wallets.iter().copied())
+        .filter(|id| synced_height(engine, session, *id) < height)
+        .collect();
     deliver_all(engine, session, wallets, move |wm| {
         Box::pin(async move {
             let block = block_with(txs);
@@ -576,6 +635,9 @@ fn block_for(
             }
         })
     });
+    for id in advancing {
+        wait_synced(session, id, height);
+    }
 }
 
 fn remove(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) {
