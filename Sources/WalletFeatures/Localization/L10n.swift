@@ -11,7 +11,8 @@ extension L10n {
         public static let notAvailableYet = "This feature is not available yet."
         public static let networkNotOpen = "The wallet is not open yet. Please wait and try again."
         public static let walletNotFound = "The selected wallet could not be found."
-        public static let storage = "The wallet data could not be read or written."
+        public static let storage =
+            "Dash Wallet could not read or write its data folder. Check that the disk has free space, then try again or restart Dash Wallet."
         public static let unexpected = "An unexpected error occurred."
         public static let noWallet = "No wallet loaded."
         public static let wrongPassphrase = "The passphrase entered for the wallet decryption was incorrect."

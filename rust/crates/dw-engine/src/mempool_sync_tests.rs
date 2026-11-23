@@ -19,8 +19,12 @@ use crate::history::{HistoryFilter, HistoryQuery, HistorySort, TxStatusKind};
 use crate::session::NetworkSession;
 use crate::{DashNetwork, Engine, WalletBalances, WalletId};
 
+#[path = "crash_send_tests.rs"]
+mod crash_send_tests;
 #[path = "dismissed_spend_disk_tests.rs"]
 mod dismissed_spend_disk_tests;
+#[path = "h03_kill9_core_tests.rs"]
+mod h03_kill9_core_tests;
 #[path = "own_spend_balance_tests.rs"]
 mod own_spend_balance_tests;
 #[path = "own_spend_disk_tests.rs"]
@@ -128,8 +132,10 @@ fn engine_wallet() -> (tempfile::TempDir, Engine, Arc<NetworkSession>, WalletId)
 }
 
 /// Closes the network and opens it again: the wallet comes back from its
-/// store.
+/// store. What holds the load fence (a wallet load, the shielded start) can
+/// outlast the close's 30 s wait on a loaded machine.
 fn reopen(engine: &Engine, session: Arc<NetworkSession>) -> Arc<NetworkSession> {
+    *session.close_load_wait.lock().unwrap() = Some(std::time::Duration::from_secs(180));
     drop(session);
     assert!(
         engine

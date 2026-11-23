@@ -596,6 +596,7 @@ public final class SendViewModel {
     /// `io`; review L5).
     public static let definiteBroadcastFailures: Set<ServiceErrorCode> = [
         .sendBroadcastRejected, .sendPreparedTxSpent, .sendNoPeers, .sendCancelled, .sendPreparedTxUnknown,
+        .sendHeldUntilRestart,
         .networkNotOpen, .walletNotFound, .invalidArgument, .notImplemented, .wallet, .storage, .spv, .io,
     ]
 
@@ -765,7 +766,7 @@ public final class SendViewModel {
                 self.prepared = nil
             }
             let txid = prepared.summary.txid
-            if isRetry {
+            if isRetry, error.code != .sendHeldUntilRestart {
                 // The first attempt may still have reached a peer.
                 phase = .broadcastUnknown(txid: txid, failure: failure)
             } else if Self.definiteBroadcastFailures.contains(error.code) {
@@ -900,6 +901,7 @@ public final class SendViewModel {
         case .sendPreparedTxSpent: message = L10n.Send.preparedTxSpent
         case .sendNoPeers: message = L10n.Send.noPeers
         case .sendCancelled: message = L10n.Send.cancelled
+        case .sendHeldUntilRestart: message = L10n.Send.heldUntilRestart
         case EngineCode.sendInsufficientMixedFunds: message = L10n.Send.insufficientMixedFunds
         case EngineCode.sendOutpointUnavailable: message = L10n.Send.preselectedCoinsInsufficient
         case EngineCode.sendTxTooLarge: message = L10n.Send.txTooLarge

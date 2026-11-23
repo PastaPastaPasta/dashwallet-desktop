@@ -30,6 +30,32 @@ die() {
 }
 sha() { sha256sum < "$1" | cut -d' ' -f1; }
 
+# The Suites of a deb822 sources file's enabled stanzas, read as libapt reads them: CRLF line ends,
+# field names in any case, comments skipped, folded values joined (a line of only spaces continues the
+# field), spaces before a field's colon, stanzas split by empty lines only, and a stanza left out
+# when its Enabled value is false.
+suites_of() {
+  awk '
+    function flush(  n, i, w) {
+      gsub(/^[ \t]+|[ \t]+$/, "", enabled)
+      if (tolower(enabled) !~ /^(no|false|without|off|disable|0)$/) {
+        n = split(suites, w, /[ \t]+/); for (i = 1; i <= n; i++) if (w[i] != "") print w[i]
+      }
+      suites = ""; enabled = ""; field = ""
+    }
+    { sub(/\r$/, "") }
+    /^#/ { next }
+    /^$/ { flush(); next }
+    /^[ \t]/ { if (field == "suites") suites = suites " " $0; else if (field == "enabled") enabled = enabled $0; next }
+    {
+      i = index($0, ":"); field = tolower(substr($0, 1, i - 1)); sub(/[ \t]+$/, "", field); value = substr($0, i + 1)
+      if (field == "suites") suites = value
+      if (field == "enabled") enabled = value
+    }
+    END { flush() }
+  ' "$1"
+}
+
 verify() {
   local dir=$1 rel name prefix signed pk rest path want n_rel=0 n_pk=0 n_deb=0 deb codename suite suites
   local -A listed=()
@@ -41,7 +67,7 @@ verify() {
   # shellcheck source=/dev/null
   codename=$(. /etc/os-release && echo "${VERSION_CODENAME:?}")
   [[ -r "$sources" ]] || die "no $sources to read the image's pockets from"
-  suites=$(awk '/^Suites:/ { for (i = 2; i <= NF; i++) print $i }' "$sources")
+  suites=$(suites_of "$sources")
   [[ -n "$suites" ]] || die "$sources lists no Suites"
   for rel in "$dir"/lists/*_InRelease; do
     name=${rel##*/}
@@ -111,5 +137,6 @@ save() {
 
 case "${1:-}" in
   save | verify) "$1" "${2:?usage: $0 save|verify DIR}" ;;
+  suites) suites_of "${2:?usage: $0 suites SOURCES}" ;;
   *) echo "usage: $0 save|verify DIR" >&2; exit 2 ;;
 esac
