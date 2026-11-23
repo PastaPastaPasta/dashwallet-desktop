@@ -2311,8 +2311,19 @@ impl Drop for PreparedTx {
 }
 
 impl TxDraft {
-    /// Drops `prepared`'s sent mark; whether it went (a failure is logged).
+    /// Drops `prepared`'s sent mark; whether it went (a failure is logged),
+    /// or stays on purpose: a load claimed its coins from it.
     async fn drop_mark(&self, prepared: &PreparedTx) -> bool {
+        // A load this session claimed the payment's coins from its marks:
+        // they're all that holds those coins, so they stay, and the payment
+        // stays pending (Abandon frees the coins after a restart).
+        let claimed = (prepared.summary.txid.parse::<dashcore::Txid>()).is_ok_and(|t| {
+            (self.session.hub.history)
+                .read_wallet(&self.wallet_id, |h| h.claimed_at_load.contains(&t))
+        });
+        if claimed {
+            return true;
+        }
         let dropped = self.mark_sent(prepared, false).await;
         if let Err(e) = &dropped {
             tracing::warn!(error = %e, "could not drop a payment's sent mark: it stays held as maybe sent");
