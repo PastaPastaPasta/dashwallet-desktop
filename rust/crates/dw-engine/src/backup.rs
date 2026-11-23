@@ -701,6 +701,8 @@ impl NetworkSession {
                 self.roll_back_restore(&held, &done).await;
                 return Err(e);
             }
+            #[cfg(test)]
+            crate::coins::pause_at(&self.backups.pause_restore).await;
         }
         // The commit, stamped before the marks clear: a readmission their
         // clearing sends covers it (review r4 M4-R4).
@@ -956,6 +958,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            let _policy = this.backups.policy.lock().await;
             let appdb = this.live()?.appdb;
             let dir = this.backup_directory();
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
@@ -1019,23 +1022,36 @@ impl NetworkSession {
     /// `Notice{BackupFailed}`; a missing data key skips quietly (dash-qt
     /// backs up when the wallet loads; here the key may not be there yet),
     /// and so does a backup of the same minute that is already written.
-    pub(crate) async fn automatic_backup(self: &Arc<Self>, id: WalletId) {
+    /// With `keep` 0 it only deletes the wallet's record. Runs under the
+    /// wallet lifecycle lock (a wallet removed or a restore rolled back is
+    /// not backed up) and the policy lock (`set_backup_policy` waits for
+    /// it). The caller must not hold the lifecycle lock.
+    pub(crate) async fn automatic_backup(self: &Arc<Self>, id: WalletId) -> AutomaticRun {
+        let _lifecycle = self.wallet_lifecycle.hold().await;
+        let _policy = self.backups.policy.lock().await;
+        if self.require_wallet(&id).is_err() || !self.vault.has_wallet_secret(&id.0) {
+            return AutomaticRun::Done;
+        }
         let keep = match self.backup_keep() {
-            Ok(0) | Err(_) => return,
+            Ok(0) => {
+                if self.automatic_backup_failed(id).await {
+                    self.record_automatic_outcome(id, None).await;
+                }
+                return AutomaticRun::Done;
+            }
+            Err(_) => return AutomaticRun::Done,
             Ok(k) => k,
         };
-        if !self.vault.has_wallet_secret(&id.0)
-            || !matches!(
-                self.vault.lock_state(),
-                LockState::Unlocked | LockState::Unencrypted
-            )
-        {
-            return;
+        if !matches!(
+            self.vault.lock_state(),
+            LockState::Unlocked | LockState::Unencrypted
+        ) {
+            return AutomaticRun::Locked;
         }
         let dir = self.backup_directory();
         let path = dir.join(automatic_name(&id, unix_now()));
         if path.exists() {
-            return;
+            return AutomaticRun::Done;
         }
         #[cfg(test)]
         crate::coins::pause_at(&self.backups.pause).await;
@@ -1057,36 +1073,42 @@ impl NetworkSession {
             .await?
         }
         .await;
-        let failed_at = match &result {
-            Ok(false) => return,
-            Ok(true) => None,
-            Err(EngineError::Backup(BackupFailure::VaultLocked)) => return,
-            Err(_) => Some(unix_now().to_string()),
-        };
-        if let Ok(live) = self.live() {
-            let scope = dw_appdb::local_scope(&id.to_string());
-            let recorded = tokio::task::spawn_blocking(move || {
-                live.appdb
-                    .set_setting(&scope, AUTO_FAILED_SETTING, failed_at.as_deref())
-            })
-            .await;
-            if !matches!(recorded, Ok(Ok(()))) {
-                tracing::warn!(wallet_id = %id, "could not record the automatic backup's outcome");
-            }
-        }
         match result {
-            Ok(_) => self.sink.emit(EngineEvent::Backups {
-                network: self.network.clone(),
-            }),
-            Err(EngineError::Backup(BackupFailure::VaultLocked)) => {}
+            Ok(false) => AutomaticRun::Done,
+            Ok(true) => {
+                self.record_automatic_outcome(id, None).await;
+                self.sink.emit(EngineEvent::Backups {
+                    network: self.network.clone(),
+                });
+                AutomaticRun::Done
+            }
+            Err(EngineError::Backup(BackupFailure::VaultLocked)) => AutomaticRun::Locked,
             Err(e) => {
+                self.record_automatic_outcome(id, Some(unix_now().to_string()))
+                    .await;
                 tracing::warn!(wallet_id = %id, error = %e, "automatic backup failed");
                 self.sink.emit(EngineEvent::Notice {
                     network: Some(self.network.clone()),
                     code: NoticeCode::BackupFailed,
                     detail: format!("wallet {id}: {e}"),
                 });
+                AutomaticRun::Done
             }
+        }
+    }
+
+    /// Records when the latest automatic backup of `id` failed, or deletes
+    /// the record for `None`.
+    async fn record_automatic_outcome(&self, id: WalletId, failed_at: Option<String>) {
+        let Ok(live) = self.live() else { return };
+        let scope = dw_appdb::local_scope(&id.to_string());
+        let recorded = tokio::task::spawn_blocking(move || {
+            live.appdb
+                .set_setting(&scope, AUTO_FAILED_SETTING, failed_at.as_deref())
+        })
+        .await;
+        if !matches!(recorded, Ok(Ok(()))) {
+            tracing::warn!(wallet_id = %id, "could not record the automatic backup's outcome");
         }
     }
 
@@ -1102,7 +1124,8 @@ impl NetworkSession {
     /// Starts an automatic backup of every wallet in the background, once
     /// per session: at open (dash-qt backs a wallet up when it loads,
     /// QT-116), or while an encrypted vault is locked then, at its first
-    /// unlock.
+    /// unlock. A wallet that finds the vault locked again ends the run, and
+    /// the next unlock starts it over.
     pub(crate) fn back_up_every_wallet_once(self: &Arc<Self>) {
         if !matches!(
             self.vault.lock_state(),
@@ -1115,13 +1138,36 @@ impl NetworkSession {
         self.backups.runs.fetch_add(1, Ordering::SeqCst);
         let this = Arc::clone(self);
         self.rt.spawn(async move {
-            let Ok(_op) = this.enter().await else { return };
             let Ok(manager) = this.manager() else { return };
             for id in manager.list_wallet_ids_blocking() {
-                this.automatic_backup(WalletId(id)).await;
+                let Ok(_op) = this.enter().await else { return };
+                if this.automatic_backup(WalletId(id)).await == AutomaticRun::Locked {
+                    this.backups.started.store(false, Ordering::SeqCst);
+                    break;
+                }
             }
+            #[cfg(test)]
+            this.backups.runs_done.fetch_add(1, Ordering::SeqCst);
         });
     }
+
+    /// After a call that changed the vault's credential (encrypt, recover,
+    /// passphrase change): the backups made this session are sealed under
+    /// the credential it replaced, so every wallet is backed up again, now
+    /// or at the next unlock.
+    pub(crate) fn back_up_after_credential_change(self: &Arc<Self>) {
+        self.backups.started.store(false, Ordering::SeqCst);
+        self.back_up_every_wallet_once();
+    }
+}
+
+/// What [`NetworkSession::automatic_backup`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutomaticRun {
+    /// Written, failed, or skipped for a reason an unlock does not change.
+    Done,
+    /// Skipped: the data key is not available.
+    Locked,
 }
 
 /// The session's automatic backup state.
@@ -1129,12 +1175,19 @@ impl NetworkSession {
 pub(crate) struct BackupRuntime {
     /// [`NetworkSession::back_up_every_wallet_once`] ran.
     started: AtomicBool,
-    /// Tests: how often it ran.
+    /// Orders `set_backup_policy` with each automatic backup.
+    policy: tokio::sync::Mutex<()>,
+    /// Tests: how often it ran, and how often its run ended.
     #[cfg(test)]
     pub(crate) runs: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) runs_done: std::sync::atomic::AtomicUsize,
     /// Tests: holds the next automatic backup after its same-minute check.
     #[cfg(test)]
     pub(crate) pause: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next restore after each wallet it registered.
+    #[cfg(test)]
+    pub(crate) pause_restore: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 fn list_automatic(dir: &Path, wallet: Option<WalletId>) -> Result<Vec<BackupInfo>, EngineError> {
@@ -1368,7 +1421,7 @@ mod tests {
                 let s = Arc::clone(&session);
                 let dest = out.join(format!("{n}.dwbackup"));
                 tasks.push(tokio::spawn(async move {
-                    let (user, ()) =
+                    let (user, _) =
                         tokio::join!(s.backup_wallet(id, dest, None), s.automatic_backup(id));
                     user
                 }));

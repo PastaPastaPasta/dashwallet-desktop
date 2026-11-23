@@ -484,7 +484,9 @@ impl NetworkSession {
             this.ensure_background().await;
             out
         });
-        task.await??.map_err(EngineError::from)
+        let out = task.await??.map_err(EngineError::from)?;
+        self.back_up_after_credential_change();
+        Ok(out)
     }
 
     /// One wallet's revocation (§8.6: removal, "Close Wallet"): its leases
