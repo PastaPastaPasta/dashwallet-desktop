@@ -3,7 +3,8 @@
 //! locked spend is passed to the wallet again, as dash-spv's mempool manager
 //! does, so the wallet records it: the change stays spent across a restart,
 //! and comes back, at once and after a restart, when a ChainLocked conflict
-//! beats the spend.
+//! beats the spend. A restart before that conflict's ChainLock is pinned as
+//! it is: the spend stays until the wallet is restored from its phrase.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -551,4 +552,267 @@ fn known_gap_a_coin_another_device_spent_shows_again_when_the_abandoned_payment_
         !held(&engine, &session, id).contains(&b),
         "E is in a block, after a restart"
     );
+}
+
+/// Runs `op` on the session's wallet manager, then hands the hub the
+/// events it emitted and waits for the store of every wallet in `wallets`.
+fn deliver_all<F>(engine: &Engine, session: &NetworkSession, wallets: &[WalletId], op: F)
+where
+    F: for<'a> FnOnce(
+            &'a mut platform_wallet::key_wallet_manager::WalletManager<
+                platform_wallet::PlatformWalletInfo,
+            >,
+        ) -> futures_util::future::BoxFuture<'a, ()>
+        + Send
+        + 'static,
+{
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    deliver(engine, session, wallets[0], op);
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    for id in wallets {
+        persister.flush(id.0).unwrap();
+    }
+}
+
+fn block_for(
+    engine: &Engine,
+    session: &NetworkSession,
+    wallets: &[WalletId],
+    fetched_for: &[WalletId],
+    height: u32,
+    txs: Vec<Transaction>,
+) {
+    let ids: BTreeSet<[u8; 32]> = fetched_for.iter().map(|id| id.0).collect();
+    let all: Vec<[u8; 32]> = wallets.iter().map(|id| id.0).collect();
+    deliver_all(engine, session, wallets, move |wm| {
+        Box::pin(async move {
+            let block = block_with(txs);
+            wm.process_block_for_wallets(&block, block.block_hash(), height, &ids)
+                .await;
+            for id in &all {
+                wm.update_wallet_synced_height(id, height);
+            }
+        })
+    });
+}
+
+fn start_offline_spv(engine: &Engine, session: &Arc<NetworkSession>) {
+    engine.block_on(session.start_spv()).unwrap();
+    super::own_spend_disk_tests::eventually("SPV runs", || {
+        session.spv_state().unwrap() == crate::SpvState::Running
+    });
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Restart {
+    AfterTheBlock,
+    BeforeTheBlock,
+}
+
+/// Dash Wallet restarts after C, locked, spends P's change and the other
+/// wallet's X, and before D's block and its ChainLock are both processed.
+/// The wallet store keeps no unconfirmed record in memory across a restart,
+/// so nothing can overturn C: Reset chain data and Rescan from the wallet's
+/// birth replay D's block under its ChainLock, and C stays, with P's change
+/// spent. Removing the wallet and restoring it from its recovery phrase
+/// releases the change once P is found again, at once and after a restart.
+/// The other wallet keeps C until it is restored too.
+fn restart_before_the_conflicts_chain_lock(restart: Restart) {
+    use crate::ImportOptions;
+    let (_dir, engine, session, id) = engine_wallet();
+    let other = engine
+        .block_on(session.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    let both = [id, other];
+    let to: Vec<Address> = (0..COINS)
+        .map(|_| fresh_address(&engine, &session, id))
+        .collect();
+    let funded = funding(7, &to, COIN);
+    let to_other = fresh_address(&engine, &session, other);
+    let funded_other = funding(8, &[to_other], COIN);
+    let x = OutPoint::new(funded_other.txid(), 0);
+    let funding_block = vec![funded.clone(), funded_other.clone()];
+    block_for(
+        &engine,
+        &session,
+        &both,
+        &both,
+        FUNDED_AT,
+        funding_block.clone(),
+    );
+    block_for(&engine, &session, &both, &[], TIP, vec![foreign()]);
+    let payment = send(&engine, &session, id, CoinSource::Any, COIN / 4, false);
+    mempool(&engine, &session, id, &payment);
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    abandon(&engine, &session, id, payment.txid());
+    let session = reopen(&engine, session);
+    let owner = Address::from_script(
+        &payment.output[change.vout as usize].script_pubkey,
+        dashcore::Network::Regtest,
+    )
+    .unwrap();
+    let mut child = super::spend_of(
+        change,
+        vec![(
+            elsewhere(),
+            payment.output[change.vout as usize].value - 1_000,
+        )],
+    );
+    child.input.push(TxIn {
+        previous_output: x,
+        ..Default::default()
+    });
+    let child = super::signed_by_wallet(&engine, &session, id, &owner, child);
+    let (back, spend) = (payment.clone(), child.clone());
+    deliver_all(&engine, &session, &both, move |wm| {
+        Box::pin(async move {
+            wm.process_mempool_transaction(&spend, Some(lock_for(&spend)))
+                .await;
+            wm.process_mempool_transaction(&back, Some(lock_for(&back)))
+                .await;
+            wm.process_mempool_transaction(&spend, Some(lock_for(&spend)))
+                .await;
+        })
+    });
+    wait_stored(&session, id, &[payment.txid(), child.txid()]);
+
+    let winner = super::spend_of(x, vec![(elsewhere(), COIN - 1_000)]);
+    let height = TIP + 2;
+    let chain_lock = ChainLock {
+        block_height: height,
+        block_hash: block_with(vec![winner.clone()]).block_hash(),
+        signature: BLSSignature::from([0; 96]),
+    };
+    let lock = |session: &NetworkSession| {
+        let chain_lock = chain_lock.clone();
+        deliver_all(&engine, session, &both, move |wm| {
+            Box::pin(async move {
+                wm.apply_chain_lock(chain_lock);
+            })
+        });
+    };
+    let replay_d = |session: &NetworkSession, wallets: &[WalletId]| {
+        block_for(
+            &engine,
+            session,
+            wallets,
+            &[other],
+            height,
+            vec![winner.clone()],
+        );
+    };
+    let session = if restart == Restart::AfterTheBlock {
+        replay_d(&session, &both);
+        let session = reopen(&engine, session);
+        lock(&session);
+        session
+    } else {
+        let session = reopen(&engine, session);
+        lock(&session);
+        replay_d(&session, &both);
+        session
+    };
+    let overturned_stays = |session: &Arc<NetworkSession>| {
+        assert!(!held(&engine, session, id).contains(&change), "C spends it");
+        assert!(records(session, id, child.txid()), "C stays");
+        assert!(records(session, other, child.txid()));
+        assert!(!held(&engine, session, other).contains(&x), "D spends X");
+    };
+    overturned_stays(&session);
+
+    let replay = |session: &NetworkSession| {
+        block_for(
+            &engine,
+            session,
+            &both,
+            &both,
+            FUNDED_AT,
+            funding_block.clone(),
+        );
+        block_for(&engine, session, &both, &[], TIP, vec![foreign()]);
+        replay_d(session, &both);
+    };
+    engine.block_on(session.reset_chain_data()).unwrap();
+    replay(&session);
+    overturned_stays(&session);
+    let session = reopen(&engine, session);
+    overturned_stays(&session);
+
+    start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    replay(&session);
+    overturned_stays(&session);
+    let session = reopen(&engine, session);
+    overturned_stays(&session);
+
+    let wipe = (session.vault())
+        .authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&id.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    engine.block_on(session.remove_wallet(id, wipe)).unwrap();
+    let session = reopen(&engine, session);
+    let id = engine
+        .block_on(session.import_wallet(
+            zeroize::Zeroizing::new(super::PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(super::BIRTH),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let both = [id, other];
+    block_for(&engine, &session, &both, &[id], FUNDED_AT, funding_block);
+    block_for(&engine, &session, &both, &[], TIP, vec![foreign()]);
+    replay_d(&session, &both);
+    assert!(
+        !records(&session, id, child.txid()),
+        "the restored wallet never saw C"
+    );
+    assert!(
+        !held(&engine, &session, id).contains(&change),
+        "P is not found yet"
+    );
+
+    let back = payment.clone();
+    deliver_all(&engine, &session, &both, move |wm| {
+        Box::pin(async move {
+            wm.process_mempool_transaction(&back, Some(lock_for(&back)))
+                .await;
+        })
+    });
+    wait_stored(&session, id, &[payment.txid()]);
+    let spent_by_p: Vec<OutPoint> = payment.input.iter().map(|i| i.previous_output).collect();
+    let released = |session: &Arc<NetworkSession>| {
+        let coins = held(&engine, session, id);
+        assert!(coins.contains(&change), "P's change is back");
+        assert!(spendable(&engine, session, id, change));
+        assert!(spent_by_p.iter().all(|coin| !coins.contains(coin)));
+        assert!(!records(session, id, child.txid()));
+        assert!(
+            records(session, other, child.txid()),
+            "until it is restored too"
+        );
+    };
+    released(&session);
+    let session = reopen(&engine, session);
+    released(&session);
+}
+
+#[test]
+fn a_restart_after_a_conflicts_block_keeps_the_overturned_spend_through_a_rescan_until_a_restore() {
+    restart_before_the_conflicts_chain_lock(Restart::AfterTheBlock);
+}
+
+#[test]
+fn a_restart_before_a_conflicts_block_keeps_the_overturned_spend_through_a_rescan_until_a_restore()
+{
+    restart_before_the_conflicts_chain_lock(Restart::BeforeTheBlock);
 }
