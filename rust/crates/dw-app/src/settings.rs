@@ -44,13 +44,10 @@ pub struct UiSettings {
     pub auto_lock_secs: Option<u32>,
     /// A new payment starts with "Subtract fee from amount" checked (QT-137).
     pub subtract_fee_by_default: bool,
-    /// Settings ▸ General ▸ Show Masternodes (MG-10 §3.6, Q5): the
-    /// Masternodes sidebar item and route always (`on`), never (`off`), or
-    /// while the wallet has something there (`auto`). A file from before
-    /// this setting migrates its `showMasternodes`: `true` is `on`, anything
-    /// else `auto` (`from_file`).
-    #[serde(deserialize_with = "MasternodesItem::lenient")]
-    pub masternodes_item: MasternodesItem,
+    /// Settings ▸ General ▸ Show Masternodes: the Masternodes sidebar item and
+    /// route (Governance, Username voting) are hidden until it is on (MG-00
+    /// D1, D2; the 0.1 release plan).
+    pub show_masternodes: bool,
     /// The Masternodes page's open tab (MG-10 D1); a tab this build doesn't
     /// know opens the default.
     #[serde(deserialize_with = "MasternodesTab::lenient")]
@@ -76,7 +73,7 @@ impl Default for UiSettings {
             autohide_balance: false,
             auto_lock_secs: None,
             subtract_fee_by_default: false,
-            masternodes_item: MasternodesItem::Auto,
+            show_masternodes: false,
             masternodes_tab: MasternodesTab::MyMasternodes,
             pre_release_notice_dismissed: false,
             language: None,
@@ -115,28 +112,6 @@ fn is_language_tag(tag: &str) -> bool {
     }
     !open_singleton
 }
-
-impl MasternodesItem {
-    fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let value = serde_json::Value::deserialize(d)?;
-        Ok(Self::deserialize(value).unwrap_or_default())
-    }
-}
-
-/// When the sidebar shows the Masternodes item (MG-10 §3.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub enum MasternodesItem {
-    On,
-    /// While the wallet has a masternode of its own or tracked, a
-    /// collateral-shaped coin, or registration work not settled.
-    #[default]
-    Auto,
-    Off,
-}
-
-/// The pre-MG-10 S2 setting `masternodesItem` replaces.
-const OLD_SHOW_MASTERNODES: &str = "showMasternodes";
 
 impl MasternodesTab {
     fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -226,15 +201,9 @@ pub fn read(root: &Path) -> UiSettings {
 /// raw text, so a `language` of any shape or depth is set aside unparsed.
 /// IPC writes deserialize `UiSettings` directly and stay strict.
 fn from_file(text: &str) -> serde_json::Result<UiSettings> {
-    let Ok(mut fields) = serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(text) else {
+    let Ok(mut fields) = serde_json::from_str::<BTreeMap<String, &RawValue>>(text) else {
         return serde_json::from_str(text);
     };
-    let show = fields.remove(OLD_SHOW_MASTERNODES);
-    if !fields.contains_key("masternodesItem")
-        && show.is_some_and(|raw| serde_json::from_str::<bool>(raw.get()).ok() == Some(true))
-    {
-        fields.insert("masternodesItem".into(), RawValue::from_string(r#""on""#.into())?);
-    }
     let language = fields
         .remove("language")
         .and_then(|raw| serde_json::from_str::<Option<String>>(raw.get()).ok())
@@ -279,7 +248,7 @@ mod tests {
             autohide_balance: true,
             auto_lock_secs: Some(300),
             subtract_fee_by_default: true,
-            masternodes_item: MasternodesItem::Off,
+            show_masternodes: true,
             masternodes_tab: MasternodesTab::Names,
             pre_release_notice_dismissed: true,
             language: Some("pt-BR".into()),
@@ -308,39 +277,8 @@ mod tests {
             std::fs::write(path(dir.path()), file).unwrap();
             let s = read(dir.path());
             assert_eq!(s.masternodes_tab, MasternodesTab::MyMasternodes);
-            assert_eq!(s.masternodes_item, MasternodesItem::On);
+            assert!(s.show_masternodes);
         }
-    }
-
-    #[test]
-    fn show_masternodes_migrates_to_the_three_way_item() {
-        let dir = root();
-        for (file, want) in [
-            (r#"{"showMasternodes":true}"#, MasternodesItem::On),
-            (r#"{"showMasternodes":false}"#, MasternodesItem::Auto),
-            (r#"{"showMasternodes":"yes"}"#, MasternodesItem::Auto),
-            (r#"{"unit":"duffs"}"#, MasternodesItem::Auto),
-            (
-                r#"{"showMasternodes":true,"masternodesItem":"off"}"#,
-                MasternodesItem::Off,
-            ),
-            (
-                r#"{"showMasternodes":false,"masternodesItem":"on"}"#,
-                MasternodesItem::On,
-            ),
-            (r#"{"masternodesItem":"sometimes"}"#, MasternodesItem::Auto),
-        ] {
-            std::fs::write(path(dir.path()), file).unwrap();
-            assert_eq!(read(dir.path()).masternodes_item, want, "{file}");
-        }
-        let s = UiSettings {
-            masternodes_item: MasternodesItem::Off,
-            ..Default::default()
-        };
-        write(dir.path(), &s).unwrap();
-        let text = std::fs::read_to_string(path(dir.path())).unwrap();
-        assert!(!text.contains(OLD_SHOW_MASTERNODES));
-        assert_eq!(read(dir.path()).masternodes_item, MasternodesItem::Off);
     }
 
     #[test]

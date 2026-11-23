@@ -43,7 +43,7 @@ import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinj
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
-import { emptyMasternodesWorld, masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -255,7 +255,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
-    masternodes: emptyMasternodesWorld(),
+    masternodes: newMasternodesWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
     pending: newPendingWorld(),
@@ -1483,7 +1483,7 @@ const SCENARIOS = {
   // CoinJoin (U-06): coinjoin.ts.
   ...coinjoinScenarios(base),
   // Governance (MG-09): governance.ts.
-  ...governanceScenarios((t) => ({ ...base(t), masternodes: newMasternodesWorld() })),
+  ...governanceScenarios(base),
   // My masternodes (MG-10): masternodes.ts.
   ...masternodesScenarios(base),
   // Prices in fiat (MP-01): rates.ts.
