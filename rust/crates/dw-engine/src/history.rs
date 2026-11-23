@@ -511,6 +511,9 @@ pub(crate) struct WalletHistory {
     /// but whose sent marks could not be dropped (`Held`): in memory only,
     /// like the hold itself.
     pub held_here: HashSet<Txid>,
+    /// Payments whose spend claims a load restored this session, from their
+    /// sent marks: their marks may be all that holds those coins.
+    pub claimed_at_load: HashSet<Txid>,
     /// The wallet's coins each payment restored from its sent mark
     /// (`add_unrecorded_sends`) signed, which a later record of it may not
     /// name.

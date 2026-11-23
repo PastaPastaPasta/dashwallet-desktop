@@ -1019,7 +1019,7 @@ fn mg10_a_held_hand_off_listed_after_a_restart_is_abandoned_before_its_discard()
     assert!(f.rows().is_empty());
 
     f.restart(&[]);
-    assert_ne!(f.stored_spent(funding), Some(true), "stored spent");
+    assert_eq!(f.stored_spent(funding), Some(false), "stored spent");
     f.credit(1, MASTERNODE_COLLATERAL + COIN);
     assert!(
         f.held().contains(&(funding, false, false)),
@@ -1072,6 +1072,11 @@ fn mg10_a_discard_while_the_wallet_loads_is_refused_and_its_steps_free_the_coin(
         f.session.hub.history.get(&id, &txid).is_none(),
         "listed already"
     );
+    assert_eq!(
+        f.stored_spent(funding),
+        Some(true),
+        "the load didn't claim it"
+    );
     assert_discard_waits_for_a_restart(&f, &op, txid);
     pause.release.notify_one();
     f.engine.block_on(loading).unwrap().unwrap();
@@ -1092,7 +1097,7 @@ fn mg10_a_discard_while_the_wallet_loads_is_refused_and_its_steps_free_the_coin(
         .block_on(f.mn().discard_operation(id, op.id))
         .unwrap();
     f.restart(&[]);
-    assert_ne!(f.stored_spent(funding), Some(true), "stored spent");
+    assert_eq!(f.stored_spent(funding), Some(false), "stored spent");
     f.credit(1, MASTERNODE_COLLATERAL + COIN);
     assert!(
         f.held().contains(&(funding, false, false)),
@@ -1120,6 +1125,46 @@ fn mg10_a_discard_after_a_load_whose_copies_did_not_read_is_refused() {
     assert!(
         f.session.hub.history.get(&f.wallet, &txid).is_none(),
         "listed"
+    );
+    let funding = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    assert_eq!(
+        f.stored_spent(funding),
+        Some(true),
+        "the load didn't claim it"
+    );
+    assert_discard_waits_for_a_restart(&f, &op, txid);
+}
+
+/// After that load, a resend of the row is refused before it leaves and its
+/// mark again can't be dropped, so the hand-off is held this session: its
+/// coin was claimed at the load all the same, and Discard still refuses.
+#[test]
+fn mg10_a_discard_after_a_held_resend_of_a_payment_claimed_at_the_load_is_refused() {
+    let (mut f, op, txid) = held_hand_off(true);
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    for _ in 0..2 {
+        dw_appdb::fault::arm(
+            &path,
+            "settings.read_senttx:",
+            dw_appdb::fault::Stage::Before,
+        );
+    }
+    f.restart(&[]);
+    dw_appdb::fault::disarm(&path);
+    *f.lib.break_marks.lock().unwrap() = Some(path.clone());
+    let resent = f.engine.block_on(
+        f.mn()
+            .resend_operation(f.wallet, op.id.clone(), f.grant(COIN)),
+    );
+    dw_appdb::fault::disarm(&path);
+    assert_eq!(
+        resent.as_ref().map(|r| r.state).ok(),
+        Some(ProTxOperationState::NotSent),
+        "{resent:?}"
+    );
+    assert!(
+        (f.session.hub.history).read_wallet(&f.wallet, |h| h.held_here.contains(&txid)),
+        "not held this session"
     );
     assert_discard_waits_for_a_restart(&f, &op, txid);
 }

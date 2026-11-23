@@ -734,7 +734,9 @@ impl NetworkSession {
         }
         let droppable = listed.is_some()
             || marked.is_some_and(|t| {
-                (self.hub.history).read_wallet(&wallet, |h| h.held_here.contains(&t))
+                (self.hub.history).read_wallet(&wallet, |h| {
+                    h.held_here.contains(&t) && !h.claimed_at_load.contains(&t)
+                })
             });
         let (w, id) = (wallet.to_string(), id.to_string());
         let deleted = self

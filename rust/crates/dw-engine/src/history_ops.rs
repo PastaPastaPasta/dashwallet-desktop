@@ -637,6 +637,9 @@ impl NetworkSession {
         if claims.is_empty() {
             return;
         }
+        (self.hub.history).with_wallet(wallet, |h| {
+            h.claimed_at_load.extend(claims.iter().map(|c| c.1))
+        });
         // A block this process saw spend a claimed coin mined the payment or
         // beat it: either way it claims nothing. Only a block the ChainLock
         // covers beats an InstantSend-locked one.

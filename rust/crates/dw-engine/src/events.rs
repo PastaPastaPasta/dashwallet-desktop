@@ -1064,7 +1064,10 @@ impl SessionHub {
     pub(crate) fn admit(&self, id: WalletId) -> bool {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         let was = unloaded.remove(&id);
-        self.history.with_wallet(id, |h| h.session_held.clear());
+        self.history.with_wallet(id, |h| {
+            h.session_held.clear();
+            h.held_here.clear();
+        });
         was
     }
 
@@ -1076,7 +1079,10 @@ impl SessionHub {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         for id in ids {
             if unloaded.remove(&id) {
-                self.history.with_wallet(id, |h| h.session_held.clear());
+                self.history.with_wallet(id, |h| {
+                    h.session_held.clear();
+                    h.held_here.clear();
+                });
             }
         }
     }
