@@ -1,0 +1,560 @@
+[
+ {
+  "kind": "hard",
+  "name": "app pid 2267 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-01-overview shows 'History'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "select sidebar 'Send' through AT-SPI Selection",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-02-send shows 'Pay To:'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "select sidebar 'Receive' through AT-SPI Selection",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-03-receive shows 'Request payment'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "select sidebar 'Transactions' through AT-SPI Selection",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-04-transactions shows 'Export\u2026'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-05-transaction-details shows 'Net amount'",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Table' through AT-SPI Action",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Address Book' through AT-SPI Action",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Sign / Verify Message' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-08-sign-verify shows Sign / Verify Message",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Tools Window' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-09-tools-information shows Tools Window",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'PSBT Operations' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-10-psbt shows PSBT Operations",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Wallets' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-11-wallets shows Wallets",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Options' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-12-options shows Options",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Security' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-13-security shows Security",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Settings' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-14-settings shows Settings",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'About' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-15-about shows About",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Tools Window' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Console' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-16-tools-console shows Console",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Peers' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-16-tools-peers shows Peers",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2440 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-onboarding-welcome shows 'Create a new wallet'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Create a new wallet' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-onboarding-phrase shows the phrase",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2502 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-lock shows 'Unlock'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2562 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-overlay shows the sync overlay",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2619 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-01-overview shows 'History'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "select sidebar 'Send' through AT-SPI Selection",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-02-send shows 'Pay To:'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "select sidebar 'Receive' through AT-SPI Selection",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-03-receive shows 'Request payment'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "select sidebar 'Transactions' through AT-SPI Selection",
+  "ok": true,
+  "detail": "['Overview', 'Send', 'Receive', 'Transactions']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-04-transactions shows 'Export\u2026'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-05-transaction-details shows 'Net amount'",
+  "ok": false,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Table' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-06-transactions-table shows 'Export\u2026'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Address Book' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-07-address-book shows Address Book",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Sign / Verify Message' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-08-sign-verify shows Sign / Verify Message",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Tools Window' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-09-tools-information shows Tools Window",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'PSBT Operations' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-10-psbt shows PSBT Operations",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Wallets' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-11-wallets shows Wallets",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Options' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-12-options shows Options",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Security' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-13-security shows Security",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Settings' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-14-settings shows Settings",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'About' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-15-about shows About",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Tools Window' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Console' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-16-tools-console shows Console",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Peers' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-16-tools-peers shows Peers",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2804 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-onboarding-welcome shows 'Create a new wallet'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "press 'Create a new wallet' through AT-SPI Action",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-onboarding-phrase shows the phrase",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2868 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-lock shows 'Unlock'",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2925 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet - Demo wallet - [testnet]']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-dark-overlay shows the sync overlay",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "app pid 2983 on the AT-SPI bus",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "kind": "hard",
+  "name": "window is a frame named \"Dash Wallet\u2026\"",
+  "ok": true,
+  "detail": "['Dash Wallet']"
+ },
+ {
+  "kind": "hard",
+  "name": "ux: ux-light-gallery shows the gallery",
+  "ok": true,
+  "detail": ""
+ }
+]

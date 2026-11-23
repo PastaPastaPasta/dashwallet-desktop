@@ -1,0 +1,1830 @@
+//! Keeps `docs/contracts/mn-engine.md` and the masternodes facade in sync
+//! (ROADMAP MG-03), the way `mg_governance_contract.rs` does for governance:
+//!
+//! - §3 of the contract is a listing generated from the facade's source,
+//!   with its SHA-256 and the contract version it was approved under. Any
+//!   difference fails with a line diff. To approve a change, raise
+//!   `Contract-Version` in the header, run with `DW_BLESS=1` (refused when
+//!   `CI` is set), review the diff, and run again without it: the bless run
+//!   itself always fails.
+//! - the facade is an explicit list of files in `src/masternodes/`; every
+//!   file there is either in it or in `NOT_FACADE`, and no `impl
+//!   Masternodes` lives elsewhere in the crate;
+//! - every `pub` type, function and constant of the facade files is
+//!   re-exported from `masternodes`;
+//! - every call has a §2 row whose Kind and Errors cells match its
+//!   signature, and every §2 row names a call;
+//! - the §4 code table matches `MasternodesError::code()`, variant for
+//!   variant;
+//! - every call not yet implemented returns `masternodes.not_implemented`
+//!   with its own name (none in MG-03); the implemented ones refuse as §2
+//!   says on a session without a synced list.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use dw_engine::masternodes::*;
+use dw_engine::platform::WithdrawAmount;
+use dw_engine::{
+    DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
+    SessionOptions, WalletId,
+};
+use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+use quote::ToTokens;
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
+
+/// Calls with real bodies: all of MG-03's, MG-04's, MG-04b slices 1a's
+/// to 2d's and MG-13's.
+const IMPLEMENTED: &[&str] = &[
+    "NetworkSession.masternodes",
+    "Masternodes.list_state",
+    "Masternodes.list",
+    "Masternodes.masternode",
+    "Masternodes.payouts",
+    "Masternodes.find",
+    "Masternodes.evonode_credits",
+    "Masternodes.resolve_collateral",
+    "Masternodes.track",
+    "Masternodes.untrack",
+    "Masternodes.set_label",
+    "Masternodes.attach_key",
+    "Masternodes.detach_key",
+    "Masternodes.registration_keys",
+    "Masternodes.preview_registration",
+    "Masternodes.register",
+    "Masternodes.prepare_external_registration",
+    "Masternodes.submit_external_registration",
+    "Masternodes.refresh_external_registration",
+    "Masternodes.preview_update_registrar",
+    "Masternodes.update_registrar",
+    "Masternodes.operations",
+    "Masternodes.resend_operation",
+    "Masternodes.discard_operation",
+    "Masternodes.release_collateral",
+    "Masternodes.lock_collateral",
+    "Masternodes.shared_capability",
+    "Masternodes.shared_shares",
+    "standby_file_transactions",
+    "Masternodes.shared_sessions",
+    "Masternodes.shared_session",
+    "Masternodes.start_shared",
+    "Masternodes.set_shared_fee",
+    "Masternodes.import_shared_message",
+    "Masternodes.join_shared",
+    "Masternodes.shared_message",
+    "Masternodes.lock_shared_terms",
+    "Masternodes.unlock_shared_terms",
+    "Masternodes.approve_shared",
+    "Masternodes.sign_shared_funding",
+    "Masternodes.send_shared_registration",
+    "Masternodes.abandon_shared_session",
+    "Masternodes.discard_shared_session",
+    "Masternodes.preview_update_share",
+    "Masternodes.update_share",
+    "Masternodes.preview_dissolve",
+    "Masternodes.dissolve",
+    "Masternodes.create_standby",
+    "Masternodes.standby",
+    "Masternodes.export_standby",
+    "Masternodes.send_standby",
+    "Masternodes.start_dissolve_together",
+    "Masternodes.approve_maintenance",
+    "Masternodes.send_maintenance",
+    "Masternodes.start_key_change",
+    "Masternodes.withdrawal_quote",
+    "Masternodes.withdraw_credits",
+    "Masternodes.retry_withdrawal",
+    "Masternodes.withdrawals",
+    "Masternodes.recheck_withdrawal",
+    "Masternodes.mark_withdrawal",
+];
+
+/// The facade's files in `src/masternodes/` (mn-engine.md §0). A new file
+/// there must join this list or `NOT_FACADE`.
+const FACADE: &[&str] = &[
+    "errors.rs",
+    "mod.rs",
+    "protx.rs",
+    "protx_records.rs",
+    "reads.rs",
+    "records.rs",
+    "shared.rs",
+    "shared/standby.rs",
+    "shared_records.rs",
+    "tracking.rs",
+    "withdrawal_records.rs",
+    "withdrawals.rs",
+];
+
+/// Files of `src/masternodes/` that are not part of the facade: the
+/// provider-transaction aggregation, the list reader with its follower, and
+/// the ProTx keys, builder and operations behind `protx.rs`, the
+/// shared-masternode session store, builder and import table behind
+/// `shared.rs`, and the evonode credit withdrawal's checks, signer, session
+/// and recheck behind `withdrawals.rs` (MG-13).
+const NOT_FACADE: &[&str] = &["aggregate.rs", "follow.rs", "protx", "shared", "withdrawal"];
+
+const BEGIN: &str = "<!-- BEGIN GENERATED: masternodes-surface -->";
+const END: &str = "<!-- END GENERATED: masternodes-surface -->";
+const VERSION_LINE: &str = "Contract-Version: ";
+
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn masternodes_dir() -> PathBuf {
+    manifest_dir().join("src/masternodes")
+}
+
+fn contract_path() -> PathBuf {
+    manifest_dir().join("../../../docs/contracts/mn-engine.md")
+}
+
+/// The contract with LF line endings, whatever the checkout did.
+fn contract() -> String {
+    std::fs::read_to_string(contract_path())
+        .expect("read mn-engine.md")
+        .replace("\r\n", "\n")
+}
+
+fn parse(path: &Path) -> syn::File {
+    let text = std::fs::read_to_string(path).expect("read source");
+    syn::parse_file(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The facade's source files, in `FACADE` order, parsed.
+fn facade_sources() -> Vec<(String, syn::File)> {
+    FACADE
+        .iter()
+        .map(|name| (name.to_string(), parse(&masternodes_dir().join(name))))
+        .collect()
+}
+
+/// Every Rust file under `dir`, recursively.
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("read dir") {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Every file of `src/masternodes/` is classified, and the facade's methods
+/// live only in facade files, so the listing cannot miss part of the
+/// surface.
+#[test]
+fn the_facade_file_list_is_complete() {
+    assert!(FACADE.windows(2).all(|w| w[0] < w[1]), "keep FACADE sorted");
+    let mut unclassified: Vec<String> = std::fs::read_dir(masternodes_dir())
+        .expect("read src/masternodes")
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| !FACADE.contains(&n.as_str()) && !NOT_FACADE.contains(&n.as_str()))
+        .collect();
+    unclassified.sort();
+    assert!(
+        unclassified.is_empty(),
+        "classify these src/masternodes entries as FACADE or NOT_FACADE: {unclassified:?}"
+    );
+
+    let mut files = Vec::new();
+    rust_files(&manifest_dir().join("src"), &mut files);
+    let facade: BTreeSet<PathBuf> = FACADE.iter().map(|n| masternodes_dir().join(n)).collect();
+    for path in files.iter().filter(|p| !facade.contains(*p)) {
+        let stray = parse(path).items.iter().any(|item| {
+            matches!(item, syn::Item::Impl(i) if i.trait_.is_none() && tidy(&i.self_ty) == "Masternodes")
+        });
+        assert!(
+            !stray,
+            "{}: `impl Masternodes` outside the facade files",
+            path.display()
+        );
+    }
+}
+
+fn errors_source() -> syn::File {
+    parse(&masternodes_dir().join("errors.rs"))
+}
+
+// ---------------------------------------------------------------------------
+// The generated listing
+// ---------------------------------------------------------------------------
+
+/// `quote`'s token text with the spacing rustfmt would use.
+fn tidy(tokens: impl ToTokens) -> String {
+    let mut s = tokens.to_token_stream().to_string();
+    for (from, to) in [
+        (" :: ", "::"),
+        ("< ", "<"),
+        (" <", "<"),
+        (" >", ">"),
+        (" ,", ","),
+        ("& ", "&"),
+        (" : ", ": "),
+        ("( ", "("),
+        (" )", ")"),
+        ("# [", "#["),
+        (" !", "!"),
+        // rustfmt's trailing comma in a wrapped argument list
+        (",)", ")"),
+    ] {
+        s = s.replace(from, to);
+    }
+    // `name (` → `name(`; a bare replace would also glue `-> (` and `: (`.
+    let mut out = String::with_capacity(s.len());
+    for (i, c) in s.char_indices() {
+        let glued = c == ' '
+            && s[i + 1..].starts_with('(')
+            && out.ends_with(|p: char| p.is_alphanumeric() || p == '_');
+        if !glued {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn is_pub(vis: &syn::Visibility) -> bool {
+    matches!(vis, syn::Visibility::Public(_))
+}
+
+/// The attributes that change a binding's or the JSON's view of an item:
+/// `derive`, `serde` and `cfg`.
+fn shape_attrs(attrs: &[syn::Attribute]) -> impl Iterator<Item = String> {
+    attrs
+        .iter()
+        .filter(|a| {
+            ["derive", "serde", "cfg"]
+                .iter()
+                .any(|i| a.path().is_ident(i))
+        })
+        .map(tidy)
+}
+
+fn attr_lines(attrs: &[syn::Attribute], indent: &str) -> String {
+    shape_attrs(attrs)
+        .map(|a| format!("{indent}{a}\n"))
+        .collect()
+}
+
+/// `name: Type`, or `Type` for a tuple field, after its shape attributes.
+fn field(f: &syn::Field) -> String {
+    let attrs: String = shape_attrs(&f.attrs).map(|a| a + " ").collect();
+    match &f.ident {
+        Some(name) => format!("{attrs}{name}: {}", tidy(&f.ty)),
+        None => format!("{attrs}{}", tidy(&f.ty)),
+    }
+}
+
+/// A variant's fields on one line.
+fn variant_fields(fields: &syn::Fields) -> String {
+    let list = fields.iter().map(field).collect::<Vec<_>>().join(", ");
+    match fields {
+        syn::Fields::Unit => String::new(),
+        syn::Fields::Unnamed(_) => format!("({list})"),
+        syn::Fields::Named(_) => format!(" {{ {list} }}"),
+    }
+}
+
+/// A struct's public fields, named ones one per line as rustfmt writes
+/// them; private fields collapse into `..`.
+fn struct_body(fields: &syn::Fields) -> String {
+    let mut list: Vec<String> = fields
+        .iter()
+        .filter(|f| is_pub(&f.vis))
+        .map(|f| format!("pub {}", field(f)))
+        .collect();
+    let hidden = list.len() < fields.len();
+    match fields {
+        syn::Fields::Unit => ";\n".into(),
+        syn::Fields::Unnamed(_) => {
+            if hidden {
+                list.push("..".into());
+            }
+            format!("({});\n", list.join(", "))
+        }
+        syn::Fields::Named(_) => {
+            let mut body: String = list.iter().map(|f| format!("    {f},\n")).collect();
+            if hidden {
+                body.push_str("    ..\n");
+            }
+            format!(" {{\n{body}}}\n")
+        }
+    }
+}
+
+fn pub_fns(i: &syn::ItemImpl) -> impl Iterator<Item = &syn::ImplItemFn> {
+    i.items.iter().filter_map(|it| match it {
+        syn::ImplItem::Fn(f) if is_pub(&f.vis) => Some(f),
+        _ => None,
+    })
+}
+
+fn signature(sig: &syn::Signature) -> String {
+    format!("pub {};", tidy(sig))
+}
+
+fn listing() -> String {
+    let mut out = String::new();
+    for (name, file) in facade_sources() {
+        out.push_str(&format!("// src/masternodes/{name}\n"));
+        for item in file.items {
+            match item {
+                syn::Item::Struct(s) if is_pub(&s.vis) => {
+                    out.push_str(&attr_lines(&s.attrs, ""));
+                    out.push_str(&format!("pub struct {}{}", s.ident, tidy(&s.generics)));
+                    out.push_str(&struct_body(&s.fields));
+                }
+                syn::Item::Enum(e) if is_pub(&e.vis) => {
+                    out.push_str(&attr_lines(&e.attrs, ""));
+                    out.push_str(&format!("pub enum {}{} {{\n", e.ident, tidy(&e.generics)));
+                    for v in &e.variants {
+                        out.push_str(&attr_lines(&v.attrs, "    "));
+                        out.push_str(&format!("    {}{},\n", v.ident, variant_fields(&v.fields)));
+                    }
+                    out.push_str("}\n");
+                }
+                // Trait impls change what a type can do (serialize, print,
+                // convert) without changing its shape: list every header.
+                syn::Item::Impl(i) if i.trait_.is_some() => {
+                    let (_, path, _) = i.trait_.as_ref().unwrap();
+                    out.push_str(&attr_lines(&i.attrs, ""));
+                    out.push_str(&format!("impl {} for {};\n", tidy(path), tidy(&i.self_ty)));
+                }
+                syn::Item::Impl(i) => {
+                    let fns: Vec<String> = pub_fns(&i)
+                        .map(|f| {
+                            format!(
+                                "{}    {}\n",
+                                attr_lines(&f.attrs, "    "),
+                                signature(&f.sig)
+                            )
+                        })
+                        .collect();
+                    if !fns.is_empty() {
+                        out.push_str(&attr_lines(&i.attrs, ""));
+                        out.push_str(&format!("impl {} {{\n", tidy(&i.self_ty)));
+                        out.extend(fns);
+                        out.push_str("}\n");
+                    }
+                }
+                syn::Item::Fn(f) if is_pub(&f.vis) => {
+                    out.push_str(&attr_lines(&f.attrs, ""));
+                    out.push_str(&format!("{}\n", signature(&f.sig)));
+                }
+                syn::Item::Const(c) if is_pub(&c.vis) => {
+                    out.push_str(&format!("pub const {}: {};\n", c.ident, tidy(&c.ty)));
+                }
+                syn::Item::Type(t) if is_pub(&t.vis) => {
+                    out.push_str(&format!("pub type {} = {};\n", t.ident, tidy(&t.ty)));
+                }
+                syn::Item::Use(u) if is_pub(&u.vis) => {
+                    out.push_str(&format!("pub use {};\n", tidy(&u.tree)));
+                }
+                // A macro at item level can generate API.
+                syn::Item::Macro(m) => out.push_str(&format!("{};\n", tidy(&m.mac))),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// The `Contract-Version` in the contract's header.
+fn header_version(doc: &str) -> u32 {
+    let line = doc
+        .lines()
+        .find_map(|l| l.strip_prefix(VERSION_LINE))
+        .expect("Contract-Version line");
+    line.trim().parse().expect("Contract-Version number")
+}
+
+/// The generated region as the contract should hold it.
+fn region(listing: &str, version: u32) -> String {
+    let fp = hex::encode(Sha256::digest(listing.as_bytes()));
+    format!("\n<!-- surface-sha256: {fp} version: {version} -->\n\n```rust\n{listing}```\n\n")
+}
+
+/// The fingerprint, version and listing recorded in a region.
+fn recorded(region: &str) -> (Option<String>, Option<u32>, String) {
+    let mark = region
+        .lines()
+        .find_map(|l| l.strip_prefix("<!-- surface-sha256: "))
+        .and_then(|l| l.strip_suffix(" -->"))
+        .and_then(|l| l.split_once(" version: "));
+    let listing = region
+        .split_once("```rust\n")
+        .and_then(|(_, rest)| rest.split_once("```"))
+        .map(|(l, _)| l.to_string())
+        .unwrap_or_default();
+    (
+        mark.map(|(fp, _)| fp.to_string()),
+        mark.and_then(|(_, v)| v.parse().ok()),
+        listing,
+    )
+}
+
+/// A line diff (`-` old, `+` new) from the longest common subsequence.
+fn diff(old: &str, new: &str) -> String {
+    let a: Vec<&str> = old.lines().collect();
+    let b: Vec<&str> = new.lines().collect();
+    let mut lcs = vec![vec![0u32; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j, mut out) = (0, 0, String::new());
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && a[i] == b[j] {
+            i += 1;
+            j += 1;
+        } else if j < b.len() && (i == a.len() || lcs[i][j + 1] >= lcs[i + 1][j]) {
+            out.push_str(&format!("+ {}\n", b[j]));
+            j += 1;
+        } else {
+            out.push_str(&format!("- {}\n", a[i]));
+            i += 1;
+        }
+    }
+    out
+}
+
+#[test]
+fn surface_listing_matches_the_contract() {
+    let doc = contract();
+    let start = doc.find(BEGIN).expect("BEGIN marker") + BEGIN.len();
+    let end = doc.find(END).expect("END marker");
+    let version = header_version(&doc);
+    let listing = listing();
+    let want = region(&listing, version);
+    let have = &doc[start..end];
+    if have == want {
+        return;
+    }
+
+    let (old_fp, old_version, old_listing) = recorded(have);
+    let new_fp = hex::encode(Sha256::digest(listing.as_bytes()));
+    let surface_changed = old_fp.as_deref() != Some(new_fp.as_str());
+    eprintln!(
+        "mn-engine.md §3 differs from the facade (recorded {old_fp:?} at version \
+         {old_version:?}; now {new_fp} at {VERSION_LINE}{version}).\n--- contract §3\n+++ source\n{}",
+        diff(&old_listing, &listing)
+    );
+    if std::env::var_os("DW_BLESS").is_none() {
+        panic!(
+            "§3 is out of date (diff above). If the change is deliberate, raise Contract-Version in \
+             the contract header, run with DW_BLESS=1, review the diff and re-run."
+        );
+    }
+    if std::env::var_os("CI").is_some() {
+        panic!("refusing DW_BLESS under CI: approve contract changes locally");
+    }
+    if surface_changed && old_version.is_some_and(|v| version <= v) {
+        panic!(
+            "the surface changed: raise Contract-Version (now {version}) above the recorded \
+             version {} before blessing",
+            old_version.unwrap()
+        );
+    }
+    let blessed = format!("{}{want}{}", &doc[..start], &doc[end..]);
+    std::fs::write(contract_path(), blessed).expect("write contract");
+    panic!(
+        "blessed §3 as version {version} ({new_fp}); review the diff above and re-run without DW_BLESS"
+    );
+}
+
+/// Every `pub` type, function and constant of the facade's submodules is
+/// re-exported from `masternodes` by name, and nothing else is. (`mod.rs`
+/// is the module root: its own items are exported by being there.)
+#[test]
+fn every_public_item_is_re_exported() {
+    let mut declared = BTreeSet::new();
+    let mut modules = BTreeSet::new();
+    for (name, file) in facade_sources() {
+        if name == "mod.rs" {
+            continue;
+        }
+        modules.insert(name.trim_end_matches(".rs").to_string());
+        for item in file.items {
+            let ident = match item {
+                syn::Item::Struct(s) if is_pub(&s.vis) => s.ident,
+                syn::Item::Enum(e) if is_pub(&e.vis) => e.ident,
+                syn::Item::Fn(f) if is_pub(&f.vis) => f.sig.ident,
+                syn::Item::Type(t) if is_pub(&t.vis) => t.ident,
+                syn::Item::Const(c) if is_pub(&c.vis) => c.ident,
+                _ => continue,
+            };
+            declared.insert(ident.to_string());
+        }
+    }
+    let mut exported = BTreeSet::new();
+    for item in parse(&masternodes_dir().join("mod.rs")).items {
+        let syn::Item::Use(u) = item else { continue };
+        let syn::UseTree::Path(p) = &u.tree else {
+            continue;
+        };
+        if !modules.contains(&p.ident.to_string()) {
+            continue;
+        }
+        match &*p.tree {
+            syn::UseTree::Name(n) => {
+                exported.insert(n.ident.to_string());
+            }
+            syn::UseTree::Group(g) => {
+                for t in &g.items {
+                    match t {
+                        syn::UseTree::Name(n) => exported.insert(n.ident.to_string()),
+                        other => panic!("re-export names one by one: {}", tidy(other)),
+                    };
+                }
+            }
+            other => panic!("re-export names one by one: {}", tidy(other)),
+        }
+    }
+    assert_eq!(
+        declared, exported,
+        "masternodes/mod.rs re-exports vs pub items"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Calls
+// ---------------------------------------------------------------------------
+
+struct Call {
+    kind: &'static str,
+    /// The `E` of `Result<_, E>`; `None` for a call that cannot fail.
+    error: Option<String>,
+}
+
+fn call(sig: &syn::Signature, free: bool) -> Call {
+    let error = match &sig.output {
+        syn::ReturnType::Type(_, ty) => tidy(ty)
+            .strip_prefix("Result<")
+            .and_then(|r| r.rsplit_once(", "))
+            .map(|(_, e)| e.trim_end_matches('>').to_string()),
+        syn::ReturnType::Default => None,
+    };
+    let kind = match (free, sig.asyncness.is_some()) {
+        (true, _) => "free, pure",
+        (false, true) => "async",
+        (false, false) => "sync",
+    };
+    Call { kind, error }
+}
+
+/// The facade's calls, keyed by the name a stub reports:
+/// `"Masternodes.<method>"`, `"NetworkSession.<method>"` or a free
+/// function's.
+fn facade_calls() -> BTreeMap<String, Call> {
+    let mut calls = BTreeMap::new();
+    for (_, file) in facade_sources() {
+        for item in file.items {
+            match item {
+                syn::Item::Impl(i) if i.trait_.is_none() => {
+                    let owner = tidy(&i.self_ty);
+                    if owner == "Masternodes" || owner == "NetworkSession" {
+                        for f in pub_fns(&i) {
+                            let name = format!("{owner}.{}", f.sig.ident);
+                            calls.insert(name, call(&f.sig, false));
+                        }
+                    }
+                }
+                syn::Item::Fn(f) if is_pub(&f.vis) => {
+                    calls.insert(f.sig.ident.to_string(), call(&f.sig, true));
+                }
+                _ => {}
+            }
+        }
+    }
+    calls
+}
+
+/// The §2 rows as cells, keyed like `facade_calls`: a first cell
+/// `Owner.call(…)` names its owner, a free function's row has the Kind
+/// `free, pure`, and any other row is a `Masternodes` call.
+fn call_rows() -> BTreeMap<String, Vec<String>> {
+    let doc = contract();
+    let section = &doc[doc.find("## 2. Calls").expect("§2")..doc.find("## 3.").expect("§3")];
+    let mut rows = BTreeMap::new();
+    for line in section.lines().filter(|l| l.starts_with("| `")) {
+        let cells: Vec<String> = line
+            .trim_matches('|')
+            .split(" | ")
+            .map(|c| c.trim().to_string())
+            .collect();
+        let name = cells[0].trim_start_matches('`').split('(').next().unwrap();
+        let key = if name.contains('.') || cells[1] == "free, pure" {
+            name.to_string()
+        } else {
+            format!("Masternodes.{name}")
+        };
+        assert!(
+            rows.insert(key.clone(), cells).is_none(),
+            "two §2 rows for {key}"
+        );
+    }
+    rows
+}
+
+#[test]
+fn call_rows_match_the_signatures() {
+    let mut rows = call_rows();
+    for (name, call) in facade_calls() {
+        let cells = rows
+            .remove(&name)
+            .unwrap_or_else(|| panic!("{name} has no §2 row"));
+        assert_eq!(cells[1], call.kind, "{name}: §2 Kind");
+        let errors = cells.last().unwrap();
+        match &call.error {
+            Some(e) => assert!(
+                errors.starts_with(&format!("`{e}`")),
+                "{name}: §2 Errors is `{errors}`, the signature says {e}"
+            ),
+            None => assert_eq!(errors, "—", "{name} cannot fail"),
+        }
+    }
+    let orphans: Vec<&String> = rows.keys().collect();
+    assert!(orphans.is_empty(), "§2 rows for no call: {orphans:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Error codes
+// ---------------------------------------------------------------------------
+
+/// The codes of the §4 row whose first cell is `` `name` ``, sorted.
+fn contract_row(name: &str) -> Vec<String> {
+    let doc = contract();
+    let prefix = format!("| `{name}` |");
+    let row = doc
+        .lines()
+        .find(|l| l.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("no {name} row in mn-engine.md §4"));
+    let mut codes: Vec<String> = row
+        .split('`')
+        .skip(3)
+        .step_by(2)
+        .map(String::from)
+        .collect();
+    codes.sort_unstable();
+    codes
+}
+
+/// A variant that wraps another error enum and passes its code through.
+fn is_wrapper(v: &syn::Variant) -> bool {
+    match &v.fields {
+        syn::Fields::Unnamed(u) if u.unnamed.len() == 1 => {
+            tidy(&u.unnamed[0].ty).ends_with("Error")
+        }
+        _ => false,
+    }
+}
+
+/// The error enums of errors.rs with the variants that carry their own
+/// code, in order.
+fn error_enums() -> BTreeMap<String, Vec<String>> {
+    errors_source()
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Enum(e) => Some((
+                e.ident.to_string(),
+                e.variants
+                    .iter()
+                    .filter(|v| !is_wrapper(v))
+                    .map(|v| v.ident.to_string())
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `AlreadyTracked` → `already_tracked`.
+fn snake(ident: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in ident.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
+/// Checks `samples` (one per own variant of `name`, in order) against the
+/// variants' names and the contract's §4 row.
+fn check_domain<E: std::fmt::Debug>(
+    enums: &BTreeMap<String, Vec<String>>,
+    name: &str,
+    samples: &[E],
+    code: fn(&E) -> &'static str,
+) {
+    let variants = &enums[name];
+    assert_eq!(
+        samples.len(),
+        variants.len(),
+        "{name}: the test needs one sample per variant"
+    );
+    for (sample, variant) in samples.iter().zip(variants) {
+        assert!(
+            format!("{sample:?}").starts_with(variant.as_str()),
+            "{name}: the samples must follow the variant order ({variant})"
+        );
+        // The code names its variant.
+        let suffix = code(sample).rsplit('.').next().unwrap();
+        assert_eq!(
+            suffix,
+            snake(variant),
+            "{name}::{variant} has code {}",
+            code(sample)
+        );
+    }
+    let mut codes: Vec<&str> = samples.iter().map(code).collect();
+    codes.sort_unstable();
+    assert_eq!(codes, contract_row(name), "{name}: §4 row");
+}
+
+#[test]
+fn error_codes_match_the_contract() {
+    let enums = error_enums();
+    let hash = || String::new();
+    check_domain(
+        &enums,
+        "MasternodesError",
+        &[
+            MasternodesError::ListUnavailable,
+            MasternodesError::NotFound,
+            MasternodesError::AlreadyTracked,
+            MasternodesError::NotTracked,
+            MasternodesError::KeyMismatch {
+                role: AttachedKeyRole::Voting,
+            },
+            MasternodesError::NotEvonode,
+            MasternodesError::NoIdentity,
+            MasternodesError::PlatformUnavailable { detail: hash() },
+            MasternodesError::Unsupported {
+                feature: hash(),
+                field: None,
+            },
+            MasternodesError::NotImplemented { call: hash() },
+            MasternodesError::ProtxRefused {
+                reason: hash(),
+                operation: None,
+            },
+            MasternodesError::CollateralUnavailable,
+            MasternodesError::SignatureMismatch,
+            MasternodesError::OperationNotFound,
+            MasternodesError::OperationState { state: hash() },
+            MasternodesError::InFlight,
+            MasternodesError::KeysExhausted { role: hash() },
+            MasternodesError::NoOwnerKey,
+            MasternodesError::UpdatePending { operation: hash() },
+            MasternodesError::UpdateSuperseded { operation: hash() },
+            MasternodesError::SharedSessionNotFound,
+            MasternodesError::SharedStage { stage: hash() },
+            MasternodesError::SharedMessage {
+                reason: hash(),
+                share: None,
+            },
+            MasternodesError::SharedFundingMismatch {
+                reason: hash(),
+                needed: None,
+            },
+            MasternodesError::ShareNotMine,
+            MasternodesError::SharedTooEarly,
+            MasternodesError::SharedRegistrationUnknown,
+            MasternodesError::SharedActorFee { fee: 0 },
+            MasternodesError::WithdrawalKeyMissing,
+            MasternodesError::WithdrawalShared,
+            MasternodesError::WithdrawalNoPayoutKey {
+                detail: String::new(),
+            },
+            MasternodesError::WithdrawalDestinationChecking {
+                reason: WithdrawalCheckingReason::PlatformBehind,
+            },
+            MasternodesError::WithdrawalPending,
+            MasternodesError::WithdrawalUnverified,
+            MasternodesError::WithdrawalRetryState,
+            MasternodesError::WithdrawTargetMismatch,
+            MasternodesError::WithdrawalMarkState,
+            MasternodesError::WithdrawalNotFound,
+            MasternodesError::WithdrawalAmountOutOfRange { min: 0, max: 0 },
+            MasternodesError::WithdrawalAmountInsufficient {
+                needed: 0,
+                available: 0,
+            },
+        ],
+        MasternodesError::code,
+    );
+    let declared: Vec<&str> = enums.keys().map(String::as_str).collect();
+    assert_eq!(
+        declared,
+        ["MasternodesError"],
+        "every error enum needs a check and a §4 row"
+    );
+}
+
+/// The m1 codes come through `Engine` unchanged, a vault error as m1's
+/// `vault`.
+#[test]
+fn engine_codes_pass_through() {
+    let e = MasternodesError::from(EngineError::NetworkNotOpen("regtest".into()));
+    assert_eq!(e.code(), "network_not_open");
+    assert!(matches!(e.engine(), Some(EngineError::NetworkNotOpen(_))));
+    let e = MasternodesError::from(EngineError::InvalidArgument("x".into()));
+    assert_eq!(e.code(), "invalid_argument");
+    let e = MasternodesError::from(dw_vault::VaultError::Locked);
+    assert_eq!(e.code(), "vault");
+    assert!(matches!(
+        e.engine(),
+        Some(EngineError::Vault(dw_vault::VaultError::Locked))
+    ));
+    assert!(MasternodesError::ListUnavailable.engine().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Behaviour without a synced list
+// ---------------------------------------------------------------------------
+
+/// Counts the masternodes events.
+#[derive(Default)]
+struct CountingSink(std::sync::atomic::AtomicUsize);
+
+impl EventSink for CountingSink {
+    fn emit(&self, event: EngineEvent) {
+        if matches!(event, EngineEvent::Masternodes { .. }) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+fn engine(root: &Path, sink: Arc<CountingSink>) -> Engine {
+    Engine::new(
+        EngineConfig {
+            data_root: root.to_path_buf(),
+            worker_threads: Some(2),
+            vault: VaultConfig {
+                kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                os_store: Arc::new(MemoryOsStore::new()),
+                ..VaultConfig::default()
+            },
+        },
+        sink,
+    )
+    .unwrap()
+}
+
+fn opts() -> SessionOptions {
+    SessionOptions {
+        dapi_addresses: vec!["http://127.0.0.1:1".into()],
+        quorum_url: Some("http://127.0.0.1:1".into()),
+        spv_peers: vec!["127.0.0.1:1".into()],
+        ..Default::default()
+    }
+}
+
+const PHRASE: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const OTHER_PHRASE: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+/// A private key's shape: 64 hex a caller might paste as a ProTx hash or a
+/// wallet id (MG-03 D23).
+const SECRET: &str = "e9873d79c6d87dc0fb6a5778633389f4453213303da61f20bd67fc233aa33262";
+
+/// `SECRET` in either byte order, as text or as bytes.
+fn quotes_secret(text: &str) -> bool {
+    let mut bytes = hex::decode(SECRET).unwrap();
+    let reversed = {
+        bytes.reverse();
+        hex::encode(&bytes)
+    };
+    let lower = text.to_lowercase();
+    [SECRET, reversed.as_str()]
+        .iter()
+        .any(|s| lower.contains(s))
+        || lower.contains(&format!("{:?}", hex::decode(SECRET).unwrap()))
+        || lower.contains(&format!("{bytes:?}"))
+}
+
+fn count(sink: &CountingSink) -> usize {
+    sink.0.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Waits for a masternodes event after `before`.
+async fn event_after(sink: &CountingSink, before: usize, what: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while count(sink) == before {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no masternodes event after {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// A well-formed regular registration (MG-04).
+fn request() -> RegistrationRequest {
+    RegistrationRequest {
+        kind: MasternodeType::Regular,
+        collateral: CollateralChoice::FundNew,
+        service: "1.2.3.4".into(),
+        operator: OperatorChoice::NextUnused,
+        operator_reward: 0,
+        owner_index: None,
+        voting: VotingChoice::NextUnused,
+        payout: PayoutChoice::NewAddress,
+        evonode: None,
+    }
+}
+
+/// One with a malformed service address.
+fn bad_request() -> RegistrationRequest {
+    RegistrationRequest {
+        service: String::new(),
+        ..request()
+    }
+}
+
+/// One with another wallet's collateral.
+fn external() -> RegistrationRequest {
+    RegistrationRequest {
+        collateral: CollateralChoice::External {
+            outpoint: format!("{}-1", "77".repeat(32)),
+            address: "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n".into(),
+        },
+        ..request()
+    }
+}
+
+/// A ProUpRegTx of `hash` that keeps its keys (MG-04 D10).
+fn update(hash: &str) -> UpdateRegistrarRequest {
+    UpdateRegistrarRequest {
+        pro_tx_hash: hash.into(),
+        operator: KeepOr::Keep,
+        voting: KeepOr::Keep,
+        payout: PayoutChoice::NewAddress,
+    }
+}
+
+/// A key change of `hash` that rotates the operator key (MG-04b D99).
+fn key_change(hash: &str) -> KeyChangeRequest {
+    KeyChangeRequest {
+        pro_tx_hash: hash.into(),
+        operator: KeepOr::Set(OperatorChoice::NextUnused),
+        voting: KeepOr::Keep,
+    }
+}
+
+/// Every call is implemented, and each refuses in §2's order on a session
+/// whose SPV never ran.
+#[test]
+fn calls_refuse_as_the_contract_says_without_a_synced_list() {
+    let want: BTreeSet<String> = facade_calls().into_keys().collect();
+    let done: BTreeSet<String> = IMPLEMENTED.iter().map(|c| c.to_string()).collect();
+    assert_eq!(done, want, "IMPLEMENTED vs the facade's calls");
+
+    let dir = dw_testutil::private_tempdir();
+    let sink = Arc::new(CountingSink::default());
+    let engine = engine(&dir.path().join("data"), Arc::clone(&sink));
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, opts()))
+        .unwrap();
+    engine
+        .block_on(session.vault_op(|v| v.create(None)))
+        .unwrap();
+    let wallet = engine
+        .block_on(session.import_wallet(
+            Zeroizing::new(PHRASE.as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                ..ImportOptions::default()
+            },
+        ))
+        .unwrap();
+    let mn = session.masternodes();
+    let hash = "ab".repeat(32);
+    let key = || Zeroizing::new("01".repeat(32));
+    let code = |r: Result<(), MasternodesError>| r.unwrap_err().code();
+
+    engine.block_on(async {
+        let unsynced = MasternodeListState {
+            synced: false,
+            height: None,
+        };
+        assert_eq!(mn.list_state().unwrap(), unsynced);
+        // A new wallet's overview: nothing yet, the list not synced.
+        let overview = mn.list(wallet).await.unwrap();
+        assert_eq!(overview.list, unsynced);
+        assert!(overview.masternodes.is_empty());
+        assert!(overview.collateral_coins.is_empty());
+        assert_eq!(overview.payouts_30d, 0);
+        assert_eq!(
+            code(mn.list(WalletId([7; 32])).await.map(drop)),
+            "wallet_not_found"
+        );
+
+        // Arguments are checked first.
+        let long = Some("x".repeat(MAX_MASTERNODE_LABEL + 1));
+        for refused in [
+            mn.masternode(wallet, "zz".into()).await.map(drop),
+            mn.shared_shares(wallet, "zz".into()).await.map(drop),
+            standby_file_transactions("private text").map(drop),
+            mn.payouts(wallet, "zz".into(), None).await.map(drop),
+            mn.find("node.example".into()).await.map(drop),
+            mn.evonode_credits("zz".into()).await.map(drop),
+            mn.resolve_collateral("zz".into()).await.map(drop),
+            mn.track("zz".into(), None).await.map(drop),
+            mn.track(hash.clone(), long.clone()).await.map(drop),
+            mn.untrack("zz".into()).await.map(drop),
+            mn.set_label(hash.clone(), long).await,
+            mn.attach_key(
+                hash.clone(),
+                AttachedKeyRole::Owner,
+                Zeroizing::new("nope".into()),
+            )
+            .await
+            .map(drop),
+            mn.detach_key("zz".into(), AttachedKeyRole::Owner)
+                .await
+                .map(drop),
+            mn.preview_registration(wallet, bad_request())
+                .await
+                .map(drop),
+            mn.register(wallet, bad_request(), "g".into())
+                .await
+                .map(drop),
+            mn.register(wallet, external(), "g".into()).await.map(drop),
+            mn.prepare_external_registration(wallet, bad_request())
+                .await
+                .map(drop),
+            mn.prepare_external_registration(wallet, request())
+                .await
+                .map(drop),
+            mn.submit_external_registration(wallet, "zz".into(), "AA==".into(), "g".into())
+                .await
+                .map(drop),
+            mn.refresh_external_registration(wallet, "zz".into())
+                .await
+                .map(drop),
+            mn.preview_update_registrar(wallet, update("zz"))
+                .await
+                .map(drop),
+            mn.update_registrar(wallet, update("zz"), "g".into())
+                .await
+                .map(drop),
+            mn.resend_operation(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.discard_operation(wallet, "zz".into()).await,
+            mn.release_collateral(wallet, "zz".into()).await,
+            mn.lock_collateral(wallet, "zz".into()).await,
+            mn.withdrawal_quote(wallet, "zz".into()).await.map(drop),
+            mn.withdraw_credits(
+                wallet,
+                "zz".into(),
+                WithdrawalKeyChoice::Owner,
+                WithdrawAmount::All,
+                None,
+                "g".into(),
+            )
+            .await
+            .map(drop),
+            mn.retry_withdrawal(
+                wallet,
+                "zz".into(),
+                "zz".into(),
+                WithdrawalKeyChoice::Owner,
+                WithdrawAmount::All,
+                None,
+                "g".into(),
+            )
+            .await
+            .map(drop),
+            mn.withdrawals("zz".into()).await.map(drop),
+            mn.recheck_withdrawal("zz".into()).await.map(drop),
+            mn.recheck_withdrawal("AB".repeat(16)).await.map(drop),
+            mn.mark_withdrawal("zz".into(), WithdrawalMark::Received)
+                .await
+                .map(drop),
+        ] {
+            assert_eq!(code(refused), "invalid_argument");
+        }
+        // A version-3 service is named as such (MG-04 D1).
+        let mut v6 = request();
+        v6.service = "[2001:db8::1]:19899".into();
+        let e = mn.preview_registration(wallet, v6).await.unwrap_err();
+        assert!(
+            matches!(&e, MasternodesError::Unsupported { feature, field }
+                if feature == "protx_v3" && field.as_deref() == Some("service")),
+            "{e:?}"
+        );
+
+        assert_eq!(
+            code(mn.shared_shares(wallet, hash.clone()).await.map(drop)),
+            "masternodes.shared_registration_unknown"
+        );
+        assert_eq!(
+            code(
+                mn.shared_shares(WalletId([7; 32]), hash.clone())
+                    .await
+                    .map(drop)
+            ),
+            "wallet_not_found"
+        );
+
+        // Then the list.
+        for refused in [
+            mn.masternode(wallet, hash.clone()).await.map(drop),
+            mn.payouts(wallet, hash.clone(), None).await.map(drop),
+            mn.find(hash.clone()).await.map(drop),
+            mn.find("10.0.0.1".into()).await.map(drop),
+            mn.evonode_credits(hash.clone()).await.map(drop),
+            mn.track(hash.clone(), None).await.map(drop),
+            mn.registration_keys(wallet, MasternodeType::Regular)
+                .await
+                .map(drop),
+            mn.preview_registration(wallet, request()).await.map(drop),
+            mn.register(wallet, request(), "g".into()).await.map(drop),
+            mn.prepare_external_registration(wallet, external())
+                .await
+                .map(drop),
+            mn.preview_update_registrar(wallet, update(&hash))
+                .await
+                .map(drop),
+            mn.update_registrar(wallet, update(&hash), "g".into())
+                .await
+                .map(drop),
+        ] {
+            assert_eq!(code(refused), "masternodes.list_unavailable");
+        }
+
+        // Shared masternodes (MG-04b §7): arguments, the wallet, v24 (not
+        // seen on this session) or sending (off, DEC-678), then the
+        // session.
+        let shared = || StartSharedRequest {
+            shares: ["A", "B"]
+                .into_iter()
+                .map(|label| ShareSlot {
+                    label: label.into(),
+                    amount: 500 * 100_000_000,
+                })
+                .collect(),
+            terms: ShareTerms {
+                service: "1.2.3.4:19999".into(),
+                operator: OperatorChoice::NextUnused,
+                operator_reward: 0,
+                voting: VotingChoice::NextUnused,
+                early_period_blocks: 0,
+                early_penalty: 0,
+            },
+            fee: 100_000,
+            reward: RewardChoice::Refund,
+            node_run_by: None,
+        };
+        let share = |hash: &str| UpdateShareRequest {
+            pro_tx_hash: hash.into(),
+            share_index: 0,
+            reward: RewardChoice::Refund,
+        };
+        let dissolution = |hash: &str| DissolveRequest {
+            pro_tx_hash: hash.into(),
+            share_index: 0,
+            fee: 1_000,
+        };
+        let join = || JoinSharedRequest {
+            share_index: None,
+            reward: RewardChoice::Refund,
+        };
+        let cap = mn.shared_capability(wallet).await.unwrap();
+        assert_eq!(
+            (cap.v24, cap.evonode_shares, cap.can_send),
+            (Activation::Unknown, Activation::Inactive, true)
+        );
+        assert!(mn.shared_sessions(wallet).await.unwrap().is_empty());
+        for refused in [
+            mn.shared_session(wallet, "zz".into()).await.map(drop),
+            mn.start_shared(wallet, StartSharedRequest { fee: 0, ..shared() })
+                .await
+                .map(drop),
+            mn.set_shared_fee(wallet, "zz".into(), 1_000)
+                .await
+                .map(drop),
+            mn.import_shared_message(wallet, "{}".into(), Some("zz".into()))
+                .await
+                .map(drop),
+            mn.join_shared(wallet, "zz".into(), join()).await.map(drop),
+            mn.shared_message(wallet, "zz".into()).await.map(drop),
+            mn.lock_shared_terms(wallet, "zz".into(), 1, "g".into())
+                .await
+                .map(drop),
+            mn.unlock_shared_terms(wallet, "zz".into()).await.map(drop),
+            mn.approve_shared(wallet, "zz".into(), String::new(), "g".into())
+                .await
+                .map(drop),
+            mn.sign_shared_funding(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.send_shared_registration(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.abandon_shared_session(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.discard_shared_session(wallet, "zz".into()).await,
+            mn.preview_update_share(wallet, share("zz")).await.map(drop),
+            mn.update_share(wallet, share("zz"), "g".into())
+                .await
+                .map(drop),
+            mn.preview_dissolve(wallet, dissolution("zz"))
+                .await
+                .map(drop),
+            mn.dissolve(wallet, dissolution("zz"), "g".into())
+                .await
+                .map(drop),
+            mn.create_standby(wallet, "zz".into(), 1_000, "g".into())
+                .await
+                .map(drop),
+            mn.standby(wallet, "zz".into()).await.map(drop),
+            mn.export_standby(wallet, "zz".into(), 0, 1_000, "g".into())
+                .await
+                .map(drop),
+            mn.send_standby(
+                wallet,
+                "zz".into(),
+                0,
+                1_000,
+                StandbyVariant::Full,
+                "g".into(),
+            )
+            .await
+            .map(drop),
+            mn.start_dissolve_together(wallet, dissolution("zz"), "g".into())
+                .await
+                .map(drop),
+            mn.approve_maintenance(wallet, "zz".into(), "g".into(), false)
+                .await
+                .map(drop),
+            mn.send_maintenance(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.start_key_change(wallet, key_change("zz"), "g".into())
+                .await
+                .map(drop),
+            mn.create_standby(wallet, hash.clone(), 0, "g".into())
+                .await
+                .map(drop),
+            // Core's builder refuses a fee of 0 or above its ceiling.
+            mn.preview_dissolve(
+                wallet,
+                DissolveRequest {
+                    fee: 0,
+                    ..dissolution(&hash)
+                },
+            )
+            .await
+            .map(drop),
+            mn.dissolve(
+                wallet,
+                DissolveRequest {
+                    fee: 1_000_001,
+                    ..dissolution(&hash)
+                },
+                "g".into(),
+            )
+            .await
+            .map(drop),
+        ] {
+            assert_eq!(code(refused), "invalid_argument");
+        }
+        for refused in [
+            mn.start_shared(wallet, shared()).await.map(drop),
+            mn.join_shared(wallet, hash.clone(), join()).await.map(drop),
+            mn.lock_shared_terms(wallet, hash.clone(), 1, "g".into())
+                .await
+                .map(drop),
+            mn.approve_shared(wallet, hash.clone(), hash.clone(), "g".into())
+                .await
+                .map(drop),
+            mn.sign_shared_funding(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
+            mn.send_shared_registration(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
+            mn.preview_update_share(wallet, share(&hash))
+                .await
+                .map(drop),
+            mn.update_share(wallet, share(&hash), "g".into())
+                .await
+                .map(drop),
+            mn.preview_dissolve(wallet, dissolution(&hash))
+                .await
+                .map(drop),
+            mn.dissolve(wallet, dissolution(&hash), "g".into())
+                .await
+                .map(drop),
+            mn.create_standby(wallet, hash.clone(), 1_000, "g".into())
+                .await
+                .map(drop),
+            mn.export_standby(wallet, hash.clone(), 0, 1_000, "g".into())
+                .await
+                .map(drop),
+            mn.send_standby(
+                wallet,
+                hash.clone(),
+                0,
+                1_000,
+                StandbyVariant::Immediate,
+                "g".into(),
+            )
+            .await
+            .map(drop),
+            mn.start_dissolve_together(wallet, dissolution(&hash), "g".into())
+                .await
+                .map(drop),
+            mn.approve_maintenance(wallet, hash.clone(), "g".into(), false)
+                .await
+                .map(drop),
+            mn.send_maintenance(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
+            mn.start_key_change(wallet, key_change(&hash), "g".into())
+                .await
+                .map(drop),
+        ] {
+            assert_eq!(code(refused), "masternodes.unsupported");
+        }
+        assert!(mn.standby(wallet, hash.clone()).await.unwrap().is_empty());
+        for refused in [
+            mn.shared_session(wallet, hash.clone()).await.map(drop),
+            mn.set_shared_fee(wallet, hash.clone(), 1_000)
+                .await
+                .map(drop),
+            mn.shared_message(wallet, hash.clone()).await.map(drop),
+            mn.unlock_shared_terms(wallet, hash.clone()).await.map(drop),
+            mn.discard_shared_session(wallet, hash.clone()).await,
+            // Sending is on (slice 1c) and abandoning has no v24 gate.
+            mn.abandon_shared_session(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
+        ] {
+            assert_eq!(code(refused), "masternodes.shared_session_not_found");
+        }
+        let e = mn
+            .import_shared_message(wallet, "not a message".into(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&e, MasternodesError::SharedMessage { reason, .. } if reason == "not_shared"),
+            "{e:?}"
+        );
+
+        // Operations: none yet.
+        assert!(mn.operations(wallet).await.unwrap().is_empty());
+        let op = || "00".repeat(16);
+        for refused in [
+            mn.submit_external_registration(wallet, op(), "AA==".into(), "g".into())
+                .await
+                .map(drop),
+            mn.refresh_external_registration(wallet, op())
+                .await
+                .map(drop),
+            mn.resend_operation(wallet, op(), "g".into())
+                .await
+                .map(drop),
+            mn.discard_operation(wallet, op()).await,
+        ] {
+            assert_eq!(code(refused), "masternodes.operation_not_found");
+        }
+        // Withdrawals: none yet, and a quote needs a loaded wallet.
+        assert!(mn.withdrawals(hash.clone()).await.unwrap().is_empty());
+        assert_eq!(
+            code(
+                mn.withdrawal_quote(WalletId([7; 32]), hash.clone())
+                    .await
+                    .map(drop)
+            ),
+            "wallet_not_found"
+        );
+        let id = || "00".repeat(16);
+        for refused in [
+            mn.retry_withdrawal(
+                wallet,
+                hash.clone(),
+                id(),
+                WithdrawalKeyChoice::Payout,
+                WithdrawAmount::Credits { credits: 1 },
+                None,
+                "g".into(),
+            )
+            .await
+            .map(drop),
+            mn.recheck_withdrawal(id()).await.map(drop),
+            mn.mark_withdrawal(id(), WithdrawalMark::NotReceived)
+                .await
+                .map(drop),
+        ] {
+            assert_eq!(code(refused), "masternodes.withdrawal_not_found");
+        }
+        // Collateral locks need one of the wallet's masternodes.
+        for refused in [
+            mn.release_collateral(wallet, hash.clone()).await,
+            mn.lock_collateral(wallet, hash.clone()).await,
+        ] {
+            assert_eq!(code(refused), "masternodes.not_found");
+        }
+        assert_eq!(
+            code(mn.resolve_collateral(hash.clone()).await.map(drop)),
+            "masternodes.unsupported"
+        );
+
+        // Keys and untracking need a tracked masternode.
+        for refused in [
+            mn.untrack(hash.clone()).await.map(drop),
+            mn.attach_key(hash.clone(), AttachedKeyRole::Voting, key())
+                .await
+                .map(drop),
+            mn.detach_key(hash.clone(), AttachedKeyRole::Payout)
+                .await
+                .map(drop),
+        ] {
+            assert_eq!(code(refused), "masternodes.not_tracked");
+        }
+
+        // A label needs a masternode someone knows: a loaded wallet's, a
+        // tracked one, or one of the list, which might hold it (D27).
+        assert_eq!(
+            code(mn.set_label(hash.clone(), Some(" Home ".into())).await),
+            "masternodes.list_unavailable"
+        );
+
+        // A change of the wallet set is an event at the same list height
+        // (D28): an import, then the removal.
+        let before = count(&sink);
+        let other = session
+            .import_wallet(
+                Zeroizing::new(OTHER_PHRASE.as_bytes().to_vec()),
+                Zeroizing::new(Vec::new()),
+                ImportOptions {
+                    birth_height: Some(0),
+                    ..ImportOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        event_after(&sink, before, "an import").await;
+        // past the coalescer's one-second pause
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        let before = count(&sink);
+        let wipe = session
+            .vault_op(move |v| v.authorize(GrantPurpose::Wipe, Some(&other.0), Credential::None))
+            .await
+            .unwrap();
+        session.remove_wallet(other, wipe.id).await.unwrap();
+        event_after(&sink, before, "a removal").await;
+        assert_eq!(
+            mn.list_state().unwrap(),
+            unsynced,
+            "the height didn't change"
+        );
+    });
+
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    // A handle outlives its session; every call then says so.
+    assert_eq!(
+        engine.block_on(mn.list(wallet)).unwrap_err().code(),
+        "network_not_open"
+    );
+    assert_eq!(mn.list_state().unwrap_err().code(), "network_not_open");
+}
+
+/// No call's error repeats a hash, key or wallet id it was given, even of a
+/// valid length (MG-03 D23): a pasted private key has that shape.
+#[test]
+fn errors_never_quote_a_secret_shaped_argument() {
+    let dir = dw_testutil::private_tempdir();
+    let sink = Arc::new(CountingSink::default());
+    let engine = engine(&dir.path().join("data"), Arc::clone(&sink));
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, opts()))
+        .unwrap();
+    engine
+        .block_on(session.vault_op(|v| v.create(None)))
+        .unwrap();
+    let mn = session.masternodes();
+    let secret = || SECRET.to_string();
+    // A pasted secret where an operator public key goes (MG-04 D15).
+    let secret_request = || RegistrationRequest {
+        operator: OperatorChoice::Given {
+            public_key: SECRET.into(),
+        },
+        ..request()
+    };
+    let as_wallet = WalletId(hex::decode(SECRET).unwrap().try_into().unwrap());
+    let calls: Vec<(&str, Result<(), MasternodesError>)> = engine.block_on(async {
+        vec![
+            ("list", mn.list(as_wallet).await.map(drop)),
+            (
+                "masternode",
+                mn.masternode(as_wallet, secret()).await.map(drop),
+            ),
+            (
+                "payouts",
+                mn.payouts(as_wallet, secret(), None).await.map(drop),
+            ),
+            ("find", mn.find(secret()).await.map(drop)),
+            (
+                "evonode_credits",
+                mn.evonode_credits(secret()).await.map(drop),
+            ),
+            (
+                "resolve_collateral",
+                mn.resolve_collateral(secret()).await.map(drop),
+            ),
+            ("track", mn.track(secret(), None).await.map(drop)),
+            ("untrack", mn.untrack(secret()).await.map(drop)),
+            ("set_label", mn.set_label(secret(), Some("x".into())).await),
+            (
+                "attach_key",
+                mn.attach_key(
+                    secret(),
+                    AttachedKeyRole::Voting,
+                    Zeroizing::new(SECRET.into()),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "detach_key",
+                mn.detach_key(secret(), AttachedKeyRole::Owner)
+                    .await
+                    .map(drop),
+            ),
+            (
+                "preview_registration",
+                mn.preview_registration(as_wallet, secret_request())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "register",
+                mn.register(as_wallet, secret_request(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "preview_update_registrar",
+                mn.preview_update_registrar(
+                    as_wallet,
+                    UpdateRegistrarRequest {
+                        operator: KeepOr::Set(OperatorChoice::Given {
+                            public_key: SECRET.into(),
+                        }),
+                        ..update(&secret())
+                    },
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "update_registrar",
+                mn.update_registrar(as_wallet, update(&secret()), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "submit_external_registration",
+                mn.submit_external_registration(as_wallet, secret(), secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "resend_operation",
+                mn.resend_operation(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "discard_operation",
+                mn.discard_operation(as_wallet, secret()).await,
+            ),
+            (
+                "release_collateral",
+                mn.release_collateral(as_wallet, secret()).await,
+            ),
+            (
+                "shared_session",
+                mn.shared_session(as_wallet, secret()).await.map(drop),
+            ),
+            (
+                "import_shared_message",
+                mn.import_shared_message(as_wallet, secret(), Some(secret()))
+                    .await
+                    .map(drop),
+            ),
+            (
+                "sign_shared_funding",
+                mn.sign_shared_funding(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "send_shared_registration",
+                mn.send_shared_registration(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "abandon_shared_session",
+                mn.abandon_shared_session(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "discard_shared_session",
+                mn.discard_shared_session(as_wallet, secret()).await,
+            ),
+            (
+                "preview_update_share",
+                mn.preview_update_share(
+                    as_wallet,
+                    UpdateShareRequest {
+                        pro_tx_hash: secret(),
+                        share_index: 0,
+                        reward: RewardChoice::Address { address: secret() },
+                    },
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "update_share",
+                mn.update_share(
+                    as_wallet,
+                    UpdateShareRequest {
+                        pro_tx_hash: secret(),
+                        share_index: 0,
+                        reward: RewardChoice::Address { address: secret() },
+                    },
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "preview_dissolve",
+                mn.preview_dissolve(
+                    as_wallet,
+                    DissolveRequest {
+                        pro_tx_hash: secret(),
+                        share_index: 0,
+                        fee: 1_000,
+                    },
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "dissolve",
+                mn.dissolve(
+                    as_wallet,
+                    DissolveRequest {
+                        pro_tx_hash: secret(),
+                        share_index: 0,
+                        fee: 1_000,
+                    },
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "create_standby",
+                mn.create_standby(as_wallet, secret(), 1_000, secret())
+                    .await
+                    .map(drop),
+            ),
+            ("standby", mn.standby(as_wallet, secret()).await.map(drop)),
+            (
+                "export_standby",
+                mn.export_standby(as_wallet, secret(), 0, 1_000, secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "send_standby",
+                mn.send_standby(
+                    as_wallet,
+                    secret(),
+                    0,
+                    1_000,
+                    StandbyVariant::Full,
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "start_dissolve_together",
+                mn.start_dissolve_together(
+                    as_wallet,
+                    DissolveRequest {
+                        pro_tx_hash: secret(),
+                        share_index: 0,
+                        fee: 1_000,
+                    },
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "approve_maintenance",
+                mn.approve_maintenance(as_wallet, secret(), secret(), true)
+                    .await
+                    .map(drop),
+            ),
+            (
+                "send_maintenance",
+                mn.send_maintenance(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "start_key_change",
+                mn.start_key_change(
+                    as_wallet,
+                    KeyChangeRequest {
+                        operator: KeepOr::Set(OperatorChoice::Given {
+                            public_key: SECRET.into(),
+                        }),
+                        ..key_change(&secret())
+                    },
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "withdrawal_quote",
+                mn.withdrawal_quote(as_wallet, secret()).await.map(drop),
+            ),
+            (
+                "withdraw_credits",
+                mn.withdraw_credits(
+                    as_wallet,
+                    secret(),
+                    WithdrawalKeyChoice::Payout,
+                    WithdrawAmount::All,
+                    Some(secret()),
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "retry_withdrawal",
+                mn.retry_withdrawal(
+                    as_wallet,
+                    secret(),
+                    secret(),
+                    WithdrawalKeyChoice::Payout,
+                    WithdrawAmount::All,
+                    Some(secret()),
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "recheck_withdrawal",
+                mn.recheck_withdrawal(secret()).await.map(drop),
+            ),
+            (
+                "mark_withdrawal",
+                mn.mark_withdrawal(secret(), WithdrawalMark::Received)
+                    .await
+                    .map(drop),
+            ),
+        ]
+    });
+    for (call, result) in calls {
+        let e = result.expect_err(call);
+        for text in [e.to_string(), format!("{e:?}")] {
+            assert!(!quotes_secret(&text), "{call} quotes its argument: {text}");
+        }
+    }
+}

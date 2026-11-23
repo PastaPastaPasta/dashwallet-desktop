@@ -1,0 +1,412 @@
+//! Leases, the lock coordinator and the dispatch fence (E0-04 design §4,
+//! §5, §8; P2a: mode-independent engine side).
+//!
+//! - [`table`]: the lease table. Everything decided about leases, permits
+//!   and artifacts happens in one critical section of its mutex J, a leaf
+//!   that is never held across an await, I/O or a library lock (H1).
+//! - [`budget`]: a purpose's budget with authority generations (§4.2).
+//! - [`call`]: Mode B's call permits around library write calls (§2a.3).
+//! - [`mode_b`]: Mode B's derived funding statuses and its funding gate
+//!   (§2a.5, H15).
+//! - [`repair`]: Repair's "Resolve stuck funding" self-spend (§6.5, C9).
+//! - [`fence`]: `register`, `admit`, `abandon` and the attempt guards; the
+//!   in-memory journal, the row-less set and its tombstones;
+//!   `dispatch_status` (§5.4, §5.5, §16.6).
+//! - [`lock`]: the freeze, the barrier, the per-request vault gate and the
+//!   drain (§8.1–§8.3); the outcomes of a lock (§8.4).
+//! - [`session`]: `NetworkSession`'s side: `begin_lease`, `lock_vault`, the
+//!   revoking vault methods, the background lease and the facade's lease
+//!   handle.
+//!
+//! The library side (Mode A's PR, Mode B's call permits) builds on this
+//! API: P2b and P4 install it, DP1-02 uses it.
+
+pub(crate) mod background;
+pub(crate) mod budget;
+pub(crate) mod call;
+pub(crate) mod fence;
+pub(crate) mod lock;
+pub(crate) mod mode_b;
+pub(crate) mod repair;
+pub(crate) mod resume;
+pub(crate) mod session;
+pub(crate) mod table;
+
+#[cfg(test)]
+mod bl76_tests;
+#[cfg(test)]
+mod call_tests;
+#[cfg(test)]
+mod import_tests;
+#[cfg(test)]
+mod mode_b_tests;
+#[cfg(test)]
+mod resume_tests;
+#[cfg(test)]
+pub(crate) mod session_tests;
+#[cfg(test)]
+mod stress_tests;
+#[cfg(test)]
+mod tests;
+
+use std::time::Duration;
+
+use dw_vault::VaultStatus;
+
+use super::errors::{IdentityError, PlatformError};
+use super::flows::{BudgetPurpose, FlowKind, RevokeCause};
+use super::identity::KeyPurpose;
+
+pub(crate) use call::FundingRelease;
+pub use call::{CallPermit, CallQuote, CallStep, FundingKey, FundingQuote, SignatureCount};
+pub use fence::{
+    AdmitRequest, ArtifactKind, AttemptGuard, CallStepInfo, CallStepStatus, DispatchPermit,
+    NonceSlot, NonceSpace, Outcome, Settlement, Verdict,
+};
+pub(crate) use mode_b::StoredLock;
+pub use mode_b::{
+    DraftKey, FundingBlock, SelfSpend, StuckFundingRefusal, TrackedRow, TrackedStatus,
+};
+pub use table::{Lease, LeaseTable};
+
+/// A lease's id: 128 bits from the OS RNG, in memory only (H5, I7).
+pub type LeaseId = [u8; 16];
+
+/// The facade's form of a lease id: what `begin_flow` returns and every
+/// call taking a `grant` accepts. Vault grant ids are 32 hex digits, so the
+/// prefix keeps the two apart.
+pub(crate) const LEASE_PREFIX: &str = "lease-";
+
+pub(crate) fn lease_string(id: &LeaseId) -> String {
+    format!("{LEASE_PREFIX}{}", hex::encode(id))
+}
+
+pub(crate) fn parse_lease(s: &str) -> Option<LeaseId> {
+    let hex_part = s.strip_prefix(LEASE_PREFIX)?;
+    let mut id = [0u8; 16];
+    hex::decode_to_slice(hex_part, &mut id).ok()?;
+    Some(id)
+}
+
+/// A handed-off artifact: a txid or a state-transition hash, 32 bytes in
+/// display order, so its string is plain lower-case hex (a txid as dash-qt
+/// shows it).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ArtifactId(pub [u8; 32]);
+
+impl ArtifactId {
+    pub fn from_txid(txid: &dashcore::Txid) -> Self {
+        use dashcore::hashes::Hash;
+        let mut bytes = txid.to_byte_array();
+        bytes.reverse();
+        Self(bytes)
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        let mut bytes = [0u8; 32];
+        hex::decode_to_slice(s, &mut bytes).ok()?;
+        Some(Self(bytes))
+    }
+
+    /// The synthetic artifact of a Mode B call step (§2a.3): a library
+    /// call cannot be named by what it will produce, so its marker names
+    /// the step. SHA-256 over a domain tag, the wallet and the step id; the
+    /// wallet keeps two wallets' identical step ids apart (review O-1).
+    pub fn of_step(wallet: &crate::WalletId, step: &str) -> Self {
+        use dashcore::hashes::{Hash, HashEngine, sha256};
+        let mut engine = sha256::Hash::engine();
+        engine.input(b"dw-e0-04/call-step/v1");
+        engine.input(&wallet.0);
+        engine.input(step.as_bytes());
+        Self(sha256::Hash::from_engine(engine).to_byte_array())
+    }
+}
+
+impl std::fmt::Display for ArtifactId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&hex::encode(self.0))
+    }
+}
+
+impl std::fmt::Debug for ArtifactId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ArtifactId({})", &hex::encode(self.0)[..16])
+    }
+}
+
+/// Hand-offs that run without a lease (§5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnleasedKind {
+    /// `TxDraft` M1 sends, until P5 leases them.
+    Send,
+    /// CoinJoin denominations and collaterals.
+    Mixing,
+    /// PSBT bytes signed elsewhere.
+    External,
+    /// A resend of a transaction already in the wallet's records.
+    Rebroadcast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Lease(LeaseId),
+    Unleased(UnleasedKind),
+}
+
+/// Who is handing off, read by `register` and `admit` (§5.2). The engine
+/// wraps every call that can hand off in one: [`Lease::scope`] or
+/// [`DispatchScope::unleased`]. P3 moves the task-local into rs-sdk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchScope {
+    pub wallet: crate::WalletId,
+    pub origin: Origin,
+    /// A resumable step (§7.6), e.g. `registration/<draft>/identity`.
+    pub step: Option<String>,
+}
+
+tokio::task_local! {
+    static SCOPE: DispatchScope;
+}
+
+impl DispatchScope {
+    /// The scope of the running task, if any.
+    pub fn current() -> Option<Self> {
+        SCOPE.try_with(Clone::clone).ok()
+    }
+
+    pub async fn run<F: Future>(self, f: F) -> F::Output {
+        SCOPE.scope(self, f).await
+    }
+
+    pub async fn unleased<F: Future>(
+        wallet: crate::WalletId,
+        kind: UnleasedKind,
+        f: F,
+    ) -> F::Output {
+        Self {
+            wallet,
+            origin: Origin::Unleased(kind),
+            step: None,
+        }
+        .run(f)
+        .await
+    }
+}
+
+/// A flow's or an artifact's outcome (§4.6, §8.4), weakest first: a flow
+/// takes the strongest of its artifacts'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FlowOutcome {
+    /// Nothing of it was ever committed, or every committed row-less
+    /// artifact settled definitely unsent.
+    Cancelled,
+    /// Handed off, outcome unknown.
+    MaybeSent,
+    /// Committed with a record; the engine sends it again.
+    WillBeSent,
+    Sent,
+}
+
+/// One revoked flow in a lock's report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowReport {
+    /// The facade's lease id.
+    pub lease: String,
+    pub wallet_id: String,
+    pub flow: FlowKind,
+    pub outcome: FlowOutcome,
+    /// Each committed artifact of the flow, with its own outcome.
+    pub artifacts: Vec<(String, FlowOutcome)>,
+}
+
+/// What a lock found (§8.4): the vault after its gate, and every lease it
+/// revoked or drained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockReport {
+    pub status: VaultStatus,
+    pub flows: Vec<FlowReport>,
+}
+
+/// `EngineEvent::LockProgress`'s phase (§16.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockPhase {
+    /// Permits handed off before the lock are still in flight (C6).
+    Draining {
+        in_flight: u32,
+        deadline_in_ms: u64,
+    },
+    Done(LockReport),
+}
+
+/// Why a lease refused a call (§16.4 maps each to its code).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum LeaseError {
+    /// A lock landed while the lease was being created, or Lock won the
+    /// flow's permit: `platform.cancelled`.
+    #[error("a lock landed first")]
+    Locked,
+    #[error("lease revoked: {0:?}")]
+    Revoked(RevokeCause),
+    /// Ended by `end_flow` or the idle reaper.
+    #[error("lease ended")]
+    Ended,
+    /// The key window passed or the flow parked: it needs a fresh grant.
+    #[error("lease parked; needs a grant for {0:?}")]
+    Parked(BudgetPurpose),
+    /// An epoch change, or the purpose's budget is 0.
+    #[error("needs a grant for {0:?}")]
+    NeedsGrant(BudgetPurpose),
+    #[error("{purpose:?} budget exceeded: {needed} needed, {remaining} remaining")]
+    Exceeded {
+        purpose: BudgetPurpose,
+        needed: u64,
+        remaining: u64,
+    },
+    /// Unknown, used, of the wrong kind, or another wallet's.
+    #[error("grant invalid")]
+    Invalid,
+    /// The vault refused for a reason the codes above do not cover.
+    #[error("vault: {0}")]
+    Vault(&'static str),
+    /// A Mode B call step's marker could not be made durable: the journal
+    /// is unavailable or its write failed, so the call did not start
+    /// (§2a.3, §6.4): `storage`.
+    #[error("the dispatch journal is unavailable")]
+    JournalUnavailable,
+    /// A Mode B call step whose marker stands under another funding key (or
+    /// none): the call is refused before it is charged (§2a.3): `internal`.
+    #[error("the call step's marker carries another funding key")]
+    StepKeyMismatch,
+    /// A Mode B funding call that must not start (§2a.3): the wallet's
+    /// tracked rows are unknown, a tracked `Built`/`Broadcast` row is not
+    /// resumed yet, or the step's own funding committed. Refused before the
+    /// charge.
+    #[error("funding blocked: {0:?}")]
+    FundingBlocked(mode_b::FundingBlock),
+    /// The vault no longer holds a key the write signs with; its grants are
+    /// unused (DP2-02): `identity.keys_missing`.
+    #[error("the vault holds none of the write's keys")]
+    KeysNotHeld,
+}
+
+impl From<LeaseError> for PlatformError {
+    fn from(e: LeaseError) -> Self {
+        match e {
+            LeaseError::Locked => PlatformError::Cancelled,
+            LeaseError::Revoked(cause) => PlatformError::LeaseRevoked { cause },
+            LeaseError::Ended => PlatformError::LeaseExpired,
+            LeaseError::Parked(purpose) | LeaseError::NeedsGrant(purpose) => {
+                PlatformError::NeedsGrant { purpose }
+            }
+            LeaseError::Exceeded {
+                purpose,
+                needed,
+                remaining,
+            } => PlatformError::GrantExceeded {
+                purpose,
+                needed,
+                remaining,
+            },
+            LeaseError::Invalid => PlatformError::GrantInvalid,
+            LeaseError::Vault(detail) => PlatformError::Internal {
+                detail: detail.into(),
+            },
+            LeaseError::JournalUnavailable => PlatformError::Storage {
+                detail: e.to_string(),
+            },
+            LeaseError::StepKeyMismatch => PlatformError::Internal {
+                detail: e.to_string(),
+            },
+            // §16.4 has no code of its own for these; the closest:
+            // the rows are read on demand, so unknown rows are transient;
+            // a pending row is the lock the catch-up will send
+            // (`will_be_sent{txid}`); a committed step is not fundable
+            // again (`invalid_argument`, as `discard_registration`'s refusal,
+            // §16.6). `funding_call_permit` names the step instead where its
+            // status has a code (`broadcast_unknown`, `will_be_sent`).
+            LeaseError::FundingBlocked(block) => match block {
+                mode_b::FundingBlock::RowsUnknown => PlatformError::Unavailable,
+                mode_b::FundingBlock::Row(txid) => PlatformError::WillBeSent {
+                    artifact: txid.to_string(),
+                },
+                mode_b::FundingBlock::Step(_) => PlatformError::InvalidArgument {
+                    detail: "the funding step has committed; a new funding needs a new step".into(),
+                },
+                mode_b::FundingBlock::StepCancelled => PlatformError::InvalidArgument {
+                    detail: "Repair cancelled the funding step; a new funding needs a new step"
+                        .into(),
+                },
+            },
+            LeaseError::KeysNotHeld => IdentityError::KeysMissing {
+                purpose: KeyPurpose::Authentication,
+            }
+            .into(),
+        }
+    }
+}
+
+/// The table's timing (§4.4, §4.7, §8.2). Tests shrink them.
+#[derive(Debug, Clone, Copy)]
+pub struct LeaseConfig {
+    /// H: a permit's lifetime from its grant.
+    pub permit_ttl: Duration,
+    /// An own key without a proof wait lives this long from the lease's
+    /// creation (the grant TTL).
+    pub key_ttl: Duration,
+    /// A vault-key lease with no call, permit or flow task is ended after
+    /// this long.
+    pub idle: Duration,
+}
+
+impl Default for LeaseConfig {
+    fn default() -> Self {
+        Self {
+            permit_ttl: Duration::from_secs(10),
+            key_ttl: Duration::from_secs(120),
+            idle: Duration::from_secs(600),
+        }
+    }
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::*;
+
+    #[test]
+    fn lease_and_artifact_ids_round_trip() {
+        let id = [7u8; 16];
+        let s = lease_string(&id);
+        assert!(s.starts_with(LEASE_PREFIX));
+        assert_eq!(parse_lease(&s), Some(id));
+        assert_eq!(
+            parse_lease(&hex::encode(id)),
+            None,
+            "a grant id is not a lease"
+        );
+        let txid: dashcore::Txid =
+            "0102030405060708091011121314151617181920212223242526272829303132"
+                .parse()
+                .unwrap();
+        let a = ArtifactId::from_txid(&txid);
+        assert_eq!(a.to_string(), txid.to_string(), "display order");
+        assert_eq!(ArtifactId::parse(&a.to_string()), Some(a));
+    }
+
+    /// SHA-256(b"dw-e0-04/call-step/v1" || [0; 32] || b"s").
+    const PINNED_STEP_ARTIFACT: &str =
+        "06459b77c1e082b93056a656c9c21b0c4601912bd720b357832292c09106237f";
+
+    #[test]
+    fn a_call_steps_artifact_is_per_wallet_and_per_step() {
+        let (w1, w2) = (crate::WalletId([1; 32]), crate::WalletId([2; 32]));
+        let a = ArtifactId::of_step(&w1, "topup/x/funding");
+        assert_eq!(a, ArtifactId::of_step(&w1, "topup/x/funding"), "stable");
+        assert_ne!(a, ArtifactId::of_step(&w2, "topup/x/funding"));
+        assert_ne!(a, ArtifactId::of_step(&w1, "topup/y/funding"));
+        // Pinned: the journal outlives builds.
+        assert_eq!(
+            ArtifactId::of_step(&crate::WalletId([0; 32]), "s").to_string(),
+            PINNED_STEP_ARTIFACT
+        );
+    }
+}

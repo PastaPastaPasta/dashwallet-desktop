@@ -1,0 +1,198 @@
+diff --git a/packages/rs-platform-wallet/src/wallet/identity/network/contact_requests.rs b/packages/rs-platform-wallet/src/wallet/identity/network/contact_requests.rs
+index 01f8327bd9..b1ded46bb9 100644
+--- a/packages/rs-platform-wallet/src/wallet/identity/network/contact_requests.rs
++++ b/packages/rs-platform-wallet/src/wallet/identity/network/contact_requests.rs
+@@ -5884,3 +5884,193 @@ mod pending_enqueue_tests {
+         assert_eq!(backend.writes.load(Ordering::SeqCst), 1);
+     }
+ }
++
++// ---------------------------------------------------------------------------
++// One-off fixture generator for dashwallet-desktop E0-03 (scratch only, never
++// committed or pushed). Run with E0_03_VECTORS_OUT=<file>.
++// ---------------------------------------------------------------------------
++#[cfg(test)]
++mod e0_03_vectors {
++    use super::*;
++    use key_wallet::bip32::{ChildNumber, DerivationPath, KeyDerivationType};
++    use key_wallet::mnemonic::Mnemonic;
++    use key_wallet::Network;
++    use serde_json::{json, Value};
++
++    use crate::wallet::identity::crypto::auto_accept::auto_accept_derivation_path;
++    use crate::wallet::identity::network::identity_handle::identity_auth_derivation_path_for_type;
++
++    const IDENTITY_DATA: &[u8] = b"dashwallet-desktop E0-03 identity signer vector";
++    const USER_ID: [u8; 32] = [0x11; 32];
++    const FRIEND_ID: [u8; 32] = [0x22; 32];
++    const PEER_SECRET: [u8; 32] = [0x42; 32];
++    const CONTACT_ID: [u8; 32] = [0x33; 32];
++    const PRIVATE_DATA: &[u8] = b"hello private data";
++    const PRIVATE_DATA_IV: [u8; 16] = [0x11; 16];
++    const EXPIRY: u32 = 1_900_000_000;
++
++    fn auth(network: Network, i: u32, k: u32) -> DerivationPath {
++        identity_auth_derivation_path_for_type(network, KeyDerivationType::ECDSA, i, k).unwrap()
++    }
++
++    fn xpub_json(x: &key_wallet::bip32::ExtendedPubKey) -> Value {
++        json!({
++            "depth": x.depth,
++            "parent_fingerprint": hex::encode(x.parent_fingerprint.to_bytes()),
++            "chain_code": hex::encode(x.chain_code.to_bytes()),
++            "public_key": hex::encode(x.public_key.serialize()),
++            "compact": hex::encode(platform_encryption::CompactXpub {
++                parent_fingerprint: x.parent_fingerprint.to_bytes(),
++                chain_code: x.chain_code.to_bytes(),
++                public_key: x.public_key.serialize(),
++            }.to_bytes()),
++        })
++    }
++
++    async fn case(name: &str, seed: [u8; 64], network: Network) -> Value {
++        let p = SeedCryptoProvider::from_seed(seed, network);
++        let secp = dashcore::secp256k1::Secp256k1::new();
++
++        // Identity keys 0-5 of identities 0 and 1 (DIP-13 auth, ECDSA).
++        let mut identity_keys = vec![];
++        for i in [0u32, 1] {
++            for k in 0u32..=5 {
++                let path = auth(network, i, k);
++                let xprv = p.wallet.derive_extended_private_key(&path).unwrap();
++                let pubkey = dashcore::secp256k1::PublicKey::from_secret_key(&secp, &xprv.private_key);
++                let sig = dashcore::signer::sign(IDENTITY_DATA, &xprv.private_key.secret_bytes()).unwrap();
++                identity_keys.push(json!({
++                    "identity_index": i, "key_index": k, "path": path.to_string(),
++                    "public_key": hex::encode(pubkey.serialize()),
++                    "hash160": hex::encode(dpp::util::hash::ripemd160_sha256(&pubkey.serialize())),
++                    "signature": hex::encode(sig),
++                }));
++            }
++        }
++
++        // DIP-15 receiving xpubs (DIP-14 256-bit children).
++        let mut receiving = vec![];
++        for account in [0u32, 1] {
++            let path = key_wallet::account::AccountType::DashpayReceivingFunds {
++                index: account,
++                user_identity_id: USER_ID,
++                friend_identity_id: FRIEND_ID,
++            }
++            .derivation_path(network)
++            .unwrap();
++            let x = p.receiving_xpub(&path).await.unwrap();
++            receiving.push(json!({"account": account, "path": path.to_string(), "xpub": xpub_json(&x)}));
++        }
++
++        // Seed binding: BIP44 account 0 xpub.
++        let bip44 = key_wallet::account::AccountType::Standard {
++            index: 0,
++            standard_account_type: key_wallet::account::StandardAccountType::BIP44Account,
++        }
++        .derivation_path(network)
++        .unwrap();
++        let bip44_xpub = p.receiving_xpub(&bip44).await.unwrap();
++
++        // Auto-accept key at EXPIRY.
++        let aa_path = auto_accept_derivation_path(network, EXPIRY).unwrap();
++        let aa_xpub = p.receiving_xpub(&aa_path).await.unwrap();
++        let aa_secret = p.export_auto_accept_private_key(&aa_path).await.unwrap();
++
++        // ECDH with the peer pubkey of PEER_SECRET.
++        let peer = dashcore::secp256k1::PublicKey::from_secret_key(
++            &secp,
++            &dashcore::secp256k1::SecretKey::from_slice(&PEER_SECRET).unwrap(),
++        );
++        let mut ecdh = vec![];
++        for (i, k) in [(0u32, 4u32), (0, 5), (1, 4)] {
++            let path = auth(network, i, k);
++            let shared = p.ecdh_shared_secret(&path, &peer).await.unwrap();
++            ecdh.push(json!({"identity_index": i, "key_index": k, "path": path.to_string(), "shared": hex::encode(*shared)}));
++        }
++
++        // Account reference over the account-0 receiving compact xpub.
++        let compact = hex::decode(receiving[0]["xpub"]["compact"].as_str().unwrap()).unwrap();
++        let mut account_refs = vec![];
++        for (i, k, account_index, version) in [(0u32, 4u32, 0u32, 0u32), (0, 4, 7, 3), (1, 4, 0, 15)] {
++            let path = auth(network, i, k);
++            let reference = p.account_reference(&path, &compact, account_index, version).await.unwrap();
++            let (v, a) = p.unmask_account_reference(&path, &compact, reference).await.unwrap();
++            assert_eq!((v, a), (version, account_index));
++            account_refs.push(json!({
++                "identity_index": i, "key_index": k, "path": path.to_string(),
++                "account_index": account_index, "version": version, "reference": reference,
++            }));
++        }
++
++        // contactInfo seal/open.
++        let mut contact_info = vec![];
++        for (i, k, idx) in [(0u32, 2u32, 0u32), (0, 2, 5), (1, 0, 0)] {
++            let root = auth(network, i, k);
++            let sealed = p
++                .contact_info_seal(&root, idx, &CONTACT_ID, PRIVATE_DATA, &PRIVATE_DATA_IV)
++                .await
++                .unwrap();
++            let opened = p
++                .contact_info_open(&root, idx, &sealed.enc_to_user_id, &sealed.private_data)
++                .await
++                .unwrap();
++            assert_eq!(opened.contact_id, CONTACT_ID);
++            assert_eq!(opened.private_data, PRIVATE_DATA);
++            contact_info.push(json!({
++                "identity_index": i, "key_index": k, "root_path": root.to_string(), "derivation_index": idx,
++                "enc_to_user_id": hex::encode(sealed.enc_to_user_id),
++                "private_data": hex::encode(&sealed.private_data),
++            }));
++        }
++        let _ = ChildNumber::from_normal_idx(0);
++
++        json!({
++            "name": name,
++            "network": match network { Network::Mainnet => "mainnet", _ => "testnet" },
++            "seed": hex::encode(seed),
++            "identity_keys": identity_keys,
++            "receiving_xpubs": receiving,
++            "bip44_account0": {"path": bip44.to_string(), "xpub": bip44_xpub.to_string()},
++            "auto_accept": {
++                "expiry": EXPIRY, "path": aa_path.to_string(),
++                "public_key": hex::encode(aa_xpub.public_key.serialize()),
++                "secret": hex::encode(aa_secret.secret_bytes()),
++            },
++            "ecdh": ecdh,
++            "account_references": account_refs,
++            "contact_info": contact_info,
++        })
++    }
++
++    #[tokio::test]
++    async fn write_e0_03_vectors() {
++        let Ok(out) = std::env::var("E0_03_VECTORS_OUT") else { return };
++        let seed_a = Mnemonic::from_phrase(
++            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
++        )
++        .unwrap()
++        .to_seed("");
++        let seed_b = Mnemonic::from_phrase(
++            "legal winner thank year wave sausage worth useful legal winner thank yellow"
++        )
++        .unwrap()
++        .to_seed("TREZOR");
++        let mut cases = vec![];
++        for (name, seed) in [("abandon-about", seed_a), ("legal-winner-TREZOR", seed_b)] {
++            for network in [Network::Testnet, Network::Mainnet] {
++                cases.push(case(name, seed, network).await);
++            }
++        }
++        let doc = json!({
++            "source": "dashpay/platform bc321362b9ff9c8ac24244f9d4b09ec3de7a5938, rs-platform-wallet SeedCryptoProvider (contact_requests.rs:171-345); identity keys via key_wallet Wallet::derive_extended_private_key + dashcore::signer::sign",
++            "constants": {
++                "identity_data": hex::encode(IDENTITY_DATA),
++                "user_id": hex::encode(USER_ID), "friend_id": hex::encode(FRIEND_ID),
++                "peer_secret": hex::encode(PEER_SECRET), "contact_id": hex::encode(CONTACT_ID),
++                "private_data": hex::encode(PRIVATE_DATA), "private_data_iv": hex::encode(PRIVATE_DATA_IV),
++            },
++            "cases": cases,
++        });
++        std::fs::write(out, serde_json::to_string_pretty(&doc).unwrap() + "\n").unwrap();
++    }
++}

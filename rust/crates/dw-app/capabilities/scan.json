@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "scan",
+  "description": "QR codes from an image file, a dropped or pasted image, or a screen region (DP2-08 D9, D10). Granted to the main window only.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-screen-scan-mode",
+    "allow-scan-qr-file",
+    "allow-scan-qr-image",
+    "allow-scan-qr-screen",
+    "allow-cancel-screen-scan"
+  ]
+}

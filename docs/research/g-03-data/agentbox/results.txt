@@ -1,0 +1,29 @@
+U5 FAIL cold start to first paint (demo Overview): median 5.006 s, max 5.629 s (<= 1.5 s) (10 runs; CPU median 4.41 s; load 147.78 131.38 138.32)
+U5 INFO spawn to demo-first-paint (s; CPU s): {'n': 10, 'min': 0.895, 'median': 1.227, 'p95': 5.436, 'max': 5.436}; {'n': 10, 'min': 0.58, 'median': 0.679, 'p95': 4.412, 'max': 4.412}
+U5 INFO spawn to live-lock-paint (s; CPU s): {'n': 10, 'min': 12.947, 'median': 16.31, 'p95': 19.064, 'max': 19.064}; {'n': 10, 'min': 9.142, 'median': 10.351, 'p95': 11.658, 'max': 11.658}
+U5 INFO unlock to Overview (KDF + first page): {'n': 10, 'min': 3.068, 'median': 3.569, 'p95': 3.7, 'max': 3.7}
+U5 PASS idle PSS without the engine (demo Overview) max 230.8 MiB (<= 400 MiB) ([{"Rss": 292.2, "Pss": 230.8, "Pss_Anon": 127.7, "Pss_File": 84.5}, {"Rss": 289.5, "Pss": 213.7, "Pss_Anon": 125.0, "Pss_File": 70.1}, {"Rss": 291.9, "Pss": 210.0, "Pss_Anon": 127.6, "Pss_File": 63.8}])
+U5 INFO idle PSS with the engine, 40k wallet, max 656.1 MiB: [{"overview": {"Rss": 574.8, "Pss": 491.1, "Pss_Anon": 380.6, "Pss_File": 93.8}, "transactions": {"Rss": 703.7, "Pss": 623.1, "Pss_Anon": 504.3, "Pss_File": 96.8}, "idleCpuPercent": 8.8}, {"overview": {"Rss": 563.8, "Pss": 479.7, "Pss_Anon": 369.4, "Pss_File": 93.5}, "transactions": {"Rss": 725.9, "Pss": 627.9, "Pss_Anon": 526.5, "Pss_File": 79.6}, "idleCpuPercent": 5.6}, {"overview": {"Rss": 614.0, "Pss": 529.6, "Pss_Anon": 420.6, "Pss_File": 92.2}, "transactions": {"Rss": 718.7, "Pss": 656.1, "Pss_Anon": 520.0, "Pss_File": 114.1}, "idleCpuPercent": 2.9}]
+U1 PASS unlock through AT-SPI (Passphrase field, Unlock button)
+U1 PASS Overview shows dwcli's balance (20601436392896 duffs) (['206\u2009014.36392896', '206\u2009014.36392896', '206\u2009014.36392896'])
+U1 PASS first 200 rows match dwcli history (200 app rows, 200 dwcli) (0 mismatches; first [])
+U3 PASS light: the four screens captured (['detail', 'overview', 'transactions', 'unlock'])
+U3 PASS light: the bundled Inter is the font in use (['/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', '/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Bold.ttf', '/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Medium.ttf', '/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Regular.ttf', '/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-SemiBold.ttf'])
+U3 PASS dark: the four screens captured (['detail', 'overview', 'transactions', 'unlock'])
+U3 PASS dark: the bundled Inter is the font in use (['/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', '/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Bold.ttf', '/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Medium.ttf', '/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Regular.ttf', '/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-SemiBold.ttf'])
+U4 PASS AT-SPI walk light-unlock: 7 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk light-overview: 32 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk light-transactions: 133 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk light-detail: 139 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk dark-unlock: 7 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk dark-overview: 32 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk dark-transactions: 133 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk dark-detail: 139 interactive, 0 unnamed ([])
+U4 PASS keyboard: unlock (Return in the field)
+U4 PASS keyboard: hide the sync overlay (Tab to Hide, Space)
+U4 FAIL keyboard: Tab through the sidebar keeps the page (focus does not select a row) (['transactions-paint'])
+U4 FAIL keyboard: Tab reaches every Overview control (21 stops) ([('list item', 'Overview'), ('list item', 'Send'), ('button', 'Address Book'), ('button', 'Sign / Verify Message'), ('button', 'Tools Window'), ('button', 'PSBT Operations'), ('button', 'Options'), ('button', 'Security'), ('button', 'Settings'), ('button', 'Hide balance')])
+U4 PASS keyboard: sidebar to Transactions (Tab, Down, Return)
+U4 FAIL keyboard: Tab reaches Load more
+U4 FAIL keyboard: open a transaction's details (Tab to a row, Return)
+U5 FAIL history_page(200) + render p95 37184.613 ms (<= 20 ms) (FFI alone p95 660.461 ms, limit 1 p95 1711.062 ms; load 156.26 179.49 184.47)

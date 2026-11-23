@@ -1,0 +1,28 @@
+diff --git a/Vendor/swift-cross-ui/Sources/Gtk/Widgets/Widget.swift b/Vendor/swift-cross-ui/Sources/Gtk/Widgets/Widget.swift
+index 142e3b3..fc35b09 100644
+--- a/Vendor/swift-cross-ui/Sources/Gtk/Widgets/Widget.swift
++++ b/Vendor/swift-cross-ui/Sources/Gtk/Widgets/Widget.swift
+@@ -35,10 +35,22 @@ open class Widget: GObject {
+     public lazy var css: CSSBlock = CSSBlock(forClass: customCSSClass) {
+         didSet {
+             guard oldValue != css else { return }
+-            cssProvider.loadCss(from: css.stringRepresentation)
++            // G-03 experiment: a provider scoped to this widget's style context, not the display.
++            let data = css.stringRepresentation
++            gtk_css_provider_load_from_data(scopedCSSProvider, data, gssize(data.utf8.count))
+         }
+     }
+ 
++    /// G-03 experiment: owned by the widget's style context once added.
++    private lazy var scopedCSSProvider: UnsafeMutablePointer<GtkCssProvider> = {
++        let provider = gtk_css_provider_new()!
++        gtk_style_context_add_provider(
++            gtk_widget_get_style_context(widgetPointer), OpaquePointer(provider),
++            UInt32(GTK_STYLE_PROVIDER_PRIORITY_APPLICATION))
++        g_object_unref(provider)
++        return provider
++    }()
++
+     /// A unique CSS class for this widget. The class is lazily added to the
+     /// widget when this property is first accessed.
+     private lazy var customCSSClass: String = {

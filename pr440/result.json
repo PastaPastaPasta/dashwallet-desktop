@@ -1,0 +1,65 @@
+{
+  "ok": true,
+  "steps": [
+    "unlocked the real vault; SPV syncs from the suite's controller node",
+    "F's pane: \"Service127.0.0.1:15581Registeredblock 219Payout addressyfd6\u20268mcw from this wallet's registration records; a change made elsewhere wouldn't show hereVoting addressygyc\u2026LoPKPoSe score\u2014 (needs a full node)ProTx hashdee5\u202642d8\"",
+    "review: {\"voting\":\"yM5V8qaUC9\u2026xTqfra \u00b7 Changes\",\"payout\":\"yjSUtrmddx\u2026yjEDku \u00b7 Changes\"}; fee \"0.00000431 tDASH\"; Signed with its owner key from this wallet.",
+    "Send change: \"Change sent. It applies once it's in a block.The wallet couldn't confirm it reached the network. It keeps checking; nothing more to do now.Done\"; sent 7bbf24994aa3ba0ad1b574650817dd000766453032259b86b69273387261f41b",
+    "one block mined over it"
+  ],
+  "evidence": {
+    "pane": "Service127.0.0.1:15581Registeredblock 219Payout addressyfd6\u20268mcw from this wallet's registration records; a change made elsewhere wouldn't show hereVoting addressygyc\u2026LoPKPoSe score\u2014 (needs a full node)ProTx hashdee5\u202642d8",
+    "review": {
+      "voting": "yM5V8qaUC9\u2026xTqfra \u00b7 Changes",
+      "payout": "yjSUtrmddx\u2026yjEDku \u00b7 Changes"
+    },
+    "fee": "0.00000431 tDASH",
+    "signer": "Signed with its owner key from this wallet.",
+    "sent": "Change sent. It applies once it's in a block.The wallet couldn't confirm it reached the network. It keeps checking; nothing more to do now.Done",
+    "txid": "7bbf24994aa3ba0ad1b574650817dd000766453032259b86b69273387261f41b",
+    "core": {
+      "before": {
+        "version": 2,
+        "addresses": {
+          "core_p2p": [
+            "127.0.0.1:15581"
+          ]
+        },
+        "registeredHeight": 219,
+        "lastPaidHeight": 0,
+        "consecutivePayments": 0,
+        "PoSePenalty": 0,
+        "PoSeRevivedHeight": -1,
+        "PoSeBanHeight": -1,
+        "revocationReason": 0,
+        "ownerAddress": "ydBk7dHL9SfUP7uJoWQp7e7qx6b3cLyJyu",
+        "votingAddress": "ygycTWr9hAkqXCZ1CtQb8kyjXHR4W1LoPK",
+        "payoutAddress": "yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw",
+        "pubKeyOperator": "863b992561ba9279e4c3583d07b35e46f81109327198e9ee9625c132ff6e2163b73e8089d35ad4759523171c896d2058"
+      },
+      "after": {
+        "version": 2,
+        "addresses": {
+          "core_p2p": [
+            "127.0.0.1:15581"
+          ]
+        },
+        "registeredHeight": 219,
+        "lastPaidHeight": 222,
+        "consecutivePayments": 0,
+        "PoSePenalty": 0,
+        "PoSeRevivedHeight": -1,
+        "PoSeBanHeight": -1,
+        "revocationReason": 0,
+        "ownerAddress": "ydBk7dHL9SfUP7uJoWQp7e7qx6b3cLyJyu",
+        "votingAddress": "yM5V8qaUC9jgj7CYAwpigRmuN8xQxTqfra",
+        "payoutAddress": "yjSUtrmddxRtDDYmeH1VtpEdZgP5yjEDku",
+        "pubKeyOperator": "863b992561ba9279e4c3583d07b35e46f81109327198e9ee9625c132ff6e2163b73e8089d35ad4759523171c896d2058"
+      }
+    }
+  },
+  "source": {
+    "head": "9c3d89cbb3147c7159ef6f04b5091750a0e2dfcd",
+    "dirty": false
+  }
+}

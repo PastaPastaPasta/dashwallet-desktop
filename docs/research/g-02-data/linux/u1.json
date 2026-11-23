@@ -1,0 +1,17 @@
+{
+  "balance": {
+    "dwcliTotalDuffs": 20601436392896,
+    "heroShown": "206\u2009014.36",
+    "heroExpected": "206014.36",
+    "heroTooltipDuffs": 20601436392896,
+    "match": true
+  },
+  "rows": {
+    "compared": 200,
+    "appRows": 200,
+    "dwcliRows": 200,
+    "mismatches": 0,
+    "firstMismatches": []
+  },
+  "pass": true
+}

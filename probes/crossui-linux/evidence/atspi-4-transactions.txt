@@ -1,0 +1,248 @@
+[application] "CrossUILinuxProbe" desc="CrossUILinuxProbe" {}
+  [frame] "Dash Wallet Probe" actions=window.close,window.minimize,window.toggle-maximized,default.activate {sensitive,showing,visible} @(0,0 900x640)
+    [panel] "" {sensitive,showing,visible}
+      [panel] "" {sensitive,showing,visible}
+        [panel] "" {sensitive,showing,visible}
+          [panel] "" {sensitive,showing,visible}
+            [panel] "" {sensitive,showing,visible}
+              [panel] "" {focusable,sensitive,showing,visible}
+                [panel] "" {sensitive,showing,visible}
+                  [panel] "" {sensitive,showing,visible}
+                    [panel] "" {sensitive,showing,visible}
+                      [panel] "" {sensitive,showing,visible}
+                        [panel] "" {sensitive,showing,visible}
+                          [list] "" {focusable,sensitive,showing,visible} @(0,262 200x116)
+                            [list item] "" {focusable,selectable,sensitive,showing,visible} @(0,262 200x29)
+                              [panel] "" {sensitive,showing,visible}
+                                [label] "Overview" text="Overview" {sensitive,showing,visible}
+                            [list item] "" {focusable,selectable,sensitive,showing,visible} @(0,291 200x29)
+                              [panel] "" {sensitive,showing,visible}
+                                [label] "Send" text="Send" {sensitive,showing,visible}
+                            [list item] "" {focusable,selectable,sensitive,showing,visible} @(0,320 200x29)
+                              [panel] "" {sensitive,showing,visible}
+                                [label] "Receive" text="Receive" {sensitive,showing,visible}
+                            [list item] "" {focusable,selectable,selected,sensitive,showing,visible} @(0,349 200x29)
+                              [panel] "" {sensitive,showing,visible}
+                                [label] "Transactions" text="Transactions" {sensitive,showing,visible}
+                [panel] "" {sensitive,showing,visible}
+                [panel] "" {sensitive,showing,visible}
+                  [panel] "" {sensitive,showing,visible}
+                    [panel] "" {sensitive,showing,visible}
+                      [panel] "" {sensitive,showing,visible}
+                        [panel] "" {sensitive,showing,visible}
+                          [panel] "" {sensitive,showing,visible}
+                            [panel] "" {sensitive,showing,visible}
+                              [panel] "" {sensitive,showing,visible}
+                                [panel] "" {sensitive,showing,visible}
+                                  [label] "Transactions" text="Transactions" {sensitive,showing,visible}
+                                [panel] "" {sensitive,showing,visible}
+                                  [panel] "" {sensitive,showing,visible}
+                                    [panel] "" {sensitive,showing,visible}
+                                      [panel] "" {sensitive,showing,visible}
+                                        [scroll pane] "" {focusable,sensitive,showing,visible} @(217,55 668x569)
+                                          [panel] "" {sensitive,showing,visible}
+                                            [panel] "" {sensitive,showing,visible}
+                                              [panel] "" {sensitive,showing,visible}
+                                                [list] "" {focusable,sensitive,showing,visible} @(217,55 668x1450)
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,55 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.12345678 DASH, 0 confirmations, sample tx 1" text="Received +0.12345678 DASH, 0 confirmations, sample tx 1" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,84 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.24691356 DASH, 37 confirmations, sample tx 2" text="Received +0.24691356 DASH, 37 confirmations, sample tx 2" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,113 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.37037034 DASH, 74 confirmations, sample tx 3" text="Sent -0.37037034 DASH, 74 confirmations, sample tx 3" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,142 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.49382712 DASH, 111 confirmations, sample tx 4" text="Received +0.49382712 DASH, 111 confirmations, sample tx 4" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,selected,sensitive,showing,visible} @(217,171 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.6172839 DASH, 148 confirmations, sample tx 5" text="Received +0.6172839 DASH, 148 confirmations, sample tx 5" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,200 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.74074068 DASH, 185 confirmations, sample tx 6" text="Sent -0.74074068 DASH, 185 confirmations, sample tx 6" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,229 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.86419746 DASH, 222 confirmations, sample tx 7" text="Received +0.86419746 DASH, 222 confirmations, sample tx 7" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,258 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.12345678 DASH, 259 confirmations, sample tx 8" text="Received +0.12345678 DASH, 259 confirmations, sample tx 8" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,287 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.24691356 DASH, 296 confirmations, sample tx 9" text="Sent -0.24691356 DASH, 296 confirmations, sample tx 9" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,316 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.37037034 DASH, 333 confirmations, sample tx 10" text="Received +0.37037034 DASH, 333 confirmations, sample tx 10" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,345 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.49382712 DASH, 370 confirmations, sample tx 11" text="Received +0.49382712 DASH, 370 confirmations, sample tx 11" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,374 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.6172839 DASH, 407 confirmations, sample tx 12" text="Sent -0.6172839 DASH, 407 confirmations, sample tx 12" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,403 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.74074068 DASH, 444 confirmations, sample tx 13" text="Received +0.74074068 DASH, 444 confirmations, sample tx 13" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,432 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.86419746 DASH, 481 confirmations, sample tx 14" text="Received +0.86419746 DASH, 481 confirmations, sample tx 14" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,461 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.12345678 DASH, 518 confirmations, sample tx 15" text="Sent -0.12345678 DASH, 518 confirmations, sample tx 15" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,490 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.24691356 DASH, 555 confirmations, sample tx 16" text="Received +0.24691356 DASH, 555 confirmations, sample tx 16" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,519 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.37037034 DASH, 592 confirmations, sample tx 17" text="Received +0.37037034 DASH, 592 confirmations, sample tx 17" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,548 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.49382712 DASH, 629 confirmations, sample tx 18" text="Sent -0.49382712 DASH, 629 confirmations, sample tx 18" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,577 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.6172839 DASH, 666 confirmations, sample tx 19" text="Received +0.6172839 DASH, 666 confirmations, sample tx 19" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,606 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.74074068 DASH, 703 confirmations, sample tx 20" text="Received +0.74074068 DASH, 703 confirmations, sample tx 20" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,635 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.86419746 DASH, 740 confirmations, sample tx 21" text="Sent -0.86419746 DASH, 740 confirmations, sample tx 21" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,664 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.12345678 DASH, 777 confirmations, sample tx 22" text="Received +0.12345678 DASH, 777 confirmations, sample tx 22" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,693 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.24691356 DASH, 814 confirmations, sample tx 23" text="Received +0.24691356 DASH, 814 confirmations, sample tx 23" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,722 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.37037034 DASH, 851 confirmations, sample tx 24" text="Sent -0.37037034 DASH, 851 confirmations, sample tx 24" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,751 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.49382712 DASH, 888 confirmations, sample tx 25" text="Received +0.49382712 DASH, 888 confirmations, sample tx 25" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,780 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.6172839 DASH, 925 confirmations, sample tx 26" text="Received +0.6172839 DASH, 925 confirmations, sample tx 26" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,809 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.74074068 DASH, 962 confirmations, sample tx 27" text="Sent -0.74074068 DASH, 962 confirmations, sample tx 27" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,838 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.86419746 DASH, 999 confirmations, sample tx 28" text="Received +0.86419746 DASH, 999 confirmations, sample tx 28" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,867 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.12345678 DASH, 36 confirmations, sample tx 29" text="Received +0.12345678 DASH, 36 confirmations, sample tx 29" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,896 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.24691356 DASH, 73 confirmations, sample tx 30" text="Sent -0.24691356 DASH, 73 confirmations, sample tx 30" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,925 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.37037034 DASH, 110 confirmations, sample tx 31" text="Received +0.37037034 DASH, 110 confirmations, sample tx 31" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,954 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.49382712 DASH, 147 confirmations, sample tx 32" text="Received +0.49382712 DASH, 147 confirmations, sample tx 32" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,983 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.6172839 DASH, 184 confirmations, sample tx 33" text="Sent -0.6172839 DASH, 184 confirmations, sample tx 33" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1012 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.74074068 DASH, 221 confirmations, sample tx 34" text="Received +0.74074068 DASH, 221 confirmations, sample tx 34" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1041 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.86419746 DASH, 258 confirmations, sample tx 35" text="Received +0.86419746 DASH, 258 confirmations, sample tx 35" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1070 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.12345678 DASH, 295 confirmations, sample tx 36" text="Sent -0.12345678 DASH, 295 confirmations, sample tx 36" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1099 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.24691356 DASH, 332 confirmations, sample tx 37" text="Received +0.24691356 DASH, 332 confirmations, sample tx 37" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1128 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.37037034 DASH, 369 confirmations, sample tx 38" text="Received +0.37037034 DASH, 369 confirmations, sample tx 38" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1157 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.49382712 DASH, 406 confirmations, sample tx 39" text="Sent -0.49382712 DASH, 406 confirmations, sample tx 39" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1186 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.6172839 DASH, 443 confirmations, sample tx 40" text="Received +0.6172839 DASH, 443 confirmations, sample tx 40" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1215 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.74074068 DASH, 480 confirmations, sample tx 41" text="Received +0.74074068 DASH, 480 confirmations, sample tx 41" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1244 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.86419746 DASH, 517 confirmations, sample tx 42" text="Sent -0.86419746 DASH, 517 confirmations, sample tx 42" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1273 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.12345678 DASH, 554 confirmations, sample tx 43" text="Received +0.12345678 DASH, 554 confirmations, sample tx 43" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1302 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.24691356 DASH, 591 confirmations, sample tx 44" text="Received +0.24691356 DASH, 591 confirmations, sample tx 44" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1331 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.37037034 DASH, 628 confirmations, sample tx 45" text="Sent -0.37037034 DASH, 628 confirmations, sample tx 45" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1360 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.49382712 DASH, 665 confirmations, sample tx 46" text="Received +0.49382712 DASH, 665 confirmations, sample tx 46" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1389 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.6172839 DASH, 702 confirmations, sample tx 47" text="Received +0.6172839 DASH, 702 confirmations, sample tx 47" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1418 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Sent -0.74074068 DASH, 739 confirmations, sample tx 48" text="Sent -0.74074068 DASH, 739 confirmations, sample tx 48" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1447 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.86419746 DASH, 776 confirmations, sample tx 49" text="Received +0.86419746 DASH, 776 confirmations, sample tx 49" {sensitive,showing,visible}
+                                                  [list item] "" {focusable,selectable,sensitive,showing,visible} @(217,1476 668x29)
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [label] "Received +0.12345678 DASH, 813 confirmations, sample tx 50" text="Received +0.12345678 DASH, 813 confirmations, sample tx 50" {sensitive,showing,visible}
+                                          [scroll bar] "" {sensitive,showing,visible}
+                                            [panel] "" {sensitive,showing,visible}

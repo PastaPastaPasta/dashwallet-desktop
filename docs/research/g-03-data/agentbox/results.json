@@ -1,0 +1,607 @@
+{
+ "uptimeStart": "97.94 120.55 139.10",
+ "u5-start": {
+  "seconds": {
+   "demo-first-paint": {
+    "n": 10,
+    "min": 0.895,
+    "median": 1.227,
+    "p95": 5.436,
+    "max": 5.436
+   },
+   "demo-overview-paint": {
+    "n": 10,
+    "min": 4.009,
+    "median": 5.006,
+    "p95": 5.629,
+    "max": 5.629
+   },
+   "live-lock-paint": {
+    "n": 10,
+    "min": 12.947,
+    "median": 16.31,
+    "p95": 19.064,
+    "max": 19.064
+   },
+   "live-unlock-to-overview": {
+    "n": 10,
+    "min": 3.068,
+    "median": 3.569,
+    "p95": 3.7,
+    "max": 3.7
+   }
+  },
+  "raw": {
+   "demo-first-paint": [
+    1.2415583319962025,
+    1.3754523450043052,
+    1.2120523389894515,
+    0.8945010500028729,
+    0.9495205350103788,
+    1.2594626679783687,
+    1.0630827940185554,
+    5.435536256991327,
+    0.921292477985844,
+    1.25707562698517
+   ],
+   "demo-overview-paint": [
+    5.263576332014054,
+    4.010355345031712,
+    4.79995933896862,
+    4.009150049998425,
+    4.690054534992669,
+    5.428182667994406,
+    5.034320794045925,
+    5.435536256991327,
+    4.977552478027064,
+    5.628601627016906
+   ],
+   "live-lock-paint": [
+    12.94659618899459,
+    15.42979376000585,
+    17.10814374696929,
+    19.063515943998937,
+    16.82983340503415,
+    15.897364789037965,
+    16.22003524500178,
+    17.48948118899716,
+    15.2376516169752,
+    16.400203590048477
+   ],
+   "live-unlock-to-overview": [
+    3.667684999993071,
+    3.0682120000128634,
+    3.592530000023544,
+    3.536982999998145,
+    3.6654509999789298,
+    3.4604229999822564,
+    3.5458269999944605,
+    3.700191999960225,
+    3.664833999995608,
+    3.295436999993399
+   ]
+  },
+  "cpuSeconds": {
+   "demo-first-paint": {
+    "n": 10,
+    "min": 0.58,
+    "median": 0.679,
+    "p95": 4.412,
+    "max": 4.412
+   },
+   "demo-overview-paint": {
+    "n": 10,
+    "min": 3.304,
+    "median": 4.41,
+    "p95": 4.973,
+    "max": 4.973
+   },
+   "live-lock-paint": {
+    "n": 10,
+    "min": 9.142,
+    "median": 10.351,
+    "p95": 11.658,
+    "max": 11.658
+   }
+  },
+  "closeToExitSeconds": [
+   0.06,
+   0.62,
+   0.06,
+   0.92,
+   0.11,
+   0.72,
+   0.37,
+   0.87,
+   0.11,
+   0.82,
+   0.21,
+   0.57,
+   0.06,
+   0.72,
+   1.33,
+   0.99,
+   0.12,
+   0.57,
+   0.17,
+   0.87
+  ],
+  "uptime": "147.78 131.38 138.32"
+ },
+ "uptimeEnd": "156.26 179.49 184.47",
+ "u5-pss": {
+  "demo": [
+   {
+    "Rss": 292.2,
+    "Pss": 230.8,
+    "Pss_Anon": 127.7,
+    "Pss_File": 84.5
+   },
+   {
+    "Rss": 289.5,
+    "Pss": 213.7,
+    "Pss_Anon": 125.0,
+    "Pss_File": 70.1
+   },
+   {
+    "Rss": 291.9,
+    "Pss": 210.0,
+    "Pss_Anon": 127.6,
+    "Pss_File": 63.8
+   }
+  ],
+  "samples": [
+   {
+    "overview": {
+     "Rss": 574.8,
+     "Pss": 491.1,
+     "Pss_Anon": 380.6,
+     "Pss_File": 93.8
+    },
+    "transactions": {
+     "Rss": 703.7,
+     "Pss": 623.1,
+     "Pss_Anon": 504.3,
+     "Pss_File": 96.8
+    },
+    "idleCpuPercent": 8.8
+   },
+   {
+    "overview": {
+     "Rss": 563.8,
+     "Pss": 479.7,
+     "Pss_Anon": 369.4,
+     "Pss_File": 93.5
+    },
+    "transactions": {
+     "Rss": 725.9,
+     "Pss": 627.9,
+     "Pss_Anon": 526.5,
+     "Pss_File": 79.6
+    },
+    "idleCpuPercent": 5.6
+   },
+   {
+    "overview": {
+     "Rss": 614.0,
+     "Pss": 529.6,
+     "Pss_Anon": 420.6,
+     "Pss_File": 92.2
+    },
+    "transactions": {
+     "Rss": 718.7,
+     "Pss": 656.1,
+     "Pss_Anon": 520.0,
+     "Pss_File": 114.1
+    },
+    "idleCpuPercent": 2.9
+   }
+  ],
+  "idleSeconds": 30,
+  "uptime": "244.68 218.25 184.99"
+ },
+ "u1": {
+  "balanceDuffs": 20601436392896,
+  "shownBalance": [
+   "206\u2009014.36392896",
+   "206\u2009014.36392896",
+   "206\u2009014.36392896"
+  ],
+  "appRows": 200,
+  "dwcliRows": 200,
+  "mismatches": []
+ },
+ "u3-fonts": {
+  "light": [
+   "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
+   "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+   "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+   "/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Bold.ttf",
+   "/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Medium.ttf",
+   "/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Regular.ttf",
+   "/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-SemiBold.ttf"
+  ],
+  "dark": [
+   "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
+   "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+   "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+   "/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Bold.ttf",
+   "/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Medium.ttf",
+   "/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Regular.ttf",
+   "/work/scratch/g-03/linux-final/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-SemiBold.ttf"
+  ]
+ },
+ "u4-naming": {
+  "light-unlock": {
+   "nodes": 236,
+   "interactive": 7,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "light-overview": {
+   "nodes": 1286,
+   "interactive": 32,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "light-transactions": {
+   "nodes": 6427,
+   "interactive": 133,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "light-detail": {
+   "nodes": 6729,
+   "interactive": 139,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-unlock": {
+   "nodes": 236,
+   "interactive": 7,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-overview": {
+   "nodes": 1286,
+   "interactive": 32,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-transactions": {
+   "nodes": 6427,
+   "interactive": 133,
+   "unnamed": 0,
+   "unnamedRoles": []
+  },
+  "dark-detail": {
+   "nodes": 6729,
+   "interactive": 139,
+   "unnamed": 0,
+   "unnamedRoles": []
+  }
+ },
+ "u4-keys": {
+  "lockFocus": null,
+  "lockTabs": [
+   [
+    "text",
+    "Passphrase"
+   ],
+   [
+    "toggle button",
+    "Unit to show amounts in"
+   ],
+   [
+    "button",
+    "0 peers"
+   ],
+   [
+    "button",
+    "Sync details"
+   ]
+  ],
+  "overviewTabs": [
+   [
+    "list item",
+    ""
+   ],
+   [
+    "list item",
+    "Receive"
+   ],
+   [
+    "list item",
+    "Transactions"
+   ],
+   [
+    "?",
+    ""
+   ],
+   [
+    "list item",
+    "Address Book"
+   ],
+   [
+    "button",
+    ""
+   ],
+   [
+    "button",
+    "Wallets"
+   ],
+   [
+    "button",
+    "About"
+   ],
+   [
+    "button",
+    "Lock Wallet"
+   ],
+   [
+    "button",
+    "List"
+   ],
+   [
+    "button",
+    "Table"
+   ],
+   [
+    "button",
+    "Export\u2026"
+   ],
+   [
+    "toggle button",
+    "Date"
+   ],
+   [
+    "toggle button",
+    "Type"
+   ],
+   [
+    "text",
+    "Search"
+   ],
+   [
+    "text",
+    "Min amount"
+   ],
+   [
+    "button",
+    "All"
+   ],
+   [
+    "button",
+    "Sent"
+   ],
+   [
+    "button",
+    "Received"
+   ],
+   [
+    "button",
+    "Rewards"
+   ],
+   [
+    "?",
+    "Mined, ygfE4x2eMCoF7v5xBvdNx8qmB6Y21TEE2r, [+0.00000008 tDASH], 10 Feb 2026 at 2:16\u202fAM"
+   ]
+  ],
+  "overviewInteractive": [
+   [
+    "list item",
+    "Overview"
+   ],
+   [
+    "list item",
+    "Send"
+   ],
+   [
+    "list item",
+    "Receive"
+   ],
+   [
+    "list item",
+    "Transactions"
+   ],
+   [
+    "button",
+    "Address Book"
+   ],
+   [
+    "button",
+    "Sign / Verify Message"
+   ],
+   [
+    "button",
+    "Tools Window"
+   ],
+   [
+    "button",
+    "PSBT Operations"
+   ],
+   [
+    "button",
+    "Wallets"
+   ],
+   [
+    "button",
+    "Options"
+   ],
+   [
+    "button",
+    "Security"
+   ],
+   [
+    "button",
+    "Settings"
+   ],
+   [
+    "button",
+    "About"
+   ],
+   [
+    "button",
+    "Lock Wallet"
+   ],
+   [
+    "button",
+    "Hide balance"
+   ],
+   [
+    "button",
+    "Receive"
+   ],
+   [
+    "button",
+    "Send"
+   ],
+   [
+    "button",
+    "Scan QR"
+   ],
+   [
+    "button",
+    "Spend"
+   ],
+   [
+    "button",
+    "Change peers"
+   ],
+   [
+    "button",
+    "Syncing 75.0%"
+   ],
+   [
+    "button",
+    "Filter"
+   ],
+   [
+    "list item",
+    "Mined, ygfE4x2eMCoF7v5xBvdNx8qmB6Y21TEE2r, [+0.00000008 tDASH], 10 Feb 2026 at 2:16\u202fAM"
+   ],
+   [
+    "list item",
+    "Mined, ygfE4x2eMCoF7v5xBvdNx8qmB6Y21TEE2r, [+0.00000008 tDASH], 10 Feb 2026 at 2:16\u202fAM"
+   ],
+   [
+    "list item",
+    "Mined, ygfE4x2eMCoF7v5xBvdNx8qmB6Y21TEE2r, [+0.00000008 tDASH], 10 Feb 2026 at 2:16\u202fAM"
+   ],
+   [
+    "list item",
+    "Mined, ygfE4x2eMCoF7v5xBvdNx8qmB6Y21TEE2r, [+0.00000008 tDASH], 10 Feb 2026 at 2:16\u202fAM"
+   ],
+   [
+    "list item",
+    "Mined, ygfE4x2eMCoF7v5xBvdNx8qmB6Y21TEE2r, [+0.00000008 tDASH], 10 Feb 2026 at 2:16\u202fAM"
+   ],
+   [
+    "button",
+    "See all transactions"
+   ],
+   [
+    "combo box",
+    "Unit to show amounts in"
+   ],
+   [
+    "toggle button",
+    "Unit to show amounts in"
+   ],
+   [
+    "button",
+    "0 peers"
+   ],
+   [
+    "button",
+    "Sync details"
+   ],
+   [
+    "menu item",
+    "File"
+   ]
+  ],
+  "pagesDuringOverviewTabs": [
+   "transactions-paint"
+  ],
+  "transactionsTabs": [
+   [
+    "?",
+    ""
+   ]
+  ]
+ },
+ "u5-history": {
+  "totalMs": {
+   "n": 9,
+   "min": 14490.523,
+   "median": 33595.873,
+   "p95": 37184.613,
+   "max": 37184.613
+  },
+  "ffiMs200": {
+   "n": 9,
+   "min": 401.932,
+   "median": 504.687,
+   "p95": 660.461,
+   "max": 660.461
+  },
+  "ffiMs1": {
+   "n": 9,
+   "min": 301.257,
+   "median": 551.083,
+   "p95": 1711.062,
+   "max": 1711.062
+  },
+  "cpuMs200": {
+   "n": 9,
+   "min": 13917.889,
+   "median": 31383.75,
+   "p95": 35822.015,
+   "max": 35822.015
+  },
+  "cpuMs1": {
+   "n": 9,
+   "min": 245.735,
+   "median": 359.409,
+   "p95": 401.005,
+   "max": 401.005
+  },
+  "raw": {
+   "totalMs": [
+    17689.239,
+    34044.69,
+    37184.613,
+    14859.545,
+    31732.559,
+    33595.873,
+    14490.523,
+    33837.059,
+    35396.817
+   ],
+   "ffiMs200": [
+    509.532,
+    606.241,
+    504.687,
+    660.461,
+    654.737,
+    402.307,
+    454.1,
+    452.06,
+    401.932
+   ],
+   "ffiMs1": [
+    551.083,
+    453.698,
+    1711.062,
+    655.597,
+    301.257,
+    554.572,
+    806.842,
+    301.769,
+    455.088
+   ]
+  },
+  "uptime": "156.26 179.49 184.47"
+ }
+}

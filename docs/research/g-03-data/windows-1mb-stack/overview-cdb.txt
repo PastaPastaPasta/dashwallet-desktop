@@ -1,0 +1,1545 @@
+
+************* Preparing the environment for Debugger Extensions Gallery repositories **************
+   ExtensionRepository : Implicit
+   UseExperimentalFeatureForNugetShare : true
+   AllowNugetExeUpdate : true
+   NonInteractiveNuget : true
+   AllowNugetMSCredentialProviderInstall : true
+   AllowParallelInitializationOfLocalRepositories : true
+
+   EnableRedirectToV8JsProvider : false
+
+   -- Configuring repositories
+      ----> Repository : LocalInstalled, Enabled: true
+      ----> Repository : UserExtensions, Enabled: true
+
+>>>>>>>>>>>>> Preparing the environment for Debugger Extensions Gallery repositories completed, duration 0.016 seconds
+
+************* Waiting for Debugger Extensions Gallery to Initialize **************
+
+>>>>>>>>>>>>> Waiting for Debugger Extensions Gallery to Initialize completed, duration 0.203 seconds
+   ----> Repository : UserExtensions, Enabled: true, Packages count: 0
+   ----> Repository : LocalInstalled, Enabled: true, Packages count: 30
+
+Microsoft (R) Windows Debugger Version 10.0.26100.8249 AMD64
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+CommandLine: D:\a\_temp\gate-work\unpacked\dash-wallet\dash-wallet.exe --network regtest --datadir D:\a\_temp\gate-work\cdb-datadir --connect 127.0.0.1:1 --dapi http://127.0.0.1:1
+
+************* Path validation summary **************
+Response                         Time (ms)     Location
+OK                                             D:\a\dashwallet-desktop\dashwallet-desktop\.build\x86_64-unknown-windows-msvc\release
+Symbol search path is: D:\a\dashwallet-desktop\dashwallet-desktop\.build\x86_64-unknown-windows-msvc\release
+Executable search path is: 
+
++------------------------------------------------------------------------+
+| This target supports Hardware-enforced Stack Protection. A HW based    |
+| "Shadow Stack" may be available to assist in debugging and analysis.   |
+| See aka.ms/userhsp for more info.                                      |
+|                                                                        |
+| dps @ssp                                                               |
+|                                                                        |
++------------------------------------------------------------------------+
+
+ModLoad: 00007ff7`720e0000 00007ff7`7c9c5000   image00007ff7`720e0000
+ModLoad: 00007ff8`45300000 00007ff8`45564000   ntdll.dll
+ModLoad: 00007ff8`43890000 00007ff8`43959000   C:\Windows\System32\KERNEL32.DLL
+ModLoad: 00007ff8`428f0000 00007ff8`42cde000   C:\Windows\System32\KERNELBASE.dll
+ModLoad: 00007ff8`44730000 00007ff8`44824000   C:\Windows\System32\shcore.dll
+ModLoad: 00007ff8`425a0000 00007ff8`426eb000   C:\Windows\System32\ucrtbase.dll
+ModLoad: 00007ff8`43330000 00007ff8`436b6000   C:\Windows\System32\combase.dll
+ModLoad: 00007ff8`44380000 00007ff8`44498000   C:\Windows\System32\RPCRT4.dll
+ModLoad: 00007ff8`43080000 00007ff8`43245000   C:\Windows\System32\user32.dll
+ModLoad: 00007ff8`42ee0000 00007ff8`42f07000   C:\Windows\System32\win32u.dll
+ModLoad: 00007ff8`43250000 00007ff8`4327b000   C:\Windows\System32\GDI32.dll
+ModLoad: 00007ff8`42cf0000 00007ff8`42e1b000   C:\Windows\System32\gdi32full.dll
+ModLoad: 00007ff8`42fd0000 00007ff8`43073000   C:\Windows\System32\msvcp_win.dll
+ModLoad: 00007ff8`43a60000 00007ff8`43bf7000   C:\Windows\System32\ole32.dll
+ModLoad: 00007ff8`441a0000 00007ff8`44277000   C:\Windows\System32\oleaut32.dll
+ModLoad: 00007ff8`42e20000 00007ff8`42ecc000   C:\Windows\System32\bcryptprimitives.dll
+ModLoad: 00007ff8`43c00000 00007ff8`43c7e000   C:\Windows\System32\ws2_32.dll
+ModLoad: 00007ff8`2d150000 00007ff8`2d1ec000   D:\a\_temp\gate-work\unpacked\dash-wallet\swift_Concurrency.dll
+ModLoad: 00007ff8`14e80000 00007ff8`1532c000   D:\a\_temp\gate-work\unpacked\dash-wallet\Foundation.dll
+ModLoad: 00007ff8`1e840000 00007ff8`1ee4d000   D:\a\_temp\gate-work\unpacked\dash-wallet\swiftCore.dll
+ModLoad: 00007ff8`42420000 00007ff8`42597000   C:\Windows\System32\crypt32.dll
+ModLoad: 00007ff8`45200000 00007ff8`452b4000   C:\Windows\System32\ADVAPI32.dll
+ModLoad: 00007ff8`2d650000 00007ff8`2d66b000   D:\a\_temp\gate-work\unpacked\dash-wallet\swiftWinSDK.dll
+ModLoad: 00007ff8`44a20000 00007ff8`45173000   C:\Windows\System32\SHELL32.dll
+ModLoad: 00007ff8`44280000 00007ff8`44329000   C:\Windows\System32\msvcrt.dll
+ModLoad: 00007ff8`22ad0000 00007ff8`22c7e000   D:\a\_temp\gate-work\unpacked\dash-wallet\FoundationInternationalization.dll
+ModLoad: 00007ff8`43280000 00007ff8`43327000   C:\Windows\System32\sechost.dll
+ModLoad: 00007ff8`42780000 00007ff8`428ea000   C:\Windows\System32\wintypes.dll
+ModLoad: 00007ff8`2b850000 00007ff8`2b86d000   D:\a\_temp\gate-work\unpacked\dash-wallet\swiftCRT.dll
+ModLoad: 00007ff8`44130000 00007ff8`44197000   C:\Windows\System32\SHLWAPI.dll
+ModLoad: 00007ff8`148f0000 00007ff8`14e72000   D:\a\_temp\gate-work\unpacked\dash-wallet\FoundationEssentials.dll
+ModLoad: 00007ff8`2b810000 00007ff8`2b846000   D:\a\_temp\gate-work\unpacked\dash-wallet\swiftDispatch.dll
+ModLoad: 00007ff8`3fe00000 00007ff8`3fe08000   D:\a\_temp\gate-work\unpacked\dash-wallet\BlocksRuntime.dll
+ModLoad: 00007ff8`2b7e0000 00007ff8`2b806000   D:\a\_temp\gate-work\unpacked\dash-wallet\swiftObservation.dll
+ModLoad: 00007ff8`2b790000 00007ff8`2b7d1000   D:\a\_temp\gate-work\unpacked\dash-wallet\dispatch.dll
+ModLoad: 00007ff8`281d0000 00007ff8`2825d000   D:\a\_temp\gate-work\unpacked\dash-wallet\MSVCP140.dll
+ModLoad: 00007ff8`2b770000 00007ff8`2b78e000   D:\a\_temp\gate-work\unpacked\dash-wallet\VCRUNTIME140.dll
+ModLoad: 00007ff8`42300000 00007ff8`4232a000   C:\Windows\SYSTEM32\bcrypt.dll
+ModLoad: 00007ff8`35cd0000 00007ff8`35cdd000   C:\Windows\SYSTEM32\secur32.dll
+ModLoad: 00007ff8`03d90000 00007ff8`06132000   D:\a\_temp\gate-work\unpacked\dash-wallet\_FoundationICU.dll
+ModLoad: 0000019d`b7520000 0000019d`b98c2000   D:\a\_temp\gate-work\unpacked\dash-wallet\_FoundationICU.dll
+ModLoad: 00007ff8`22a10000 00007ff8`22ac7000   D:\a\_temp\gate-work\unpacked\dash-wallet\swift_StringProcessing.dll
+ModLoad: 00007ff8`0a7f0000 00007ff8`0aa3c000   C:\Windows\SYSTEM32\dbghelp.dll
+ModLoad: 00007ff8`40c80000 00007ff8`40cb4000   C:\Windows\SYSTEM32\IPHLPAPI.DLL
+ModLoad: 00007ff8`41730000 00007ff8`4175b000   C:\Windows\SYSTEM32\USERENV.dll
+ModLoad: 0000019d`b7540000 0000019d`b756b000   C:\Windows\SYSTEM32\USERENV.dll
+ModLoad: 00007ff8`3fdd0000 00007ff8`3fddc000   D:\a\_temp\gate-work\unpacked\dash-wallet\VCRUNTIME140_1.dll
+ModLoad: 00007ff8`22e80000 00007ff8`22eb5000   C:\Windows\SYSTEM32\WINMM.dll
+ModLoad: 0000019d`b7540000 0000019d`b754c000   D:\a\_temp\gate-work\unpacked\dash-wallet\VCRUNTIME140_1.dll
+ModLoad: 00007ff8`22410000 00007ff8`22518000   D:\a\_temp\gate-work\unpacked\dash-wallet\swift_RegexParser.dll
+ModLoad: 00007ff8`413b0000 00007ff8`413f9000   C:\Windows\SYSTEM32\SSPICLI.DLL
+ModLoad: 00007ff8`418d0000 00007ff8`418dc000   C:\Windows\SYSTEM32\CRYPTBASE.DLL
+(2418.1954): Break instruction exception - code 80000003 (first chance)
+ntdll!RtlGetReturnAddressHijackTarget+0x6ed:
+00007ff8`4541f5cd cc              int     3
+0:000> cdb: Reading initial command 'sxe -c "kn 250; !uniqstack; q" sov; g'
+ModLoad: 00007ff8`43a20000 00007ff8`43a51000   C:\Windows\System32\IMM32.DLL
+ModLoad: 00007ff8`28020000 00007ff8`28083000   D:\a\_temp\gate-work\unpacked\dash-wallet\swift-winui_CWinAppSDK.resources\Microsoft.WindowsAppRuntime.Bootstrap.dll
+ModLoad: 00007ff8`40620000 00007ff8`4063b000   C:\Windows\SYSTEM32\kernel.appcore.dll
+\BuildOutput\Release\x64\WindowsAppRuntime_DLL\WindowsAppRuntimeInsights.h(53)\Microsoft.WindowsAppRuntime.Bootstrap.dll!00007FF82803DFA7: (caller: 00007FF82803DCC1) LogHr(1) tid(1954) 8007007E The specified module could not be found.
+    Msg:[Unable to load resource dll. Microsoft.WindowsAppRuntime.Insights.Resource.dll] 
+ModLoad: 00007ff8`43960000 00007ff8`43a10000   C:\Windows\System32\clbcatq.dll
+ModLoad: 00007ff8`38410000 00007ff8`3857e000   C:\Windows\System32\AppXDeploymentClient.dll
+ModLoad: 00007ff8`449c0000 00007ff8`449e0000   C:\Windows\System32\imagehlp.dll
+ModLoad: 00007ff8`2c350000 00007ff8`2c428000   C:\Windows\System32\Windows.ApplicationModel.dll
+\dev\WindowsAppRuntime_BootstrapDLL\MddBootstrap.cpp(898)\Microsoft.WindowsAppRuntime.Bootstrap.dll!00007FF82802B673: (caller: 00007FF828029DC0) LogHr(2) tid(1954) 80040010 Object is not in any of the inplace active states
+    Msg:[Bootstrap.Intitialize: Scanning packages for Major.Minor=1.5, Tag=, MinVersion=0.0.0.0] CallContext:[\Initialize] 
+ModLoad: 00007ff8`359b0000 00007ff8`359ca000   C:\Windows\SYSTEM32\windows.staterepositorycore.dll
+\dev\WindowsAppRuntime_BootstrapDLL\MddBootstrap.cpp(1007)\Microsoft.WindowsAppRuntime.Bootstrap.dll!00007FF82802C039: (caller: 00007FF828029DC0) LogHr(3) tid(1954) 80040012 Not able to perform the operation because object is not given storage yet
+    Msg:[Bootstrap.Intitialize: Microsoft.WinAppRuntime.DDLM.5001.373.1736.0-x6_5001.373.1736.0_x64__8wekyb3d8bbwe is applicable (Major.Minor=1.5, Tag=, MinVersion=0.0.0.0)] CallContext:[\Initialize] 
+\dev\WindowsAppRuntime_BootstrapDLL\MddBootstrap.cpp(998)\Microsoft.WindowsAppRuntime.Bootstrap.dll!00007FF82802BF70: (caller: 00007FF828029DC0) LogHr(4) tid(1954) 80040011 Not able to convert object
+    Msg:[Bootstrap.Intitialize: Microsoft.WinAppRuntime.DDLM.5001.373.1736.0-x8_5001.373.1736.0_x86__8wekyb3d8bbwe not applicable. Architecture doesn't match current architecture x64 (Major.Minor=1.5, Tag=, MinVersion=0.0.0.0)] CallContext:[\Initialize] 
+\dev\WindowsAppRuntime_BootstrapDLL\MddBootstrap.cpp(1030)\Microsoft.WindowsAppRuntime.Bootstrap.dll!00007FF82802C39E: (caller: 00007FF828029DC0) LogHr(5) tid(1954) 80040013     Msg:[Bootstrap.Intitialize: Microsoft.WinAppRuntime.DDLM.5001.373.1736.0-x6_5001.373.1736.0_x64__8wekyb3d8bbwe best matches the criteria (Major.Minor=1.5, Tag=, MinVersion=0.0.0.0) of 49 packages scanned] CallContext:[\Initialize] 
+ModLoad: 00007ff8`28ec0000 00007ff8`28f84000   C:\Windows\System32\twinui.appcore.dll
+ModLoad: 00007ff8`3afa0000 00007ff8`3b801000   C:\Windows\System32\Windows.Storage.dll
+ModLoad: 00007ff8`328c0000 00007ff8`32f0f000   C:\Windows\System32\OneCoreUAPCommonProxyStub.dll
+ModLoad: 00007ff8`26e20000 00007ff8`26f3a000   C:\Windows\SYSTEM32\daxexec.dll
+ModLoad: 00007ff8`41be0000 00007ff8`41c10000   C:\Windows\System32\ncrypt.dll
+ModLoad: 00007ff8`38150000 00007ff8`3819b000   C:\Windows\System32\container.dll
+ModLoad: 00007ff8`41b90000 00007ff8`41bcf000   C:\Windows\System32\NTASN1.dll
+ModLoad: 00007ff8`391e0000 00007ff8`391f7000   C:\Windows\SYSTEM32\usermgrcli.dll
+ModLoad: 00007ff8`30eb0000 00007ff8`30ef6000   C:\Windows\SYSTEM32\windows.staterepositoryclient.dll
+ModLoad: 00007ff8`2c430000 00007ff8`2c4f4000   C:\Windows\System32\Windows.StateRepositoryPS.dll
+ModLoad: 00007ff8`371d0000 00007ff8`371f1000   C:\Windows\SYSTEM32\licensemanagerapi.dll
+ModLoad: 00007ff8`24bc0000 00007ff8`24c1d000   C:\Windows\SYSTEM32\capauthz.dll
+ModLoad: 00007ff8`3c830000 00007ff8`3c933000   C:\Windows\System32\PROPSYS.dll
+ModLoad: 00007ff8`3bc20000 00007ff8`3be00000   C:\Windows\System32\urlmon.dll
+ModLoad: 00007ff8`3b850000 00007ff8`3bb14000   C:\Windows\System32\iertutil.dll
+ModLoad: 00007ff8`3c5a0000 00007ff8`3c5c9000   C:\Windows\System32\srvcli.dll
+ModLoad: 00007ff8`40c60000 00007ff8`40c6d000   C:\Windows\System32\netutils.dll
+ModLoad: 00007ff8`3c330000 00007ff8`3c347000   C:\Windows\SYSTEM32\virtdisk.dll
+ModLoad: 00007ff8`42330000 00007ff8`42359000   C:\Windows\System32\profapi.dll
+ModLoad: 00007ff8`41f80000 00007ff8`41fd7000   C:\Windows\System32\CFGMGR32.dll
+ModLoad: 00007ff8`1b470000 00007ff8`1b5e8000   C:\Windows\SYSTEM32\windows.system.launcher.dll
+ModLoad: 00007ff8`3f320000 00007ff8`3f3bd000   C:\Windows\SYSTEM32\apphelp.dll
+ModLoad: 00007ff8`3cba0000 00007ff8`3cbbb000   C:\Windows\system32\NetworkExplorer.dll
+ModLoad: 00007ff8`1b470000 00007ff8`1b5e8000   C:\Windows\SYSTEM32\windows.system.launcher.dll
+ModLoad: 00007ff8`1bbf0000 00007ff8`1bc19000   C:\Windows\System32\edputil.dll
+ModLoad: 00007ff8`24a60000 00007ff8`24b29000   C:\Windows\System32\OneCoreCommonProxyStub.dll
+ModLoad: 00007ff8`3e220000 00007ff8`3e234000   C:\Windows\system32\execmodelproxy.dll
+ModLoad: 00007ff8`3c5f0000 00007ff8`3c611000   C:\Windows\System32\MPR.dll
+ModLoad: 00007ff8`1fc30000 00007ff8`1fd7c000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.WindowsAppRuntime.dll
+ModLoad: 00007ff8`3f7c0000 00007ff8`3f7fa000   C:\Windows\SYSTEM32\XmlLite.dll
+ModLoad: 00007ff8`119b0000 00007ff8`119e9000   C:\Windows\SYSTEM32\RoMetadata.dll
+ModLoad: 00007ff8`42290000 00007ff8`422ee000   C:\Windows\SYSTEM32\powrprof.dll
+ModLoad: 0000019d`b9500000 0000019d`b955e000   C:\Windows\SYSTEM32\powrprof.dll
+ModLoad: 00007ff8`42270000 00007ff8`42284000   C:\Windows\SYSTEM32\UMPDC.dll
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+onecore\base\appmodel\runtime\src\lookup.cpp(218)\kernelbase.dll!00007FF8429071B2: (caller: 00007FF8429063EA) ReturnHr(1) tid(1954) 8007007A The data area passed to a system call is too small.
+ModLoad: 00007ff8`073c0000 00007ff8`0823d000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.UI.Xaml.dll
+ModLoad: 00007ff8`3d290000 00007ff8`3d4f9000   C:\Windows\SYSTEM32\DWrite.dll
+ModLoad: 00007ff8`277e0000 00007ff8`27857000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.UI.Windowing.Core.dll
+ModLoad: 00007ff8`22930000 00007ff8`229ff000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.Internal.FrameworkUdk.dll
+ModLoad: 00007ff8`3d600000 00007ff8`3d862000   C:\Windows\SYSTEM32\d3d11.dll
+ModLoad: 00007ff8`37360000 00007ff8`3736b000   C:\Windows\SYSTEM32\VERSION.dll
+ModLoad: 00007ff8`3ffe0000 00007ff8`4008b000   C:\Windows\SYSTEM32\UxTheme.dll
+ModLoad: 00007ff8`3d870000 00007ff8`3deac000   C:\Windows\SYSTEM32\d2d1.dll
+ModLoad: 00007ff8`41230000 00007ff8`41266000   C:\Windows\SYSTEM32\ntmarta.dll
+ModLoad: 00007ff8`1fb20000 00007ff8`1fc1e000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\CoreMessagingXP.dll
+ModLoad: 00007ff8`38230000 00007ff8`3828e000   C:\Windows\SYSTEM32\Bcp47Langs.dll
+ModLoad: 00007ff8`40310000 00007ff8`4044b000   C:\Windows\SYSTEM32\dxgi.dll
+ModLoad: 00007ff8`3e9d0000 00007ff8`3eaf7000   C:\Windows\SYSTEM32\CoreMessaging.dll
+ModLoad: 00007ff8`3dec0000 00007ff8`3e0e3000   C:\Windows\SYSTEM32\dcomp.dll
+ModLoad: 00007ff8`3ef10000 00007ff8`3ef29000   C:\Windows\SYSTEM32\Microsoft.Internal.WarpPal.dll
+ModLoad: 00007ff8`22020000 00007ff8`220bf000   C:\Windows\SYSTEM32\Microsoft.Internal.FrameworkUdk.System.dll
+ModLoad: 00007ff8`3f850000 00007ff8`3f85d000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.WindowsAppRuntime.Insights.Resource.dll
+ModLoad: 00007ff8`27510000 00007ff8`27755000   C:\Windows\System32\twinapi.appcore.dll
+ModLoad: 00007ff8`402c0000 00007ff8`40304000   C:\Windows\SYSTEM32\dxcore.dll
+ModLoad: 00007ff8`25490000 00007ff8`255e2000   C:\Windows\System32\Windows.UI.dll
+ModLoad: 00007ff8`40500000 00007ff8`40514000   C:\Windows\SYSTEM32\resourcepolicyclient.dll
+ModLoad: 00007ff8`25330000 00007ff8`25481000   C:\Windows\System32\Windows.UI.Immersive.dll
+ModLoad: 00007ff8`39c80000 00007ff8`39ce2000   C:\Windows\SYSTEM32\directxdatabasehelper.dll
+ModLoad: 00007ff8`2b740000 00007ff8`2b765000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.Windows.ApplicationModel.Resources.dll
+ModLoad: 00007ff8`27f00000 00007ff8`27f4d000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\MRM.dll
+onecoreuap\windows\frameworkudk\mrtcore.cpp(388)\Microsoft.Internal.FrameworkUdk.System.dll!00007FF82205E0DF: (caller: 00007FF8229A8DF2) ReturnHr(1) tid(1954) 80073D54 The process has no package identity.
+\dev\MRTCore\mrt\mrm\mrmmin\UnifiedView.cpp(277)\MRM.dll!00007FF827F16B85: (caller: 00007FF827F062CC) ReturnHr(1) tid(1954) 80070002 The system cannot find the file specified.
+\dev\MRTCore\mrt\mrm\mrmmin\UnifiedView.cpp(292)\MRM.dll!00007FF827F16BA1: (caller: 00007FF827F062CC) ReturnHr(2) tid(1954) 80070002 The system cannot find the file specified.
+\dev\MRTCore\mrt\Core\src\MRM.cpp(537)\MRM.dll!00007FF827F06395: (caller: 00007FF82B749D9C) ReturnHr(3) tid(1954) 80070002 The system cannot find the file specified.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(1) tid(1954) 8007007A The data area passed to a system call is too small.
+ModLoad: 00007ff8`25ba0000 00007ff8`25bd4000   C:\Windows\SYSTEM32\bcp47mrm.dll
+ModLoad: 00007ff8`26f40000 00007ff8`274ee000   C:\Windows\SYSTEM32\d3d10warp.dll
+ModLoad: 00007ff8`15b80000 00007ff8`15d0f000   C:\Windows\System32\Windows.Globalization.dll
+ModLoad: 00007ff8`24830000 00007ff8`248e6000   C:\Windows\SYSTEM32\TextShaping.dll
+ModLoad: 00007ff8`08cf0000 00007ff8`0938c000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.UI.Xaml.Controls.dll
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(1) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Media.AcrylicBrush)] 
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\MddWinRT.cpp(54)\Microsoft.WindowsAppRuntime.dll!00007FF81FCF4CBC: (caller: 00007FF81FC9EA21) ReturnHr(2) tid(1954) 80004002 No such interface supported
+    Msg:[C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(1) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Media.AcrylicBrush)] 
+] 
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(395)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA45: (caller: 00007FF81FCA1550) ReturnHr(3) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(381)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA60: (caller: 00007FF81FCA1550) ReturnHr(4) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\urfw.cpp(244)\Microsoft.WindowsAppRuntime.dll!00007FF81FCA1534: (caller: 00007FF80751EBBC) ReturnHr(5) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\WindowsAppRuntime_Insights\WindowsAppRuntimeInsights.h(44)\Microsoft.WindowsAppRuntime.dll!00007FF81FC3910B: (caller: 00007FF81FC39039) LogHr(1) tid(1954) 8007029C An assertion failure has occurred.
+C:\__w\1\s\dev\WindowsAppRuntime_Insights\WindowsAppRuntimeInsights.h(44)\Microsoft.WindowsAppRuntime.dll!00007FF81FC3910B: (caller: 00007FF81FC39039) LogHr(2) tid(1954) 8007029C An assertion failure has occurred.
+    Msg:[Failed to load resource string. id: 10001] 
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(2) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.MenuBar)] 
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\MddWinRT.cpp(54)\Microsoft.WindowsAppRuntime.dll!00007FF81FCF4CBC: (caller: 00007FF81FC9EA21) ReturnHr(6) tid(1954) 80004002 No such interface supported
+    Msg:[C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(2) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.MenuBar)] 
+] 
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(395)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA45: (caller: 00007FF81FCA1550) ReturnHr(7) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(381)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA60: (caller: 00007FF81FCA1550) ReturnHr(8) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\urfw.cpp(244)\Microsoft.WindowsAppRuntime.dll!00007FF81FCA1534: (caller: 00007FF80751EBBC) ReturnHr(9) tid(1954) 80004002 No such interface supported
+ModLoad: 00007ff8`1e2d0000 00007ff8`1e48e000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\dcompi.dll
+ModLoad: 00007ff8`29ef0000 00007ff8`29efe000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.UI.Composition.OSSupport.dll
+ModLoad: 00007ff8`251d0000 00007ff8`2525b000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\marshal.dll
+ModLoad: 00007ff8`1d560000 00007ff8`1d843000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\dwmcorei.dll
+ModLoad: 00007ff8`3cbc0000 00007ff8`3d03f000   C:\Windows\SYSTEM32\D3DCOMPILER_47.dll
+ModLoad: 00007ff8`25760000 00007ff8`257ce000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.InputStateManager.dll
+ModLoad: 00007ff8`41a90000 00007ff8`41aab000   C:\Windows\SYSTEM32\cryptsp.dll
+ModLoad: 00007ff8`1db40000 00007ff8`1dca8000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.UI.Input.dll
+onecore\internal\sdk\inc\wil/resource.h(955)\dwmcorei.dll!00007FF81D600914: (caller: 00007FF81D602395) ReturnNt(1) tid(1564) C0000022 ModLoad: 00007ff8`43720000 00007ff8`4387f000   C:\Windows\System32\msctf.dll
+ModLoad: 00007ff8`22360000 00007ff8`223cf000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.UI.Windowing.dll
+ModLoad: 00007ff8`25860000 00007ff8`258ba000   C:\Windows\system32\DataExchange.dll
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(3) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.MenuBarItem)] 
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\MddWinRT.cpp(54)\Microsoft.WindowsAppRuntime.dll!00007FF81FCF4CBC: (caller: 00007FF81FC9EA21) ReturnHr(10) tid(1954) 80004002 No such interface supported
+    Msg:[C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(3) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.MenuBarItem)] 
+] 
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(395)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA45: (caller: 00007FF81FCA1550) ReturnHr(11) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(381)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA60: (caller: 00007FF81FCA1550) ReturnHr(12) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\urfw.cpp(244)\Microsoft.WindowsAppRuntime.dll!00007FF81FCA1534: (caller: 00007FF80751EBBC) ReturnHr(13) tid(1954) 80004002 No such interface supported
+ModLoad: 00007ff8`37f70000 00007ff8`380b8000   C:\Windows\SYSTEM32\textinputframework.dll
+ModLoad: 00007ff8`40470000 00007ff8`404a0000   C:\Windows\SYSTEM32\dwmapi.dll
+ModLoad: 00007ff8`259b0000 00007ff8`25b95000   C:\Windows\System32\InputHost.dll
+ModLoad: 00007ff8`1e680000 00007ff8`1e729000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\Microsoft.DirectManipulation.dll
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(4) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.CommandBarFlyout)] 
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\MddWinRT.cpp(54)\Microsoft.WindowsAppRuntime.dll!00007FF81FCF4CBC: (caller: 00007FF81FC9EA21) ReturnHr(14) tid(1954) 80004002 No such interface supported
+    Msg:[C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(4) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.CommandBarFlyout)] 
+] 
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(395)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA45: (caller: 00007FF81FCA1550) ReturnHr(15) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(381)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA60: (caller: 00007FF81FCA1550) ReturnHr(16) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\urfw.cpp(244)\Microsoft.WindowsAppRuntime.dll!00007FF81FCA1534: (caller: 00007FF80751EBBC) ReturnHr(17) tid(1954) 80004002 No such interface supported
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(5) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.AnimatedIcon)] 
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\MddWinRT.cpp(54)\Microsoft.WindowsAppRuntime.dll!00007FF81FCF4CBC: (caller: 00007FF81FC9EA21) ReturnHr(18) tid(1954) 80004002 No such interface supported
+    Msg:[C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(5) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.AnimatedIcon)] 
+] 
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(395)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA45: (caller: 00007FF81FCA1550) ReturnHr(19) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(381)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA60: (caller: 00007FF81FCA1550) ReturnHr(20) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\urfw.cpp(244)\Microsoft.WindowsAppRuntime.dll!00007FF81FCA1534: (caller: 00007FF80751EBBC) ReturnHr(21) tid(1954) 80004002 No such interface supported
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(6) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.Primitives.CornerRadiusFilterConverter)] 
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\MddWinRT.cpp(54)\Microsoft.WindowsAppRuntime.dll!00007FF81FCF4CBC: (caller: 00007FF81FC9EA21) ReturnHr(22) tid(1954) 80004002 No such interface supported
+    Msg:[C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(6) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.Primitives.CornerRadiusFilterConverter)] 
+] 
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(395)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA45: (caller: 00007FF81FCA1550) ReturnHr(23) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(381)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA60: (caller: 00007FF81FCA1550) ReturnHr(24) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\urfw.cpp(244)\Microsoft.WindowsAppRuntime.dll!00007FF81FCA1534: (caller: 00007FF80751EBBC) ReturnHr(25) tid(1954) 80004002 No such interface supported
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(7) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.ProgressBar)] 
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\MddWinRT.cpp(54)\Microsoft.WindowsAppRuntime.dll!00007FF81FCF4CBC: (caller: 00007FF81FC9EA21) ReturnHr(26) tid(1954) 80004002 No such interface supported
+    Msg:[C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(7) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.ProgressBar)] 
+] 
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(395)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA45: (caller: 00007FF81FCA1550) ReturnHr(27) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(381)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA60: (caller: 00007FF81FCA1550) ReturnHr(28) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\urfw.cpp(244)\Microsoft.WindowsAppRuntime.dll!00007FF81FCA1534: (caller: 00007FF80751EBBC) ReturnHr(29) tid(1954) 80004002 No such interface supported
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(30) tid(1954) 8007007A The data area passed to a system call is too small.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(31) tid(1954) 8007007A The data area passed to a system call is too small.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(32) tid(1954) 8007007A The data area passed to a system call is too small.
+ModLoad: 00007ff8`41680000 00007ff8`416eb000   C:\Windows\system32\mswsock.dll
+ModLoad: 00007ff8`41b00000 00007ff8`41b13000   C:\Windows\SYSTEM32\MSASN1.dll
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(8) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.ProgressRing)] 
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\MddWinRT.cpp(54)\Microsoft.WindowsAppRuntime.dll!00007FF81FCF4CBC: (caller: 00007FF81FC9EA21) ReturnHr(33) tid(1954) 80004002 No such interface supported
+    Msg:[C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(8) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.ProgressRing)] 
+] 
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(395)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA45: (caller: 00007FF81FCA1550) ReturnHr(34) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(381)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA60: (caller: 00007FF81FCA1550) ReturnHr(35) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\urfw.cpp(244)\Microsoft.WindowsAppRuntime.dll!00007FF81FCA1534: (caller: 00007FF80751EBBC) ReturnHr(36) tid(1954) 80004002 No such interface supported
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(9) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.AnimatedVisualPlayer)] 
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\MddWinRT.cpp(54)\Microsoft.WindowsAppRuntime.dll!00007FF81FCF4CBC: (caller: 00007FF81FC9EA21) ReturnHr(37) tid(1954) 80004002 No such interface supported
+    Msg:[C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(9) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.AnimatedVisualPlayer)] 
+] 
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(395)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA45: (caller: 00007FF81FCA1550) ReturnHr(38) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(381)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA60: (caller: 00007FF81FCA1550) ReturnHr(39) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\urfw.cpp(244)\Microsoft.WindowsAppRuntime.dll!00007FF81FCA1534: (caller: 00007FF80751EBBC) ReturnHr(40) tid(1954) 80004002 No such interface supported
+(2418.1954): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(10) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.Primitives.ComboBoxHelper)] 
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): C++ EH exception - code e06d7363 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\MddWinRT.cpp(54)\Microsoft.WindowsAppRuntime.dll!00007FF81FCF4CBC: (caller: 00007FF81FC9EA21) ReturnHr(41) tid(1954) 80004002 No such interface supported
+    Msg:[C:\__w\1\s\dev\DynamicDependency\API\WinRTInprocModule.h(55)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9C51B: (caller: 00007FF81FC9BB92) Exception(10) tid(1954) 80004002 No such interface supported
+    Msg:[Error 0x80004002 in ifactory->QueryInterface(Microsoft.UI.Xaml.Controls.Primitives.ComboBoxHelper)] 
+] 
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(395)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA45: (caller: 00007FF81FCA1550) ReturnHr(42) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\catalog.cpp(381)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9EA60: (caller: 00007FF81FCA1550) ReturnHr(43) tid(1954) 80004002 No such interface supported
+C:\__w\1\s\dev\UndockedRegFreeWinRT\urfw.cpp(244)\Microsoft.WindowsAppRuntime.dll!00007FF81FCA1534: (caller: 00007FF80751EBBC) ReturnHr(44) tid(1954) 80004002 No such interface supported
+ModLoad: 00007ff8`145a0000 00007ff8`148e3000   C:\Program Files\WindowsApps\Microsoft.WindowsAppRuntime.1.5_5001.373.1736.0_x64__8wekyb3d8bbwe\WinUIEdit.dll
+ModLoad: 00007ff8`2bab0000 00007ff8`2bac9000   C:\Windows\SYSTEM32\USP10.dll
+ModLoad: 00007ff8`29b20000 00007ff8`29b39000   C:\Windows\SYSTEM32\elscore.dll
+ModLoad: 00007ff8`115e0000 00007ff8`11613000   C:\Windows\SYSTEM32\globinputhost.dll
+ModLoad: 00007ff8`22de0000 00007ff8`22e13000   C:\Windows\system32\msctfp.dll
+(2418.1704): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(45) tid(1704) 8007007A The data area passed to a system call is too small.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(46) tid(1704) 8007007A The data area passed to a system call is too small.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(47) tid(1704) 8007007A The data area passed to a system call is too small.
+(2418.1704): Windows Runtime Originate Error - code 40080201 (first chance)
+(2418.1704): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(48) tid(1704) 8007007A The data area passed to a system call is too small.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(49) tid(1704) 8007007A The data area passed to a system call is too small.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(50) tid(1704) 8007007A The data area passed to a system call is too small.
+(2418.1704): Windows Runtime Originate Error - code 40080201 (first chance)
+(2418.1704): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(51) tid(1704) 8007007A The data area passed to a system call is too small.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(52) tid(1704) 8007007A The data area passed to a system call is too small.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(53) tid(1704) 8007007A The data area passed to a system call is too small.
+(2418.1704): Windows Runtime Originate Error - code 40080201 (first chance)
+(2418.1704): Windows Runtime Originate Error - code 40080201 (first chance)
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(54) tid(1704) 8007007A The data area passed to a system call is too small.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(55) tid(1704) 8007007A The data area passed to a system call is too small.
+C:\__w\1\s\dev\DynamicDependency\API\PackageGraphManager.cpp(234)\Microsoft.WindowsAppRuntime.dll!00007FF81FC9A948: (caller: 00007FF81FC907A6) ReturnHr(56) tid(1704) 8007007A The data area passed to a system call is too small.
+(2418.1704): Windows Runtime Originate Error - code 40080201 (first chance)
+(2418.1850): Unknown exception - code 000006f4 (first chance)
+(2418.1850): Unknown exception - code 000006f4 (first chance)
+(2418.1ddc): C++ EH exception - code e06d7363 (first chance)
+(2418.1954): Stack overflow - code c00000fd (first chance)
+ # Child-SP          RetAddr               Call Site
+00 00000022`ffe03eb0 00007ff8`4531d0d1     ntdll!RtlSetBits+0xe14
+01 00000022`ffe04120 00007ff8`4531cca4     ntdll!RtlAllocateHeap+0xf01
+02 00000022`ffe041b0 00007ff8`45350468     ntdll!RtlAllocateHeap+0xad4
+03 00000022`ffe042f0 00007ff8`45352f3a     ntdll!RtlSetBits+0x778
+04 00000022`ffe04350 00007ff8`4531d0d1     ntdll!RtlSetBits+0x324a
+05 00000022`ffe045c0 00007ff8`4531cca4     ntdll!RtlAllocateHeap+0xf01
+06 00000022`ffe04650 00007ff8`425b0139     ntdll!RtlAllocateHeap+0xad4
+*** WARNING: Unable to verify checksum for D:\a\_temp\gate-work\unpacked\dash-wallet\swiftCore.dll
+07 00000022`ffe04790 00007ff8`1eb80cdb     ucrtbase!malloc_base+0x39
+08 00000022`ffe047c0 00007ff8`1eb80fd6     swiftCore!swift_slowAlloc+0x1b
+*** WARNING: Unable to verify checksum for D:\a\_temp\gate-work\unpacked\dash-wallet\dash-wallet.exe
+09 00000022`ffe04800 00007ff7`725555c9     swiftCore!swift_bufferAllocate+0x26
+0a 00000022`ffe04830 00007ff7`7258d738     dash_wallet+0x4755c9
+0b 00000022`ffe048b0 00007ff7`72593667     dash_wallet+0x4ad738
+0c 00000022`ffe04a70 00007ff7`725a88cb     dash_wallet+0x4b3667
+0d 00000022`ffe04bd0 00007ff7`72413f6a     dash_wallet+0x4c88cb
+0e 00000022`ffe04d80 00007ff7`7255bca5     dash_wallet+0x333f6a
+0f 00000022`ffe050f0 00007ff7`7253b632     dash_wallet+0x47bca5
+10 00000022`ffe053b0 00007ff7`7253c0ab     dash_wallet+0x45b632
+11 00000022`ffe055e0 00007ff7`7258defe     dash_wallet+0x45c0ab
+12 00000022`ffe05730 00007ff7`723f087e     dash_wallet+0x4adefe
+13 00000022`ffe05940 00007ff7`723f1650     dash_wallet+0x31087e
+14 00000022`ffe05c50 00007ff7`725b4e49     dash_wallet+0x311650
+15 00000022`ffe05df0 00007ff7`725b4232     dash_wallet+0x4d4e49
+16 00000022`ffe060c0 00007ff7`724320f6     dash_wallet+0x4d4232
+*** WARNING: Unable to verify checksum for D:\a\_temp\gate-work\unpacked\dash-wallet\swiftObservation.dll
+17 00000022`ffe06100 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+18 00000022`ffe06130 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+19 00000022`ffe061a0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+1a 00000022`ffe061f0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+1b 00000022`ffe062a0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+1c 00000022`ffe06320 00007ff7`724320c9     dash_wallet+0x2c482a
+1d 00000022`ffe06380 00007ff7`725b21ed     dash_wallet+0x3520c9
+1e 00000022`ffe065d0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+1f 00000022`ffe06c90 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+20 00000022`ffe06d60 00007ff7`723fa627     dash_wallet+0x2db8b8
+21 00000022`ffe06e60 00007ff7`723fa201     dash_wallet+0x31a627
+22 00000022`ffe071d0 00007ff7`7258defe     dash_wallet+0x31a201
+23 00000022`ffe07360 00007ff7`72592bfd     dash_wallet+0x4adefe
+24 00000022`ffe07570 00007ff7`725a083b     dash_wallet+0x4b2bfd
+25 00000022`ffe077a0 00007ff7`725b4e49     dash_wallet+0x4c083b
+26 00000022`ffe078f0 00007ff7`725b4232     dash_wallet+0x4d4e49
+27 00000022`ffe07bd0 00007ff7`724320f6     dash_wallet+0x4d4232
+28 00000022`ffe07c10 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+29 00000022`ffe07c40 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+2a 00000022`ffe07cb0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+2b 00000022`ffe07d00 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+2c 00000022`ffe07db0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+2d 00000022`ffe07e30 00007ff7`724320c9     dash_wallet+0x2c482a
+2e 00000022`ffe07e90 00007ff7`725b21ed     dash_wallet+0x3520c9
+2f 00000022`ffe080e0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+30 00000022`ffe087e0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+31 00000022`ffe088b0 00007ff7`72448bcb     dash_wallet+0x2db8b8
+32 00000022`ffe089b0 00007ff7`72448814     dash_wallet+0x368bcb
+33 00000022`ffe08d50 00007ff7`7258defe     dash_wallet+0x368814
+34 00000022`ffe08ee0 00007ff7`72592bfd     dash_wallet+0x4adefe
+35 00000022`ffe090f0 00007ff7`725a24bb     dash_wallet+0x4b2bfd
+36 00000022`ffe09320 00007ff7`725b4e49     dash_wallet+0x4c24bb
+37 00000022`ffe09470 00007ff7`725b4232     dash_wallet+0x4d4e49
+38 00000022`ffe09790 00007ff7`724320f6     dash_wallet+0x4d4232
+39 00000022`ffe097d0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+3a 00000022`ffe09800 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+3b 00000022`ffe09870 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+3c 00000022`ffe098c0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+3d 00000022`ffe09970 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+3e 00000022`ffe099f0 00007ff7`724320c9     dash_wallet+0x2c482a
+3f 00000022`ffe09a50 00007ff7`725b21ed     dash_wallet+0x3520c9
+40 00000022`ffe09ca0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+41 00000022`ffe0a4a0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+42 00000022`ffe0a570 00007ff7`72448bcb     dash_wallet+0x2db8b8
+43 00000022`ffe0a670 00007ff7`72448814     dash_wallet+0x368bcb
+44 00000022`ffe0aa90 00007ff7`7258defe     dash_wallet+0x368814
+45 00000022`ffe0ac20 00007ff7`72592bfd     dash_wallet+0x4adefe
+46 00000022`ffe0ae30 00007ff7`725a24bb     dash_wallet+0x4b2bfd
+47 00000022`ffe0b060 00007ff7`725b4e49     dash_wallet+0x4c24bb
+48 00000022`ffe0b1b0 00007ff7`725b4232     dash_wallet+0x4d4e49
+49 00000022`ffe0b510 00007ff7`724320f6     dash_wallet+0x4d4232
+4a 00000022`ffe0b550 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+4b 00000022`ffe0b580 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+4c 00000022`ffe0b5f0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+4d 00000022`ffe0b640 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+4e 00000022`ffe0b6f0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+4f 00000022`ffe0b770 00007ff7`724320c9     dash_wallet+0x2c482a
+50 00000022`ffe0b7d0 00007ff7`725b21ed     dash_wallet+0x3520c9
+51 00000022`ffe0ba20 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+52 00000022`ffe0c320 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+53 00000022`ffe0c3f0 00007ff7`723c93f8     dash_wallet+0x2db8b8
+54 00000022`ffe0c4f0 00007ff7`723c8e61     dash_wallet+0x2e93f8
+55 00000022`ffe0ca60 00007ff7`7258defe     dash_wallet+0x2e8e61
+56 00000022`ffe0cbf0 00007ff7`72592bfd     dash_wallet+0x4adefe
+57 00000022`ffe0ce00 00007ff7`725a011b     dash_wallet+0x4b2bfd
+58 00000022`ffe0d030 00007ff7`725b4e49     dash_wallet+0x4c011b
+59 00000022`ffe0d180 00007ff7`725b4232     dash_wallet+0x4d4e49
+5a 00000022`ffe0d550 00007ff7`724320f6     dash_wallet+0x4d4232
+5b 00000022`ffe0d590 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+5c 00000022`ffe0d5c0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+5d 00000022`ffe0d630 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+5e 00000022`ffe0d680 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+5f 00000022`ffe0d730 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+60 00000022`ffe0d7b0 00007ff7`724320c9     dash_wallet+0x2c482a
+61 00000022`ffe0d810 00007ff7`725b21ed     dash_wallet+0x3520c9
+62 00000022`ffe0da60 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+63 00000022`ffe0e520 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+64 00000022`ffe0e5f0 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+65 00000022`ffe0e6f0 00007ff7`7253b7de     dash_wallet+0x45bcc0
+66 00000022`ffe0e940 00007ff7`72425d2e     dash_wallet+0x45b7de
+67 00000022`ffe0e9a0 00007ff7`7241408f     dash_wallet+0x345d2e
+68 00000022`ffe0ed20 00007ff7`7255bca5     dash_wallet+0x33408f
+69 00000022`ffe0f090 00007ff7`7253b632     dash_wallet+0x47bca5
+6a 00000022`ffe0f570 00007ff7`7253c0ab     dash_wallet+0x45b632
+6b 00000022`ffe0f7a0 00007ff7`7258defe     dash_wallet+0x45c0ab
+6c 00000022`ffe0f8f0 00007ff7`7259c23d     dash_wallet+0x4adefe
+6d 00000022`ffe0fb00 00007ff7`7259393b     dash_wallet+0x4bc23d
+6e 00000022`ffe0fd30 00007ff7`725a8d3e     dash_wallet+0x4b393b
+6f 00000022`ffe0fe80 00007ff7`725a7946     dash_wallet+0x4c8d3e
+70 00000022`ffe10190 00007ff7`7220a670     dash_wallet+0x4c7946
+71 00000022`ffe10340 00007ff7`725b4e49     dash_wallet+0x12a670
+72 00000022`ffe104e0 00007ff7`725b4232     dash_wallet+0x4d4e49
+73 00000022`ffe10790 00007ff7`724320f6     dash_wallet+0x4d4232
+74 00000022`ffe107d0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+75 00000022`ffe10800 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+76 00000022`ffe10870 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+77 00000022`ffe108c0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+78 00000022`ffe10970 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+79 00000022`ffe109f0 00007ff7`724320c9     dash_wallet+0x2c482a
+7a 00000022`ffe10a50 00007ff7`725b21ed     dash_wallet+0x3520c9
+7b 00000022`ffe10ca0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+7c 00000022`ffe112e0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+7d 00000022`ffe113b0 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+7e 00000022`ffe114b0 00007ff7`7253b7de     dash_wallet+0x45bcc0
+7f 00000022`ffe115e0 00007ff7`72425d2e     dash_wallet+0x45b7de
+80 00000022`ffe11640 00007ff7`7241408f     dash_wallet+0x345d2e
+81 00000022`ffe119c0 00007ff7`7255bca5     dash_wallet+0x33408f
+82 00000022`ffe11d30 00007ff7`7253b632     dash_wallet+0x47bca5
+83 00000022`ffe11fd0 00007ff7`7253c0ab     dash_wallet+0x45b632
+84 00000022`ffe12200 00007ff7`7258defe     dash_wallet+0x45c0ab
+85 00000022`ffe12350 00007ff7`7259c23d     dash_wallet+0x4adefe
+86 00000022`ffe12560 00007ff7`7259393b     dash_wallet+0x4bc23d
+87 00000022`ffe12790 00007ff7`725b4e49     dash_wallet+0x4b393b
+88 00000022`ffe128e0 00007ff7`725b4232     dash_wallet+0x4d4e49
+89 00000022`ffe12b90 00007ff7`724320f6     dash_wallet+0x4d4232
+8a 00000022`ffe12bd0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+8b 00000022`ffe12c00 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+8c 00000022`ffe12c70 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+8d 00000022`ffe12cc0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+8e 00000022`ffe12d70 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+8f 00000022`ffe12df0 00007ff7`724320c9     dash_wallet+0x2c482a
+90 00000022`ffe12e50 00007ff7`725b21ed     dash_wallet+0x3520c9
+91 00000022`ffe130a0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+92 00000022`ffe136e0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+93 00000022`ffe137b0 00007ff7`72445cc4     dash_wallet+0x2db8b8
+94 00000022`ffe138b0 00007ff7`72444fc4     dash_wallet+0x365cc4
+95 00000022`ffe13af0 00007ff7`7258defe     dash_wallet+0x364fc4
+96 00000022`ffe13c80 00007ff7`7259c23d     dash_wallet+0x4adefe
+97 00000022`ffe13e90 00007ff7`725921ab     dash_wallet+0x4bc23d
+98 00000022`ffe140c0 00007ff7`725b4e49     dash_wallet+0x4b21ab
+99 00000022`ffe14210 00007ff7`725b4232     dash_wallet+0x4d4e49
+9a 00000022`ffe144c0 00007ff7`724320f6     dash_wallet+0x4d4232
+9b 00000022`ffe14500 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+9c 00000022`ffe14530 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+9d 00000022`ffe145a0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+9e 00000022`ffe145f0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+9f 00000022`ffe146a0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+a0 00000022`ffe14720 00007ff7`724320c9     dash_wallet+0x2c482a
+a1 00000022`ffe14780 00007ff7`725b21ed     dash_wallet+0x3520c9
+a2 00000022`ffe149d0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+a3 00000022`ffe15010 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+a4 00000022`ffe150e0 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+a5 00000022`ffe151e0 00007ff7`7253b7de     dash_wallet+0x45bcc0
+a6 00000022`ffe15310 00007ff7`72425d2e     dash_wallet+0x45b7de
+a7 00000022`ffe15370 00007ff7`72416375     dash_wallet+0x345d2e
+a8 00000022`ffe156f0 00007ff7`72415734     dash_wallet+0x336375
+a9 00000022`ffe15b20 00007ff7`725b4e49     dash_wallet+0x335734
+aa 00000022`ffe15cb0 00007ff7`725b4232     dash_wallet+0x4d4e49
+ab 00000022`ffe15f70 00007ff7`724320f6     dash_wallet+0x4d4232
+ac 00000022`ffe15fb0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+ad 00000022`ffe15fe0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+ae 00000022`ffe16050 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+af 00000022`ffe160a0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+b0 00000022`ffe16150 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+b1 00000022`ffe161d0 00007ff7`724320c9     dash_wallet+0x2c482a
+b2 00000022`ffe16230 00007ff7`725b21ed     dash_wallet+0x3520c9
+b3 00000022`ffe16480 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+b4 00000022`ffe16b00 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+b5 00000022`ffe16bd0 00007ff7`7240f8a5     dash_wallet+0x2db8b8
+b6 00000022`ffe16cd0 00007ff7`7240f371     dash_wallet+0x32f8a5
+b7 00000022`ffe17030 00007ff7`7258defe     dash_wallet+0x32f371
+b8 00000022`ffe171c0 00007ff7`72592bfd     dash_wallet+0x4adefe
+b9 00000022`ffe173d0 00007ff7`725a0f5b     dash_wallet+0x4b2bfd
+ba 00000022`ffe17600 00007ff7`725b4e49     dash_wallet+0x4c0f5b
+bb 00000022`ffe17750 00007ff7`725b4232     dash_wallet+0x4d4e49
+bc 00000022`ffe17a30 00007ff7`724320f6     dash_wallet+0x4d4232
+bd 00000022`ffe17a70 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+be 00000022`ffe17aa0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+bf 00000022`ffe17b10 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+c0 00000022`ffe17b60 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+c1 00000022`ffe17c10 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+c2 00000022`ffe17c90 00007ff7`724320c9     dash_wallet+0x2c482a
+c3 00000022`ffe17cf0 00007ff7`725b21ed     dash_wallet+0x3520c9
+c4 00000022`ffe17f40 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+c5 00000022`ffe18640 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+c6 00000022`ffe18710 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+c7 00000022`ffe18810 00007ff7`7253b7de     dash_wallet+0x45bcc0
+c8 00000022`ffe18970 00007ff7`72425d2e     dash_wallet+0x45b7de
+c9 00000022`ffe189d0 00007ff7`725a7065     dash_wallet+0x345d2e
+ca 00000022`ffe18d50 00007ff7`725a6344     dash_wallet+0x4c7065
+cb 00000022`ffe191a0 00007ff7`725b4e49     dash_wallet+0x4c6344
+cc 00000022`ffe19330 00007ff7`725b4232     dash_wallet+0x4d4e49
+cd 00000022`ffe197c0 00007ff7`724320f6     dash_wallet+0x4d4232
+ce 00000022`ffe19800 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+cf 00000022`ffe19830 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+d0 00000022`ffe198a0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+d1 00000022`ffe198f0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+d2 00000022`ffe199a0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+d3 00000022`ffe19a20 00007ff7`724320c9     dash_wallet+0x2c482a
+d4 00000022`ffe19a80 00007ff7`725b21ed     dash_wallet+0x3520c9
+d5 00000022`ffe19cd0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+d6 00000022`ffe1aa90 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+d7 00000022`ffe1ab60 00007ff7`72448bcb     dash_wallet+0x2db8b8
+d8 00000022`ffe1ac60 00007ff7`72448814     dash_wallet+0x368bcb
+d9 00000022`ffe1b360 00007ff7`7258defe     dash_wallet+0x368814
+da 00000022`ffe1b4f0 00007ff7`72592bfd     dash_wallet+0x4adefe
+db 00000022`ffe1b700 00007ff7`725a24bb     dash_wallet+0x4b2bfd
+dc 00000022`ffe1b930 00007ff7`725b4e49     dash_wallet+0x4c24bb
+dd 00000022`ffe1ba80 00007ff7`725b4232     dash_wallet+0x4d4e49
+de 00000022`ffe1bf50 00007ff7`724320f6     dash_wallet+0x4d4232
+df 00000022`ffe1bf90 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+e0 00000022`ffe1bfc0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+e1 00000022`ffe1c030 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+e2 00000022`ffe1c080 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+e3 00000022`ffe1c130 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+e4 00000022`ffe1c1b0 00007ff7`724320c9     dash_wallet+0x2c482a
+e5 00000022`ffe1c210 00007ff7`725b21ed     dash_wallet+0x3520c9
+e6 00000022`ffe1c460 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+e7 00000022`ffe1d320 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+e8 00000022`ffe1d3f0 00007ff7`7240fd4f     dash_wallet+0x2db8b8
+e9 00000022`ffe1d4f0 00007ff7`7240f5a1     dash_wallet+0x32fd4f
+ea 00000022`ffe1dc80 00007ff7`7258defe     dash_wallet+0x32f5a1
+eb 00000022`ffe1de10 00007ff7`72592bfd     dash_wallet+0x4adefe
+ec 00000022`ffe1e020 00007ff7`725a167b     dash_wallet+0x4b2bfd
+ed 00000022`ffe1e250 00007ff7`725b4e49     dash_wallet+0x4c167b
+ee 00000022`ffe1e3a0 00007ff7`725b4232     dash_wallet+0x4d4e49
+ef 00000022`ffe1e8d0 00007ff7`724320f6     dash_wallet+0x4d4232
+f0 00000022`ffe1e910 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+f1 00000022`ffe1e940 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+f2 00000022`ffe1e9b0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+f3 00000022`ffe1ea00 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+f4 00000022`ffe1eab0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+f5 00000022`ffe1eb30 00007ff7`724320c9     dash_wallet+0x2c482a
+f6 00000022`ffe1eb90 00007ff7`725b21ed     dash_wallet+0x3520c9
+f7 00000022`ffe1ede0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+f8 00000022`ffe1fe20 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+f9 00000022`ffe1fef0 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+fa 00000022`ffe1fff0 00007ff7`7253b7de     dash_wallet+0x45bcc0
+fb 00000022`ffe203a0 00007ff7`72425d2e     dash_wallet+0x45b7de
+fc 00000022`ffe20400 00007ff7`7241408f     dash_wallet+0x345d2e
+fd 00000022`ffe20780 00007ff7`7255bca5     dash_wallet+0x33408f
+fe 00000022`ffe20af0 00007ff7`7253b632     dash_wallet+0x47bca5
+ff 00000022`ffe21290 00007ff7`7253c0ab     dash_wallet+0x45b632
+100 00000022`ffe214c0 00007ff7`7258defe     dash_wallet+0x45c0ab
+101 00000022`ffe21610 00007ff7`7259c23d     dash_wallet+0x4adefe
+102 00000022`ffe21820 00007ff7`7259393b     dash_wallet+0x4bc23d
+103 00000022`ffe21a50 00007ff7`725a8d3e     dash_wallet+0x4b393b
+104 00000022`ffe21ba0 00007ff7`725a7946     dash_wallet+0x4c8d3e
+105 00000022`ffe22010 00007ff7`720e50f0     dash_wallet+0x4c7946
+106 00000022`ffe221c0 00007ff7`725b4e49     dash_wallet+0x50f0
+107 00000022`ffe22360 00007ff7`725b4232     dash_wallet+0x4d4e49
+108 00000022`ffe22690 00007ff7`724320f6     dash_wallet+0x4d4232
+109 00000022`ffe226d0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+10a 00000022`ffe22700 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+10b 00000022`ffe22770 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+10c 00000022`ffe227c0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+10d 00000022`ffe22870 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+10e 00000022`ffe228f0 00007ff7`724320c9     dash_wallet+0x2c482a
+10f 00000022`ffe22950 00007ff7`725b21ed     dash_wallet+0x3520c9
+110 00000022`ffe22ba0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+111 00000022`ffe233e0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+112 00000022`ffe234b0 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+113 00000022`ffe235b0 00007ff7`7253b7de     dash_wallet+0x45bcc0
+114 00000022`ffe23760 00007ff7`724235e3     dash_wallet+0x45b7de
+115 00000022`ffe237c0 00007ff7`724263dd     dash_wallet+0x3435e3
+116 00000022`ffe23ae0 00007ff7`725a7065     dash_wallet+0x3463dd
+117 00000022`ffe23e60 00007ff7`725a6344     dash_wallet+0x4c7065
+118 00000022`ffe242b0 00007ff7`725b4e49     dash_wallet+0x4c6344
+119 00000022`ffe24440 00007ff7`725b4232     dash_wallet+0x4d4e49
+11a 00000022`ffe247d0 00007ff7`724320f6     dash_wallet+0x4d4232
+11b 00000022`ffe24810 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+11c 00000022`ffe24840 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+11d 00000022`ffe248b0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+11e 00000022`ffe24900 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+11f 00000022`ffe249b0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+120 00000022`ffe24a30 00007ff7`724320c9     dash_wallet+0x2c482a
+121 00000022`ffe24a90 00007ff7`725b21ed     dash_wallet+0x3520c9
+122 00000022`ffe24ce0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+123 00000022`ffe256a0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+124 00000022`ffe25770 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+125 00000022`ffe25870 00007ff7`7253b7de     dash_wallet+0x45bcc0
+126 00000022`ffe25a80 00007ff7`72425d2e     dash_wallet+0x45b7de
+127 00000022`ffe25ae0 00007ff7`7241408f     dash_wallet+0x345d2e
+128 00000022`ffe25e60 00007ff7`7255bca5     dash_wallet+0x33408f
+129 00000022`ffe261d0 00007ff7`7253b632     dash_wallet+0x47bca5
+12a 00000022`ffe26630 00007ff7`7253c0ab     dash_wallet+0x45b632
+12b 00000022`ffe26860 00007ff7`7258defe     dash_wallet+0x45c0ab
+12c 00000022`ffe269b0 00007ff7`7259c23d     dash_wallet+0x4adefe
+12d 00000022`ffe26bc0 00007ff7`7259393b     dash_wallet+0x4bc23d
+12e 00000022`ffe26df0 00007ff7`725b4e49     dash_wallet+0x4b393b
+12f 00000022`ffe26f40 00007ff7`725b4232     dash_wallet+0x4d4e49
+130 00000022`ffe272d0 00007ff7`724320f6     dash_wallet+0x4d4232
+131 00000022`ffe27310 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+132 00000022`ffe27340 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+133 00000022`ffe273b0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+134 00000022`ffe27400 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+135 00000022`ffe274b0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+136 00000022`ffe27530 00007ff7`724320c9     dash_wallet+0x2c482a
+137 00000022`ffe27590 00007ff7`725b21ed     dash_wallet+0x3520c9
+138 00000022`ffe277e0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+139 00000022`ffe281a0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+13a 00000022`ffe28270 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+13b 00000022`ffe28370 00007ff7`7253b7de     dash_wallet+0x45bcc0
+13c 00000022`ffe28580 00007ff7`72425d2e     dash_wallet+0x45b7de
+13d 00000022`ffe285e0 00007ff7`7241408f     dash_wallet+0x345d2e
+13e 00000022`ffe28960 00007ff7`7255bca5     dash_wallet+0x33408f
+13f 00000022`ffe28cd0 00007ff7`7253b632     dash_wallet+0x47bca5
+140 00000022`ffe29130 00007ff7`7253c0ab     dash_wallet+0x45b632
+141 00000022`ffe29360 00007ff7`7258defe     dash_wallet+0x45c0ab
+142 00000022`ffe294b0 00007ff7`7259c23d     dash_wallet+0x4adefe
+143 00000022`ffe296c0 00007ff7`7259393b     dash_wallet+0x4bc23d
+144 00000022`ffe298f0 00007ff7`725b4e49     dash_wallet+0x4b393b
+145 00000022`ffe29a40 00007ff7`725b4232     dash_wallet+0x4d4e49
+146 00000022`ffe29dd0 00007ff7`724320f6     dash_wallet+0x4d4232
+147 00000022`ffe29e10 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+148 00000022`ffe29e40 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+149 00000022`ffe29eb0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+14a 00000022`ffe29f00 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+14b 00000022`ffe29fb0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+14c 00000022`ffe2a030 00007ff7`724320c9     dash_wallet+0x2c482a
+14d 00000022`ffe2a090 00007ff7`725b21ed     dash_wallet+0x3520c9
+14e 00000022`ffe2a2e0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+14f 00000022`ffe2aca0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+150 00000022`ffe2ad70 00007ff7`7240fd4f     dash_wallet+0x2db8b8
+151 00000022`ffe2ae70 00007ff7`7240f5a1     dash_wallet+0x32fd4f
+152 00000022`ffe2b380 00007ff7`7258defe     dash_wallet+0x32f5a1
+153 00000022`ffe2b510 00007ff7`72592bfd     dash_wallet+0x4adefe
+154 00000022`ffe2b720 00007ff7`725a167b     dash_wallet+0x4b2bfd
+155 00000022`ffe2b950 00007ff7`725b4e49     dash_wallet+0x4c167b
+156 00000022`ffe2baa0 00007ff7`725b4232     dash_wallet+0x4d4e49
+157 00000022`ffe2be90 00007ff7`724320f6     dash_wallet+0x4d4232
+158 00000022`ffe2bed0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+159 00000022`ffe2bf00 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+15a 00000022`ffe2bf70 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+15b 00000022`ffe2bfc0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+15c 00000022`ffe2c070 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+15d 00000022`ffe2c0f0 00007ff7`724320c9     dash_wallet+0x2c482a
+15e 00000022`ffe2c150 00007ff7`725b21ed     dash_wallet+0x3520c9
+15f 00000022`ffe2c3a0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+160 00000022`ffe2cee0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+161 00000022`ffe2cfb0 00007ff7`7240f8a5     dash_wallet+0x2db8b8
+162 00000022`ffe2d0b0 00007ff7`7240f371     dash_wallet+0x32f8a5
+163 00000022`ffe2d670 00007ff7`7258defe     dash_wallet+0x32f371
+164 00000022`ffe2d800 00007ff7`72592bfd     dash_wallet+0x4adefe
+165 00000022`ffe2da10 00007ff7`725a0f5b     dash_wallet+0x4b2bfd
+166 00000022`ffe2dc40 00007ff7`725b4e49     dash_wallet+0x4c0f5b
+167 00000022`ffe2dd90 00007ff7`725b4232     dash_wallet+0x4d4e49
+168 00000022`ffe2e1a0 00007ff7`724320f6     dash_wallet+0x4d4232
+169 00000022`ffe2e1e0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+16a 00000022`ffe2e210 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+16b 00000022`ffe2e280 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+16c 00000022`ffe2e2d0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+16d 00000022`ffe2e380 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+16e 00000022`ffe2e400 00007ff7`724320c9     dash_wallet+0x2c482a
+16f 00000022`ffe2e460 00007ff7`725b21ed     dash_wallet+0x3520c9
+170 00000022`ffe2e6b0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+171 00000022`ffe2f270 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+172 00000022`ffe2f340 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+173 00000022`ffe2f440 00007ff7`7253b7de     dash_wallet+0x45bcc0
+174 00000022`ffe2f6d0 00007ff7`72425d2e     dash_wallet+0x45b7de
+175 00000022`ffe2f730 00007ff7`725a7065     dash_wallet+0x345d2e
+176 00000022`ffe2fab0 00007ff7`725a6344     dash_wallet+0x4c7065
+177 00000022`ffe2ff00 00007ff7`725b4e49     dash_wallet+0x4c6344
+178 00000022`ffe30090 00007ff7`725b4232     dash_wallet+0x4d4e49
+179 00000022`ffe30550 00007ff7`724320f6     dash_wallet+0x4d4232
+17a 00000022`ffe30590 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+17b 00000022`ffe305c0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+17c 00000022`ffe30630 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+17d 00000022`ffe30680 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+17e 00000022`ffe30730 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+17f 00000022`ffe307b0 00007ff7`724320c9     dash_wallet+0x2c482a
+180 00000022`ffe30810 00007ff7`725b21ed     dash_wallet+0x3520c9
+181 00000022`ffe30a60 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+182 00000022`ffe318e0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+183 00000022`ffe319b0 00007ff7`7240fd4f     dash_wallet+0x2db8b8
+184 00000022`ffe31ab0 00007ff7`7240f5a1     dash_wallet+0x32fd4f
+185 00000022`ffe32220 00007ff7`7258defe     dash_wallet+0x32f5a1
+186 00000022`ffe323b0 00007ff7`72592bfd     dash_wallet+0x4adefe
+187 00000022`ffe325c0 00007ff7`725a167b     dash_wallet+0x4b2bfd
+188 00000022`ffe327f0 00007ff7`725b4e49     dash_wallet+0x4c167b
+189 00000022`ffe32940 00007ff7`725b4232     dash_wallet+0x4d4e49
+18a 00000022`ffe32e60 00007ff7`724320f6     dash_wallet+0x4d4232
+18b 00000022`ffe32ea0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+18c 00000022`ffe32ed0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+18d 00000022`ffe32f40 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+18e 00000022`ffe32f90 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+18f 00000022`ffe33040 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+190 00000022`ffe330c0 00007ff7`724320c9     dash_wallet+0x2c482a
+191 00000022`ffe33120 00007ff7`725b21ed     dash_wallet+0x3520c9
+192 00000022`ffe33370 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+193 00000022`ffe34370 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+194 00000022`ffe34440 00007ff7`723c93f8     dash_wallet+0x2db8b8
+195 00000022`ffe34540 00007ff7`723c8e61     dash_wallet+0x2e93f8
+196 00000022`ffe34d00 00007ff7`7258defe     dash_wallet+0x2e8e61
+197 00000022`ffe34e90 00007ff7`72592bfd     dash_wallet+0x4adefe
+198 00000022`ffe350a0 00007ff7`725a011b     dash_wallet+0x4b2bfd
+199 00000022`ffe352d0 00007ff7`725b4e49     dash_wallet+0x4c011b
+19a 00000022`ffe35420 00007ff7`725b4232     dash_wallet+0x4d4e49
+19b 00000022`ffe35a40 00007ff7`724320f6     dash_wallet+0x4d4232
+19c 00000022`ffe35a80 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+19d 00000022`ffe35ab0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+19e 00000022`ffe35b20 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+19f 00000022`ffe35b70 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+1a0 00000022`ffe35c20 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+1a1 00000022`ffe35ca0 00007ff7`724320c9     dash_wallet+0x2c482a
+1a2 00000022`ffe35d00 00007ff7`725b21ed     dash_wallet+0x3520c9
+1a3 00000022`ffe35f50 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+1a4 00000022`ffe37350 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+1a5 00000022`ffe37420 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+1a6 00000022`ffe37520 00007ff7`7253b7de     dash_wallet+0x45bcc0
+1a7 00000022`ffe379c0 00007ff7`72425d2e     dash_wallet+0x45b7de
+1a8 00000022`ffe37a20 00007ff7`7241408f     dash_wallet+0x345d2e
+1a9 00000022`ffe37da0 00007ff7`7255bca5     dash_wallet+0x33408f
+1aa 00000022`ffe38110 00007ff7`7253b632     dash_wallet+0x47bca5
+1ab 00000022`ffe38a90 00007ff7`7253c0ab     dash_wallet+0x45b632
+1ac 00000022`ffe38cc0 00007ff7`7258defe     dash_wallet+0x45c0ab
+1ad 00000022`ffe38e10 00007ff7`7259c23d     dash_wallet+0x4adefe
+1ae 00000022`ffe39020 00007ff7`7259393b     dash_wallet+0x4bc23d
+1af 00000022`ffe39250 00007ff7`725a8d3e     dash_wallet+0x4b393b
+1b0 00000022`ffe393a0 00007ff7`725a7946     dash_wallet+0x4c8d3e
+1b1 00000022`ffe39900 00007ff7`720e50f0     dash_wallet+0x4c7946
+1b2 00000022`ffe39ab0 00007ff7`725b4e49     dash_wallet+0x50f0
+1b3 00000022`ffe39c50 00007ff7`725b4232     dash_wallet+0x4d4e49
+1b4 00000022`ffe3a070 00007ff7`724320f6     dash_wallet+0x4d4232
+1b5 00000022`ffe3a0b0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+1b6 00000022`ffe3a0e0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+1b7 00000022`ffe3a150 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+1b8 00000022`ffe3a1a0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+1b9 00000022`ffe3a250 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+1ba 00000022`ffe3a2d0 00007ff7`724320c9     dash_wallet+0x2c482a
+1bb 00000022`ffe3a330 00007ff7`725b21ed     dash_wallet+0x3520c9
+1bc 00000022`ffe3a580 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+1bd 00000022`ffe3b180 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+1be 00000022`ffe3b250 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+1bf 00000022`ffe3b350 00007ff7`7253b7de     dash_wallet+0x45bcc0
+1c0 00000022`ffe3b5f0 00007ff7`72425d2e     dash_wallet+0x45b7de
+1c1 00000022`ffe3b650 00007ff7`725a7065     dash_wallet+0x345d2e
+1c2 00000022`ffe3b9d0 00007ff7`725a6344     dash_wallet+0x4c7065
+1c3 00000022`ffe3be20 00007ff7`725b4e49     dash_wallet+0x4c6344
+1c4 00000022`ffe3bfb0 00007ff7`725b4232     dash_wallet+0x4d4e49
+1c5 00000022`ffe3c820 00007ff7`724320f6     dash_wallet+0x4d4232
+1c6 00000022`ffe3c860 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+1c7 00000022`ffe3c890 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+1c8 00000022`ffe3c900 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+1c9 00000022`ffe3c950 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+1ca 00000022`ffe3ca00 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+1cb 00000022`ffe3ca80 00007ff7`724320c9     dash_wallet+0x2c482a
+1cc 00000022`ffe3cae0 00007ff7`725b21ed     dash_wallet+0x3520c9
+1cd 00000022`ffe3cd30 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+1ce 00000022`ffe3ea70 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+1cf 00000022`ffe3eb40 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+1d0 00000022`ffe3ec40 00007ff7`7253b7de     dash_wallet+0x45bcc0
+1d1 00000022`ffe3f330 00007ff7`72425d2e     dash_wallet+0x45b7de
+1d2 00000022`ffe3f390 00007ff7`725a7065     dash_wallet+0x345d2e
+1d3 00000022`ffe3f710 00007ff7`725a6344     dash_wallet+0x4c7065
+1d4 00000022`ffe3fb60 00007ff7`725b4e49     dash_wallet+0x4c6344
+1d5 00000022`ffe3fcf0 00007ff7`725b4232     dash_wallet+0x4d4e49
+1d6 00000022`ffe40570 00007ff7`724320f6     dash_wallet+0x4d4232
+1d7 00000022`ffe405b0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+1d8 00000022`ffe405e0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+1d9 00000022`ffe40650 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+1da 00000022`ffe406a0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+1db 00000022`ffe40750 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+1dc 00000022`ffe407d0 00007ff7`724320c9     dash_wallet+0x2c482a
+1dd 00000022`ffe40830 00007ff7`725b21ed     dash_wallet+0x3520c9
+1de 00000022`ffe40a80 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+1df 00000022`ffe42800 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+1e0 00000022`ffe428d0 00007ff7`724646ed     dash_wallet+0x2db8b8
+1e1 00000022`ffe429d0 00007ff7`72463a24     dash_wallet+0x3846ed
+1e2 00000022`ffe439a0 00007ff7`7258defe     dash_wallet+0x383a24
+1e3 00000022`ffe43b30 00007ff7`7259c23d     dash_wallet+0x4adefe
+1e4 00000022`ffe43d40 00007ff7`725928cb     dash_wallet+0x4bc23d
+1e5 00000022`ffe43f70 00007ff7`725b4e49     dash_wallet+0x4b28cb
+1e6 00000022`ffe440c0 00007ff7`725b4232     dash_wallet+0x4d4e49
+1e7 00000022`ffe44940 00007ff7`724320f6     dash_wallet+0x4d4232
+1e8 00000022`ffe44980 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+1e9 00000022`ffe449b0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+1ea 00000022`ffe44a20 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+1eb 00000022`ffe44a70 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+1ec 00000022`ffe44b20 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+1ed 00000022`ffe44ba0 00007ff7`724320c9     dash_wallet+0x2c482a
+1ee 00000022`ffe44c00 00007ff7`725b21ed     dash_wallet+0x3520c9
+1ef 00000022`ffe44e50 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+1f0 00000022`ffe46bd0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+1f1 00000022`ffe46ca0 00007ff7`723c93f8     dash_wallet+0x2db8b8
+1f2 00000022`ffe46da0 00007ff7`723c8e61     dash_wallet+0x2e93f8
+1f3 00000022`ffe477f0 00007ff7`7258defe     dash_wallet+0x2e8e61
+1f4 00000022`ffe47980 00007ff7`72592bfd     dash_wallet+0x4adefe
+1f5 00000022`ffe47b90 00007ff7`725a011b     dash_wallet+0x4b2bfd
+1f6 00000022`ffe47dc0 00007ff7`725b4e49     dash_wallet+0x4c011b
+1f7 00000022`ffe47f10 00007ff7`725b4232     dash_wallet+0x4d4e49
+1f8 00000022`ffe487b0 00007ff7`724320f6     dash_wallet+0x4d4232
+1f9 00000022`ffe487f0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+1fa 00000022`ffe48820 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+1fb 00000022`ffe48890 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+1fc 00000022`ffe488e0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+1fd 00000022`ffe48990 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+1fe 00000022`ffe48a10 00007ff7`724320c9     dash_wallet+0x2c482a
+1ff 00000022`ffe48a70 00007ff7`725b21ed     dash_wallet+0x3520c9
+200 00000022`ffe48cc0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+201 00000022`ffe4aac0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+202 00000022`ffe4ab90 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+203 00000022`ffe4ac90 00007ff7`7253b7de     dash_wallet+0x45bcc0
+204 00000022`ffe4b3b0 00007ff7`72425d2e     dash_wallet+0x45b7de
+205 00000022`ffe4b410 00007ff7`7241408f     dash_wallet+0x345d2e
+206 00000022`ffe4b790 00007ff7`7255bca5     dash_wallet+0x33408f
+207 00000022`ffe4bb00 00007ff7`7253b632     dash_wallet+0x47bca5
+208 00000022`ffe4c980 00007ff7`7253c0ab     dash_wallet+0x45b632
+209 00000022`ffe4cbb0 00007ff7`7258defe     dash_wallet+0x45c0ab
+20a 00000022`ffe4cd00 00007ff7`7259c23d     dash_wallet+0x4adefe
+20b 00000022`ffe4cf10 00007ff7`7259393b     dash_wallet+0x4bc23d
+20c 00000022`ffe4d140 00007ff7`725b4e49     dash_wallet+0x4b393b
+20d 00000022`ffe4d290 00007ff7`725b4232     dash_wallet+0x4d4e49
+20e 00000022`ffe4db30 00007ff7`724320f6     dash_wallet+0x4d4232
+20f 00000022`ffe4db70 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+210 00000022`ffe4dba0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+211 00000022`ffe4dc10 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+212 00000022`ffe4dc60 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+213 00000022`ffe4dd10 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+214 00000022`ffe4dd90 00007ff7`724320c9     dash_wallet+0x2c482a
+215 00000022`ffe4ddf0 00007ff7`725b21ed     dash_wallet+0x3520c9
+216 00000022`ffe4e040 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+217 00000022`ffe4fe40 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+218 00000022`ffe4ff10 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+219 00000022`ffe50010 00007ff7`7253b7de     dash_wallet+0x45bcc0
+21a 00000022`ffe50730 00007ff7`72425d2e     dash_wallet+0x45b7de
+21b 00000022`ffe50790 00007ff7`7241408f     dash_wallet+0x345d2e
+21c 00000022`ffe50b10 00007ff7`7255bca5     dash_wallet+0x33408f
+21d 00000022`ffe50e80 00007ff7`7253b632     dash_wallet+0x47bca5
+21e 00000022`ffe51d00 00007ff7`7253c0ab     dash_wallet+0x45b632
+21f 00000022`ffe51f30 00007ff7`7258defe     dash_wallet+0x45c0ab
+220 00000022`ffe52080 00007ff7`7259c23d     dash_wallet+0x4adefe
+221 00000022`ffe52290 00007ff7`7259393b     dash_wallet+0x4bc23d
+222 00000022`ffe524c0 00007ff7`725a8d3e     dash_wallet+0x4b393b
+223 00000022`ffe52610 00007ff7`72426fb2     dash_wallet+0x4c8d3e
+224 00000022`ffe52df0 00007ff7`7242732d     dash_wallet+0x346fb2
+225 00000022`ffe52fa0 00007ff7`724279bb     dash_wallet+0x34732d
+226 00000022`ffe531d0 00007ff7`7258defe     dash_wallet+0x3479bb
+227 00000022`ffe53320 00007ff7`72592bfd     dash_wallet+0x4adefe
+228 00000022`ffe53530 00007ff7`7259dd7b     dash_wallet+0x4b2bfd
+229 00000022`ffe53760 00007ff7`725b4e49     dash_wallet+0x4bdd7b
+22a 00000022`ffe538b0 00007ff7`725b4232     dash_wallet+0x4d4e49
+22b 00000022`ffe54180 00007ff7`724320f6     dash_wallet+0x4d4232
+22c 00000022`ffe541c0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+22d 00000022`ffe541f0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+22e 00000022`ffe54260 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+22f 00000022`ffe542b0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+230 00000022`ffe54360 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+231 00000022`ffe543e0 00007ff7`724320c9     dash_wallet+0x2c482a
+232 00000022`ffe54440 00007ff7`725b21ed     dash_wallet+0x3520c9
+233 00000022`ffe54690 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+234 00000022`ffe56550 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+235 00000022`ffe56620 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+236 00000022`ffe56720 00007ff7`7253b7de     dash_wallet+0x45bcc0
+237 00000022`ffe56e70 00007ff7`72425d2e     dash_wallet+0x45b7de
+238 00000022`ffe56ed0 00007ff7`7241408f     dash_wallet+0x345d2e
+239 00000022`ffe57250 00007ff7`7255bca5     dash_wallet+0x33408f
+23a 00000022`ffe575c0 00007ff7`7253b632     dash_wallet+0x47bca5
+23b 00000022`ffe584a0 00007ff7`7253c0ab     dash_wallet+0x45b632
+23c 00000022`ffe586d0 00007ff7`7258defe     dash_wallet+0x45c0ab
+23d 00000022`ffe58820 00007ff7`7259c23d     dash_wallet+0x4adefe
+23e 00000022`ffe58a30 00007ff7`7259393b     dash_wallet+0x4bc23d
+23f 00000022`ffe58c60 00007ff7`725a8d3e     dash_wallet+0x4b393b
+240 00000022`ffe58db0 00007ff7`7243d5bd     dash_wallet+0x4c8d3e
+241 00000022`ffe595c0 00007ff7`7243e065     dash_wallet+0x35d5bd
+242 00000022`ffe59820 00007ff7`7258defe     dash_wallet+0x35e065
+243 00000022`ffe599c0 00007ff7`72592bfd     dash_wallet+0x4adefe
+244 00000022`ffe59bd0 00007ff7`725a32fb     dash_wallet+0x4b2bfd
+245 00000022`ffe59e00 00007ff7`725b4e49     dash_wallet+0x4c32fb
+246 00000022`ffe59f50 00007ff7`725b4232     dash_wallet+0x4d4e49
+247 00000022`ffe5a830 00007ff7`724320f6     dash_wallet+0x4d4232
+248 00000022`ffe5a870 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+249 00000022`ffe5a8a0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+24a 00000022`ffe5a910 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+24b 00000022`ffe5a960 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+24c 00000022`ffe5aa10 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+24d 00000022`ffe5aa90 00007ff7`724320c9     dash_wallet+0x2c482a
+24e 00000022`ffe5aaf0 00007ff7`725b21ed     dash_wallet+0x3520c9
+24f 00000022`ffe5ad40 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+Processing 44 threads, please wait
+
+.  0  Id: 2418.1954 Suspend: 1 Teb: 00000022`ffdeb000 Unfrozen
+      Start: dash_wallet+0x3613930 (00007ff7`756f3930)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`ffe03eb0 00007ff8`4531d0d1     ntdll!RtlSetBits+0xe14
+00000022`ffe04120 00007ff8`4531cca4     ntdll!RtlAllocateHeap+0xf01
+00000022`ffe041b0 00007ff8`45350468     ntdll!RtlAllocateHeap+0xad4
+00000022`ffe042f0 00007ff8`45352f3a     ntdll!RtlSetBits+0x778
+00000022`ffe04350 00007ff8`4531d0d1     ntdll!RtlSetBits+0x324a
+00000022`ffe045c0 00007ff8`4531cca4     ntdll!RtlAllocateHeap+0xf01
+00000022`ffe04650 00007ff8`425b0139     ntdll!RtlAllocateHeap+0xad4
+00000022`ffe04790 00007ff8`1eb80cdb     ucrtbase!malloc_base+0x39
+00000022`ffe047c0 00007ff8`1eb80fd6     swiftCore!swift_slowAlloc+0x1b
+00000022`ffe04800 00007ff7`725555c9     swiftCore!swift_bufferAllocate+0x26
+00000022`ffe04830 00007ff7`7258d738     dash_wallet+0x4755c9
+00000022`ffe048b0 00007ff7`72593667     dash_wallet+0x4ad738
+00000022`ffe04a70 00007ff7`725a88cb     dash_wallet+0x4b3667
+00000022`ffe04bd0 00007ff7`72413f6a     dash_wallet+0x4c88cb
+00000022`ffe04d80 00007ff7`7255bca5     dash_wallet+0x333f6a
+00000022`ffe050f0 00007ff7`7253b632     dash_wallet+0x47bca5
+00000022`ffe053b0 00007ff7`7253c0ab     dash_wallet+0x45b632
+00000022`ffe055e0 00007ff7`7258defe     dash_wallet+0x45c0ab
+00000022`ffe05730 00007ff7`723f087e     dash_wallet+0x4adefe
+00000022`ffe05940 00007ff7`723f1650     dash_wallet+0x31087e
+00000022`ffe05c50 00007ff7`725b4e49     dash_wallet+0x311650
+00000022`ffe05df0 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe060c0 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe06100 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe06130 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe061a0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe061f0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe062a0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe06320 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe06380 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe065d0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe06c90 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe06d60 00007ff7`723fa627     dash_wallet+0x2db8b8
+00000022`ffe06e60 00007ff7`723fa201     dash_wallet+0x31a627
+00000022`ffe071d0 00007ff7`7258defe     dash_wallet+0x31a201
+00000022`ffe07360 00007ff7`72592bfd     dash_wallet+0x4adefe
+00000022`ffe07570 00007ff7`725a083b     dash_wallet+0x4b2bfd
+00000022`ffe077a0 00007ff7`725b4e49     dash_wallet+0x4c083b
+00000022`ffe078f0 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe07bd0 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe07c10 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe07c40 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe07cb0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe07d00 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe07db0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe07e30 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe07e90 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe080e0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe087e0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe088b0 00007ff7`72448bcb     dash_wallet+0x2db8b8
+00000022`ffe089b0 00007ff7`72448814     dash_wallet+0x368bcb
+00000022`ffe08d50 00007ff7`7258defe     dash_wallet+0x368814
+00000022`ffe08ee0 00007ff7`72592bfd     dash_wallet+0x4adefe
+00000022`ffe090f0 00007ff7`725a24bb     dash_wallet+0x4b2bfd
+00000022`ffe09320 00007ff7`725b4e49     dash_wallet+0x4c24bb
+00000022`ffe09470 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe09790 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe097d0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe09800 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe09870 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe098c0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe09970 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe099f0 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe09a50 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe09ca0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe0a4a0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe0a570 00007ff7`72448bcb     dash_wallet+0x2db8b8
+00000022`ffe0a670 00007ff7`72448814     dash_wallet+0x368bcb
+00000022`ffe0aa90 00007ff7`7258defe     dash_wallet+0x368814
+00000022`ffe0ac20 00007ff7`72592bfd     dash_wallet+0x4adefe
+00000022`ffe0ae30 00007ff7`725a24bb     dash_wallet+0x4b2bfd
+00000022`ffe0b060 00007ff7`725b4e49     dash_wallet+0x4c24bb
+00000022`ffe0b1b0 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe0b510 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe0b550 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe0b580 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe0b5f0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe0b640 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe0b6f0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe0b770 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe0b7d0 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe0ba20 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe0c320 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe0c3f0 00007ff7`723c93f8     dash_wallet+0x2db8b8
+00000022`ffe0c4f0 00007ff7`723c8e61     dash_wallet+0x2e93f8
+00000022`ffe0ca60 00007ff7`7258defe     dash_wallet+0x2e8e61
+00000022`ffe0cbf0 00007ff7`72592bfd     dash_wallet+0x4adefe
+00000022`ffe0ce00 00007ff7`725a011b     dash_wallet+0x4b2bfd
+00000022`ffe0d030 00007ff7`725b4e49     dash_wallet+0x4c011b
+00000022`ffe0d180 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe0d550 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe0d590 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe0d5c0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe0d630 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe0d680 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe0d730 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe0d7b0 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe0d810 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe0da60 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe0e520 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe0e5f0 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+00000022`ffe0e6f0 00007ff7`7253b7de     dash_wallet+0x45bcc0
+00000022`ffe0e940 00007ff7`72425d2e     dash_wallet+0x45b7de
+00000022`ffe0e9a0 00007ff7`7241408f     dash_wallet+0x345d2e
+00000022`ffe0ed20 00007ff7`7255bca5     dash_wallet+0x33408f
+00000022`ffe0f090 00007ff7`7253b632     dash_wallet+0x47bca5
+00000022`ffe0f570 00007ff7`7253c0ab     dash_wallet+0x45b632
+00000022`ffe0f7a0 00007ff7`7258defe     dash_wallet+0x45c0ab
+00000022`ffe0f8f0 00007ff7`7259c23d     dash_wallet+0x4adefe
+00000022`ffe0fb00 00007ff7`7259393b     dash_wallet+0x4bc23d
+00000022`ffe0fd30 00007ff7`725a8d3e     dash_wallet+0x4b393b
+00000022`ffe0fe80 00007ff7`725a7946     dash_wallet+0x4c8d3e
+00000022`ffe10190 00007ff7`7220a670     dash_wallet+0x4c7946
+00000022`ffe10340 00007ff7`725b4e49     dash_wallet+0x12a670
+00000022`ffe104e0 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe10790 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe107d0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe10800 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe10870 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe108c0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe10970 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe109f0 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe10a50 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe10ca0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe112e0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe113b0 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+00000022`ffe114b0 00007ff7`7253b7de     dash_wallet+0x45bcc0
+00000022`ffe115e0 00007ff7`72425d2e     dash_wallet+0x45b7de
+00000022`ffe11640 00007ff7`7241408f     dash_wallet+0x345d2e
+00000022`ffe119c0 00007ff7`7255bca5     dash_wallet+0x33408f
+00000022`ffe11d30 00007ff7`7253b632     dash_wallet+0x47bca5
+00000022`ffe11fd0 00007ff7`7253c0ab     dash_wallet+0x45b632
+00000022`ffe12200 00007ff7`7258defe     dash_wallet+0x45c0ab
+00000022`ffe12350 00007ff7`7259c23d     dash_wallet+0x4adefe
+00000022`ffe12560 00007ff7`7259393b     dash_wallet+0x4bc23d
+00000022`ffe12790 00007ff7`725b4e49     dash_wallet+0x4b393b
+00000022`ffe128e0 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe12b90 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe12bd0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe12c00 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe12c70 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe12cc0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe12d70 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe12df0 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe12e50 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe130a0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe136e0 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe137b0 00007ff7`72445cc4     dash_wallet+0x2db8b8
+00000022`ffe138b0 00007ff7`72444fc4     dash_wallet+0x365cc4
+00000022`ffe13af0 00007ff7`7258defe     dash_wallet+0x364fc4
+00000022`ffe13c80 00007ff7`7259c23d     dash_wallet+0x4adefe
+00000022`ffe13e90 00007ff7`725921ab     dash_wallet+0x4bc23d
+00000022`ffe140c0 00007ff7`725b4e49     dash_wallet+0x4b21ab
+00000022`ffe14210 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe144c0 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe14500 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe14530 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe145a0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe145f0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe146a0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe14720 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe14780 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe149d0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe15010 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe150e0 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+00000022`ffe151e0 00007ff7`7253b7de     dash_wallet+0x45bcc0
+00000022`ffe15310 00007ff7`72425d2e     dash_wallet+0x45b7de
+00000022`ffe15370 00007ff7`72416375     dash_wallet+0x345d2e
+00000022`ffe156f0 00007ff7`72415734     dash_wallet+0x336375
+00000022`ffe15b20 00007ff7`725b4e49     dash_wallet+0x335734
+00000022`ffe15cb0 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe15f70 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe15fb0 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe15fe0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe16050 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe160a0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe16150 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe161d0 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe16230 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe16480 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe16b00 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe16bd0 00007ff7`7240f8a5     dash_wallet+0x2db8b8
+00000022`ffe16cd0 00007ff7`7240f371     dash_wallet+0x32f8a5
+00000022`ffe17030 00007ff7`7258defe     dash_wallet+0x32f371
+00000022`ffe171c0 00007ff7`72592bfd     dash_wallet+0x4adefe
+00000022`ffe173d0 00007ff7`725a0f5b     dash_wallet+0x4b2bfd
+00000022`ffe17600 00007ff7`725b4e49     dash_wallet+0x4c0f5b
+00000022`ffe17750 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe17a30 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe17a70 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe17aa0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe17b10 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe17b60 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe17c10 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe17c90 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe17cf0 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe17f40 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe18640 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe18710 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+00000022`ffe18810 00007ff7`7253b7de     dash_wallet+0x45bcc0
+00000022`ffe18970 00007ff7`72425d2e     dash_wallet+0x45b7de
+00000022`ffe189d0 00007ff7`725a7065     dash_wallet+0x345d2e
+00000022`ffe18d50 00007ff7`725a6344     dash_wallet+0x4c7065
+00000022`ffe191a0 00007ff7`725b4e49     dash_wallet+0x4c6344
+00000022`ffe19330 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe197c0 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe19800 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe19830 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe198a0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe198f0 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe199a0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe19a20 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe19a80 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe19cd0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe1aa90 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe1ab60 00007ff7`72448bcb     dash_wallet+0x2db8b8
+00000022`ffe1ac60 00007ff7`72448814     dash_wallet+0x368bcb
+00000022`ffe1b360 00007ff7`7258defe     dash_wallet+0x368814
+00000022`ffe1b4f0 00007ff7`72592bfd     dash_wallet+0x4adefe
+00000022`ffe1b700 00007ff7`725a24bb     dash_wallet+0x4b2bfd
+00000022`ffe1b930 00007ff7`725b4e49     dash_wallet+0x4c24bb
+00000022`ffe1ba80 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe1bf50 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe1bf90 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe1bfc0 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe1c030 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe1c080 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe1c130 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe1c1b0 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe1c210 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe1c460 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe1d320 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe1d3f0 00007ff7`7240fd4f     dash_wallet+0x2db8b8
+00000022`ffe1d4f0 00007ff7`7240f5a1     dash_wallet+0x32fd4f
+00000022`ffe1dc80 00007ff7`7258defe     dash_wallet+0x32f5a1
+00000022`ffe1de10 00007ff7`72592bfd     dash_wallet+0x4adefe
+00000022`ffe1e020 00007ff7`725a167b     dash_wallet+0x4b2bfd
+00000022`ffe1e250 00007ff7`725b4e49     dash_wallet+0x4c167b
+00000022`ffe1e3a0 00007ff7`725b4232     dash_wallet+0x4d4e49
+00000022`ffe1e8d0 00007ff7`724320f6     dash_wallet+0x4d4232
+00000022`ffe1e910 00007ff8`2b7e60d4     dash_wallet+0x3520f6
+00000022`ffe1e940 00007ff8`2b7e6d08     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0xd84
+00000022`ffe1e9b0 00007ff8`2b7e233b     swiftObservation!$s11Observation12ObservationsV8IteratorVMa+0x19b8
+00000022`ffe1ea00 00007ff8`2b7e237f     swiftObservation!$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg+0xbb
+00000022`ffe1eab0 00007ff7`723a482a     swiftObservation!$s11Observation04withA8Tracking_8onChangexxyXE_yyYbcyXKtlF+0x2f
+00000022`ffe1eb30 00007ff7`724320c9     dash_wallet+0x2c482a
+00000022`ffe1eb90 00007ff7`725b21ed     dash_wallet+0x3520c9
+00000022`ffe1ede0 00007ff7`723bbe9b     dash_wallet+0x4d21ed
+00000022`ffe1fe20 00007ff7`723bb8b8     dash_wallet+0x2dbe9b
+00000022`ffe1fef0 00007ff7`7253bcc0     dash_wallet+0x2db8b8
+00000022`ffe1fff0 00007ff7`7253b7de     dash_wallet+0x45bcc0
+00000022`ffe203a0 00007ff7`72425d2e     dash_wallet+0x45b7de
+00000022`ffe20400 00007ff7`7241408f     dash_wallet+0x345d2e
+00000022`ffe20780 00007ff7`7255bca5     dash_wallet+0x33408f
+00000022`ffe20af0 00007ff7`7253b632     dash_wallet+0x47bca5
+00000022`ffe21290 00007ff7`7253c0ab     dash_wallet+0x45b632
+
+.  1  Id: 2418.24f8 Suspend: 1 Teb: 00000022`ffded000 Unfrozen
+      Start: ntdll!RtlSetThreadSubProcessTag+0x1770 (00007ff8`45375bc0)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`fffff868 00007ff8`45375f3e     ntdll!NtWaitForWorkViaWorkerFactory+0x14
+00000022`fffff870 00007ff8`438be987     ntdll!RtlSetThreadSubProcessTag+0x1aee
+00000022`fffffbd0 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`fffffc00 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+.  4  Id: 2418.1a84 Suspend: 1 Teb: 00000022`ffdf3000 Unfrozen
+      Start: combase!RoParameterizedTypeExtraGetTypeSignature+0xa0 (00007ff8`4344c170)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`802ff288 00007ff8`4292de73     ntdll!NtWaitForMultipleObjects+0x14
+00000022`802ff290 00007ff8`4345486e     KERNELBASE!WaitForMultipleObjectsEx+0x123
+00000022`802ff580 00007ff8`4344c2e1     combase!RoClearError+0x14fe
+00000022`802ff7f0 00007ff8`4344c199     combase!RoParameterizedTypeExtraGetTypeSignature+0x211
+00000022`802ff860 00007ff8`438be987     combase!RoParameterizedTypeExtraGetTypeSignature+0xc9
+00000022`802ff890 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`802ff8c0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+.  9  Id: 2418.1704 Suspend: 1 Teb: 00000022`ffc66000 Unfrozen
+      Start: combase!RoParameterizedTypeExtraGetTypeSignature+0xa0 (00007ff8`4344c170)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`807ff6c8 00007ff8`430bf402     win32u!NtUserGetMessage+0x14
+00000022`807ff6d0 00007ff8`4344a112     user32!GetMessageW+0x22
+00000022`807ff730 00007ff8`4333ba0b     combase!CStdStubBuffer_QueryInterface+0xab2
+00000022`807ff7a0 00007ff8`4344c2e1     combase!CoResumeClassObjects+0x43b
+00000022`807ff7d0 00007ff8`4344c199     combase!RoParameterizedTypeExtraGetTypeSignature+0x211
+00000022`807ff840 00007ff8`438be987     combase!RoParameterizedTypeExtraGetTypeSignature+0xc9
+00000022`807ff870 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`807ff8a0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 10  Id: 2418.ef4 Suspend: 1 Teb: 00000022`ffc00000 Unfrozen
+      Start: CoreMessagingXP!CoreUIRouteToTestRegistrar+0x61b0 (00007ff8`1fb339c0)
+      Priority: 15  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`808fed58 00007ff8`4292de73     ntdll!NtWaitForMultipleObjects+0x14
+00000022`808fed60 00007ff8`1fb879d7     KERNELBASE!WaitForMultipleObjectsEx+0x123
+00000022`808ff050 00007ff8`1fb3e452     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x5a1c7
+00000022`808ff0b0 00007ff8`1fb3ecd6     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x10c42
+00000022`808ff170 00007ff8`1fb7a216     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x114c6
+00000022`808ff1e0 00007ff8`1fb7b73e     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x4ca06
+00000022`808ff2e0 00007ff8`1fb3c990     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x4df2e
+00000022`808ff380 00007ff8`1fb3c6fd     CoreMessagingXP!CoreUIRouteToTestRegistrar+0xf180
+00000022`808ff420 00007ff8`1fb2fecc     CoreMessagingXP!CoreUIRouteToTestRegistrar+0xeeed
+00000022`808ff4e0 00007ff8`1fb3e868     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x26bc
+00000022`808ff540 00007ff8`1fb2fccc     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x11058
+00000022`808ff5d0 00007ff8`1fb31005     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x24bc
+00000022`808ff660 00007ff8`1fb2c58c     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x37f5
+00000022`808ff6f0 00007ff8`1fb33a3b     CoreMessagingXP!MsgStringCreateStack+0x32dc
+00000022`808ff780 00007ff8`438be987     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x622b
+00000022`808ff7e0 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`808ff810 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 11  Id: 2418.1564 Suspend: 1 Teb: 00000022`ffc06000 Unfrozen "DWM Compositor Thread"
+      Start: dwmcorei+0x93ad0 (00007ff8`1d5f3ad0)
+      Priority: 15  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`809ff2b8 00007ff8`4292de73     ntdll!NtWaitForMultipleObjects+0x14
+00000022`809ff2c0 00007ff8`1fb879d7     KERNELBASE!WaitForMultipleObjectsEx+0x123
+00000022`809ff5b0 00007ff8`1fb3e452     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x5a1c7
+00000022`809ff610 00007ff8`1fb3ecd6     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x10c42
+00000022`809ff6d0 00007ff8`1fb7a216     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x114c6
+00000022`809ff740 00007ff8`1fb3010a     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x4ca06
+00000022`809ff840 00007ff8`1fb71c3b     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x28fa
+00000022`809ff920 00007ff8`1fb396f5     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x4442b
+00000022`809ff970 00007ff8`1d59c228     CoreMessagingXP!CoreUIRouteToTestRegistrar+0xbee5
+00000022`809ffa00 00007ff8`1d59b72e     dwmcorei+0x3c228
+00000022`809ffab0 00007ff8`1d59aad5     dwmcorei+0x3b72e
+00000022`809ffc20 00007ff8`1d5f3b76     dwmcorei+0x3aad5
+00000022`809ffc50 00007ff8`438be987     dwmcorei+0x93b76
+00000022`809ffc80 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`809ffcb0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 12  Id: 2418.984 Suspend: 1 Teb: 00000022`ffc04000 Unfrozen
+      Start: Microsoft_UI_Xaml!GetErrorContextIndex+0x570 (00007ff8`07675860)
+      Priority: 15  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`80aff6b8 00007ff8`4292de73     ntdll!NtWaitForMultipleObjects+0x14
+00000022`80aff6c0 00007ff8`075bbf0b     KERNELBASE!WaitForMultipleObjectsEx+0x123
+00000022`80aff9b0 00007ff8`074f085b     Microsoft_UI_Xaml!DllGetActivationFactory+0x20c3b
+00000022`80affab0 00007ff8`076758bd     Microsoft_UI_Xaml+0x13085b
+00000022`80affb90 00007ff8`438be987     Microsoft_UI_Xaml!GetErrorContextIndex+0x5cd
+00000022`80affbc0 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`80affbf0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 13  Id: 2418.2044 Suspend: 1 Teb: 00000022`ffc08000 Unfrozen "Composition Token Thread"
+      Start: dwmcorei+0x8cfb0 (00007ff8`1d5ecfb0)
+      Priority: 15  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`80bff488 00007ff8`4292de73     ntdll!NtWaitForMultipleObjects+0x14
+00000022`80bff490 00007ff8`4292dd41     KERNELBASE!WaitForMultipleObjectsEx+0x123
+00000022`80bff780 00007ff8`251dc4aa     KERNELBASE!WaitForMultipleObjects+0x11
+00000022`80bff7c0 00007ff8`1d5ecffd     marshal!LM_TokenManagerThread+0x32a
+00000022`80bff880 00007ff8`438be987     dwmcorei+0x8cffd
+00000022`80bff8b0 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`80bff8e0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 14  Id: 2418.20e8 Suspend: 1 Teb: 00000022`ffc0a000 Unfrozen "DWM Master Input Thread"
+      Start: dwmcorei!LiftedCompositionEngine_Initialize+0x4ef0 (00007ff8`1d5facb0)
+      Priority: 15  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`80cff988 00007ff8`1d5e5658     win32u!NtUserMsgWaitForMultipleObjectsEx+0x14
+00000022`80cff990 00007ff8`438be987     dwmcorei+0x85658
+00000022`80cffa00 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`80cffa30 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 15  Id: 2418.2038 Suspend: 1 Teb: 00000022`ffc0c000 Unfrozen "DWM Manipulation Thread"
+      Start: dwmcorei!LiftedCompositionEngine_Initialize+0x4d70 (00007ff8`1d5fab30)
+      Priority: 15  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`80dfed98 00007ff8`4292de73     ntdll!NtWaitForMultipleObjects+0x14
+00000022`80dfeda0 00007ff8`1fb879d7     KERNELBASE!WaitForMultipleObjectsEx+0x123
+00000022`80dff090 00007ff8`1fb3e452     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x5a1c7
+00000022`80dff0f0 00007ff8`1fb3ecd6     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x10c42
+00000022`80dff1b0 00007ff8`1fb7a216     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x114c6
+00000022`80dff220 00007ff8`1fb7b73e     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x4ca06
+00000022`80dff320 00007ff8`1fb3c990     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x4df2e
+00000022`80dff3c0 00007ff8`1fb3c6fd     CoreMessagingXP!CoreUIRouteToTestRegistrar+0xf180
+00000022`80dff460 00007ff8`1fb2fecc     CoreMessagingXP!CoreUIRouteToTestRegistrar+0xeeed
+00000022`80dff520 00007ff8`1fb3e868     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x26bc
+00000022`80dff580 00007ff8`1fb2fccc     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x11058
+00000022`80dff610 00007ff8`1fb6e1ed     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x24bc
+00000022`80dff6a0 00007ff8`1fb66f28     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x409dd
+00000022`80dff6e0 00007ff8`1d5ce7c9     CoreMessagingXP!CoreUIRouteToTestRegistrar+0x39718
+00000022`80dff720 00007ff8`1d5fab40     dwmcorei+0x6e7c9
+00000022`80dff780 00007ff8`438be987     dwmcorei!LiftedCompositionEngine_Initialize+0x4d80
+00000022`80dff7b0 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`80dff7e0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 16  Id: 2418.20b0 Suspend: 1 Teb: 00000022`ffc0e000 Unfrozen "Lifted DMIT"
+      Start: ucrtbase!wcsrchr+0x120 (00007ff8`425a3780)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`80effae8 00007ff8`25777815     win32u!NtUserMsgWaitForMultipleObjectsEx+0x14
+00000022`80effaf0 00007ff8`2578733a     Microsoft_InputStateManager!HandleDelegatedInputInProc+0x4e5
+00000022`80effb60 00007ff8`425a37b0     Microsoft_InputStateManager!InjectLiftedPointerWheelInput+0x7cea
+00000022`80effba0 00007ff8`438be987     ucrtbase!wcsrchr+0x150
+00000022`80effbd0 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`80effc00 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 17  Id: 2418.1ef8 Suspend: 1 Teb: 00000022`ffc68000 Unfrozen
+      Start: combase!RoParameterizedTypeExtraGetTypeSignature+0xa0 (00007ff8`4344c170)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`80fff668 00007ff8`4292de73     ntdll!NtWaitForMultipleObjects+0x14
+00000022`80fff670 00007ff8`4344c56e     KERNELBASE!WaitForMultipleObjectsEx+0x123
+00000022`80fff960 00007ff8`4344c3a6     combase!RoParameterizedTypeExtraGetTypeSignature+0x49e
+00000022`80fffbf0 00007ff8`4344c199     combase!RoParameterizedTypeExtraGetTypeSignature+0x2d6
+00000022`80fffc60 00007ff8`438be987     combase!RoParameterizedTypeExtraGetTypeSignature+0xc9
+00000022`80fffc90 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`80fffcc0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 18  Id: 2418.15ac Suspend: 1 Teb: 00000022`ffc4c000 Unfrozen "tr-worker-IdentitySync"
+      Start: dash_wallet+0x1cad370 (00007ff7`73d8d370)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`811fd808 00007ff8`4539c1c3     ntdll!ZwWaitForAlertByThreadId+0x14
+00000022`811fd810 00007ff8`429cf688     ntdll!RtlWaitOnAddress+0x213
+00000022`811fd880 00007ff7`74e297de     KERNELBASE!WaitOnAddress+0x38
+00000022`811fd8c0 00007ff7`73b7a11e     dash_wallet+0x2d497de
+00000022`811fd9c0 00007ff7`73243125     dash_wallet+0x1a9a11e
+00000022`811fda40 00007ff7`73624fdf     dash_wallet+0x1163125
+00000022`811ff590 00007ff7`73962069     dash_wallet+0x1544fdf
+00000022`811ff8d0 00007ff7`736c50f2     dash_wallet+0x1882069
+00000022`811ffbb0 00007ff7`73d8d553     dash_wallet+0x15e50f2
+00000022`811ffd30 00007ff8`438be987     dash_wallet+0x1cad553
+00000022`811ffde0 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`811ffe10 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 19  Id: 2418.318 Suspend: 1 Teb: 00000022`ffc4e000 Unfrozen "tr-worker-DashPaySync"
+      Start: dash_wallet+0x1cad370 (00007ff7`73d8d370)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`84ff6338 00007ff8`4539c1c3     ntdll!ZwWaitForAlertByThreadId+0x14
+00000022`84ff6340 00007ff8`429cf688     ntdll!RtlWaitOnAddress+0x213
+00000022`84ff63b0 00007ff7`74e297de     KERNELBASE!WaitOnAddress+0x38
+00000022`84ff63f0 00007ff7`73b7a11e     dash_wallet+0x2d497de
+00000022`84ff64f0 00007ff7`73e97cc1     dash_wallet+0x1a9a11e
+00000022`84ff6570 00007ff7`73f56584     dash_wallet+0x1db7cc1
+00000022`84fff640 00007ff7`73d8d553     dash_wallet+0x1e76584
+00000022`84fff7d0 00007ff8`438be987     dash_wallet+0x1cad553
+00000022`84fff880 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`84fff8b0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 20  Id: 2418.1ba8 Suspend: 1 Teb: 00000022`ffc50000 Unfrozen "tr-worker-DpnsSync"
+      Start: dash_wallet+0x1cad370 (00007ff7`73d8d370)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`857fc688 00007ff8`4539c1c3     ntdll!ZwWaitForAlertByThreadId+0x14
+00000022`857fc690 00007ff8`429cf688     ntdll!RtlWaitOnAddress+0x213
+00000022`857fc700 00007ff7`74e297de     KERNELBASE!WaitOnAddress+0x38
+00000022`857fc740 00007ff7`73b7a11e     dash_wallet+0x2d497de
+00000022`857fc840 00007ff7`73e995e0     dash_wallet+0x1a9a11e
+00000022`857fc8c0 00007ff7`73f56904     dash_wallet+0x1db95e0
+00000022`857ff950 00007ff7`73d8d553     dash_wallet+0x1e76904
+00000022`857ffae0 00007ff8`438be987     dash_wallet+0x1cad553
+00000022`857ffb90 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`857ffbc0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 21  Id: 2418.26e8 Suspend: 1 Teb: 00000022`ffc18000 Unfrozen "DManip Delegate Thread"
+      Start: Microsoft_DirectManipulation+0x253a0 (00007ff8`1e6a53a0)
+      Priority: 2  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`813ff7e8 00007ff8`1e6a5007     win32u!NtUserMsgWaitForMultipleObjectsEx+0x14
+00000022`813ff7f0 00007ff8`1e6a546a     Microsoft_DirectManipulation+0x25007
+00000022`813ff8c0 00007ff8`438be987     Microsoft_DirectManipulation+0x2546a
+00000022`813ff900 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`813ff930 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+*** WARNING: Unable to verify checksum for D:\a\_temp\gate-work\unpacked\dash-wallet\dispatch.dll
+
+. 26  Id: 2418.15e8 Suspend: 1 Teb: 00000022`ffc6a000 Unfrozen "com.apple.root.user-initiated-qos"
+      Start: ucrtbase!wcsrchr+0x120 (00007ff8`425a3780)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`818ff678 00007ff8`4292759f     ntdll!NtWaitForSingleObject+0x14
+00000022`818ff680 00007ff8`2b7acb63     KERNELBASE!WaitForSingleObjectEx+0xaf
+00000022`818ff720 00007ff8`2b7a5630     dispatch!voucher_copy+0x2893
+00000022`818ff760 00007ff8`2b7a4bcd     dispatch!dispatch_semaphore_wait+0x40
+00000022`818ff7a0 00007ff8`425a37b0     dispatch!dispatch_prohibit_transition_to_multithreaded+0x205d
+00000022`818ff880 00007ff8`438be987     ucrtbase!wcsrchr+0x150
+00000022`818ff8b0 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`818ff8e0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 27  Id: 2418.948 Suspend: 1 Teb: 00000022`ffc24000 Unfrozen "com.apple.root.user-interactive-qos.overcommit"
+      Start: ucrtbase!wcsrchr+0x120 (00007ff8`425a3780)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`819ff938 00007ff8`4292e45c     ntdll!ZwRemoveIoCompletion+0x14
+00000022`819ff940 00007ff8`2b7ac02d     KERNELBASE!GetQueuedCompletionStatus+0x6c
+00000022`819ff9a0 00007ff8`2b7a1674     dispatch!voucher_copy+0x1d5d
+00000022`819ffa30 00007ff8`2b7a15ce     dispatch!dispatch_workloop_set_cpupercent+0x2704
+00000022`819ffaf0 00007ff8`2b7a4d26     dispatch!dispatch_workloop_set_cpupercent+0x265e
+00000022`819ffb20 00007ff8`425a37b0     dispatch!dispatch_prohibit_transition_to_multithreaded+0x21b6
+00000022`819ffc00 00007ff8`438be987     ucrtbase!wcsrchr+0x150
+00000022`819ffc30 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`819ffc60 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 31  Id: 2418.146c Suspend: 1 Teb: 00000022`ffc2c000 Unfrozen "dw-engine"
+      Start: dash_wallet+0x1cad370 (00007ff7`73d8d370)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`824ff2f8 00007ff8`4539c1c3     ntdll!ZwWaitForAlertByThreadId+0x14
+00000022`824ff300 00007ff8`429cf688     ntdll!RtlWaitOnAddress+0x213
+00000022`824ff370 00007ff7`74e297de     KERNELBASE!WaitOnAddress+0x38
+00000022`824ff3b0 00007ff7`73b78872     dash_wallet+0x2d497de
+00000022`824ff4b0 00007ff7`73b76ee0     dash_wallet+0x1a98872
+00000022`824ff560 00007ff7`73b84930     dash_wallet+0x1a96ee0
+00000022`824ff5d0 00007ff7`73b85bce     dash_wallet+0x1aa4930
+00000022`824ff670 00007ff7`73b738b0     dash_wallet+0x1aa5bce
+00000022`824ff820 00007ff7`73b895c5     dash_wallet+0x1a938b0
+00000022`824ff970 00007ff7`73b64b7f     dash_wallet+0x1aa95c5
+00000022`824ff9f0 00007ff7`74b241df     dash_wallet+0x1a84b7f
+00000022`824ffa50 00007ff7`73b7955c     dash_wallet+0x2a441df
+00000022`824ffb20 00007ff7`73b802da     dash_wallet+0x1a9955c
+00000022`824ffc10 00007ff7`73b814e4     dash_wallet+0x1aa02da
+00000022`824ffca0 00007ff7`73d8d553     dash_wallet+0x1aa14e4
+00000022`824ffdd0 00007ff8`438be987     dash_wallet+0x1cad553
+00000022`824ffe80 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`824ffeb0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 32  Id: 2418.1030 Suspend: 1 Teb: 00000022`ffc30000 Unfrozen "dw-engine"
+      Start: dash_wallet+0x1cad370 (00007ff7`73d8d370)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`834feda8 00007ff8`429b4cff     ntdll!NtRemoveIoCompletionEx+0x14
+00000022`834fedb0 00007ff7`74e2ae42     KERNELBASE!GetQueuedCompletionStatusEx+0xcf
+00000022`834fee60 00007ff7`74d22865     dash_wallet+0x2d4ae42
+00000022`834fef30 00007ff7`73b757a5     dash_wallet+0x2c42865
+00000022`834fef80 00007ff7`73b750a4     dash_wallet+0x1a957a5
+00000022`834ff040 00007ff7`73b76e8c     dash_wallet+0x1a950a4
+00000022`834ff0e0 00007ff7`73b84930     dash_wallet+0x1a96e8c
+00000022`834ff150 00007ff7`73b85bce     dash_wallet+0x1aa4930
+00000022`834ff1f0 00007ff7`73b738b0     dash_wallet+0x1aa5bce
+00000022`834ff3a0 00007ff7`73b895c5     dash_wallet+0x1a938b0
+00000022`834ff4f0 00007ff7`73b64b7f     dash_wallet+0x1aa95c5
+00000022`834ff570 00007ff7`74b241df     dash_wallet+0x1a84b7f
+00000022`834ff5d0 00007ff7`73b7955c     dash_wallet+0x2a441df
+00000022`834ff6a0 00007ff7`73b802da     dash_wallet+0x1a9955c
+00000022`834ff790 00007ff7`73b814e4     dash_wallet+0x1aa02da
+00000022`834ff820 00007ff7`73d8d553     dash_wallet+0x1aa14e4
+00000022`834ff950 00007ff8`438be987     dash_wallet+0x1cad553
+00000022`834ffa00 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`834ffa30 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 37  Id: 2418.5c8 Suspend: 1 Teb: 00000022`ffc3c000 Unfrozen "dw-engine"
+      Start: dash_wallet+0x1cad370 (00007ff7`73d8d370)
+      Priority: 0  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`846ff658 00007ff8`4539c1c3     ntdll!ZwWaitForAlertByThreadId+0x14
+00000022`846ff660 00007ff8`429cf688     ntdll!RtlWaitOnAddress+0x213
+00000022`846ff6d0 00007ff7`74e296b1     KERNELBASE!WaitOnAddress+0x38
+00000022`846ff710 00007ff7`73b795e0     dash_wallet+0x2d496b1
+00000022`846ff810 00007ff7`73b802da     dash_wallet+0x1a995e0
+00000022`846ff900 00007ff7`73b814e4     dash_wallet+0x1aa02da
+00000022`846ff990 00007ff7`73d8d553     dash_wallet+0x1aa14e4
+00000022`846ffac0 00007ff8`438be987     dash_wallet+0x1cad553
+00000022`846ffb70 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`846ffba0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+. 38  Id: 2418.694 Suspend: 1 Teb: 00000022`ffc3e000 Unfrozen
+      Start: mswsock!Tcpip6_WSHGetSockaddrType+0xf0 (00007ff8`41698e80)
+      Priority: 1  Priority class: 32  Affinity: f
+Child-SP          RetAddr               Call Site
+00000022`847ffea8 00007ff8`41698f2e     ntdll!ZwRemoveIoCompletion+0x14
+00000022`847ffeb0 00007ff8`438be987     mswsock!Tcpip6_WSHGetSockaddrType+0x19e
+00000022`847fff10 00007ff8`4538c53c     KERNEL32!BaseThreadInitThunk+0x17
+00000022`847fff40 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+
+Total threads: 44
+Duplicate callstacks: 22 (windbg thread #s follow):
+2, 3, 5, 6, 7, 8, 22, 23, 24, 25, 28, 29, 30, 33, 34, 35, 36, 39, 40, 41, 42, 43
+quit:
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\atlmfc.natvis'
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\ObjectiveC.natvis'
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\concurrency.natvis'
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\cpp_rest.natvis'
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\stl.natvis'
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\Windows.Data.Json.natvis'
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\Windows.Devices.Geolocation.natvis'
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\Windows.Devices.Sensors.natvis'
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\Windows.Media.natvis'
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\windows.natvis'
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\winrt.natvis'

@@ -1,0 +1,232 @@
+[application] "dash-wallet" desc="Dash Wallet" {}
+  [frame] "Dash Wallet" actions=window.close,window.minimize,window.toggle-maximized,default.activate {sensitive,showing,visible} @(0,0 1100x760)
+    [panel] "" {sensitive,showing,visible}
+      [panel] "" {sensitive,showing,visible}
+        [panel] "" {sensitive,showing,visible}
+          [panel] "" {sensitive,showing,visible}
+            [panel] "" {sensitive,showing,visible}
+              [panel] "" {sensitive,showing,visible}
+                [panel] "" {sensitive,showing,visible}
+                  [panel] "" {sensitive,showing,visible}
+                    [panel] "" {sensitive,showing,visible}
+                      [panel] "" {sensitive,showing,visible}
+                        [panel] "" {sensitive,showing,visible}
+                          [panel] "" {sensitive,showing,visible}
+                            [panel] "" {sensitive,showing,visible}
+                              [panel] "" {sensitive,showing,visible}
+                              [panel] "" {sensitive,showing,visible}
+                                [panel] "" {sensitive,showing,visible}
+                                  [panel] "" {sensitive,showing,visible}
+                                    [panel] "" {sensitive,showing,visible}
+                                      [panel] "" {sensitive,showing,visible}
+                                        [panel] "" {sensitive,showing,visible}
+                                          [panel] "" {sensitive,showing,visible}
+                                            [panel] "" {sensitive,showing,visible}
+                                              [panel] "" {sensitive,showing,visible}
+                                              [panel] "" {sensitive,showing,visible}
+                                                [panel] "" {sensitive,showing,visible}
+                                                  [panel] "" {sensitive,showing,visible}
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [panel] "" {sensitive,showing,visible}
+                                                          [panel] "" {sensitive,showing,visible}
+                                                            [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
+                                                                [panel] "" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                                    [panel] "" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [panel] "" {sensitive,showing,visible}
+                                                                            [panel] "" {sensitive,showing,visible}
+                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [label] "Recent transactions may not yet be visible" text="Recent transactions may not yet be visible" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [label] "The wallet is still synchronizing with the Dash network, so its balance may be incorrect. Spending coins from transactions not shown yet will not be accepted by the network." text="The wallet is still synchronizing with the Dash network, so its balance may be incorrect. Spending coins from transactions not shown yet will not be accepted by the network." {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Status" text="Status" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Connecting to peers…" text="Connecting to peers…" {focusable,sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Number of blocks left" text="Number of blocks left" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Unknown" text="Unknown" {focusable,sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Last block time" text="Last block time" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Unknown" text="Unknown" {focusable,sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Progress" text="Progress" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "0.00%" text="0.00%" {focusable,sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Progress increase per hour" text="Progress increase per hour" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Unknown" text="Unknown" {focusable,sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Estimated time left until synced" text="Estimated time left until synced" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [label] "Unknown" text="Unknown" {focusable,sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                                              [push button] "Hide" actions=click {focusable,sensitive,showing,visible} @(762,495 36x17)
+                                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                                  [label] "Hide" text="Hide" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                [panel] "" {sensitive,showing,visible}
+                                                  [panel] "" {sensitive,showing,visible}
+                                                    [panel] "" {sensitive,showing,visible}
+                                                    [panel] "" {sensitive,showing,visible}
+                                                      [panel] "" {sensitive,showing,visible}
+                                                        [panel] "" {sensitive,showing,visible}
+                                                          [panel] "" {sensitive,showing,visible}
+                                                            [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
+                                                                [label] "Connecting to peers…" text="Connecting to peers…" {sensitive,showing,visible}
+                                                          [panel] "" {sensitive,showing,visible}
+                                                            [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
+                                                                [panel] "" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                                    [panel] "" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [panel] "" {sensitive,showing,visible}
+                                                                            [progress bar] "" {sensitive,showing,visible}
+                                                          [panel] "" {sensitive,showing,visible}
+                                                          [panel] "" {sensitive,showing,visible}
+                                                            [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
+                                                                [panel] "" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                                    [panel] "" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [label] "Regtest" text="Regtest" {sensitive,showing,visible}
+                                                            [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
+                                                                [panel] "" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                                    [panel] "" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [label] "Unlocked" text="Unlocked" {sensitive,showing,visible}
+                                                          [panel] "" {sensitive,showing,visible}
+                                                            [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
+                                                                [panel] "" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                                    [panel] "" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [panel] "" {sensitive,showing,visible}
+                                                                            [panel] "" {sensitive,showing,visible}
+                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [push button] "Sync details" actions=click {focusable,sensitive,showing,visible} @(801,729 88x17)
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [label] "Sync details" text="Sync details" {sensitive,showing,visible}
+                                                                [panel] "" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                                    [panel] "" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [panel] "" {sensitive,showing,visible}
+                                                                            [panel] "" {sensitive,showing,visible}
+                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [panel] "" {sensitive,showing,visible}
+                                                                                      [panel] "" {sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [push button] "0 peers" actions=click {focusable,sensitive,showing,visible} @(925,729 55x17)
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [label] "0 peers" text="0 peers" {sensitive,showing,visible}
+                                                            [panel] "" {sensitive,showing,visible}
+                                                              [panel] "" {sensitive,showing,visible}
+                                                                [panel] "" {sensitive,showing,visible}
+                                                                  [panel] "" {sensitive,showing,visible}
+                                                                    [panel] "" {sensitive,showing,visible}
+                                                                      [panel] "" {sensitive,showing,visible}
+                                                                        [panel] "" {sensitive,showing,visible}
+                                                                          [panel] "" {sensitive,showing,visible}
+                                                                            [panel] "" {sensitive,showing,visible}
+                                                                              [panel] "" {sensitive,showing,visible}
+                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                  [panel] "" {sensitive,showing,visible}
+                                                                                    [combo box] "tDASH" {sensitive,showing,visible}
+                                                                                      [toggle button] "tDASH" actions=click {focusable,sensitive,showing,visible}
+                                                                                        [panel] "" {sensitive,showing,visible}
+                                                                                          [panel] "" {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                            [panel] "" {sensitive,showing,visible}
+                                                                                              [panel] "" actions=listitem.scroll-to {focusable,sensitive,showing,visible}
+                                                                                                [panel] "" {sensitive,showing,visible}
+                                                                                                  [label] "tDASH" text="tDASH" {sensitive,showing,visible}

@@ -1,0 +1,17 @@
+build: core 1630 s, swift 1365 s (release)
+U7 zip: 95600143 bytes, 35 entries (32 DLLs from /c/Users/runneradmin/AppData/Local/Programs/Swift/Runtimes/6.3.3/usr/bin and the build)
+u2-overview: FAIL exited (0xC00000FD) before 'overview-paint' after 11.7s
+u4-unlock: ok 'lock-paint' after 8.1s; working set 225 MB
+u4-unlock: UIA walk FAIL MethodInvocationException: Exception calling "FindAll" with "2" argument(s): "Catastrophic failure (0x8000FFFF (E_UNEXPECTED))"
+u4-unlock: FAIL the app exited during the UIA walk (0xC0000005)
+u4-overview: FAIL exited (0xC00000FD) before 'overview-paint' after 7.6s
+u4-transactions: FAIL exited (0xC00000FD) before 'transactions-paint' after 7.7s
+light-unlock: ok 'lock-paint' after 6.6s; working set 224 MB
+light-overview: FAIL exited (0xC00000FD) before 'overview-paint' after 8.2s
+light-transactions: FAIL exited (0xC00000FD) before 'transactions-paint' after 7.6s
+light-detail: FAIL exited (0xC00000FD) before 'detail-paint' after 7.6s
+dark-unlock: ok 'lock-paint' after 6.6s; working set 224 MB
+dark-overview: FAIL exited (0xC00000FD) before 'overview-paint' after 8.1s
+dark-transactions: FAIL exited (0xC00000FD) before 'transactions-paint' after 7.7s
+dark-detail: FAIL exited (0xC00000FD) before 'detail-paint' after 8.1s
+overview under cdb: 1545 lines in overview-cdb.txt

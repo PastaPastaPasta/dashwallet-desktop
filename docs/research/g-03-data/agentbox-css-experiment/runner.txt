@@ -1,0 +1,5 @@
+host: Linux 7.0.0-38-generic x86_64; Ubuntu 26.04.1 LTS
+cpu: 32 x Intel(R) Xeon(R) CPU E5-2687W v4 @ 3.00GHz
+memory: 157 GiB
+gtk: unknown
+display: :39 1440x900

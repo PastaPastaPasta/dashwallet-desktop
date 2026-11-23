@@ -1,0 +1,153 @@
+﻿{
+    "selftestShots":  8,
+    "nsis":  {
+                 "file":  "Dash Wallet_0.1.0_x64-setup.exe",
+                 "bytes":  14767720,
+                 "exitCode":  0,
+                 "seconds":  3.1,
+                 "installedExe":  "C:\\Users\\runneradmin\\AppData\\Local\\Dash Wallet\\dash-wallet.exe"
+             },
+    "msi":  {
+                "file":  "Dash Wallet_0.1.0_x64_en-US.msi",
+                "bytes":  20889600,
+                "exitCode":  0,
+                "seconds":  2,
+                "installedExe":  "C:\\Users\\runneradmin\\AppData\\Local\\Dash Wallet\\dash-wallet.exe",
+                "window":  true
+            },
+    "uiaExit":  0,
+    "u2":  {
+               "samples":  [
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  431.8,
+                                   "privateBytesMB":  203.3,
+                                   "t":  6
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  429.2,
+                                   "privateBytesMB":  200,
+                                   "t":  36
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  425.8,
+                                   "privateBytesMB":  197.9,
+                                   "t":  66
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  425.8,
+                                   "privateBytesMB":  197.8,
+                                   "t":  97
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  427.4,
+                                   "privateBytesMB":  198.5,
+                                   "t":  127
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  400.1,
+                                   "privateBytesMB":  196.2,
+                                   "t":  157
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  325.6,
+                                   "privateBytesMB":  196,
+                                   "t":  187
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  260,
+                                   "privateBytesMB":  195.8,
+                                   "t":  217
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  204.8,
+                                   "privateBytesMB":  195.8,
+                                   "t":  247
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  164.2,
+                                   "privateBytesMB":  195.6,
+                                   "t":  277
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  146.1,
+                                   "privateBytesMB":  196.5,
+                                   "t":  307
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  131.8,
+                                   "privateBytesMB":  196.2,
+                                   "t":  337
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  127.6,
+                                   "privateBytesMB":  196.3,
+                                   "t":  367
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  122.8,
+                                   "privateBytesMB":  196.2,
+                                   "t":  397
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  122,
+                                   "privateBytesMB":  195.7,
+                                   "t":  427
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  121.4,
+                                   "privateBytesMB":  195.6,
+                                   "t":  457
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  119.7,
+                                   "privateBytesMB":  195.4,
+                                   "t":  487
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  120,
+                                   "privateBytesMB":  195.2,
+                                   "t":  517
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  117,
+                                   "privateBytesMB":  195.2,
+                                   "t":  547
+                               },
+                               {
+                                   "processes":  7,
+                                   "workingSetMB":  116.8,
+                                   "privateBytesMB":  195.2,
+                                   "t":  578
+                               }
+                           ],
+               "window":  true,
+               "windowSeconds":  0.3,
+               "lockScreenShown":  true,
+               "typedWith":  "ValuePattern",
+               "unlocked":  true,
+               "ranSeconds":  608,
+               "exited":  false
+           },
+    "failures":  [
+
+                 ]
+}

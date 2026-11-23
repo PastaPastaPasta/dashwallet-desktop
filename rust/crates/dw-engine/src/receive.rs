@@ -1,0 +1,668 @@
+//! Receive addresses and payment requests (QT-081…085, QT-096,
+//! IOS-053…055).
+//!
+//! Addresses come from the BIP44 account 0 address pools, which key-wallet
+//! keeps filled to the gap limit past the highest used address. An address
+//! counts as *issued* once it was handed out by `next_receive_address` or a
+//! payment request: those are stored in dw-appdb's address book with purpose
+//! `receive`, so issuance survives restarts and never repeats an address.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use dashcore::Address;
+use dw_appdb::{AppDbError, BookPurpose, LabelKind};
+use dw_uri::core::{SendCoinsRecipient, format_request_uri};
+use key_wallet::managed_account::address_pool::{AddressPool, AddressState};
+use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+use key_wallet::managed_account::managed_account_type::ManagedAccountType;
+
+use crate::events::unix_now;
+use crate::history::AddressChain;
+use crate::{EngineError, NetworkSession, WalletId};
+
+/// Dash Core `MAX_MONEY` (21 million DASH) in duffs.
+const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
+
+/// dw-appdb setting (wallet scope) of "Include my username in payment
+/// requests" (DP3-03b): `"0"` is off, absent (the default) is off; `"1"` is on; anything
+/// else is corrupt, which the URIs read as off.
+pub(crate) const USERNAME_IN_REQUESTS_KEY: &str = "dashpay.username_in_requests";
+
+/// One lock per wallet between "Include my username in payment requests"
+/// and the URIs that carry the username (DP3-03b D20): a URI is made under
+/// the read side, from the setting's read through the name's to the URI;
+/// a change of the setting takes the write side. After turning it off, the
+/// Receive QR and requests with an unset override omit the name. A request
+/// saved with `Some(true)` keeps its explicit opt-in; `Some(false)` omits it.
+#[derive(Default)]
+pub(crate) struct UsernameGate {
+    /// Never pruned: one empty lock per wallet seen, bounded by the wallets.
+    locks: std::sync::Mutex<HashMap<WalletId, Arc<tokio::sync::RwLock<()>>>>,
+    /// Tests: holds the next username read after its setting read.
+    #[cfg(test)]
+    pub(crate) pause_name_read: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+}
+
+impl UsernameGate {
+    fn lock(&self, wallet: WalletId) -> Arc<tokio::sync::RwLock<()>> {
+        let mut locks = self.locks.lock().unwrap_or_else(|p| p.into_inner());
+        Arc::clone(locks.entry(wallet).or_default())
+    }
+
+    async fn read(&self, wallet: WalletId) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        self.lock(wallet).read_owned().await
+    }
+
+    async fn write(&self, wallet: WalletId) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.lock(wallet).write_owned().await
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressInfo {
+    pub address: String,
+    pub chain: AddressChain,
+    pub index: u32,
+    /// e.g. `m/44'/1'/0'/0/7`.
+    pub derivation_path: String,
+    /// Has received funds at least once.
+    pub used: bool,
+    pub label: Option<String>,
+    /// Current balance held by this address.
+    pub balance: Option<u64>,
+    /// Wallet transactions paying to or spending from this address.
+    pub tx_count: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddressFilter {
+    pub chain: Option<AddressChain>,
+    pub used: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiveRequest {
+    pub include_username: Option<bool>,
+    pub id: u64,
+    pub created_at: u64,
+    pub address: String,
+    pub amount: Option<u64>,
+    pub label: Option<String>,
+    pub message: Option<String>,
+    /// The wallet's DashPay username, as `uri` carries it (DP3-03): read
+    /// with the request, not stored with it.
+    pub username: Option<String>,
+    pub uri: String,
+}
+
+/// One pool address with what the list needs.
+#[derive(Debug, Clone)]
+struct PoolAddress {
+    address: Address,
+    chain: AddressChain,
+    index: u32,
+    path: String,
+    state: AddressState,
+}
+
+/// Snapshot of the BIP44 account 0 pools and per-address balances.
+struct PoolView {
+    addresses: Vec<PoolAddress>,
+    balances: HashMap<Address, u64>,
+}
+
+/// The first receiving address free to hand out: no transaction paid it
+/// and it is not held reserved.
+fn current_receiving(view: &PoolView) -> Result<&PoolAddress, EngineError> {
+    view.addresses
+        .iter()
+        .filter(|a| {
+            a.chain == AddressChain::Receiving && matches!(a.state, AddressState::Available)
+        })
+        .min_by_key(|a| a.index)
+        .ok_or(EngineError::GapLimit)
+}
+
+fn pool_addresses(pool: &AddressPool, chain: AddressChain) -> Vec<PoolAddress> {
+    pool.addresses
+        .values()
+        .map(|a| PoolAddress {
+            address: a.address.clone(),
+            chain,
+            index: a.index,
+            path: a.path.to_string(),
+            state: a.state,
+        })
+        .collect()
+}
+
+/// Builds the `dash:` URI of a request (dash-qt `formatBitcoinURI`, then
+/// iOS's `user=`).
+fn request_uri(
+    address: &str,
+    amount: Option<u64>,
+    label: Option<&str>,
+    message: Option<&str>,
+    username: Option<&str>,
+) -> String {
+    let info = SendCoinsRecipient {
+        address: address.to_string(),
+        label: label.unwrap_or_default().to_string(),
+        message: message.unwrap_or_default().to_string(),
+        amount: amount.and_then(|a| i64::try_from(a).ok()).unwrap_or(0),
+    };
+    format_request_uri(&info, username)
+}
+
+impl NetworkSession {
+    async fn pool_view(&self, wallet: WalletId) -> Result<PoolView, EngineError> {
+        let manager = self.manager()?;
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm
+            .get_wallet_info(&wallet.0)
+            .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
+        let account = info
+            .core_wallet
+            .accounts
+            .standard_bip44_accounts
+            .get(&0)
+            .ok_or_else(|| EngineError::Wallet("wallet has no BIP44 account 0".into()))?;
+        let mut addresses = Vec::new();
+        if let ManagedAccountType::Standard {
+            external_addresses,
+            internal_addresses,
+            ..
+        } = account.managed_account_type()
+        {
+            addresses.extend(pool_addresses(external_addresses, AddressChain::Receiving));
+            addresses.extend(pool_addresses(internal_addresses, AddressChain::Change));
+        }
+        let mut balances: HashMap<Address, u64> = HashMap::new();
+        for utxo in account.utxos.values() {
+            *balances.entry(utxo.address.clone()).or_default() += utxo.txout.value;
+        }
+        Ok(PoolView {
+            addresses,
+            balances,
+        })
+    }
+
+    /// Txs per address (outputs paying it plus known inputs spending from it).
+    fn tx_counts(&self, wallet: &WalletId) -> HashMap<String, u32> {
+        let network = self.network.core_network();
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        for entry in self.hub.history.snapshot(wallet).values() {
+            let mut touched: HashSet<String> = entry
+                .tx
+                .output
+                .iter()
+                .filter_map(|o| Address::from_script(&o.script_pubkey, network).ok())
+                .map(|a| a.to_string())
+                .collect();
+            touched.extend(entry.own_inputs.values().map(|(_, a)| a.to_string()));
+            for a in touched {
+                *counts.entry(a).or_default() += 1;
+            }
+        }
+        counts
+    }
+
+    fn address_info(
+        &self,
+        a: &PoolAddress,
+        view: &PoolView,
+        labels: &HashMap<String, String>,
+        counts: &HashMap<String, u32>,
+    ) -> AddressInfo {
+        let text = a.address.to_string();
+        AddressInfo {
+            label: labels.get(&text).cloned(),
+            tx_count: counts.get(&text).copied().unwrap_or(0),
+            balance: Some(view.balances.get(&a.address).copied().unwrap_or(0)),
+            used: matches!(a.state, AddressState::Used),
+            chain: a.chain,
+            index: a.index,
+            derivation_path: a.path.clone(),
+            address: text,
+        }
+    }
+
+    async fn address_labels(
+        &self,
+        wallet: WalletId,
+    ) -> Result<HashMap<String, String>, EngineError> {
+        let appdb = self.live()?.appdb;
+        tokio::task::spawn_blocking(move || appdb.labels(&wallet.to_string(), LabelKind::Address))
+            .await?
+            .map(|v| v.into_iter().collect())
+            .map_err(|e| EngineError::Storage(e.to_string()))
+    }
+
+    /// Addresses of the BIP44 account (QT-096), by chain then index.
+    pub async fn addresses(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        filter: AddressFilter,
+    ) -> Result<Vec<AddressInfo>, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let view = this.pool_view(wallet).await?;
+            let labels = this.address_labels(wallet).await?;
+            let counts = this.tx_counts(&wallet);
+            let mut out: Vec<AddressInfo> = view
+                .addresses
+                .iter()
+                .map(|a| this.address_info(a, &view, &labels, &counts))
+                .filter(|a| filter.chain.is_none_or(|c| c == a.chain))
+                .filter(|a| filter.used.is_none_or(|u| u == a.used))
+                .collect();
+            out.sort_by_key(|a| (a.chain == AddressChain::Change, a.index));
+            Ok(out)
+        })
+        .await
+    }
+
+    /// The first unused receiving address (IOS-053). Re-queried after
+    /// `HistoryChanged`: once paid, the next one becomes current.
+    pub async fn current_receive_address(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<AddressInfo, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let view = this.pool_view(wallet).await?;
+            let current = current_receiving(&view)?;
+            let labels = this.address_labels(wallet).await?;
+            Ok(this.address_info(current, &view, &labels, &this.tx_counts(&wallet)))
+        })
+        .await
+    }
+
+    /// [`Self::current_receive_address`]'s address alone, for a caller
+    /// already inside the session (release 0.1: "Move to Dash wallet" pays
+    /// it).
+    pub(crate) async fn current_receiving_address(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Address, EngineError> {
+        let view = self.pool_view(wallet).await?;
+        Ok(current_receiving(&view)?.address.clone())
+    }
+
+    /// Whether `address` is one of the wallet's BIP44 account 0 receiving
+    /// addresses (a quote's destination, release 0.1).
+    pub(crate) async fn is_receiving_address(
+        &self,
+        wallet: WalletId,
+        address: &Address,
+    ) -> Result<bool, EngineError> {
+        let view = self.pool_view(wallet).await?;
+        Ok(view
+            .addresses
+            .iter()
+            .any(|a| a.chain == AddressChain::Receiving && a.address == *address))
+    }
+
+    /// Issues a fresh receiving address: unused, not reserved by
+    /// key-wallet and never issued before. Stored as a `receive` address-book
+    /// entry with `label` (dash-qt `getNewDestination(label)`, QT-081).
+    /// `GapLimit` when every address inside the gap is already issued.
+    pub async fn next_receive_address(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        label: Option<String>,
+    ) -> Result<AddressInfo, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.issue_address(wallet, label).await
+        })
+        .await
+    }
+
+    pub(crate) async fn issue_address(
+        &self,
+        wallet: WalletId,
+        label: Option<String>,
+    ) -> Result<AddressInfo, EngineError> {
+        let view = self.pool_view(wallet).await?;
+        let appdb = self.live()?.appdb;
+        let w = wallet.to_string();
+        let issued: HashSet<String> = {
+            let appdb = Arc::clone(&appdb);
+            let w = w.clone();
+            tokio::task::spawn_blocking(move || -> Result<HashSet<String>, dw_appdb::AppDbError> {
+                let mut set: HashSet<String> = appdb
+                    .address_book(&w, Some(BookPurpose::Receive))?
+                    .into_iter()
+                    .map(|e| e.address)
+                    .collect();
+                set.extend(appdb.receive_requests(&w)?.into_iter().map(|r| r.address));
+                Ok(set)
+            })
+            .await?
+            .map_err(|e| EngineError::Storage(e.to_string()))?
+        };
+        let fresh = view
+            .addresses
+            .iter()
+            .filter(|a| {
+                a.chain == AddressChain::Receiving
+                    && matches!(a.state, AddressState::Available)
+                    && !issued.contains(&a.address.to_string())
+            })
+            .min_by_key(|a| a.index)
+            .ok_or(EngineError::GapLimit)?
+            .clone();
+        let text = fresh.address.to_string();
+        let stored_label = label.clone().unwrap_or_default();
+        let addr = text.clone();
+        tokio::task::spawn_blocking(move || {
+            appdb.upsert_book_entry(&w, &addr, BookPurpose::Receive, &stored_label, unix_now())
+        })
+        .await?
+        .map_err(|e| EngineError::Storage(e.to_string()))?;
+        let mut labels = HashMap::new();
+        if let Some(l) = label.filter(|l| !l.is_empty()) {
+            labels.insert(text, l);
+        }
+        Ok(self.address_info(&fresh, &view, &labels, &self.tx_counts(&wallet)))
+    }
+
+    /// Stores a payment request on a freshly issued address (QT-081/082).
+    /// An amount of 0 means "any amount", as in dash-qt.
+    pub async fn create_receive_request(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        amount: Option<u64>,
+        label: Option<String>,
+        message: Option<String>,
+    ) -> Result<ReceiveRequest, EngineError> {
+        self.create_receive_request_with_username(wallet, amount, label, message, None)
+            .await
+    }
+
+    /// Stores a per-request choice; `None` follows the wallet setting.
+    pub async fn create_receive_request_with_username(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        amount: Option<u64>,
+        label: Option<String>,
+        message: Option<String>,
+        include_username: Option<bool>,
+    ) -> Result<ReceiveRequest, EngineError> {
+        let amount = amount.filter(|a| *a > 0);
+        if amount.is_some_and(|a| a > MAX_MONEY) {
+            return Err(EngineError::InvalidArgument(
+                "amount above the maximum supply".into(),
+            ));
+        }
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let label = label.filter(|l| !l.is_empty());
+            let message = message.filter(|m| !m.is_empty());
+            let issued = this.issue_address(wallet, label.clone()).await?;
+            let appdb = this.live()?.appdb;
+            let created_at = unix_now();
+            let (address, l, m) = (issued.address.clone(), label.clone(), message.clone());
+            let id = tokio::task::spawn_blocking(move || {
+                appdb.add_receive_request_with_username(
+                    &wallet.to_string(),
+                    created_at,
+                    &address,
+                    amount,
+                    l.as_deref(),
+                    m.as_deref(),
+                    include_username,
+                )
+            })
+            .await?
+            .map_err(|e| EngineError::Storage(e.to_string()))?;
+            let _gate = this.username_gate.read(wallet).await;
+            let username = this.request_username(wallet, include_username).await;
+            Ok(ReceiveRequest {
+                include_username,
+                id: u64::try_from(id)
+                    .map_err(|_| EngineError::Internal(format!("request id {id}")))?,
+                created_at,
+                uri: request_uri(
+                    &issued.address,
+                    amount,
+                    label.as_deref(),
+                    message.as_deref(),
+                    username.as_deref(),
+                ),
+                address: issued.address,
+                amount,
+                label,
+                message,
+                username,
+            })
+        })
+        .await
+    }
+
+    /// Stored requests, newest first (QT-083).
+    pub async fn receive_requests(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<Vec<ReceiveRequest>, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.require_wallet(&wallet)?;
+            let appdb = this.live()?.appdb;
+            let rows =
+                tokio::task::spawn_blocking(move || appdb.receive_requests(&wallet.to_string()))
+                    .await?
+                    .map_err(|e| EngineError::Storage(e.to_string()))?;
+            let _gate = this.username_gate.read(wallet).await;
+            let default_username = this.username_of(wallet).await;
+            let explicit_username = if rows.iter().any(|r| r.include_username == Some(true)) {
+                this.request_username(wallet, Some(true)).await
+            } else {
+                None
+            };
+            Ok(rows
+                .into_iter()
+                .filter_map(|r| {
+                    let username = match r.include_username {
+                        Some(true) => explicit_username.clone(),
+                        Some(false) => None,
+                        None => default_username.clone(),
+                    };
+                    Some(ReceiveRequest {
+                        include_username: r.include_username,
+                        id: u64::try_from(r.id).ok()?,
+                        created_at: r.created_at,
+                        uri: request_uri(
+                            &r.address,
+                            r.amount,
+                            r.label.as_deref(),
+                            r.message.as_deref(),
+                            username.as_deref(),
+                        ),
+                        address: r.address,
+                        amount: r.amount,
+                        label: r.label,
+                        message: r.message,
+                        username,
+                    })
+                })
+                .collect())
+        })
+        .await
+    }
+
+    /// The username the Receive screen's QR carries as `user=` (IOS-055,
+    /// DP3-03): the main name of the wallet's main DashPay identity. `None`
+    /// without one, while a sync pass holds the names, while Platform's
+    /// state cannot be read, or while [`Self::username_in_requests`] is off:
+    /// the QR is then a plain Core one.
+    pub async fn receive_username(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<Option<String>, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.require_wallet(&wallet)?;
+            Ok(this.read_username(wallet).await.1)
+        })
+        .await
+    }
+
+    /// The username the wallet's URIs carry, with the read side of its
+    /// [`UsernameGate`] (D20): the caller makes its URIs before dropping it.
+    /// The name is [`Self::receive_username`]'s: `None` while
+    /// [`Self::username_in_requests`] is off or cannot be read, and never an
+    /// error, as without it the URI is a plain Core one. The identity read
+    /// touches the database, so it runs off the runtime's threads.
+    async fn read_username(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> (tokio::sync::OwnedRwLockReadGuard<()>, Option<String>) {
+        let gate = self.username_gate.read(wallet).await;
+        (gate, self.username_of(wallet).await)
+    }
+
+    async fn username_of(self: &Arc<Self>, wallet: WalletId) -> Option<String> {
+        if !self.username_in_requests_of(wallet).await.ok()? {
+            return None;
+        }
+        #[cfg(test)]
+        crate::coins::pause_at(&self.username_gate.pause_name_read).await;
+        let this = Arc::clone(self);
+        (tokio::task::spawn_blocking(move || this.main_username(wallet)).await).ok()?
+    }
+
+    async fn request_username(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        included: Option<bool>,
+    ) -> Option<String> {
+        match included {
+            None => self.username_of(wallet).await,
+            Some(false) => None,
+            Some(true) => {
+                let this = Arc::clone(self);
+                tokio::task::spawn_blocking(move || this.main_username(wallet))
+                    .await
+                    .ok()?
+            }
+        }
+    }
+
+    /// "Include my username in payment requests" (DP3-03b, DP3-02 D21):
+    /// The default for [`Self::receive_username`] and requests without an explicit
+    /// choice. Stored per wallet in this network's app.sqlite; per-request
+    /// choices override it when a stored request is read.
+    pub async fn username_in_requests(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<bool, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.require_wallet(&wallet)?;
+            this.username_in_requests_of(wallet).await
+        })
+        .await
+    }
+
+    /// Turns [`Self::username_in_requests`] on or off for one wallet. Waits
+    /// for URIs being made with the wallet default (D20).
+    pub async fn set_username_in_requests(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        on: bool,
+    ) -> Result<(), EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            // A removal waits for the write, so it never lands on the wallet
+            // a re-import brings back, which starts off (D21).
+            let _lifecycle = this.wallet_lifecycle.hold().await;
+            this.require_wallet(&wallet)?;
+            let _gate = this.username_gate.write(wallet).await;
+            let scope = wallet.to_string();
+            this.appdb_op(move |db| {
+                db.set_setting(
+                    &scope,
+                    USERNAME_IN_REQUESTS_KEY,
+                    Some(if on { "1" } else { "0" }),
+                )
+            })
+            .await
+        })
+        .await
+    }
+
+    async fn username_in_requests_of(&self, wallet: WalletId) -> Result<bool, EngineError> {
+        let scope = wallet.to_string();
+        self.appdb_op(
+            move |db| match db.setting(&scope, USERNAME_IN_REQUESTS_KEY)? {
+                None => Ok(false),
+                Some(v) if v == "0" => Ok(false),
+                Some(v) if v == "1" => Ok(true),
+                Some(v) => Err(AppDbError::Corrupt(format!(
+                    "{USERNAME_IN_REQUESTS_KEY} {v:?}"
+                ))),
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_receive_request(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        request_id: u64,
+    ) -> Result<(), EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.require_wallet(&wallet)?;
+            let id =
+                i64::try_from(request_id).map_err(|_| EngineError::RequestNotFound(request_id))?;
+            let appdb = this.live()?.appdb;
+            let deleted = tokio::task::spawn_blocking(move || {
+                appdb.delete_receive_request(&wallet.to_string(), id)
+            })
+            .await?
+            .map_err(|e| EngineError::Storage(e.to_string()))?;
+            if deleted {
+                Ok(())
+            } else {
+                Err(EngineError::RequestNotFound(request_id))
+            }
+        })
+        .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_uri_matches_dash_qt_format() {
+        assert_eq!(request_uri("yAddr", None, None, None, None), "dash:yAddr");
+        assert_eq!(
+            request_uri("yAddr", Some(150_000_000), Some("Rent"), Some("May"), None),
+            "dash:yAddr?amount=1.50000000&label=Rent&message=May"
+        );
+        assert_eq!(
+            request_uri("yAddr", Some(150_000_000), None, Some("May"), Some("al1ce")),
+            "dash:yAddr?amount=1.50000000&message=May&user=al1ce"
+        );
+        assert_eq!(
+            request_uri("yAddr", None, None, None, Some("al1ce")),
+            "dash:yAddr?user=al1ce"
+        );
+    }
+}

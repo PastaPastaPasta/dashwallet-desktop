@@ -1,0 +1,850 @@
+{
+  "source": "dashpay/platform bc321362b9ff9c8ac24244f9d4b09ec3de7a5938, rs-platform-wallet SeedCryptoProvider (contact_requests.rs:171-345); identity keys via key_wallet Wallet::derive_extended_private_key + dashcore::signer::sign",
+  "constants": {
+    "identity_data": "6461736877616c6c65742d6465736b746f702045302d3033206964656e74697479207369676e657220766563746f72",
+    "user_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "friend_id": "2222222222222222222222222222222222222222222222222222222222222222",
+    "peer_secret": "4242424242424242424242424242424242424242424242424242424242424242",
+    "contact_id": "3333333333333333333333333333333333333333333333333333333333333333",
+    "private_data": "68656c6c6f20707269766174652064617461",
+    "private_data_iv": "11111111111111111111111111111111"
+  },
+  "cases": [
+    {
+      "name": "abandon-about",
+      "network": "testnet",
+      "seed": "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+      "identity_keys": [
+        {
+          "identity_index": 0,
+          "key_index": 0,
+          "path": "m/9'/1'/5'/0'/0'/0'/0'",
+          "public_key": "03a00f4853081aeb8c9debe37267303fa133bd7f6678bfb3299dfa001bfd0341db",
+          "hash160": "35891d57608f93cfe630e70bee9ae863f403f50f",
+          "signature": "1fa29b70285cdb1097c06bad822fd120826323b6bc99cedcde858807ba200fdd46358b304da792b957735605c3255176c6c2344b1a019afa7cf1347de6854b07ec"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 1,
+          "path": "m/9'/1'/5'/0'/0'/0'/1'",
+          "public_key": "03280859fd14d1b8a7a75d918dd0a1bf922be5af7eff9aafa26f446ea5f16da616",
+          "hash160": "521cb3d158f60b778ea5ed44a20189bcd8a40a9a",
+          "signature": "1f3b39f06d8e1c4106f9722d193f6524b18855fe115de9886303af1cbd08e37ee3589b108371ee1bb06e979c319b2b3235b67c16505f6c8bbdb13c2f408662d9c4"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "path": "m/9'/1'/5'/0'/0'/0'/2'",
+          "public_key": "02cb109b54e542efbb86f3e5ba1d6a2da97d02cc4de0c706c23ab8ddb53ff7fe3e",
+          "hash160": "ea8a4559d2aa5130044f86bb4511fe984aeecf8f",
+          "signature": "201e346e00917b4973a28f5694addf4ecd14d7ac99af9d0a8e681e5a89dfcce0d60ae2ccdbd2c6fc3988f9c6b5de7fbed02514a8ce2087130843661357ecd8b601"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 3,
+          "path": "m/9'/1'/5'/0'/0'/0'/3'",
+          "public_key": "02711df617d984f97ad43dfb5eab5e780055f4a4dd68a1d95fe708ae1e9c9e17aa",
+          "hash160": "4e24163ad0fe77ce11334f44d6982a68b441efd9",
+          "signature": "1f2a8878191c4792140963ddc09543a9bfcc6ce66c6438c939ca2eec2d4a36e32c1962314e8fcdc01b4e43375fb8a5bf556ca1d70bfef91599a06434051579eac9"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/0'/4'",
+          "public_key": "03d3c6c2629ff5c15703717a7a14c8a01b04b55dbf511cafc58d96519206f0213c",
+          "hash160": "da04297700d495a1c29927e59f22770c6ddf2e41",
+          "signature": "1f467fadea94983899d38047fd3a2560178d0f50e98d54ef5f394b56d4748f47882fef9c38c463fa2554c0e231252ca901dd040c6a2e35cd69da147b46f683a403"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 5,
+          "path": "m/9'/1'/5'/0'/0'/0'/5'",
+          "public_key": "02f521bfa606ef60d9a1b3582d9bdc6ed00c95177cd3546e3eef95e424a912795a",
+          "hash160": "bcfce4f268eb895273aa47b2f461be36215101dd",
+          "signature": "20aa979d0dd4fe05b9859609b38c13237ba2dbd5ed939f6ef18ad63c0498c8057979954586b59fb4f62759c83c6fbb3b8401e3beb9476b95fb20fe76ef4bea5925"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 0,
+          "path": "m/9'/1'/5'/0'/0'/1'/0'",
+          "public_key": "0312aa9ac813f9751da6747c4ac7798a9c5f778545788204785eafbfe287544144",
+          "hash160": "8378226e5e86af65f2c2c85f144942a97c28b9d8",
+          "signature": "20ee32f0874e1626156fca90aaf3917f5e0e09d71030aeed20283565d5bf4dada217d6a2473db1cd45494f7335c16b71ad7e18e23a3caf05b790f3786a2b5fbcbd"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 1,
+          "path": "m/9'/1'/5'/0'/0'/1'/1'",
+          "public_key": "03a8150f657be60fe91fec7aefe69d655247417e9e7ab408d209261b57f798ce84",
+          "hash160": "db5bc4b70acdd92ef5ff3e0430759bf1708a9bf6",
+          "signature": "1fead907bf183b38082afa62fb80b66e2e5623b309991d97ce17173ded43a4d2503457c54d83cad6b04f07ed507fc141148c9ffb2fc4f5ea463c74571d7145d765"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 2,
+          "path": "m/9'/1'/5'/0'/0'/1'/2'",
+          "public_key": "03e1280783f1b2d0ed971a93ab9e1f7665e5555b1e5154201462cd33e9a7ab9a47",
+          "hash160": "a656723bc309e5bbec79aea7080fd3ff92bb5642",
+          "signature": "20e927a6ba666dbb0a4ce13d0d6cc94ec4e75636a2c867b0a93bf2622f7805eb7d0704d708fff7edf74bbf35029b9826fa7d84e082c42a34a4efbbb550b6106c63"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 3,
+          "path": "m/9'/1'/5'/0'/0'/1'/3'",
+          "public_key": "02c5036f9253775c16dd64fb788e2f6ff62bc24b7785c74ad1ea011cf3fcc55a4e",
+          "hash160": "8567cd9baafaeda92b391a6a1ffee41efbd78979",
+          "signature": "1fd9e060381cc7d02ff92b096c7b7adf7e388a12965f1f4d0a38a149bbbe421faf2d3c666f7add470b6380a0de9569f01e015b53dee5b91b728a986d8f29d423e8"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/1'/4'",
+          "public_key": "02025d6686712a76e128b92875b4e542f7192bdbe7c1dd8ec90fb09ce79d63111a",
+          "hash160": "e3e93c0f7aac2a8e3deadc09ca4c99230ca31224",
+          "signature": "1fb3dbb7b8cc53cd9f236c2aca8bb9cc280414cf307c9d44428fa79a0cc7afef3840f55b4c5270f1815f49cd3bd921cebbc212e10be69ba5bc945cf5c72736a138"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 5,
+          "path": "m/9'/1'/5'/0'/0'/1'/5'",
+          "public_key": "03ce77cf2a2d8f1d479ede39cc827e464a10237ac5858a38d74c15443e92d23d2d",
+          "hash160": "cc4cc614e959b951ac7dcc44eff2133653020d2b",
+          "signature": "206f0b958e668269caab78d171b253948575fe0aee10afa19c75ac9cb4b48625003127cf2d4f06e0b4a2f41668721412987811400a19f9222c8d5775ef97a0a710"
+        }
+      ],
+      "receiving_xpubs": [
+        {
+          "account": 0,
+          "path": "m/9'/1'/15'/0'/0x1111111111111111111111111111111111111111111111111111111111111111/0x2222222222222222222222222222222222222222222222222222222222222222",
+          "xpub": {
+            "depth": 6,
+            "parent_fingerprint": "d4d29a36",
+            "chain_code": "76d3402e09220d5add0fbdceb129e01938b1985a8d7687a863cb3f4305cfd231",
+            "public_key": "03a068ef3347135cefe9465b7f60d4d7c0a51c3134716c51cc0da94fd90e176c9a",
+            "compact": "d4d29a3676d3402e09220d5add0fbdceb129e01938b1985a8d7687a863cb3f4305cfd23103a068ef3347135cefe9465b7f60d4d7c0a51c3134716c51cc0da94fd90e176c9a"
+          }
+        },
+        {
+          "account": 1,
+          "path": "m/9'/1'/15'/1'/0x1111111111111111111111111111111111111111111111111111111111111111/0x2222222222222222222222222222222222222222222222222222222222222222",
+          "xpub": {
+            "depth": 6,
+            "parent_fingerprint": "0b5185c1",
+            "chain_code": "640ef4046d357e8c29345149b616e33c500b29eab8d2ecd6e11e750d28baf663",
+            "public_key": "03da38b8431af002bdd9667f884f257d038f558c96a7b620c4b24c58d0482af769",
+            "compact": "0b5185c1640ef4046d357e8c29345149b616e33c500b29eab8d2ecd6e11e750d28baf66303da38b8431af002bdd9667f884f257d038f558c96a7b620c4b24c58d0482af769"
+          }
+        }
+      ],
+      "bip44_account0": {
+        "path": "m/44'/1'/0'",
+        "xpub": "tpubDC5FSnBiZDMmhiuCmWAYsLwgLYrrT9rAqvTySfuCCrgsWz8wxMXUS9Tb9iVMvcRbvFcAHGkMD5Kx8koh4GquNGNTfohfk7pgjhaPCdXpoba"
+      },
+      "auto_accept": {
+        "expiry": 1900000000,
+        "path": "m/9'/1'/16'/1900000000'",
+        "public_key": "020ad7c256c2ef74feacb4b70fd366aa6696ac87b45614eb74a810522ce1276a88",
+        "secret": "03807b869584861b6bba53d5ec5e1f6d4a5caa944f707715d9172cec493fbc05"
+      },
+      "ecdh": [
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/0'/4'",
+          "shared": "499f5616c59bb46ae9b47004c19bd06972541953d8b91b426235ed57aa634dfe"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 5,
+          "path": "m/9'/1'/5'/0'/0'/0'/5'",
+          "shared": "54f3b8b1a46fd1887d550829036469c385939a9ddff2d0ae0392dffc119d8318"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/1'/4'",
+          "shared": "d0d3fe01721cf74e4fb9103bc9c5ab52b82d4a839d867d3011d9d43314d67dd0"
+        }
+      ],
+      "account_references": [
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/0'/4'",
+          "account_index": 0,
+          "version": 0,
+          "reference": 32926804
+        },
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/0'/4'",
+          "account_index": 7,
+          "version": 3,
+          "reference": 838233171
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/1'/4'",
+          "account_index": 0,
+          "version": 15,
+          "reference": 4165302671
+        }
+      ],
+      "contact_info": [
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "root_path": "m/9'/1'/5'/0'/0'/0'/2'",
+          "derivation_index": 0,
+          "enc_to_user_id": "51c287bd4d4c3d0a063fa8276148b25a51c287bd4d4c3d0a063fa8276148b25a",
+          "private_data": "11111111111111111111111111111111e9bdc9aa953fc7edfd4ab1f1aa6df69c69127335a60ae685486eb17b3059f657"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "root_path": "m/9'/1'/5'/0'/0'/0'/2'",
+          "derivation_index": 5,
+          "enc_to_user_id": "f9e05a000bfca8905ae6611d924115c2f9e05a000bfca8905ae6611d924115c2",
+          "private_data": "11111111111111111111111111111111629a0151066b1fc98df2b242637c4e1d95e5d3b9a11946c13dd28b9fce8b8b67"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 0,
+          "root_path": "m/9'/1'/5'/0'/0'/1'/0'",
+          "derivation_index": 0,
+          "enc_to_user_id": "7323b9bd124ad0f185d55ebe966b1fe47323b9bd124ad0f185d55ebe966b1fe4",
+          "private_data": "11111111111111111111111111111111d31d59c0f4d4b40ee48cebb1d449f9487fe8809470253c51b4bf770a930cd85f"
+        }
+      ]
+    },
+    {
+      "name": "abandon-about",
+      "network": "mainnet",
+      "seed": "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+      "identity_keys": [
+        {
+          "identity_index": 0,
+          "key_index": 0,
+          "path": "m/9'/5'/5'/0'/0'/0'/0'",
+          "public_key": "03de6e4f0a455c1f089e51c53ed937b172d46e5cec4a98e2d9977ea4638129d252",
+          "hash160": "d0559a724d640d22df8a04665308ffd0b7fe9b77",
+          "signature": "1fec68ccbcc7c03d7bc7d24cc4bfb0f2900d39af1dda3901ec6d8a37f6337172867f6451e881a422f9f543d49e0cf37d9b59c73f36d5470686924e5a809e3e8186"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 1,
+          "path": "m/9'/5'/5'/0'/0'/0'/1'",
+          "public_key": "02725184a963a31b362742455e4b1bd36b8b56b0d667f1f6c24688ed3d9b0e13e9",
+          "hash160": "ec4daa2906753f59144ebbe1a646aa34cfe63faf",
+          "signature": "2060aa20b6ec598daf8981dccdb63739c5aab2ab9a7ec87e6b901187c1d24faa2f29b11cd8d7692c1c1087e4807c5abcec4cec9a40e340e7ab2831f2d9b05b22a5"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "path": "m/9'/5'/5'/0'/0'/0'/2'",
+          "public_key": "0224fec3be710f5b8375faefd255efd97f1414bf571f4e7d6627e27aa179428a95",
+          "hash160": "c262d78f53d0645815ddfba14892d0cbde4ee5f0",
+          "signature": "1f18d61dcd2e21c4f065c5d58a1a59b14c33c088635e3f7e68c1a8202080a5e97f79f1bc53ef77ee1c3f21a8a3a0026a5eb9335abc256b8c7799bd5626959e85aa"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 3,
+          "path": "m/9'/5'/5'/0'/0'/0'/3'",
+          "public_key": "02136f55ea0c496f9cf64c023d0b02b4c1a66dda56aeb40f761cf933b76578a417",
+          "hash160": "8d772c30c51dfc8fd7d5e92d8d92e7ad24760c89",
+          "signature": "1f9bb74d7903282b43d57a141ab0c3c3983cc6668c03f6fe5754553dd1321340d27ae5724034d4172f6c42e71cb103df6f2b70ead8c7324f64b758df431d34678a"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/0'/4'",
+          "public_key": "022c3e8d4b11cdcdbb2de4cafbcdcbdde877998e415f25b0381c440dd185e9879f",
+          "hash160": "ab6c437d054adb71586aca5fe0eb1013052522da",
+          "signature": "209b08d776b9cd52d6905153936263236c25bdc59ba2dbf311f8ff0a87676b42646f25dd54f37532a34de52dd61d4e1aea765b9ce5fac18a0d7d4274c08e872b2d"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 5,
+          "path": "m/9'/5'/5'/0'/0'/0'/5'",
+          "public_key": "02b27ace04e655a87a07a7a46513394ee5ce04870b91b30eb692c02a7f46c806d7",
+          "hash160": "e687455eb115100c988740bd98c80ff871783616",
+          "signature": "206982f03d17e95c2272386c3682a12867cfa0045ff2ec23a73d3e3c22097f733167973568b17778a8d3ca3a07eb782eccd201bf180da5aa2a599a6f7647f54360"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 0,
+          "path": "m/9'/5'/5'/0'/0'/1'/0'",
+          "public_key": "03a1d16e5996b98b2c08a3a81a2b4b922a76acd2094cd7bdfa560b1d91dffea5f6",
+          "hash160": "67cecc83cde95f4bd562ba8c926a52dd27b5f1a2",
+          "signature": "20261056a09bf88b7aa5a9db619fdae9186eb27503a464737f664b56d9e4ec5cb52db957fdd0528d8d95f56f41073390573d34f0b1724fd4b50cb27adc137cec23"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 1,
+          "path": "m/9'/5'/5'/0'/0'/1'/1'",
+          "public_key": "03c16c4428f119183ae4e1dfe0ae7e34cd8ffada86c60ee0e76d676baf0c158d7a",
+          "hash160": "cb74033685243fe3f10412a523347b6763caf968",
+          "signature": "1ff6b6b0f45aa34f2739d98ddd9020fae65b0d8fcc1e7578b97824cf61193e66165228c02fd6eee9ccef6cceba2570bc44657c6b2fccdcad9f7682cb0ad701ba11"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 2,
+          "path": "m/9'/5'/5'/0'/0'/1'/2'",
+          "public_key": "03d44474281ab6a55451553d958037ac34dca0654c6aed7e07c26b6588fd574de4",
+          "hash160": "a050a362bffd2bd8569e0080d8b1a2c620ebd0f7",
+          "signature": "1f53d8057b61bf96a9fdb248fda92b809278ce4eaa195e8da66c18bdd2b4a31f77365b92c8d250160813ac3f2a729e172ed7a38733c271931bf0d584b5926938c4"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 3,
+          "path": "m/9'/5'/5'/0'/0'/1'/3'",
+          "public_key": "03fedfee09cd6255150772093acf225c3dd4756f0d5093cc3fc8ae5c4dc082a731",
+          "hash160": "ed4e2761ade435a7c092a7364096df1381e789a4",
+          "signature": "1f23022246f09076d7188c1b4f30413659f928f3c4053aaf39f640e870497b49133eb8120d4414657fec4f6d54a106eccb9b40ce6a4a9ac83f292692622c985028"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/1'/4'",
+          "public_key": "0274a6518c65264dfd52e43b659f5f13c3c502df9d984db9bd3f1b12f3328d941d",
+          "hash160": "8961ab68a7798a2c231c8dbf096395229aaa7736",
+          "signature": "1fa01026ba496abc8b80bec7f4f9fe0aab43596d0e4db19200914a763f0e712b0e2e675b42a2f457647ce4df78fd6be0e3fdbbbdca5b9f6e361e2ebbfb28328665"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 5,
+          "path": "m/9'/5'/5'/0'/0'/1'/5'",
+          "public_key": "03515b3545472c3125f9dc2ffe1a7bfc7211a53900b77c8997a59382d6e383c47d",
+          "hash160": "38b163bec620052daedfe3344aef8c80ac59c5b8",
+          "signature": "1ff3c918a16f83ad48dff488a89a3705df3b725c2e24a904a2a376ed7f336ecc2f0b0c8fd5c5c643c2bc9e24878096946ca22f6f7df996673d204ec062c91216b5"
+        }
+      ],
+      "receiving_xpubs": [
+        {
+          "account": 0,
+          "path": "m/9'/5'/15'/0'/0x1111111111111111111111111111111111111111111111111111111111111111/0x2222222222222222222222222222222222222222222222222222222222222222",
+          "xpub": {
+            "depth": 6,
+            "parent_fingerprint": "c7a2665f",
+            "chain_code": "05191acd9663359528dcc83841e07451ec3ddab6d46b892406ece53cd9579c67",
+            "public_key": "039b4a71de759ea01685743f1b7b1577c1ad12e733681670d78e76dc73a518fee3",
+            "compact": "c7a2665f05191acd9663359528dcc83841e07451ec3ddab6d46b892406ece53cd9579c67039b4a71de759ea01685743f1b7b1577c1ad12e733681670d78e76dc73a518fee3"
+          }
+        },
+        {
+          "account": 1,
+          "path": "m/9'/5'/15'/1'/0x1111111111111111111111111111111111111111111111111111111111111111/0x2222222222222222222222222222222222222222222222222222222222222222",
+          "xpub": {
+            "depth": 6,
+            "parent_fingerprint": "10cf4d42",
+            "chain_code": "e6c70ebac44c7a9101f1d58c728eb3f09f39d810af1d347ea225f760f3eeb77f",
+            "public_key": "02cea7893880f5012f1b59e1451b7008cb660d81f1c04c26540d83ab7cd9789f4b",
+            "compact": "10cf4d42e6c70ebac44c7a9101f1d58c728eb3f09f39d810af1d347ea225f760f3eeb77f02cea7893880f5012f1b59e1451b7008cb660d81f1c04c26540d83ab7cd9789f4b"
+          }
+        }
+      ],
+      "bip44_account0": {
+        "path": "m/44'/5'/0'",
+        "xpub": "xpub6CYEjsU6zPM3sADS2ubu2aZeGxCm3C5KabkCpo4rkNbXGAH9M7rRUJ4E5CKiyUddmRzrSCopPzisTBrXkfCD4o577XKM9mzyZtP1Xdbizyk"
+      },
+      "auto_accept": {
+        "expiry": 1900000000,
+        "path": "m/9'/5'/16'/1900000000'",
+        "public_key": "022dde6b10a2b65a2758644dd9115a5fddd6cdb8a3a0bf8fd0091a0fd2ca9097e6",
+        "secret": "5c008a688b2931f526502776d333b7d722d9c4fd7d9bb9b1cb041bcc8d77d2d8"
+      },
+      "ecdh": [
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/0'/4'",
+          "shared": "96b54525c3e5ff97054736c19072f99e6cb72c81ea47757392511b22850dcede"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 5,
+          "path": "m/9'/5'/5'/0'/0'/0'/5'",
+          "shared": "d9c5469a9c3aaa9cd70607473afc4a01861835ba4b5b49dfc32bb98b5bf696aa"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/1'/4'",
+          "shared": "c3aa5f6b3d69f81d60d1b666b0729e2494346f658bc5fb4d85a0a373d91a6158"
+        }
+      ],
+      "account_references": [
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/0'/4'",
+          "account_index": 0,
+          "version": 0,
+          "reference": 5735657
+        },
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/0'/4'",
+          "account_index": 7,
+          "version": 3,
+          "reference": 811042030
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/1'/4'",
+          "account_index": 0,
+          "version": 15,
+          "reference": 4044380857
+        }
+      ],
+      "contact_info": [
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "root_path": "m/9'/5'/5'/0'/0'/0'/2'",
+          "derivation_index": 0,
+          "enc_to_user_id": "1662e3f736676f73c5bea66b4f8592fe1662e3f736676f73c5bea66b4f8592fe",
+          "private_data": "1111111111111111111111111111111106252e202a51187b6323b3fcf91087e0098df23fb0f8f12aebf6cca0aad21097"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "root_path": "m/9'/5'/5'/0'/0'/0'/2'",
+          "derivation_index": 5,
+          "enc_to_user_id": "8f4836c27b1d1b19fea642008e2fb3298f4836c27b1d1b19fea642008e2fb329",
+          "private_data": "111111111111111111111111111111111fa992c12b5b445ae1614cae74b8fc2272b1a04577cc554a00bd9caeb42a7300"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 0,
+          "root_path": "m/9'/5'/5'/0'/0'/1'/0'",
+          "derivation_index": 0,
+          "enc_to_user_id": "61c5916a5adaa28a9bde8fe03f95963961c5916a5adaa28a9bde8fe03f959639",
+          "private_data": "1111111111111111111111111111111157217a17981c7d3cbfaf2037a2309089f071d3db8419eb67ed0194e66cb994df"
+        }
+      ]
+    },
+    {
+      "name": "legal-winner-TREZOR",
+      "network": "testnet",
+      "seed": "2e8905819b8723fe2c1d161860e5ee1830318dbf49a83bd451cfb8440c28bd6fa457fe1296106559a3c80937a1c1069be3a3a5bd381ee6260e8d9739fce1f607",
+      "identity_keys": [
+        {
+          "identity_index": 0,
+          "key_index": 0,
+          "path": "m/9'/1'/5'/0'/0'/0'/0'",
+          "public_key": "03c938f6401883a2807b5f3e0ca4d75455c4e4784b1e9078000032d43caf6a2f61",
+          "hash160": "80f636f28bd69cd2d5bf130dc2ff563ff1fc1ffb",
+          "signature": "202526eebb0ca2950963cdaace45b870d1a67d82163fe79a863cb762d9d78490b3623df93c7bc5179a7a7dae5e95e2057f1b686a743f83207c04287a81bdd263ff"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 1,
+          "path": "m/9'/1'/5'/0'/0'/0'/1'",
+          "public_key": "0314afafbf25acaed1a40c0d0765b2e4cc40cfe0909b384da8ba7b7b86aff033f6",
+          "hash160": "de5861dc77b538d470e349950ff8cfc7b4de344e",
+          "signature": "1f2cbe4bea48c76f6d920c749647fdbbba8d03ec44550a8a92802bdd61d3ea5f726935b8bec94033490f8346963fb09a82cf6fb8d056faa6d786b10832e8f97b0e"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "path": "m/9'/1'/5'/0'/0'/0'/2'",
+          "public_key": "03a5845fca6751f54f33d31d979a028a0e91954c3d608de997a8166bb9be466724",
+          "hash160": "1fb1e9fa071526fd6f329672f7298faf6cd99ffe",
+          "signature": "20aa6526b75e10602fed9722a50f3dcf1192860d0705134c208cbeaf8e1076683b1276ea589ce4f4cc08b32a58f9b8d1a05706dd3c10eb96a20bddf2475f834948"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 3,
+          "path": "m/9'/1'/5'/0'/0'/0'/3'",
+          "public_key": "02f27d2385fbf9261e7e29802e91bc485fe9f46eac0a2c20d8901d662c14f9cf24",
+          "hash160": "34f733da355bed1e7f23e2feb2bb796e952d77c6",
+          "signature": "20f231886bcb52af03f43ed814fdc3d4d07c58533c86abb962421b8e324aa8d8c3245b3e0a91dc0ea6a9afbfc8a91ee5189a97ab36f5dcccb0b020f31833732ff6"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/0'/4'",
+          "public_key": "0276ed7dd55da3d0eed3e9f3a0643d99f7759ae09543c52940d2e3f254577836f7",
+          "hash160": "7f2973bd7b07523848231935e9baa61ffaae6bbe",
+          "signature": "20eec5aa59ec113bf29d3d71e4ccb15adf598a18c595b04a674e22f674540cf476694f16990650ae6fe5662a47ee54fa62940a06431f0c09ccb3451f6256aecc19"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 5,
+          "path": "m/9'/1'/5'/0'/0'/0'/5'",
+          "public_key": "0296a8cc32da8a6efd75476e0cb73beaae40b84892d0a1b6641f39aff3614f4397",
+          "hash160": "edb21eca2ad64f26ac86d7e1a344c28b93d2324a",
+          "signature": "1f465714f1e52cb2314a4a40b0b3c084c1c2ddc4600801f15ad8a2b5039c2859515b954e507a188773c404ff166964146a6dd54a298e2e3c1ec1b64831b1367cd8"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 0,
+          "path": "m/9'/1'/5'/0'/0'/1'/0'",
+          "public_key": "03e3a8fe75d066b9f553be10bc35ebba13dad3e2842a99aea30f6b0c3d664cc066",
+          "hash160": "65eb05b61ff520469fc71a7945ffbdf0a8032da6",
+          "signature": "20d17434df5c41a945597159fd19aaed62cf5d7210bf5766b8d196ba34f78e9621118e61d6f48e78c1a1583a5617873d9b53739216e46b241198fd56da5610cb0b"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 1,
+          "path": "m/9'/1'/5'/0'/0'/1'/1'",
+          "public_key": "032fdb18b0fa4b127cf2d4a77cee569f917c8dc458c75b91c9c84a0062bb1d312e",
+          "hash160": "65ed6c2faa473deecb755c9fe15fe623f32971ef",
+          "signature": "2027984b7a4f3fe7e3ce96c9cfe38e39c87749448a3af20deff5fad1cd589521904907978c08c217155b30f920bb7965bbbe0770f3439f500115e331551fa1b22b"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 2,
+          "path": "m/9'/1'/5'/0'/0'/1'/2'",
+          "public_key": "03cbb60244a64112f50605903eb1920fc46c0daaf4f726baa77a932f798871ce77",
+          "hash160": "66255ca881aa69e7595847d630626a9e56ca9447",
+          "signature": "1f6bc7d93a30dd249925f40227564bcd7b9a079690721419c8383dcfb22050d35624645ceac34dd99f4ccf76dda30391ad21ee9d9e7123be884f183b515d894baf"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 3,
+          "path": "m/9'/1'/5'/0'/0'/1'/3'",
+          "public_key": "03f4a0ee8a25c4bb5be8b9e911b70c30a21438f00f7e7f1dcbd5cb7b7becb499e9",
+          "hash160": "5d8f4d75195a11a73fe0beffe929ae03c0a14b69",
+          "signature": "20802b7c4fcbfb46e51b5eb035035dd5ba5ac2e664f3fa347aff6138dc733cd8ae61fd93a5827cf9f77381309d0732e9abd815c88ea74797975afa5a346503528e"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/1'/4'",
+          "public_key": "033f6d6ec64404740ce1fa7b862e7d737ad403dc36495386a6bae0d6a208064443",
+          "hash160": "22cdd1ed5e5220142902c11c621574fb7b9cf4b2",
+          "signature": "204170128663b580e2bc5b73d257021112a58eb0958fcfb389e1c31912d9134fd851878e3d6d3423b27a008e7e694be8f3c4d6c2e11b6a1c4c1affaafd4a056218"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 5,
+          "path": "m/9'/1'/5'/0'/0'/1'/5'",
+          "public_key": "0280611e206d9e2dcaba3e949f868e294d98f5260a5afbc86e51b9bb92cc6bd6f3",
+          "hash160": "1a52c2f2a14e24b7b03e9a631d5285564615c37d",
+          "signature": "2009bf756bb65989f4695640c77a3dc0e7336395a25d39becf9f87aefd0f92030a49fbc8d8af2d8321905d3064a540ed74159a17ef1cac15e0ca13215166b6dd6f"
+        }
+      ],
+      "receiving_xpubs": [
+        {
+          "account": 0,
+          "path": "m/9'/1'/15'/0'/0x1111111111111111111111111111111111111111111111111111111111111111/0x2222222222222222222222222222222222222222222222222222222222222222",
+          "xpub": {
+            "depth": 6,
+            "parent_fingerprint": "f5478c9b",
+            "chain_code": "17cc2e547d0dc53b12f5d773f1439d55b0fef3ae3f86fed2f340709ba018939f",
+            "public_key": "0264b4cc7a936bbdb7c0b152e91bd91557ffd5455fb2fe9cee934314684f8b0aa3",
+            "compact": "f5478c9b17cc2e547d0dc53b12f5d773f1439d55b0fef3ae3f86fed2f340709ba018939f0264b4cc7a936bbdb7c0b152e91bd91557ffd5455fb2fe9cee934314684f8b0aa3"
+          }
+        },
+        {
+          "account": 1,
+          "path": "m/9'/1'/15'/1'/0x1111111111111111111111111111111111111111111111111111111111111111/0x2222222222222222222222222222222222222222222222222222222222222222",
+          "xpub": {
+            "depth": 6,
+            "parent_fingerprint": "a7e924f0",
+            "chain_code": "dbde0ecf72ee6eaeeea66a4a4020d86dd1b01000933e05768e7fce094f161ba1",
+            "public_key": "0321cb1d5b1765fe3ad277baebcf3e991f5796500ac5990fc8fe0400b7433aa26b",
+            "compact": "a7e924f0dbde0ecf72ee6eaeeea66a4a4020d86dd1b01000933e05768e7fce094f161ba10321cb1d5b1765fe3ad277baebcf3e991f5796500ac5990fc8fe0400b7433aa26b"
+          }
+        }
+      ],
+      "bip44_account0": {
+        "path": "m/44'/1'/0'",
+        "xpub": "tpubDCcSf3bv2kQiwxRJCbsknqJtWXkcW5bS5yfkqqp9RW2th2ZLFwDWvFo5DqHeZQUdgDh1KV7QaGujkJSWTY4EWtw8EgKpQCvacxkZw4CFox9"
+      },
+      "auto_accept": {
+        "expiry": 1900000000,
+        "path": "m/9'/1'/16'/1900000000'",
+        "public_key": "03f91e5f36c3c136445d68b4644d433f2832ae1901115a16552618c2acc0c2b1b9",
+        "secret": "56b1aff423a59c22a7bab41670b3966f282612bb7d3d11e2102d882f35b10495"
+      },
+      "ecdh": [
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/0'/4'",
+          "shared": "d0557597f3008c55a50704288acc996d1b5b9f4289cec1c27d850e05fe6c6286"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 5,
+          "path": "m/9'/1'/5'/0'/0'/0'/5'",
+          "shared": "ccf62829ef46f2890c8d6a65d290b007f39d60ec827313506de055b7b0b1b20d"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/1'/4'",
+          "shared": "3b2e62e4040993c43884c6cecad169b8a4a4b36a5fcd5b7f8a49b5699bd71947"
+        }
+      ],
+      "account_references": [
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/0'/4'",
+          "account_index": 0,
+          "version": 0,
+          "reference": 31190810
+        },
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/0'/4'",
+          "account_index": 7,
+          "version": 3,
+          "reference": 836497181
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/1'/5'/0'/0'/1'/4'",
+          "account_index": 0,
+          "version": 15,
+          "reference": 4085054223
+        }
+      ],
+      "contact_info": [
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "root_path": "m/9'/1'/5'/0'/0'/0'/2'",
+          "derivation_index": 0,
+          "enc_to_user_id": "e1201bf998ba2c8f77941ecb4676eea0e1201bf998ba2c8f77941ecb4676eea0",
+          "private_data": "111111111111111111111111111111115c2762e89133c04f017f397a35e033e715a2f06e5195180d656d80f2cc48dedc"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "root_path": "m/9'/1'/5'/0'/0'/0'/2'",
+          "derivation_index": 5,
+          "enc_to_user_id": "10ada4b93edd0d5d9c53d2d004fcce0810ada4b93edd0d5d9c53d2d004fcce08",
+          "private_data": "11111111111111111111111111111111bcf69382e487658495a1be823e76a8bbf554210e7232df391f5af654112580c0"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 0,
+          "root_path": "m/9'/1'/5'/0'/0'/1'/0'",
+          "derivation_index": 0,
+          "enc_to_user_id": "055f734a60723155b382e1141d218e93055f734a60723155b382e1141d218e93",
+          "private_data": "111111111111111111111111111111114e7d1c46ddbe30b0af43ffe12508a30be350b24bf0626f1e7d61bca419653ea2"
+        }
+      ]
+    },
+    {
+      "name": "legal-winner-TREZOR",
+      "network": "mainnet",
+      "seed": "2e8905819b8723fe2c1d161860e5ee1830318dbf49a83bd451cfb8440c28bd6fa457fe1296106559a3c80937a1c1069be3a3a5bd381ee6260e8d9739fce1f607",
+      "identity_keys": [
+        {
+          "identity_index": 0,
+          "key_index": 0,
+          "path": "m/9'/5'/5'/0'/0'/0'/0'",
+          "public_key": "025cc38c06a086cf0bfdb745d493a7c647b6969a87ed6fbdfe166d7f12272b232f",
+          "hash160": "1b6ae94720ae71608a0c0858374eae667938f251",
+          "signature": "1fff09590d1e10264d6abe6f5d8cc680859d9208fd8f6d46fdbd5180b8a71cfa946be9e5955e5d6c29746dbab7eb55984728147f23c4b05880f384cef6514a21b3"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 1,
+          "path": "m/9'/5'/5'/0'/0'/0'/1'",
+          "public_key": "031508e665285ec8e36a1fbe57b499b25d54a5324e6874c8b01901d04139e3b7a6",
+          "hash160": "0bcd5272961ca9111dcd688d63a2e2a90de03353",
+          "signature": "20b7d9d6c72f9e404f43fe9f6e8c03baf39afb8d2f513234b41b040cb2e9910c6250a9291664078812b2a89819ab6248a9c55654da80bf8435b3d5e581cd16dfe4"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "path": "m/9'/5'/5'/0'/0'/0'/2'",
+          "public_key": "032cf92b61b8e2e14f46e2113a68293c3c7572f0d13d8ca4a4b4fd7849a680ec4e",
+          "hash160": "a5a23ad50a82aff760c79d884ba8f6672bec1a45",
+          "signature": "1f675dc548885d59872808262e8631b9df627a68dbf270fc3fe5afcb788f35bb0a2bc5f0b199d90cd1e5ebab37cabe278cd0027b575c78165ff62ff09a459b993a"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 3,
+          "path": "m/9'/5'/5'/0'/0'/0'/3'",
+          "public_key": "0203a92f1d3df3a447a137950008848483316f2847271be57a66d3d6592ffc87fe",
+          "hash160": "7911883b83ca927ced54eb99940ed77da9b15f5e",
+          "signature": "201342b6ed9c93d7fd7ac568f8561171b38f8251cd2bf22558f078f2c2f614a1d96806eca93b02d70caa2e66a293c43e1fa32c124efa5f72178bf972954f5950d2"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/0'/4'",
+          "public_key": "0317a4076b9bdedfcabc022d7aacb241fec883334e2aa0fcd41b8f557c4fdd9f4a",
+          "hash160": "e9fbc800e04229ba96e77bc1a4a45203463b1413",
+          "signature": "207deccb6a9c87a9b2f7137ed832cccba572d250c8509c9a944885fae89a544b4d6f047288e08b80488b3b4fb97509a354413b4c79f5efcec84f5f359ecdb0345a"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 5,
+          "path": "m/9'/5'/5'/0'/0'/0'/5'",
+          "public_key": "0372bf7222030cfa46b459d728c9b4906e82ed22823ab165e2c519c7453c296d03",
+          "hash160": "afcd3faabccab10bee86574b370f04bd7f2b669d",
+          "signature": "1f0be49c77162c5442b3e4b552181c719e60af1c893d0c04e191f91a70c870cf6610b710454b6161dfd0ff1aebb0963805ee3aacb170e1e07f2ef074f464e1dc9e"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 0,
+          "path": "m/9'/5'/5'/0'/0'/1'/0'",
+          "public_key": "0367d43b319dbcf1705e6fa5e17ef984be506ce5ae09fba710bc8c93962cdbd910",
+          "hash160": "0a85a5dd9d0d66a7819a3ffe9197590289a8508b",
+          "signature": "1f656864b6bc9e1707cd5b090592240bf8db395e9e906e6236c97a97d816ee2c730232b42dd32b13d4f2bf0f6509a39e48d8aea4fb048ae3e9fde4f5dcfc04158b"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 1,
+          "path": "m/9'/5'/5'/0'/0'/1'/1'",
+          "public_key": "030ed123799d77e9e5a7b7d43595691bbb6bf9c2b7150e30b66f2fc6b33897c12a",
+          "hash160": "6fbb85f0b9634950eb83880eceea0f989e3698a5",
+          "signature": "20cdaf4c2866d83e40788b8104c222e28f817b7bba504fff709fcc23f5f0d7cfb54eefa7c3901a301fb333652918fd011b9a819b44b149b42a6ca97f64cd75aae9"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 2,
+          "path": "m/9'/5'/5'/0'/0'/1'/2'",
+          "public_key": "03d870582f59ead53be5fcb2c3c4370b2f53e93d78f2e49c27715650fb50e6c5e5",
+          "hash160": "3ba3023260fd6abe46b22212c79d2985790345ac",
+          "signature": "1f4bada536aef2474e5330e107505c4acc3e33b1989444ada6051309f35f1e0d0b7bb9d718e4e71d3f2cab75336ee0559cbcfa969a614e1019d05cfe28198d1086"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 3,
+          "path": "m/9'/5'/5'/0'/0'/1'/3'",
+          "public_key": "03772e13b054bb21f7fadbc2a41adbeadeec7abad3a1d60487172f87cbcd381344",
+          "hash160": "cbae184e6bb801391dc87489373a7c53aaf2d0f5",
+          "signature": "2005e48f5c2b1e86dec098059fae05242136591a532a0ff3667da61cf8f5b53727664a5ff4b5345a25149da8f4c394824bdb09b8228693128a382760edabb4f706"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/1'/4'",
+          "public_key": "026cd63f4241de789839b888779802296ff23bfee00009ea174bbc9785528a6d18",
+          "hash160": "a39ece7ae82dfee907da15fcc8f6a8b0effee8d6",
+          "signature": "1fccd275085714fc3062720dc7fa7ba83a2d8c1e115ba3ae4302b5a1166b95d5413ce288a7f059d82d997a3c8b436c0d14034bc0f6dbca4b4b368f2d9255be10eb"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 5,
+          "path": "m/9'/5'/5'/0'/0'/1'/5'",
+          "public_key": "0335dd910c536ae8e61b11c3435b47c57591e4ba57268e9d3fda002cbe8fca7e72",
+          "hash160": "aa68c5a655fa1d445128c19379f50d8be14fb8c5",
+          "signature": "1f1bd9fdd9870ebf432819588d7b6fa536113f1730ae766a19baf754ed3fd2cc941411c8b6c0a6c225ec2a491553c1ca069c347b51656df2be1bde496977a22baf"
+        }
+      ],
+      "receiving_xpubs": [
+        {
+          "account": 0,
+          "path": "m/9'/5'/15'/0'/0x1111111111111111111111111111111111111111111111111111111111111111/0x2222222222222222222222222222222222222222222222222222222222222222",
+          "xpub": {
+            "depth": 6,
+            "parent_fingerprint": "3e0b2f8b",
+            "chain_code": "cbd2250368eece142af8a6cee634a5eee2f41af5a2918396340f9911d5f4986d",
+            "public_key": "0270d56c16689e03cfb201fbf43f0f1b91d41c65f667d20b4781b2595fa446564b",
+            "compact": "3e0b2f8bcbd2250368eece142af8a6cee634a5eee2f41af5a2918396340f9911d5f4986d0270d56c16689e03cfb201fbf43f0f1b91d41c65f667d20b4781b2595fa446564b"
+          }
+        },
+        {
+          "account": 1,
+          "path": "m/9'/5'/15'/1'/0x1111111111111111111111111111111111111111111111111111111111111111/0x2222222222222222222222222222222222222222222222222222222222222222",
+          "xpub": {
+            "depth": 6,
+            "parent_fingerprint": "f62656b0",
+            "chain_code": "ffdf52d73f8a5bdd108000ce0ad560834c92ad71a421ac45cca0572cd0356ecc",
+            "public_key": "0346c6f54a568276fc126976c31aa56b98223ae9c20f0b564771264aadc07c3ca8",
+            "compact": "f62656b0ffdf52d73f8a5bdd108000ce0ad560834c92ad71a421ac45cca0572cd0356ecc0346c6f54a568276fc126976c31aa56b98223ae9c20f0b564771264aadc07c3ca8"
+          }
+        }
+      ],
+      "bip44_account0": {
+        "path": "m/44'/5'/0'",
+        "xpub": "xpub6CSfvRcXZXN2DUFGRpxvz4gPLLXANK1tdzGNtSivbGVZQirafjN5jr2wfxZZTxJpw5xRMauoKhJE5aENM4cvBf19MTRog1WTy4myeghYk7j"
+      },
+      "auto_accept": {
+        "expiry": 1900000000,
+        "path": "m/9'/5'/16'/1900000000'",
+        "public_key": "033c58068723025c0a5ce905db2c4c7ff7de73df5f8942c1d85a9c98c753f6636d",
+        "secret": "2ee9688017b94e5a9610869b6cd71dd4a4757cc9a0bc57c1221eca3ae358c07d"
+      },
+      "ecdh": [
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/0'/4'",
+          "shared": "635a1eb7423d7513923b609b8a4167875d9cd535d5bba3d9274f70a48b6b3839"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 5,
+          "path": "m/9'/5'/5'/0'/0'/0'/5'",
+          "shared": "0763c62f5bf443f225803d2558bf0f686ca0821bb44fca7a80e04b3898f2c46b"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/1'/4'",
+          "shared": "9bf9e031d3a8db17f4fcc9b39c29e0b6b52a41c94676d7f53b1b927e39a435b6"
+        }
+      ],
+      "account_references": [
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/0'/4'",
+          "account_index": 0,
+          "version": 0,
+          "reference": 121423087
+        },
+        {
+          "identity_index": 0,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/0'/4'",
+          "account_index": 7,
+          "version": 3,
+          "reference": 926729448
+        },
+        {
+          "identity_index": 1,
+          "key_index": 4,
+          "path": "m/9'/5'/5'/0'/0'/1'/4'",
+          "account_index": 0,
+          "version": 15,
+          "reference": 4287174411
+        }
+      ],
+      "contact_info": [
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "root_path": "m/9'/5'/5'/0'/0'/0'/2'",
+          "derivation_index": 0,
+          "enc_to_user_id": "bb3ebb5a274a2f68e97945be466fbe29bb3ebb5a274a2f68e97945be466fbe29",
+          "private_data": "11111111111111111111111111111111545fb764dc9d8dfb8b067e03ade87df5fd3d9da61fd92a54961ecd6a9adf4155"
+        },
+        {
+          "identity_index": 0,
+          "key_index": 2,
+          "root_path": "m/9'/5'/5'/0'/0'/0'/2'",
+          "derivation_index": 5,
+          "enc_to_user_id": "3c7af9cf681faf8516e456b47a659d003c7af9cf681faf8516e456b47a659d00",
+          "private_data": "111111111111111111111111111111119e7673375a2b8b8987320527e4d3b2eb6c563f790dc9aaa0874f953ffe0c2aa5"
+        },
+        {
+          "identity_index": 1,
+          "key_index": 0,
+          "root_path": "m/9'/5'/5'/0'/0'/1'/0'",
+          "derivation_index": 0,
+          "enc_to_user_id": "ccfadd08977c5d9a8301a498ce4ca4cdccfadd08977c5d9a8301a498ce4ca4cd",
+          "private_data": "11111111111111111111111111111111e96c61e7f6d0a80fb96237247885ca61d03c66343f0a0689de6a4601ca61f426"
+        }
+      ]
+    }
+  ]
+}

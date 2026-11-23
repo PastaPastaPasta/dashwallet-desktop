@@ -1,0 +1,198 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TxNoticeRow } from "../api/generated/TxNoticeRow";
+import { announceReceived, exposedNow, forgetReceived, lookupPending, LOOKUP_TIMEOUT_MS, isReceivedPayment, markReceivedRead, MAX_SEALED, onReceived, receivedKept, receivedNow, receivedOf, recordReceived, resetReceived, sealReceived, unreadReceived } from "./received";
+
+const row = (over: Partial<TxNoticeRow> = {}): TxNoticeRow => ({
+  txid: "aa".repeat(32),
+  recordIndex: 0,
+  amount: 999_819,
+  timestamp: 1,
+  txType: "recvWithAddress",
+  address: "yAddr",
+  label: null,
+  coinjoinInternal: false,
+  ...over,
+});
+
+afterEach(resetReceived);
+
+describe("received payments (DEC-1058 #6)", () => {
+  it("DEC1058_onlyMoneyPaidToTheWalletIsAnnounced", () => {
+    expect(isReceivedPayment(row())).toBe(true);
+    expect(isReceivedPayment(row({ txType: "recvFromOther" }))).toBe(true);
+    expect(isReceivedPayment(row({ amount: -5 }))).toBe(false);
+    expect(isReceivedPayment(row({ amount: 0 }))).toBe(false);
+    expect(isReceivedPayment(row({ txType: "recvWithCoinJoin" }))).toBe(false);
+    expect(isReceivedPayment(row({ txType: "dustReceive" }))).toBe(false);
+    expect(isReceivedPayment(row({ txType: "generated" }))).toBe(false);
+    expect(isReceivedPayment(row({ coinjoinInternal: true }))).toBe(false);
+  });
+
+  it("records each payment once, tells the listeners and counts it unread until the bell was opened", () => {
+    const seen = vi.fn();
+    const stop = onReceived(seen);
+    const batch = recordReceived("w1", [row(), row({ txid: "bb".repeat(32), amount: -1 })], 100);
+    expect(batch).toEqual([{ id: `${"aa".repeat(32)}:0`, walletId: "w1", txid: "aa".repeat(32), duffs: 999_819, address: "yAddr", at: 100, read: false }]);
+    expect(seen).toHaveBeenCalledTimes(1);
+    // The same payment again (a repeated event) is not news.
+    expect(recordReceived("w1", [row()])).toEqual([]);
+    expect(seen).toHaveBeenCalledTimes(1);
+    // Another wallet's is its own.
+    expect(recordReceived("w2", [row()])).toHaveLength(1);
+    stop();
+    expect(recordReceived("w1", [row({ txid: "cc".repeat(32) })])).toHaveLength(1);
+    expect(seen).toHaveBeenCalledTimes(2);
+    markReceivedRead("w1", [batch[0].id]);
+    expect(unreadReceived([{ ...batch[0], read: true }])).toBe(0);
+  });
+
+  it("asks the engine for the rows, and a failed read announces nothing", async () => {
+    const txNotices = vi.fn().mockResolvedValue([row()]);
+    const seen = vi.fn();
+    onReceived(seen);
+    await announceReceived({ txNotices }, "w1", ["t"]);
+    expect(txNotices).toHaveBeenCalledWith("w1", ["t"]);
+    expect(seen).toHaveBeenCalledTimes(1);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await announceReceived({ txNotices: vi.fn().mockRejectedValue(new Error("x")) }, "w1", ["t"]);
+    expect(seen).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+});
+
+describe("DEC1058_noticeLookup", () => {
+  it("is pending while the lookup is out, and not after a failure", async () => {
+    let answer!: (rows: TxNoticeRow[]) => void;
+    const txNotices = vi.fn().mockReturnValue(new Promise<TxNoticeRow[]>((r) => (answer = r)));
+    const done = announceReceived({ txNotices }, "w1", ["t"]);
+    expect(lookupPending("w1")).toBe(true);
+    expect(lookupPending("w2")).toBe(false);
+    answer([row()]);
+    await done;
+    expect(lookupPending("w1")).toBe(false);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await announceReceived({ txNotices: vi.fn().mockRejectedValue(new Error("x")) }, "w1", ["t"]);
+    expect(lookupPending("w1")).toBe(false);
+    warn.mockRestore();
+  });
+
+  it("stops being waited for after its timeout, and still records a late answer", async () => {
+    vi.useFakeTimers();
+    try {
+      let answer!: (rows: TxNoticeRow[]) => void;
+      const txNotices = vi.fn().mockReturnValue(new Promise<TxNoticeRow[]>((r) => (answer = r)));
+      const seen = vi.fn();
+      onReceived(seen);
+      const done = announceReceived({ txNotices }, "w1", ["t"]);
+      vi.advanceTimersByTime(LOOKUP_TIMEOUT_MS - 1);
+      expect(lookupPending("w1")).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(lookupPending("w1")).toBe(false);
+      answer([row()]);
+      await done;
+      expect(seen).toHaveBeenCalledTimes(1);
+      expect(lookupPending("w1")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("marks read only the ids it is given", () => {
+    recordReceived("w1", [row({ txid: "a1".repeat(32) }), row({ txid: "b2".repeat(32) })]);
+    markReceivedRead("w1", [`${"a1".repeat(32)}:0`]);
+    // The other is still unread.
+    expect(recordReceived("w1", [row({ txid: "b2".repeat(32) })])).toEqual([]);
+  });
+});
+
+describe("exposedNow (DEC-1058 r3 #3)", () => {
+  const el = (over: { isConnected?: boolean; inert?: boolean }) => ({ isConnected: over.isConnected ?? true, closest: (sel: string) => (sel === "[inert]" && over.inert ? {} : null) }) as unknown as Element;
+
+  it("is true only for a connected element with no inert ancestor, read at the moment it is asked", () => {
+    expect(exposedNow(el({}))).toBe(true);
+    expect(exposedNow(el({ inert: true }))).toBe(false);
+    expect(exposedNow(el({ isConnected: false }))).toBe(false);
+    expect(exposedNow(null)).toBe(false);
+  });
+
+  it("follows the element as it is covered, with no observer in between", () => {
+    let inert = false;
+    const live = { isConnected: true, closest: () => (inert ? {} : null) } as unknown as Element;
+    expect(exposedNow(live)).toBe(true);
+    inert = true;
+    expect(exposedNow(live)).toBe(false);
+  });
+});
+
+describe("the payments across a lock", () => {
+  it("a lock drops their amounts and addresses, and gives their txids back oldest first", () => {
+    recordReceived("w", [row({ txid: "a" })]);
+    recordReceived("v", [row({ txid: "b" })]);
+    markReceivedRead("w", ["a:0"]);
+    expect(sealReceived()).toEqual([
+      { walletId: "w", txid: "a" },
+      { walletId: "v", txid: "b" },
+    ]);
+    // Looked up again after the unlock: the bell's seen mark comes back with it, the amount is the new read's.
+    const again = recordReceived("w", [row({ txid: "a", amount: 7 })], 5, false);
+    expect(again).toEqual([expect.objectContaining({ txid: "a", duffs: 7, read: true })]);
+    expect(recordReceived("v", [row({ txid: "b" })], 5, false)).toEqual([expect.objectContaining({ read: false })]);
+  });
+
+  it("a lookup that answers after a lock records nothing and says so", async () => {
+    let answer!: (rows: TxNoticeRow[]) => void;
+    const seen: unknown[] = [];
+    const stop = onReceived((b) => seen.push(b));
+    const lookup = announceReceived({ txNotices: () => new Promise<TxNoticeRow[]>((r) => (answer = r)) }, "w", ["a"]);
+    sealReceived();
+    answer([row({ txid: "a" })]);
+    expect(await lookup).toBe("stale");
+    expect(seen).toEqual([]);
+    expect(sealReceived()).toEqual([]);
+    expect(await announceReceived({ txNotices: async () => [row({ txid: "a" })] }, "w", ["a"])).toBe("recorded");
+    stop();
+  });
+
+  it("forgets what the lock kept of a removed wallet", () => {
+    recordReceived("w", [row({ txid: "a" })]);
+    markReceivedRead("w", ["a:0"]);
+    sealReceived();
+    forgetReceived("w");
+    expect(recordReceived("w", [row({ txid: "a" })])).toEqual([expect.objectContaining({ read: false })]);
+  });
+
+  it("a lock leaves no other wallet's rows in the memo either", () => {
+    recordReceived("w", [row({ txid: "a" })]);
+    recordReceived("v", [row({ txid: "b" })]);
+    expect(receivedOf("w")).toEqual([expect.objectContaining({ duffs: 999_819, address: "yAddr" })]);
+    expect(receivedOf("v")).toHaveLength(1);
+    expect(receivedKept().memoized).toBe(2);
+    sealReceived();
+    expect(receivedKept().memoized).toBe(0);
+    expect(receivedOf("w")).toEqual([]);
+  });
+
+  it("a removed wallet's rows and memo go, and a network switch takes every one", () => {
+    recordReceived("w", [row({ txid: "a" })]);
+    recordReceived("v", [row({ txid: "b" })]);
+    receivedOf("w");
+    receivedOf("v");
+    forgetReceived("w");
+    expect(receivedNow().map((p) => p.walletId)).toEqual(["v"]);
+    expect(receivedKept().memoized).toBe(1);
+    forgetReceived();
+    expect(receivedNow()).toEqual([]);
+    expect(receivedKept()).toEqual({ sealed: 0, memoized: 0 });
+  });
+
+  it("keeps the read state of the newest payments only, across many locks", () => {
+    for (let lock = 0; lock < 5; lock++) {
+      recordReceived("w", Array.from({ length: 50 }, (_, i) => row({ txid: `t${lock}-${i}` })), lock * 100 + 1);
+      sealReceived();
+    }
+    expect(receivedKept().sealed).toBe(MAX_SEALED);
+    // The newest lock's are kept: recorded again, they come back unread as they were.
+    expect(recordReceived("w", [row({ txid: "t4-0" })], 999, false)).toEqual([expect.objectContaining({ at: 401 })]);
+    expect(recordReceived("w", [row({ txid: "t0-0" })], 999, false)).toEqual([expect.objectContaining({ at: 999 })]);
+  });
+});

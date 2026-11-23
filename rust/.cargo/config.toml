@@ -1,0 +1,4 @@
+[env]
+# The Swift package targets macOS 14; build the Rust static library for the
+# same floor so the linker does not warn about newer object files.
+MACOSX_DEPLOYMENT_TARGET = { value = "14.0", force = false }

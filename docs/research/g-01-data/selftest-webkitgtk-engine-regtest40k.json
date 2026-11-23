@@ -1,0 +1,119 @@
+{
+  "userAgent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15",
+  "backend": "tauri",
+  "devicePixelRatio": 1,
+  "viewport": {
+    "width": 1280,
+    "height": 820
+  },
+  "interFontLoaded": true,
+  "textProbe": {
+    "amount700": 103.22,
+    "amount700tnum": 102,
+    "amount400": 92.22,
+    "caps700": 57.92,
+    "caps700ls": 66.32,
+    "body400": 261.65
+  },
+  "shown": {
+    "heroAmount": "206\u2009014.36",
+    "heroFull": "206\u2009014.36392896 tDASH",
+    "rowsShown": 200,
+    "firstRows": [
+      {
+        "txid": "36a86620770ee61e3684ac4431f64b01ecbbe66ab0877e8bd443f4d4b80c7484",
+        "recordIndex": 0,
+        "amount": "+0.00000008"
+      },
+      {
+        "txid": "9a91494027515b6421fbcb5a62e50a28c443235901b90a7bd83f7c20212eeaf4",
+        "recordIndex": 0,
+        "amount": "+0.00000008"
+      },
+      {
+        "txid": "f0cbd1a353a6d5c475cca58dae271747a698a4495d81fc3df40b3ae157a91926",
+        "recordIndex": 0,
+        "amount": "+0.00000008"
+      },
+      {
+        "txid": "4028473b1f9ce4840e5f11f9a58a2211de0a7b1f9dff4c087b55379fdb069a89",
+        "recordIndex": 0,
+        "amount": "+0.00000008"
+      },
+      {
+        "txid": "4ae1385816a12418248dc0a8e98fe5bb48578a09a40228f384be505f8e16fb99",
+        "recordIndex": 0,
+        "amount": "+0.00000008"
+      }
+    ]
+  },
+  "checksFailed": 0,
+  "checksNotApplicable": 12,
+  "checksTotal": 160,
+  "shellPaintMs": 1968,
+  "firstPaintMs": 23751,
+  "startup": {
+    "milestones": {
+      "scriptStart": 218,
+      "launchInfo": 247,
+      "shell": 676,
+      "first-paint": 22461
+    },
+    "navigation": {
+      "responseEnd": 46,
+      "domInteractive": 46,
+      "domContentLoaded": 241,
+      "load": 242
+    }
+  },
+  "ipc": {
+    "ipcBenchRows200": {
+      "n": 200,
+      "p50": 5,
+      "p95": 11,
+      "max": 23
+    },
+    "historyPage200": {
+      "n": 200,
+      "p50": 968,
+      "p95": 2141,
+      "max": 2839
+    },
+    "historyPage1": {
+      "n": 50,
+      "p50": 735,
+      "p95": 1454,
+      "max": 1576
+    }
+  },
+  "security": {
+    "unlistedCommand": "refused: Command probe_unlisted not allowed by ACL",
+    "unknownPluginCommand": "refused: Command plugin:shell|execute not allowed by ACL",
+    "remoteFetch": "refused: Load failed; CSP violations: connect-src https://example.com/",
+    "windowOpen": "refused: window.open returned null",
+    "navigation": "refused: still on the app origin"
+  },
+  "final": true,
+  "engine": "WebKitGTK 2.52.6 (dash-wallet, regtest 40k wallet)",
+  "failedChecks": [],
+  "notApplicable": [
+    "light/overview:accentTint.chip",
+    "light/overview:textLink.chip",
+    "light/overview:radius.switcher.chip",
+    "light/overview:type.chip.size",
+    "light/overview:type.chip.weight",
+    "light/overview:type.chip.line",
+    "dark/overview:accentTint.chip",
+    "dark/overview:textLink.chip",
+    "dark/overview:radius.switcher.chip",
+    "dark/overview:type.chip.size",
+    "dark/overview:type.chip.weight",
+    "dark/overview:type.chip.line"
+  ],
+  "boxesPerScreen": {
+    "light/overview": 36,
+    "light/transactions": 228,
+    "dark/overview": 36,
+    "dark/transactions": 228
+  }
+}

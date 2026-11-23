@@ -1,0 +1,4 @@
+-rw-r--r-- 1 runner runner 23187506 Oct 11 07:45 /home/runner/work/dashwallet-desktop/dashwallet-desktop/rust/target/release/bundle/deb/Dash Wallet_0.1.0_amd64.deb
+-rwxr-xr-x 1 runner runner 99957240 Oct 11 07:46 /home/runner/work/dashwallet-desktop/dashwallet-desktop/rust/target/release/bundle/appimage/Dash Wallet_0.1.0_amd64.AppImage
+-rwxr-xr-x 2 runner runner 69448240 Oct 11 07:46 /home/runner/work/dashwallet-desktop/dashwallet-desktop/rust/target/release/dash-wallet
+build seconds: 201

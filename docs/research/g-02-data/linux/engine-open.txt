@@ -1,0 +1,5 @@
+dwcli list on the regtest40k fixture (engine open + balance, no UI), agentbox, release build, 3 runs
+load 108.43: wall 9.22 s user 5.43 s sys 0.70 s maxrss 183044 kB
+load 103.18: wall 5.23 s user 4.05 s sys 0.79 s maxrss 188880 kB
+load  99.80: wall 8.39 s user 5.51 s sys 0.85 s maxrss 188600 kB
+balance: total=20601436392896 duffs (matches the app's hero)

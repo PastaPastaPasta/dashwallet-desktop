@@ -1,0 +1,258 @@
+<!-- board title="Registration wizard" -->
+
+<!-- frame id="reg-behind" title="The page behind the wizard" route="masternodes" -->
+<main class="page page-masternodes">
+ <div class="page-column">
+  <header class="top-intro mg-header">
+   <h1 class="top-intro-title">Masternodes</h1>
+   <span class="mg-header-actions">
+    <button type="button" class="dash-button dash-button-tintedGray dash-button-small">More</button>
+    <button type="button" class="dash-button dash-button-filledBlue dash-button-small">Set up a masternode</button>
+   </span>
+  </header>
+  <div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="true">My masternodes</button><button class="tab" role="tab">Governance</button></div>
+  <section class="mg-empty card-l1"><img src="icon:masternode-network-monitor" alt=""><h2>No masternodes yet</h2></section>
+ </div>
+</main>
+<!-- /frame -->
+
+<!-- frame id="reg-type" title="Registration wizard, step 1: what and who runs it (§4.25.5)" route="masternodes" behind="reg-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Set up a masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="mg-wizard">
+   <ol class="mg-steps">
+    <li data-n="1" aria-current="step">Type</li><li data-n="2">Collateral</li><li data-n="3">Operator</li><li data-n="4">Keys and payout</li><li data-n="5">Review</li>
+   </ol>
+   <div class="mg-step">
+    <h3 class="mg-step-title">What are you setting up?</h3>
+    <div class="mg-choices mg-choices-2">
+     <label class="mg-choice is-selected"><input type="radio" name="t" checked><span class="mg-choice-title">Masternode</span><span class="mg-choice-help">1,000 Dash collateral. Runs Dash Core.</span></label>
+     <label class="mg-choice"><input type="radio" name="t"><span class="mg-choice-title">Evonode</span><span class="mg-choice-help">4,000 Dash collateral. Also runs Dash Platform and earns Platform credits.</span></label>
+    </div>
+    <label class="mg-choice"><input type="radio" name="t"><span class="mg-choice-title">Shared masternode</span><span class="mg-choice-help">2 to 8 people each put in a share of the collateral and split the payouts. Opens the shared-masternode setup.</span><span class="mg-choice-note">Masternode or evonode: you choose in the shared setup.</span></label>
+    <h3 class="mg-step-title" style="margin-top:var(--dw-space-s)">Who runs the server?</h3>
+    <div class="mg-choices">
+     <label class="mg-choice is-selected"><input type="radio" name="w" checked><span class="mg-choice-title">A hosting provider, or someone else</span><span class="mg-choice-help">They give you an operator key (a public key), the server's address and their fee. You keep the collateral and the owner key.</span></label>
+     <label class="mg-choice"><input type="radio" name="w"><span class="mg-choice-title">I run it myself</span><span class="mg-choice-help">The wallet fills in the operator key from its masternode keys. You copy the operator secret to your server later, from Masternode keys.</span></label>
+    </div>
+   </div>
+  </div>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Step 1 of 5</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Cancel</button><button class="dash-button dash-button-filledBlue dash-button-medium">Continue</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="reg-collateral" title="Step 2: collateral (§4.25.5)" route="masternodes" behind="reg-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Set up a masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="mg-wizard">
+   <ol class="mg-steps">
+    <li data-n="1" class="is-done">Type</li><li data-n="2" aria-current="step">Collateral</li><li data-n="3">Operator</li><li data-n="4">Keys and payout</li><li data-n="5">Review</li>
+   </ol>
+   <div class="mg-step">
+    <h3 class="mg-step-title">Where is the 1,000 Dash collateral?</h3>
+    <p class="mg-step-intro">The collateral stays yours. While it is unspent the masternode stays registered; spending it ends the masternode.</p>
+    <div class="mg-choices">
+     <label class="mg-choice"><input type="radio" name="c"><span class="mg-choice-title">Send it from this wallet</span><span class="mg-choice-help">Moves 1,000 Dash to a new address in this wallet, in the same transaction as the registration.</span><span class="mg-choice-note">Available: 1,204.37 Dash</span></label>
+     <label class="mg-choice is-selected"><input type="radio" name="c" checked><span class="mg-choice-title">Use a 1,000 Dash output already in this wallet</span><span class="mg-choice-help">Pick an unspent output of exactly 1,000 Dash.</span>
+      <span class="mg-choice-note" style="grid-column:2">
+       <span class="mg-nodes card-l1" style="display:block;margin-top:var(--dw-space-xs)">
+        <span class="mg-node" style="grid-template-columns:20px minmax(0,1fr) auto"><input type="radio" checked><span><span class="mono">e41c…77a0:1</span> · yXc2…k9Lp</span><span>214 confirmations</span></span>
+        <span class="mg-node" style="grid-template-columns:20px minmax(0,1fr) auto" aria-disabled="true"><input type="radio" disabled><span class="mg-muted"><span class="mono">90bd…13f4:0</span> · collateral of Home node</span><span class="mg-muted">In use</span></span>
+       </span>
+      </span>
+     </label>
+     <label class="mg-choice"><input type="radio" name="c"><span class="mg-choice-title">It is in another wallet</span><span class="mg-choice-help">For example dash-qt or a hardware wallet. Enter the output; before sending you sign a message with that wallet to prove it is yours.</span></label>
+    </div>
+   </div>
+  </div>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Step 2 of 5</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Back</button><button class="dash-button dash-button-filledBlue dash-button-medium">Continue</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="reg-operator" title="Step 3: operator details, hosted, with a field error (§4.25.5)" route="masternodes" behind="reg-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Set up a masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="mg-wizard">
+   <ol class="mg-steps">
+    <li data-n="1" class="is-done">Type</li><li data-n="2" class="is-done">Collateral</li><li data-n="3" aria-current="step">Operator</li><li data-n="4">Keys and payout</li><li data-n="5">Review</li>
+   </ol>
+   <div class="mg-step">
+    <h3 class="mg-step-title">Your operator's details</h3>
+    <p class="mg-step-intro">Copy these from your hosting provider. None of them is secret.</p>
+    <div class="mg-form">
+     <label class="mg-field mg-span">Operator public key
+      <input class="mono" value="8f1d5c27a3b9e4f06d2c71a85e93b40f6c1a2d8e7b53f9c04a6e1d28b7c3f59e0a4d6b82c17e95f3a08d4c61b2e7f9a3">
+      <span class="mg-field-ok">A valid BLS public key (48 bytes)</span>
+      <span class="mg-field-help">The key the server signs with. Your operator keeps the matching secret on the server; never paste a secret here.</span>
+     </label>
+     <label class="mg-field has-error">Server address (IP and port)
+      <input class="mono" value="203.0.113.9:9999">
+      <span class="mg-field-error">9999 is the Mainnet port. This wallet is on Testnet, where masternodes use 19999.</span>
+      <span class="mg-field-help">Ask your operator for it. A masternode registered without an address earns nothing until the operator adds one.</span>
+     </label>
+     <label class="mg-field">Operator's share of payouts
+      <span class="mg-field-row"><input value="5"><span>%</span></span>
+      <span class="mg-field-help">The operator gets this share of every payout once they set their payout address from the server; until then it stays with you. Leave it at 0 unless you agreed on a share.</span>
+     </label>
+    </div>
+   </div>
+  </div>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Step 3 of 5</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Back</button><button class="dash-button dash-button-filledBlue dash-button-medium" disabled>Continue</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="reg-operator-evo" title="Step 3 for an evonode, run by the owner (§4.25.5)" route="masternodes" behind="reg-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Set up an evonode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="mg-wizard">
+   <ol class="mg-steps">
+    <li data-n="1" class="is-done">Type</li><li data-n="2" class="is-done">Collateral</li><li data-n="3" aria-current="step">Operator</li><li data-n="4">Keys and payout</li><li data-n="5">Review</li>
+   </ol>
+   <div class="mg-step">
+    <h3 class="mg-step-title">Your server's details</h3>
+    <p class="mg-notice mg-notice-info">You run this evonode, so the operator key and the Platform node key come from this wallet's masternode keys (keypair 3). After registering, copy their secrets to the server from <strong>Masternode keys</strong>.</p>
+    <div class="mg-form">
+     <label class="mg-field mg-span">Operator public key
+      <span class="mg-field-row"><input class="mono" value="a03b7f…19c4e2 · keypair 3" readonly><button class="dash-button dash-button-plainBlue dash-button-small">Enter one instead</button></span>
+     </label>
+     <label class="mg-field">Server address (IP and port)<input class="mono" value="198.51.100.21:19999"></label>
+     <label class="mg-field">Operator's share of payouts<span class="mg-field-row"><input value="0"><span>%</span></span></label>
+     <label class="mg-field mg-span">Platform node ID
+      <span class="mg-field-row"><input class="mono" value="4c1e9a…d07b3f · keypair 3" readonly><button class="dash-button dash-button-plainBlue dash-button-small">Enter one instead</button></span>
+      <span class="mg-field-help">Identifies the server on Dash Platform. Derived from its Platform node key.</span>
+     </label>
+     <label class="mg-field">Platform P2P port<input class="mono" value="26656"></label>
+     <label class="mg-field">Platform HTTPS port<input class="mono" value="443"></label>
+    </div>
+   </div>
+  </div>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Step 3 of 5</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Back</button><button class="dash-button dash-button-filledBlue dash-button-medium">Continue</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="reg-keys" title="Step 4: keys and payout (§4.25.5)" route="masternodes" behind="reg-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Set up a masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="mg-wizard">
+   <ol class="mg-steps">
+    <li data-n="1" class="is-done">Type</li><li data-n="2" class="is-done">Collateral</li><li data-n="3" class="is-done">Operator</li><li data-n="4" aria-current="step">Keys and payout</li><li data-n="5">Review</li>
+   </ol>
+   <div class="mg-step">
+    <h3 class="mg-step-title">Keys and payout</h3>
+    <dl class="detail-list card-l1">
+     <div class="detail-row"><dt class="detail-label">Owner key</dt><dd class="detail-value">This wallet, owner keypair 3<div class="mg-field-help">Controls the registration: changing keys and payout. Always kept in this wallet.</div></dd></div>
+    </dl>
+    <div class="mg-field">Voting
+     <div class="mg-choices">
+      <label class="mg-choice is-selected"><input type="radio" name="v" checked><span class="mg-choice-title">Vote from this wallet</span><span class="mg-choice-help">Uses voting keypair 3.</span></label>
+      <label class="mg-choice"><input type="radio" name="v"><span class="mg-choice-title">Let someone else vote</span><span class="mg-choice-help">Enter their voting address. You can change it later.</span></label>
+     </div>
+    </div>
+    <div class="mg-field">Payouts go to
+     <div class="mg-choices">
+      <label class="mg-choice is-selected"><input type="radio" name="p" checked><span class="mg-choice-title">A new address in this wallet</span><span class="mg-choice-help">Payouts appear in Activity as "Masternode reward".</span></label>
+      <label class="mg-choice"><input type="radio" name="p"><span class="mg-choice-title">Another address</span><span class="mg-choice-help">For example a cold wallet. This wallet then can't show the payouts.</span></label>
+     </div>
+    </div>
+   </div>
+  </div>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Step 4 of 5</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Back</button><button class="dash-button dash-button-filledBlue dash-button-medium">Continue</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="reg-review" title="Step 5: review (§4.25.5)" route="masternodes" behind="reg-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Set up a masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="mg-wizard">
+   <ol class="mg-steps">
+    <li data-n="1" class="is-done">Type</li><li data-n="2" class="is-done">Collateral</li><li data-n="3" class="is-done">Operator</li><li data-n="4" class="is-done">Keys and payout</li><li data-n="5" aria-current="step">Review</li>
+   </ol>
+   <div class="mg-step">
+    <h3 class="mg-step-title">Review the registration</h3>
+    <dl class="detail-list card-l1">
+     <div class="detail-row"><dt class="detail-label">Type</dt><dd class="detail-value">Masternode, run by your operator</dd></div>
+     <div class="detail-row"><dt class="detail-label">Collateral</dt><dd class="detail-value"><span class="mono">e41c…77a0:1</span>, 1,000 Dash in this wallet<div class="mg-field-help">Locked against spending while the masternode is registered</div></dd></div>
+     <div class="detail-row"><dt class="detail-label">Server</dt><dd class="detail-value">203.0.113.9:19999</dd></div>
+     <div class="detail-row"><dt class="detail-label">Operator key</dt><dd class="detail-value"><span class="mono">8f1d5c…f9a3</span>, from your operator</dd></div>
+     <div class="detail-row"><dt class="detail-label">Operator's share</dt><dd class="detail-value">5% of each payout</dd></div>
+     <div class="detail-row"><dt class="detail-label">Voting</dt><dd class="detail-value">This wallet</dd></div>
+     <div class="detail-row"><dt class="detail-label">Payouts to</dt><dd class="detail-value"><span class="mono">yPay3n…Q2wd</span>, this wallet</dd></div>
+     <div class="detail-row"><dt class="detail-label">Network fee</dt><dd class="detail-value"><span class="amount">0.00000453<dash/></span>, from this wallet</dd></div>
+     <div class="detail-row"><dt class="detail-label">Then</dt><dd class="detail-value">Send your operator the ProTx hash. The masternode earns once the server runs and the network accepts it.</dd></div>
+    </dl>
+    <label class="form-field" style="max-width:320px">Passphrase<input type="password" value="••••••••••••"></label>
+   </div>
+  </div>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Only the fee leaves this wallet.</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Back</button><button class="dash-button dash-button-filledBlue dash-button-medium">Register</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="reg-prove" title="External collateral: sign the message in the other wallet (§4.25.5)" route="masternodes" behind="reg-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-large" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Set up a masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="mg-wizard">
+   <ol class="mg-steps">
+    <li data-n="1" class="is-done">Type</li><li data-n="2" class="is-done">Collateral</li><li data-n="3" class="is-done">Operator</li><li data-n="4" class="is-done">Keys and payout</li><li data-n="5" class="is-done">Review</li><li data-n="6" aria-current="step">Prove the collateral</li>
+   </ol>
+   <div class="mg-step">
+    <h3 class="mg-step-title">Sign with the wallet that holds the collateral</h3>
+    <p class="mg-step-intro">The collateral <span class="mono">b07e…c1d2:0</span> is in another wallet. In that wallet, sign this message with the collateral's address (in dash-qt: File ▸ Sign message), then paste the signature here.</p>
+    <dl class="detail-list card-l1">
+     <div class="detail-row"><dt class="detail-label">Address</dt><dd class="detail-value"><span class="copy-value"><span class="mono">yCoLL4t3r4lAddr3ssK9pQ2wM7nB5vR1sT</span><button class="copy-button" aria-label="Copy address"><img width="20" height="20" alt="" src="icon:action-copy"></button></span></dd></div>
+     <div class="detail-row"><dt class="detail-label">Message</dt><dd class="detail-value"><span class="copy-value"><span class="mono">yPay3nQ…Q2wd|500|yOwn7r…h3Kd|yVot9s…m1Rc|5d0e…7b42</span><button class="copy-button" aria-label="Copy message"><img width="20" height="20" alt="" src="icon:action-copy"></button></span></dd></div>
+    </dl>
+    <label class="mg-field">Signature
+     <textarea class="mono" rows="3">H1lK8p0b3sN4X2mWq9Rv7tY6uZc5aE8dF3gH2jK1lM0nB9vC8xZ7aS6dF5gH4jK3lM2nB1vC0xZ9aS8dF7gH6jK5lM4=</textarea>
+     <span class="mg-field-ok">The signature matches the collateral's address</span>
+    </label>
+    <p class="mg-muted mg-small" style="margin:0">The message holds this registration's details. If you go back and change them, sign again.</p>
+    <label class="form-field" style="max-width:320px">Passphrase<input type="password" value="••••••••••••"></label>
+   </div>
+  </div>
+ </div>
+ <footer class="mg-sheet-footer"><span class="mg-sheet-footer-note">Step 6 of 6</span><span class="mg-actions"><button class="dash-button dash-button-tintedGray dash-button-medium">Back</button><button class="dash-button dash-button-filledBlue dash-button-medium">Register</button></span></footer>
+</div>
+<!-- /frame -->
+
+<!-- frame id="reg-done" title="Sent: the result and the next steps (§4.25.5)" route="masternodes" behind="reg-behind" -->
+<!-- sheet -->
+<div class="sheet sheet-medium" role="dialog" aria-modal="true">
+ <header class="sheet-header"><span></span><h2 class="sheet-title">Set up a masternode</h2><span><x-close/></span></header>
+ <div class="sheet-body mg-sheet-body">
+  <div class="tx-detail-summary">
+   <img width="50" height="50" alt="" src="icon:governance-vote-approved">
+   <h3 class="tx-detail-title" style="margin:0">Registration sent</h3>
+   <div class="tx-detail-status"><span class="chip chip-info">Registering</span><span class="tx-detail-date">waiting for 1 confirmation</span></div>
+  </div>
+  <dl class="detail-list card-l1">
+   <div class="detail-row"><dt class="detail-label">ProTx hash</dt><dd class="detail-value"><span class="copy-value"><span class="mono">9c2f61d0e8a47b3c5f12d9e0a6b84c7f31e2d5a9b06c48f7e3a1d2b5c9f0e81a</span><button class="copy-button" aria-label="Copy ProTx hash"><img width="20" height="20" alt="" src="icon:action-copy"></button></span></dd></div>
+  </dl>
+  <ol class="mg-small" style="margin:0;padding-left:var(--dw-space-xl);display:flex;flex-direction:column;gap:var(--dw-space-xs)">
+   <li>Send your operator the ProTx hash. They start the server with it.</li>
+   <li>The masternode shows <strong>Active</strong> once the network sees the server.</li>
+   <li>Payouts then arrive in this wallet and show in Activity as "Masternode reward".</li>
+  </ol>
+ </div>
+ <footer class="mg-sheet-footer"><span></span><span class="mg-actions"><button class="dash-button dash-button-tintedBlue dash-button-medium">Copy ProTx hash</button><button class="dash-button dash-button-filledBlue dash-button-medium">Done</button></span></footer>
+</div>
+<!-- /frame -->

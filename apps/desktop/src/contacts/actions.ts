@@ -1,0 +1,201 @@
+// The contact actions one surface runs (DP2-09 D3, D16): Send (DP2-08 D5), Accept, Ignore,
+// Unignore, saving the private details and enabling DashPay's keys, for the window's wallet and
+// its main identity.
+// Each Platform write sizes its `platformOp` grant with `grant_request` and gets it through
+// U-05's GrantModel (the passphrase sheet when needed). One action runs at a time; the screens
+// read `running` to disable their buttons and show the outcome where the action was (D4).
+
+import { hasCode, isAppError, type Backend } from "../api/backend";
+import type { AuthGrant } from "../api/generated/AuthGrant";
+import type { GrantAction } from "../api/generated/GrantAction";
+import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
+import type { PublishStateName } from "../api/generated/PublishStateName";
+import { t } from "../i18n";
+import { Model } from "../onboarding/model";
+import { AddText, eligibilityLine } from "./add";
+import type { GrantModel } from "../tools/grant";
+
+export type ActionApi = Pick<
+  Backend,
+  "grantRequest" | "dashpaySendRequest" | "dashpayAcceptRequest" | "dashpayIgnoreContact" | "dashpayUnignoreContact" | "dashpaySetPrivateDetails" | "dashpayEnableKeys"
+>;
+
+export type ActionKind = "send" | "accept" | "ignore" | "unignore" | "details" | "enable";
+
+/** What an action did, said where it ran; `contact` is `null` for Enable. */
+export interface ActionOutcome {
+  kind: ActionKind;
+  contact: string | null;
+  ok: boolean;
+  text: string;
+  /** A request answered one of theirs: the two are contacts now, not waiting. */
+  established?: boolean;
+}
+
+/** What the screens re-read after an action, besides what the engine's signal re-reads: the
+ * contacts of the identity, its identities (keys), or its cached network search (D6). */
+export type Refresh = "contacts" | "identities" | "search";
+
+/** D4: the copy of a refusal. */
+export function actionError(e: unknown): string {
+  if (hasCode(e, "contact.ineligible") && e.data?.kind === "ineligible" && e.data.reason !== "noDashPayKeys")
+    return eligibilityLine(e.data.reason).text ?? e.message;
+  if (hasCode(e, "contact.request_pending")) return t("contacts.errors.requestPending");
+  if (hasCode(e, "contact.scan_expired")) return AddText.scanExpired;
+  if (hasCode(e, "contact.self")) return t("contacts.errors.self");
+  // A scanned code's sender confirms only once Platform's context is trusted (requests.rs).
+  if (hasCode(e, "platform.context_unavailable")) return t("contacts.errors.notSynced");
+  if (hasCode(e, "platform.insufficient_credits")) return t("contacts.errors.credits");
+  if (hasCode(e, "contact.ineligible")) return t("contacts.pane.enableFirst");
+  if (hasCode(e, "contact.already_contact")) return t("contacts.errors.alreadyContact");
+  if (hasCode(e, "contact.details_too_long")) return t("contacts.errors.detailsTooLong");
+  if (hasCode(e, "platform.unavailable") || hasCode(e, "platform.timeout")) return t("contacts.errors.platform");
+  if (hasCode(e, "vault.locked") || hasCode(e, "platform.signer_unavailable")) return t("contacts.errors.locked");
+  return isAppError(e) || e instanceof Error ? e.message : String(e);
+}
+
+/** D7: what a save says. */
+export function publishText(state: PublishStateName): string {
+  switch (state) {
+    case "published":
+      return t("contacts.details.published");
+    case "deferredUntilTwoContacts":
+      return t("contacts.details.deferred");
+    case "local":
+      return t("contacts.details.local");
+  }
+}
+
+export class ContactActions extends Model {
+  /** The action under way; `null` while none is. */
+  running: { kind: ActionKind; contact: string | null } | null = null;
+  /** The last action's outcome; a new action clears it. */
+  outcome: ActionOutcome | null = null;
+
+  constructor(
+    private readonly api: ActionApi,
+    readonly grants: GrantModel,
+    readonly walletId: string,
+    readonly identity: string,
+    private readonly refresh: (what: Refresh[]) => void = () => undefined,
+  ) {
+    super();
+  }
+
+  /** Whether an action runs now (the screens disable every action meanwhile). */
+  get busy(): boolean {
+    return this.running !== null;
+  }
+
+  /** Whether `kind` runs for `contact` now. */
+  isRunning(kind: ActionKind, contact: string | null): boolean {
+    return this.running?.kind === kind && this.running.contact === contact;
+  }
+
+  /** Sends a contact request to `contact` (DP2-08 D5), with the auto-accept `scan` it answers
+   * (D7). Their request was already in: they are contacts now. */
+  send(contact: string, name: string, scan: string | null): Promise<ActionOutcome | null> {
+    return this.#run("send", contact, ["contacts", "search"], async () => {
+      const done = await this.#withPlatformGrant({ kind: "sendRequest" }, (grant) => this.api.dashpaySendRequest(this.walletId, this.identity, contact, scan, grant.id));
+      if (!done) return null;
+      return done.kind === "established" ? { text: t("contacts.actions.established", { name }), established: true } : t("contacts.actions.sent", { name });
+    });
+  }
+
+  /** Accepts `contact`'s request (D3): it sends the reverse request under a grant. Already
+   * contacts (another surface or device accepted first) is what was asked for. */
+  accept(contact: string, name: string): Promise<ActionOutcome | null> {
+    return this.#run("accept", contact, ["contacts"], async () => {
+      const text = t("contacts.actions.established", { name });
+      try {
+        const done = await this.#withPlatformGrant({ kind: "acceptRequest" }, (grant) => this.api.dashpayAcceptRequest(this.walletId, this.identity, contact, grant.id));
+        return done ? text : null;
+      } catch (e) {
+        if (hasCode(e, "contact.already_contact")) return text;
+        throw e;
+      }
+    });
+  }
+
+  /** Ignores `contact`'s request (D5): free, reversible from Hidden. */
+  ignore(contact: string): Promise<ActionOutcome | null> {
+    return this.#run("ignore", contact, ["contacts"], async () => {
+      await this.api.dashpayIgnoreContact(this.walletId, this.identity, contact);
+      return t("contacts.actions.ignored");
+    });
+  }
+
+  /** Unignores `contact` (D5); the cached network search is read again (D6). */
+  unignore(contact: string): Promise<ActionOutcome | null> {
+    return this.#run("unignore", contact, ["contacts", "search"], async () => {
+      await this.api.dashpayUnignoreContact(this.walletId, this.identity, contact);
+      return t("contacts.actions.unignored");
+    });
+  }
+
+  /** Saves `contact`'s private details, publishing them under a grant (D7). */
+  saveDetails(contact: string, details: PrivateContactDetails): Promise<ActionOutcome | null> {
+    return this.#run("details", contact, ["contacts"], async () => {
+      const state = await this.#withPlatformGrant({ kind: "publishPrivateDetails" }, async (grant) => {
+        try {
+          return await this.api.dashpaySetPrivateDetails(this.walletId, this.identity, contact, details, grant.id);
+        } finally {
+          // Unused when nothing was sent (D7); a spent grant's revoke is ignored.
+          this.grants.revoke(grant);
+        }
+      });
+      return state ? publishText(state) : null;
+    });
+  }
+
+  /** Adds the identity's DashPay keys (D10). */
+  enable(): Promise<ActionOutcome | null> {
+    return this.#run("enable", null, ["identities"], async () => {
+      const done = await this.#withPlatformGrant({ kind: "enableDashPayKeys" }, async (grant) => {
+        try {
+          await this.api.dashpayEnableKeys(this.walletId, this.identity, grant.id);
+        } finally {
+          // Unused when the keys were there already (a stale identities read).
+          this.grants.revoke(grant);
+        }
+        return true;
+      });
+      return done ? t("contacts.enable.done") : null;
+    });
+  }
+
+  /** Cancels a grant request still waiting for its passphrase. */
+  cancel() {
+    this.grants.cancel();
+  }
+
+  /** `run` under a `platformOp` grant sized by `action`; `null` when the user cancelled. */
+  async #withPlatformGrant<T>(action: GrantAction, run: (grant: AuthGrant) => Promise<T>): Promise<T | null> {
+    const since = this.grants.epoch;
+    const { maxDuffs, maxCredits } = await this.api.grantRequest(this.walletId, this.identity, action);
+    const got = await this.grants.withGrant({ kind: "platformOp", maxDuffs, maxCredits }, this.walletId, run, since);
+    return got?.value ?? null;
+  }
+
+  /** One action at a time: its outcome, or `null` when it was cancelled or another one runs. */
+  async #run(kind: ActionKind, contact: string | null, refresh: Refresh[], act: () => Promise<string | { text: string; established: boolean } | null>): Promise<ActionOutcome | null> {
+    if (this.running) return null;
+    this.running = { kind, contact };
+    this.outcome = null;
+    this.changed();
+    let outcome: ActionOutcome | null = null;
+    try {
+      const done = await act();
+      if (done) outcome = { kind, contact, ok: true, ...(typeof done === "string" ? { text: done } : done) };
+    } catch (e) {
+      outcome = { kind, contact, ok: false, text: actionError(e) };
+    } finally {
+      this.running = null;
+      this.outcome = outcome;
+      this.changed();
+    }
+    // A refusal re-reads too: it may say another surface or device acted first.
+    if (outcome) this.refresh(refresh);
+    return outcome;
+  }
+}

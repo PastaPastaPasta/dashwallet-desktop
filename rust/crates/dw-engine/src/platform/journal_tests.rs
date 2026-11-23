@@ -1,0 +1,1666 @@
+//! The changeset tap (ROADMAP E0-06): one test per row of DASHPAY §3.5, then
+//! idempotence, catch-up silence, the trust fallback, and the wiring through
+//! a session's `WalletStore` and bring-up.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use dashcore::hashes::Hash;
+use dashcore::{BlockHash, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
+use dpp::platform_value::string_encoding::Encoding;
+use dpp::prelude::Identifier;
+use dpp::util::strings::convert_to_homograph_safe_chars;
+use dw_appdb::{AppDb, JournalRow, SqlValue, TableRows};
+use key_wallet::account::{AccountType, StandardAccountType};
+use key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+use key_wallet::managed_account::transaction_record::{TransactionDirection, TransactionRecord};
+use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
+use platform_wallet::changeset::{
+    AccountRegistrationEntry, AssetLockChangeSet, ContactChangeSet, ContactRequestEntry,
+    DpnsNameSaleStatus, DpnsNameStateChangeSet, DpnsNameStateEntry, IdentityChangeSet,
+    IdentityEntry, Merge, PendingContactCrypto, PendingContactCryptoKey, PendingContactCryptoKind,
+    PendingContactCryptoOp, PlatformWalletChangeSet, PlatformWalletPersistence,
+    ReceivedContactRequestKey, SentContactRequestKey,
+};
+use platform_wallet::wallet::identity::{PaymentDirection, PaymentEntry, PaymentStatus};
+use platform_wallet::{ContactRequest, DpnsNameInfo, EstablishedContact, IdentityStatus};
+use zeroize::Zeroizing;
+
+use super::contacts_tests::wait_for;
+use super::journal::{CATCH_UP_BEFORE_KEY, ChangesetTap, Times, classify, kind_name};
+use super::notifications::EventKind;
+use crate::events::SessionHub;
+use crate::held_writes::ReleaseOnDrop;
+use crate::{
+    DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, ImportOptions, NetworkSession,
+    PlatformChange, SessionOptions, WalletId,
+};
+
+const W: WalletId = WalletId([0xAA; 32]);
+/// Our identity and two other people.
+const ME: u8 = 1;
+const BOB: u8 = 2;
+const CAROL: u8 = 3;
+/// When this installation first brought `W` up, in the tests that set it
+/// (UNIX seconds); the ms times below are either side of it.
+const BEFORE: u64 = 1_000;
+const OLD_MS: u64 = 500_000;
+const NEW_MS: u64 = 2_000_000;
+
+pub(super) fn id(n: u8) -> Identifier {
+    Identifier::from([n; 32])
+}
+
+pub(super) fn b58(n: u8) -> String {
+    id(n).to_string(Encoding::Base58)
+}
+
+pub(super) fn request(sender: u8, recipient: u8, created_at: u64) -> ContactRequest {
+    ContactRequest::new(
+        id(sender),
+        id(recipient),
+        0,
+        0,
+        0,
+        vec![1; 96],
+        1,
+        created_at,
+    )
+}
+
+fn identity(n: u8, index: Option<u32>, names: &[(&str, Option<u64>)]) -> IdentityEntry {
+    IdentityEntry {
+        id: id(n),
+        balance: 0,
+        revision: 0,
+        identity_index: index,
+        last_updated_balance_block_time: None,
+        last_synced_keys_block_time: None,
+        dpns_names: names
+            .iter()
+            .map(|(label, acquired_at)| DpnsNameInfo {
+                label: label.to_string(),
+                acquired_at: *acquired_at,
+            })
+            .collect(),
+        contested_dpns_names: Vec::new(),
+        status: IdentityStatus::Active,
+        wallet_id: None,
+        dashpay_profile: None,
+        dashpay_payments: BTreeMap::new(),
+        contact_profiles: BTreeMap::new(),
+        ignored_senders: BTreeSet::new(),
+    }
+}
+
+fn identities(entries: Vec<IdentityEntry>) -> PlatformWalletChangeSet {
+    PlatformWalletChangeSet {
+        identities: Some(IdentityChangeSet {
+            identities: entries.into_iter().map(|e| (e.id, e)).collect(),
+            removed: BTreeSet::new(),
+        }),
+        ..Default::default()
+    }
+}
+
+pub(super) fn contacts(cs: ContactChangeSet) -> PlatformWalletChangeSet {
+    PlatformWalletChangeSet {
+        contacts: Some(cs),
+        ..Default::default()
+    }
+}
+
+pub(super) fn incoming(owner: u8, sender: u8, created_at: u64) -> ContactChangeSet {
+    let mut cs = ContactChangeSet::default();
+    cs.incoming_requests.insert(
+        ReceivedContactRequestKey {
+            owner_id: id(owner),
+            sender_id: id(sender),
+        },
+        ContactRequestEntry {
+            request: request(sender, owner, created_at),
+        },
+    );
+    cs
+}
+
+/// `owner` and `contact` established: our request at `ours`, theirs at
+/// `theirs` (ms).
+fn established(owner: u8, contact: u8, ours: u64, theirs: u64) -> ContactChangeSet {
+    let mut cs = ContactChangeSet::default();
+    cs.established.insert(
+        SentContactRequestKey {
+            owner_id: id(owner),
+            recipient_id: id(contact),
+        },
+        EstablishedContact::new(
+            id(contact),
+            request(owner, contact, ours),
+            request(contact, owner, theirs),
+        ),
+    );
+    cs
+}
+
+fn payment(
+    identity: u8,
+    txid: &str,
+    from: u8,
+    direction: PaymentDirection,
+) -> PlatformWalletChangeSet {
+    let entry = PaymentEntry {
+        counterparty_id: id(from),
+        amount_duffs: 1_000,
+        memo: None,
+        direction,
+        status: PaymentStatus::Confirmed,
+    };
+    PlatformWalletChangeSet {
+        dashpay_payments_overlay: Some(BTreeMap::from([(
+            id(identity),
+            BTreeMap::from([(txid.to_string(), entry)]),
+        )])),
+        ..Default::default()
+    }
+}
+
+/// A received transaction, in a block of time `block_time` (s) or in the
+/// mempool.
+pub(super) fn tx_record(n: u32, block_time: Option<u32>) -> TransactionRecord {
+    let tx = Transaction {
+        version: 2,
+        lock_time: n,
+        input: Vec::new(),
+        output: vec![TxOut {
+            value: 1_000,
+            script_pubkey: ScriptBuf::new(),
+        }],
+        special_transaction_payload: None,
+    };
+    let context = match block_time {
+        Some(t) => TransactionContext::InBlock(BlockInfo::new(10, BlockHash::all_zeros(), t)),
+        None => TransactionContext::Mempool,
+    };
+    TransactionRecord::new(
+        tx,
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        context,
+        TransactionType::Standard,
+        TransactionDirection::Incoming,
+        Vec::new(),
+        Vec::new(),
+        1_000,
+    )
+}
+
+fn outpoint(n: u8, vout: u32) -> OutPoint {
+    OutPoint::new(Txid::from_byte_array([n; 32]), vout)
+}
+
+fn contacts_of(n: u8) -> BTreeSet<PlatformChange> {
+    BTreeSet::from([PlatformChange::Contacts { identity: b58(n) }])
+}
+
+/// `changes` and the feed signal of `ME`'s rows a write added (DP2-05).
+fn journaled(mut changes: BTreeSet<PlatformChange>) -> BTreeSet<PlatformChange> {
+    changes.insert(events_of(ME));
+    changes
+}
+
+#[derive(Default)]
+pub(super) struct Recorder(pub(super) Mutex<Vec<EngineEvent>>);
+
+impl EventSink for Recorder {
+    fn emit(&self, event: EngineEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+/// The persister's authoritative times, as a test sets them.
+#[derive(Default)]
+struct FakeTimes {
+    blocks: Mutex<HashMap<Txid, u32>>,
+    names: Mutex<HashMap<(Identifier, String), u64>>,
+}
+
+impl FakeTimes {
+    /// The record as the persister holds it: confirmed in its block, or not.
+    fn confirm(&self, record: &TransactionRecord) {
+        if let Some(block) = record.context.block_info() {
+            self.blocks
+                .lock()
+                .unwrap()
+                .insert(record.txid, block.timestamp());
+        }
+    }
+
+    /// The marketplace row of `label` for identity `n`, created at `ms`.
+    fn name(&self, n: u8, label: &str, ms: u64) {
+        let key = (id(n), convert_to_homograph_safe_chars(label));
+        self.names.lock().unwrap().insert(key, ms);
+    }
+}
+
+impl Times for FakeTimes {
+    fn block_time(&self, _: WalletId, txid: &Txid) -> Option<u32> {
+        self.blocks.lock().unwrap().get(txid).copied()
+    }
+
+    fn name_time(&self, _: WalletId, identity: &Identifier, normalized: &str) -> Option<u64> {
+        let key = (*identity, normalized.to_string());
+        self.names.lock().unwrap().get(&key).copied()
+    }
+}
+
+struct Harness {
+    hub: Arc<SessionHub>,
+    appdb: Arc<AppDb>,
+    tap: Arc<ChangesetTap>,
+    times: FakeTimes,
+}
+
+impl Harness {
+    fn new() -> Self {
+        let hub = Arc::new(SessionHub::new(
+            DashNetwork::Regtest,
+            Arc::new(Recorder::default()),
+        ));
+        let appdb = Arc::new(AppDb::open_in_memory().unwrap());
+        let tap = Arc::new(ChangesetTap::new(Arc::clone(&hub), Arc::clone(&appdb)));
+        Self {
+            hub,
+            appdb,
+            tap,
+            times: FakeTimes::default(),
+        }
+    }
+
+    /// A tap whose wallet `W` was first brought up here at [`BEFORE`].
+    fn restored() -> Self {
+        let h = Self::new();
+        let scope = dw_appdb::local_scope(&W.to_string());
+        h.appdb
+            .set_setting(&scope, CATCH_UP_BEFORE_KEY, Some(&BEFORE.to_string()))
+            .unwrap();
+        h
+    }
+
+    fn feed(&self, cs: PlatformWalletChangeSet) {
+        self.feed_to(W, cs);
+    }
+
+    /// What `WalletStore::store` does around an accepting persister.
+    fn feed_to(&self, wallet: WalletId, cs: PlatformWalletChangeSet) {
+        if let Some(c) = classify(&cs) {
+            self.tap
+                .record(wallet, self.tap.epoch(wallet), c, &self.times);
+        }
+    }
+
+    /// The signals marked since the last call.
+    fn changes(&self) -> BTreeSet<PlatformChange> {
+        let mut pending = self.hub.pump.take_platform();
+        let mine = pending.remove(&W).unwrap_or_default();
+        assert!(pending.is_empty(), "another wallet signalled: {pending:?}");
+        mine
+    }
+
+    fn journal(&self) -> Vec<JournalRow> {
+        self.appdb.journal(&W.to_string()).unwrap()
+    }
+
+    /// The journal as (kind, contact, ref, read).
+    fn rows(&self) -> Vec<(String, String, String, bool)> {
+        self.journal()
+            .into_iter()
+            .map(|r| (r.kind, r.contact, r.reference, r.read_at.is_some()))
+            .collect()
+    }
+}
+
+fn row(
+    kind: EventKind,
+    contact: &str,
+    reference: &str,
+    read: bool,
+) -> (String, String, String, bool) {
+    (
+        kind_name(kind).to_string(),
+        contact.to_string(),
+        reference.to_string(),
+        read,
+    )
+}
+
+#[test]
+fn kind_names_are_the_facade_serde_names() {
+    for kind in [
+        EventKind::UsernameRegistered,
+        EventKind::ContestWon,
+        EventKind::ContestLost,
+        EventKind::ContestLocked,
+        EventKind::RequestReceived,
+        EventKind::RequestAccepted,
+        EventKind::ContactEstablished,
+        EventKind::PaymentReceived,
+    ] {
+        assert_eq!(serde_json::to_value(kind).unwrap(), kind_name(kind));
+        assert_eq!(super::journal::kind_of(kind_name(kind)), Some(kind));
+    }
+    assert_eq!(super::journal::kind_of("contest_drawn"), None);
+}
+
+#[test]
+fn core_only_changesets_are_not_classified() {
+    assert!(classify(&PlatformWalletChangeSet::default()).is_none());
+    let empty_dashpay = PlatformWalletChangeSet {
+        identities: Some(IdentityChangeSet::default()),
+        contacts: Some(ContactChangeSet::default()),
+        dashpay_payments_overlay: Some(BTreeMap::new()),
+        ..Default::default()
+    };
+    assert!(classify(&empty_dashpay).is_none());
+}
+
+/// §3.5 row `identities`: `Identities`; "username registered", once per
+/// holding of a name, and only for the wallet's own identities.
+#[test]
+fn row_identities_signal_and_journal_usernames() {
+    let h = Harness::new();
+    h.feed(identities(vec![
+        identity(ME, Some(0), &[("alice", Some(NEW_MS))]),
+        // An identity the wallet only watches: no news.
+        identity(BOB, None, &[("bob", Some(NEW_MS))]),
+    ]));
+    assert_eq!(
+        h.changes(),
+        BTreeSet::from([PlatformChange::Identities, events_of(ME)])
+    );
+    let alice = format!("alice@{NEW_MS}");
+    assert_eq!(
+        h.rows(),
+        vec![row(EventKind::UsernameRegistered, "", &alice, false)]
+    );
+    assert_eq!(h.journal()[0].identity, b58(ME));
+
+    // The next snapshot carries the same name: nothing new. A second name,
+    // and the first one held again after it left, are new events. A name
+    // with no marketplace row has no authoritative time: news (DEC-114).
+    h.feed(identities(vec![identity(
+        ME,
+        Some(0),
+        &[("alice", Some(NEW_MS)), ("al1ce2", Some(NEW_MS + 1))],
+    )]));
+    h.feed(identities(vec![identity(
+        ME,
+        Some(0),
+        &[("alice", Some(NEW_MS + 2)), ("found", None)],
+    )]));
+    assert_eq!(
+        h.rows(),
+        vec![
+            row(EventKind::UsernameRegistered, "", &alice, false),
+            row(
+                EventKind::UsernameRegistered,
+                "",
+                &format!("al1ce2@{}", NEW_MS + 1),
+                false
+            ),
+            row(
+                EventKind::UsernameRegistered,
+                "",
+                &format!("alice@{}", NEW_MS + 2),
+                false
+            ),
+            row(EventKind::UsernameRegistered, "", "found", false),
+        ]
+    );
+
+    // A removal signals too.
+    h.changes();
+    let mut removal = IdentityChangeSet::default();
+    removal.removed.insert(id(ME));
+    h.feed(PlatformWalletChangeSet {
+        identities: Some(removal),
+        ..Default::default()
+    });
+    assert_eq!(h.changes(), BTreeSet::from([PlatformChange::Identities]));
+}
+
+/// §3.5 row `identities`, contest outcome: a watched label that becomes an
+/// owned name is DP1-04's watch's to journal (`ContestWon`, by the block
+/// that resolved the poll); the tap stores its `UsernameRegistered` read
+/// and journals no win of its own.
+#[test]
+fn row_identities_leave_a_watched_win_to_the_watch() {
+    let h = Harness::new();
+    h.appdb
+        .watch_contest(&W.to_string(), &b58(ME), "Alice", 7_000)
+        .unwrap();
+    let mut entry = identity(ME, Some(0), &[]);
+    entry.contested_dpns_names = vec!["Alice".into()];
+    h.feed(identities(vec![entry]));
+    assert!(h.rows().is_empty(), "still contested");
+
+    // Won: DPNS compares labels homograph-normalized.
+    let won = || identities(vec![identity(ME, Some(0), &[("a1ice", Some(NEW_MS))])]);
+    h.feed(won());
+    h.feed(won());
+    assert_eq!(
+        h.rows(),
+        vec![row(
+            EventKind::UsernameRegistered,
+            "",
+            &format!("a1ice@{NEW_MS}"),
+            true
+        )]
+    );
+}
+
+/// §3.5 row `contacts`, received: `Contacts{identity}`; "@bob sent you a
+/// contact request", once per contact.
+#[test]
+fn row_contacts_received_journals_the_request() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    assert_eq!(h.changes(), journaled(contacts_of(ME)));
+    assert_eq!(
+        h.rows(),
+        vec![row(
+            EventKind::RequestReceived,
+            &b58(BOB),
+            &NEW_MS.to_string(),
+            false
+        )]
+    );
+    // A pending request rotated (a newer `$createdAt`) is no news.
+    h.feed(contacts(incoming(ME, BOB, NEW_MS + 1)));
+    assert_eq!(h.journal().len(), 1);
+}
+
+/// §3.5 row `contacts`, established: "@bob accepted your request" when ours
+/// came first, "is now your contact" when we accepted theirs.
+#[test]
+fn row_contacts_established_journals_who_accepted() {
+    let h = Harness::new();
+    h.feed(contacts(established(ME, BOB, NEW_MS, NEW_MS + 10)));
+    h.feed(contacts(established(ME, CAROL, NEW_MS + 30, NEW_MS + 20)));
+    assert_eq!(h.changes(), journaled(contacts_of(ME)));
+    assert_eq!(
+        h.rows(),
+        vec![
+            row(
+                EventKind::RequestAccepted,
+                &b58(BOB),
+                &(NEW_MS + 10).to_string(),
+                false
+            ),
+            row(
+                EventKind::ContactEstablished,
+                &b58(CAROL),
+                &(NEW_MS + 20).to_string(),
+                false
+            ),
+        ]
+    );
+}
+
+/// A contact's key rotation re-emits the relationship with a newer request
+/// on either side, and a stale incoming request may follow: none of it is
+/// news (review C2).
+#[test]
+fn rotated_requests_of_a_contact_are_not_news() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, CAROL, NEW_MS)));
+    // We accept Carol's request.
+    h.feed(contacts(established(ME, CAROL, NEW_MS + 10, NEW_MS)));
+    let before = h.rows();
+    assert_eq!(
+        before.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+        ["request_received", "contact_established"]
+    );
+    // They rotate: their newer request makes ours the older one.
+    h.feed(contacts(established(ME, CAROL, NEW_MS + 10, NEW_MS + 50)));
+    // We rotate: ours is newer again.
+    h.feed(contacts(established(ME, CAROL, NEW_MS + 90, NEW_MS + 50)));
+    // An incoming request of the established contact.
+    h.feed(contacts(incoming(ME, CAROL, NEW_MS + 50)));
+    assert_eq!(h.rows(), before);
+}
+
+/// §3.5 row alias, note, hidden, `ignored_senders`: `Contacts{identity}`,
+/// no journal entry.
+#[test]
+fn row_contact_edits_signal_without_journal() {
+    let h = Harness::new();
+    h.feed(contacts(established(ME, BOB, NEW_MS, NEW_MS + 10)));
+    h.changes();
+    let before = h.journal();
+
+    // Alias, note and hidden ride `established`.
+    let mut edit = established(ME, BOB, NEW_MS, NEW_MS + 10);
+    for contact in edit.established.values_mut() {
+        contact.alias = Some("Bobby".into());
+        contact.note = Some("from work".into());
+        contact.is_hidden = true;
+    }
+    h.feed(contacts(edit));
+    assert_eq!(h.changes(), contacts_of(ME));
+
+    let mut ignore = ContactChangeSet::default();
+    ignore.ignored.insert((id(ME), id(CAROL)));
+    h.feed(contacts(ignore));
+    assert_eq!(h.changes(), contacts_of(ME));
+    let mut unignore = ContactChangeSet::default();
+    unignore.unignored.insert((id(ME), id(CAROL)));
+    h.feed(contacts(unignore));
+    assert_eq!(h.changes(), contacts_of(ME));
+    assert_eq!(h.journal(), before);
+}
+
+/// §3.5 row `asset_locks`: `Registration{draft}`, the registration whose
+/// lock it is; no journal entry.
+#[test]
+fn row_asset_locks_signal_their_registration() {
+    let h = Harness::new();
+    let lock = outpoint(7, 1);
+    // DP1-02 writes these rows; a `.dwbackup` import stands in for it.
+    let text = |s: &str| SqlValue::Text(s.into());
+    let columns = [
+        "wallet_id",
+        "label",
+        "funding",
+        "asset_lock_outpoint",
+        "phase",
+        "created_at",
+        "updated_at",
+    ];
+    h.appdb
+        .import_wallet_rows(
+            &W.to_string(),
+            &[TableRows {
+                table: "dp_registration".into(),
+                columns: columns.iter().map(|c| c.to_string()).collect(),
+                rows: vec![vec![
+                    text(&W.to_string()),
+                    text("alice"),
+                    text("{}"),
+                    text(&lock.to_string()),
+                    text("funding_sent"),
+                    SqlValue::Integer(1),
+                    SqlValue::Integer(1),
+                ]],
+            }],
+        )
+        .unwrap();
+    let draft = h
+        .appdb
+        .registration_for_lock(&W.to_string(), &lock.to_string())
+        .unwrap()
+        .unwrap();
+    let mut locks = AssetLockChangeSet::default();
+    locks.removed.insert(lock);
+    // A lock no registration names (a top-up).
+    locks.removed.insert(outpoint(8, 0));
+    h.feed(PlatformWalletChangeSet {
+        asset_locks: Some(locks),
+        ..Default::default()
+    });
+    assert_eq!(
+        h.changes(),
+        BTreeSet::from([
+            PlatformChange::Registration {
+                draft: Some(draft.to_string())
+            },
+            PlatformChange::Registration { draft: None },
+        ])
+    );
+    assert!(h.journal().is_empty());
+}
+
+/// The rows of an `asset_locks` changeset, of any status (the persister
+/// may fold a `Built` into a later one), with their funding keys: what
+/// releases a funding call's coin fence (E0-04 §2a.6).
+#[test]
+fn asset_locks_report_their_tracked_rows() {
+    use platform_wallet::changeset::AssetLockEntry;
+    use platform_wallet::{AssetLockFundingType as T, AssetLockStatus as A};
+    let entry = |n: u8, status: A, identity_index: u32| AssetLockEntry {
+        out_point: outpoint(n, 0),
+        transaction: Transaction {
+            version: 3,
+            lock_time: 0,
+            input: Vec::new(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        },
+        account_index: 2,
+        funding_type: T::IdentityRegistration,
+        identity_index,
+        amount_duffs: 1_000,
+        status,
+        proof: None,
+    };
+    let mut locks = AssetLockChangeSet::default();
+    for e in [entry(1, A::Built, 4), entry(2, A::Broadcast, 5)] {
+        locks.asset_locks.insert(e.out_point, e);
+    }
+    locks.removed.insert(outpoint(3, 0));
+    let c = classify(&PlatformWalletChangeSet {
+        asset_locks: Some(locks),
+        ..Default::default()
+    })
+    .unwrap();
+    let key = |identity_index| crate::platform::lease::FundingKey {
+        funding_type: T::IdentityRegistration,
+        identity_index,
+        account: 2,
+    };
+    let mut tracked = c.tracked().to_vec();
+    tracked.sort_by_key(|(_, k)| k.identity_index);
+    assert_eq!(
+        tracked,
+        [(outpoint(1, 0).txid, key(4)), (outpoint(2, 0).txid, key(5))]
+    );
+}
+
+/// §3.4 Restore rule 3 through the real tap: a tracked registration lock
+/// (account 0) moves the `KeysPrepared` flow at its identity index to
+/// `FundingSent` with the outpoint, once, and tells the session (which
+/// schedules the backup); a top-up's or another account's lock moves none.
+#[test]
+fn a_tracked_registration_lock_reaches_its_flow_before_the_broadcast() {
+    use super::registration_flow::{LOCK_DUFFS, canonical};
+    use super::registration_rows::{Funding, Phase};
+    use platform_wallet::AssetLockFundingType as T;
+    use platform_wallet::changeset::AssetLockEntry;
+    use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
+
+    let h = Harness::new();
+    let row = |index: u32| dw_appdb::NewRegistration {
+        identity_index: Some(index),
+        identity: None,
+        label: format!("alice{index}"),
+        temp_label: None,
+        funding: Funding::CoreBalance {
+            lock_duffs: LOCK_DUFFS,
+        }
+        .encode(),
+        initial_profile: None,
+        phase: Phase::KeysPrepared.as_str().into(),
+    };
+    let w = W.to_string();
+    let three = h.appdb.insert_registration(&w, &row(3), 1).unwrap();
+    let four = h.appdb.insert_registration(&w, &row(4), 1).unwrap();
+    let funded = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&funded);
+    let _ = h.tap.on_funded.set(Box::new(move |id, draft| {
+        seen.lock().unwrap().push((id, draft))
+    }));
+    let _ = h.tap.registrations.set(Arc::default());
+    // The session's lease table, whose signed-lock records the tap gives a
+    // lock by (none here); without one, or with its journal unread, the
+    // tap gives none.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let leases = super::lease::LeaseTable::new(
+        DashNetwork::Regtest,
+        Arc::new(Recorder::default()),
+        rt.handle().clone(),
+        super::lease::LeaseConfig::default(),
+        0,
+    );
+    // Its dispatch journal is read and empty: PA-1 answers, with no step.
+    let dw_appdb::dispatch::JournalOpen::Ready(journal) =
+        dw_appdb::dispatch::DispatchJournal::open_in_memory(1).unwrap()
+    else {
+        panic!("a fresh journal is ready")
+    };
+    leases.load_journal(
+        Some(Arc::new(journal) as Arc<dyn super::lease::fence::JournalBackend>),
+        Vec::new(),
+        Vec::new(),
+    );
+    h.tap.watch_locks(&leases);
+    let entry = |op: OutPoint, funding_type: T, account_index: u32, identity_index: u32| {
+        let tx = Transaction {
+            version: 3,
+            lock_time: 0,
+            input: Vec::new(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        (
+            op,
+            AssetLockEntry {
+                out_point: op,
+                transaction: tx,
+                account_index,
+                funding_type,
+                identity_index,
+                amount_duffs: LOCK_DUFFS,
+                status: AssetLockStatus::Built,
+                proof: None,
+            },
+        )
+    };
+    let (reg, topup, other) = (outpoint(30, 0), outpoint(31, 0), outpoint(32, 0));
+    let changeset = || PlatformWalletChangeSet {
+        asset_locks: Some(AssetLockChangeSet {
+            asset_locks: BTreeMap::from([
+                entry(reg, T::IdentityRegistration, 0, 3),
+                entry(topup, T::IdentityTopUp, 0, 4),
+                entry(other, T::IdentityRegistration, 1, 4),
+            ]),
+            removed: BTreeSet::new(),
+        }),
+        ..Default::default()
+    };
+    h.feed(changeset());
+    let three_row = h.appdb.registration_row(&w, three).unwrap().unwrap();
+    assert_eq!(three_row.phase, Phase::FundingSent.as_str());
+    assert_eq!(
+        three_row.asset_lock_outpoint.as_deref(),
+        Some(canonical(reg).as_str())
+    );
+    let four_row = h.appdb.registration_row(&w, four).unwrap().unwrap();
+    assert_eq!(
+        (four_row.phase.as_str(), four_row.asset_lock_outpoint),
+        (Phase::KeysPrepared.as_str(), None)
+    );
+    // The library stores the row again at each status: the flow moved once.
+    h.feed(changeset());
+    assert_eq!(*funded.lock().unwrap(), [(W, three)]);
+}
+
+/// §3.5 row `dashpay_payments_overlay`: `Payments{identity}`; "Received …
+/// from @alice" for a received payment. Its age is the block time of its
+/// confirmed transaction, as the persister has it (DEC-114): a payment the
+/// library reconstructs after a restore's passes, from a transaction older
+/// than the wallet's first bring-up here, is stored read; an unconfirmed
+/// one, or one with no transaction on file, is news.
+#[test]
+fn row_payments_journal_received_payments() {
+    let h = Harness::restored();
+    let old = tx_record(1, Some(500));
+    let new = tx_record(2, Some(2_000));
+    let mempool = tx_record(3, None);
+    for record in [&old, &new, &mempool] {
+        h.times.confirm(record);
+    }
+    for txid in [old.txid, new.txid, mempool.txid] {
+        h.feed(payment(
+            ME,
+            &txid.to_string(),
+            BOB,
+            PaymentDirection::Received,
+        ));
+    }
+    h.feed(payment(ME, "bb22", CAROL, PaymentDirection::Sent));
+    assert_eq!(
+        h.changes(),
+        journaled(BTreeSet::from([PlatformChange::Payments {
+            identity: b58(ME)
+        }]))
+    );
+    let bob = b58(BOB);
+    let received =
+        |txid: Txid, read| row(EventKind::PaymentReceived, &bob, &txid.to_string(), read);
+    assert_eq!(
+        h.rows(),
+        vec![
+            received(old.txid, true),
+            received(new.txid, false),
+            received(mempool.txid, false),
+        ]
+    );
+}
+
+/// §3.5 row `account_registrations` (contact accounts):
+/// `Contacts{identity}`, no journal entry; other accounts are not DashPay.
+#[test]
+fn row_contact_accounts_signal_contacts() {
+    let h = Harness::new();
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[7; 32]).unwrap();
+    let xpub = ExtendedPubKey::from_priv(&master);
+    let account = |account_type| AccountRegistrationEntry {
+        account_type,
+        account_xpub: xpub,
+    };
+    h.feed(PlatformWalletChangeSet {
+        account_registrations: vec![
+            account(AccountType::DashpayReceivingFunds {
+                index: 0,
+                user_identity_id: [ME; 32],
+                friend_identity_id: [BOB; 32],
+            }),
+            account(AccountType::DashpayExternalAccount {
+                index: 0,
+                user_identity_id: [CAROL; 32],
+                friend_identity_id: [BOB; 32],
+            }),
+        ],
+        ..Default::default()
+    });
+    let mut expected = contacts_of(ME);
+    expected.extend(contacts_of(CAROL));
+    assert_eq!(h.changes(), expected);
+    assert!(h.journal().is_empty());
+
+    let standard = PlatformWalletChangeSet {
+        account_registrations: vec![account(AccountType::CoinJoin { index: 0 })],
+        ..Default::default()
+    };
+    assert!(classify(&standard).is_none());
+}
+
+/// §3.5 row `pending_contact_crypto_*` (DP2-01): queueing or dequeueing an
+/// account build or an auto-accept is `Contacts` for its owner, once per
+/// owner, with no journal entry; a `contactInfo` decrypt is neither.
+#[test]
+fn row_queued_contact_setup_signals_contacts() {
+    let h = Harness::new();
+    let op = |owner: u8, contact: u8, op: PendingContactCryptoOp| PendingContactCrypto {
+        owner_identity_id: id(owner),
+        contact_id: id(contact),
+        op,
+        enqueued_at_ms: 0,
+    };
+    h.feed(PlatformWalletChangeSet {
+        pending_contact_crypto_added: vec![
+            op(ME, BOB, PendingContactCryptoOp::RegisterReceiving),
+            op(ME, CAROL, PendingContactCryptoOp::AutoAccept),
+            op(CAROL, BOB, PendingContactCryptoOp::ContactInfoDecrypt),
+        ],
+        ..Default::default()
+    });
+    assert_eq!(h.changes(), contacts_of(ME));
+    let key = |owner: u8, kind| PendingContactCryptoKey {
+        owner_identity_id: id(owner),
+        contact_id: id(BOB),
+        kind,
+    };
+    h.feed(PlatformWalletChangeSet {
+        pending_contact_crypto_cleared: vec![key(CAROL, PendingContactCryptoKind::AutoAccept)],
+        ..Default::default()
+    });
+    assert_eq!(h.changes(), contacts_of(CAROL));
+    assert!(h.journal().is_empty());
+
+    let decrypt_only = PlatformWalletChangeSet {
+        pending_contact_crypto_added: vec![op(ME, BOB, PendingContactCryptoOp::ContactInfoDecrypt)],
+        pending_contact_crypto_cleared: vec![key(ME, PendingContactCryptoKind::ContactInfoDecrypt)],
+        ..Default::default()
+    };
+    assert!(classify(&decrypt_only).is_none());
+}
+
+fn name_state(document: u8, label: &str) -> DpnsNameStateEntry {
+    DpnsNameStateEntry {
+        document_id: id(document),
+        wallet_identity_id: id(ME),
+        label: label.into(),
+        normalized_label: convert_to_homograph_safe_chars(label),
+        normalized_parent_domain_name: "dash".into(),
+        price: Some(5),
+        status: DpnsNameSaleStatus::Owned,
+        created_at_ms: None,
+        updated_at_ms: None,
+        transferred_at_ms: None,
+        last_synced_at_ms: 1,
+    }
+}
+
+/// §3.5 row `dpns_name_states`: `Names`, no journal entry.
+#[test]
+fn row_dpns_name_states_signal_names() {
+    let h = Harness::new();
+    let mut states = DpnsNameStateChangeSet::default();
+    states.names.insert(id(9), name_state(9, "Alice"));
+    h.feed(PlatformWalletChangeSet {
+        dpns_name_states: Some(states),
+        ..Default::default()
+    });
+    assert_eq!(h.changes(), BTreeSet::from([PlatformChange::Names]));
+    assert!(h.journal().is_empty());
+}
+
+/// Journal writes are idempotent per (kind, contact, txid or request id),
+/// and a replay keeps the row's read state.
+#[test]
+fn replayed_changesets_journal_each_event_once() {
+    let h = Harness::new();
+    let everything = || {
+        let mut cs = contacts(incoming(ME, BOB, NEW_MS));
+        Merge::merge(
+            cs.contacts.as_mut().unwrap(),
+            established(ME, CAROL, NEW_MS, NEW_MS + 1),
+        );
+        cs.identities =
+            identities(vec![identity(ME, Some(0), &[("alice", Some(NEW_MS))])]).identities;
+        cs.dashpay_payments_overlay =
+            payment(ME, "aa11", BOB, PaymentDirection::Received).dashpay_payments_overlay;
+        cs
+    };
+    h.feed(everything());
+    let first = h.journal();
+    assert_eq!(first.len(), 4);
+    for _ in 0..3 {
+        h.feed(everything());
+    }
+    assert_eq!(h.journal(), first);
+}
+
+/// Catch-up (DEC-125): a recovery phase moves the wallet's boundary to now,
+/// never back. Events Platform dates before it are stored read, later ones
+/// and undated ones are news; another wallet is not affected, and signals
+/// are never silenced.
+#[test]
+fn a_recovery_phase_moves_the_boundary_forward_only() {
+    let h = Harness::new();
+    let other = WalletId([0xBB; 32]);
+    let later_ms = (crate::events::unix_now() + 3_600) * 1_000;
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    assert!(h.journal()[0].read_at.is_none(), "no boundary yet");
+
+    h.tap.advance_catch_up(W);
+    h.feed(contacts(incoming(ME, CAROL, NEW_MS)));
+    h.feed(identities(vec![identity(
+        ME,
+        Some(0),
+        &[("alice", Some(NEW_MS))],
+    )]));
+    h.times.name(ME, "dated", NEW_MS);
+    h.feed(identities(vec![identity(ME, Some(0), &[("dated", None)])]));
+    h.feed(payment(ME, "aa11", BOB, PaymentDirection::Received));
+    h.feed(contacts(incoming(ME, 7, later_ms)));
+    h.feed_to(other, contacts(incoming(ME, CAROL, NEW_MS)));
+    assert_eq!(
+        h.rows()[1..],
+        [
+            row(
+                EventKind::RequestReceived,
+                &b58(CAROL),
+                &NEW_MS.to_string(),
+                true
+            ),
+            // Undated: news (the declared residual).
+            row(
+                EventKind::UsernameRegistered,
+                "",
+                &format!("alice@{NEW_MS}"),
+                false
+            ),
+            row(EventKind::UsernameRegistered, "", "dated", true),
+            row(EventKind::PaymentReceived, &b58(BOB), "aa11", false),
+            row(
+                EventKind::RequestReceived,
+                &b58(7),
+                &later_ms.to_string(),
+                false
+            ),
+        ]
+    );
+    let other_rows = h.appdb.journal(&other.to_string()).unwrap();
+    assert!(other_rows[0].read_at.is_none());
+    let pending = h.hub.pump.take_platform();
+    assert!(pending.contains_key(&W) && pending.contains_key(&other));
+
+    // A boundary ahead of now (a clock stepped back) stays; so does any
+    // boundary under a first bring-up.
+    let scope = dw_appdb::local_scope(&W.to_string());
+    let ahead = (later_ms / 1_000 + 3_600).to_string();
+    h.appdb
+        .set_setting(&scope, CATCH_UP_BEFORE_KEY, Some(&ahead))
+        .unwrap();
+    h.tap.forget(&W);
+    h.tap.advance_catch_up(W);
+    h.tap.note_first_bring_up(W);
+    assert_eq!(
+        h.appdb.setting(&scope, CATCH_UP_BEFORE_KEY).unwrap(),
+        Some(ahead)
+    );
+    h.feed(contacts(incoming(ME, 8, later_ms)));
+    assert!(h.journal().last().unwrap().read_at.is_some());
+}
+
+/// Sol r3 R3-2's interleaving (DEC-135): the boundary is at 900; a phase
+/// start that captured 1000 is overtaken by one at 2000 and lands after it.
+/// The upsert keeps 2000 on disk and the cache takes what it returns; a
+/// read of 900 that fills the cache late cannot lower it either. A request
+/// Platform dates at 1500 s stays history.
+#[test]
+fn a_stale_phase_start_never_lowers_the_boundary() {
+    let h = Harness::new();
+    let scope = dw_appdb::local_scope(&W.to_string());
+    let stored = || h.appdb.setting(&scope, CATCH_UP_BEFORE_KEY).unwrap();
+    h.tap.move_boundary_to(W, 900, false);
+    h.tap.move_boundary_to(W, 2_000, false);
+    h.tap.move_boundary_to(W, 1_000, false);
+    assert_eq!(stored().as_deref(), Some("2000"));
+    assert_eq!(h.tap.catch_up_before(W), Some(2_000));
+    assert_eq!(h.tap.remember(W, 900), 2_000);
+    assert_eq!(h.tap.catch_up_before(W), Some(2_000));
+    // A cache that missed the later write learns it from the next upsert.
+    h.tap.forget(&W);
+    h.tap.remember(W, 900);
+    h.tap.move_boundary_to(W, 1_000, false);
+    assert_eq!(h.tap.catch_up_before(W), Some(2_000));
+    assert_eq!(stored().as_deref(), Some("2000"));
+
+    h.feed(contacts(incoming(ME, BOB, 1_500_000)));
+    assert!(h.journal()[0].read_at.is_some());
+}
+
+/// What happened before the wallet's first bring-up here stays history
+/// when it arrives after the recovery phases (a pass cut off by its
+/// budget, a lock or a kill; review C1), by authoritative time only
+/// (DEC-114): requests by `$createdAt`, relationships by their later
+/// request, names by their marketplace row. A name's `acquired_at` (a
+/// refresh stamps the fetch's wall clock) is never its age.
+#[test]
+fn history_arriving_after_the_restore_passes_is_stored_read() {
+    let h = Harness::restored();
+    h.feed(contacts(incoming(ME, BOB, OLD_MS)));
+    h.feed(contacts(established(ME, CAROL, OLD_MS, OLD_MS + 1)));
+    h.times.name(ME, "old", OLD_MS);
+    h.times.name(ME, "new", NEW_MS);
+    h.times.name(ME, "refreshed", OLD_MS);
+    h.feed(identities(vec![identity(
+        ME,
+        Some(0),
+        &[
+            ("old", Some(OLD_MS)),
+            ("new", Some(NEW_MS)),
+            // Fetched now, created on Platform long ago.
+            ("refreshed", Some(NEW_MS + 5)),
+            // An old stamp, but no row: no authoritative time.
+            ("unrowed", Some(OLD_MS)),
+        ],
+    )]));
+    // Accepted after the restore, although the first request is older.
+    h.feed(contacts(established(ME, 9, OLD_MS, NEW_MS)));
+    h.feed(contacts(incoming(ME, 7, NEW_MS)));
+    let read: Vec<(String, bool)> = h.rows().into_iter().map(|r| (r.0, r.3)).collect();
+    assert_eq!(
+        read,
+        [
+            ("request_received", true),
+            ("request_accepted", true),
+            ("username_registered", true),
+            ("username_registered", false),
+            ("username_registered", true),
+            ("username_registered", false),
+            ("request_accepted", false),
+            ("request_received", false),
+        ]
+        .map(|(k, r)| (k.to_string(), r))
+    );
+}
+
+/// The first bring-up's time is kept, persisted, and read back by a later
+/// session's tap.
+#[test]
+fn the_first_bring_up_time_is_kept() {
+    let h = Harness::restored();
+    h.tap.note_first_bring_up(W);
+    let scope = dw_appdb::local_scope(&W.to_string());
+    let stored = || h.appdb.setting(&scope, CATCH_UP_BEFORE_KEY).unwrap();
+    assert_eq!(stored(), Some(BEFORE.to_string()));
+    let other = WalletId([0xBB; 32]);
+    h.tap.note_first_bring_up(other);
+    let scope = dw_appdb::local_scope(&other.to_string());
+    let first = h.appdb.setting(&scope, CATCH_UP_BEFORE_KEY).unwrap();
+    assert!(first.is_some());
+    // A later session over the same database uses it.
+    let later = ChangesetTap::new(Arc::clone(&h.hub), Arc::clone(&h.appdb));
+    if let Some(c) = classify(&contacts(incoming(ME, BOB, OLD_MS))) {
+        later.record(W, later.epoch(W), c, &h.times);
+    }
+    assert!(h.journal()[0].read_at.is_some());
+}
+
+/// A removed wallet imported again is a new first bring-up; a stored time
+/// that cannot be read is never overwritten.
+#[test]
+fn the_first_bring_up_restarts_after_removal_and_survives_bad_reads() {
+    let h = Harness::restored();
+    h.tap.note_first_bring_up(W);
+    let scope = dw_appdb::local_scope(&W.to_string());
+    h.appdb.delete_wallet(&W.to_string()).unwrap();
+    h.tap.forget(&W);
+    // Imported again: the import readmits the wallet first (DEC-210).
+    h.appdb.readmit_wallet(&W.to_string()).unwrap();
+    h.tap.note_first_bring_up(W);
+    let stored = h
+        .appdb
+        .setting(&scope, CATCH_UP_BEFORE_KEY)
+        .unwrap()
+        .unwrap();
+    assert!(stored.parse::<u64>().unwrap() > BEFORE, "{stored}");
+
+    let other = WalletId([0xBB; 32]);
+    let scope = dw_appdb::local_scope(&other.to_string());
+    h.appdb
+        .set_setting(&scope, CATCH_UP_BEFORE_KEY, Some("garbled"))
+        .unwrap();
+    h.tap.note_first_bring_up(other);
+    // No boundary is held: a bring-up keeps its discovery marker (DEC-143).
+    assert!(!h.tap.advance_catch_up(other));
+    assert_eq!(
+        h.appdb
+            .setting(&scope, CATCH_UP_BEFORE_KEY)
+            .unwrap()
+            .as_deref(),
+        Some("garbled")
+    );
+}
+
+pub(super) const ABANDON_12: &[u8] =
+    b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+/// A day: no grant a test issues expires before the test redeems it,
+/// however slow a loaded machine runs the test.
+const TEST_GRANT_TTL_SECS: u64 = 24 * 60 * 60;
+
+pub(super) fn engine(dir: &std::path::Path, sink: Arc<dyn EventSink>) -> Engine {
+    Engine::new(
+        EngineConfig {
+            data_root: dir.join("data"),
+            worker_threads: Some(2),
+            vault: dw_vault::VaultConfig {
+                kdf: dw_vault::KdfPolicy::Fixed(dw_vault::KdfParams::TEST),
+                os_store: Arc::new(dw_vault::MemoryOsStore::new()),
+                grant_ttl_secs: TEST_GRANT_TTL_SECS,
+                ..dw_vault::VaultConfig::default()
+            },
+        },
+        sink,
+    )
+    .unwrap()
+}
+
+/// An offline session (DAPI and peers unreachable) with an imported wallet.
+pub(super) fn session(engine: &Engine, no_platform: bool) -> (Arc<NetworkSession>, WalletId) {
+    let s = engine
+        .block_on(engine.open_network(
+            DashNetwork::Regtest,
+            SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                no_platform,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let wallet = engine
+        .block_on(s.import_wallet(
+            Zeroizing::new(ABANDON_12.to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    (s, wallet)
+}
+
+/// The wiring: a changeset the library stores through the session's
+/// `WalletStore` reaches the journal and an `EngineEvent::Platform`; one the
+/// SQLite persister refuses leaves no trace.
+#[test]
+fn the_session_store_taps_what_the_persister_accepts() {
+    let dir = dw_testutil::private_tempdir();
+    let sink = Arc::new(Recorder::default());
+    let engine = engine(dir.path(), Arc::clone(&sink) as Arc<dyn EventSink>);
+    let (s, wallet) = session(&engine, true);
+    let store = s.live().unwrap().store;
+    let names = || {
+        let mut states = DpnsNameStateChangeSet::default();
+        states.names.insert(id(9), name_state(9, "Alice"));
+        // Payments need their identity's row (a foreign key).
+        PlatformWalletChangeSet {
+            dpns_name_states: Some(states),
+            dashpay_payments_overlay: payment(ME, "aa11", BOB, PaymentDirection::Received)
+                .dashpay_payments_overlay,
+            ..identities(vec![identity(ME, Some(0), &[])])
+        }
+    };
+
+    // Not a registered wallet: the persister refuses it.
+    let stranger = WalletId([0x5A; 32]);
+    assert!(store.store(stranger.0, names()).is_err());
+    *s.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+    store.store(wallet.0, names()).unwrap();
+    // One mark carries the write's signals and the count it moved, so no
+    // flush can send the count's `Events` ahead of the rows that moved it
+    // (review DP2-05 r3 finding 2).
+    let marks = s.hub.pump.platform_marks.lock().unwrap().take().unwrap();
+    let counted: Vec<_> = (marks.iter())
+        .filter(|(w, changes)| *w == wallet && changes.contains(&events_of(ME)))
+        .collect();
+    assert_eq!(
+        counted,
+        [&(
+            wallet,
+            BTreeSet::from([
+                PlatformChange::Identities,
+                PlatformChange::Payments { identity: b58(ME) },
+                PlatformChange::Names,
+                events_of(ME),
+            ])
+        )],
+        "{marks:?}"
+    );
+
+    let journal = |w: WalletId| {
+        engine
+            .block_on(s.appdb_op(move |db| db.journal(&w.to_string())))
+            .unwrap()
+    };
+    assert!(journal(stranger).is_empty());
+    let rows = journal(wallet);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].kind, "payment_received");
+    assert!(rows[0].read_at.is_none());
+
+    let platform = |events: &[EngineEvent]| -> Vec<(WalletId, PlatformChange)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                EngineEvent::Platform {
+                    wallet_id, change, ..
+                } => Some((*wallet_id, change.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let seen = loop {
+        let seen = platform(&sink.0.lock().unwrap());
+        if seen.len() >= 4 || Instant::now() > deadline {
+            break seen;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        seen,
+        vec![
+            (wallet, PlatformChange::Identities),
+            (wallet, PlatformChange::Payments { identity: b58(ME) }),
+            (wallet, PlatformChange::Names),
+            (wallet, events_of(ME)),
+        ]
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The bring-up records the wallet's first bring-up here (bringup.rs
+/// notes it right after admission, before the first pass), and the setting
+/// is local: a `.dwbackup` does not carry it.
+#[test]
+fn the_bring_up_records_the_first_bring_up() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine(dir.path(), Arc::new(Recorder::default()));
+    let (s, wallet) = session(&engine, false);
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let stored = || {
+        let scope = scope.clone();
+        engine
+            .block_on(s.appdb_op(move |db| db.setting(&scope, CATCH_UP_BEFORE_KEY)))
+            .unwrap()
+    };
+    assert_eq!(stored(), None);
+    engine.block_on(s.start_spv()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while stored().is_none() {
+        assert!(Instant::now() < deadline, "no first bring-up recorded");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Not exported: a restore elsewhere starts its own.
+    let exported = engine
+        .block_on(s.appdb_op(move |db| db.export_wallet_rows(&wallet.to_string())))
+        .unwrap();
+    assert!(!format!("{exported:?}").contains(CATCH_UP_BEFORE_KEY));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A vault grant for one Platform write of `wallet` (unencrypted vault).
+pub(super) fn platform_grant(s: &NetworkSession, wallet: WalletId, max_credits: u64) -> String {
+    let purpose = dw_vault::GrantPurpose::PlatformOp {
+        max_duffs: 0,
+        max_credits,
+    };
+    let granted = s
+        .vault
+        .authorize(purpose, Some(&wallet.0), dw_vault::Credential::None);
+    granted.unwrap().id
+}
+
+/// `grant` is still there to redeem: nothing consumed it.
+pub(super) fn grant_unused(s: &NetworkSession, wallet: WalletId, grant: &str) -> bool {
+    (s.vault)
+        .check_grant(grant, dw_vault::GrantKind::PlatformOp, Some(&wallet.0))
+        .is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// DP2-05: news and the unread counts
+// ---------------------------------------------------------------------------
+
+type Shown = (String, EventKind, Option<String>, Option<String>);
+
+impl Harness {
+    /// The news marked since the last call, oldest first: (identity, kind,
+    /// contact, reference). Each event's id is its journal row's.
+    fn news(&self) -> Vec<Shown> {
+        let mut pending = self.hub.pump.take_news();
+        let mine = pending.remove(&W).unwrap_or_default();
+        assert!(pending.is_empty(), "another wallet has news: {pending:?}");
+        let ids: BTreeSet<i64> = self.journal().iter().map(|r| r.id).collect();
+        let mut out = Vec::new();
+        for (identity, news) in mine {
+            assert_eq!(news.more, 0);
+            for e in news.events {
+                assert!(ids.contains(&(e.id as i64)), "{e:?} names no row");
+                assert_eq!(e.read_at, None);
+                out.push((identity.clone(), e.kind, e.contact, e.reference));
+            }
+        }
+        out
+    }
+
+    fn unread(&self) -> Option<u32> {
+        self.tap.unread(W, &b58(ME))
+    }
+}
+
+fn shown(kind: EventKind, contact: Option<u8>, reference: &str) -> Shown {
+    (b58(ME), kind, contact.map(b58), Some(reference.to_string()))
+}
+
+fn events_of(n: u8) -> PlatformChange {
+    PlatformChange::Events { identity: b58(n) }
+}
+
+/// "One event per request received or accepted": a row is news once, when
+/// the write that inserts it runs, and only if it is unread and of a kind
+/// that notifies. Replays, rotations, our own accept and a payment are not.
+#[test]
+fn news_is_each_unread_row_a_write_added_once() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    assert_eq!(h.changes(), journaled(contacts_of(ME)));
+    let received = shown(EventKind::RequestReceived, Some(BOB), &NEW_MS.to_string());
+    assert_eq!(h.news(), std::slice::from_ref(&received));
+    // The same changeset again, and a rotation: no row, no news, no feed
+    // signal.
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    h.feed(contacts(incoming(ME, BOB, NEW_MS + 1)));
+    assert_eq!(h.changes(), contacts_of(ME));
+    assert!(h.news().is_empty());
+
+    // They accepted ours (ours first): news. We accepted Carol's: a feed
+    // row, unread, but not news. A rotation of either: nothing.
+    h.feed(contacts(established(ME, BOB, NEW_MS - 5, NEW_MS)));
+    h.feed(contacts(established(ME, CAROL, NEW_MS + 30, NEW_MS + 20)));
+    h.feed(contacts(established(ME, BOB, NEW_MS + 40, NEW_MS + 50)));
+    assert_eq!(
+        h.news(),
+        [shown(
+            EventKind::RequestAccepted,
+            Some(BOB),
+            &NEW_MS.to_string()
+        )]
+    );
+    // A payment is in the feed; `NewTransactions` announces it.
+    h.feed(payment(ME, "aa11", BOB, PaymentDirection::Received));
+    assert!(h.news().is_empty());
+    assert!(h.changes().contains(&events_of(ME)));
+    assert_eq!(h.unread(), Some(4));
+
+    // A new tap over the same app database (a restart) replays the whole
+    // snapshot: nothing is news again.
+    let again = ChangesetTap::new(Arc::clone(&h.hub), Arc::clone(&h.appdb));
+    for cs in [
+        contacts(incoming(ME, BOB, NEW_MS)),
+        contacts(established(ME, BOB, NEW_MS - 5, NEW_MS)),
+        contacts(established(ME, CAROL, NEW_MS + 30, NEW_MS + 20)),
+        payment(ME, "aa11", BOB, PaymentDirection::Received),
+    ] {
+        again.record(W, again.epoch(W), classify(&cs).unwrap(), &h.times);
+    }
+    assert!(h.news().is_empty());
+    assert_eq!(h.journal().len(), 4);
+}
+
+/// No storm after a restore: a wallet whose history (40 requests, a
+/// contact, a confirmed payment) predates its catch-up boundary journals it
+/// all read, makes no news and counts nothing unread; the first request
+/// after the boundary is one news event.
+#[test]
+fn a_restore_with_many_historic_requests_makes_no_news() {
+    let h = Harness::restored();
+    for n in 10..50u8 {
+        h.feed(contacts(incoming(ME, n, OLD_MS + u64::from(n))));
+    }
+    h.feed(contacts(established(ME, CAROL, OLD_MS, OLD_MS + 1)));
+    let paid = tx_record(1, Some((OLD_MS / 1000) as u32));
+    h.times.confirm(&paid);
+    h.feed(payment(
+        ME,
+        &paid.txid.to_string(),
+        CAROL,
+        PaymentDirection::Received,
+    ));
+    assert!(h.news().is_empty());
+    let rows = h.journal();
+    assert_eq!(rows.len(), 42);
+    assert!(rows.iter().all(|r| r.read_at.is_some()), "{rows:?}");
+    assert_eq!(h.tap.refresh_unread(W, 0).unwrap(), BTreeSet::new());
+    assert_eq!(h.unread(), Some(0));
+
+    h.feed(contacts(incoming(ME, 60, NEW_MS)));
+    assert_eq!(
+        h.news(),
+        [shown(
+            EventKind::RequestReceived,
+            Some(60),
+            &NEW_MS.to_string()
+        )]
+    );
+    assert_eq!(h.unread(), Some(1));
+}
+
+/// Name events: a watched contest's name is history (its win is the
+/// watch's news); a name we registered counts unread but is no news (our
+/// own act).
+#[test]
+fn a_watched_name_is_history_a_registered_name_is_not_news() {
+    let h = Harness::new();
+    (h.appdb)
+        .watch_contest(&W.to_string(), &b58(ME), "won", 77)
+        .unwrap();
+    h.feed(identities(vec![identity(
+        ME,
+        Some(0),
+        &[("alice", Some(NEW_MS)), ("won", Some(NEW_MS))],
+    )]));
+    assert!(h.news().is_empty());
+    assert_eq!(h.unread(), Some(1));
+}
+
+/// A hidden contact's events are news like any other (DASHPAY §3.5: hiding
+/// journals nothing; iOS filters neither its bell nor its notifications).
+#[test]
+fn a_hidden_contacts_events_are_news() {
+    let h = Harness::new();
+    let mut cs = established(ME, BOB, NEW_MS, NEW_MS + 10);
+    for contact in cs.established.values_mut() {
+        contact.is_hidden = true;
+    }
+    h.feed(contacts(cs));
+    assert_eq!(
+        h.news(),
+        [shown(
+            EventKind::RequestAccepted,
+            Some(BOB),
+            &(NEW_MS + 10).to_string()
+        )]
+    );
+    assert_eq!(h.unread(), Some(1));
+}
+
+/// The counts follow every write and `mark_read`, which signals the feed
+/// only when a row changed; one contact's rows can be marked alone.
+#[test]
+fn unread_counts_follow_writes_and_mark_read() {
+    let h = Harness::new();
+    assert_eq!(h.unread(), None, "no count before the first");
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    h.feed(contacts(incoming(ME, CAROL, NEW_MS + 1)));
+    assert_eq!(h.unread(), Some(2));
+    h.changes();
+
+    assert_eq!(
+        h.tap
+            .mark_read(W, &b58(ME), u64::MAX, Some(&b58(BOB)))
+            .unwrap(),
+        1
+    );
+    assert_eq!(h.unread(), Some(1));
+    assert_eq!(h.changes(), BTreeSet::from([events_of(ME)]));
+    assert_eq!(h.tap.mark_read(W, &b58(ME), u64::MAX, None).unwrap(), 1);
+    assert_eq!(h.unread(), Some(0));
+    assert_eq!(h.tap.mark_read(W, &b58(ME), u64::MAX, None).unwrap(), 0);
+    assert_eq!(h.changes(), BTreeSet::from([events_of(ME)]));
+    assert!(h.journal().iter().all(|r| r.read_at.is_some()));
+}
+
+/// A removed wallet's news not delivered yet and its counts go with it,
+/// and a write still in flight after the removal leaves no row and no news.
+#[test]
+fn a_removed_wallets_news_and_counts_are_dropped() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    assert_eq!(h.unread(), Some(1));
+    h.appdb.delete_wallet(&W.to_string()).unwrap();
+    h.tap.forget(&W);
+    assert!(h.news().is_empty());
+    assert_eq!(h.unread(), None);
+    h.feed(contacts(incoming(ME, CAROL, NEW_MS)));
+    assert!(h.news().is_empty());
+    assert!(h.journal().is_empty());
+}
+
+/// A queued count held while `between` runs. The count is released
+/// however `between` ends, so a failed assert leaves no worker waiting.
+fn a_held_count(h: &Harness, between: impl FnOnce()) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *h.tap.pause_count.lock().unwrap() = Some(Arc::clone(&pause));
+    let release = ReleaseOnDrop(Arc::clone(&pause));
+    h.tap.load_unread(W, h.tap.epoch(W), rt.handle());
+    assert_eq!(h.unread(), Some(0), "the stand-in");
+    let held = Duration::from_secs(20);
+    wait_for("the held count", held, || pause.reached.load(SeqCst));
+    between();
+    drop(release);
+    wait_for("the count's end", held, || pause.done.load(SeqCst));
+    rt.shutdown_timeout(Duration::from_secs(5));
+}
+
+/// Sol r1 finding 4: a first count queued before the wallet's removal and
+/// run after its `forget` puts nothing back, though the rows it counts are
+/// still there.
+#[test]
+fn a_count_queued_across_a_removal_puts_nothing_back() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    h.tap.forget(&W);
+    a_held_count(&h, || h.tap.forget(&W));
+    assert_eq!(h.unread(), None);
+}
+
+/// ... and when it fails, it leaves the count of the wallet as it is now
+/// alone; at its own epoch it takes its stand-in out, for a retry.
+#[test]
+fn a_failed_count_clears_only_its_own_stand_in() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    h.tap.forget(&W);
+    let fail = || {
+        h.tap
+            .fail_count
+            .store(true, std::sync::atomic::Ordering::SeqCst)
+    };
+    a_held_count(&h, || {
+        h.tap.forget(&W);
+        assert!(h.tap.unread_moved(W), "a later generation's count");
+        fail();
+    });
+    assert_eq!(h.unread(), Some(1));
+
+    h.tap.forget(&W);
+    a_held_count(&h, fail);
+    assert_eq!(h.unread(), None, "retried by the next call");
+}
+
+/// Sol r2 new 1: a first count that fails after a journal write counted
+/// the wallet at the same epoch leaves that count alone: only its own
+/// stand-in goes.
+#[test]
+fn a_failed_first_count_keeps_a_count_that_landed_meanwhile() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    h.tap.forget(&W);
+    a_held_count(&h, || {
+        assert!(h.tap.unread_moved(W), "a journal write's count");
+        assert_eq!(h.unread(), Some(1));
+        h.tap
+            .fail_count
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    assert_eq!(h.unread(), Some(1), "the failed first count wiped it");
+}
+
+/// A write begun before the wallet's removal that reaches app.sqlite after
+/// the removal's `forget` writes no row, makes no news and leaves no
+/// count, though no tombstone stops it (a readmission would have cleared
+/// one).
+#[test]
+fn a_write_across_a_forget_leaves_no_row_news_or_count() {
+    let h = Harness::new();
+    h.feed(contacts(incoming(ME, BOB, NEW_MS)));
+    assert_eq!(h.unread(), Some(1));
+    h.news();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *h.tap.pause_journal.lock().unwrap() = Some(Arc::clone(&pause));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            let _rt = rt.enter();
+            h.feed(contacts(incoming(ME, CAROL, NEW_MS)));
+        });
+        // Before the scope joins the writer, however this ends.
+        let release = ReleaseOnDrop(Arc::clone(&pause));
+        wait_for("the held write", Duration::from_secs(20), || {
+            pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        h.tap.forget(&W);
+        drop(release);
+        writer.join().unwrap();
+    });
+    assert_eq!(h.journal().len(), 1, "the late write's row landed");
+    assert!(h.news().is_empty());
+    assert_eq!(h.unread(), None);
+}

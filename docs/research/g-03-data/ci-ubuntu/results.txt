@@ -1,0 +1,23 @@
+U5 FAIL cold start to first paint (demo Overview): median 1.529 s, max 3.198 s (<= 1.5 s) (10 runs; CPU median 1.542 s; load 2.09 3.71 3.42)
+U5 INFO spawn to demo-first-paint (s; CPU s): {'n': 10, 'min': 0.342, 'median': 0.346, 'p95': 1.352, 'max': 1.352}; {'n': 10, 'min': 0.354, 'median': 0.359, 'p95': 1.068, 'max': 1.068}
+U5 INFO spawn to live-lock-paint (s; CPU s): {'n': 10, 'min': 3.94, 'median': 3.95, 'p95': 4.277, 'max': 4.277}; {'n': 10, 'min': 3.658, 'median': 3.681, 'p95': 4.073, 'max': 4.073}
+U5 INFO unlock to Overview (KDF + first page): {'n': 10, 'min': 1.452, 'median': 1.457, 'p95': 1.531, 'max': 1.531}
+U5 FAIL history_page(200) + render p95 21597.681 ms (<= 20 ms) (FFI alone p95 150.735 ms, limit 1 p95 150.549 ms; load 0.78 1.89 2.70)
+U5 PASS idle PSS without the engine (demo Overview) max 265.6 MiB (<= 400 MiB) ([{"Rss": 287.3, "Pss": 260.0, "Pss_Anon": 161.8, "Pss_File": 94.7}, {"Rss": 285.6, "Pss": 258.5, "Pss_Anon": 160.5, "Pss_File": 94.6}, {"Rss": 292.9, "Pss": 265.6, "Pss_Anon": 167.3, "Pss_File": 94.8}])
+U5 INFO idle PSS with the engine, 40k wallet, max 882.2 MiB: [{"overview": {"Rss": 564.4, "Pss": 536.6, "Pss_Anon": 406.4, "Pss_File": 126.6}, "transactions": {"Rss": 910.0, "Pss": 882.2, "Pss_Anon": 752.1, "Pss_File": 126.6}, "idleCpuPercent": 0.4}, {"overview": {"Rss": 536.2, "Pss": 508.4, "Pss_Anon": 378.2, "Pss_File": 126.6}, "transactions": {"Rss": 874.2, "Pss": 846.3, "Pss_Anon": 716.1, "Pss_File": 126.7}, "idleCpuPercent": 0.3}, {"overview": {"Rss": 571.7, "Pss": 543.9, "Pss_Anon": 413.7, "Pss_File": 126.7}, "transactions": {"Rss": 909.8, "Pss": 882.0, "Pss_Anon": 751.8, "Pss_File": 126.7}, "idleCpuPercent": 0.3}]
+U1 PASS unlock through AT-SPI (Passphrase field, Unlock button)
+U1 PASS Overview shows dwcli's balance (20601436392896 duffs) (['206\u2009014.36392896', '206\u2009014.36392896', '206\u2009014.36392896'])
+U1 PASS first 200 rows match dwcli history (200 app rows, 200 dwcli) (0 mismatches; first [])
+U3 PASS light: the four screens captured (['detail', 'overview', 'transactions', 'unlock'])
+U3 PASS light: the bundled Inter is the font in use (['/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Bold.ttf', '/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Medium.ttf', '/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Regular.ttf', '/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-SemiBold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'])
+U3 PASS dark: the four screens captured (['detail', 'overview', 'transactions', 'unlock'])
+U3 PASS dark: the bundled Inter is the font in use (['/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Bold.ttf', '/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Medium.ttf', '/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-Regular.ttf', '/home/runner/work/_temp/gate-out/linux/install/dash-wallet/DashWalletDesktop_DashUICross.resources/Fonts/Inter-SemiBold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'])
+U4 PASS AT-SPI walk light-unlock: 7 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk light-overview: 32 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk light-transactions: 133 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk light-detail: 139 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk dark-unlock: 7 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk dark-overview: 32 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk dark-transactions: 133 interactive, 0 unnamed ([])
+U4 PASS AT-SPI walk dark-detail: 139 interactive, 0 unnamed ([])
+U4 FAIL keyboard: unlock (Tab to Unlock + Space)

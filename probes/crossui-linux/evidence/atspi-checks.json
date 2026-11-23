@@ -1,0 +1,146 @@
+[
+  {
+    "kind": "hard",
+    "name": "probe registered on the AT-SPI bus",
+    "ok": true,
+    "detail": "pid 68"
+  },
+  {
+    "kind": "info",
+    "name": "time until the app appeared on the bus",
+    "ok": true,
+    "detail": "1.6 s, app name 'CrossUILinuxProbe'"
+  },
+  {
+    "kind": "hard",
+    "name": "window exposed as role=frame named 'Dash Wallet Probe'",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "kind": "hard",
+    "name": "sidebar list exposes 4 list items Overview/Send/Receive/Transactions",
+    "ok": true,
+    "detail": "4 items"
+  },
+  {
+    "kind": "soft",
+    "name": "sidebar list items carry their own accessible name",
+    "ok": false,
+    "detail": "item names = ['', '', '', '']"
+  },
+  {
+    "kind": "hard",
+    "name": "toggle (switch style) exposed",
+    "ok": true,
+    "detail": "check box \"\" actions=['toggle']"
+  },
+  {
+    "kind": "soft",
+    "name": "switch named 'Hide balance' (label associated with the control)",
+    "ok": false,
+    "detail": ""
+  },
+  {
+    "kind": "hard",
+    "name": "toggle the switch through AT-SPI Action and see the balance hidden",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "kind": "hard",
+    "name": "select sidebar 'Send' through the AT-SPI Selection interface",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "kind": "hard",
+    "name": "button exposed as role=push button named 'Send'",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "kind": "hard",
+    "name": "text field exposed as an editable entry",
+    "ok": true,
+    "detail": "text \"\" desc=\"\""
+  },
+  {
+    "kind": "soft",
+    "name": "text field has an accessible name (a label, e.g. 'Pay to')",
+    "ok": false,
+    "detail": ""
+  },
+  {
+    "kind": "soft",
+    "name": "text field exposes its placeholder 'Dash address' (attribute)",
+    "ok": true,
+    "detail": "attributes = [['placeholder-text:Dash address', 'toolkit:GTK']]"
+  },
+  {
+    "kind": "hard",
+    "name": "checkbox-style toggle exposed as role=check box",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "kind": "soft",
+    "name": "checkbox named 'Use only mixed funds'",
+    "ok": false,
+    "detail": ""
+  },
+  {
+    "kind": "soft",
+    "name": "checkbox exposes a toggle action",
+    "ok": false,
+    "detail": "actions = [[]]"
+  },
+  {
+    "kind": "hard",
+    "name": "type an address through AT-SPI EditableText",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "kind": "hard",
+    "name": "read the typed address back through AT-SPI Text",
+    "ok": true,
+    "detail": "text = 'XpESxaUmonkq8RaLLp46Brx2K39ggQe226'"
+  },
+  {
+    "kind": "hard",
+    "name": "press Send through the AT-SPI Action interface",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "kind": "hard",
+    "name": "view model received the typed address and updated the status label",
+    "ok": true,
+    "detail": "Address format OK. Sending is not implemented in this probe."
+  },
+  {
+    "kind": "hard",
+    "name": "select sidebar 'Transactions' through the AT-SPI Selection interface",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "kind": "hard",
+    "name": "transaction list exposes >= 50 list items with their text",
+    "ok": true,
+    "detail": "50 rows"
+  },
+  {
+    "kind": "soft",
+    "name": "transaction list items carry their own accessible name",
+    "ok": false,
+    "detail": "first row name = '', first row label = ['Received +0.12345678 DASH, 0 confirmations, sample tx 1']"
+  },
+  {
+    "kind": "hard",
+    "name": "select transaction row 5 through AT-SPI Selection",
+    "ok": true,
+    "detail": ""
+  }
+]

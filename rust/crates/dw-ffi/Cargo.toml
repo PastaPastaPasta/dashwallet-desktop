@@ -1,0 +1,42 @@
+[package]
+name = "dw-ffi"
+description = "UniFFI facade over dw-engine; produces libdashwallet_core for the Swift package"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "dashwallet_core"
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[dependencies]
+dashcore = { workspace = true }
+# M3 constants and types (docs/contracts/m3-engine.md).
+dw-coinjoin = { workspace = true }
+dw-console = { workspace = true }
+dw-desktop = { workspace = true }
+dw-engine = { workspace = true }
+dw-message = { workspace = true }
+dw-psbt = { workspace = true }
+dw-units = { workspace = true }
+dw-uri = { workspace = true }
+dw-vault = { workspace = true }
+hex = { workspace = true }
+uniffi = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+# Static OpenSSL for reqwest's native-tls on Linux, so the app needs no
+# runtime libssl (DESIGN-opus §1.9; upstream U4 moves Linux to rustls).
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
+[dev-dependencies]
+# Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
+dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
+tempfile = { workspace = true }
+# private_tempdir(): engine data roots that pass the storage permission check under any umask.
+dw-testutil = { workspace = true }
+tokio = { workspace = true }

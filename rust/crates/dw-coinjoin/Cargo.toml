@@ -1,0 +1,26 @@
+[package]
+name = "dw-coinjoin"
+description = "CoinJoin mixing client for dashwallet-desktop: denominations, sessions, rounds, progress (QT-041..051, IOS-057/058)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Owner: R1 (docs/contracts/m3-engine.md §0).
+
+[dependencies]
+# `bls`: operator signatures on dsq/dstx (dash-pkc, already in the graph
+# through platform-wallet's `bls` feature).
+dashcore = { workspace = true, features = ["bls"] }
+dw-p2p = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+rand = "0.8"
+
+[dev-dependencies]
+# Only the test operator key (tests/support/operator_key.rs) signs; the
+# library verifies through dashcore and cannot name dash_pkc (MG-01 D21).
+dash-pkc = { workspace = true, features = ["bls"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }

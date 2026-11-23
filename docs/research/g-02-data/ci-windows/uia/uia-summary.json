@@ -1,0 +1,219 @@
+﻿{
+    "summary":  {
+                    "window":  "Dash Wallet — Testnet",
+                    "overview":  {
+                                     "nodes":  269,
+                                     "interactive":  22,
+                                     "unnamed":  0,
+                                     "hiddenSkipped":  45,
+                                     "unnamedDetail":  [
+
+                                                       ],
+                                     "interactiveNames":  [
+                                                              "Button: 30.39 tDASH",
+                                                              "Button: Alice 5:46 AM -0.50000226 tDASH",
+                                                              "Button: Back up",
+                                                              "Button: Coffee refund 1:10 AM InstantSend +1.25 tDASH",
+                                                              "Button: Filter",
+                                                              "Button: Hide balance",
+                                                              "Button: Lock wallet",
+                                                              "Button: Overview",
+                                                              "Button: Receive",
+                                                              "Button: Received 1:40 AM Pending +0.20 tDASH",
+                                                              "Button: Scan QR",
+                                                              "Button: Send",
+                                                              "Button: Transactions",
+                                                              "ListItem: Alice5:46 AM-0.50000226tDASH",
+                                                              "ListItem: Coffee refund1:10 AMInstantSend+1.25tDASH",
+                                                              "ListItem: Overview",
+                                                              "ListItem: Receive",
+                                                              "ListItem: Received1:40 AMPending+0.20tDASH",
+                                                              "ListItem: Send",
+                                                              "ListItem: Transactions"
+                                                          ]
+                                 },
+                    "transactions":  {
+                                         "nodes":  674,
+                                         "interactive":  28,
+                                         "unnamed":  0,
+                                         "hiddenSkipped":  118,
+                                         "unnamedDetail":  [
+
+                                                           ],
+                                         "interactiveNames":  [
+                                                                  "Button: Alice 5:46 AM -0.50000226 tDASH",
+                                                                  "Button: All",
+                                                                  "Button: Coffee refund 1:10 AM InstantSend +1.25 tDASH",
+                                                                  "Button: Exchange withdrawal 1:44 AM +0.32237277 tDASH",
+                                                                  "Button: Hide balance",
+                                                                  "Button: Lock wallet",
+                                                                  "Button: Masternode reward 11:06 AM +0.71561845 tDASH",
+                                                                  "Button: Mixing",
+                                                                  "Button: Overview",
+                                                                  "Button: Receive",
+                                                                  "Button: Received",
+                                                                  "Button: Received 1:40 AM Pending +0.20 tDASH",
+                                                                  "Button: Rewards",
+                                                                  "Button: Send",
+                                                                  "Button: Sent",
+                                                                  "Button: Sent to yourself 10:57 PM 0.00000429 tDASH",
+                                                                  "Button: Transactions",
+                                                                  "Edit: Search address, transaction id or label",
+                                                                  "ListItem: Alice5:46 AM-0.50000226tDASH",
+                                                                  "ListItem: Coffee refund1:10 AMInstantSend+1.25tDASH",
+                                                                  "ListItem: Exchange withdrawal1:44 AM+0.32237277tDASH",
+                                                                  "ListItem: Masternode reward11:06 AM+0.71561845tDASH",
+                                                                  "ListItem: Overview",
+                                                                  "ListItem: Receive",
+                                                                  "ListItem: Received1:40 AMPending+0.20tDASH",
+                                                                  "ListItem: Send",
+                                                                  "ListItem: Sent to yourself10:57 PM0.00000429tDASH",
+                                                                  "ListItem: Transactions"
+                                                              ]
+                                     },
+                    "txDetail":  {
+                                     "nodes":  215,
+                                     "interactive":  9,
+                                     "unnamed":  0,
+                                     "hiddenSkipped":  40,
+                                     "unnamedDetail":  [
+
+                                                       ],
+                                     "interactiveNames":  [
+                                                              "Button: Close",
+                                                              "Button: Copy address",
+                                                              "Button: Copy transaction ID",
+                                                              "Button: Inputs (1)",
+                                                              "Button: Outputs (1)",
+                                                              "ListItem: Received with",
+                                                              "ListItem: Size",
+                                                              "ListItem: Status",
+                                                              "ListItem: Transaction ID"
+                                                          ]
+                                 },
+                    "unlock":  {
+                                   "nodes":  183,
+                                   "interactive":  2,
+                                   "unnamed":  0,
+                                   "hiddenSkipped":  40,
+                                   "unnamedDetail":  [
+
+                                                     ],
+                                   "interactiveNames":  [
+                                                            "Button: Unlock",
+                                                            "Edit: Passphrase"
+                                                        ]
+                               }
+                },
+    "checks":  [
+                   {
+                       "kind":  "hard",
+                       "what":  "the app window is in the UIA tree",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "soft",
+                       "what":  "the window is named \u0027Dash Wallet\u0027",
+                       "ok":  false,
+                       "detail":  "Dash Wallet — Testnet"
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "web content is exposed (Overview controls found)",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "Invoke \u0027Transactions\u0027 through UIA",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "Invoke \u0027Received 1:40 AM Pending +0.20 tDASH\u0027 through UIA",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "the detail sheet is a dialog",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "soft",
+                       "what":  "the dialog is named",
+                       "ok":  true,
+                       "detail":  "Transaction details"
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "Invoke \u0027Close\u0027 through UIA",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "Invoke \u0027Lock wallet\u0027 through UIA",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "the passphrase field is named",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "soft",
+                       "what":  "type the passphrase through UIA ValuePattern",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "Invoke \u0027Unlock\u0027 through UIA",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "unlocking through UIA opens the wallet (Lock enabled, no passphrase field)",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "overview: 0 unnamed interactive elements (22 interactive)",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "transactions: 0 unnamed interactive elements (28 interactive)",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "txDetail: 0 unnamed interactive elements (9 interactive)",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "unlock: 0 unnamed interactive elements (2 interactive)",
+                       "ok":  true,
+                       "detail":  ""
+                   },
+                   {
+                       "kind":  "hard",
+                       "what":  "the app is still running after the walk (no UIA crash)",
+                       "ok":  true,
+                       "detail":  ""
+                   }
+               ],
+    "hardFailures":  0
+}

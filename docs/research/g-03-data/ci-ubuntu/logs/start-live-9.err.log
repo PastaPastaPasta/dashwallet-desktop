@@ -1,0 +1,17 @@
+gate-mark main 2152.157373 cpu=0.015
+libEGL warning: DRI3 error: Could not get DRI3 device
+libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
+gate-mark first-paint 2152.372688 cpu=0.241
+gate-mark lock-paint 2156.132645 cpu=3.683
+gate-mark unlock-requested 2156.132876 cpu=3.683
+
+thread '<unnamed>' (35676) panicked at crates/dw-engine/src/platform/lease/session.rs:348:20:
+there is no reactor running, must be called from the context of a Tokio 1.x runtime
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+(dash-wallet:35650): Gtk-WARNING **: 06:14:22.511: GtkLabel 0x5607df458c40 (label) reported min width 11 and natural width 8 in measure() with for_size=17; natural size must be >= min size
+gate-mark sync-overlay-paint 2156.817104 cpu=4.283
+gate-mark sync-overlay-hide 2156.817310 cpu=4.283
+gate-mark overview-paint 2157.598394 cpu=5.187
+dash-wallet: shutting the engine down
+dash-wallet: engine shut down

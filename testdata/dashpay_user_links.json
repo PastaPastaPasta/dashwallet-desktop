@@ -1,0 +1,16 @@
+{
+  "source": "dashwallet-ios 3df12fc89 DashWallet/Sources/Infrastructure/SwiftDashSDK/Contacts/DashPayUserLink.swift (uriString, parse), with String.withoutDashSuffix from ContactItem.swift, compiled unchanged with swiftc in docker swift:6.3.3-noble (swift-corelibs-foundation URLComponents); only `import SwiftDashSDK` was replaced by Base58 shims for Data.toBase58String and Data.identifier(fromBase58:). Each link is AddContactScreen.myUserLink's: DashPayUserLink(identityId:, username: username.withoutDashSuffix).uriString, and DashPayUserLink.parse read it back to the same id and label.",
+  "network": "testnet",
+  "links": [
+    {
+      "identity": "CgPsN9TRQK4yLcU5jhtK475YfXLqpQb2mkqU5ExUUA6a",
+      "username_given": "dwrecovera2",
+      "uri": "dashpay://user?id=CgPsN9TRQK4yLcU5jhtK475YfXLqpQb2mkqU5ExUUA6a&username=dwrecovera2"
+    },
+    {
+      "identity": "HjfQJmEbqM8bbwtoGMVbouiWVC9Wmk6187VLx3XjN4J6",
+      "username_given": "dwrecoverb2.dash",
+      "uri": "dashpay://user?id=HjfQJmEbqM8bbwtoGMVbouiWVC9Wmk6187VLx3XjN4J6&username=dwrecoverb2"
+    }
+  ]
+}

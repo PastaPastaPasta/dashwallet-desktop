@@ -1,0 +1,24 @@
+{
+  "source": "regtest dashd /Dash Core:23.1.10/: upgradetohd on a blank descriptor wallet",
+  "generator": "testdata/oracle/dashd/gen_long_passphrase.py",
+  "archive": "dashcore-23.1.10-x86_64-linux-gnu.tar.gz",
+  "archive_sha256": "09f980572ac65b9b109c7d7dd497806d11cc7e8ece0031333ca390f2d4054081",
+  "mnemonic": "alter undo step harbor skate color young picture sand chef goat ordinary",
+  "passphrase": "long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é long passphrase é 0123456789",
+  "passphrase_bytes": 314,
+  "descriptor_master_xprv": "tprv8ZgxMBicQKsPeUgCaukCej2xTWHarSVp9Ayofs5QfNnoTxQK7evdKo5KJDVijUvt2SGLnZdZiSoYkrY2XjXVuCR6PhgMKZr6Kk7gpgLfdef",
+  "external": [
+    "yMwpzZ7VSKhJtWRn7t8cKUN51LVz2TLYxj",
+    "yM2expPaz4gZLKfpUS9o88o9VpGXBKTTyc",
+    "yU4wCbY72gm164YNBYg17KSbDpsmza1fK2",
+    "ydaWkZCE5HyHeabeny9jQXz56MAtu1EXz4",
+    "yWG7o7cn3Cn3k75gFRUcitwPjSfUYXnLsb"
+  ],
+  "internal": [
+    "yMbGMsqH4NKxUAgw9HDQ2NbFcV1NNUC7d2",
+    "yU4aWseRGKswGSJDUrbAGwxLLYwqNUqsRV",
+    "yPDbt5J5z2QVfSb2RTD9hE7QN6FtBHysyr",
+    "ycWecVN5BkqacA2LV2LqJ63Wd7z6T23iSA",
+    "ycAoDiRrQnJA1WqA2YUdmyEkN4Z5Ft2CQu"
+  ]
+}

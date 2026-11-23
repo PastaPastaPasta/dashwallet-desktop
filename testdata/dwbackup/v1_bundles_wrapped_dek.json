@@ -1,0 +1,79 @@
+{
+  "header": "fixture header",
+  "backup_passphrase": {
+    "version": 1,
+    "vault_id": "35b4c7a319fdd5a05264b1d64c406749",
+    "network": "regtest",
+    "wallet_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "slot": {
+      "kind": "backup_passphrase",
+      "kdf": {
+        "m_kib": 64,
+        "t": 1,
+        "p": 1
+      },
+      "salt": "07070707070707070707070707070707",
+      "wrapped_dek": {
+        "nonce": "d2ed6063f6a43af60f7c5966ea3244282ff33e69e211f331",
+        "ct": "f0cf6a7c393ed94e17abd99dd9bf0f7d1b0c4c9fd825fda0544383e2c4d0db2bbda2e622ac0e05072dc52071e45dd449"
+      }
+    },
+    "records": {
+      "mnemonic": {
+        "nonce": "3499b68a3d2440f4c765d386fc6118324efc4c661e2f596b",
+        "ct": "f0e3c6ed905c8edd99b577b02db3f174355f403afd75"
+      },
+      "mnemonic_passphrase": {
+        "nonce": "e8890dfebbc5eb20ffeb9ce8acdd89050f1dd24e83bb1f6c",
+        "ct": "9e7b9ac0b054ecd52b1d9d500e69b078dc"
+      },
+      "seed": {
+        "nonce": "dc54de64ef12347fb85a016b166305eb5bac3da2f42b2104",
+        "ct": "ef7d154f8808aabb7d2f2037adda0705eb57997b69de9eb563932effceaf23c7c9f2060a95ad09192e580ff75f797d184dbd8ec4bf9df83504b16657b016389b3ac232af6fac2f32dc8a4482b5166b62a7597d"
+      }
+    },
+    "payload_salt": "08080808080808080808080808080808",
+    "payload": {
+      "nonce": "7dd6103eaab94617f32f84bf4367334432325ff0642a071d",
+      "ct": "2e6bedd67667f269552f3ef73ee9ab96109822d0ec44296eef3877156d4177"
+    }
+  },
+  "vault_passphrase": {
+    "version": 1,
+    "vault_id": "ad3636a5058bae62738d93f4a185557f",
+    "network": "regtest",
+    "wallet_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "slot": {
+      "kind": "vault_passphrase",
+      "kdf": {
+        "m_kib": 64,
+        "t": 1,
+        "p": 1
+      },
+      "salt": "44b274b7156b86d02c2a91335ef82d09",
+      "wrapped_dek": {
+        "nonce": "05f7a9267e7a1c71b1fc550af493d39a22f4904ee5cd21ec",
+        "ct": "d1b4d28bcccc6255f45bd1e3fac6daa4e1bc60d6bd470ae626f5349251a45f7ed0b89ec70afaccc064484a9d3e5da65b"
+      }
+    },
+    "records": {
+      "mnemonic": {
+        "nonce": "e20d1413dde353c63937fb477dc648ca4502816c16e9f776",
+        "ct": "95dddf6de9938c32dd159900c086af3ba78d738614bf"
+      },
+      "mnemonic_passphrase": {
+        "nonce": "153c41bf0958e6c0115fca6c4bb0aa6abaaa471c689ee95d",
+        "ct": "59ca7aee393213ef2f52eea9edc27682f2"
+      },
+      "seed": {
+        "nonce": "1f2db0a5490583b6ad886a3c25a18d38451b628bdec446ab",
+        "ct": "871d1f210e706e490d48b1ab0e87b38cc119c884f5ee7000bbf57b0ce0b149849caae0673b9e1faa6351e0e065dcb32051449f3240ecd0e6e82802e141e383000690aaa2dcbf88d25e6b64040b43cd6579cc20"
+      }
+    },
+    "payload_salt": "08080808080808080808080808080808",
+    "payload": {
+      "nonce": "e5cd4016de04fe0921bbf35b0fad32b27d34f0f59cd75987",
+      "ct": "d07d7d31ead59a2439edd64b4e58a1b81a30f573333b5f70b3397663b75634"
+    }
+  }
+}

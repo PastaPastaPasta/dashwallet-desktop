@@ -1,0 +1,7 @@
+gate-mark main 3317.332705 cpu=0.015
+libEGL warning: DRI3 error: Could not get DRI3 device
+libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
+gate-mark first-paint 3317.553850 cpu=0.247
+gate-mark lock-paint 3321.257616 cpu=3.662
+dash-wallet: shutting the engine down
+dash-wallet: engine shut down

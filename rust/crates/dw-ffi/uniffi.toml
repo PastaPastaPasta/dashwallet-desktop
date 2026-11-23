@@ -1,0 +1,8 @@
+# Swift binding names line up with the SwiftPM targets:
+#   DashWalletCoreFFI  - binary target (C header + modulemap + static lib)
+#   DashWalletCore     - generated Swift
+[bindings.swift]
+module_name = "DashWalletCore"
+ffi_module_name = "DashWalletCoreFFI"
+ffi_module_filename = "DashWalletCoreFFI"
+generate_immutable_records = true

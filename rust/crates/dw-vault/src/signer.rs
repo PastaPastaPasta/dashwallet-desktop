@@ -1,0 +1,1199 @@
+//! [`VaultSigner`]: key_wallet's [`Signer`] backed by a wallet seed in the
+//! vault, plus Dash message signing ([`WalletSigner`], the signer contract E2
+//! codes against for transactions and `signmessage`).
+//!
+//! platform-wallet registers every wallet external-signable (it never holds
+//! keys), so all signing for wallets this app creates goes through here.
+//! Each call decrypts the seed record, derives the key for `path`, signs and
+//! erases the derived key; nothing secret is cached in the signer.
+//!
+//! A [`SignerScope`] limits both the paths a signer derives and what it does
+//! with the key there ([`KeyUse`]); a refused path or use is
+//! [`SignerError::PathNotAllowed`] before the seed is read.
+//!
+//! Every call is one [`Op`] run by [`VaultSigner::run`] inside the vault's
+//! operation gate ([`Vault::gated`]): from the epoch check until its result
+//! is released, so [`Vault::lock`] waits for calls already running and every
+//! later call is [`SignerError::Locked`]. A result is released only if the
+//! signer's epoch is still the vault's, checked under the mutex every epoch
+//! change holds, so none is released once `lock()` has returned (vault
+//! module doc, "Release").
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
+
+use async_trait::async_trait;
+use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
+use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+use key_wallet::{ExtendedPubKeySigner, Network, Signer, SignerMethod};
+use zeroize::Zeroizing;
+
+use crate::paths::{self, is_bip44_path, is_coinjoin_path};
+use crate::types::{KeySource, WalletId};
+use crate::vault::Vault;
+use crate::vault::masternode::{ROLE_OWNER, ROLE_PAYOUT, ROLE_VOTING};
+use crate::withdrawal::WithdrawalDestination;
+use crate::{SignerError, VaultError};
+
+/// Which derivations a signer may use, and for what.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SignerScope {
+    /// Every path of the wallet, but no owner signature beyond the owner
+    /// payload's and no export of an asset-lock credit key.
+    Full,
+    /// Only the DIP9 CoinJoin account `m/9'/coin'/4'/account'/…` (QT-112).
+    CoinJoinOnly,
+    /// The CoinJoin account plus the BIP44 accounts `m/44'/coin'/…`: what
+    /// mixing needs to turn ordinary coins into denominations and
+    /// collaterals of the same wallet (Dash Core lets a mixing-only unlock
+    /// create those, `CCoinJoinClientSession::CreateDenominated`,
+    /// `src/coinjoin/client.cpp:2194`). The engine uses it only for
+    /// transactions whose outputs all pay the wallet itself.
+    CoinJoinFunding,
+    /// Platform state transitions (DASHPAY §3.3): signatures and public
+    /// keys (no chain codes) of the DIP-13 ECDSA identity keys
+    /// `m/9'/coin'/5'/0'/0'/identity'/key'` only.
+    PlatformIdentity,
+    /// DashPay contact crypto (DIP-15); **never signs**. Extended public
+    /// keys of the receiving accounts `m/9'/coin'/15'/account'/<user>/<friend>`
+    /// (DIP-14 256-bit children), of the auto-accept keys
+    /// `m/9'/coin'/16'/expiry'` and of BIP44 account 0 (the seed-binding
+    /// check); ECDH and the account-reference mask with identity keys (the
+    /// DIP-15 encryption keys are identity keys); the contactInfo keys
+    /// `65536'`/`65537'` under an identity key; and the export of an
+    /// auto-accept key.
+    DashPayCrypto,
+    /// Asset-lock funding (registration, top-up, Platform-address and
+    /// shielded funding): signatures and public keys (no chain codes) of
+    /// BIP44, BIP32 and DashPay-receiving addresses and of the credit keys
+    /// `m/9'/coin'/5'/{1',2',3',4',5'}/…`, plus the extended
+    /// public key of an identity's top-up account `m/9'/coin'/5'/2'/i'`
+    /// (platform-wallet adds that account through the signer). The cap is
+    /// bounded by the token ([`crate::Vault::platform_signer`] refuses a
+    /// `max_duffs` above the grant's), but the vault signs sighashes and
+    /// cannot see the debit, so the engine checks it before the transaction
+    /// leaves the process (E0-04 design §3.4, §4.2).
+    PlatformFunding { max_duffs: u64 },
+    /// "Move mixed coins" to Shielded (0.2 MIX-SHIELD): the drain of the
+    /// CoinJoin account into one Core → Shielded asset lock and that
+    /// lock's apply. Signatures and public keys (no chain codes) of the
+    /// address keys of CoinJoin account 0 `m/9'/coin'/4'/0'/{0,1}/index`
+    /// (the lock's inputs) and of the shielded top-up credit keys
+    /// `m/9'/coin'/5'/5'/index` (the lock's one-time key), nothing else: no
+    /// BIP44, BIP32 or DashPay input, no other credit key, no identity,
+    /// Orchard or masternode key, and no `signmessage` call.
+    ///
+    /// Issued only from a `Spend` grant, whose [`SignerScope::Full`] signer
+    /// already reaches every one of these keys, so it gives no grant more
+    /// reach; and only against a [`crate::SignerLife`]
+    /// ([`crate::Vault::shield_drain_signer`]), so it stops with its owner
+    /// whatever key it signs with, not at the vault's next epoch. The engine
+    /// issues it only for a `ShieldDrain` lease, whose life it is. The token
+    /// bounds `max_duffs` (not 0, at most the grant's), but the vault signs
+    /// sighashes and cannot see the debit: whoever builds with the signer
+    /// must refuse, before signing, any input set whose sum passes
+    /// `max_duffs` (the engine's drain does: it checks the whole build
+    /// before its first signature, and per signature behind that). An
+    /// operation already under way when the life drops still finishes.
+    ///
+    /// Threat note: a leaked signer of this scope (one that reached other
+    /// code while its life held) signs any digest at these keys. It can
+    /// spend every coin paying a CoinJoin account 0 address to any script,
+    /// whatever `max_duffs` says, and sign the proof of any unconsumed
+    /// Core → Shielded lock, sending its credits to whatever Platform use
+    /// consumes that lock. It reaches no other coin or key, and no private
+    /// key, chain code or Orchard key leaves it.
+    ShieldDrainFunding { max_duffs: u64 },
+    /// Platform-address spends (release 0.1, "Move to Dash wallet"):
+    /// signatures and public keys (no chain codes) of the DIP-17 payment
+    /// address keys `m/9'/coin'/17'/account'/key_class'/index` only. Like
+    /// `PlatformIdentity`, the vault signs state-transition bytes and cannot
+    /// see what they spend; the engine bounds the spend by the grant's
+    /// credits before it signs.
+    PlatformAddress,
+    /// Governance votes (MG-05 §3, D1): the keychain voting keys
+    /// `m/9'/coin'/3'/1'/i` and the `voting` key attached to a tracked
+    /// masternode, for [`KeyUse::Vote`] only, which no [`VaultSigner`]
+    /// method makes. Only a [`crate::VoteSigner`] reaches these keys, and it
+    /// signs the digest of a funding vote it builds itself, never one it is
+    /// given: no transaction sighash, so coins sent to a voting key's
+    /// address stay out of a vote signer's reach.
+    MasternodeVoting,
+    /// Masternode Core transactions (MG-05 §1): signatures and public keys
+    /// of BIP44 and BIP32 addresses (inputs, change), `signmessage` with an
+    /// address key (an existing collateral's proof), and a ProUpRegTx's
+    /// payload signature ([`KeyUse::OwnerPayload`]) with a keychain owner
+    /// key `m/9'/coin'/3'/2'/i` or the `owner` key attached to that
+    /// masternode (MG-04 D11, D12), and a shared masternode's owner
+    /// signatures (consent, ProUpShareTx, ProUpSharedRegTx, ProDisTx) with
+    /// a keychain owner key only (MG-04b D11). An owner key signs no digest
+    /// it is given. Like `PlatformFunding`, the vault cannot see the debit of
+    /// what it signs; the engine checks it against the grant's cap first
+    /// (MG-05 §2). No operator or platform-node key is in reach.
+    MasternodeOwner,
+    /// One masternode Platform credit withdrawal (MG-13 P3, P12), from a
+    /// `MasternodeWithdraw` grant: [`KeyUse::MasternodeWithdrawal`] only,
+    /// which [`VaultSigner::sign_masternode_withdrawal`] alone makes, with a
+    /// keychain owner key `m/9'/coin'/3'/2'/i`, a BIP44 or BIP32 address
+    /// key (the wallet-held payout key), or the `owner` or `payout` key
+    /// attached to a tracked masternode. No digest, message, public key,
+    /// owner payload or vote: the vault lays out what it signs from the
+    /// transition's checked fields. `pro_tx_hash` (wire order) is the one
+    /// masternode it withdraws from; `max_credits` caps the amount;
+    /// `destination` is the output script the user approved for a payout-key
+    /// withdrawal, bound as its SHA-256 ([`WithdrawalDestination`]), and
+    /// `None` for an owner-key one (Drive picks the payout address, so the
+    /// transition carries no script). A signer of this scope signs at most
+    /// once, its clones included (r2 m5).
+    MasternodeWithdrawal {
+        pro_tx_hash: [u8; 32],
+        max_credits: u64,
+        destination: Option<WithdrawalDestination>,
+    },
+    /// The spend authority of the wallet's Orchard account 0 (0.1 E1,
+    /// `crate::shielded`): platform-wallet's ZIP-32 key set
+    /// `m_orchard/32'/coin'/0'`, derived from the seed for one shielded
+    /// spend and handed to the library, which takes no signer. No BIP32 key
+    /// of the wallet. Issued only by a `PlatformOp` grant whose
+    /// `max_credits` is not 0 ([`crate::Vault::shielded_spend_key`]).
+    ShieldedSpend,
+    /// The full viewing key of that account, no spend authority and no
+    /// BIP32 key: what the library binds to scan the pool and to show the
+    /// receive address. Grant-less, like `DashPayCrypto`, so issued only
+    /// while the full key needs no prompt
+    /// ([`crate::Vault::shielded_viewing_key`]).
+    ShieldedView,
+}
+
+/// What a derived key is used for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyUse {
+    /// A signature over a digest or a state transition.
+    Sign,
+    /// A Dash Core `signmessage` signature.
+    Message,
+    /// The public key.
+    PublicKey,
+    /// The extended public key: the public key and its chain code, which
+    /// lets the holder derive every non-hardened descendant.
+    ExtendedPublicKey,
+    /// DIP-15 key agreement: ECDH, the account-reference mask.
+    Agreement,
+    /// A DIP-15 contactInfo AES key (`encToUserId`, `privateData`).
+    ContactInfo,
+    /// The raw key leaves the vault (the DIP-15 auto-accept key).
+    Export,
+    /// A governance vote's key id, or a signature over the digest of a
+    /// funding vote the vault builds ([`crate::VoteSigner`]).
+    Vote,
+    /// An owner signature over the digest of a payload or transaction the
+    /// vault hashes itself: a ProUpRegTx's
+    /// ([`VaultSigner::sign_update_registrar`]) or a shared masternode's
+    /// ([`VaultSigner::sign_shared_consent`] and its siblings, MG-04b
+    /// §6.2).
+    OwnerPayload,
+    /// An owner or payout key's signature over a masternode identity's
+    /// credit withdrawal the vault checks field by field itself
+    /// ([`VaultSigner::sign_masternode_withdrawal`], MG-13 P3).
+    MasternodeWithdrawal,
+}
+
+impl SignerScope {
+    /// The funding cap of [`SignerScope::PlatformFunding`] and
+    /// [`SignerScope::ShieldDrainFunding`].
+    pub fn max_duffs(&self) -> Option<u64> {
+        match self {
+            SignerScope::PlatformFunding { max_duffs }
+            | SignerScope::ShieldDrainFunding { max_duffs } => Some(*max_duffs),
+            _ => None,
+        }
+    }
+
+    /// Whether this scope may use the key at `path` for `key_use`.
+    pub(crate) fn allows(&self, key_use: KeyUse, path: &DerivationPath, network: Network) -> bool {
+        // What the CoinJoin scopes have always allowed.
+        let coinjoin_use = matches!(
+            key_use,
+            KeyUse::Sign | KeyUse::Message | KeyUse::PublicKey | KeyUse::ExtendedPublicKey
+        );
+        let sign_or_public_key = matches!(key_use, KeyUse::Sign | KeyUse::PublicKey);
+        match self {
+            // An owner payload signature comes from a `MasternodeOp` grant
+            // only (MG-04 D38), and no other signature at an owner key: a
+            // ProUpRegTx's owner signature is a plain ECDSA one over the
+            // payload's hash, which `Sign` would make for any digest (D50).
+            // Nor at a voting key: off testnet a vote signature is a
+            // message one (MG-05 D1).
+            // No export of an asset-lock credit key or its account
+            // ([`paths::is_asset_lock_credit_key`]).
+            SignerScope::Full => match key_use {
+                KeyUse::OwnerPayload | KeyUse::MasternodeWithdrawal => false,
+                KeyUse::Sign | KeyUse::Message => {
+                    !paths::is_owner_key(path, network) && !paths::is_voting_key(path, network)
+                }
+                KeyUse::Export => {
+                    !paths::is_asset_lock_credit_key(path, network)
+                        && !paths::is_asset_lock_credit_account(path, network)
+                }
+                _ => true,
+            },
+            SignerScope::CoinJoinOnly => coinjoin_use && is_coinjoin_path(path, network),
+            SignerScope::CoinJoinFunding => {
+                coinjoin_use && (is_coinjoin_path(path, network) || is_bip44_path(path, network))
+            }
+            SignerScope::PlatformIdentity => {
+                sign_or_public_key && paths::identity_auth_key(path, network).is_some()
+            }
+            SignerScope::DashPayCrypto => match key_use {
+                KeyUse::Sign
+                | KeyUse::Message
+                | KeyUse::Vote
+                | KeyUse::OwnerPayload
+                | KeyUse::MasternodeWithdrawal => false,
+                KeyUse::PublicKey | KeyUse::ExtendedPublicKey => {
+                    paths::is_dashpay_receiving_account(path, network)
+                        || paths::is_auto_accept_key(path, network)
+                        || paths::is_bip44_account_zero(path, network)
+                }
+                KeyUse::Agreement => paths::identity_auth_key(path, network).is_some(),
+                KeyUse::ContactInfo => paths::is_contact_info_key(path, network),
+                KeyUse::Export => paths::is_auto_accept_key(path, network),
+            },
+            SignerScope::PlatformFunding { .. } => match key_use {
+                KeyUse::Sign | KeyUse::PublicKey => {
+                    paths::is_bip44_address(path, network)
+                        || paths::is_bip32_address(path)
+                        || paths::is_dashpay_receiving_address(path, network)
+                        || paths::is_asset_lock_credit_key(path, network)
+                }
+                KeyUse::ExtendedPublicKey => paths::is_identity_top_up_account(path, network),
+                _ => false,
+            },
+            SignerScope::ShieldDrainFunding { .. } => {
+                sign_or_public_key
+                    && (paths::is_coinjoin_address(path, network)
+                        || paths::is_shielded_top_up_credit_key(path, network))
+            }
+            SignerScope::PlatformAddress => {
+                sign_or_public_key && paths::is_platform_payment_address(path, network)
+            }
+            SignerScope::MasternodeVoting => {
+                key_use == KeyUse::Vote && paths::is_voting_key(path, network)
+            }
+            SignerScope::MasternodeOwner => {
+                let address =
+                    paths::is_bip44_address(path, network) || paths::is_bip32_address(path);
+                let owner = paths::is_owner_key(path, network);
+                match key_use {
+                    KeyUse::Sign | KeyUse::Message => address,
+                    KeyUse::PublicKey => address || owner,
+                    KeyUse::OwnerPayload => owner,
+                    _ => false,
+                }
+            }
+            // MG-13 P3: the withdrawal itself and nothing else, not even
+            // the public key, with an owner key or an address key (the
+            // wallet-held payout key).
+            SignerScope::MasternodeWithdrawal { .. } => {
+                key_use == KeyUse::MasternodeWithdrawal
+                    && (paths::is_owner_key(path, network)
+                        || paths::is_bip44_address(path, network)
+                        || paths::is_bip32_address(path))
+            }
+            // ZIP-32 starts from the seed ([`VaultSigner::with_seed`]).
+            SignerScope::ShieldedSpend | SignerScope::ShieldedView => false,
+        }
+    }
+
+    /// Whether this scope may use the key attached for `role` to a tracked
+    /// masternode for `key_use` (MG-01 D7): the `voting` key, for
+    /// [`KeyUse::Vote`] under [`SignerScope::MasternodeVoting`], and the
+    /// `owner` key, for [`KeyUse::OwnerPayload`] under
+    /// [`SignerScope::MasternodeOwner`] (MG-04 D12), and the `owner` and
+    /// `payout` keys, for [`KeyUse::MasternodeWithdrawal`] under
+    /// [`SignerScope::MasternodeWithdrawal`] (MG-13 P3). Nothing else.
+    pub(crate) fn allows_attached(&self, key_use: KeyUse, role: &str) -> bool {
+        match self {
+            SignerScope::MasternodeVoting => key_use == KeyUse::Vote && role == ROLE_VOTING,
+            SignerScope::MasternodeOwner => key_use == KeyUse::OwnerPayload && role == ROLE_OWNER,
+            SignerScope::MasternodeWithdrawal { .. } => {
+                key_use == KeyUse::MasternodeWithdrawal
+                    && (role == ROLE_OWNER || role == ROLE_PAYOUT)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// The signer contract for transaction and message signing.
+#[async_trait]
+pub trait WalletSigner: ExtendedPubKeySigner + Signer<Error = SignerError> {
+    /// The wallet whose seed signs.
+    fn wallet_id(&self) -> WalletId;
+
+    /// Dash Core `signmessage` for the key at `path`: base64 of the 65-byte
+    /// compact signature over `"DarkCoin Signed Message:\n" ‖ message`,
+    /// compressed public key.
+    async fn sign_message(
+        &self,
+        path: &DerivationPath,
+        message: &[u8],
+    ) -> Result<String, SignerError>;
+}
+
+const METHODS: &[SignerMethod] = &[SignerMethod::Digest];
+
+/// Core's `CKey::SignCompact` over `digest` for a compressed key:
+/// `27 + 4 + recid ‖ r ‖ s`, deterministic (RFC 6979).
+/// Also what `dashcore::signer::sign` makes for a Platform
+/// `ECDSA_HASH160` key (MG-07's name votes).
+pub(crate) fn sign_compact(digest: [u8; 32], secret: &SecretKey) -> [u8; 65] {
+    let sig =
+        ecdsa::RecoverableSignature::sign_ecdsa_recoverable(Message::from_digest(digest), secret);
+    let (recid, rs) = sig.serialize_compact();
+    let mut out = [0u8; 65];
+    out[0] = 27 + recid.to_u8() + 4;
+    out[1..].copy_from_slice(&rs);
+    out
+}
+
+/// A signer for one wallet, valid until the vault locks or changes unlock
+/// scope. Obtain it from [`Vault::signer`] (after redeeming a grant) or
+/// [`Vault::mixing_signer`].
+#[derive(Clone)]
+pub struct VaultSigner {
+    vault: Vault,
+    wallet_id: WalletId,
+    scope: SignerScope,
+    epoch: u64,
+    /// The data key it signs with ([`KeySource`]).
+    key: KeySource,
+    /// Set by the first signature of a [`SignerScope::MasternodeWithdrawal`]
+    /// signer and never cleared, shared with every clone
+    /// ([`Self::consume_single_use`]); `None` for every other scope.
+    spent: Option<Arc<AtomicBool>>,
+    /// Its owner's [`crate::SignerLife`], when it has one: it stops when
+    /// that drops.
+    life: Option<Weak<()>>,
+}
+
+impl std::fmt::Debug for VaultSigner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultSigner")
+            .field("wallet_id", &hex::encode(self.wallet_id))
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
+}
+
+impl VaultSigner {
+    pub(crate) fn new(
+        vault: Vault,
+        wallet_id: WalletId,
+        scope: SignerScope,
+        epoch: u64,
+        key: KeySource,
+    ) -> Self {
+        let spent = matches!(scope, SignerScope::MasternodeWithdrawal { .. })
+            .then(|| Arc::new(AtomicBool::new(false)));
+        Self {
+            vault,
+            wallet_id,
+            scope,
+            epoch,
+            key,
+            spent,
+            life: None,
+        }
+    }
+
+    /// Binds the signer to `life` ([`crate::SignerLife::watch`]).
+    pub(crate) fn with_life(mut self, life: Weak<()>) -> Self {
+        self.life = Some(life);
+        self
+    }
+
+    /// `Locked` once the signer's [`crate::SignerLife`] dropped.
+    fn alive(&self) -> Result<(), SignerError> {
+        match &self.life {
+            Some(life) if life.strong_count() == 0 => Err(SignerError::Locked),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn scope(&self) -> SignerScope {
+        self.scope
+    }
+
+    /// The network of the vault this signer derives for.
+    pub fn network(&self) -> Network {
+        self.vault.network()
+    }
+
+    /// Spends a single-use signer (MG-13 P3, r2 m5): the first call on a
+    /// [`SignerScope::MasternodeWithdrawal`] signer or any clone of it
+    /// passes and marks it spent, every later one is
+    /// [`VaultError::GrantInvalid`]. The caller makes it before it reads the
+    /// secret and keeps it spent whatever follows, a failed signature
+    /// included. A signer of any other scope is not single-use.
+    pub(crate) fn consume_single_use(&self) -> Result<(), SignerError> {
+        match &self.spent {
+            Some(spent) if spent.swap(true, Ordering::AcqRel) => {
+                Err(SignerError::Vault(VaultError::GrantInvalid))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The scope check of one use of the key at `path`.
+    pub(crate) fn check(&self, key_use: KeyUse, path: &DerivationPath) -> Result<(), SignerError> {
+        if self.scope.allows(key_use, path, self.vault.network()) {
+            Ok(())
+        } else {
+            Err(SignerError::PathNotAllowed(path.to_string()))
+        }
+    }
+
+    /// Runs `body` as one operation on the keys `uses`, the only way a
+    /// signer reaches a key: every use passes the scope check before the
+    /// seed is read; then, inside the vault's gate, the signer's epoch must
+    /// be the one the operation started under, the seed is decrypted and
+    /// `body` runs on the [`Op`]. The master key is erased when `body`
+    /// returns, and its result is released only if that epoch is still
+    /// current ([`Vault::gated`]), else [`SignerError::Locked`].
+    pub(crate) fn run<T>(
+        &self,
+        uses: &[(KeyUse, &DerivationPath)],
+        body: impl FnOnce(&Op<'_>) -> Result<T, SignerError>,
+    ) -> Result<T, SignerError> {
+        for (key_use, path) in uses {
+            self.check(*key_use, path)?;
+        }
+        self.vault.gated(SignerError::Locked, |gate| {
+            self.alive()?;
+            let seed = self
+                .vault
+                .signing_seed(gate, &self.wallet_id, self.epoch, &self.key)?;
+            let master = ExtendedPrivKey::new_master(self.vault.network(), &seed[..])
+                .map_err(|e| SignerError::Derivation(e.to_string()))?;
+            #[cfg(test)]
+            test_hook::opened();
+            body(&Op {
+                signer: self,
+                master,
+            })
+        })
+    }
+
+    /// Runs `body` on the wallet's seed in one operation, under the same
+    /// gate and epoch rule as [`Self::run`]: for the Orchard keys of the
+    /// shielded scopes only, whose ZIP-32 derivation starts from the seed
+    /// rather than a BIP32 key. Any other scope is `PathNotAllowed`.
+    pub(crate) fn with_seed<T>(
+        &self,
+        body: impl FnOnce(&[u8]) -> Result<T, SignerError>,
+    ) -> Result<T, SignerError> {
+        if !matches!(
+            self.scope,
+            SignerScope::ShieldedSpend | SignerScope::ShieldedView
+        ) {
+            return Err(SignerError::PathNotAllowed("the seed".into()));
+        }
+        self.vault.gated(SignerError::Locked, |gate| {
+            self.alive()?;
+            let seed = self
+                .vault
+                .signing_seed(gate, &self.wallet_id, self.epoch, &self.key)?;
+            body(&seed[..])
+        })
+    }
+
+    /// Runs `f` on the key attached for `role` to the tracked masternode
+    /// `pro_tx_hash`, in an operation of its own, then erases the key. The
+    /// scope check ([`SignerScope::allows_attached`]) comes before the
+    /// record is read; inside the gate the signer's epoch must still be the
+    /// vault's, as for a seed ([`Self::run`]). `NoSecret` when no key is
+    /// attached for `role`, or the record is no secp256k1 secret.
+    pub(crate) fn with_attached_key<T>(
+        &self,
+        pro_tx_hash: &[u8; 32],
+        role: &str,
+        key_use: KeyUse,
+        f: impl FnOnce(&SecretKey) -> T,
+    ) -> Result<T, SignerError> {
+        if !self.scope.allows_attached(key_use, role) {
+            return Err(SignerError::PathNotAllowed(format!(
+                "the attached {role} key"
+            )));
+        }
+        self.vault.gated(SignerError::Locked, |gate| {
+            self.alive()?;
+            /// Erases the secret when dropped, so a panicking `f` erases it
+            /// too.
+            struct Erased(SecretKey);
+            impl Drop for Erased {
+                fn drop(&mut self) {
+                    self.0.non_secure_erase();
+                }
+            }
+            let secret = Erased(self.vault.attached_secret(
+                gate,
+                self.epoch,
+                &self.key,
+                pro_tx_hash,
+                role,
+            )?);
+            #[cfg(test)]
+            test_hook::opened();
+            Ok(f(&secret.0))
+        })
+    }
+
+    /// Runs `f` on the private key at `path` in an operation of its own,
+    /// then erases the key.
+    pub(crate) fn with_key<T>(
+        &self,
+        path: &DerivationPath,
+        key_use: KeyUse,
+        f: impl FnOnce(&ExtendedPrivKey) -> T,
+    ) -> Result<T, SignerError> {
+        self.run(&[(key_use, path)], |op| op.with_key(path, key_use, f))
+    }
+}
+
+/// One signer call inside the gate ([`VaultSigner::run`]): the wallet's
+/// master key, erased on drop, before the call's result is released.
+pub(crate) struct Op<'a> {
+    signer: &'a VaultSigner,
+    master: ExtendedPrivKey,
+}
+
+impl Op<'_> {
+    /// Runs `f` on the private key at `path` (scope-checked again), then
+    /// erases the key.
+    pub(crate) fn with_key<T>(
+        &self,
+        path: &DerivationPath,
+        key_use: KeyUse,
+        f: impl FnOnce(&ExtendedPrivKey) -> T,
+    ) -> Result<T, SignerError> {
+        self.signer.check(key_use, path)?;
+        let mut xpriv = self
+            .master
+            .derive_priv(path)
+            .map_err(|e| SignerError::Derivation(e.to_string()))?;
+        let out = f(&xpriv);
+        xpriv.private_key.non_secure_erase();
+        Ok(out)
+    }
+}
+
+impl Drop for Op<'_> {
+    fn drop(&mut self) {
+        self.master.private_key.non_secure_erase();
+    }
+}
+
+/// Lets the lock-race tests pause a gated operation of the current thread
+/// once it has passed its epoch check ([`opened`]).
+#[cfg(test)]
+pub(crate) mod test_hook {
+    use std::cell::RefCell;
+
+    type Hook = Box<dyn FnMut()>;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+        static CHECKED: RefCell<Option<Hook>> = const { RefCell::new(None) };
+        static KEY_TAKEN: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    /// Calls `f` whenever an operation of this thread is opened.
+    pub(crate) fn set(f: impl FnMut() + 'static) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    /// Calls `f` whenever an operation of this thread has taken its copy
+    /// of a grant's own key inside the gate, before it reads the seed.
+    pub(crate) fn set_key_taken(f: impl FnMut() + 'static) {
+        KEY_TAKEN.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(crate) fn key_taken() {
+        KEY_TAKEN.with(|h| {
+            if let Some(f) = h.borrow_mut().as_mut() {
+                f();
+            }
+        });
+    }
+
+    /// Calls `f` whenever an operation of this thread has checked (or
+    /// redeemed) its grant token, or loaded the vault's key, and not yet
+    /// entered the gate.
+    pub(crate) fn set_checked(f: impl FnMut() + 'static) {
+        CHECKED.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(crate) fn opened() {
+        HOOK.with(|h| {
+            if let Some(f) = h.borrow_mut().as_mut() {
+                f();
+            }
+        });
+    }
+
+    pub(crate) fn checked() {
+        CHECKED.with(|h| {
+            if let Some(f) = h.borrow_mut().as_mut() {
+                f();
+            }
+        });
+    }
+}
+
+#[async_trait]
+impl Signer for VaultSigner {
+    type Error = SignerError;
+
+    fn supported_methods(&self) -> &[SignerMethod] {
+        METHODS
+    }
+
+    async fn sign_ecdsa(
+        &self,
+        path: &DerivationPath,
+        sighash: [u8; 32],
+    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+        self.with_key(path, KeyUse::Sign, |x| {
+            // Low-R grinding, as Dash Core's `CKey::Sign`: one byte smaller on
+            // average, and the same signature dashd makes for the sighash.
+            let sig = ecdsa::sign_low_r(Message::from_digest(sighash), &x.private_key);
+            (sig, PublicKey::from_secret_key(&x.private_key))
+        })
+    }
+
+    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
+        self.with_key(path, KeyUse::PublicKey, |x| {
+            PublicKey::from_secret_key(&x.private_key)
+        })
+    }
+}
+
+#[async_trait]
+impl ExtendedPubKeySigner for VaultSigner {
+    async fn extended_public_key(
+        &self,
+        path: &DerivationPath,
+    ) -> Result<ExtendedPubKey, SignerError> {
+        self.with_key(path, KeyUse::ExtendedPublicKey, ExtendedPubKey::from_priv)
+    }
+}
+
+#[async_trait]
+impl WalletSigner for VaultSigner {
+    fn wallet_id(&self) -> WalletId {
+        self.wallet_id
+    }
+
+    async fn sign_message(
+        &self,
+        path: &DerivationPath,
+        message: &[u8],
+    ) -> Result<String, SignerError> {
+        self.with_key(path, KeyUse::Message, |x| {
+            let secret = dw_uri::keyio::Secret {
+                key: Zeroizing::new(x.private_key.to_secret_bytes()),
+                compressed: true,
+            };
+            dw_message::sign_message(&secret, message)
+                .map_err(|e| SignerError::Derivation(e.to_string()))
+        })?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn path(s: &str) -> DerivationPath {
+        DerivationPath::from_str(s).unwrap()
+    }
+
+    const T: Network = Network::Testnet;
+    const ALL_USES: [KeyUse; 10] = [
+        KeyUse::Sign,
+        KeyUse::Message,
+        KeyUse::PublicKey,
+        KeyUse::ExtendedPublicKey,
+        KeyUse::Agreement,
+        KeyUse::ContactInfo,
+        KeyUse::Export,
+        KeyUse::Vote,
+        KeyUse::OwnerPayload,
+        KeyUse::MasternodeWithdrawal,
+    ];
+    /// A withdrawal scope of each key kind (MG-13 P3).
+    const WITHDRAW_OWNER: SignerScope = SignerScope::MasternodeWithdrawal {
+        pro_tx_hash: [0; 32],
+        max_credits: 1,
+        destination: None,
+    };
+    fn withdraw_payout() -> SignerScope {
+        SignerScope::MasternodeWithdrawal {
+            pro_tx_hash: [0; 32],
+            max_credits: 1,
+            destination: Some(WithdrawalDestination::of_script(&[0x76, 0xa9])),
+        }
+    }
+    /// Every scope but the withdrawal ones.
+    const OTHER_SCOPES: [SignerScope; 12] = [
+        SignerScope::Full,
+        SignerScope::CoinJoinOnly,
+        SignerScope::CoinJoinFunding,
+        SignerScope::PlatformIdentity,
+        SignerScope::DashPayCrypto,
+        SignerScope::PlatformFunding { max_duffs: 1 },
+        SignerScope::ShieldDrainFunding { max_duffs: 1 },
+        SignerScope::PlatformAddress,
+        SignerScope::MasternodeVoting,
+        SignerScope::MasternodeOwner,
+        SignerScope::ShieldedSpend,
+        SignerScope::ShieldedView,
+    ];
+
+    fn uses(scope: SignerScope, p: &str) -> Vec<KeyUse> {
+        ALL_USES
+            .into_iter()
+            .filter(|u| scope.allows(*u, &path(p), T))
+            .collect()
+    }
+
+    /// Every derived key and the per-call master key rely on key-wallet's
+    /// erasing `Drop` for `ExtendedPrivKey` (rust-dashcore `e4208c9`,
+    /// `bip32.rs:373-395`); a pin without it would leave `Op::master`'s
+    /// chain code and `ScanKey::master_key`'s clone unerased.
+    #[test]
+    fn extended_private_keys_erase_on_drop() {
+        assert!(std::mem::needs_drop::<ExtendedPrivKey>());
+    }
+
+    /// Everything but an owner payload signature, which only a
+    /// `MasternodeOp` grant's signer makes (MG-04 D38), or a masternode
+    /// withdrawal, which only a `MasternodeWithdraw` grant's makes (MG-13
+    /// P3), no signature or message signature at an owner key (D50) or a
+    /// voting key, and no export of an asset-lock credit key.
+    #[test]
+    fn full_scope_allows_everything_but_owner_and_voting_signatures() {
+        for p in ["m/0", "m/44'/1'/0'/0/0"] {
+            assert_eq!(uses(SignerScope::Full, p), ALL_USES[..8].to_vec(), "{p}");
+        }
+        let no_signature: Vec<KeyUse> = ALL_USES[..8]
+            .iter()
+            .copied()
+            .filter(|u| !matches!(u, KeyUse::Sign | KeyUse::Message))
+            .collect();
+        for p in [
+            "m/9'/1'/3'/2'/0",
+            "m/9'/1'/3'/2'/7",
+            "m/9'/1'/3'/1'/0",
+            "m/9'/1'/3'/1'/19",
+        ] {
+            assert_eq!(uses(SignerScope::Full, p), no_signature, "{p}");
+        }
+        let no_export: Vec<KeyUse> = ALL_USES[..8]
+            .iter()
+            .copied()
+            .filter(|u| *u != KeyUse::Export)
+            .collect();
+        // The credit keys and their accounts.
+        for p in [
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/2'/0",
+            "m/9'/1'/5'/2'/3'/1",
+            "m/9'/1'/5'/3'/2",
+            "m/9'/1'/5'/4'/0",
+            "m/9'/1'/5'/5'/7",
+            "m/9'/1'/5'/1'",
+            "m/9'/1'/5'/2'",
+            "m/9'/1'/5'/2'/3'",
+            "m/9'/1'/5'/3'",
+            "m/9'/1'/5'/4'",
+            "m/9'/1'/5'/5'",
+        ] {
+            assert_eq!(uses(SignerScope::Full, p), no_export, "{p}");
+        }
+        // The identity keys and their account keep it.
+        for p in ["m/9'/1'/5'/0'/0'/0'/0'", "m/9'/1'/5'/0'"] {
+            assert!(SignerScope::Full.allows(KeyUse::Export, &path(p), T), "{p}");
+        }
+    }
+
+    #[test]
+    fn coinjoin_scopes_keep_their_paths_and_never_touch_platform_uses() {
+        let cj = "m/9'/1'/4'/0'/0/1";
+        let bip44 = "m/44'/1'/0'/0/0";
+        let before = vec![
+            KeyUse::Sign,
+            KeyUse::Message,
+            KeyUse::PublicKey,
+            KeyUse::ExtendedPublicKey,
+        ];
+        assert_eq!(uses(SignerScope::CoinJoinOnly, cj), before);
+        assert!(uses(SignerScope::CoinJoinOnly, bip44).is_empty());
+        assert_eq!(uses(SignerScope::CoinJoinFunding, bip44), before);
+        assert!(uses(SignerScope::CoinJoinFunding, "m/9'/1'/5'/0'/0'/0'/0'").is_empty());
+    }
+
+    #[test]
+    fn platform_identity_signs_identity_keys_only() {
+        let s = SignerScope::PlatformIdentity;
+        assert_eq!(
+            uses(s, "m/9'/1'/5'/0'/0'/0'/3'"),
+            vec![KeyUse::Sign, KeyUse::PublicKey]
+        );
+        for other in [
+            "m/44'/1'/0'/0/0",
+            "m/9'/1'/4'/0'/0/1",
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/0'/0'/0'/3'/65536'/0'",
+            "m/9'/1'/16'/1'",
+            "m/9'/1'/5'/0'/0'/0'",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+    }
+
+    #[test]
+    fn dashpay_crypto_never_signs() {
+        let s = SignerScope::DashPayCrypto;
+        let public = vec![KeyUse::PublicKey, KeyUse::ExtendedPublicKey];
+        assert_eq!(
+            uses(s, "m/9'/1'/16'/7'"),
+            [public.clone(), vec![KeyUse::Export]].concat()
+        );
+        assert_eq!(uses(s, "m/44'/1'/0'"), public);
+        assert_eq!(uses(s, "m/9'/1'/5'/0'/0'/0'/4'"), vec![KeyUse::Agreement]);
+        assert_eq!(
+            uses(s, "m/9'/1'/5'/0'/0'/0'/2'/65537'/1'"),
+            vec![KeyUse::ContactInfo]
+        );
+        for other in [
+            "m/44'/1'/0'/0/0",
+            "m/44'/1'/1'",
+            "m/9'/1'/4'/0'/0/1",
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/0'/0'/0'/2'/65538'/1'",
+            "m/9'/1'/15'/0'",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+    }
+
+    #[test]
+    fn platform_funding_signs_funding_inputs_and_credit_keys() {
+        let s = SignerScope::PlatformFunding { max_duffs: 1 };
+        assert_eq!(s.max_duffs(), Some(1));
+        for ok in [
+            "m/44'/1'/0'/0/0",
+            "m/0'/1/3",
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/2'/0'/1",
+            "m/9'/1'/5'/3'/2",
+            "m/9'/1'/5'/4'/0",
+            "m/9'/1'/5'/5'/0",
+        ] {
+            assert_eq!(uses(s, ok), vec![KeyUse::Sign, KeyUse::PublicKey], "{ok}");
+        }
+        assert_eq!(uses(s, "m/9'/1'/5'/2'/0'"), vec![KeyUse::ExtendedPublicKey]);
+        for other in [
+            "m/9'/1'/4'/0'/0/1",
+            "m/9'/1'/5'/0'/0'/0'/0'",
+            "m/9'/1'/16'/1'",
+            "m/44'/1'/0'",
+            "m/44'/5'/0'/0/0",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+    }
+
+    /// 0.2 MIX-SHIELD: the drain scope signs CoinJoin account 0's address
+    /// keys and the shielded top-up credit keys, nothing else; BIP44,
+    /// identity, other-account and other credit keys are refused, and no
+    /// signature or chain code beyond `Sign`/`PublicKey`.
+    #[test]
+    fn shield_drain_funding_signs_coinjoin_inputs_and_shielded_credit_keys_only() {
+        let s = SignerScope::ShieldDrainFunding { max_duffs: 7 };
+        assert_eq!(s.max_duffs(), Some(7));
+        for ok in [
+            "m/9'/1'/4'/0'/0/0",
+            "m/9'/1'/4'/0'/1/99",
+            "m/9'/1'/5'/5'/0",
+            "m/9'/1'/5'/5'/12",
+        ] {
+            assert_eq!(uses(s, ok), vec![KeyUse::Sign, KeyUse::PublicKey], "{ok}");
+        }
+        for other in [
+            // BIP44, BIP32 and DashPay inputs.
+            "m/44'/1'/0'/0/0",
+            "m/44'/1'/1'/1/3",
+            "m/0'/1/3",
+            "m/9'/1'/15'/0'/0",
+            // Other CoinJoin accounts, the account nodes, hardened children.
+            "m/9'/1'/4'/1'/0/0",
+            "m/9'/1'/4'/0'",
+            "m/9'/1'/4'/0'/0",
+            "m/9'/1'/4'/0'/0/0'",
+            "m/9'/1'/4'/0'/2/0",
+            // Other credit keys, the shielded top-up account node.
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/2'/0",
+            "m/9'/1'/5'/2'/0'/1",
+            "m/9'/1'/5'/2'/0'",
+            "m/9'/1'/5'/3'/2",
+            "m/9'/1'/5'/5'",
+            "m/9'/1'/5'/5'/0'",
+            // Identity, Platform-address, provider keys.
+            "m/9'/1'/5'/0'/0'/0'/0'",
+            "m/9'/1'/17'/0'/0'/0",
+            "m/9'/1'/3'/1'/0",
+            "m/9'/1'/3'/2'/0",
+            // Another network's coin type.
+            "m/9'/5'/4'/0'/0/0",
+            "m/9'/5'/5'/5'/0",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+        // PlatformFunding still refuses CoinJoin inputs.
+        assert!(
+            uses(
+                SignerScope::PlatformFunding { max_duffs: 7 },
+                "m/9'/1'/4'/0'/0/0"
+            )
+            .is_empty()
+        );
+    }
+
+    /// Release 0.1: a Platform-address signer reaches the DIP-17 payment
+    /// keys and nothing else, and no other Platform scope reaches them.
+    #[test]
+    fn platform_address_signs_payment_address_keys_only() {
+        let s = SignerScope::PlatformAddress;
+        for ok in ["m/9'/1'/17'/0'/0'/0", "m/9'/1'/17'/0'/0'/19"] {
+            assert_eq!(uses(s, ok), vec![KeyUse::Sign, KeyUse::PublicKey], "{ok}");
+        }
+        for other in [
+            // Accounts and key classes the engine does not use.
+            "m/9'/1'/17'/1'/0'/0",
+            "m/9'/1'/17'/0'/1'/0",
+            "m/9'/1'/17'/2'/1'/19",
+            "m/9'/5'/17'/0'/0'/0",
+            "m/9'/1'/17'/0'/0'/0'",
+            "m/9'/1'/17'/0'/0/0",
+            "m/9'/1'/17'/0'/0'",
+            "m/9'/1'/17'/0'/0'/0/1",
+            "m/9'/1'/5'/0'/0'/0'/0'",
+            "m/9'/1'/5'/1'/0",
+            "m/44'/1'/0'/0/0",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+        for other in [
+            SignerScope::CoinJoinOnly,
+            SignerScope::CoinJoinFunding,
+            SignerScope::PlatformIdentity,
+            SignerScope::DashPayCrypto,
+            SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::MasternodeVoting,
+            SignerScope::MasternodeOwner,
+        ] {
+            assert!(uses(other, "m/9'/1'/17'/0'/0'/0").is_empty(), "{other:?}");
+        }
+    }
+
+    /// A voting key is reached for votes only (MG-05 D1), and no other scope
+    /// but `Full` reaches it at all.
+    #[test]
+    fn masternode_voting_votes_with_voting_keys_only() {
+        let s = SignerScope::MasternodeVoting;
+        assert_eq!(uses(s, "m/9'/1'/3'/1'/0"), vec![KeyUse::Vote]);
+        assert_eq!(uses(s, "m/9'/1'/3'/1'/19"), vec![KeyUse::Vote]);
+        for other in [
+            "m/9'/1'/3'/2'/0",
+            "m/9'/1'/3'/3'/0",
+            "m/9'/1'/3'/4'/0'",
+            "m/9'/1'/3'/1'/0'",
+            "m/9'/5'/3'/1'/0",
+            "m/44'/1'/0'/0/0",
+            "m/0'/1/3",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+        for other in [
+            SignerScope::CoinJoinOnly,
+            SignerScope::CoinJoinFunding,
+            SignerScope::PlatformIdentity,
+            SignerScope::DashPayCrypto,
+            SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::PlatformAddress,
+            SignerScope::MasternodeOwner,
+        ] {
+            assert!(uses(other, "m/9'/1'/3'/1'/0").is_empty(), "{other:?}");
+            for path in ["m/44'/1'/0'/0/0", "m/9'/1'/3'/2'/0"] {
+                assert!(
+                    !other.allows(KeyUse::Vote, &self::path(path), T),
+                    "{other:?}"
+                );
+            }
+        }
+        assert!(s.allows_attached(KeyUse::Vote, "voting"));
+        for (scope, key_use, role) in [
+            (s, KeyUse::Sign, "voting"),
+            (s, KeyUse::PublicKey, "voting"),
+            (s, KeyUse::Vote, "owner"),
+            (s, KeyUse::Vote, "payout"),
+            (SignerScope::Full, KeyUse::Vote, "voting"),
+            (SignerScope::MasternodeOwner, KeyUse::Sign, "owner"),
+            (SignerScope::MasternodeOwner, KeyUse::Vote, "voting"),
+            (SignerScope::MasternodeOwner, KeyUse::OwnerPayload, "voting"),
+            (SignerScope::MasternodeOwner, KeyUse::OwnerPayload, "payout"),
+            (SignerScope::Full, KeyUse::OwnerPayload, "owner"),
+            (s, KeyUse::OwnerPayload, "owner"),
+            (WITHDRAW_OWNER, KeyUse::Vote, "voting"),
+            (withdraw_payout(), KeyUse::Vote, "voting"),
+        ] {
+            assert!(
+                !scope.allows_attached(key_use, role),
+                "{scope:?} {key_use:?} {role}"
+            );
+        }
+    }
+
+    /// MG-04 D11: an owner key signs owner payloads only, no digest it is
+    /// given; the attached owner key likewise (D12).
+    #[test]
+    fn masternode_owner_signs_addresses_and_owner_payloads() {
+        let s = SignerScope::MasternodeOwner;
+        let address = vec![KeyUse::Sign, KeyUse::Message, KeyUse::PublicKey];
+        assert_eq!(uses(s, "m/44'/1'/0'/0/0"), address);
+        assert_eq!(uses(s, "m/44'/1'/3'/1/9"), address);
+        assert_eq!(uses(s, "m/0'/1/3"), address);
+        assert_eq!(
+            uses(s, "m/9'/1'/3'/2'/4"),
+            vec![KeyUse::PublicKey, KeyUse::OwnerPayload]
+        );
+        assert!(s.allows_attached(KeyUse::OwnerPayload, "owner"));
+        for other in [
+            SignerScope::CoinJoinOnly,
+            SignerScope::CoinJoinFunding,
+            SignerScope::PlatformIdentity,
+            SignerScope::DashPayCrypto,
+            SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::PlatformAddress,
+            SignerScope::MasternodeVoting,
+            SignerScope::Full,
+            WITHDRAW_OWNER,
+            withdraw_payout(),
+        ] {
+            assert!(
+                !other.allows(KeyUse::OwnerPayload, &path("m/9'/1'/3'/2'/0"), T),
+                "{other:?}"
+            );
+            assert!(
+                !other.allows_attached(KeyUse::OwnerPayload, "owner"),
+                "{other:?}"
+            );
+        }
+        for other in [
+            "m/9'/1'/3'/1'/0",  // voting
+            "m/9'/1'/3'/3'/0",  // operator
+            "m/9'/1'/3'/4'/0'", // platform node
+            "m/9'/1'/3'/2'/0'",
+            "m/9'/1'/4'/0'/0/1",
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/0'/0'/0'/0'",
+            "m/44'/1'/0'",
+            "m/44'/5'/0'/0/0",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+    }
+    /// MG-13 P3: a withdrawal scope makes the withdrawal and nothing else
+    /// (no digest, message, public key, owner payload or vote), with an
+    /// owner key or an address key only; every other scope refuses the
+    /// withdrawal, `Full` included.
+    #[test]
+    fn masternode_withdrawal_withdraws_with_owner_and_address_keys_only() {
+        let withdrawal = vec![KeyUse::MasternodeWithdrawal];
+        for s in [WITHDRAW_OWNER, withdraw_payout()] {
+            for ok in [
+                "m/9'/1'/3'/2'/0",  // keychain owner key
+                "m/9'/1'/3'/2'/19", // keychain owner key
+                "m/44'/1'/0'/0/0",  // BIP44 receive address
+                "m/44'/1'/3'/1/9",  // BIP44 change address
+                "m/0'/1/3",         // BIP32 address
+            ] {
+                assert_eq!(uses(s, ok), withdrawal, "{s:?} {ok}");
+            }
+            for other in [
+                "m/9'/1'/3'/1'/0",  // voting
+                "m/9'/1'/3'/3'/0",  // operator
+                "m/9'/1'/3'/4'/0'", // platform node
+                "m/9'/1'/3'/2'/0'",
+                "m/9'/5'/3'/2'/0",
+                "m/9'/1'/4'/0'/0/1",
+                "m/9'/1'/5'/1'/0",
+                "m/9'/1'/5'/0'/0'/0'/0'",
+                "m/9'/1'/15'/0'/1/2",
+                "m/44'/1'/0'",
+                "m/44'/5'/0'/0/0",
+                "m",
+            ] {
+                assert!(uses(s, other).is_empty(), "{s:?} {other}");
+            }
+        }
+        for other in OTHER_SCOPES {
+            for p in [
+                "m/9'/1'/3'/2'/0",
+                "m/44'/1'/0'/0/0",
+                "m/0'/1/3",
+                "m/9'/1'/3'/1'/0",
+            ] {
+                assert!(
+                    !other.allows(KeyUse::MasternodeWithdrawal, &path(p), T),
+                    "{other:?} {p}"
+                );
+            }
+            for role in ["owner", "voting", "payout"] {
+                assert!(
+                    !other.allows_attached(KeyUse::MasternodeWithdrawal, role),
+                    "{other:?} {role}"
+                );
+            }
+        }
+        for s in [WITHDRAW_OWNER, withdraw_payout()] {
+            assert!(s.allows_attached(KeyUse::MasternodeWithdrawal, "owner"));
+            assert!(s.allows_attached(KeyUse::MasternodeWithdrawal, "payout"));
+            assert!(!s.allows_attached(KeyUse::MasternodeWithdrawal, "voting"));
+            assert!(!s.allows_attached(KeyUse::MasternodeWithdrawal, "operator"));
+            for key_use in ALL_USES
+                .into_iter()
+                .filter(|u| *u != KeyUse::MasternodeWithdrawal)
+            {
+                for role in ["owner", "voting", "payout"] {
+                    assert!(
+                        !s.allows_attached(key_use, role),
+                        "{s:?} {key_use:?} {role}"
+                    );
+                }
+            }
+        }
+    }
+}

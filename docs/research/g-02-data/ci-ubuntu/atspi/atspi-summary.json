@@ -1,0 +1,186 @@
+{
+  "summary": {
+    "application": "dash-wallet",
+    "overview": {
+      "nodes": 56,
+      "interactive": 17,
+      "unnamed": 0,
+      "unnamedDetail": [],
+      "interactiveNames": [
+        "push button: 30.39 tDASH",
+        "push button: Alice 5:46 AM\n-0.50000226 tDASH",
+        "push button: Back up",
+        "push button: Coffee refund 1:10 AM InstantSend\n+1.25 tDASH",
+        "push button: Exchange withdrawal 1:44 AM\n+0.32237277 tDASH",
+        "push button: Filter",
+        "push button: Lock wallet",
+        "push button: Masternode reward 11:06 AM\n+0.71561845 tDASH",
+        "push button: Overview",
+        "push button: Receive",
+        "push button: Received 1:40 AM Pending\n+0.20 tDASH",
+        "push button: Scan QR",
+        "push button: Send",
+        "push button: Transactions",
+        "toggle button: Hide balance"
+      ]
+    },
+    "transactions": {
+      "nodes": 255,
+      "interactive": 19,
+      "unnamed": 0,
+      "unnamedDetail": [],
+      "interactiveNames": [
+        "entry: Search address, transaction id or label",
+        "push button: Alice 5:46 AM\n-0.50000226 tDASH",
+        "push button: Coffee refund 1:10 AM InstantSend\n+1.25 tDASH",
+        "push button: Exchange withdrawal 1:44 AM\n+0.32237277 tDASH",
+        "push button: Lock wallet",
+        "push button: Masternode reward 11:06 AM\n+0.71561845 tDASH",
+        "push button: Mined 9:15 AM\nLocked +2.88 tDASH",
+        "push button: Overview",
+        "push button: Receive",
+        "push button: Received 1:40 AM Pending\n+0.20 tDASH",
+        "push button: Send",
+        "push button: Sent to yourself 10:57 PM\n0.00000429 tDASH",
+        "push button: Transactions",
+        "toggle button: All",
+        "toggle button: Hide balance",
+        "toggle button: Mixing",
+        "toggle button: Received",
+        "toggle button: Rewards",
+        "toggle button: Sent"
+      ]
+    },
+    "txDetail": {
+      "nodes": 27,
+      "interactive": 3,
+      "unnamed": 0,
+      "unnamedDetail": [],
+      "interactiveNames": [
+        "push button: Close",
+        "push button: Copy address",
+        "push button: Copy transaction ID"
+      ]
+    },
+    "unlock": {
+      "nodes": 15,
+      "interactive": 2,
+      "unnamed": 0,
+      "unnamedDetail": [],
+      "interactiveNames": [
+        "password text: Passphrase",
+        "push button: Unlock"
+      ]
+    }
+  },
+  "checks": [
+    {
+      "kind": "hard",
+      "name": "dash-wallet is on the AT-SPI bus",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "soft",
+      "name": "application name is 'Dash Wallet'",
+      "ok": false,
+      "detail": "dash-wallet"
+    },
+    {
+      "kind": "hard",
+      "name": "web content is exposed (Overview controls found)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "hard",
+      "name": "press 'Transactions' through AT-SPI Action",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "hard",
+      "name": "press 'Received 1:40 AM Pending\n+0.20 tDASH' through AT-SPI Action",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "hard",
+      "name": "the detail sheet is a dialog",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "soft",
+      "name": "the dialog is named",
+      "ok": true,
+      "detail": "Transaction details"
+    },
+    {
+      "kind": "hard",
+      "name": "press 'Close' through AT-SPI Action",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "hard",
+      "name": "press 'Lock wallet' through AT-SPI Action",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "hard",
+      "name": "the passphrase field is named",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "soft",
+      "name": "type the passphrase through AT-SPI EditableText",
+      "ok": false,
+      "detail": "WebKitGTK refuses programmatic text on a password field"
+    },
+    {
+      "kind": "hard",
+      "name": "type the passphrase with the keyboard (xdotool)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "hard",
+      "name": "press 'Unlock' through AT-SPI Action",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "hard",
+      "name": "unlocking through AT-SPI removes the lock screen",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "kind": "hard",
+      "name": "overview: 0 unnamed interactive elements (17 interactive)",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "kind": "hard",
+      "name": "transactions: 0 unnamed interactive elements (19 interactive)",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "kind": "hard",
+      "name": "txDetail: 0 unnamed interactive elements (3 interactive)",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "kind": "hard",
+      "name": "unlock: 0 unnamed interactive elements (2 interactive)",
+      "ok": true,
+      "detail": "[]"
+    }
+  ]
+}

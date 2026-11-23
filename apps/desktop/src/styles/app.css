@@ -1,0 +1,6502 @@
+/* Screen and component styles (UX-SPEC §3, §4). Values come only from tokens.generated.css;
+   a literal here is either structural (0, 1px hairline, 50%) or a derived layout number named
+   in a comment. No hex or rgb literal may appear in this file (checked by `pnpm test`). */
+
+/* ------------------------------------------------------------------ base */
+
+/* A page title focused after a link, a menu or the unlock opened its page (shellBridge.ts
+   focusPage), or a sheet focused because nothing in it can be pressed, shows no ring: it is not a
+   control. */
+.page h1[tabindex="-1"]:focus,
+.sheet[tabindex="-1"]:focus {
+  outline: none;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--dw-font-family);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+  font-weight: var(--dw-type-subhead-weight);
+  color: var(--dw-role-text-primary);
+  background: var(--dw-role-canvas);
+  -webkit-font-smoothing: antialiased;
+  font-synthesis: none;
+  overflow: hidden;
+}
+
+h1,
+h2,
+h3,
+p,
+dl,
+dd {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* Checkboxes and radios are drawn from tokens, not by the engine: WebKitGTK paints a native
+   unchecked box solid white in dark appearance, where it reads as checked. Unchecked is an
+   outline on the surface behind it; checked fills with the accent and draws the mark. */
+input[type="checkbox"],
+input[type="radio"] {
+  --check-fill: var(--dw-role-accent);
+  --check-mark: var(--dw-role-text-on-hero);
+  -webkit-appearance: none; /* WebKitGTK before 2.36 knows only the prefixed property */
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  flex: none;
+  width: 16px; /* the box: a touch over the 13 px native one, for the drawn tick */
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid var(--dw-role-text-tertiary);
+  border-radius: var(--dw-space-xxs); /* no radius token is this small */
+  background: transparent;
+  vertical-align: middle;
+}
+
+input[type="radio"] {
+  border-radius: 50%;
+}
+
+input[type="checkbox"]:checked,
+input[type="radio"]:checked {
+  border-color: var(--check-fill);
+  background: var(--check-fill);
+}
+
+input[type="checkbox"]:checked::before {
+  content: "";
+  width: 9px; /* the tick's long arm, 16 px box */
+  height: 5px;
+  margin-top: -2px; /* centres the rotated tick */
+  border: solid var(--check-mark);
+  border-width: 0 0 2px 2px;
+  transform: rotate(-45deg);
+}
+
+input[type="radio"]:checked::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--check-mark);
+}
+
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled {
+  opacity: var(--dw-opacity-disabled);
+}
+
+/* High contrast replaces backgrounds, which would hide the fill and the radio's dot: the
+   engine's own control follows the system colours there. */
+@media (forced-colors: active) {
+  input[type="checkbox"],
+  input[type="radio"] {
+    -webkit-appearance: auto;
+    appearance: auto;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--dw-role-accent);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.mono {
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  word-break: break-all;
+}
+
+.boot-error {
+  padding: var(--dw-space-xxl);
+  color: var(--dw-role-danger);
+}
+
+/* ------------------------------------------------------------------ shell (§4.1) */
+
+.app,
+.app-chrome {
+  height: 100%;
+}
+
+/* What a network switch's card covers (App): no box of its own, only its inertness. */
+.app-under-switch {
+  display: contents;
+}
+
+.app-chrome {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px; /* one 28 pt toolbar button + 6 pt above and below */
+  padding: 0 var(--dw-space-l);
+  border-bottom: 1px solid var(--dw-role-separator);
+  background: var(--dw-role-canvas);
+}
+
+.toolbar-wallet {
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.toolbar-start,
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.toolbar-start {
+  gap: var(--dw-space-m);
+  min-width: 0;
+}
+
+/* The identity chip (DASHPAY §4): avatar and @username, or the way into DashPay. */
+.identity-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  height: 28px; /* the toolbar buttons' 28 px (.toolbar-button), one row */
+  padding: 0 var(--dw-space-sm);
+  border: 0;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.identity-chip:hover {
+  background: var(--dw-role-accent-tint-strong);
+}
+
+.identity-chip-avatar {
+  display: grid;
+  place-items: center;
+  /* 20 px: the chip's 28 px less a 4 px ring above and below. */
+  width: 20px;
+  height: 20px;
+  margin-inline-start: calc(-1 * var(--dw-space-xxs));
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+  font-size: var(--dw-type-caption2-size);
+  line-height: var(--dw-type-caption2-line);
+}
+
+.wallet-picker {
+  max-width: var(--dw-layout-sidebar-ideal-width);
+  padding: var(--dw-space-xxs) var(--dw-space-xs);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+}
+
+/* 16 px: one caption2 digit's line, so a single-digit badge is round. */
+.toolbar-badge,
+.sidebar-badge {
+  min-width: 16px;
+  padding: 0 var(--dw-space-xxs);
+  border-radius: var(--dw-radius-badge);
+  background: var(--dw-role-danger);
+  color: var(--dw-role-text-on-hero);
+  font-size: var(--dw-type-caption2-size);
+  font-weight: var(--dw-type-caption1-medium-weight);
+  line-height: 16px;
+  text-align: center;
+}
+
+.toolbar-badge {
+  position: absolute;
+  top: calc(-1 * var(--dw-space-xxxs));
+  inset-inline-end: calc(-1 * var(--dw-space-xxs));
+}
+
+.toolbar-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dw-radius-small);
+  background: transparent;
+  color: var(--dw-role-text-secondary);
+  cursor: default;
+}
+
+.toolbar-button:hover:not(:disabled) {
+  background: var(--dw-role-accent-tint);
+}
+
+.toolbar-button:disabled {
+  opacity: var(--dw-opacity-disabled);
+}
+
+.toolbar-icon,
+.sidebar-icon,
+.sheet-close svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.app-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.sidebar {
+  width: var(--dw-layout-sidebar-ideal-width);
+  padding: var(--dw-space-sm);
+  border-inline-end: 1px solid var(--dw-role-separator);
+  background: var(--dw-role-canvas);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Settings sits at the foot, whatever the height. */
+.sidebar-list.sidebar-foot {
+  margin-top: auto;
+  padding-top: var(--dw-space-sm);
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  width: 100%;
+  padding: var(--dw-space-xs) var(--dw-space-m);
+  border: 0;
+  border-radius: var(--dw-radius-small);
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--dw-motion-hover);
+}
+
+.sidebar-title {
+  flex: 1;
+}
+
+.sidebar-item .sidebar-icon {
+  color: var(--dw-role-accent);
+}
+
+.sidebar-item:hover:not(.is-current) {
+  background: var(--dw-role-accent-tint);
+}
+
+.sidebar-item.is-current {
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+}
+
+.sidebar-item.is-current .sidebar-icon {
+  color: var(--dw-role-text-on-hero);
+}
+
+.sidebar-item[aria-disabled="true"] {
+  color: var(--dw-role-text-tertiary);
+}
+
+.sidebar-item[aria-disabled="true"] .sidebar-icon {
+  color: var(--dw-role-text-tertiary);
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--dw-layout-status-bar-height);
+  padding: 0 var(--dw-space-l);
+  border-top: 1px solid var(--dw-role-separator);
+  background: var(--dw-role-canvas);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+  color: var(--dw-role-text-primary);
+}
+
+.status-left,
+.status-right {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-l);
+}
+
+.status-progress {
+  width: var(--dw-layout-status-progress-width);
+  height: 4px;
+  accent-color: var(--dw-role-accent);
+}
+
+/* ------------------------------------------------------------------ pages */
+
+/* Routes a later task builds, their tabs and the prefilled forms links open (screens/Routes.tsx). */
+.placeholder {
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+  color: var(--dw-role-text-secondary);
+}
+
+.contact-activity-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  text-align: center;
+}
+
+.placeholder-note,
+.form-problem {
+  margin: 0 0 var(--dw-space-m);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  color: var(--dw-role-text-secondary);
+}
+
+.form-problem {
+  color: var(--dw-role-danger);
+}
+
+.tabs {
+  display: flex;
+  gap: var(--dw-space-xxs);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-space-xxxs);
+  border-radius: var(--dw-radius-switcher);
+  background: var(--dw-role-neutral-tint);
+  width: fit-content;
+  flex-wrap: wrap;
+}
+
+.tab {
+  padding: var(--dw-space-xxs) var(--dw-space-m);
+  border: 0;
+  border-radius: var(--dw-radius-switcher);
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  cursor: default;
+}
+
+.tab[aria-selected="true"] {
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-card);
+}
+
+.pay-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  max-width: var(--dw-layout-form-max-width);
+}
+
+.pay-form .placeholder {
+  margin: 0;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.form-field input {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-body-size);
+  font-weight: var(--dw-type-body-weight);
+  line-height: var(--dw-type-body-line);
+}
+
+.form-field input.mono {
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+}
+
+.add-contact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.add-contact p {
+  margin: 0;
+}
+
+.add-contact-title {
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.add-contact-actions {
+  display: flex;
+  gap: var(--dw-space-s);
+  margin-top: var(--dw-space-s);
+}
+
+/* Add Contact (DP2-08, screens/contacts/AddContact.tsx). */
+.add-contact-slot .tabs {
+  margin-bottom: var(--dw-space-m);
+}
+
+.add-contact-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s);
+}
+
+.add-contact-candidate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-m);
+  border: 1px solid var(--dw-role-separator);
+  border-radius: var(--dw-radius-card);
+}
+
+.add-contact-name {
+  margin: 0;
+  font-size: var(--dw-type-body-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-body-line);
+  overflow-wrap: anywhere;
+}
+
+.add-contact-identity,
+.add-contact-link-text {
+  overflow-wrap: anywhere;
+}
+
+/* The wipe's warning and its sentence are long runs in some languages: they wrap rather than widening the sheet. */
+.settings-wipe-warning,
+.settings-wipe-label {
+  overflow-wrap: anywhere;
+}
+
+/* A banned masternode's notice is a long run in some languages: it wraps rather than widening the pane. */
+.mn-banned-notice {
+  overflow-wrap: anywhere;
+}
+
+.share-who {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dw-space-s);
+  margin-bottom: var(--dw-space-s);
+}
+
+.share-who-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.share-who-name {
+  font-size: var(--dw-type-body-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-body-line);
+  overflow-wrap: anywhere;
+}
+
+.share-who-username {
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  color: var(--dw-role-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.add-contact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.add-contact-source {
+  color: var(--dw-role-text-secondary);
+}
+
+.add-contact-status .add-contact-actions {
+  flex-wrap: wrap;
+}
+
+.add-contact-search,
+.add-contact-scan,
+.add-contact-my-qr {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+/* The search field grows along the filter bar's row; here it is one line of the column. */
+.add-contact-search .search-field {
+  flex: none;
+}
+
+.add-contact-my-qr .qr,
+.add-contact-my-qr .qr-placeholder {
+  align-self: center;
+}
+
+.add-contact-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-l) var(--dw-space-m);
+  border: 2px dashed var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-card);
+  text-align: center;
+}
+
+.add-contact-drop.is-over {
+  border-color: var(--dw-role-accent);
+  background: var(--dw-role-accent-tint);
+}
+
+/* ------------------------------------------------------------------ contacts (DP2-07, screens/contacts) */
+
+/* The list and the detail slot side by side; stacked once both no longer fit 300 px. Groups and
+   rows are Activity's (.tx-group, .tx-row). */
+.page-contacts .page-column {
+  max-width: calc(var(--dw-layout-content-max-width) + var(--dw-layout-sheet-width-small));
+}
+
+.contacts-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-space-s) var(--dw-space-l);
+  border-radius: var(--dw-radius-group);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.contacts-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: var(--dw-space-l);
+}
+
+.contacts-split.is-solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.contacts-list {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--dw-space-stack);
+  min-width: 0;
+}
+
+.contacts-pane {
+  position: sticky;
+  top: var(--dw-space-l);
+  min-width: 0;
+}
+
+.contacts-group-title {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-space-l) var(--dw-space-xxs);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.contacts-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.contacts-disclosure::before {
+  content: "";
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-inline-start: 5px solid currentColor;
+  transition: transform var(--dw-motion-hover);
+}
+
+.contacts-disclosure[aria-expanded="true"]::before {
+  transform: rotate(90deg);
+}
+
+.contact-row[aria-current="true"] {
+  background: var(--dw-role-accent-tint);
+}
+
+/* On a row the chips sit on the card's own colour, so a selected row's tint under them keeps
+   their text at AA (axe). */
+.contact-row .chip-info {
+  background: linear-gradient(var(--dw-role-accent-tint), var(--dw-role-accent-tint)), var(--dw-role-card);
+}
+
+.contact-row .chip-danger {
+  background: linear-gradient(var(--dw-role-danger-tint), var(--dw-role-danger-tint)), var(--dw-role-card);
+}
+
+.contact-row .chip-warning {
+  background: linear-gradient(var(--dw-role-warning-tint), var(--dw-role-warning-tint)), var(--dw-role-card);
+}
+
+.contact-row-username,
+.contact-row-note,
+.contacts-network-note,
+.contacts-updating {
+  margin: 0;
+  overflow: hidden;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-overflow: ellipsis;
+}
+
+.contact-row-trailing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--dw-space-xs);
+}
+
+.contacts-network-note {
+  padding: var(--dw-space-xs) var(--dw-space-l) var(--dw-space-s);
+}
+
+.contacts-more {
+  margin: 0 var(--dw-space-l) var(--dw-space-s);
+}
+
+.contact-avatar {
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  /* The accent tint on a card, opaque: on a selected row or the bell's raised panel a translucent
+     tint would darken under the link-coloured initials (DP2-09 axe). */
+  background: color-mix(in srgb, var(--dw-role-accent) 10%, var(--dw-role-card));
+  color: var(--dw-role-text-link);
+  font-weight: var(--dw-type-caption1-medium-weight);
+}
+
+.contact-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.contact-avatar-row {
+  width: var(--dw-layout-row-icon-size);
+  height: var(--dw-layout-row-icon-size);
+  font-size: var(--dw-type-caption1-medium-size);
+}
+
+.contact-avatar-pane {
+  flex: none;
+  width: 56px;
+  height: 56px;
+  font-size: var(--dw-type-title3-size);
+}
+
+.contact-detail {
+  gap: var(--dw-space-m);
+  margin-bottom: 0;
+}
+
+.contact-detail-header {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  min-width: 0;
+}
+
+.contact-detail-names {
+  min-width: 0;
+}
+
+/* Over .add-contact p's margin. */
+.contact-detail .contact-detail-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
+  margin-top: var(--dw-space-xs);
+}
+
+.contact-detail-facts dd {
+  overflow-wrap: anywhere;
+}
+
+.about-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--dw-space-xs) var(--dw-space-l);
+  margin: 0;
+}
+
+.about-list dt {
+  color: var(--dw-role-text-secondary);
+}
+
+.about-list dd {
+  margin: 0;
+}
+
+.page {
+  min-height: 0;
+  overflow: auto;
+  background: var(--dw-role-canvas);
+}
+
+.page-column {
+  box-sizing: content-box;
+  max-width: var(--dw-layout-content-max-width);
+  margin: 0 auto;
+  padding: 0 var(--dw-layout-page-padding-h) var(--dw-layout-section-gap);
+}
+
+.top-intro {
+  padding: var(--dw-layout-page-padding-top) 0 var(--dw-space-l);
+}
+
+.top-intro-title {
+  font-size: var(--dw-type-title2-size);
+  font-weight: var(--dw-type-title2-weight);
+  line-height: var(--dw-type-title2-line);
+}
+
+/* ------------------------------------------------------------------ amounts (C10) */
+
+.amount {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.glyph {
+  display: inline-block;
+  /* glyph-dash-currency is 72 × 54 px @2x: width = height × 4/3 */
+  height: calc(1em * var(--glyph-factor, 1));
+  width: calc(1em * var(--glyph-factor, 1) * 4 / 3);
+  margin-inline-start: var(--dw-space-xxxs);
+  background-color: currentColor;
+  -webkit-mask: var(--glyph-url) center / contain no-repeat;
+  mask: var(--glyph-url) center / contain no-repeat;
+  vertical-align: baseline;
+}
+
+/* The Dash wordmark as a template; each use sets its size and colour. */
+.dash-logo {
+  -webkit-mask: var(--logo-url) center / contain no-repeat;
+  mask: var(--logo-url) center / contain no-repeat;
+}
+
+/* ------------------------------------------------------------------ chips and buttons (C20, C14) */
+
+.chip {
+  display: inline-block;
+  padding: 1px var(--dw-space-xs);
+  border-radius: var(--dw-radius-switcher);
+  font-size: var(--dw-type-caption1-medium-size);
+  font-weight: var(--dw-type-caption1-medium-weight);
+  line-height: var(--dw-type-caption1-medium-line);
+  white-space: nowrap;
+}
+
+.chip-info {
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-link);
+}
+
+.chip-danger {
+  background: var(--dw-role-danger-tint);
+  color: var(--dw-role-danger);
+}
+
+.chip-warning {
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-warning);
+}
+
+.network-capsule {
+  display: inline-block;
+  padding: 3px var(--dw-space-sm);
+  border-radius: var(--dw-radius-capsule);
+  background: color-mix(in srgb, var(--dw-role-network-capsule) calc(var(--dw-opacity-network-capsule) * 100%), transparent);
+  color: var(--dw-role-text-on-hero);
+  font-size: var(--dw-type-caption2-size);
+  font-weight: 700; /* UX-SPEC §2.2: caption2 bold for the capsule */
+  line-height: var(--dw-type-caption2-line);
+  letter-spacing: 1.2px; /* UX-SPEC §2.2: tracking 1.2 */
+}
+
+.experimental-badge {
+  display: inline-block;
+  margin-inline-start: var(--dw-space-xs);
+  padding: 0 var(--dw-space-xs);
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-warning);
+  font-size: var(--dw-type-caption2-size);
+  font-weight: 700;
+  line-height: var(--dw-type-caption2-line);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* The selected item's accent fill sits under the badge in both themes, so it gets its own fixed pair. */
+.sidebar-item.is-current .experimental-badge {
+  background: var(--dw-c-white);
+  color: var(--dw-c-black);
+}
+
+.network-capsule-slot {
+  display: block;
+  height: 19px; /* capsule height, so the hero never jumps on mainnet */
+}
+
+.dash-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  font-family: inherit;
+  cursor: default;
+  transition: filter var(--dw-motion-hover);
+}
+
+/* The reason a disabled button waits (DEC-1058): a line beside it, wrapping under it in a button row. */
+.dash-button-why {
+  flex: 1 0 100%;
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  color: var(--dw-role-text-secondary);
+}
+
+.dash-button:hover:not(:disabled):not([aria-disabled="true"]) {
+  filter: brightness(0.96); /* UX-SPEC §3.2: buttons darken 4 % on hover */
+}
+
+.dash-button-fill {
+  width: 100%;
+}
+
+.dash-button-large {
+  padding: var(--dw-button-large-padding);
+  gap: var(--dw-button-large-gap);
+  border-radius: var(--dw-button-large-radius);
+  font-size: var(--dw-button-large-font);
+  font-weight: var(--dw-type-callout-medium-weight);
+  line-height: var(--dw-type-callout-medium-line);
+}
+
+.dash-button-medium {
+  padding: var(--dw-button-medium-padding);
+  gap: var(--dw-button-medium-gap);
+  border-radius: var(--dw-button-medium-radius);
+  font-size: var(--dw-button-medium-font);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.dash-button-small {
+  padding: var(--dw-button-small-padding);
+  gap: var(--dw-button-small-gap);
+  border-radius: var(--dw-button-small-radius);
+  font-size: var(--dw-button-small-font);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.dash-button-filledBlue {
+  /* Not buttonFilledBlueBackground: white text takes the AA accent (UX-SPEC §2.1a), as the
+   * sidebar's selection does. */
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+}
+
+.dash-button-filledBlue:disabled {
+  background: var(--dw-c-button-filled-blue-background-disabled);
+  color: var(--dw-c-button-filled-blue-content-disabled);
+}
+
+.dash-button-tintedBlue {
+  background: var(--dw-c-button-tinted-blue-background);
+  /* As plainBlue: blue text takes the AA link colour (UX-SPEC §2.1a). */
+  color: var(--dw-role-text-link);
+}
+
+.dash-button-tintedBlue:disabled {
+  background: var(--dw-c-button-tinted-blue-background-disabled);
+  color: var(--dw-c-button-tinted-blue-content-disabled);
+}
+
+.dash-button-tintedGray {
+  background: var(--dw-c-button-tinted-gray-background);
+  color: var(--dw-c-button-tinted-gray-content);
+}
+
+.dash-button-tintedGray:disabled {
+  background: var(--dw-c-button-tinted-gray-background-disabled);
+  color: var(--dw-c-button-tinted-gray-content-disabled);
+}
+
+.dash-button-plainRed {
+  background: transparent;
+  color: var(--dw-role-danger);
+}
+
+.dash-button-plainBlue:disabled,
+.dash-button-plainRed:disabled {
+  color: var(--dw-role-plain-content-disabled);
+}
+
+.dash-button-plainBlue {
+  background: transparent;
+  /* Not buttonPlainBlueContent: blue text takes the AA link colour (UX-SPEC §2.1a). */
+  color: var(--dw-role-text-link);
+}
+
+.dash-button-filledWhiteBlue {
+  background: var(--dw-c-button-filled-white-background);
+  color: var(--dw-c-button-filled-white-content);
+}
+
+.dash-button-filledWhiteBlue:disabled {
+  background: var(--dw-c-button-filled-white-background-disabled);
+  color: var(--dw-c-button-filled-white-content-disabled);
+}
+
+/* A disabled button stays readable in both themes (DEC-1058): the generated disabled tokens are
+ * 40 % ink, and in the dark theme dark ink on a dark card. Text takes the tertiary role colour
+ * (AA on both surfaces) on a neutral tint, whatever the style, and the cursor says "not here". */
+.dash-button:disabled:not(.dash-button-plainBlue):not(.dash-button-plainRed):not(.dash-button-plainWhite) {
+  background: var(--dw-c-button-tinted-gray-background);
+  color: var(--dw-role-text-tertiary);
+}
+
+.dash-button-plainBlue:disabled,
+.dash-button-plainRed:disabled {
+  color: var(--dw-role-text-tertiary);
+}
+
+.dash-button:disabled {
+  cursor: not-allowed;
+}
+
+.dash-button-plainWhite {
+  background: transparent;
+  color: var(--dw-c-button-plain-white-content);
+}
+
+/* ------------------------------------------------------------------ hero (C4, C5) */
+
+.hero-band {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: var(--dw-layout-hero-height);
+  padding: var(--dw-space-l) var(--dw-layout-page-padding-h) 0;
+  background: var(--dw-role-hero);
+  color: var(--dw-role-text-on-hero);
+}
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: var(--dw-layout-content-max-width);
+}
+
+.hero :focus-visible,
+.lock-screen :focus-visible {
+  outline-color: var(--dw-role-text-on-hero);
+}
+
+.hero-caption {
+  height: var(--dw-type-caption1-line);
+  margin-top: var(--dw-space-xs);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.hero-amount {
+  padding: 0 var(--dw-space-s);
+  border: 0;
+  border-radius: var(--dw-radius-standard);
+  background: transparent;
+  color: var(--dw-role-text-on-hero);
+  font-size: var(--dw-type-large-title-size);
+  font-weight: var(--dw-type-large-title-weight);
+  line-height: var(--dw-type-large-title-line);
+  cursor: default;
+}
+
+/* The decimals past the second, smaller, as the mobile wallets draw them; still exact. */
+.hero-amount .amount-minor {
+  font-size: var(--dw-type-title2-size);
+  line-height: var(--dw-type-title2-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.hero-unknown {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.hero-unknown-caption {
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+/* MP-01: the fiat row under the hero amount; the band grows by its line only while it shows. */
+.hero-band:has(.hero-fiat) {
+  height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line));
+}
+
+/* No breakdown under the amount: the shorter band the balance alone needs, plus a line for each of
+   the fiat row and the note of what Core has pending. */
+@media (min-width: 980px) {
+  .hero-band:has(.hero[data-breakdown="none"]) {
+    height: var(--dw-layout-hero-height-hidden);
+  }
+  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat),
+  .hero-band:has(.hero[data-breakdown="none"] .hero-note) {
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line));
+  }
+  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat):has(.hero-note) {
+    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line));
+  }
+}
+
+.hero-note {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.hero-fiat {
+  display: flex;
+  gap: var(--dw-space-s);
+  align-items: baseline;
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.hero-fiat .fiat-line,
+.hero-fiat-note.is-quiet,
+.breakdown-fiat {
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.hero-fiat-note.is-caution {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+/* Stale (rates-engine §2): the caution colour and marker; the title gives the price's time. */
+.fiat-line.is-stale,
+.hero-fiat .fiat-line.is-stale,
+.hero-fiat-note.is-caution {
+  color: var(--dw-role-caution);
+  opacity: 1;
+}
+
+.fiat-line.is-stale::before {
+  content: "⚠ ";
+}
+
+.breakdown-amounts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.breakdown-fiat {
+  font-size: var(--dw-type-caption2-size);
+  font-weight: var(--dw-type-caption2-weight);
+  line-height: var(--dw-type-caption2-line);
+}
+
+.hero-breakdown {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  width: 100%;
+  max-width: var(--dw-layout-hero-strip-max-width);
+  margin-top: var(--dw-space-l);
+  border-radius: var(--dw-radius-standard);
+  background: color-mix(in srgb, var(--dw-role-hero-card) calc(var(--dw-opacity-hero-card) * 100%), transparent);
+}
+
+.hero-breakdown:has(> :nth-child(5)) {
+  grid-template-columns: 1fr auto 1fr auto 1fr;
+}
+
+.hero-breakdown:has(> :nth-child(7)) {
+  grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+}
+
+.breakdown-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-sm) var(--dw-space-l);
+}
+
+.breakdown-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.breakdown-title {
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.breakdown-subtitle {
+  font-size: var(--dw-type-caption2-size);
+  font-weight: var(--dw-type-caption2-weight);
+  line-height: var(--dw-type-caption2-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.breakdown-amount {
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.breakdown-divider {
+  width: 1px;
+  height: var(--dw-space-xxl);
+  background: color-mix(in srgb, var(--dw-role-hero-card) calc(var(--dw-opacity-hero-divider) * 100%), transparent);
+}
+
+@media (max-width: 900px) {
+  .contacts-split { grid-template-columns: minmax(0, 1fr); }
+  .contacts-pane { position: static; }
+}
+
+/* Narrow windows stack the strip's cells (UX-SPEC §4.5; the sidebar takes 220 of the 980). */
+@media (max-width: 979px) {
+  .hero-band, .hero-band:has(.hero-fiat) {
+    height: auto;
+    padding-bottom: var(--dw-space-l);
+  }
+  .hero-breakdown,
+  .hero-breakdown:has(> :nth-child(5)),
+  .hero-breakdown:has(> :nth-child(7)) {
+    grid-template-columns: 1fr;
+  }
+  .breakdown-divider {
+    width: auto;
+    height: 1px;
+    margin: 0 var(--dw-space-l);
+  }
+}
+
+/* ------------------------------------------------------------------ shortcut card (C6) */
+
+.shortcut-card {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  width: calc(100% - 2 * var(--dw-layout-page-padding-h));
+  max-width: var(--dw-layout-shortcut-card-max-width);
+  padding: var(--dw-space-xxs);
+  border: var(--dw-border-floating);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-floating);
+  transform: translate(-50%, 50%);
+}
+
+.shortcut-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-sm) var(--dw-space-xxs);
+  border: 0;
+  border-radius: var(--dw-radius-text-field);
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  cursor: default;
+  transition: background-color var(--dw-motion-hover);
+}
+
+.shortcut-item:hover:not([aria-disabled="true"]) {
+  background: var(--dw-role-accent-tint);
+}
+
+.shortcut-item[aria-disabled="true"] {
+  color: var(--dw-role-text-secondary);
+}
+
+.shortcut-item[aria-disabled="true"] .shortcut-icon {
+  opacity: 0.5;
+}
+
+.shortcut-icon {
+  width: var(--dw-layout-shortcut-icon-size);
+  height: var(--dw-layout-shortcut-icon-size);
+}
+
+.shortcut-title {
+  font-size: var(--dw-type-caption2-size);
+  font-weight: 600; /* UX-SPEC C6: caption2 semibold */
+  line-height: var(--dw-type-caption2-line);
+}
+
+/* The card's lower half (icon frame + caption + paddings ≈ 92 / 2) plus the section gap. */
+.page-overview .page-column {
+  padding-top: calc(var(--dw-layout-shortcut-icon-size) + var(--dw-layout-section-gap));
+}
+
+/* ------------------------------------------------------------------ history (C7, C8, C9) */
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--dw-space-xs);
+}
+
+.history-title {
+  padding-inline-start: var(--dw-space-xxs);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-subhead-size);
+  font-weight: var(--dw-type-subhead-weight);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.history-syncing {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+}
+
+.tx-groups {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--dw-space-stack);
+}
+
+.card-l1 {
+  border: var(--dw-border-card);
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-card);
+}
+
+.tx-group {
+  border-radius: var(--dw-radius-group);
+}
+
+.tx-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--dw-layout-day-header-height);
+  padding: var(--dw-space-xs) var(--dw-space-l) 0;
+}
+
+.tx-group-day {
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.tx-group-weekday {
+  color: var(--dw-role-text-tertiary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.tx-group-rows {
+  margin: 0;
+  padding: 0 var(--dw-space-xs) var(--dw-space-xs);
+  list-style: none;
+}
+
+.tx-mixing-members-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tx-row {
+  display: grid;
+  grid-template-columns: var(--dw-layout-row-icon-size) minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--dw-space-transaction-row-spacing);
+  width: 100%;
+  min-height: var(--dw-layout-tx-row-min-height);
+  padding: var(--dw-space-transaction-row-vertical) var(--dw-space-transaction-row-horizontal);
+  border: 0;
+  border-radius: var(--dw-radius-group);
+  background: transparent;
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--dw-motion-hover);
+}
+
+.tx-row:hover {
+  background: var(--dw-role-accent-tint);
+}
+
+.tx-row.is-readonly:hover {
+  background: transparent;
+}
+
+.tx-row-icon {
+  width: var(--dw-layout-row-icon-size);
+  height: var(--dw-layout-row-icon-size);
+}
+
+.tx-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+  min-width: 0;
+}
+
+.tx-row-title {
+  overflow: hidden;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tx-row-title.is-problem {
+  color: var(--dw-role-text-secondary);
+}
+
+.tx-row-subtitle {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.tx-row-time {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.tx-row-trailing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  align-self: start;
+}
+
+.tx-row-status {
+  color: var(--dw-role-warning);
+  font-size: var(--dw-type-caption1-medium-size);
+  font-weight: var(--dw-type-caption1-medium-weight);
+  line-height: var(--dw-type-caption1-medium-line);
+}
+
+.tx-row-amount {
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+/* The value now under the amount (MP-01). */
+.tx-row-fiat {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+}
+
+/* A stored request's value now, under its amount (MP-01). */
+.request-fiat {
+  display: block;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.tx-table td.is-stale {
+  color: var(--dw-role-caution);
+}
+
+.see-all {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--dw-space-m);
+}
+
+/* ------------------------------------------------------------------ empty and loading (C25, C26) */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-xxxl) var(--dw-space-xxl);
+  border-radius: var(--dw-radius-card);
+  text-align: center;
+}
+
+.empty-state-icon {
+  opacity: var(--dw-opacity-hero-hint);
+}
+
+.empty-state-art {
+  color: var(--dw-role-accent);
+  flex: none;
+}
+
+/* The accent used for text on light cards is too dim on a dark card. The link blue clears 4.5:1 there. */
+:root[data-theme="dark"] .empty-state-art {
+  color: var(--dw-role-text-link);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .empty-state-art {
+    color: var(--dw-role-text-link);
+  }
+}
+
+.empty-state-title {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.empty-state-message {
+  color: var(--dw-role-text-secondary);
+}
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-l);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.spinner {
+  width: var(--dw-space-l);
+  height: var(--dw-space-l);
+  border: 2px solid var(--dw-role-progress-track);
+  border-top-color: var(--dw-role-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ------------------------------------------------------------------ transactions (§4.9) */
+
+.tx-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-space-l);
+}
+
+.page-transactions .empty-state + [data-testid="tx-list"],
+.page-transactions .empty-state + .table-card {
+  margin-top: var(--dw-space-stack);
+}
+
+.search-field {
+  display: flex;
+  flex: 1 1 260px;
+  align-items: center;
+  gap: var(--dw-space-s);
+  height: 32px; /* UX-SPEC C18: 32 h */
+  padding: 0 var(--dw-space-sm);
+  border: 1px solid transparent;
+  border-radius: var(--dw-radius-search-field);
+  background: var(--dw-role-field-fill);
+}
+
+.search-field:focus-within {
+  border-color: var(--dw-role-field-stroke);
+  outline: 2px solid var(--dw-role-accent);
+  outline-offset: 2px;
+}
+
+.search-field input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  outline: none;
+}
+
+.search-field input::placeholder {
+  color: var(--dw-role-text-tertiary);
+}
+
+.filter-chips {
+  display: flex;
+  gap: var(--dw-space-xs);
+}
+
+.filter-chip {
+  height: 28px;
+  padding: 0 var(--dw-space-m);
+  border: 0;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  cursor: default;
+}
+
+.filter-chip.is-selected {
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+}
+
+.tx-sentinel {
+  min-height: 1px;
+}
+
+.tx-more-error {
+  padding: var(--dw-space-m) 0;
+  color: var(--dw-role-danger);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-align: center;
+}
+
+.tx-footer {
+  padding: var(--dw-space-l) 0 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-align: center;
+}
+
+/* ------------------------------------------------------------------ sheet (C23) and detail (§4.9) */
+
+.sheet-scrim {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--dw-space-xxxl);
+  background: var(--dw-role-overlay);
+}
+
+.sheet {
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  border: var(--dw-border-floating);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-floating);
+}
+
+.sheet-small {
+  width: var(--dw-layout-sheet-width-small);
+}
+
+.sheet-medium {
+  width: var(--dw-layout-sheet-width-medium);
+}
+
+.sheet-large {
+  width: var(--dw-layout-sheet-width-large);
+}
+
+.sheet-header {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px; /* 44 pt close target (UX-SPEC C23) */
+  align-items: center;
+  flex: none;
+  height: var(--dw-layout-sheet-header-height);
+  padding: 0 var(--dw-space-sm);
+}
+
+.sheet-title {
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+  text-align: center;
+}
+
+.sheet-close {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dw-role-text-secondary);
+}
+
+.sheet-close:hover {
+  background: var(--dw-role-accent-tint);
+}
+
+.sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+  padding: 0 var(--dw-layout-page-padding-h) var(--dw-layout-page-padding-h);
+  overflow: auto;
+}
+
+.tx-detail-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.tx-detail-who {
+  margin: 0;
+  max-width: 100%;
+  text-align: center;
+  font-size: var(--dw-type-title3-size);
+  font-weight: var(--dw-type-title3-weight);
+  line-height: var(--dw-type-title3-line);
+  overflow-wrap: anywhere;
+}
+
+.tx-detail-who-user {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.tx-detail-title {
+  font-size: var(--dw-type-title3-size);
+  font-weight: var(--dw-type-title3-weight);
+  line-height: var(--dw-type-title3-line);
+}
+
+.tx-detail-amount {
+  font-size: var(--dw-type-title1-size);
+  font-weight: var(--dw-type-title1-weight);
+  line-height: var(--dw-type-title1-line);
+}
+
+/* What the payment was worth when first seen (MP-01, rates-engine §6). */
+.tx-detail-fiat-then {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.tx-detail-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dw-space-s);
+}
+
+.tx-detail-date,
+.tx-detail-state {
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.tx-detail-date {
+  color: var(--dw-role-text-secondary);
+}
+
+.tx-detail-state.is-problem {
+  color: var(--dw-role-danger);
+}
+
+.tx-detail-explorer {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dw-role-text-link);
+  font-family: inherit;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.tx-detail-explorer:disabled {
+  color: var(--dw-role-plain-content-disabled);
+  text-decoration: none;
+  cursor: progress;
+}
+
+.io-heading {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-layout-card-padding) 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.detail-list {
+  padding: var(--dw-space-xs) var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.sheet .card-l1 {
+  background: var(--dw-role-card-raised);
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: var(--dw-layout-detail-label-width) minmax(0, 1fr);
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-sm) 0;
+}
+
+.detail-row + .detail-row {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.detail-label {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.detail-value {
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.detail-note {
+  color: var(--dw-role-text-secondary);
+}
+
+.copy-value {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--dw-space-s);
+}
+
+.copy-button {
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.disclosure {
+  border-radius: var(--dw-radius-card);
+}
+
+.disclosure summary {
+  padding: var(--dw-space-m) var(--dw-layout-card-padding);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.io-list {
+  margin: 0;
+  padding: 0 var(--dw-layout-card-padding) var(--dw-space-m);
+  list-style: none;
+}
+
+.io-row {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr) auto; /* the "#n" / short outpoint column */
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-xs) 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------ forms and tables (U-03) */
+
+.form-field input[aria-invalid="true"] {
+  border-color: var(--dw-role-danger);
+}
+
+.form-field select,
+.filter-select select,
+.inline-field select,
+.inline-field-column input,
+.filter-amount,
+.label-editor input,
+.tool-inline-form input,
+.tool-field,
+.console-input input {
+  padding: var(--dw-space-xs) var(--dw-space-sm);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.field-error,
+.field-hint {
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.field-error {
+  color: var(--dw-role-danger);
+}
+
+.field-hint,
+.text-secondary {
+  color: var(--dw-role-text-secondary);
+}
+
+.checkbox-row,
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.radio-group legend {
+  margin-bottom: var(--dw-space-xs);
+  padding: 0;
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.inline-field,
+.inline-field-column {
+  display: flex;
+  gap: var(--dw-space-s);
+  margin-inline-start: calc(16px + var(--dw-space-s)); /* under the radio's label */
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.inline-field {
+  align-items: center;
+}
+
+.inline-field-column {
+  flex-direction: column;
+  max-width: 320px;
+}
+
+.inline-field-column .inline-field {
+  margin-inline-start: 0;
+}
+
+.table-card {
+  overflow-x: auto;
+  border-radius: var(--dw-radius-card);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.data-table th {
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-bottom: 1px solid var(--dw-role-separator);
+  color: var(--dw-role-text-secondary);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  text-align: start;
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: var(--dw-space-s) var(--dw-space-m);
+  vertical-align: middle;
+}
+
+.data-table tbody tr + tr td {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.data-table .num {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.row-actions {
+  text-align: end;
+  white-space: nowrap;
+}
+
+.card-title {
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.card-actions,
+.sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+}
+
+.sheet-actions {
+  justify-content: flex-end;
+}
+
+.sheet-actions .dash-button {
+  flex: 1 1 0;
+}
+
+/* Pay's confirm sheet: three actions, one of them "Create Unsigned", each on one line. */
+.sheet-actions-fit .dash-button {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+
+.address-full {
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* ------------------------------------------------------------------ pay (§4.7) */
+
+.pay-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.amount-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.amount-entry input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* MP-01: the fiat toggle keeps its width, and the other unit sits under the field. */
+.amount-toggle {
+  flex: none;
+  white-space: nowrap;
+}
+
+.amount-secondary {
+  display: block;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  font-variant-numeric: tabular-nums;
+}
+
+.field-hint > .field-hint {
+  display: block;
+}
+
+.confirm-fiat {
+  display: block;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coin-control-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+  padding: 0 var(--dw-layout-card-padding) var(--dw-layout-card-padding);
+}
+
+.coin-table {
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.coin-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--dw-space-xs) var(--dw-space-m);
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coin-summary dt {
+  color: var(--dw-role-text-secondary);
+}
+
+.coin-summary dd {
+  margin: 0;
+}
+
+.change-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.pay-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+}
+
+.pay-footer-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.pay-footer-text .form-problem {
+  margin: 0;
+}
+
+/* Pay ▸ To a contact (DP3-06): the frequent strip, the payee card and the confirm sheet's payee. */
+/* The chooser is a column: the search field keeps its 32 px height instead of growing. */
+.pay-contact-chooser .search-field {
+  flex: none;
+}
+
+.pay-frequent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pay-frequent-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-xxs);
+  width: 80px;
+  padding: var(--dw-space-xs);
+  border: 0;
+  border-radius: var(--dw-radius-standard);
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.pay-frequent-chip:hover {
+  background: var(--dw-role-field-fill);
+}
+
+.pay-frequent-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The transaction detail's contact row (DP3-07 D6): avatar, names, View contact. */
+.tx-detail-contact {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.tx-detail-contact-names {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tx-detail-contact-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Home's frequent strip (DP3-07 D7): DP3-06's strip in a card above History. */
+.home-frequent {
+  margin-bottom: var(--dw-layout-section-gap);
+  padding-bottom: var(--dw-space-s);
+  border-radius: var(--dw-radius-card);
+}
+
+.home-frequent .pay-frequent-chips {
+  padding: 0 var(--dw-space-s);
+}
+
+.pay-payee-card {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pay-payee {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  min-width: 0;
+}
+
+.pay-payee-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pay-payee-name {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.pay-found-name {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+/* Flush with the card's edge, as the picker's line under the search. */
+.pay-found-address > .dash-button-plainBlue {
+  padding-inline-start: 0;
+  padding-inline-end: 0;
+}
+
+.pay-banner {
+  margin-bottom: 0;
+}
+
+.pay-fee-line {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.confirm,
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+}
+
+.confirm-summary,
+.result {
+  align-items: center;
+  text-align: center;
+}
+
+.confirm-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.confirm-amount,
+.result-amount {
+  font-size: var(--dw-type-title1-size);
+  font-weight: var(--dw-type-title1-weight);
+  line-height: var(--dw-type-title1-line);
+}
+
+.confirm-question,
+.result-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.confirm-label {
+  display: block;
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.confirm .form-problem {
+  margin: 0;
+}
+
+.result {
+  gap: var(--dw-space-s);
+}
+
+.result-sent svg {
+  color: var(--dw-role-success);
+}
+
+.result-unknown svg {
+  color: var(--dw-role-warning);
+}
+
+.result-failed svg {
+  color: var(--dw-role-danger);
+}
+
+.result-failed .result-text {
+  color: var(--dw-role-text-primary);
+}
+
+/* ------------------------------------------------------------------ receive (§4.8) */
+
+.receive-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--dw-space-l);
+  margin-bottom: var(--dw-layout-section-gap);
+}
+
+/* Receive on Platform (0.2 X1b): collapsed under the Dash address. */
+.platform-receive {
+  margin-bottom: var(--dw-layout-section-gap);
+}
+
+.platform-receive-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-m);
+  padding: 0 var(--dw-layout-card-padding) var(--dw-layout-card-padding);
+}
+
+.receive-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+/* The request column keeps one size on every tab: the form and the Platform or Shielded panel share
+   one cell, the form kept (inert and unseen) while another tab shows. */
+.receive-request {
+  display: grid;
+  align-self: start;
+}
+
+.receive-request > * {
+  grid-area: 1 / 1;
+}
+
+.request-form[inert] {
+  visibility: hidden;
+}
+
+.request-unavailable p {
+  margin: 0;
+}
+
+.receive-card .qr,
+.receive-card .qr-placeholder,
+.receive-card .qr-problem {
+  align-self: center;
+}
+
+.request-form .placeholder-note,
+.receive-card .form-problem {
+  margin: 0;
+}
+
+.request-form .card-actions {
+  justify-content: flex-end;
+}
+
+.requests .row-actions {
+  white-space: normal;
+}
+
+/* Scanners need dark modules on a light ground: the code keeps it in dark appearance too. */
+.qr {
+  display: block;
+  border-radius: var(--dw-radius-small);
+}
+
+.qr-light {
+  fill: var(--dw-c-white);
+}
+
+.qr-dark {
+  fill: var(--dw-c-black);
+}
+
+.qr-placeholder {
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-field-fill);
+}
+
+.qr-problem {
+  max-width: 280px;
+  margin: 0;
+  color: var(--dw-role-danger);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-align: center;
+}
+
+.request-qr {
+  display: flex;
+  justify-content: center;
+}
+
+.requests .history-title {
+  margin-bottom: var(--dw-space-m);
+}
+
+/* ------------------------------------------------------------------ activity table (§4.9, U-03 D13) */
+
+.top-intro-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
+/* A header's action keeps its label on one line beside the title. */
+.top-intro-row > .dash-button {
+  flex: none;
+  white-space: nowrap;
+}
+
+.tx-intro-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.segmented {
+  display: flex;
+  gap: var(--dw-space-xxxs);
+  padding: var(--dw-space-xxxs);
+  border-radius: var(--dw-radius-switcher);
+  background: var(--dw-role-neutral-tint);
+}
+
+.segment {
+  padding: var(--dw-space-xxs) var(--dw-space-m);
+  border: 0;
+  border-radius: var(--dw-radius-switcher);
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  cursor: default;
+}
+
+.segment[aria-pressed="true"] {
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-card);
+}
+
+.tx-filter-row {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-m);
+}
+
+.filter-select {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.filter-amount {
+  width: 110px;
+}
+
+.filter-amount[aria-invalid="true"] {
+  border-color: var(--dw-role-danger);
+}
+
+.page-wide .page-column,
+.page-transactions.is-table .page-column {
+  max-width: none;
+}
+
+.tx-table-status {
+  width: 1px;
+}
+
+.tx-table td.is-problem {
+  color: var(--dw-role-danger);
+}
+
+.tx-table-party {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sort-button,
+.table-open {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+}
+
+.sort-button {
+  display: inline-flex;
+  gap: var(--dw-space-xxs);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.num .sort-button {
+  flex-direction: row-reverse;
+}
+
+.sort-mark {
+  color: var(--dw-role-text-link);
+}
+
+.table-open {
+  color: var(--dw-role-text-link);
+  text-align: start;
+  white-space: nowrap;
+}
+
+.table-open:hover {
+  text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------ detail actions (QT-105) */
+
+.label-editor,
+.tx-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-m) var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.label-editor label {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.label-editor-row,
+.tx-actions-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.label-editor-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.tx-actions-question {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.tx-actions .form-problem,
+.tx-actions .placeholder-note {
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ lock screen (§4.4) */
+
+.lock-screen {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--dw-role-hero);
+  color: var(--dw-role-text-on-hero);
+}
+
+.lock-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-m);
+  width: 360px; /* UX-SPEC §4.4: the field is 360 wide */
+}
+
+.lock-logo {
+  display: block;
+  width: 112px; /* brand-dash-logo is 223 × 60 @2x */
+  height: 30px;
+  margin-bottom: var(--dw-space-s);
+  background-color: var(--dw-role-text-on-hero);
+}
+
+.lock-title {
+  font-size: var(--dw-type-title2-size);
+  font-weight: var(--dw-type-title2-weight);
+  line-height: var(--dw-type-title2-line);
+}
+
+.lock-prompt {
+  /* iOS draws whiteAlpha80; UX-SPEC §2.1a raises hero secondary text to AA. */
+  color: color-mix(in srgb, var(--dw-role-text-on-hero) calc(var(--dw-opacity-hero-secondary-text) * 100%), transparent);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+  text-align: center;
+}
+
+.lock-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  width: 100%;
+  margin-top: var(--dw-space-s);
+}
+
+.lock-field {
+  height: 48px; /* callout line 21 + 2 × 13.5 padding, iOS field height */
+  padding: 0 var(--dw-space-l);
+  border: 0;
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-c-white);
+  color: var(--dw-c-black);
+  font: inherit;
+  font-size: var(--dw-type-callout-size);
+}
+
+.lock-field::placeholder {
+  color: var(--dw-c-gray400);
+}
+
+.lock-error {
+  min-height: var(--dw-type-footnote-line);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+/* What the last lock did to running flows (E0-13 D3); hero text colours as .lock-prompt. */
+.lock-report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  width: 100%;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.lock-report-title {
+  font-weight: 600;
+}
+
+.lock-report-flows {
+  margin: 0;
+  padding-inline-start: var(--dw-space-l);
+}
+
+.lock-report-note {
+  color: color-mix(in srgb, var(--dw-role-text-on-hero) calc(var(--dw-opacity-hero-secondary-text) * 100%), transparent);
+}
+
+/* ------------------------------------------------------------------ toast (C21) */
+
+.toast-host {
+  position: fixed;
+  bottom: calc(var(--dw-layout-status-bar-height) + var(--dw-space-xxl));
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.toast {
+  padding: var(--dw-space-sm) var(--dw-space-l);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-toast-fill);
+  color: var(--dw-c-toast-text);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ------------------------------------------------------------------ onboarding (§4.3, U-02) */
+
+.onboarding {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--dw-space-xxxl) var(--dw-space-l);
+  overflow: auto;
+  background: var(--dw-role-canvas);
+}
+
+.onboarding-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 480px); /* UX-SPEC §4.3: one column, the sheet's medium width */
+  padding: var(--dw-space-l) var(--dw-layout-page-padding-h) var(--dw-layout-page-padding-h);
+  border: var(--dw-border-floating);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-floating);
+}
+
+.onboarding-header {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 72px;
+  align-items: center;
+  margin-bottom: var(--dw-space-l);
+}
+
+.onboarding-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.onboarding-logo {
+  display: block;
+  width: 112px; /* the lock screen's wordmark */
+  height: 30px;
+  background-color: var(--dw-role-accent);
+}
+
+.onboarding-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.onboarding-title {
+  font-size: var(--dw-type-title2-size);
+  font-weight: var(--dw-type-title2-weight);
+  line-height: var(--dw-type-title2-line);
+  text-align: center;
+}
+
+.onboarding-title:focus {
+  outline: none;
+}
+
+.onboarding-text,
+.sheet-text {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.onboarding-text {
+  text-align: center;
+}
+
+.onboarding-note,
+.form-hint,
+.form-ok {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.form-ok {
+  color: var(--dw-role-success-text);
+}
+
+.outcome:empty {
+  position: absolute;
+  margin: 0;
+}
+
+.onboarding-warning,
+.sheet-warning,
+.settings-backup-failed {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.onboarding-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.onboarding-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.onboarding-advanced > summary {
+  color: var(--dw-role-text-link);
+  cursor: default;
+}
+
+.onboarding-advanced[open] > summary {
+  margin-bottom: var(--dw-space-s);
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.secret-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.secret-form .form-problem,
+.phrase-input .form-problem,
+.scan-start .form-problem {
+  margin: 0;
+}
+
+.secret-form .form-problem:empty {
+  display: none;
+}
+
+.strength {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  min-height: var(--dw-type-footnote-line);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  color: var(--dw-role-text-secondary);
+}
+
+.strength-bars {
+  display: grid;
+  grid-template-columns: repeat(4, 32px);
+  gap: var(--dw-space-xxs);
+}
+
+.strength-bar {
+  height: 4px;
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-progress-track);
+}
+
+.strength-bar-on {
+  background: var(--dw-role-caution);
+}
+
+[data-strength="good"] .strength-bar-on,
+[data-strength="strong"] .strength-bar-on {
+  background: var(--dw-role-success);
+}
+
+/* A phrase's words cannot be selected (D18); the elements refuse copy events too. */
+.phrase-grid,
+.verify-slots,
+.verify-chips {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* The phrase (IOS-003): numbered words in three columns. */
+.phrase-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--dw-space-xs) var(--dw-space-m);
+  margin: 0;
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card-raised);
+  list-style: none;
+}
+
+.phrase-cell {
+  display: grid;
+  grid-template-columns: 2.5ch minmax(0, 1fr); /* numbers up to 24 keep the words aligned */
+  align-items: baseline;
+  gap: var(--dw-space-xs);
+  font-size: var(--dw-type-callout-size);
+  line-height: var(--dw-type-callout-line);
+}
+
+.phrase-index {
+  color: var(--dw-role-text-tertiary);
+  font-size: var(--dw-type-footnote-size);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+.phrase-word {
+  font-weight: 600;
+}
+
+.phrase-input {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.phrase-textarea {
+  resize: vertical;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-body-size);
+  line-height: var(--dw-type-body-line);
+}
+
+.phrase-suggestions,
+.verify-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
+}
+
+.phrase-suggestion,
+.verify-chip {
+  padding: var(--dw-space-xxs) var(--dw-space-sm);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-card);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.phrase-suggestion:hover,
+.verify-chip:hover:not(:disabled) {
+  background: var(--dw-role-accent-tint);
+}
+
+.verify-chip:disabled {
+  opacity: var(--dw-opacity-disabled);
+}
+
+.verify-chips {
+  justify-content: center;
+}
+
+.verify-chips-mistake {
+  animation: verify-shake var(--dw-motion-standard) ease-in-out;
+}
+
+@keyframes verify-shake {
+  25% {
+    transform: translateX(-6px);
+  }
+  75% {
+    transform: translateX(6px);
+  }
+}
+
+.verify-slots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.verify-slot {
+  display: flex;
+  justify-content: space-between;
+  min-height: 40px;
+  align-items: center;
+  padding: 0 var(--dw-space-m);
+  border: 1px dashed var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-standard);
+  font-size: var(--dw-type-subhead-size);
+}
+
+.verify-slot[data-filled="true"] {
+  border-style: solid;
+  background: var(--dw-role-accent-tint);
+}
+
+.verify-slot-label {
+  color: var(--dw-role-text-secondary);
+}
+
+.verify-slot-word {
+  font-weight: 600;
+}
+
+/* A group, not a fieldset: WebKitGTK sizes a flex fieldset's rendered legend twice when the
+   step mounts, so the first click's blur moved the step under the pointer (issue 108). */
+.scan-start {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.scan-start-title {
+  padding-inline: 2px;
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.scan-input {
+  margin-inline-start: calc(16px + var(--dw-space-s)); /* under the radio's label */
+  padding: var(--dw-space-xs) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+}
+
+/* Wallet choices in Forgot passphrase and Show Recovery Phrase. */
+.choice-list {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card-raised);
+}
+
+.choice-row {
+  min-height: var(--dw-layout-row-min-height);
+  padding: 0 var(--dw-layout-card-padding);
+  border: 0;
+  border-bottom: 1px solid var(--dw-role-separator);
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: start;
+}
+
+.choice-row:last-child {
+  border-bottom: 0;
+}
+
+.choice-row:hover {
+  background: var(--dw-role-accent-tint);
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.settings-card-title {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+/* ------------------------------------------------------------------ settings (U-04) */
+
+.settings-card > .dash-button-plainBlue,
+.settings-card > .dash-button-plainRed,
+.settings-backup-failed > .dash-button-plainBlue {
+  padding-inline-start: 0;
+  padding-inline-end: 0;
+}
+
+/* The card's width, not its longest line: a refusal under the picker wraps there and leaves the
+ * switch where it was (row 74). */
+.settings-card > .network-picker {
+  align-self: stretch;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s) var(--dw-space-m);
+  width: 100%;
+  margin: 0;
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.settings-row-title {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.settings-not-yet {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xxxs);
+}
+
+.settings-not-yet + .settings-not-yet {
+  padding-top: var(--dw-space-s);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.settings-select {
+  padding: var(--dw-space-xs) var(--dw-space-sm);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.settings-hint {
+  margin: 0;
+}
+
+.settings-backup-failed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xs);
+}
+
+.settings-backup-failed p {
+  margin: 0;
+}
+
+.settings-backup-failed-title {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.settings-done {
+  margin: 0;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+/* Settings ▸ Advanced ▸ Identities (DP6-01) */
+.identities-actions,
+.identity-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+}
+
+.identities-list,
+.identity-names {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.identity-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-m) 0;
+}
+
+.identity-row + .identity-row {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.identity-row-text {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.identity-row-text p,
+.identity-found p {
+  margin: 0;
+}
+
+.identity-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.identity-badge {
+  padding: 0 var(--dw-space-xs);
+  border-radius: var(--dw-radius-badge);
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.identity-badge-warn {
+  background: var(--dw-role-warning-tint);
+}
+
+.identity-names li {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.identity-find,
+.identity-keys-wrap {
+  width: 100%;
+}
+
+.identity-keys-wrap {
+  overflow-x: auto;
+}
+
+.identity-find-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--dw-space-s);
+}
+
+.settings-list {
+  margin: 0;
+  padding-inline-start: var(--dw-space-xl);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.settings-details {
+  width: 100%;
+  padding: 0;
+}
+
+.settings-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--dw-space-m);
+}
+
+.settings-textarea {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+  resize: vertical;
+}
+
+.settings-wallet-list,
+.settings-backup-list {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-wallet,
+.settings-backup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-m) 0;
+  min-width: 0;
+}
+
+.settings-wallet + .settings-wallet,
+.settings-backup + .settings-backup {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.settings-wallet .mono,
+.settings-backup .mono {
+  overflow-wrap: anywhere;
+}
+
+.settings-wallet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.settings-wallet-name {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.settings-wallet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+}
+
+/* On hero blue the box and its fill are white, and the tick takes the hero's blue. */
+.lock-check input {
+  --check-fill: var(--dw-role-text-on-hero);
+  --check-mark: var(--dw-role-hero);
+  border-color: var(--dw-role-text-on-hero);
+}
+
+.status-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-link);
+  font: inherit;
+  text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------ splash (§4.2) */
+
+.splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dw-space-l);
+  height: 100%;
+  background: var(--dw-role-canvas);
+}
+
+.splash-logo {
+  display: block;
+  width: 119px; /* 32 h wordmark: 223 × 60 @2x scaled to 32 */
+  height: 32px;
+  background-color: var(--dw-role-accent);
+}
+
+.splash-bar {
+  position: relative;
+  width: 240px; /* UX-SPEC §4.2: accent bar, 240 w */
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-progress-track);
+}
+
+.splash-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: var(--dw-role-accent);
+  animation: splash-bar 1.2s ease-in-out infinite;
+}
+
+@keyframes splash-bar {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+.splash-text {
+  color: var(--dw-role-text-secondary);
+}
+
+.splash-error {
+  max-width: var(--dw-layout-form-max-width);
+  color: var(--dw-role-danger);
+  text-align: center;
+}
+
+/* ------------------------------------------------------------------ Tools (U-05) */
+
+.tool-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-layout-section-gap);
+}
+
+.tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-sm);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.tool-card .placeholder-note {
+  margin: 0;
+}
+
+.tool-card .detail-list {
+  padding: 0;
+}
+
+.tool-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s);
+}
+
+.tool-owner {
+  color: var(--dw-role-text-tertiary);
+}
+
+.tool-banner {
+  margin: 0;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.tool-value {
+  overflow-wrap: anywhere;
+}
+
+.tool-note {
+  display: block;
+}
+
+/* Information's DashPay card (DP6-03): its state chip and headline, then its lines. */
+.dashpay-info-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.dashpay-info-line {
+  margin: 0;
+}
+
+.tool-actions,
+.tool-inline-form,
+.tool-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.tool-inline-form label {
+  font-size: var(--dw-type-footnote-size);
+  color: var(--dw-role-text-secondary);
+}
+
+.tool-inline-form input {
+  width: 12em;
+}
+
+.tool-progress progress {
+  flex: 1 1 200px;
+  accent-color: var(--dw-role-accent);
+}
+
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s);
+}
+
+.console-bar,
+.console-font {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.console-bar {
+  justify-content: flex-end;
+}
+
+.console-log {
+  height: 360px;
+  overflow-y: auto;
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+  font-family: var(--dw-font-mono);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.console-entry + .console-entry {
+  margin-top: var(--dw-space-xs);
+}
+
+.console-json {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+}
+
+.console-command {
+  color: var(--dw-role-text-secondary);
+}
+
+.console-error {
+  color: var(--dw-role-danger);
+}
+
+.console-warning {
+  padding-inline-start: var(--dw-space-xs);
+  border-inline-start: 3px solid var(--dw-role-caution);
+}
+
+.console-input {
+  display: flex;
+  gap: var(--dw-space-s);
+}
+
+.console-input input {
+  flex: 1;
+  min-width: 0;
+}
+
+.peers-table .table-open {
+  cursor: pointer;
+  text-align: start;
+}
+
+.tool-row-actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--dw-space-xxs);
+}
+
+.address-cell {
+  white-space: nowrap;
+}
+
+.tool-message {
+  min-height: 5em;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.tool-message.mono {
+  font-family: var(--dw-font-mono);
+}
+
+.tool-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-m);
+}
+
+.psbt-lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Coin Selection's view of the shared coin table (D19). */
+.sort-header {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+}
+
+.coin-table-detail th,
+.coin-table-detail td {
+  white-space: nowrap;
+}
+
+.coin-group td {
+  background: var(--dw-role-neutral-tint);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.coin-child td:nth-child(2) {
+  padding-inline-start: var(--dw-space-l);
+}
+
+.coin-actions {
+  text-align: end;
+}
+
+.row-menu {
+  position: relative;
+  display: inline-block;
+}
+
+.row-menu > summary {
+  padding: var(--dw-space-xxs) var(--dw-space-xs);
+  color: var(--dw-role-text-link);
+  font-size: var(--dw-button-small-font);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  list-style: none;
+  cursor: default;
+}
+
+.row-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.row-menu-items {
+  position: absolute;
+  inset-inline-end: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 18em;
+  padding: var(--dw-space-xxs);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-card-raised);
+  box-shadow: var(--dw-shadow-floating);
+}
+
+.row-menu-items button {
+  padding: var(--dw-space-xs) var(--dw-space-s);
+  border: 0;
+  border-radius: var(--dw-radius-small);
+  background: none;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: start;
+}
+
+.row-menu-items button:hover:not(:disabled),
+.row-menu-items button:focus-visible {
+  background: var(--dw-role-accent-tint);
+}
+
+.row-menu-items button:disabled {
+  color: var(--dw-role-text-tertiary);
+}
+
+/* DP2-09: the contact pane's sections, a request row's Accept and Ignore, the Enable DashPay
+   banner, and the bell's popover and page. */
+
+.contact-row-item.has-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.contact-row-item.has-actions > .contact-row {
+  flex: 1;
+  min-width: 0;
+}
+
+.contact-row-actions {
+  display: flex;
+  flex: none;
+  gap: var(--dw-space-xs);
+  padding-inline-end: var(--dw-space-s);
+}
+
+.contacts-enable-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+}
+
+.contact-pane-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.contact-pane-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  padding-top: var(--dw-space-m);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.contact-pane-heading,
+.bell-section-title {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.contact-details-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.contact-note {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  font-weight: var(--dw-type-body-weight);
+  resize: vertical;
+}
+
+.contact-activity-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.toolbar-bell {
+  position: relative;
+}
+
+.bell-popover {
+  position: absolute;
+  top: calc(100% + var(--dw-space-xs));
+  inset-inline-end: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  width: 22rem;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-card-raised);
+  box-shadow: var(--dw-shadow-floating);
+}
+
+.bell-title {
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.bell-title:focus {
+  outline: none;
+}
+
+.bell-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  margin: 0 0 var(--dw-space-m);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-align: center;
+}
+
+.bell-empty p {
+  margin: 0;
+}
+
+.bell-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+}
+
+.bell-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bell-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.bell-row-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--dw-space-s);
+  min-width: 0;
+  padding: var(--dw-space-xs);
+  border: 0;
+  border-radius: var(--dw-radius-small);
+  background: none;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: start;
+}
+
+button.bell-row-open:hover,
+button.bell-row-open:focus-visible {
+  background: var(--dw-role-accent-tint);
+}
+
+.bell-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bell-row-title .chip-warning {
+  background: linear-gradient(var(--dw-role-warning-tint), var(--dw-role-warning-tint)), var(--dw-role-card-raised);
+}
+
+.bell-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.bell-row-sub,
+.bell-more {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.bell-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dw-role-accent);
+}
+
+.bell-all {
+  align-self: flex-start;
+}
+
+.notifications {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+}
+
+.notifications .bell-section {
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card);
+}
+
+/* ------------------------------------------------------------------ DashPay status (DP1-08) */
+
+.dashpay-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.dashpay-card-icon {
+  width: var(--dw-layout-row-icon-size);
+  height: var(--dw-layout-row-icon-size);
+  padding: var(--dw-space-xxs);
+  box-sizing: border-box;
+  border-radius: 50%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-link);
+}
+
+.dashpay-card.is-problem .dashpay-card-icon {
+  background: var(--dw-role-danger-tint);
+  color: var(--dw-role-danger);
+}
+
+.dashpay-card-body,
+.dashpay-card-live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.dashpay-card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+  overflow-wrap: anywhere;
+}
+
+.dashpay-card-spinner {
+  flex: none;
+  width: var(--dw-space-m);
+  height: var(--dw-space-m);
+}
+
+.dashpay-card-step {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.dashpay-card-progress {
+  width: var(--dw-layout-status-progress-width);
+  height: 4px;
+  accent-color: var(--dw-role-accent);
+}
+
+.dashpay-card-line {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.dashpay-card-note {
+  align-self: flex-start;
+  margin: var(--dw-space-xs) 0 0;
+  padding: var(--dw-space-xxs) var(--dw-space-m);
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-link);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.dashpay-card-action {
+  align-self: center;
+}
+
+.join-intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.join-intro-headline {
+  margin: 0;
+  font-size: var(--dw-type-title3-medium-size);
+  font-weight: var(--dw-type-title3-medium-weight);
+  line-height: var(--dw-type-title3-medium-line);
+}
+
+.join-intro-pitch,
+.about-dashpay-intro {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-callout-size);
+  line-height: var(--dw-type-callout-line);
+}
+
+.join-features,
+.about-dashpay-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  margin: var(--dw-space-s) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.join-feature {
+  display: flex;
+  flex-direction: column;
+}
+
+.join-feature-title,
+.about-dashpay-item-title {
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.join-feature-text,
+.about-dashpay-item-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.join-readiness {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin-bottom: var(--dw-space-l);
+}
+
+.join-readiness .dashpay-card {
+  margin-bottom: 0;
+}
+
+.join-line {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.join-shortfall {
+  color: var(--dw-role-danger);
+}
+
+.join-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-m);
+  margin-top: var(--dw-space-s);
+}
+
+.join-actions .dashpay-card-note {
+  align-self: center;
+  margin: 0;
+}
+
+.join-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-m);
+}
+
+/* DP1-09: the registration wizard and a registration's screens, on the Join page. */
+.registration {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  max-width: var(--dw-layout-form-max-width);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.registration-header,
+.registration-live,
+.registration-form,
+.registration-cost,
+.registration-contested {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.registration-form {
+  gap: var(--dw-space-m);
+}
+
+.registration-step {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.registration-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+  overflow-wrap: anywhere;
+}
+
+.registration-spinner {
+  flex: none;
+  width: var(--dw-space-m);
+  height: var(--dw-space-m);
+}
+
+.registration-line,
+.registration-availability {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  overflow-wrap: anywhere;
+}
+
+.registration-availability {
+  min-height: var(--dw-type-footnote-line);
+}
+
+.registration-availability[data-tone="ok"] {
+  color: var(--dw-role-text-primary);
+}
+
+.registration-availability[data-tone="problem"],
+.registration-problem,
+.registration-error {
+  color: var(--dw-role-danger);
+}
+
+.registration-error {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.registration-rules {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.registration-rules li::before {
+  display: inline-block;
+  width: 1.25em;
+  content: "•";
+}
+
+.registration-rules li[data-passed="true"] {
+  color: var(--dw-role-text-primary);
+}
+
+.registration-rules li[data-passed="true"]::before {
+  content: "✓";
+}
+
+.registration-rules li[data-passed="false"] {
+  color: var(--dw-role-danger);
+}
+
+.registration-rules li[data-passed="false"]::before {
+  content: "✗";
+}
+
+.registration-contested .dash-button {
+  align-self: flex-start;
+}
+
+.registration-fee {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin: 0;
+  font-size: var(--dw-type-body-size);
+  line-height: var(--dw-type-body-line);
+}
+
+.registration-fee-amount {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.registration-accept {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.registration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--dw-space-s);
+}
+
+/* R9, the welcome moment (PRODUCT #4): the greeting, then three next steps as rows. */
+.registration-welcome .registration-title {
+  font-size: var(--dw-type-title2-size);
+  font-weight: var(--dw-type-title2-weight);
+  line-height: var(--dw-type-title2-line);
+}
+
+.registration-welcome .registration-line {
+  font-size: var(--dw-type-callout-size);
+  line-height: var(--dw-type-callout-line);
+}
+
+.welcome-next {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.welcome-next-title {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.welcome-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.welcome-step {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  width: 100%;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 0;
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-neutral-tint);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--dw-motion-hover);
+}
+
+.welcome-step:hover:not(:disabled) {
+  background: var(--dw-role-accent-tint);
+}
+
+.welcome-step:disabled {
+  color: var(--dw-role-text-secondary);
+}
+
+.welcome-step:disabled .welcome-step-number {
+  background: var(--dw-role-neutral-tint);
+  color: var(--dw-role-text-secondary);
+}
+
+.registration-title[tabindex="-1"]:focus {
+  outline: none;
+}
+
+.welcome-step-number {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.welcome-step-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.welcome-step-title {
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.welcome-step-detail {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.welcome-step-chevron {
+  flex: none;
+  color: var(--dw-role-text-tertiary);
+  font-size: var(--dw-type-title3-size);
+}
+
+/* DP5-03: the invitation claim screen. */
+.claim-inviter,
+.claim-recipient {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.claim-inviter-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+}
+
+.claim-inviter-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.claim-inviter-primary {
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+  overflow-wrap: anywhere;
+}
+
+.claim-inviter-secondary,
+.claim-label {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.claim-recipient-id .copy-value {
+  overflow-wrap: anywhere;
+}
+
+.about-dashpay-headline {
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.about-dashpay-faq {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.about-dashpay-question {
+  padding: var(--dw-space-s) 0;
+  border-bottom: 1px solid var(--dw-role-separator);
+}
+
+.about-dashpay-question summary {
+  cursor: pointer;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.about-dashpay-question .about-dashpay-item-text {
+  margin-top: var(--dw-space-xs);
+}
+
+/* ------------------------------------------------------------------ Platform addresses */
+
+.platform-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.platform-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.shielded-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--dw-space-xs);
+}
+
+.platform-card-title {
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.platform-card-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.platform-card > .platform-card-body {
+  flex: 1 1 auto;
+}
+
+/* A pool card's head (CardHead.tsx): the title is the button that opens Transfer from the pool, and
+   its hit area, hover and focus ring cover the whole head, title and text. */
+
+.card-head {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: calc(-1 * var(--dw-space-xs));
+  padding: var(--dw-space-xs);
+  border-radius: var(--dw-radius-text-field);
+  transition: background-color var(--dw-motion-hover);
+}
+
+.card-head:has(.card-transfer:hover) {
+  background: var(--dw-role-accent-tint);
+}
+
+.card-transfer {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.card-transfer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.card-transfer:focus-visible {
+  outline: none;
+}
+
+.card-transfer:focus-visible::after {
+  outline: 2px solid var(--dw-role-accent);
+  outline-offset: 2px;
+}
+
+.card-transfer-chevron {
+  color: var(--dw-role-text-secondary);
+}
+
+/* ------------------------------------------------------------------ Transfer (POLISH 25) */
+
+.transfer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.transfer-running {
+  margin: 0;
+}
+
+.transfer-ends {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.transfer-end,
+.transfer-picker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.transfer-end[aria-expanded="true"],
+.transfer-picker-item[aria-pressed="true"] {
+  border-color: var(--dw-role-accent);
+}
+
+.transfer-end-label {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption2-size);
+  line-height: var(--dw-type-caption2-line);
+}
+
+.transfer-end-pool {
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.transfer-end-balance {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transfer-swap {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.transfer-swap:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.transfer-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.transfer-picker-item {
+  width: 100%;
+}
+
+.transfer-amount-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--dw-space-s);
+}
+
+.transfer-amount-row .form-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.transfer-amount-row .dash-button {
+  flex: none;
+  margin-bottom: 2px;
+}
+
+.transfer-route {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+/* A disclosure opened by a button (it can wait, disabled, as a <summary> cannot): drawn as one. */
+.disclosure-toggle {
+  display: block;
+  width: 100%;
+  padding: var(--dw-space-m) var(--dw-layout-card-padding);
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  text-align: start;
+  cursor: pointer;
+}
+
+.disclosure-toggle::before {
+  display: inline-block;
+  width: 1em;
+  content: "▸";
+}
+
+.disclosure-toggle[aria-expanded="true"]::before {
+  content: "▾";
+}
+
+.disclosure-toggle:disabled {
+  color: var(--dw-role-text-secondary);
+  cursor: default;
+}
+
+.disclosure-why {
+  margin: 0;
+  padding: 0 var(--dw-layout-card-padding) var(--dw-space-m);
+}
+
+.pay-shielded {
+  margin: var(--dw-space-m) 0 0;
+}
+
+/* ------------------------------------------------------------------ Protocol advisory */
+
+.protocol-advisory-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.protocol-advisory-icon {
+  width: var(--dw-layout-row-icon-size);
+  height: var(--dw-layout-row-icon-size);
+  padding: var(--dw-space-xxs);
+  border-radius: 50%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-warning);
+}
+
+.protocol-advisory-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.protocol-advisory-text {
+  margin: 0;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.protocol-advisory-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.protocol-advisory-link {
+  margin: 0;
+  padding: var(--dw-space-xxs) var(--dw-space-s);
+  border: 0;
+  border-radius: var(--dw-radius-small);
+  background: none;
+  color: var(--dw-role-text-link);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.protocol-advisory-link:disabled {
+  opacity: var(--dw-opacity-disabled);
+}
+
+/* ------------------------------------------------------------------ Prices (MP-01) */
+
+.rates-consent-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.rates-consent-card .shielded-card-actions {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.onboarding-rates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  width: 100%;
+}
+
+.currency-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  width: 100%;
+}
+
+.currency-picker > p {
+  margin: 0;
+}
+
+.currency-list {
+  max-height: 280px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--dw-role-separator);
+  border-radius: var(--dw-radius-standard);
+}
+
+.currency-row {
+  display: grid;
+  grid-template-columns: 3.5em 1fr auto;
+  gap: var(--dw-space-s);
+  align-items: baseline;
+  width: 100%;
+  padding: var(--dw-space-xs) var(--dw-space-s);
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  font-size: var(--dw-type-subhead-size);
+  text-align: start;
+  cursor: pointer;
+}
+
+.currency-row[aria-pressed="true"] {
+  background: var(--dw-role-accent-tint);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.currency-row:disabled {
+  cursor: default;
+}
+
+.currency-code {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.currency-name,
+.currency-price {
+  color: var(--dw-role-text-secondary);
+}
+
+.settings-currency-status {
+  font-size: var(--dw-type-footnote-size);
+}
+
+/* ------------------------------------------------------------------ CoinJoin (U-06) */
+
+.coinjoin-card,
+.coinjoin-status {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.coinjoin-card-body,
+.coinjoin-card-live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.coinjoin-card-title,
+.coinjoin-status-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.coinjoin-status-title {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.coinjoin-card-open {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.coinjoin-card-open:hover {
+  color: var(--dw-role-text-link);
+}
+
+.coinjoin-spinner {
+  flex: none;
+  width: var(--dw-space-m);
+  height: var(--dw-space-m);
+}
+
+.coinjoin-progress-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  font-variant-numeric: tabular-nums;
+}
+
+.coinjoin-progress {
+  width: var(--dw-layout-status-progress-width);
+  height: 4px;
+  accent-color: var(--dw-role-accent);
+}
+
+.coinjoin-mixed,
+.coinjoin-line {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coinjoin-line {
+  color: var(--dw-role-text-secondary);
+}
+
+.coinjoin-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--dw-space-xxs);
+  align-self: center;
+}
+
+.coinjoin-status-action {
+  align-self: center;
+}
+
+.coinjoin-subtitle {
+  margin: 0 0 var(--dw-space-l);
+  color: var(--dw-role-text-secondary);
+}
+
+.coinjoin-notes,
+.coinjoin-levels,
+.coinjoin-move {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.coinjoin-notes p {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coinjoin-move-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
+  margin-top: var(--dw-space-xs);
+}
+
+.coinjoin-level-group {
+  gap: var(--dw-space-xs);
+}
+
+.coinjoin-level {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: start;
+  gap: var(--dw-space-sm);
+  padding: var(--dw-space-sm) 0;
+  cursor: pointer;
+}
+
+.coinjoin-level + .coinjoin-level {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.coinjoin-level input {
+  margin: var(--dw-space-xxs) 0 0;
+}
+
+.coinjoin-level-icon {
+  object-fit: contain;
+}
+
+.coinjoin-level-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+  grid-column: 3;
+}
+
+.coinjoin-level-title {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.coinjoin-level-time {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.coinjoin-details {
+  margin-bottom: var(--dw-space-l);
+}
+
+.coinjoin-details-list {
+  margin: 0;
+  padding: 0 var(--dw-layout-card-padding);
+}
+
+.coinjoin-detail-note {
+  display: block;
+}
+
+.coinjoin-sessions {
+  padding: var(--dw-space-s) var(--dw-layout-card-padding) var(--dw-space-m);
+}
+
+.coinjoin-setting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+}
+
+.coinjoin-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  width: 100%;
+}
+
+/* Whole numbers of a few digits: no full-width field. */
+.coinjoin-settings-form .form-field input {
+  max-width: 240px;
+}
+
+/* My Profile and the top-up sheet (DP1-10) */
+
+.profile-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-layout-section-gap);
+}
+
+.profile-none {
+  margin: 0;
+  font-size: var(--dw-type-title3-medium-size);
+  font-weight: var(--dw-type-title3-medium-weight);
+  line-height: var(--dw-type-title3-medium-line);
+}
+
+.profile-header,
+.profile-details,
+.profile-credits,
+.profile-request,
+.profile-outcomes {
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.profile-header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--dw-space-m);
+}
+
+.profile-header-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.profile-name {
+  margin: 0;
+  font-size: var(--dw-type-title3-medium-size);
+  font-weight: var(--dw-type-title3-medium-weight);
+  line-height: var(--dw-type-title3-medium-line);
+  overflow-wrap: anywhere;
+}
+
+.profile-username,
+.profile-message {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  overflow-wrap: anywhere;
+}
+
+.profile-edit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--dw-space-xxs);
+  max-width: 14rem;
+  text-align: end;
+}
+
+.profile-credits,
+.profile-request,
+.profile-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.profile-credits .card-title,
+.profile-request .card-title,
+.profile-outcomes .card-title {
+  margin: 0;
+}
+
+.profile-credits-figure {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dw-space-s);
+  margin: 0;
+  font-size: var(--dw-type-title3-medium-size);
+  font-weight: var(--dw-type-title3-medium-weight);
+  line-height: var(--dw-type-title3-medium-line);
+}
+
+.profile-credits-updating {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: normal;
+}
+
+.profile-credits-line,
+.profile-row-title,
+.profile-warning-title {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.profile-credits-line {
+  color: var(--dw-role-text-secondary);
+}
+
+.profile-row-title,
+.profile-warning-title {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.profile-warning {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-warning-tint);
+}
+
+[data-level="empty"] .profile-warning {
+  background: var(--dw-role-danger-tint);
+}
+
+.profile-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-s);
+  padding-top: var(--dw-space-s);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.profile-row-actions,
+.profile-credits-actions,
+.profile-request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.profile-tally {
+  margin: 0;
+}
+
+/* DP6-02: the destination in the withdraw quote. */
+.withdraw-to {
+  font-family: var(--dw-font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* A destination's address under its name, on a line of its own. */
+.destination-line {
+  display: block;
+}
+
+.topup-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.topup-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.topup-choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--dw-space-s);
+  align-items: center;
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border: 1px solid var(--dw-role-separator);
+  border-radius: var(--dw-radius-card);
+  cursor: pointer;
+}
+
+.topup-choice:has(input:checked) {
+  border-color: var(--dw-role-text-link);
+}
+
+.topup-choice-amount {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.topup-choice-buys {
+  grid-column: 2;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+/* C-funding F19: a source that cannot pay shows why and cannot be chosen. */
+.pay-with-source[data-disabled] {
+  cursor: default;
+}
+
+.pay-with-source[data-disabled] .topup-choice-amount {
+  color: var(--dw-role-text-secondary);
+}
+
+.topup-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  margin: 0 0 var(--dw-space-xs);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.topup-total .detail-value {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+/* ------------------------------------------------------------------ saved links (DP5-01 D11) */
+
+.saved-links {
+  margin: 0 0 var(--dw-space-m);
+  padding: 0;
+  list-style: none;
+}
+
+.saved-link {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-s) 0;
+  border-bottom: 1px solid var(--dw-role-separator);
+}
+
+.saved-link-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.saved-link-when {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+}
+
+.saved-link-actions {
+  display: flex;
+  gap: var(--dw-space-xs);
+}
+
+/* ------------------------------------------------------------------ Edit Profile (DP4-03) */
+
+.edit-profile-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.edit-profile-picture {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: var(--dw-space-m);
+}
+
+.edit-profile-picture-side,
+.edit-profile-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.edit-profile-picture-side {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.edit-profile-picture-side p,
+.edit-profile-body p {
+  margin: 0;
+}
+
+.edit-profile-picture-state {
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.edit-profile-field textarea {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-body-size);
+  font-weight: var(--dw-type-body-weight);
+  line-height: var(--dw-type-body-line);
+  resize: vertical;
+}
+
+.edit-profile-field textarea[aria-invalid="true"] {
+  border-color: var(--dw-role-danger);
+}
+
+.edit-profile-count {
+  align-self: flex-end;
+}
+
+.edit-profile-count.is-over {
+  color: var(--dw-role-danger);
+}
+
+.edit-profile-step-title {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.edit-profile-saving {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+/* The square crop (D4): the picture moves under a fixed frame; the ring shows the circle the
+   lists draw. */
+.crop-frame {
+  position: relative;
+  align-self: center;
+  overflow: hidden;
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-field-fill);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.crop-frame:active {
+  cursor: grabbing;
+}
+
+.crop-image {
+  position: absolute;
+  max-width: none;
+  pointer-events: none;
+}
+
+.crop-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 999px var(--dw-role-overlay);
+  pointer-events: none;
+}
+
+.crop-zoom input {
+  accent-color: var(--dw-role-accent);
+}
+
+/* ------------------------------------------------------------------ masternodes (MG-09) */
+
+/* The Masternodes screens' components, lifted from docs/design/ux/mg-00/mg-00.css part 2 (the parts
+   Governance uses). */
+
+/* Page header: the title and its actions (§4.25.1). */
+.mg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-space-l);
+}
+
+.mg-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.page-masternodes .page-column {
+  max-width: calc(var(--dw-layout-content-max-width) + var(--dw-layout-sheet-width-small));
+}
+
+/* Status chips. Green text fails AA on white (UX-SPEC §2.1a), so a success chip is a dot in
+   `success` (non-text, 3:1) and the label in the primary text colour (MG-00 D24). */
+.chip-success,
+.chip-neutral {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dw-space-xxs);
+}
+
+.chip-success {
+  background: var(--dw-role-success-tint);
+  color: var(--dw-role-text-primary);
+}
+
+.chip-success::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dw-role-success);
+}
+
+.chip-neutral {
+  background: var(--dw-role-neutral-tint);
+  color: var(--dw-role-text-secondary);
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xxs);
+}
+
+/* A masternode or proposal row: Activity's .tx-row with a two-line trailing column. */
+.mg-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--dw-space-m);
+  width: 100%;
+  padding: var(--dw-space-transaction-row-vertical) var(--dw-space-l);
+  border: 0;
+  border-radius: var(--dw-radius-standard);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+}
+
+.mg-row-wide {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.mg-row[aria-current="true"] {
+  background: var(--dw-role-accent-tint);
+}
+
+.mg-row-text,
+.mg-row-trailing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+  min-width: 0;
+}
+
+.mg-row-trailing {
+  align-items: flex-end;
+}
+
+.mg-row-title {
+  overflow: hidden;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mg-row-sub,
+.mg-row-meta {
+  overflow: hidden;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mg-row .mg-votebar {
+  margin-top: var(--dw-space-xxs);
+}
+
+/* Detail pane (Contacts' pane): header, facts, sections, actions. */
+.mg-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding) var(--dw-space-xl);
+  border-radius: var(--dw-radius-card);
+}
+
+.mg-pane-title {
+  margin: 0;
+  font-size: var(--dw-type-title3-size);
+  font-weight: var(--dw-type-title3-weight);
+  line-height: var(--dw-type-title3-line);
+}
+
+.mg-section-title {
+  margin: 0 0 var(--dw-space-xxs);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.mg-facts {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: var(--dw-space-xs) var(--dw-space-m);
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-facts dt {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+}
+
+/* Lines in two columns: the wallet's masternodes and their last votes. */
+.mg-roles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--dw-space-xs) var(--dw-space-l);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-roles li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dw-space-xs);
+}
+
+/* Notices: info (accent tint) and warning. */
+.mg-notice {
+  margin: 0;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-notice strong {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-notice-info {
+  background: var(--dw-role-accent-tint);
+}
+
+.mg-notice-warning {
+  background: var(--dw-role-warning-tint);
+}
+
+.mg-notice-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
+/* Votes bar: yes / no / abstain segments by weight, with the funding threshold as a tick. */
+.mg-votebar {
+  position: relative;
+  display: flex;
+  height: 6px;
+  overflow: visible;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-progress-track);
+}
+
+.mg-votebar > span {
+  height: 100%;
+}
+
+.mg-votebar > span:first-child {
+  border-radius: var(--dw-radius-capsule) 0 0 var(--dw-radius-capsule);
+}
+
+.mg-vote-yes {
+  background: var(--dw-role-success);
+}
+
+.mg-vote-no {
+  background: var(--dw-role-danger);
+}
+
+.mg-vote-abstain {
+  background: var(--dw-role-text-tertiary);
+}
+
+.mg-votebar .mg-threshold {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--dw-role-text-primary);
+}
+
+.mg-vote-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xxs) var(--dw-space-m);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-vote-legend span::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-inline-end: var(--dw-space-xxs);
+  border-radius: 2px;
+  vertical-align: 0;
+}
+
+.mg-vote-legend .l-yes::before {
+  background: var(--dw-role-success);
+}
+
+.mg-vote-legend .l-no::before {
+  background: var(--dw-role-danger);
+}
+
+.mg-vote-legend .l-abstain::before {
+  background: var(--dw-role-text-tertiary);
+}
+
+.mg-vote-legend .l-threshold::before {
+  width: 2px;
+  background: var(--dw-role-text-primary);
+}
+
+/* Governance clock card: the cycle as a bar with the voting cutoff and the superblock. */
+.mg-clock {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: var(--dw-space-xl);
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-layout-card-padding) var(--dw-space-xl);
+  border-radius: var(--dw-radius-card);
+}
+
+.mg-clock-title {
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.mg-clock-sub {
+  margin: var(--dw-space-xxxs) 0 var(--dw-space-m);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-cycle {
+  position: relative;
+  height: 8px;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-progress-track);
+}
+
+.mg-cycle-done {
+  height: 100%;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent);
+}
+
+.mg-cycle-mark {
+  position: absolute;
+  top: -4px;
+  width: 2px;
+  height: 16px;
+  background: var(--dw-role-text-primary);
+}
+
+.mg-cycle-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--dw-space-xs);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-budget-bar {
+  display: flex;
+  height: 8px;
+  margin: var(--dw-space-s) 0 var(--dw-space-xs);
+  overflow: hidden;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-progress-track);
+}
+
+.mg-budget-bar > span {
+  height: 100%;
+}
+
+.mg-budget-passing {
+  background: var(--dw-role-accent);
+}
+
+.mg-budget-over {
+  background: var(--dw-role-warning);
+}
+
+/* Wizard: the step header and the step list beside the step. */
+.mg-wizard {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  gap: var(--dw-space-xl);
+  min-height: 0;
+}
+
+.mg-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-steps li {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-xs) var(--dw-space-s);
+  border-radius: var(--dw-radius-small);
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-steps li::before {
+  content: attr(data-n);
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--dw-role-separator);
+  border-radius: 50%;
+  font-size: var(--dw-type-caption2-size);
+}
+
+.mg-steps li.is-done::before {
+  content: "✓";
+  border-color: transparent;
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-link);
+}
+
+.mg-steps li[aria-current="step"] {
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-primary);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-steps li[aria-current="step"]::before {
+  border-color: transparent;
+  background: var(--dw-c-app-dash-blue-color, var(--dw-role-accent));
+  color: var(--dw-role-text-on-hero);
+}
+
+.mg-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  min-width: 0;
+}
+
+.mg-step-title {
+  margin: 0;
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+/* Form fields with help under them (the operator fields' plain-language help, §5a). */
+.mg-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--dw-space-m) var(--dw-space-l);
+}
+
+.mg-form .mg-span {
+  grid-column: 1 / -1;
+}
+
+.mg-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.mg-field input,
+.mg-field select {
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  font-weight: var(--dw-type-footnote-weight);
+}
+
+.mg-field .mono,
+.mg-field input.mono {
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-caption1-size);
+}
+
+.mg-field-help {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-field-error {
+  color: var(--dw-role-danger);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-field.has-error input {
+  border-color: var(--dw-role-danger);
+}
+
+.mg-field-row {
+  display: flex;
+  gap: var(--dw-space-s);
+  align-items: center;
+}
+
+.mg-field-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The sheet's footer: secondary on the left, the primary on the right. */
+.mg-sheet-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-m) var(--dw-layout-page-padding-h) var(--dw-layout-page-padding-h);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.mg-sheet-footer-note {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-sheet-footer .mg-actions {
+  flex-wrap: nowrap;
+}
+
+.sheet .mg-sheet-body {
+  padding-top: var(--dw-space-xxs);
+}
+
+/* Vote sheet: masternodes with a checkbox, their weight and current vote. */
+.mg-nodes {
+  margin: 0;
+  padding: var(--dw-space-xxs) 0;
+  border-radius: var(--dw-radius-group);
+  list-style: none;
+}
+
+.mg-node {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 64px 112px;
+  align-items: center;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-s) var(--dw-space-l);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-node + .mg-node {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.mg-node[aria-disabled="true"] .mg-node-name {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-node-name {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-node-sub {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-node-head {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-medium-size);
+  font-weight: var(--dw-type-caption1-medium-weight);
+}
+
+.mg-node-weight {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.mg-node-result {
+  text-align: end;
+}
+
+/* A "More" button's menu (mg-00.css's .mg-menu, with real menu items). */
+.mg-menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.mg-menu {
+  position: absolute;
+  top: calc(100% + var(--dw-space-xxs));
+  inset-inline-end: 0;
+  z-index: 2;
+  min-width: 248px;
+  margin: 0;
+  padding: var(--dw-space-xxs);
+  border: var(--dw-border-floating);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-card-raised);
+  box-shadow: var(--dw-shadow-floating);
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-menu button {
+  display: block;
+  width: 100%;
+  padding: var(--dw-space-xs) var(--dw-space-m);
+  border: 0;
+  border-radius: var(--dw-radius-small);
+  background: none;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.mg-menu button:hover,
+.mg-menu button:focus-visible {
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+  outline: none;
+}
+
+/* mg-00.css's helpers (its "Empty state" section's tail). */
+.mg-muted {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-small {
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.mg-spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
+/* MG-09's own: the toolbar, the list, the pane's parts and the syncing card. */
+.mg-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-space-l);
+}
+
+.mg-toolbar .search-field {
+  flex: 1;
+}
+
+.mg-list {
+  margin: 0;
+  padding: var(--dw-space-xs);
+  list-style: none;
+}
+
+.mg-flush {
+  margin: 0;
+}
+
+.mg-pane-chip {
+  margin-top: var(--dw-space-xxs);
+  align-items: center;
+}
+
+.mg-pane-votes {
+  gap: var(--dw-space-xs);
+}
+
+.mg-pane-link {
+  color: var(--dw-role-text-link);
+}
+
+.mg-roles-votes {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.mg-roles-votes .mg-roles-pair {
+  justify-content: space-between;
+}
+
+/* Username voting (MG-11): the tally rows, the choice list of the vote sheet. */
+/* A selected row's tint under its "Ends in" chip keeps the text at AA, as a contact row's (axe). */
+.mg-row .chip-warning {
+  background: linear-gradient(var(--dw-role-warning-tint), var(--dw-role-warning-tint)), var(--dw-role-card);
+}
+
+.mg-names-intro {
+  margin: 0 0 var(--dw-space-m);
+}
+
+.mg-tally {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mg-tally-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--dw-space-s);
+  row-gap: var(--dw-space-xxxs);
+  font-size: var(--dw-type-footnote-size);
+}
+
+.mg-tally-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  min-width: 0;
+}
+
+.mg-tally-votes {
+  font-variant-numeric: tabular-nums;
+}
+
+.mg-tally-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-progress-track);
+}
+
+.mg-tally-fill {
+  background: var(--dw-role-accent);
+}
+
+.mg-tally-lock {
+  background: var(--dw-role-danger);
+}
+
+.mg-tally-abstain {
+  background: var(--dw-role-text-tertiary);
+}
+
+.mg-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mg-choice {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-xs) var(--dw-space-s);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card);
+}
+
+.mg-choice:has(input:checked) {
+  box-shadow: inset 0 0 0 2px var(--dw-role-accent);
+}
+
+.mg-choice-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Change keys or payout: the review card and a gap above each key's choices. */
+.mg-change-review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+}
+
+.sheet .mg-operator-body {
+  gap: var(--dw-space-s);
+}
+
+.mg-operator-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding-inline-start: var(--dw-space-l);
+}
+
+.mg-change-keys .mg-choices + .mg-choices,
+.mg-change-keys .mg-choices:first-of-type {
+  margin-top: var(--dw-space-s);
+}
+
+.page-masternodes .mg-notice {
+  margin-bottom: var(--dw-space-l);
+}
+
+.mg-loading {
+  border-radius: var(--dw-radius-card);
+}
+
+/* The vote sheet's outcome (a radio group in the segmented look), rows and bottom line. */
+.mg-outcomes {
+  width: fit-content;
+}
+
+.mg-outcomes .segment {
+  padding: var(--dw-space-xs) var(--dw-space-xl);
+}
+
+/* The radiogroup's chosen outcome looks like a pressed segment. */
+.mg-outcomes .segment[aria-checked="true"] {
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-card);
+}
+
+.mg-node label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.mg-node-result-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.mg-node-result-row > span:first-child {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.mg-vote-bottom {
+  align-items: flex-end;
+}
+
+.mg-vote-note {
+  max-width: 300px;
+}
+
+.mg-vote-credential {
+  width: 240px;
+}
+
+/* Mine: a row with [Submit] or Turn on after its chip. */
+.mg-mine-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.mg-mine-error {
+  color: var(--dw-role-warning);
+}
+
+/* Create a proposal: the total, the data JSON and the passphrase. */
+.mg-total {
+  padding: var(--dw-space-s) 0;
+  font-weight: var(--dw-type-footnote-weight);
+}
+
+.mg-json {
+  margin: var(--dw-space-s) 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.mg-create-credential {
+  max-width: 320px;
+}
+
+/* "Copied" on the copy button itself (DEC-1058 #3). */
+.copied-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  white-space: nowrap;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  color: var(--dw-role-text-link);
+}
+
+/* A payment arrived at the address on Receive (DEC-1058 #6). */
+.receive-received {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-success-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  text-align: center;
+}
+
+.receive-received span {
+  color: var(--dw-role-success-text);
+}
+
+.receive-qr {
+  display: flex;
+  justify-content: center;
+}
+
+.receive-qr.is-used {
+  opacity: 0.35;
+}
+
+/* "Most of this goes to fees" on a confirm sheet (DEC-1058 #8). */
+.fee-warning {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-text-primary);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+/* "✓ Copied" in an icon copy button is a label, not a circle. */
+.copy-button[data-copied] {
+  padding: 0 var(--dw-space-xs);
+  border-radius: var(--dw-radius-small);
+}
+
+/* The tabs switch the whole page's address, above both columns. */
+.receive-selector {
+  width: fit-content;
+  margin-bottom: var(--dw-space-l);
+}
+
+@media (max-width: 979px) {
+  .shortcut-card {
+    position: static;
+    width: 100%;
+    margin-top: var(--dw-space-l);
+    transform: none;
+  }
+  .page-overview > .page-column { padding-top: var(--dw-space-l); }
+}
+
+/* My masternodes (MG-10 §1.2), from MG-00's frames. */
+.mg-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-space-m) 0;
+  border-radius: var(--dw-radius-group);
+}
+
+.mg-summary > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xxxs);
+  padding: 0 var(--dw-space-l);
+}
+
+.mg-summary > div + div {
+  border-left: 1px solid var(--dw-role-separator);
+}
+
+.mg-summary-label {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-summary-value {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.mg-summary-note {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption2-size);
+  line-height: var(--dw-type-caption2-line);
+}
+
+.mg-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-xxxl) var(--dw-space-xxl);
+  border-radius: var(--dw-radius-card);
+  text-align: center;
+}
+
+.mg-empty h2 {
+  margin: 0;
+  font-size: var(--dw-type-title3-size);
+  font-weight: var(--dw-type-title3-weight);
+  line-height: var(--dw-type-title3-line);
+}
+
+.mg-empty p {
+  max-width: 520px;
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-empty-points {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--dw-space-l);
+  max-width: 680px;
+  margin: var(--dw-space-s) 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-empty-points strong {
+  display: block;
+  margin-bottom: var(--dw-space-xxxs);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-empty-points span {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-roles .mg-held::before,
+.mg-roles .mg-elsewhere::before {
+  flex: none;
+  width: 14px;
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-roles .mg-held::before {
+  content: "✓";
+  color: var(--dw-role-success);
+}
+
+.mg-roles .mg-elsewhere::before {
+  content: "–";
+  color: var(--dw-role-text-tertiary);
+}
+
+.mg-roles .mg-elsewhere {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-notice-danger {
+  background: var(--dw-role-danger-tint);
+}
+
+/* The selected row's tint under a "PoSe banned" chip keeps the text at AA, as with .chip-warning (axe). */
+.mg-row .chip-danger {
+  background: linear-gradient(var(--dw-role-danger-tint), var(--dw-role-danger-tint)), var(--dw-role-card);
+}

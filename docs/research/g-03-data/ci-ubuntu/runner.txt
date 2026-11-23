@@ -1,0 +1,5 @@
+host: Linux 6.17.0-1022-azure x86_64; Ubuntu 24.04.5 LTS
+cpu: 4 x AMD EPYC 7763 64-Core Processor
+memory: 15 GiB
+gtk: 4.14.5
+display: :91 1440x900

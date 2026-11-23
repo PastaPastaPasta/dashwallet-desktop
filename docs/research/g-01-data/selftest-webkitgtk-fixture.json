@@ -1,0 +1,98 @@
+{
+  "userAgent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15",
+  "backend": "fixture",
+  "devicePixelRatio": 1,
+  "viewport": {
+    "width": 1280,
+    "height": 820
+  },
+  "interFontLoaded": true,
+  "textProbe": {
+    "amount700": 103.22,
+    "amount700tnum": 102,
+    "amount400": 92.22,
+    "caps700": 57.92,
+    "caps700ls": 66.32,
+    "body400": 261.65
+  },
+  "shown": {
+    "heroAmount": "30.39",
+    "heroFull": "30.39698287 tDASH",
+    "rowsShown": 45,
+    "firstRows": [
+      {
+        "txid": "0902059dbc42dcaa8e6a8d52d5b3f4c1cb484afab42e717ea37a2962908b3c36",
+        "recordIndex": 0,
+        "amount": "+0.20"
+      },
+      {
+        "txid": "71286458349328c76d2c907c6966038f90a4dbaf4f8782569970b9f3a9e3f294",
+        "recordIndex": 0,
+        "amount": "+1.25"
+      },
+      {
+        "txid": "6813bb0604077876c8c7a76b7f7b44d1a6bb41bd702b5c3bb95be65eee60942d",
+        "recordIndex": 0,
+        "amount": "-0.50000226"
+      },
+      {
+        "txid": "e4140d76513fe375842094d473d0748def588e648abcfbf841c598cd09938b35",
+        "recordIndex": 0,
+        "amount": "+0.71561845"
+      },
+      {
+        "txid": "29a1d45d6bef3950303126180bacde370b86f8bcc19a0b293a964b280b923ab8",
+        "recordIndex": 0,
+        "amount": "+0.32237277"
+      }
+    ]
+  },
+  "checksFailed": 0,
+  "checksNotApplicable": 0,
+  "checksTotal": 212,
+  "shellPaintMs": 3586,
+  "firstPaintMs": 3587,
+  "startup": {
+    "milestones": {
+      "scriptStart": 222,
+      "launchInfo": 268,
+      "shell": 1317,
+      "first-paint": 1318
+    },
+    "navigation": {
+      "responseEnd": 40,
+      "domInteractive": 40,
+      "domContentLoaded": 239,
+      "load": 239
+    }
+  },
+  "ipc": {
+    "ipcBenchRows200": {
+      "n": 200,
+      "p50": 12,
+      "p95": 62,
+      "max": 141
+    }
+  },
+  "security": {
+    "unlistedCommand": "refused: Command probe_unlisted not allowed by ACL",
+    "unknownPluginCommand": "refused: Command plugin:shell|execute not allowed by ACL",
+    "remoteFetch": "refused: Load failed; CSP violations: connect-src https://example.com/",
+    "windowOpen": "refused: window.open returned null",
+    "navigation": "refused: still on the app origin"
+  },
+  "final": true,
+  "engine": "WebKitGTK 2.52.6 (dash-wallet --fixture)",
+  "failedChecks": [],
+  "notApplicable": [],
+  "boxesPerScreen": {
+    "light/overview": 33,
+    "light/transactions": 99,
+    "light/txDetail": 106,
+    "light/unlock": 104,
+    "dark/overview": 33,
+    "dark/transactions": 99,
+    "dark/txDetail": 106,
+    "dark/unlock": 104
+  }
+}

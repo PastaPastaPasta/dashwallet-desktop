@@ -1,0 +1,28 @@
+import { defineConfig } from "@playwright/test";
+
+// Runs of the fixture build (`pnpm build:fixture`, served by `vite preview --mode fixture`) on
+// the fixture backend alone, no engine (U-07), in Chromium (the engine inside WebView2) and
+// WebKit (close to WKWebView and WebKitGTK). The viewport equals the Tauri window's inner
+// size, so element boxes compare across engines and with `--selftest` (U3c). The gate runs the
+// style spec again at its self-test size: DW_VIEWPORT=1000x620 (as the G-02 gate did).
+const [width, height] = (process.env.DW_VIEWPORT ?? "1280x820").split("x").map(Number);
+const port = Number(process.env.DW_E2E_PORT ?? 1420);
+export default defineConfig({
+  testDir: "e2e",
+  outputDir: "test-results",
+  fullyParallel: true,
+  reporter: [["list"], ["html", { open: "never" }]],
+  webServer: { command: `pnpm exec vite preview --mode fixture --port ${port} --strictPort`, port, reuseExistingServer: !process.env.CI },
+  use: {
+    baseURL: `http://localhost:${port}`,
+    viewport: { width, height },
+    deviceScaleFactor: 1,
+    locale: "en-US",
+  },
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    // On a loaded CI runner WebKit sometimes misses a fill on a search field, a different test each run.
+    // One retry keeps main green; the run still lists those tests as flaky.
+    { name: "webkit", retries: process.env.CI ? 1 : 0, use: { browserName: "webkit" } },
+  ],
+});

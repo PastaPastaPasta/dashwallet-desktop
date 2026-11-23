@@ -1,0 +1,31 @@
+[package]
+name = "dw-governance"
+description = "Dash governance over SPV for dashwallet-desktop: govsync, tallies, votes, proposals, superblock clock (QT-026, QT-128..134)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Salvaged from m3/r2-governance (MG-01); the facade is MG-02's.
+
+[dependencies]
+# `secp-recovery`: votes carry 65-byte compact signatures; the voting key id
+# is recovered from them (Core `CPubKey::RecoverCompact`). `bls`: operator
+# votes are verified against the list's operator key (MG-02 D89; already in
+# the graph through platform-wallet).
+dashcore = { workspace = true, features = ["secp-recovery", "bls"] }
+dw-message = { workspace = true }
+dw-p2p = { workspace = true }
+hex = { workspace = true }
+serde = "1"
+# `raw_value`: numbers are read from their text as UniValue does;
+# `unbounded_depth`: UniValue nests 512 deep, serde_json stops at 128
+# (`validate::depth_ok` bounds it instead).
+serde_json = { version = "1", features = ["raw_value", "unbounded_depth"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "rt", "sync", "time", "macros"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }

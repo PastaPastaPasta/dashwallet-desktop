@@ -1,0 +1,364 @@
+{
+  "base": "chromium",
+  "tolerance": 2.0,
+  "compared": 684,
+  "textRunIds": [
+    "hero-amount",
+    "hero-capsule"
+  ],
+  "engines": {
+    "wkwebview-classic-scrollbars": {
+      "maxDelta": 17.45,
+      "maxContainerDelta": 17.45,
+      "overTolerance": 578,
+      "onlyHere": [],
+      "missingHere": [],
+      "worst": [
+        {
+          "screen": "dark/transactions",
+          "id": "tx-categories",
+          "delta": 17.45,
+          "chromium": {
+            "id": "tx-categories",
+            "x": 636,
+            "y": 106,
+            "w": 340,
+            "h": 28
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "tx-categories",
+            "x": 618.55,
+            "y": 106,
+            "w": 340.45,
+            "h": 28
+          }
+        },
+        {
+          "screen": "dark/transactions",
+          "id": "tx-category-all",
+          "delta": 17.45,
+          "chromium": {
+            "id": "tx-category-all",
+            "x": 636,
+            "y": 106,
+            "w": 39,
+            "h": 28
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "tx-category-all",
+            "x": 618.55,
+            "y": 106,
+            "w": 39.78,
+            "h": 28
+          }
+        },
+        {
+          "screen": "dark/transactions",
+          "id": "tx-search",
+          "delta": 17.45,
+          "chromium": {
+            "id": "tx-search",
+            "x": 244,
+            "y": 104,
+            "w": 380,
+            "h": 32
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "tx-search",
+            "x": 244,
+            "y": 104,
+            "w": 362.55,
+            "h": 32
+          }
+        },
+        {
+          "screen": "dark/txDetail",
+          "id": "tx-categories",
+          "delta": 17.45,
+          "chromium": {
+            "id": "tx-categories",
+            "x": 636,
+            "y": 106,
+            "w": 340,
+            "h": 28
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "tx-categories",
+            "x": 618.55,
+            "y": 106,
+            "w": 340.45,
+            "h": 28
+          }
+        },
+        {
+          "screen": "dark/txDetail",
+          "id": "tx-category-all",
+          "delta": 17.45,
+          "chromium": {
+            "id": "tx-category-all",
+            "x": 636,
+            "y": 106,
+            "w": 39,
+            "h": 28
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "tx-category-all",
+            "x": 618.55,
+            "y": 106,
+            "w": 39.78,
+            "h": 28
+          }
+        },
+        {
+          "screen": "dark/txDetail",
+          "id": "tx-search",
+          "delta": 17.45,
+          "chromium": {
+            "id": "tx-search",
+            "x": 244,
+            "y": 104,
+            "w": 380,
+            "h": 32
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "tx-search",
+            "x": 244,
+            "y": 104,
+            "w": 362.55,
+            "h": 32
+          }
+        },
+        {
+          "screen": "dark/unlock",
+          "id": "tx-categories",
+          "delta": 17.45,
+          "chromium": {
+            "id": "tx-categories",
+            "x": 636,
+            "y": 106,
+            "w": 340,
+            "h": 28
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "tx-categories",
+            "x": 618.55,
+            "y": 106,
+            "w": 340.45,
+            "h": 28
+          }
+        },
+        {
+          "screen": "dark/unlock",
+          "id": "tx-category-all",
+          "delta": 17.45,
+          "chromium": {
+            "id": "tx-category-all",
+            "x": 636,
+            "y": 106,
+            "w": 39,
+            "h": 28
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "tx-category-all",
+            "x": 618.55,
+            "y": 106,
+            "w": 39.78,
+            "h": 28
+          }
+        },
+        {
+          "screen": "dark/unlock",
+          "id": "tx-search",
+          "delta": 17.45,
+          "chromium": {
+            "id": "tx-search",
+            "x": 244,
+            "y": 104,
+            "w": 380,
+            "h": 32
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "tx-search",
+            "x": 244,
+            "y": 104,
+            "w": 362.55,
+            "h": 32
+          }
+        },
+        {
+          "screen": "light/transactions",
+          "id": "tx-categories",
+          "delta": 17.45,
+          "chromium": {
+            "id": "tx-categories",
+            "x": 636,
+            "y": 106,
+            "w": 340,
+            "h": 28
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "tx-categories",
+            "x": 618.55,
+            "y": 106,
+            "w": 340.45,
+            "h": 28
+          }
+        }
+      ],
+      "textRuns": [
+        {
+          "screen": "dark/overview",
+          "id": "hero-capsule",
+          "delta": 8.96,
+          "chromium": {
+            "id": "hero-capsule",
+            "x": 570.8,
+            "y": 56,
+            "w": 78.41,
+            "h": 19
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "hero-capsule",
+            "x": 561.84,
+            "y": 56,
+            "w": 79.3,
+            "h": 19
+          }
+        },
+        {
+          "screen": "light/overview",
+          "id": "hero-capsule",
+          "delta": 8.96,
+          "chromium": {
+            "id": "hero-capsule",
+            "x": 570.8,
+            "y": 56,
+            "w": 78.41,
+            "h": 19
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "hero-capsule",
+            "x": 561.84,
+            "y": 56,
+            "w": 79.3,
+            "h": 19
+          }
+        },
+        {
+          "screen": "dark/overview",
+          "id": "hero-amount",
+          "delta": 8.53,
+          "chromium": {
+            "id": "hero-amount",
+            "x": 536.64,
+            "y": 97,
+            "w": 146.72,
+            "h": 41
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "hero-amount",
+            "x": 528.11,
+            "y": 97,
+            "w": 146.78,
+            "h": 41
+          }
+        },
+        {
+          "screen": "light/overview",
+          "id": "hero-amount",
+          "delta": 8.53,
+          "chromium": {
+            "id": "hero-amount",
+            "x": 536.64,
+            "y": 97,
+            "w": 146.72,
+            "h": 41
+          },
+          "wkwebview-classic-scrollbars": {
+            "id": "hero-amount",
+            "x": 528.11,
+            "y": 97,
+            "w": 146.78,
+            "h": 41
+          }
+        }
+      ],
+      "overPatterns": [
+        {
+          "dxdydwdh": [
+            0.0,
+            0.0,
+            -17.0,
+            0.0
+          ],
+          "boxes": 512
+        },
+        {
+          "dxdydwdh": [
+            -8.5,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "boxes": 16
+        },
+        {
+          "dxdydwdh": [
+            -17.5,
+            0.0,
+            0.5,
+            0.0
+          ],
+          "boxes": 6
+        },
+        {
+          "dxdydwdh": [
+            -17.5,
+            0.0,
+            1.0,
+            0.0
+          ],
+          "boxes": 6
+        },
+        {
+          "dxdydwdh": [
+            -17.0,
+            0.0,
+            0.5,
+            0.0
+          ],
+          "boxes": 6
+        },
+        {
+          "dxdydwdh": [
+            -16.5,
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "boxes": 6
+        },
+        {
+          "dxdydwdh": [
+            -16.5,
+            0.0,
+            -0.5,
+            0.0
+          ],
+          "boxes": 6
+        },
+        {
+          "dxdydwdh": [
+            -16.5,
+            0.0,
+            0.5,
+            0.0
+          ],
+          "boxes": 6
+        }
+      ]
+    }
+  },
+  "pass": false,
+  "passAllBoxes": false
+}

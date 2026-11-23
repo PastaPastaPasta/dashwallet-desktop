@@ -1,0 +1,722 @@
+info: syncing channel updates for 1.98.1-aarch64-unknown-linux-gnu
+info: latest update on 2026-09-03 for version 1.98.1 (48a229cea 2026-09-01)
+info: downloading 2 components
+disk-guard: 27 GB free on /target (>= 15 GB)
+build-core: cargo rustc -p dw-ffi (aarch64-unknown-linux-gnu, dev) -> /target
+note: link against the following native artifacts when linking against this static library. The order and any duplication can be significant on some platforms
+
+note: native-static-libs: -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
+
+warning: the gold linker is deprecated and has known bugs with Rust
+  |
+  = help: consider using LLD or ld from GNU binutils instead
+
+warning: `dw-ffi` (lib) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.31s
+build-core: uniffi-bindgen generate (library mode)
+warning: the gold linker is deprecated and has known bugs with Rust
+  |
+  = help: consider using LLD or ld from GNU binutils instead
+
+build-core: native libs: -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
+build-core: bundle variant linux-aarch64 ready: 509M
+== build-core took 23s; target volume 6.0G
+warning: prohibited flag(s): -pthread, -pthread, -pthread, -pthread, -pthread, -pthread, -pthread, -pthread
+warning: prohibited flag(s): -pthread, -pthread, -pthread, -pthread, -pthread, -pthread, -pthread, -pthread
+[0/1] Planning build
+Building for debugging...
+[0/7] Write sources
+[2/8] Write swift-version-24593BA9C3E375BF.txt
+[3/8] Copying libdashwallet_core.a
+[5/10] Compiling DashUICross Home.swift
+[6/10] Compiling DashUICross Gallery.swift
+[7/10] Emitting module DashUICross
+[9/11] Compiling DashWalletCore DashWalletCore.swift
+[10/11] Emitting module DashWalletCore
+[12/28] Compiling DashKit Models.swift
+[13/29] Compiling DashKit EngineClient+M2.swift
+[14/29] Compiling DashKit EngineProtocol.swift
+[15/29] Compiling DashKit EventBus.swift
+[16/29] Compiling DashKit SecretBytes.swift
+[17/29] Compiling DashKit EngineClient.swift
+[18/29] Compiling DashKit SimpleEnums.swift
+[19/29] Compiling DashKit Desktop.swift
+[20/29] Compiling DashKit DashKitError+M2.swift
+[21/29] Compiling DashKit DashKitError+M3.swift
+[22/29] Compiling DashKit DashKitError.swift
+[23/29] Compiling DashKit Amount.swift
+[24/29] Compiling DashKit CoreFunctions.swift
+[25/29] Emitting module DashKit
+[26/29] Compiling DashKit EngineM2Models.swift
+[27/29] Compiling DashKit EngineM2Services.swift
+[28/29] Compiling DashKit EngineModels.swift
+[30/36] Compiling AppServices AppServices.swift
+[31/36] Emitting module AppServices
+[33/38] Compiling PlatformServicesDesktop PlatformServicesDesktop.swift
+[34/38] Emitting module PlatformServicesDesktop
+[35/85] Compiling PlatformServicesDesktop DesktopDataDirectory.swift
+[36/85] Compiling PlatformServicesDesktop DesktopOSServices.swift
+/work/Sources/PlatformServicesDesktop/DesktopOSServices.swift:426:33: warning: result of call to 'fileExists(atPath:isDirectory:)' is unused [#no-usage]
+424 |             process.executableURL = URL(fileURLWithPath: "/usr/bin/xdg-open")
+425 |             var isDirectory: ObjCBool = false
+426 |             FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+    |                                 `- warning: result of call to 'fileExists(atPath:isDirectory:)' is unused [#no-usage]
+427 |             process.arguments = [isDirectory.boolValue ? url.path : url.deletingLastPathComponent().path]
+428 |         #else
+[37/86] Compiling WalletRuntime Broadcasters.swift
+[38/86] Compiling WalletRuntime Coalescer.swift
+[39/86] Compiling WalletRuntime RuntimeClock.swift
+[41/89] Compiling WalletRuntime TaskBag.swift
+[42/89] Compiling WalletRuntime Watchdog.swift
+[43/89] Compiling WalletRuntime WalletRuntime.swift
+[44/89] Compiling WalletRuntime Sync.swift
+[45/89] Compiling WalletRuntime Tools.swift
+[46/89] Compiling WalletRuntime Vault.swift
+[47/89] Compiling WalletRuntime WalletState.swift
+[48/89] Compiling WalletRuntime M2Security.swift
+[49/89] Compiling WalletRuntime M2Shell.swift
+[50/89] Compiling WalletRuntime M2Tools.swift
+[51/89] Compiling WalletRuntime M2Transactions.swift
+[52/89] Compiling WalletRuntime VaultService.swift
+[53/89] Compiling WalletRuntime AuthenticationGate.swift
+[54/89] Compiling WalletRuntime SPVCoordinator.swift
+[55/89] Compiling WalletRuntime CommonTypes.swift
+[56/89] Compiling WalletRuntime History.swift
+[57/89] Compiling WalletRuntime Lifecycle.swift
+[58/89] Compiling WalletRuntime M2Compat.swift
+[59/89] Compiling WalletRuntime QueryServices.swift
+[60/89] Compiling WalletRuntime ToolServices.swift
+[61/89] Compiling WalletRuntime TransactionSender.swift
+[62/89] Compiling WalletRuntime M3Tools.swift
+[63/89] Compiling WalletRuntime Receive.swift
+[64/89] Compiling WalletRuntime Send.swift
+[65/89] Compiling WalletRuntime ServiceError.swift
+[66/89] Compiling WalletRuntime Conversions.swift
+[67/89] Compiling WalletRuntime EnumConversions.swift
+[68/89] Compiling WalletRuntime WalletRuntimeServices.swift
+[69/89] Compiling WalletRuntime CoinsAndLabels.swift
+[70/89] Compiling WalletRuntime Shell.swift
+[71/89] Compiling WalletRuntime TransactionNotifications.swift
+[72/89] Compiling WalletRuntime EngineContext.swift
+[73/89] Compiling WalletRuntime SettingsStore.swift
+[74/89] Compiling WalletRuntime SyncProgressDamper.swift
+[75/89] Compiling WalletRuntime WalletStateModel.swift
+[76/89] Compiling WalletRuntime LifecycleQueue.swift
+[77/89] Compiling WalletRuntime WalletHost.swift
+[78/89] Compiling WalletRuntime AutoLockController.swift
+[79/89] Compiling WalletRuntime DesktopRuntime.swift
+[80/89] Compiling WalletRuntime EngineToolAdapters.swift
+[81/89] Compiling WalletRuntime LaunchArgumentsParser.swift
+[82/89] Compiling WalletRuntime PlatformErrors.swift
+[83/89] Compiling WalletRuntime QuickUnlockService.swift
+[84/89] Compiling WalletRuntime M2WalletLifecycle.swift
+[85/89] Compiling WalletRuntime M3CoinJoin.swift
+[86/89] Compiling WalletRuntime M3Governance.swift
+[87/89] Compiling WalletRuntime M3Masternodes.swift
+[88/89] Emitting module WalletRuntime
+[90/171] Compiling WalletFeatures L10n+Options.swift
+[91/171] Compiling WalletFeatures L10n+PSBT.swift
+[92/171] Compiling WalletFeatures L10n+Receive.swift
+[93/171] Compiling WalletFeatures L10n+Send.swift
+[94/171] Compiling WalletFeatures L10n+Settings.swift
+[95/171] Compiling WalletFeatures L10n+Shell.swift
+[96/177] Compiling WalletFeatures L10n+SignVerify.swift
+[97/177] Compiling WalletFeatures L10n+Sync.swift
+[98/177] Compiling WalletFeatures L10n+Tools.swift
+[99/177] Compiling WalletFeatures L10n+Transactions.swift
+[100/177] Compiling WalletFeatures L10n+TransactionsM2.swift
+[101/177] Compiling WalletFeatures L10n+Wallets.swift
+[102/177] Compiling WalletFeatures L10n+HomeM2.swift
+[103/177] Compiling WalletFeatures L10n+Lock.swift
+[104/177] Compiling WalletFeatures L10n+M2Errors.swift
+[105/177] Compiling WalletFeatures L10n+M3Errors.swift
+[106/177] Compiling WalletFeatures L10n+Masternodes.swift
+[107/177] Compiling WalletFeatures L10n+Onboarding.swift
+[108/177] Compiling WalletFeatures DesktopPreferences.swift
+[109/177] Compiling WalletFeatures EngineCode.swift
+[110/177] Compiling WalletFeatures ErrorText.swift
+[111/177] Compiling WalletFeatures InputValidation.swift
+[112/177] Compiling WalletFeatures M2Services+Live.swift
+[113/177] Compiling WalletFeatures M2Services.swift
+[114/177] Compiling WalletFeatures M3Defaults.swift
+[115/177] Compiling WalletFeatures ShortcutBarViewModel.swift
+[116/177] Compiling WalletFeatures L10n+AddressBook.swift
+[117/177] Compiling WalletFeatures L10n+CoinControl.swift
+[118/177] Compiling WalletFeatures L10n+CoinJoin.swift
+[119/177] Compiling WalletFeatures L10n+Governance.swift
+[120/177] Compiling WalletFeatures L10n+Home.swift
+[121/177] Compiling WalletFeatures AboutViewModel.swift
+[122/177] Compiling WalletFeatures AddressBookViewModel.swift
+[123/177] Compiling WalletFeatures CoinJoinPanelViewModel.swift
+[124/177] Compiling WalletFeatures MixedCoinsViewModel.swift
+[125/177] Compiling WalletFeatures AmountFormatter.swift
+[126/177] Compiling WalletFeatures AppEnvironment+Runtime.swift
+[127/177] Compiling WalletFeatures AppEnvironment.swift
+[128/177] Compiling WalletFeatures GovernanceClockViewModel.swift
+[129/177] Compiling WalletFeatures GovernanceInfoViewModel.swift
+[130/177] Compiling WalletFeatures ProposalListViewModel.swift
+[131/177] Compiling WalletFeatures ProposalVoteViewModel.swift
+[132/177] Compiling WalletFeatures ResumeProposalsViewModel.swift
+[133/177] Compiling WalletFeatures HomeViewModel.swift
+[134/177] Compiling WalletFeatures AppRoute.swift
+[135/177] Compiling WalletFeatures BIP39EnglishWords.swift
+[136/177] Compiling WalletFeatures OnboardingSupport.swift
+[137/177] Compiling WalletFeatures OnboardingViewModel.swift
+[138/177] Compiling WalletFeatures OptionsViewModel.swift
+[139/177] Compiling WalletFeatures PSBTViewModel.swift
+[140/177] Compiling WalletFeatures TransactionFilters.swift
+[141/177] Compiling WalletFeatures TransactionsViewModel+M2.swift
+[142/177] Compiling WalletFeatures TransactionsViewModel.swift
+[143/177] Compiling WalletFeatures WalletFeatures.swift
+[144/177] Compiling WalletFeatures WalletManagementViewModel.swift
+[145/177] Compiling WalletFeatures WalletWiper.swift
+[146/177] Compiling WalletFeatures L10n.swift
+[147/177] Compiling WalletFeatures LockViewModel.swift
+[148/177] Compiling WalletFeatures MainViewModel.swift
+[149/177] Compiling WalletFeatures MenuBarCompanionViewModel.swift
+[150/177] Compiling WalletFeatures PeersViewModel.swift
+[151/177] Compiling WalletFeatures SyncRateTracker.swift
+[152/177] Compiling WalletFeatures M3Preferences.swift
+[153/177] Compiling WalletFeatures M3Services+Live.swift
+[154/177] Compiling WalletFeatures M3Services.swift
+[155/177] Compiling WalletFeatures M3Support.swift
+[156/177] Compiling WalletFeatures UIPreferences.swift
+[157/177] Compiling WalletFeatures CreateProposalWizardViewModel.swift
+[158/177] Compiling WalletFeatures ReceiveViewModel.swift
+[159/177] Compiling WalletFeatures SecurityViewModel.swift
+[160/177] Compiling WalletFeatures CoinControlViewModel.swift
+[161/177] Compiling WalletFeatures SendViewModel.swift
+[162/177] Compiling WalletFeatures SettingsViewModel.swift
+[163/177] Compiling WalletFeatures ShellModel.swift
+[164/177] Compiling WalletFeatures StartupViewModels.swift
+[165/177] Compiling WalletFeatures SignVerifyViewModel.swift
+[166/177] Compiling WalletFeatures ConsoleViewModel.swift
+[167/177] Compiling WalletFeatures InformationViewModel.swift
+[168/177] Compiling WalletFeatures NetworkInformationViewModel.swift
+[169/177] Compiling WalletFeatures RepairViewModel.swift
+[170/177] Compiling WalletFeatures MasternodeDetailViewModel.swift
+[171/177] Compiling WalletFeatures MasternodeKeysViewModels.swift
+[172/177] Compiling WalletFeatures MasternodeListViewModel.swift
+[173/177] Compiling WalletFeatures MasternodeMaintenanceViewModel.swift
+[174/177] Compiling WalletFeatures RegisterMasternodeWizardViewModel.swift
+[175/177] Compiling WalletFeatures SharedMasternodeViewModel.swift
+[176/177] Emitting module WalletFeatures
+[178/201] Compiling CrossUI TransactionsScreen.swift
+[179/202] Compiling CrossUI StartupScreens.swift
+[180/202] Compiling CrossUI Support.swift
+[181/202] Compiling CrossUI SettingsScreen.swift
+[182/202] Compiling CrossUI ShellMenus.swift
+[183/202] Compiling CrossUI OverviewScreen.swift
+[184/202] Compiling CrossUI PSBTScreen.swift
+[185/202] Compiling CrossUI TransactionDetailViews.swift
+[186/202] Compiling CrossUI SyncScreens.swift
+[187/202] Compiling CrossUI ToolScreens.swift
+[188/202] Compiling CrossUI ToolsWindowScreen.swift
+[189/202] Compiling CrossUI Presentation.swift
+[190/202] Compiling CrossUI ReceiveScreen.swift
+[191/202] Compiling CrossUI SecurityScreen.swift
+[192/202] Compiling CrossUI SendScreen.swift
+[193/202] Compiling CrossUI CrossAppState.swift
+[194/202] Compiling CrossUI CrossUI.swift
+[195/202] Compiling CrossUI OnboardingScreen.swift
+[196/202] Compiling CrossUI OptionsScreen.swift
+[197/202] Emitting module CrossUI
+[198/202] Compiling CrossUI AboutScreen.swift
+[199/202] Compiling CrossUI CoinSelectionScreen.swift
+[200/202] Compiling CrossUI WalletsScreen.swift
+[201/202] Compiling CrossUI WalletRootView.swift
+/work/Sources/CrossUI/WalletRootView.swift:106:18: warning: 'frame(minWidth:idealWidth:maxWidth:minHeight:idealHeight:maxHeight:alignment:)' is deprecated: renamed to 'frame(minWidth:idealWidth:maxWidth:minHeight:idealHeight:maxHeight:alignment:)' [#DeprecatedDeclaration]
+104 |         NavigationSplitView {
+105 |             Sidebar(state: state)
+106 |                 .frame(minWidth: CrossLayout.sidebarWidth - 20)
+    |                  |- warning: 'frame(minWidth:idealWidth:maxWidth:minHeight:idealHeight:maxHeight:alignment:)' is deprecated: renamed to 'frame(minWidth:idealWidth:maxWidth:minHeight:idealHeight:maxHeight:alignment:)' [#DeprecatedDeclaration]
+    |                  `- note: use 'frame(minWidth:idealWidth:maxWidth:minHeight:idealHeight:maxHeight:alignment:)' instead
+107 |         } detail: {
+108 |             detail(main)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[202/204] Wrapping AST for DashUICross for debugging
+[203/209] Write sources
+[204/209] Wrapping AST for CrossUI for debugging
+[206/223] Compiling WalletDemo DemoM3Services.swift
+[207/223] Compiling WalletDemo DemoM3World.swift
+[208/224] Compiling WalletDemo DemoLedger.swift
+[209/224] Emitting module WalletDemo
+[210/224] Compiling WalletDemo DemoSupport.swift
+[211/224] Compiling WalletDemo DemoWorld.swift
+[212/224] Compiling WalletDemo DemoEnvironment.swift
+[213/224] Compiling WalletDemo DemoM3Sample.swift
+[214/224] Compiling WalletDemo DemoM3Rules.swift
+[215/224] Compiling WalletDemo DemoM2Services.swift
+[216/224] Compiling WalletDemo DemoM3Provider.swift
+[217/224] Compiling WalletDemo DemoM2Ledger.swift
+[218/224] Compiling WalletDemo DemoServices.swift
+[219/224] Compiling WalletDemo DemoSending.swift
+[220/224] Compiling WalletDemo DemoQueries.swift
+[222/229] Compiling DashWalletCross OSServices.swift
+[223/229] Compiling DashWalletCross LiveEnvironment.swift
+[224/229] Compiling DashWalletCross LaunchOptions.swift
+[225/229] Emitting module DashWalletCross
+[226/229] Compiling DashWalletCross DashWalletCrossApp.swift
+[227/229] Write Objects.LinkFileList
+clang: warning: argument unused during compilation: '-F/swiftpm/.build/aarch64-unknown-linux-gnu/debug' [-Wunused-command-line-argument]
+[228/229] Linking dash-wallet
+Build of product 'dash-wallet' complete! (50.48s)
+== swift build dash-wallet took 56s
+== binary: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), dynamically linked
+dbus-daemon[1318]: [session uid=0 pid=1318] Activating service name='org.a11y.Bus' requested by ':1.0' (uid=0 pid=1329 comm="dbus-send --session --print-reply --dest=org.a11y.")
+dbus-daemon[1318]: [session uid=0 pid=1318] Successfully activated service 'org.a11y.Bus'
+== demo: launched dash-wallet --demo (pid 1347)
+dbus-daemon[1344]: Activating service name='org.a11y.atspi.Registry' requested by ':1.0' (uid=0 pid=1348 comm="python3 /work/ci/linux/crossui/atspi_demo.py --pid")
+SpiRegistry daemon is running with well-known name - org.a11y.atspi.Registry
+dbus-daemon[1344]: Successfully activated service 'org.a11y.atspi.Registry'
+
+(process:1348): dbind-WARNING **: 18:35:07.425: AT-SPI: Error in GetItems, sender=:1.2, error=Object does not exist at path “/org/a11y/atspi/cache”
+[PASS] hard: app pid 1347 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: 1-overview: marker text 'History' is exposed
+== 1-overview: dumped 1293 nodes
+== screenshot /tmp/regression/1-overview.png (window 0x200004): ok
+[PASS] soft: 1-overview: control naming -- {"list item": {"total": 9, "named": 9, "examples_unnamed": []}, "push button": {"total": 17, "named": 17, "examples_unnamed": []}, "combo box": {"total": 1, "named": 1, "examples_unnamed": []}, "toggle button": {"total": 1, "named": 1, "examples_unnamed": []}}
+[PASS] hard: 1-overview: sidebar list items ['Overview', 'Send', 'Receive', 'Transactions'] -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: 1-overview: every entry, switch and picker has an accessible name -- []
+[PASS] hard: 1-overview: every list row has an accessible name -- ['Overview', 'Send', 'Receive', 'Transactions', 'Received, ye3zmgeiPnVYmPGYEDw48axGcgqZgfJkQ4, +0.20000000 tDASH, 6 Oct 2026 at 6:29\u202fPM', 'Received, yh8pynqksrcvMUBRcfRx9N3x8vHQS5DAuS, +1.25000000 tDASH, 6 Oct 2026 at 5:59\u202fPM']
+[PASS] hard: select sidebar 'Send' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: 2-send: marker text 'Pay To:' is exposed
+== 2-send: dumped 876 nodes
+== screenshot /tmp/regression/2-send.png (window 0x200004): ok
+[PASS] soft: 2-send: control naming -- {"list item": {"total": 4, "named": 4, "examples_unnamed": []}, "push button": {"total": 16, "named": 16, "examples_unnamed": []}, "text": {"total": 5, "named": 5, "examples_unnamed": []}, "check box": {"total": 1, "named": 1, "examples_unnamed": []}, "combo box": {"total": 2, "named": 2, "examples_unnamed": []}, "toggle button": {"total": 2, "named": 2, "examples_unnamed": []}}
+[PASS] hard: 2-send: sidebar list items ['Overview', 'Send', 'Receive', 'Transactions'] -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: 2-send: every entry, switch and picker has an accessible name -- []
+[PASS] hard: 2-send: every list row has an accessible name -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: send: push button named 'Send'
+[PASS] hard: send: push button named 'Add Recipient'
+[PASS] hard: send: push button named 'Clear All'
+[PASS] hard: send: push button named 'Use available balance'
+[PASS] hard: send: text named 'Pay To'
+[PASS] hard: send: text named 'Amount'
+[PASS] hard: send: check box named 'Subtract fee from amount'
+[PASS] hard: send: combo box named 'Confirmation time target'
+[PASS] hard: send: address entry exposes placeholder 'Pay to: Dash address'
+== 22 checks, 0 hard failures
+== demo: alive at end (rss 370020 KB)
+== transactions: launched dash-wallet --demo --page transactions (pid 1420)
+[PASS] hard: app pid 1420 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: 3-transactions: marker text 'Export…' is exposed
+== 3-transactions: dumped 2871 nodes
+== screenshot /tmp/regression/3-transactions.png (window 0x200004): ok
+[PASS] soft: 3-transactions: control naming -- {"list item": {"total": 29, "named": 29, "examples_unnamed": []}, "push button": {"total": 16, "named": 16, "examples_unnamed": []}, "combo box": {"total": 3, "named": 3, "examples_unnamed": []}, "toggle button": {"total": 3, "named": 3, "examples_unnamed": []}, "text": {"total": 2, "named": 2, "examples_unnamed": []}}
+== 4 checks, 0 hard failures
+== transactions: alive at end (rss 340552 KB)
+== receive: launched dash-wallet --demo --page receive (pid 1483)
+[PASS] hard: app pid 1483 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: 4-receive: marker text 'Request payment' is exposed
+== 4-receive: dumped 874 nodes
+== screenshot /tmp/regression/4-receive.png (window 0x200004): ok
+[PASS] soft: 4-receive: control naming -- {"list item": {"total": 4, "named": 4, "examples_unnamed": []}, "push button": {"total": 17, "named": 17, "examples_unnamed": []}, "text": {"total": 3, "named": 3, "examples_unnamed": []}, "combo box": {"total": 1, "named": 1, "examples_unnamed": []}, "toggle button": {"total": 1, "named": 1, "examples_unnamed": []}}
+== 4 checks, 0 hard failures
+== receive: alive at end (rss 322848 KB)
+== onboarding: launched dash-wallet --demo onboarding (pid 1543)
+[PASS] hard: app pid 1543 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - [testnet]']
+[PASS] hard: 5-onboarding: marker text 'Create a new wallet' is exposed
+== 5-onboarding: dumped 244 nodes
+== screenshot /tmp/regression/5-onboarding.png (window 0x200004): ok
+[PASS] soft: 5-onboarding: control naming -- {"push button": {"total": 4, "named": 4, "examples_unnamed": []}, "combo box": {"total": 1, "named": 1, "examples_unnamed": []}, "toggle button": {"total": 1, "named": 1, "examples_unnamed": []}}
+== 4 checks, 0 hard failures
+== onboarding: alive at end (rss 290768 KB)
+== onboarding-flow: launched dash-wallet --demo onboarding (pid 1601)
+[PASS] hard: app pid 1601 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - [testnet]']
+[PASS] hard: onboarding: welcome page
+[PASS] hard: press 'Create a new wallet' through AT-SPI Action
+[PASS] hard: onboarding: recovery phrase page
+== 6-onboarding-phrase: dumped 331 nodes
+== screenshot /tmp/regression/6-onboarding-phrase.png (window 0x200004): ok
+[PASS] hard: onboarding: the phrase page exposes 12 numbered words -- 12
+[PASS] hard: press 'I wrote it down' through AT-SPI Action
+[PASS] hard: press 'rocket' through AT-SPI Action
+[PASS] hard: press 'tiny' through AT-SPI Action
+[PASS] hard: press 'crane' through AT-SPI Action
+[PASS] hard: press 'above' through AT-SPI Action
+[PASS] hard: onboarding: phrase verified, passphrase page shown
+== 6-onboarding-passphrase: dumped 269 nodes
+== screenshot /tmp/regression/6-onboarding-passphrase.png (window 0x200004): ok
+[PASS] hard: type into the field named 'New passphrase' through AT-SPI EditableText
+[PASS] hard: type into the field named 'Repeat new passphrase' through AT-SPI EditableText
+[PASS] hard: press 'Encrypt wallet' through AT-SPI Action
+[PASS] hard: onboarding: the new wallet's Overview is shown
+== 6-onboarding-done: dumped 1319 nodes
+== screenshot /tmp/regression/6-onboarding-done.png (window 0x200004): ok
+== 16 checks, 0 hard failures
+== onboarding-flow: alive at end (rss 321884 KB)
+== send-flow: launched dash-wallet --demo --page send (pid 1682)
+[PASS] hard: app pid 1682 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: send: page shown
+[PASS] hard: type into the field named 'Pay To' through AT-SPI EditableText
+[PASS] hard: type into the field named 'Amount' through AT-SPI EditableText
+== 7-send-filled: dumped 876 nodes
+== screenshot /tmp/regression/7-send-filled.png (window 0x200004): ok
+[PASS] hard: press 'Send' through AT-SPI Action
+[PASS] hard: send: review (confirm) panel shown
+== 7-send-review: dumped 1002 nodes
+== screenshot /tmp/regression/7-send-review.png (window 0x200004): ok
+[PASS] hard: send: review lists the recipient address
+[PASS] hard: press 'Send' through AT-SPI Action
+[FAIL] hard: send: the sent payment is listed on the Transactions page
+== 7-send-done: dumped 3312 nodes
+== screenshot /tmp/regression/7-send-done.png (window 0x200004): ok
+== 10 checks, 1 hard failures
+== send-flow: alive at end (rss 361108 KB)
+== tools-flow: launched dash-wallet --demo (pid 1777)
+[PASS] hard: app pid 1777 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: tools: overview shown
+[PASS] hard: tools: status-row unit selector is a combo box named 'Unit to show amounts in'
+[PASS] hard: tools: status-row peers button -- 8 peers
+[PASS] hard: press '8 peers' through AT-SPI Action
+[PASS] hard: tools: peers page with 'Change Peers'
+[PASS] hard: tools: peer rows are named after their address -- 203.0.113.11:19999, User Agent: /Dash Core:23.1.7/  Height: 1234567  Ping: 27 ms  Outbound
+== 9-tools-peers: dumped 946 nodes
+== screenshot /tmp/regression/9-tools-peers.png (window 0x200004): ok
+[PASS] hard: press 'Close' through AT-SPI Action
+[PASS] hard: press 'Address Book' through AT-SPI Action
+[PASS] hard: tools: address book lists entries with 'Show QR'
+[PASS] hard: press 'Show QR' through AT-SPI Action
+[PASS] hard: tools: the entry's QR code and dash: URI are shown -- dash:yXPK1R5baHAcD2pw9HRinRs9ck7A2uB1Po?label=Alice
+[PASS] hard: tools: the address lists are segments named 'Sending addresses' / 'Receiving addresses' -- ['Address Book', 'Sign / Verify Message', 'Tools Window', 'PSBT Operations', 'Wallets', 'Options', 'Security', 'Settings', 'About', 'Sending addresses', 'Receiving addresses', 'Export…']
+== 9-tools-qr: dumped 1219 nodes
+== screenshot /tmp/regression/9-tools-qr.png (window 0x200004): ok
+== 14 checks, 0 hard failures
+== tools-flow: alive at end (rss 332192 KB)
+== overlay-flow: launched dash-wallet --demo offline (pid 1846)
+[PASS] hard: app pid 1846 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: overlay: shown by itself while the tip is old
+[PASS] hard: overlay: row 'Number of blocks left'
+[PASS] hard: overlay: row 'Last block time'
+[PASS] hard: overlay: row 'Progress increase per hour'
+== 10-overlay-shown: dumped 323 nodes
+== screenshot /tmp/regression/10-overlay-shown.png (window 0x200004): ok
+[PASS] hard: press 'Hide' through AT-SPI Action
+[PASS] hard: overlay: Hide returns to the wallet
+[PASS] hard: overlay: status row offers 'Sync details'
+== 10-overlay-hidden: dumped 1408 nodes
+== screenshot /tmp/regression/10-overlay-hidden.png (window 0x200004): ok
+== 9 checks, 0 hard failures
+== overlay-flow: alive at end (rss 330876 KB)
+== m2-menus: launched dash-wallet --demo (pid 1916)
+[PASS] hard: app pid 1916 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: menus: overview shown
+[PASS] hard: menus: window title is 'Dash Wallet - … - [testnet]' (QT-011) -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: menus: the window has a menu bar
+[PASS] hard: menus: top-level menu 'File' -- ['File', 'Settings', 'Window', 'Help']
+[PASS] hard: menus: top-level menu 'Settings' -- ['File', 'Settings', 'Window', 'Help']
+[PASS] hard: menus: top-level menu 'Window' -- ['File', 'Settings', 'Window', 'Help']
+[PASS] hard: menus: top-level menu 'Help' -- ['File', 'Settings', 'Window', 'Help']
+== m2-1-menus-overview: dumped 1293 nodes
+== screenshot /tmp/regression/m2-1-menus-overview.png (window 0x200004): ok
+== 9 checks, 0 hard failures
+== m2-menus: alive at end (rss 325208 KB)
+== m2-options: launched dash-wallet --demo --page options (pid 1982)
+
+(process:1983): dbind-WARNING **: 18:41:21.750: AT-SPI: Error in GetItems, sender=:1.20, error=Object does not exist at path “/org/a11y/atspi/cache”
+[PASS] hard: app pid 1982 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: options: page shown
+== m2-2-options-main: dumped 809 nodes
+== screenshot /tmp/regression/m2-2-options-main.png (window 0x200004): ok
+[PASS] hard: press 'Wallet' through AT-SPI Action
+[PASS] hard: options: Wallet tab shows the coin control switch
+== m2-2-options-wallet: dumped 854 nodes
+== screenshot /tmp/regression/m2-2-options-wallet.png (window 0x200004): ok
+[PASS] hard: toggle 'Enable coin control features' through AT-SPI Action
+[PASS] hard: press 'OK' through AT-SPI Action
+[PASS] hard: options: OK saves ('Options saved.')
+[PASS] hard: press 'Network' through AT-SPI Action
+[PASS] hard: options: Network tab says proxy needs an engine update
+== m2-2-options-network: dumped 885 nodes
+== screenshot /tmp/regression/m2-2-options-network.png (window 0x200004): ok
+[PASS] hard: press 'Display' through AT-SPI Action
+[PASS] hard: options: Display tab has the third-party URL field
+== m2-2-options-display: dumped 926 nodes
+== screenshot /tmp/regression/m2-2-options-display.png (window 0x200004): ok
+[PASS] hard: select sidebar 'Send' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: coin control: Send shows 'Coin Control Features'
+[PASS] hard: press 'Inputs…' through AT-SPI Action
+[PASS] hard: coin selection: page shown
+[PASS] hard: coin selection: 'automatically selected' before a pick
+== m2-2-options-coin-selection: dumped 1537 nodes
+== screenshot /tmp/regression/m2-2-options-coin-selection.png (window 0x200004): ok
+[PASS] hard: coin selection: coins are switches named 'Select <amount> at <address>' -- Select 4.87999774 at yesAWtYnaAoYsCxKpKrjPANeRsZe97QP9P
+[PASS] hard: toggle 'Select 4.87999774 at yesAWtYnaAoYsCxKpKrjPANeRsZe97QP9P' through AT-SPI Action
+[PASS] hard: coin selection: the summary shows Quantity after a pick
+== m2-2-options-coin-selected: dumped 1609 nodes
+== screenshot /tmp/regression/m2-2-options-coin-selected.png (window 0x200004): ok
+[PASS] hard: press 'OK' through AT-SPI Action
+[PASS] hard: coin selection: OK returns to Send, whose panel shows the pick
+== m2-2-options-send-with-selection: dumped 924 nodes
+== screenshot /tmp/regression/m2-2-options-send-with-selection.png (window 0x200004): ok
+== 22 checks, 0 hard failures
+== m2-options: alive at end (rss 337840 KB)
+== m2-tools: launched dash-wallet --demo --page tools-console (pid 2081)
+[PASS] hard: app pid 2081 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: console: welcome text
+[PASS] hard: console: anti-scam warning
+[PASS] hard: type into the field named 'Console command' through AT-SPI EditableText
+[PASS] hard: press 'Run' through AT-SPI Action
+[PASS] hard: console: the command is echoed and answered with a block count -- 1234567
+== m2-3-tools-console: dumped 892 nodes
+== screenshot /tmp/regression/m2-3-tools-console.png (window 0x200004): ok
+[PASS] hard: press 'Information' through AT-SPI Action
+[PASS] hard: information: client version row
+[PASS] hard: information: full-node rows say so
+== m2-3-tools-information: dumped 974 nodes
+== screenshot /tmp/regression/m2-3-tools-information.png (window 0x200004): ok
+[PASS] hard: press 'Peers' through AT-SPI Action
+[PASS] hard: peers tab: 'Change Peers'
+== m2-3-tools-peers: dumped 946 nodes
+== screenshot /tmp/regression/m2-3-tools-peers.png (window 0x200004): ok
+[PASS] hard: press 'Repair' through AT-SPI Action
+[PASS] hard: repair tab: rescan and reset buttons
+== m2-3-tools-repair: dumped 889 nodes
+== screenshot /tmp/regression/m2-3-tools-repair.png (window 0x200004): ok
+== 14 checks, 0 hard failures
+== m2-tools: alive at end (rss 320992 KB)
+== m2-pages: launched dash-wallet --demo (pid 2167)
+[PASS] hard: app pid 2167 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: pages: overview shown
+[PASS] hard: press 'Wallets' through AT-SPI Action
+[PASS] hard: wallets: import, restore and watch-only controls
+== m2-5-pages-wallets: dumped 1075 nodes
+== screenshot /tmp/regression/m2-5-pages-wallets.png (window 0x200004): ok
+[PASS] hard: press 'Security' through AT-SPI Action
+[PASS] hard: security: auto-lock picker
+[PASS] hard: security: says there is no biometric unlock on this system
+== m2-5-pages-security: dumped 918 nodes
+== screenshot /tmp/regression/m2-5-pages-security.png (window 0x200004): ok
+[PASS] hard: press 'About' through AT-SPI Action
+[PASS] hard: about: Export Logs
+== m2-5-pages-about: dumped 756 nodes
+== screenshot /tmp/regression/m2-5-pages-about.png (window 0x200004): ok
+[PASS] hard: press 'Command-line options' through AT-SPI Action
+[PASS] hard: command-line options: dash-qt options listed
+== m2-5-pages-command-line: dumped 759 nodes
+== screenshot /tmp/regression/m2-5-pages-command-line.png (window 0x200004): ok
+[PASS] hard: select sidebar 'Transactions' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: transactions: rows listed
+[PASS] hard: transactions: select the first row through AT-SPI Selection
+[FAIL] hard: transactions: details show dash-qt's Abandon / Resend actions
+[FAIL] hard: transactions: details list 'Net amount'
+== m2-5-pages-transaction-details: dumped 1 nodes
+== screenshot /tmp/regression/m2-5-pages-transaction-details.png (window 0x200004): ok
+== 17 checks, 2 hard failures
+== m2-pages: alive at end (rss 360940 KB)
+== ux-light-main: launched dash-wallet --demo --appearance light (pid 2267)
+[PASS] hard: app pid 2267 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: ux: ux-light-01-overview shows 'History'
+== ux-light-01-overview: dumped 1293 nodes
+== screenshot /out/ux-light-01-overview.png (window 0x200004): ok
+[PASS] hard: select sidebar 'Send' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: ux: ux-light-02-send shows 'Pay To:'
+== ux-light-02-send: dumped 876 nodes
+== screenshot /out/ux-light-02-send.png (window 0x200004): ok
+[PASS] hard: select sidebar 'Receive' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: ux: ux-light-03-receive shows 'Request payment'
+== ux-light-03-receive: dumped 874 nodes
+== screenshot /out/ux-light-03-receive.png (window 0x200004): ok
+[PASS] hard: select sidebar 'Transactions' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: ux: ux-light-04-transactions shows 'Export…'
+== ux-light-04-transactions: dumped 2871 nodes
+== screenshot /out/ux-light-04-transactions.png (window 0x200004): ok
+[FAIL] hard: ux: ux-light-05-transaction-details shows 'Net amount'
+== ux-light-05-transaction-details: dumped 1 nodes
+== screenshot /out/ux-light-05-transaction-details.png (window 0x200004): ok
+[FAIL] hard: press 'Table' through AT-SPI Action
+[FAIL] hard: press 'Address Book' through AT-SPI Action
+[PASS] hard: press 'Sign / Verify Message' through AT-SPI Action
+[PASS] hard: ux: ux-light-08-sign-verify shows Sign / Verify Message
+== ux-light-08-sign-verify: dumped 670 nodes
+== screenshot /out/ux-light-08-sign-verify.png (window 0x200004): ok
+[PASS] hard: press 'Tools Window' through AT-SPI Action
+[PASS] hard: ux: ux-light-09-tools-information shows Tools Window
+== ux-light-09-tools-information: dumped 974 nodes
+== screenshot /out/ux-light-09-tools-information.png (window 0x200004): ok
+[PASS] hard: press 'PSBT Operations' through AT-SPI Action
+[PASS] hard: ux: ux-light-10-psbt shows PSBT Operations
+== ux-light-10-psbt: dumped 668 nodes
+== screenshot /out/ux-light-10-psbt.png (window 0x200004): ok
+[PASS] hard: press 'Wallets' through AT-SPI Action
+[FAIL] hard: ux: ux-light-11-wallets shows Wallets
+== ux-light-11-wallets: dumped 1075 nodes
+== screenshot /out/ux-light-11-wallets.png (window 0x200004): ok
+[PASS] hard: press 'Options' through AT-SPI Action
+[PASS] hard: ux: ux-light-12-options shows Options
+== ux-light-12-options: dumped 809 nodes
+== screenshot /out/ux-light-12-options.png (window 0x200004): ok
+[PASS] hard: press 'Security' through AT-SPI Action
+[PASS] hard: ux: ux-light-13-security shows Security
+== ux-light-13-security: dumped 918 nodes
+== screenshot /out/ux-light-13-security.png (window 0x200004): ok
+[PASS] hard: press 'Settings' through AT-SPI Action
+[PASS] hard: ux: ux-light-14-settings shows Settings
+== ux-light-14-settings: dumped 838 nodes
+== screenshot /out/ux-light-14-settings.png (window 0x200004): ok
+[PASS] hard: press 'About' through AT-SPI Action
+[PASS] hard: ux: ux-light-15-about shows About
+== ux-light-15-about: dumped 756 nodes
+== screenshot /out/ux-light-15-about.png (window 0x200004): ok
+[PASS] hard: press 'Tools Window' through AT-SPI Action
+[PASS] hard: press 'Console' through AT-SPI Action
+[PASS] hard: ux: ux-light-16-tools-console shows Console
+== ux-light-16-tools-console: dumped 880 nodes
+== screenshot /out/ux-light-16-tools-console.png (window 0x200004): ok
+[PASS] hard: press 'Peers' through AT-SPI Action
+[PASS] hard: ux: ux-light-16-tools-peers shows Peers
+== ux-light-16-tools-peers: dumped 946 nodes
+== screenshot /out/ux-light-16-tools-peers.png (window 0x200004): ok
+== 33 checks, 4 hard failures
+== ux-light-main: alive at end (rss 374140 KB)
+== ux-light-onboarding: launched dash-wallet --demo onboarding --appearance light (pid 2440)
+[PASS] hard: app pid 2440 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - [testnet]']
+[PASS] hard: ux: ux-light-onboarding-welcome shows 'Create a new wallet'
+== ux-light-onboarding-welcome: dumped 244 nodes
+== screenshot /out/ux-light-onboarding-welcome.png (window 0x200004): ok
+[PASS] hard: press 'Create a new wallet' through AT-SPI Action
+[PASS] hard: ux: ux-light-onboarding-phrase shows the phrase
+== ux-light-onboarding-phrase: dumped 331 nodes
+== screenshot /out/ux-light-onboarding-phrase.png (window 0x200004): ok
+== 5 checks, 0 hard failures
+== ux-light-onboarding: alive at end (rss 294984 KB)
+== ux-light-lock: launched dash-wallet --demo locked --appearance light (pid 2502)
+[PASS] hard: app pid 2502 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet']
+[PASS] hard: ux: ux-light-lock shows 'Unlock'
+== ux-light-lock: dumped 219 nodes
+== screenshot /out/ux-light-lock.png (window 0x200004): ok
+== 3 checks, 0 hard failures
+== ux-light-lock: alive at end (rss 290688 KB)
+== ux-light-overlay: launched dash-wallet --demo offline --appearance light (pid 2562)
+[PASS] hard: app pid 2562 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet']
+[PASS] hard: ux: ux-light-overlay shows the sync overlay
+== ux-light-overlay: dumped 323 nodes
+== screenshot /out/ux-light-overlay.png (window 0x200004): ok
+== 3 checks, 0 hard failures
+== ux-light-overlay: alive at end (rss 302196 KB)
+== ux-dark-main: launched dash-wallet --demo --appearance dark (pid 2619)
+[PASS] hard: app pid 2619 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: ux: ux-dark-01-overview shows 'History'
+== ux-dark-01-overview: dumped 1293 nodes
+== screenshot /out/ux-dark-01-overview.png (window 0x200004): ok
+[PASS] hard: select sidebar 'Send' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: ux: ux-dark-02-send shows 'Pay To:'
+== ux-dark-02-send: dumped 876 nodes
+== screenshot /out/ux-dark-02-send.png (window 0x200004): ok
+[PASS] hard: select sidebar 'Receive' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: ux: ux-dark-03-receive shows 'Request payment'
+== ux-dark-03-receive: dumped 874 nodes
+== screenshot /out/ux-dark-03-receive.png (window 0x200004): ok
+[PASS] hard: select sidebar 'Transactions' through AT-SPI Selection -- ['Overview', 'Send', 'Receive', 'Transactions']
+[PASS] hard: ux: ux-dark-04-transactions shows 'Export…'
+== ux-dark-04-transactions: dumped 2871 nodes
+== screenshot /out/ux-dark-04-transactions.png (window 0x200004): ok
+[FAIL] hard: ux: ux-dark-05-transaction-details shows 'Net amount'
+== ux-dark-05-transaction-details: dumped 3219 nodes
+== screenshot /out/ux-dark-05-transaction-details.png (window 0x200004): ok
+[PASS] hard: press 'Table' through AT-SPI Action
+[PASS] hard: ux: ux-dark-06-transactions-table shows 'Export…'
+== ux-dark-06-transactions-table: dumped 2189 nodes
+== screenshot /out/ux-dark-06-transactions-table.png (window 0x200004): ok
+[PASS] hard: press 'Address Book' through AT-SPI Action
+[PASS] hard: ux: ux-dark-07-address-book shows Address Book
+== ux-dark-07-address-book: dumped 1163 nodes
+== screenshot /out/ux-dark-07-address-book.png (window 0x200004): ok
+[PASS] hard: press 'Sign / Verify Message' through AT-SPI Action
+[PASS] hard: ux: ux-dark-08-sign-verify shows Sign / Verify Message
+== ux-dark-08-sign-verify: dumped 670 nodes
+== screenshot /out/ux-dark-08-sign-verify.png (window 0x200004): ok
+[PASS] hard: press 'Tools Window' through AT-SPI Action
+[PASS] hard: ux: ux-dark-09-tools-information shows Tools Window
+== ux-dark-09-tools-information: dumped 974 nodes
+== screenshot /out/ux-dark-09-tools-information.png (window 0x200004): ok
+[PASS] hard: press 'PSBT Operations' through AT-SPI Action
+[PASS] hard: ux: ux-dark-10-psbt shows PSBT Operations
+== ux-dark-10-psbt: dumped 668 nodes
+== screenshot /out/ux-dark-10-psbt.png (window 0x200004): ok
+[PASS] hard: press 'Wallets' through AT-SPI Action
+[PASS] hard: ux: ux-dark-11-wallets shows Wallets
+== ux-dark-11-wallets: dumped 1075 nodes
+== screenshot /out/ux-dark-11-wallets.png (window 0x200004): ok
+[PASS] hard: press 'Options' through AT-SPI Action
+[PASS] hard: ux: ux-dark-12-options shows Options
+== ux-dark-12-options: dumped 809 nodes
+== screenshot /out/ux-dark-12-options.png (window 0x200004): ok
+[PASS] hard: press 'Security' through AT-SPI Action
+[PASS] hard: ux: ux-dark-13-security shows Security
+== ux-dark-13-security: dumped 918 nodes
+== screenshot /out/ux-dark-13-security.png (window 0x200004): ok
+[PASS] hard: press 'Settings' through AT-SPI Action
+[PASS] hard: ux: ux-dark-14-settings shows Settings
+== ux-dark-14-settings: dumped 838 nodes
+== screenshot /out/ux-dark-14-settings.png (window 0x200004): ok
+[PASS] hard: press 'About' through AT-SPI Action
+[PASS] hard: ux: ux-dark-15-about shows About
+== ux-dark-15-about: dumped 756 nodes
+== screenshot /out/ux-dark-15-about.png (window 0x200004): ok
+[PASS] hard: press 'Tools Window' through AT-SPI Action
+[PASS] hard: press 'Console' through AT-SPI Action
+[PASS] hard: ux: ux-dark-16-tools-console shows Console
+== ux-dark-16-tools-console: dumped 880 nodes
+== screenshot /out/ux-dark-16-tools-console.png (window 0x200004): ok
+[PASS] hard: press 'Peers' through AT-SPI Action
+[PASS] hard: ux: ux-dark-16-tools-peers shows Peers
+== ux-dark-16-tools-peers: dumped 946 nodes
+== screenshot /out/ux-dark-16-tools-peers.png (window 0x200004): ok
+== 35 checks, 1 hard failures
+== ux-dark-main: alive at end (rss 273672 KB)
+== ux-dark-onboarding: launched dash-wallet --demo onboarding --appearance dark (pid 2804)
+[PASS] hard: app pid 2804 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - [testnet]']
+[PASS] hard: ux: ux-dark-onboarding-welcome shows 'Create a new wallet'
+== ux-dark-onboarding-welcome: dumped 244 nodes
+== screenshot /out/ux-dark-onboarding-welcome.png (window 0x200004): ok
+[PASS] hard: press 'Create a new wallet' through AT-SPI Action
+[PASS] hard: ux: ux-dark-onboarding-phrase shows the phrase
+== ux-dark-onboarding-phrase: dumped 331 nodes
+== screenshot /out/ux-dark-onboarding-phrase.png (window 0x200004): ok
+== 5 checks, 0 hard failures
+== ux-dark-onboarding: alive at end (rss 293864 KB)
+== ux-dark-lock: launched dash-wallet --demo locked --appearance dark (pid 2868)
+[PASS] hard: app pid 2868 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet']
+[PASS] hard: ux: ux-dark-lock shows 'Unlock'
+== ux-dark-lock: dumped 219 nodes
+== screenshot /out/ux-dark-lock.png (window 0x200004): ok
+== 3 checks, 0 hard failures
+== ux-dark-lock: alive at end (rss 289168 KB)
+== ux-dark-overlay: launched dash-wallet --demo offline --appearance dark (pid 2925)
+[PASS] hard: app pid 2925 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet - Demo wallet - [testnet]']
+[PASS] hard: ux: ux-dark-overlay shows the sync overlay
+== ux-dark-overlay: dumped 323 nodes
+== screenshot /out/ux-dark-overlay.png (window 0x200004): ok
+== 3 checks, 0 hard failures
+== ux-dark-overlay: alive at end (rss 302276 KB)
+== ux-gallery: launched dash-wallet --gallery (pid 2983)
+[PASS] hard: app pid 2983 on the AT-SPI bus
+[PASS] hard: window is a frame named "Dash Wallet…" -- ['Dash Wallet']
+[PASS] hard: ux: ux-light-gallery shows the gallery
+== ux-light-gallery: dumped 2473 nodes
+== screenshot /out/ux-light-gallery.png (window 0x200004): ok
+== 3 checks, 0 hard failures
+== ux-gallery: alive at end (rss 298116 KB)

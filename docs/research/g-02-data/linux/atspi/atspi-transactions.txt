@@ -1,0 +1,409 @@
+[application] "dash-wallet" {}
+  [frame] "Dash Wallet — Testnet" attrs=window-type:normal {active,enabled,sensitive,showing,visible} @(-1,-22 1282x847)
+    [filler] "" {enabled,sensitive,showing,visible}
+      [filler] "" {}
+        [filler] "" {}
+          [scroll pane] "" actions= {enabled,focusable,sensitive} @(0,0 1280x820)
+            [document web] "Dash Wallet" actions= {enabled,focusable,sensitive,showing,visible}
+              [landmark] "" actions= attrs=computed-role:banner,tag:header,xml-roles:banner {enabled,sensitive,showing,visible}
+                [toggle button] "Hide balance" desc="Hide balance" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [button] "Lock wallet" desc="Lock wallet" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+              [landmark] "Main" actions= attrs=computed-role:navigation,tag:nav,xml-roles:navigation {enabled,sensitive,showing,visible}
+                [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,showing,visible} @(10,50 199x134)
+                  [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(10,50 199x32)
+                    [button] "Overview" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                  [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(10,84 199x32)
+                    [button] "Send" desc="Send is not part of the G-01 spike" actions=press attrs=computed-role:button,tag:button {focusable,showing,visible}
+                  [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(10,118 199x32)
+                    [button] "Receive" desc="Receive is not part of the G-01 spike" actions=press attrs=computed-role:button,tag:button {focusable,showing,visible}
+                  [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(10,152 199x32)
+                    [button] "Transactions" actions=press attrs=computed-role:button,current:page,tag:button {active,enabled,focusable,sensitive,showing,visible}
+              [landmark] "" actions= attrs=computed-role:main,tag:main,xml-roles:main {enabled,sensitive,showing,visible}
+                [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,showing,visible}
+                  [heading] "Transactions" text="Transactions" actions= attrs=computed-role:heading,level:1,tag:h1 {enabled,sensitive,showing,visible}
+                [label] "" attrs=tag:label {enabled,sensitive,showing,visible}
+                  [entry] "Search address, transaction id or label" actions= attrs=computed-role:searchbox,placeholder-text:Search address, transaction id or label,tag:input {editable,enabled,focusable,sensitive,showing,visible}
+                    [section] "" actions= attrs=computed-role:generic,tag:div {enabled,sensitive,visible}
+                [panel] "Transaction type" text="￼￼￼￼￼" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,showing,visible}
+                  [toggle button] "All" actions=press attrs=computed-role:button,tag:button {enabled,focusable,pressed,sensitive,showing,visible}
+                  [toggle button] "Sent" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                  [toggle button] "Received" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                  [toggle button] "Mixing" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                  [toggle button] "Rewards" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [panel] "Today" text="Today
+Tuesday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,showing,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,showing,visible}
+                    [heading] "Today" text="Today" actions= attrs=computed-role:heading,id:_r_3_,level:3,tag:h3 {enabled,sensitive,showing,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,showing,visible} @(370,190 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,190 748x62)
+                      [button] "Received 1:40 AM Pending
++0.20 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,252 748x62)
+                      [button] "Coffee refund 1:10 AM InstantSend
++1.25 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [panel] "Yesterday" text="Yesterday
+Monday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,showing,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,showing,visible}
+                    [heading] "Yesterday" text="Yesterday" actions= attrs=computed-role:heading,id:_r_4_,level:3,tag:h3 {enabled,sensitive,showing,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,showing,visible} @(370,373 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,373 748x62)
+                      [button] "Alice 5:46 AM
+-0.50000226 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [panel] "October 4, 2026" text="October 4, 2026
+Sunday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,showing,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,showing,visible}
+                    [heading] "October 4, 2026" text="October 4, 2026" actions= attrs=computed-role:heading,id:_r_5_,level:3,tag:h3 {enabled,sensitive,showing,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,showing,visible} @(370,494 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,494 748x62)
+                      [button] "Masternode reward 11:06 AM
++0.71561845 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,556 748x62)
+                      [button] "Exchange withdrawal 1:44 AM
++0.32237277 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [panel] "October 3, 2026" text="October 3, 2026
+Saturday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,showing,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,showing,visible}
+                    [heading] "October 3, 2026" text="October 3, 2026" actions= attrs=computed-role:heading,id:_r_6_,level:3,tag:h3 {enabled,sensitive,showing,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,showing,visible} @(370,677 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,677 748x62)
+                      [button] "Sent to yourself 10:57 PM
+0.00000429 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,showing,visible} @(376,739 748x62)
+                      [button] "Mined 9:15 AM
+Locked +2.88 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,showing,visible}
+                [panel] "October 2, 2026" text="October 2, 2026
+Friday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "October 2, 2026" text="October 2, 2026" actions= attrs=computed-role:heading,id:_r_7_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,860 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,860 748x62)
+                      [button] "Sent 6:02 PM Abandoned
+-0.12345678 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,922 748x62)
+                      [button] "Payroll 3:24 PM
++0.94468993 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "October 1, 2026" text="October 1, 2026
+Thursday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "October 1, 2026" text="October 1, 2026" actions= attrs=computed-role:heading,id:_r_8_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,1043 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,1043 748x62)
+                      [button] "Masternode reward 8:46 PM
++1.3112703 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,1105 748x62)
+                      [button] "Payroll 7:36 PM
++3.72737798 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 30, 2026" text="September 30, 2026
+Wednesday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 30, 2026" text="September 30, 2026" actions= attrs=computed-role:heading,id:_r_9_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,1226 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,1226 748x62)
+                      [button] "Exchange withdrawal 5:23 AM
+-1.59948139 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 29, 2026" text="September 29, 2026
+Tuesday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 29, 2026" text="September 29, 2026" actions= attrs=computed-role:heading,id:_r_a_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,1347 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,1347 748x62)
+                      [button] "Mixing 8:08 AM
+-0.000006 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 28, 2026" text="September 28, 2026
+Monday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 28, 2026" text="September 28, 2026" actions= attrs=computed-role:heading,id:_r_b_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,1468 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,1468 748x62)
+                      [button] "Received 5:06 PM
++0.93080144 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,1530 748x62)
+                      [button] "Exchange withdrawal 4:21 AM
+-0.84313714 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 27, 2026" text="September 27, 2026
+Sunday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 27, 2026" text="September 27, 2026" actions= attrs=computed-role:heading,id:_r_c_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,1651 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,1651 748x62)
+                      [button] "Payroll 3:44 PM
++1.49531007 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 26, 2026" text="September 26, 2026
+Saturday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 26, 2026" text="September 26, 2026" actions= attrs=computed-role:heading,id:_r_d_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,1772 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,1772 748x62)
+                      [button] "Groceries 1:43 AM
++3.06274499 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 25, 2026" text="September 25, 2026
+Friday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 25, 2026" text="September 25, 2026" actions= attrs=computed-role:heading,id:_r_e_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,1893 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,1893 748x62)
+                      [button] "Groceries 8:16 PM
++3.75507481 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,1955 748x62)
+                      [button] "Exchange withdrawal 2:18 PM
+-3.20883783 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 24, 2026" text="September 24, 2026
+Thursday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 24, 2026" text="September 24, 2026" actions= attrs=computed-role:heading,id:_r_f_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,2076 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,2076 748x62)
+                      [button] "Sent to yourself 10:16 AM
+0.00000288 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 23, 2026" text="September 23, 2026
+Wednesday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 23, 2026" text="September 23, 2026" actions= attrs=computed-role:heading,id:_r_g_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,2197 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,2197 748x62)
+                      [button] "Sent 10:50 AM
+-2.07654572 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 22, 2026" text="September 22, 2026
+Tuesday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 22, 2026" text="September 22, 2026" actions= attrs=computed-role:heading,id:_r_h_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,2318 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,2318 748x62)
+                      [button] "Mixing 6:14 PM
+-0.00000364 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,2380 748x62)
+                      [button] "Received 5:45 PM
++3.04643106 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 21, 2026" text="September 21, 2026
+Monday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 21, 2026" text="September 21, 2026" actions= attrs=computed-role:heading,id:_r_i_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,2501 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,2501 748x62)
+                      [button] "Mixing 8:52 AM
+-0.00000407 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 20, 2026" text="September 20, 2026
+Sunday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 20, 2026" text="September 20, 2026" actions= attrs=computed-role:heading,id:_r_j_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,2622 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,2622 748x62)
+                      [button] "Received 2:28 AM
++2.15146997 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 19, 2026" text="September 19, 2026
+Saturday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 19, 2026" text="September 19, 2026" actions= attrs=computed-role:heading,id:_r_k_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,2743 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,2743 748x62)
+                      [button] "Mixing 7:12 AM
+-0.00000536 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,2805 748x62)
+                      [button] "Mixing 4:06 AM
+-0.00000517 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 18, 2026" text="September 18, 2026
+Friday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 18, 2026" text="September 18, 2026" actions= attrs=computed-role:heading,id:_r_l_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,2926 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,2926 748x62)
+                      [button] "Mixing 11:58 AM
+-0.0000025 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 17, 2026" text="September 17, 2026
+Thursday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 17, 2026" text="September 17, 2026" actions= attrs=computed-role:heading,id:_r_m_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,3047 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,3047 748x62)
+                      [button] "Sent to yourself 3:04 AM
+0.00000416 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 16, 2026" text="September 16, 2026
+Wednesday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 16, 2026" text="September 16, 2026" actions= attrs=computed-role:heading,id:_r_n_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,3168 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,3168 748x62)
+                      [button] "Mixing 7:34 PM
+-0.00000532 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,3230 748x62)
+                      [button] "Groceries 3:26 PM
++1.73030407 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 15, 2026" text="September 15, 2026
+Tuesday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 15, 2026" text="September 15, 2026" actions= attrs=computed-role:heading,id:_r_o_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,3351 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,3351 748x62)
+                      [button] "Masternode reward 7:04 PM
++0.70086055 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 14, 2026" text="September 14, 2026
+Monday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 14, 2026" text="September 14, 2026" actions= attrs=computed-role:heading,id:_r_p_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,3472 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,3472 748x62)
+                      [button] "Sent 5:26 PM
+-3.81521378 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 13, 2026" text="September 13, 2026
+Sunday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 13, 2026" text="September 13, 2026" actions= attrs=computed-role:heading,id:_r_q_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,3593 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,3593 748x62)
+                      [button] "Payroll 10:57 PM
++1.947815 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,3655 748x62)
+                      [button] "Received 7:31 AM
++3.76941262 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 12, 2026" text="September 12, 2026
+Saturday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 12, 2026" text="September 12, 2026" actions= attrs=computed-role:heading,id:_r_r_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,3776 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,3776 748x62)
+                      [button] "Mixing 2:37 AM
+-0.00000494 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 11, 2026" text="September 11, 2026
+Friday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 11, 2026" text="September 11, 2026" actions= attrs=computed-role:heading,id:_r_s_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,3897 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,3897 748x62)
+                      [button] "Sent to yourself 7:05 PM
+0.00000406 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 10, 2026" text="September 10, 2026
+Thursday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 10, 2026" text="September 10, 2026" actions= attrs=computed-role:heading,id:_r_t_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,4018 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,4018 748x62)
+                      [button] "Received 5:53 PM
++1.57590946 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,4080 748x62)
+                      [button] "Bob 4:48 AM
++1.74434119 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 9, 2026" text="September 9, 2026
+Wednesday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 9, 2026" text="September 9, 2026" actions= attrs=computed-role:heading,id:_r_u_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,4201 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,4201 748x62)
+                      [button] "Payroll 6:19 PM
++0.81612383 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 8, 2026" text="September 8, 2026
+Tuesday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 8, 2026" text="September 8, 2026" actions= attrs=computed-role:heading,id:_r_v_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,4322 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,4322 748x62)
+                      [button] "Sent to yourself 5:53 PM
+0.00000535 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 7, 2026" text="September 7, 2026
+Monday
+￼
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 7, 2026" text="September 7, 2026" actions= attrs=computed-role:heading,id:_r_10_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,4443 760x130)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,4443 748x62)
+                      [button] "Sent to yourself 4:23 PM
+0.00000376 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,4505 748x62)
+                      [button] "Payroll 1:47 PM
+-2.21006167 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 6, 2026" text="September 6, 2026
+Sunday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 6, 2026" text="September 6, 2026" actions= attrs=computed-role:heading,id:_r_11_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,4626 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,4626 748x62)
+                      [button] "Mixing 12:01 PM
+-0.0000032 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [panel] "September 5, 2026" text="September 5, 2026
+Saturday
+￼
+" actions= attrs=computed-role:group,tag:div,xml-roles:group {enabled,sensitive,visible}
+                  [header] "" actions= attrs=computed-role:sectionheader,tag:header {enabled,sensitive,visible}
+                    [heading] "September 5, 2026" text="September 5, 2026" actions= attrs=computed-role:heading,id:_r_12_,level:3,tag:h3 {enabled,sensitive,visible}
+                  [list] "" actions= attrs=computed-role:list,tag:ul,xml-roles:list {enabled,sensitive,visible} @(370,4747 760x68)
+                    [list item] "" text="￼" actions=select attrs=computed-role:listitem,tag:li {enabled,sensitive,visible} @(376,4747 748x62)
+                      [button] "Groceries 10:18 AM
++2.11977727 tDASH" actions=press attrs=computed-role:button,tag:button {enabled,focusable,sensitive,visible}
+                [section] "" actions= attrs=computed-role:generic,tag:div {enabled,sensitive,visible}
+                [footer] "" text="45 transactions" actions= attrs=computed-role:sectionfooter,tag:footer {enabled,sensitive,visible}
+              [landmark] "" actions= attrs=computed-role:contentinfo,tag:footer,xml-roles:contentinfo {enabled,sensitive,showing,visible}
+                [status bar] "" text="Up to date" actions= attrs=atomic:true,computed-role:status,container-atomic:true,container-live-role:status,container-live:polite,container-relevant:additions text,live:polite,relevant:additions text,tag:span,xml-roles:status {enabled,sensitive,showing,visible}
+              [status bar] "" actions= attrs=atomic:true,computed-role:status,container-atomic:true,container-live-role:status,container-live:polite,container-relevant:additions text,live:polite,relevant:additions text,tag:div,xml-roles:status {enabled,sensitive,visible}

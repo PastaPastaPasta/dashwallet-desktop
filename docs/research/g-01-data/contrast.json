@@ -1,0 +1,210 @@
+[
+  {
+    "pair": "#bce1f8 on #1f9be7 @ 8.3pt (11px)/normal",
+    "ratio": 2.21,
+    "required": "4.5:1",
+    "nodes": 4,
+    "screens": [
+      "dark-overview"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": "div[data-testid=\"breakdown-available\"] > .breakdown-text > .breakdown-subtitle"
+  },
+  {
+    "pair": "#bce1f8 on #1f9be6 @ 8.3pt (11px)/normal",
+    "ratio": 2.21,
+    "required": "4.5:1",
+    "nodes": 4,
+    "screens": [
+      "light-overview"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": "div[data-testid=\"breakdown-available\"] > .breakdown-text > .breakdown-subtitle"
+  },
+  {
+    "pair": "#fa9169 on #ffffff @ 9.0pt (12px)/normal",
+    "ratio": 2.25,
+    "required": "4.5:1",
+    "nodes": 2,
+    "screens": [
+      "light-transactions"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": ".tx-row-status"
+  },
+  {
+    "pair": "#ffffff on #e19175 @ 8.3pt (11px)/bold",
+    "ratio": 2.46,
+    "required": "4.5:1",
+    "nodes": 8,
+    "screens": [
+      "dark-overview",
+      "dark-unlock",
+      "light-overview",
+      "light-unlock"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": ".network-capsule"
+  },
+  {
+    "pair": "#cce8fa on #008de4 @ 11.3pt (15px)/normal",
+    "ratio": 2.78,
+    "required": "4.5:1",
+    "nodes": 2,
+    "screens": [
+      "dark-unlock"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": ".lock-prompt"
+  },
+  {
+    "pair": "#cce8f9 on #008de3 @ 11.3pt (15px)/normal",
+    "ratio": 2.78,
+    "required": "4.5:1",
+    "nodes": 2,
+    "screens": [
+      "light-unlock"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": ".lock-prompt"
+  },
+  {
+    "pair": "#ffffff on #1f9be7 @ 9.8pt (13px)/normal",
+    "ratio": 3.04,
+    "required": "4.5:1",
+    "nodes": 8,
+    "screens": [
+      "dark-overview"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": "div[data-testid=\"breakdown-available\"] > .breakdown-text > .breakdown-title"
+  },
+  {
+    "pair": "#ffffff on #1f9be6 @ 9.8pt (13px)/normal",
+    "ratio": 3.04,
+    "required": "4.5:1",
+    "nodes": 8,
+    "screens": [
+      "light-overview"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": "div[data-testid=\"breakdown-available\"] > .breakdown-text > .breakdown-title"
+  },
+  {
+    "pair": "#008de4 on #e6f4fc @ 9.0pt (12px)/normal",
+    "ratio": 3.15,
+    "required": "4.5:1",
+    "nodes": 10,
+    "screens": [
+      "light-overview",
+      "light-transactions",
+      "light-txDetail"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": "button[data-testid=\"tx-row-0902059dbc-0\"] > .tx-row-text > .tx-row-subtitle > .chip.chip-info"
+  },
+  {
+    "pair": "#008de4 on #f7f7f7 @ 9.8pt (13px)/normal",
+    "ratio": 3.3,
+    "required": "4.5:1",
+    "nodes": 2,
+    "screens": [
+      "light-overview"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": ".dash-button-small"
+  },
+  {
+    "pair": "#ffffff on #008de4 @ 11.3pt (15px)/normal",
+    "ratio": 3.54,
+    "required": "4.5:1",
+    "nodes": 8,
+    "screens": [
+      "dark-overview",
+      "dark-transactions",
+      "light-overview",
+      "light-transactions"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": ".is-current > span"
+  },
+  {
+    "pair": "#ffffff on #008de4 @ 9.8pt (13px)/normal",
+    "ratio": 3.54,
+    "required": "4.5:1",
+    "nodes": 4,
+    "screens": [
+      "dark-transactions",
+      "light-transactions"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": ".is-selected"
+  },
+  {
+    "pair": "#75808a on #ffffff @ 9.8pt (13px)/normal",
+    "ratio": 4.02,
+    "required": "4.5:1",
+    "nodes": 14,
+    "screens": [
+      "light-overview",
+      "light-transactions"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": "div[aria-labelledby=\"_r_0_\"] > .tx-group-header > .tx-group-weekday"
+  },
+  {
+    "pair": "#008de4 on #1b2a37 @ 9.0pt (12px)/normal",
+    "ratio": 4.13,
+    "required": "4.5:1",
+    "nodes": 10,
+    "screens": [
+      "dark-overview",
+      "dark-transactions",
+      "dark-txDetail"
+    ],
+    "engines": [
+      "chromium",
+      "webkit"
+    ],
+    "example": "button[data-testid=\"tx-row-0902059dbc-0\"] > .tx-row-text > .tx-row-subtitle > .chip.chip-info"
+  }
+]

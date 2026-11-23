@@ -1,0 +1,27 @@
+# Wallet dump created by Dash Core v24.0.0-rc.2
+# * Created on 2026-10-05T07:03:43Z
+# * Best block at time of backup was 0 (000008ca1832a4baf228eb1553c03d3a2c8e02399550dd6ea8d65cec3ef23d2e),
+#   mined on 2014-12-04T17:15:37Z
+
+# mnemonic: letter advice cage absurd amount doctor acoustic avoid letter advice cage above
+# mnemonic passphrase:   two leading spaces, # and % and é 
+
+# HD seed: ae5e763329b72ccb06205d8655493744561107efb2b355d6220d16383954f135d09a76278a36d1d7ff6ee81c38fadb63d903561afc0b18c065f57e120e4094a5
+
+# extended private masterkey: tprv8ZgxMBicQKsPeQJazs6TzY86Q8apyiv762LmFwigmne2kp5itNTtJedSrZSmwXwYkeyswkgajCNerkSuxFBQngrAiE3Ek9g1p657Vy9RV62
+# extended public masterkey: tpubD6NzVbkrYhZ4XsLNtWm4PwnCyA6m9471fKwYYTkzC4SRbJLVWmHUV9FK2gbiYsuFyVPe4SSpPq7tXpEozMYMn1sU2Quu6rsM9wteeyNQBxc
+
+# external chain counter: 4
+# internal chain counter: 4
+
+cTmeLgeHRLAj3CcdUHSrahdrZWJsYWBtU9Ehu4H77jA3arM6y35H 2026-10-05T07:03:43Z reserve=1 # addr=yNPw9ieC332AeLrovudK1UKE5EBd2DYaNU hdkeypath=m/44'/1'/0'/1/0
+cQqCfp77vJBFpHiXi6X3DPrx4NDwYtj1KJveFbkMQ1WayLGNZShA 2026-10-05T07:03:43Z reserve=1 # addr=yRK85RUPqe6cZ5UChcn93JwP6T9Amnprgy hdkeypath=m/44'/1'/0'/0/1
+cPojgXUTpRpbfaynjqFGDAMG1hWFpd5tESBj1LMwLnQC6PU6HWfK 2026-10-05T07:03:43Z reserve=1 # addr=yRS8rJBYLbgjkPMR54y6Z1oRywub5eu9Uy hdkeypath=m/44'/1'/0'/1/3
+cVXJHg5FJj5ETr2usbTXatigskkcLHB7Zep5VTq39tRmAy4QYUQK 2026-10-05T07:03:43Z label=100%25 # addr=yTgPcz8aGRJ1UKwwSTPENdFM39szb5fMfL hdkeypath=m/44'/1'/0'/0/0
+cSCWDBMia257iUvABbhoSLMXEWsbaPjF9964bYsf3WXWH18ymvsU 2026-10-05T07:03:43Z reserve=1 # addr=yUJ5ocyU5F1eBUjyPht7tYFFKW9oab8cGy hdkeypath=m/44'/1'/0'/0/2
+cN279Xk4ty7nV5YbEmtsLhYCBsTkS1CDhWQLvkotBBzqu5hxHusK 2026-10-05T07:03:43Z reserve=1 # addr=yVDGA6Z2jZwhmbJHk4ovx5YnMBdBYS8ftN hdkeypath=m/44'/1'/0'/1/1
+cQd3GjYZjuYfL7XjVAvraWT16dhvkfjvZDz7SP2tcw9uppscX3Q3 2026-10-05T07:03:43Z reserve=1 # addr=yabVArejaCG9vtExXwiRtNLyLRJcwaE2ji hdkeypath=m/44'/1'/0'/0/3
+cRnc2aHEfrxTwUQmyHFE5FPKY24hF2Sf2Kvq9Wbwd1hxV7kxTfhU 2026-10-05T07:03:43Z reserve=1 # addr=yhhjhPGh7h1svjtbEBZoBhDPRVCVqqPHnN hdkeypath=m/44'/1'/0'/1/2
+
+
+# End of dump

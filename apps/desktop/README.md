@@ -1,0 +1,193 @@
+# Dash Wallet on Tauri 2
+
+The desktop app. G-04 chose Tauri ([ADR 0003](../../docs/adr/0003-ui-stack.md)); this tree starts from
+the gate G-UI candidate (tasks G-01 and G-02, branch `dw/g-02-tauri-measure`). It shows
+Overview, Transactions, the transaction detail sheet and the lock screen in light and dark, drawn to
+[`UX-SPEC.md`](../../docs/design/UX-SPEC.md) with tokens generated from the same source as the Swift
+toolkits. Findings and the Linux pre-measurements for G-02 are in
+[`docs/research/g-01-tauri-spike.md`](../../docs/research/g-01-tauri-spike.md).
+
+```
+apps/desktop/                 renderer: React 19 + TypeScript + Vite, TanStack Query
+  src/api/generated/          IPC types, generated from rust/crates/dw-app/src/dto.rs (ts-rs)
+  src/api/                    Backend interface, IpcBackend (generated commands), queries, event bridge,
+                              lock-report summary and reconciliation (lockReport.ts)
+  src/fixture/                fixture backend (U-07): Tauri mock IPC answering from scenario data; never in
+                              a production build
+  src/styles/tokens.generated.*  CSS custom properties + typed tokens (scripts/gen-tokens.mjs)
+  src/app/selftest.ts         --selftest: element boxes, UX-SPEC §2 style checks, IPC timings, U6 probes
+  e2e/                        Playwright on the fixture backend, Chromium and WebKit (scenarios, screens,
+                              style checks, axe, keyboard, errors, lock report, XSS, visual baselines)
+  e2e-tauri/                  tauri-driver smoke: the real app on the real engine (WebKitGTK, Linux)
+rust/crates/dw-app/           Tauri 2 app: commands over dw-engine (in-process), event bridge, ACL, CSP
+```
+
+`dw-app` lives in the Rust workspace, not in `src-tauri/`, so it shares `Cargo.lock` and the pinned
+platform graph with `dw-engine`. `pnpm tauri …` runs the Tauri CLI against it (`scripts/tauri.mjs`).
+
+## Setup (Ubuntu 26.04, as on agentbox)
+
+```sh
+# Tauri's Linux build and runtime dependencies (WebKitGTK 4.1 is the webview)
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev \
+  libayatana-appindicator3-dev librsvg2-dev
+# Node 24 + pnpm 12 (agentbox has them through mise)
+pnpm install
+pnpm exec playwright install --with-deps chromium webkit
+```
+
+The Rust toolchain is the workspace's (`rust/rust-toolchain.toml`, 1.98.1). Building `dw-app` needs the
+WebKitGTK development packages above, so on Linux `cargo build --workspace` now needs them too.
+
+## Commands (from `apps/desktop`)
+
+| Command | What it does |
+|---|---|
+| `pnpm dev` | Vite dev server on :1420 with the fixture backend (open in any browser; URL parameters below) |
+| `pnpm tauri dev` | the app with hot reload, on the real engine |
+| `pnpm build` | production renderer in `dist/`; fails if it holds a fixture marker or a fixture sentinel, a distinctive literal of `src/fixture/` (`scripts/check-bundle.mjs`) |
+| `pnpm build:fixture` | renderer with the fixture backend in `dist-fixture/` (`pnpm preview:fixture` serves it on :1420) |
+| `pnpm tauri build` | release binary plus `.deb` and AppImage (`--no-bundle` for the binary only); runs `pnpm build` |
+| `pnpm test` | unit tests: amount formatting against `testdata/amount_format.json`, presentation, fixture, event bridge, token hygiene |
+| `pnpm e2e` | `pnpm build:fixture`, then Playwright in Chromium and WebKit; `DW_WRITE_SCREENSHOTS=1` writes into `docs/screenshots/gate/` |
+| `scripts/e2e-docker.sh [args]` | the same in the pinned Playwright image, as CI runs it; `DW_VISUAL=1 … --project=chromium e2e/visual.spec.ts` compares the visual baselines |
+| `pnpm e2e:tauri` | tauri-driver smoke on Linux: builds the debug app and dwcli, then drives the app on a new regtest wallet; needs a private `DISPLAY` (`xvfb-run -a`, or `agent-gui start N`), `WebKitWebDriver` and `tauri-driver` (`cargo install tauri-driver --version 2.1.0 --locked`, or `$TAURI_DRIVER`) |
+| `pnpm tokens` | regenerates `src/styles/tokens.generated.*` (`pnpm build` fails when they are stale) |
+| `cd rust && DW_UPDATE_BINDINGS=1 cargo test -p dw-app bindings` | regenerates `src/api/generated/` (`cargo test` fails when it is stale) |
+
+The app (`rust/target/release/dash-wallet`):
+
+```
+dash-wallet [--datadir DIR] [--network mainnet|testnet|regtest|devnet-NAME] [--sync]
+            [--spv-peer IP:PORT]… [--dapi URL]… [--no-platform] [--theme light|dark]
+            [--window-size WxH]
+            [--selftest FILE [--selftest-pause MS] [--selftest-passphrase-file FILE]]
+            [--selftest-link-trace FILE]
+            [link]…
+```
+
+An option's value follows it as the next argument or after `=` (`--datadir DIR` or `--datadir=DIR`); an
+option that takes no value, such as `--no-platform`, refuses one.
+
+The `--selftest` options exist only in a build with dw-app's `selftest` feature
+(`pnpm tauri build --no-bundle --features selftest`, as `tauri-selftest.yml` does); release and
+packaged builds leave it off and refuse them as unknown options (E0-13 D17).
+
+The app always runs on the engine; there is no fixture mode in it (the fixture backend is for browsers,
+below). `--selftest FILE` renders the four screens in light and dark, writes every `data-testid` box, the style-check results, the
+IPC timings and the security probes to `FILE`, and exits. With `--selftest-passphrase-file`, dw-app
+unlocks an encrypted vault with that file's first line (the renderer never sees it), so the run also
+records the detail sheet and the lock screen. On Unix the file must be the user's alone (mode 0600 or
+stricter, its final component not a symlink); dw-app refuses any other (E0-13 D16). `--no-platform` opens a chain without Platform
+(a plain dashd regtest; regtest still needs a `--dapi` address, which nothing connects to).
+`--window-size` sets the window's inner size; the gate's self-tests use 1000x620 on every OS.
+
+**Shell (U-01, [`docs/design/U-01-shell.md`](../../docs/design/U-01-shell.md)).** The routes of DASHPAY §4,
+the toolbar (identity chip, bell, wallet picker, discreet, lock), native menus with shortcuts, a tray, one
+instance per data root and the saved window geometry (not with `--window-size` or `--selftest`). A
+`dash:`, `pay:`, `dashwallet:` or `dashpay:` argument is a link: dw-app queues it, routes it for the
+window's network and the window opens its page. A second launch hands its links to the running app and
+exits. The packages register the four schemes (`tauri.conf.json`); nothing is registered at run time.
+`--selftest-link-trace FILE` (the `selftest` feature) appends `received <source> <scheme>` for each link
+and `routed <route>` for each route the renderer opens, never the link itself; `ci/github/deep-links.sh`
+reads it.
+
+On Linux without a GPU (no `/dev/dri/renderD*`), the app sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` before
+GTK starts: WebKitGTK's DMA-BUF renderer falls back to slow software rendering there (about 1 s of first
+paint and 170 MB of memory on agentbox). Set the variable yourself to override the choice.
+
+The gate harness that measured G-UI (Xvfb + AT-SPI, the UIA walk, `ci/gate/`) stays on branch
+`dw/g-02-tauri-measure`. Results and method: [ADR 0003](../../docs/adr/0003-ui-stack.md).
+
+## DashPay flows on testnet (H-04 O4a)
+
+Seven tauri-driver flows in `e2e-tauri/` drive the real app against public testnet: `dashpay-status`
+(DP1-08), `contacts` (DP2-07), `registration` (DP1-09), `add-contact` (DP2-08), `bell-accept` (DP2-09),
+`pay-contact` (DP3-06) and `profile-write` (BL-162). They read a fixture of four wallets A–D, each with an
+identity and a username, whose contacts are A:{B,C}, B:{A}, C:{A,D}, D:{C}. Two scripts make the
+fixture and run the flows; neither opens a window.
+
+```sh
+# 1. The fixture (once; a rerun resumes and never pays, registers or sends twice). Writes to testnet:
+#    one faucet payout (dash-faucet skill's helper), A→B,C,D, four identities, three contact pairs.
+#    The directory must lie under $HOME: each phrase and the vault passphrase go to the secret store
+#    (`secret set dwd-qa-testnet-<dir name>-<W>-mnemonic`, …) and are linked into it.
+DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/testnet-dashpay-fixture.sh
+
+# 2. The seven flows: builds once, reads first, then writes; goes on past a failure. Each run gets a
+#    new directory, test-results/dashpay-testnet/<UTC time>-XXXX/ (`latest` points at it), with
+#    summary.{md,json} (each flow's result, duration, first error) and <flow>/ (screenshots, logs);
+#    nothing is emptied. DW_SUITE_OUT moves that root; inside a git work tree it must be git-ignored.
+#    Starts under xvfb-run when $DISPLAY is unset.
+DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/e2e-tauri-dashpay-testnet.sh
+```
+
+Each write flow keeps a ledger in the fixture (`DP1-09.json`, `DP2-08.json`, `DP2-09.json`,
+`DP3-06.json`, and `BL-162.json`, which profile-write writes as soon as its edit is confirmed), so a
+second run checks rather than repeats. Every secret a flow makes (its app passphrase; registration's new
+wallet E, its phrase and its app data root's passphrase) goes to the store as it is made, as
+`<prefix>-run-<run>-<flow>-…`, and its name, never its value, to the run's `secrets.manifest`
+(`e2e-tauri/flow-secrets.ts`; a suite flow cannot take a screenshot before it has registered one). E's
+files are links into the store from the start: `<fixture>/E.mnemonic` and `DW_REG_STATE`'s passphrase
+(default `<fixture>.reg-state`, beside the fixture because registration fails on a secret among the
+fixture's files). Every run first checks that each phrase and passphrase file of the fixture and its
+registration state is a link into the store, and that each one the ledgers say exists is there.
+Registration is skipped once done. Profile-write records its edit `pending` before it submits (no
+record, no submit) and `done` once the profile reads the new name back; a rerun that finds `pending`
+reads the profile rather than submit again, records `done` if it shows the pending name and stops
+otherwise, and it is skipped once `done` (`DW_PROFILE_WRITE_AGAIN=1` submits another edit). And bell-accept's C→B pair is spent after one accept (move its
+ledger aside and pick B–D with `DW_BELL_SENDER`/`DW_BELL_RECEIVER`); pay-contact's rerun pays nothing
+but still checks the payee card.
+
+A secret never reaches a screenshot in the first place: every flow types one only through
+`fillSecret` (`e2e-tauri/driver.ts`), which refuses, typing nothing, unless the field is an
+`<input type="password">` with no reveal toggle in its form. The runner's closing phrase and key check
+over everything it kept is the second line (`e2e-tauri/artifact-scan.ts`: the fixture's secrets and
+those in the manifest, any run of 12 BIP39 words, xprv/tprv, and the secrets in screenshots through
+tesseract). OCR misreads, so a screenshot is matched with look-alikes folded together (`J`, `l`, `1`,
+`}` and `]` as one, and so on) and approximately: any stretch within max(2, 20%) edits of a secret of 8
+or more characters is a hit. A screenshot it cannot read, or of more than one colour that OCR reads no
+text from, is a hit too; the summary says whether it came back clean. `DW_SUITE_FLOWS` runs a subset,
+`DW_E2E_SKIP_BUILD=1` reuses the binaries.
+
+A run's throwaway secrets last as long as its artifacts. When a run is no longer needed, prune it:
+
+```sh
+DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/e2e-tauri-dashpay-testnet.sh prune test-results/dashpay-testnet/<run>
+```
+
+It reruns the check over the run and its profile directory and, only if that is clean, `secret rm`s
+each name the run's manifest holds in the store alone (printing the names, never the values; E's
+linked secrets stay with the fixture) and deletes the run, together. Nothing else removes a run, and
+nothing else removes its secrets.
+
+## Fixture backend (U-07)
+
+`src/fixture/` stands in for dw-app at the IPC boundary. It installs Tauri's mock IPC
+(`@tauri-apps/api/mocks`), so the renderer runs its real code: the generated command wrappers and the
+`engine://event` listener. The handlers are typed by the generated `CommandArgs` and `CommandResults`, so
+a changed command fails `pnpm typecheck` until the fixture follows. A command without a handler rejects
+with `platform.not_implemented`, as the engine's stubs do.
+
+It is reachable only where the build-time constant `__DW_FIXTURES__` is true: the dev server and
+`vite build --mode fixture`. `pnpm build` (and so every `pnpm tauri build`) leaves it out, and two checks
+prove it: Vite's `noFixtureModules` fails a production build whose chunks hold any `src/fixture/` module, any
+module carrying the `// dw-fixture-module` marker line (every fixture module starts with it, so a copy
+elsewhere is caught too) or the mock IPC, and `scripts/check-bundle.mjs` scans the files: `dist/` must not contain the fixture's
+sentinel or the mock IPC, `dist-fixture/` must. In a fixture build `window.__dwFixture` lets tests emit events, fail commands, hold a reply and read
+the calls made.
+
+URL parameters (`pnpm dev`, `pnpm preview:fixture`, Playwright):
+
+| Parameter | |
+|---|---|
+| `scenario=` | `funded` (default; passphrase `demo`), `empty`, `no-wallet`, `locked`, `large` (10,003 rows), `xss`, `dashpay-no-identity`, `dashpay-registering`, `dashpay-registered` (contacts in every relation and channel state, pending requests both ways), `lock-report-omitted` (the lock cut more flows than its report lists, after pending ones: unresolved for good), `lock-report-omitted-settles` (omissions the report's order shows are settled: resolved once the listed artifacts settle and the running call ends), `lock-report-pending` (every flow listed; a registration reads Sent while its identity call may still be out), `lock-report-resolved`, `lock-report-call` (a sent payment whose `accept_request` call may still be out: reported under the call's label, which nothing can check), or `error-<class>`: `funded` with `list_wallets` failing with a sample of that `ErrorData` class (`none`, `duffs`, `rpc`, `retryAfter`, …; `src/fixture/errors.ts`) |
+| `theme=light\|dark` | the launch theme |
+| `fail=<command>:<class>` | that command rejects with a sample of the class (repeatable), e.g. `fail=history_page:rpc` |
+| `delay=<ms>` | every command but `launch_info` answers after this long (loading states) |
+
+Unknown scenario, class or command names throw, so a typo shows an error rather than the default.
+
+The renderer has no DashPay screen yet (the DP tasks add them), so the `dashpay-*` scenarios are checked
+at the command level for now (`src/fixture/fixture.test.ts`): every relation and channel state, requests in
+both directions, registration in flight.

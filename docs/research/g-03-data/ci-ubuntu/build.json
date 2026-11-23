@@ -1,0 +1,11 @@
+{
+  "coreReleaseSeconds": 886,
+  "swiftReleaseSeconds": 507,
+  "binaryBytes": 136581192,
+  "tarballBytes": 52569796,
+  "resourceBundles": "DashWalletDesktop_DashUICross.resources",
+  "needed": "libgcc_s.so.1,libgtk-4.so.1,libpango-1.0.so.0,libpangocairo-1.0.so.0,libm.so.6,libstdc++.so.6,libgobject-2.0.so.0,libglib-2.0.so.0,libharfbuzz.so.0,libcairo.so.2,libgdk_pixbuf-2.0.so.0,libcairo-gobject.so.2,libvulkan.so.1,libgraphene-1.0.so.0,libgio-2.0.so.0,libc.so.6,ld-linux-x86-64.so.2",
+  "swiftLibrariesInLdd": 0,
+  "swift": "Swift version 6.3.3 (swift-6.3.3-RELEASE)",
+  "gtk": "4.14.5"
+}

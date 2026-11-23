@@ -1,0 +1,11 @@
+{
+  "binary": "/work/home/agent/workspace/dw-wt/g-01-tauri-spike/rust/target/release/dash-wallet",
+  "webkit2gtk": "2.52.6",
+  "kernel": "7.0.0-38-generic",
+  "cpus": 32,
+  "startup": [{"run":1,"dropCaches":false,"load1":106.95,"shellMs":2351,"firstPaintMs":2352,"spawnToFirstPaintMs":2574},{"run":2,"dropCaches":false,"load1":106.95,"shellMs":2105,"firstPaintMs":2579,"spawnToFirstPaintMs":2735},{"run":3,"dropCaches":false,"load1":105.03,"shellMs":2171,"firstPaintMs":2171,"spawnToFirstPaintMs":2431},{"run":4,"dropCaches":false,"load1":105.03,"shellMs":1963,"firstPaintMs":2416,"spawnToFirstPaintMs":2569},{"run":5,"dropCaches":false,"load1":102.54,"shellMs":1763,"firstPaintMs":2264,"spawnToFirstPaintMs":2369}],
+  "fixtureIdle": {"pssKb":385330,"processes":{"dash-wallet[2563590]":92670,"WebKitNetworkPr[2563652]":20695,"WebKitWebProces[2563848]":271965}},
+  "engine": {"load1":133.82,"shellMs":4050,"firstPaintMs":31508,"spawnToFirstPaintMs":31981,"idle":{"pssKb":606247,"processes":{"dash-wallet[2662598]":236080,"WebKitNetworkPr[2662741]":20580,"WebKitWebProces[2663133]":349587}}},
+  "atspiExit": 0,
+  "sizesBytes": {"dash-wallet":57364080,"Dash Wallet_0.1.0_amd64.deb":19294470,"Dash Wallet_0.1.0_amd64.AppImage":101054968}
+}

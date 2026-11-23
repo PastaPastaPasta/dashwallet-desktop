@@ -1,0 +1,12 @@
+{
+  "os": "macos",
+  "runnerImage": "macos26 20260907.0351.1",
+  "runnerName": "GitHub Actions 1000101381",
+  "arch": "arm64",
+  "cpu": "Apple M1 (Virtual)",
+  "cores": 3,
+  "memoryMB": 7168,
+  "system": "macOS 26.6.2 (25G83)",
+  "webview": "WKWebView (Safari 26.6.2)",
+  "load": "2.65 7.47 9.52"
+}

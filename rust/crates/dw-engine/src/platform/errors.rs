@@ -1,0 +1,1239 @@
+//! Per-domain errors of the DashPay facade with their stable codes
+//! (DASHPAY §3.6, `docs/contracts/m4-dashpay-engine.md` §4). The `Display`
+//! text is diagnostic detail for logs; the UI picks its copy by `code()`.
+//! No `Display` or `detail` ever quotes a `BearerSecret` input.
+//!
+//! `PlatformError` holds the codes every call can return: `platform.*`, the
+//! `identity.*` and `profile.*` codes and the m1 common codes. Each other domain wraps it, so
+//! a `platform.*` code reaches the host whichever domain the call belongs to;
+//! `platform()` finds it again.
+
+use super::contacts::Eligibility;
+use super::flows::{BudgetPurpose, RevokeCause};
+use super::identity::KeyPurpose;
+use super::names::UsernameRule;
+use super::profile::{Profile, ProfileField};
+use super::registration::ShieldedCheck;
+pub use super::shielded::ShieldedSyncWait;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PlatformError {
+    #[error("platform unavailable")]
+    Unavailable,
+    #[error("platform timeout")]
+    Timeout,
+    #[error("platform proof invalid")]
+    ProofInvalid,
+    /// SPV and the trusted service disagree on a quorum key (§2.2 rule 4).
+    #[error("quorum key mismatch between SPV and the trusted service")]
+    TrustMismatch,
+    #[error("platform context unavailable")]
+    ContextUnavailable,
+    /// The vault is locked or the flow lease has ended.
+    #[error("signer unavailable")]
+    SignerUnavailable,
+    /// The seed-binding check failed.
+    #[error("seed mismatch")]
+    SeedMismatch,
+    #[error("insufficient credits: {needed} needed, {available} available")]
+    InsufficientCredits { needed: u64, available: u64 },
+    #[error("grant invalid")]
+    GrantInvalid,
+    /// A lease budget cannot cover the charge (E0-04 §4.2).
+    #[error("{purpose:?} budget exceeded: {needed} needed, {remaining} remaining")]
+    GrantExceeded {
+        purpose: BudgetPurpose,
+        needed: u64,
+        remaining: u64,
+    },
+    /// A signed artifact was handed off and its outcome is unknown: it may
+    /// already be out (E0-04 `MaybeSent`). Never retried blindly.
+    #[error("broadcast outcome unknown for {artifact}")]
+    BroadcastUnknown { artifact: String },
+    /// The artifact is committed and the engine will send it again, for
+    /// example when the network is back. Never retried.
+    #[error("{artifact} will be sent")]
+    WillBeSent { artifact: String },
+    /// Lock won the flow's permit before the hand-off: nothing was sent
+    /// (E0-04 `Cancelled`, `lease.locked`).
+    #[error("cancelled before anything was sent")]
+    Cancelled,
+    /// The lease is parked or its grants died with an unlock, a scope or a
+    /// passphrase change: the flow needs a fresh grant for `purpose`.
+    #[error("needs a new grant for {purpose:?}")]
+    NeedsGrant { purpose: BudgetPurpose },
+    /// The lease the call named was revoked.
+    #[error("lease revoked: {cause:?}")]
+    LeaseRevoked { cause: RevokeCause },
+    /// The lease the call named has ended: `end_flow` or the idle reaper.
+    /// (Its own key's expiry parks it: `NeedsGrant`.)
+    #[error("lease expired")]
+    LeaseExpired,
+    #[error("feature off: {feature}")]
+    FeatureOff { feature: String },
+    /// `call` is `"DashPay.<method>"`, `"NetworkSession.<method>"` or the
+    /// free function's name.
+    #[error("not implemented: {call}")]
+    NotImplemented { call: String },
+    #[error("identity: {0}")]
+    Identity(IdentityError),
+    #[error("profile: {0}")]
+    Profile(ProfileError),
+    #[error("invalid argument: {detail}")]
+    InvalidArgument { detail: String },
+    #[error("network session is not open")]
+    NetworkNotOpen,
+    #[error("wallet not found")]
+    WalletNotFound,
+    /// A rescan the user stopped part way must run again (0.1.x-bal §1).
+    #[error("a rescan was interrupted")]
+    RescanInterrupted,
+    #[error("storage error: {detail}")]
+    Storage { detail: String },
+    #[error("internal error: {detail}")]
+    Internal { detail: String },
+}
+
+impl PlatformError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Unavailable => "platform.unavailable",
+            Self::Timeout => "platform.timeout",
+            Self::ProofInvalid => "platform.proof_invalid",
+            Self::TrustMismatch => "platform.trust_mismatch",
+            Self::ContextUnavailable => "platform.context_unavailable",
+            Self::SignerUnavailable => "platform.signer_unavailable",
+            Self::SeedMismatch => "platform.seed_mismatch",
+            Self::InsufficientCredits { .. } => "platform.insufficient_credits",
+            Self::GrantInvalid => "platform.grant_invalid",
+            Self::GrantExceeded { .. } => "platform.grant_exceeded",
+            Self::BroadcastUnknown { .. } => "platform.broadcast_unknown",
+            Self::WillBeSent { .. } => "platform.will_be_sent",
+            Self::Cancelled => "platform.cancelled",
+            Self::NeedsGrant { .. } => "platform.needs_grant",
+            Self::LeaseRevoked { .. } => "platform.lease_revoked",
+            Self::LeaseExpired => "platform.lease_expired",
+            Self::FeatureOff { .. } => "platform.feature_off",
+            Self::NotImplemented { .. } => "platform.not_implemented",
+            Self::Identity(e) => e.code(),
+            Self::Profile(e) => e.code(),
+            Self::InvalidArgument { .. } => "invalid_argument",
+            Self::NetworkNotOpen => "network_not_open",
+            Self::WalletNotFound => "wallet_not_found",
+            Self::RescanInterrupted => "rescan_interrupted",
+            Self::Storage { .. } => "storage",
+            Self::Internal { .. } => "internal",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum IdentityError {
+    #[error("identity not found")]
+    NotFound,
+    #[error("identity has no {purpose:?} key")]
+    KeysMissing { purpose: KeyPurpose },
+}
+
+impl IdentityError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotFound => "identity.not_found",
+            Self::KeysMissing { .. } => "identity.keys_missing",
+        }
+    }
+}
+
+impl From<IdentityError> for PlatformError {
+    fn from(e: IdentityError) -> Self {
+        Self::Identity(e)
+    }
+}
+
+/// An edit `update_profile` refuses against the DashPay contract (DP4-01).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProfileError {
+    /// `field` holds `length` characters (Unicode scalar values, trimmed);
+    /// the contract allows `max`.
+    #[error("{field:?} is {length} characters; at most {max}")]
+    TooLong {
+        field: ProfileField,
+        length: u32,
+        max: u32,
+    },
+    /// The profile would hold no field: the contract needs one.
+    #[error("a profile needs at least one field")]
+    Empty,
+    /// The profile on Platform is not the one the edit was made against
+    /// (its `baseline`, D23): `current` is Platform's, as `profile` shows it.
+    #[error("the profile changed since it was read")]
+    Conflict { current: Option<Box<Profile>> },
+    /// Platform's DashPay contract has a profile field this version would
+    /// not carry over, so it writes no profile (D21).
+    #[error("the DashPay contract on Platform has profile fields this version does not know")]
+    UnsupportedContract,
+}
+
+impl ProfileError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::TooLong { .. } => "profile.too_long",
+            Self::Empty => "profile.empty",
+            Self::Conflict { .. } => "profile.conflict",
+            Self::UnsupportedContract => "profile.unsupported_contract",
+        }
+    }
+}
+
+impl From<ProfileError> for PlatformError {
+    fn from(e: ProfileError) -> Self {
+        Self::Profile(e)
+    }
+}
+
+/// Registration also returns the `name.*` refusals of its label and the
+/// `invitation.*` refusals of invitation funding.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RegistrationError {
+    /// Another registration is in progress (DP1-02 §5.3): `draft` names
+    /// the row that blocks, or `registration/<n>/funding` for a funding step
+    /// whose row is gone (an orphan, Q7).
+    #[error("registration {draft} is in progress")]
+    InProgress { draft: String },
+    #[error("insufficient funds: {needed} duffs needed, {available} available")]
+    FundingInsufficient { needed: u64, available: u64 },
+    /// The wallet has coins it keeps from automatic selection (locked by
+    /// the user or the dust protection, or reserved by a send), and the
+    /// asset-lock funding cannot be told to skip them: it is refused until
+    /// they are unlocked or the send ends.
+    #[error("the wallet has locked or reserved coins the funding could spend")]
+    CoinsLocked,
+    #[error("no InstantSend lock in time")]
+    IslockTimeout,
+    /// The flow parked and can be resumed with `resume_registration`.
+    #[error("registration {draft} can be resumed")]
+    Recoverable { draft: String },
+    #[error("the identity already has a username")]
+    AlreadyHasUsername,
+    /// The row was written by a newer build: its funding or profile
+    /// encoding, or its phase, is one this build does not know. Read-time
+    /// only: the row is never advanced, funded or discarded here, and stays
+    /// as written for the build that can read it.
+    #[error("the registration was written by a newer version")]
+    Unsupported,
+    /// A row's failure, never returned by a call: another registration
+    /// holds the lock this one's funding step signed (a restored copy), so
+    /// this one is closed for good and never funds that intent again. It
+    /// can be discarded; a new registration starts afresh (DP1-02 §3.3
+    /// row 7).
+    #[error("another registration holds this registration's funding")]
+    FundedElsewhere,
+    /// A row's failure, never returned by a call: its funding was cancelled
+    /// (Repair's ChainLocked self-spend took its lock's inputs, or nothing
+    /// was signed before a restart) and its step is never called again.
+    /// Nothing is committed; it can be discarded, and a new registration
+    /// starts afresh (DP1-02 §3.3 row 8).
+    #[error("the registration's funding was cancelled")]
+    FundingCancelled,
+    /// A start past an unknown funding (DEC-197) while SPV is not caught
+    /// up: a lock the earlier funding sent may not be seen yet.
+    #[error("the wallet is not synced")]
+    NotSynced,
+    /// A start past an unknown funding (DEC-197) before its release is an
+    /// hour old, or with its age unknown: a lock it sent may still appear.
+    /// `wait_secs` is how long until it may pass, when known.
+    #[error("registration {draft}'s funding may still appear")]
+    FundingUnknownRecent {
+        draft: String,
+        wait_secs: Option<u64>,
+    },
+    /// A Shielded-funded start whose readiness `reason` does not hold
+    /// (C-funding F16, F17): nothing was written or signed. `ready_at` is
+    /// when the notes have rested, for `Rested`.
+    #[error("the shielded balance cannot pay yet: {reason:?}")]
+    ShieldedNotReady {
+        reason: ShieldedCheck,
+        ready_at: Option<u64>,
+    },
+    /// The start's cost is not the one the quote showed (C-funding F4):
+    /// nothing was written or signed; quote again.
+    #[error("the cost changed since the quote")]
+    QuoteChanged,
+    #[error(transparent)]
+    Name(NameError),
+    #[error(transparent)]
+    Invitation(InvitationError),
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl RegistrationError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InProgress { .. } => "registration.in_progress",
+            Self::FundingInsufficient { .. } => "registration.funding_insufficient",
+            Self::CoinsLocked => "registration.coins_locked",
+            Self::IslockTimeout => "registration.islock_timeout",
+            Self::Recoverable { .. } => "registration.recoverable",
+            Self::AlreadyHasUsername => "registration.already_has_username",
+            Self::Unsupported => "registration.unsupported",
+            Self::FundedElsewhere => "registration.funded_elsewhere",
+            Self::FundingCancelled => "registration.funding_cancelled",
+            Self::NotSynced => "registration.not_synced",
+            Self::FundingUnknownRecent { .. } => "registration.funding_unknown_recent",
+            Self::ShieldedNotReady { .. } => "registration.shielded_not_ready",
+            Self::QuoteChanged => "registration.quote_changed",
+            Self::Name(e) => e.code(),
+            Self::Invitation(e) => e.code(),
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Name(e) => e.platform(),
+            Self::Invitation(e) => e.platform(),
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// A wrapped domain's `Platform` variant becomes this enum's own, so one
+/// code has one representation.
+impl From<NameError> for RegistrationError {
+    fn from(e: NameError) -> Self {
+        match e {
+            NameError::Platform(p) => Self::Platform(p),
+            other => Self::Name(other),
+        }
+    }
+}
+
+impl From<InvitationError> for RegistrationError {
+    fn from(e: InvitationError) -> Self {
+        match e {
+            InvitationError::Platform(p) => Self::Platform(p),
+            other => Self::Invitation(other),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NameError {
+    /// `rules` are the rules the label breaks.
+    #[error("invalid username: {rules:?}")]
+    Invalid { rules: Vec<UsernameRule> },
+    #[error("username taken")]
+    Taken,
+    #[error("username contest open")]
+    ContestOpen,
+    #[error("username locked")]
+    Locked,
+    /// A contested name cannot be claimed with this invitation.
+    #[error("username unavailable for this invitation")]
+    UnavailableForInvite,
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl NameError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Invalid { .. } => "name.invalid",
+            Self::Taken => "name.taken",
+            Self::ContestOpen => "name.contest_open",
+            Self::Locked => "name.locked",
+            Self::UnavailableForInvite => "name.unavailable_for_invite",
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ContactError {
+    /// `reason` is the `eligibility` answer that refused; never `Ok`.
+    #[error("contact ineligible: {reason:?}")]
+    Ineligible { reason: Eligibility },
+    #[error("already a contact")]
+    AlreadyContact,
+    #[error("contact request pending")]
+    RequestPending,
+    #[error("contact is the identity itself")]
+    IsSelf,
+    #[error("payment channel broken")]
+    ChannelBroken,
+    /// An ambiguous broadcast to this contact is not settled yet.
+    #[error("payments to this contact are locked by {txid}")]
+    PaymentLocked { txid: String },
+    /// The scanned `dapk` proof has expired, or the scan id is unknown or
+    /// used: "this QR code has expired; ask for a new one".
+    #[error("scanned code expired")]
+    ScanExpired,
+    /// The scanned code's username is not the scanned identity's on
+    /// Platform, or no one holds it: "couldn't be verified on the Dash
+    /// network; the QR code may be outdated" (iOS).
+    #[error("scanned code not verified")]
+    ScanUnverified,
+    /// The identity has no username, so it has no user link.
+    #[error("identity has no username")]
+    NoUsername,
+    /// The private details encode to `bytes`, more than the `max` a
+    /// `contactInfo` holds (DIP-15 `privateData`, DP2-04).
+    #[error("private details too long: {bytes} bytes, at most {max}")]
+    DetailsTooLong { bytes: u32, max: u32 },
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl ContactError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Ineligible { .. } => "contact.ineligible",
+            Self::AlreadyContact => "contact.already_contact",
+            Self::RequestPending => "contact.request_pending",
+            Self::IsSelf => "contact.self",
+            Self::ChannelBroken => "contact.channel_broken",
+            Self::PaymentLocked { .. } => "contact.payment_locked",
+            Self::ScanExpired => "contact.scan_expired",
+            Self::ScanUnverified => "contact.scan_unverified",
+            Self::NoUsername => "contact.no_username",
+            Self::DetailsTooLong { .. } => "contact.details_too_long",
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InvitationError {
+    #[error("invitation invalid")]
+    Invalid,
+    #[error("invitation already claimed")]
+    Claimed,
+    #[error("invitation expired")]
+    Expired,
+    #[error("the wallet already has an identity")]
+    AlreadyHasIdentity,
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl InvitationError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Invalid => "invitation.invalid",
+            Self::Claimed => "invitation.claimed",
+            Self::Expired => "invitation.expired",
+            Self::AlreadyHasIdentity => "invitation.already_has_identity",
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AvatarError {
+    #[error("avatar too large")]
+    TooLarge,
+    #[error("avatar format unsupported")]
+    Unsupported,
+    #[error("avatar fetch failed")]
+    FetchFailed,
+    /// The image does not match the profile's `avatarHash`, or the profile's
+    /// hash or fingerprint is malformed (DP4-02 D26).
+    #[error("avatar hash mismatch")]
+    HashMismatch,
+    /// No Imgur client id is configured.
+    #[error("avatar upload unconfigured")]
+    UploadUnconfigured,
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl AvatarError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::TooLarge => "avatar.too_large",
+            Self::Unsupported => "avatar.unsupported",
+            Self::FetchFailed => "avatar.fetch_failed",
+            Self::HashMismatch => "avatar.hash_mismatch",
+            Self::UploadUnconfigured => "avatar.upload_unconfigured",
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// Top-up and withdraw. A top-up spends Core duffs, so its shortfall is
+/// `credits.funding_insufficient`, not `platform.insufficient_credits`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CreditsError {
+    #[error("insufficient funds: {needed} duffs needed, {available} available")]
+    FundingInsufficient { needed: u64, available: u64 },
+    /// Below `CostTable.top_up_min_duffs`.
+    #[error("below the minimum of {min} duffs")]
+    BelowMinimum { min: u64 },
+    /// A coin the funding accounts hold back (a user's lock, the dust
+    /// protection, a send's reservation) would be selected: the pinned
+    /// asset-lock builder cannot exclude it (as `registration.coins_locked`).
+    #[error("a locked coin of the funding accounts blocks the asset lock")]
+    CoinsLocked,
+    /// An earlier top-up of the identity is not applied yet: its lock `txid`
+    /// waits for its proof or for `resume_top_up`, and a new top-up would
+    /// fund it twice.
+    #[error("the top-up {txid} is not applied yet")]
+    TopUpPending { txid: String },
+    /// A withdrawal of credits outside what Platform takes at the network's
+    /// protocol version, `min` to `max` credits (DP6-02).
+    #[error("a withdrawal takes {min} to {max} credits")]
+    WithdrawalOutOfRange { min: u64, max: u64 },
+    /// The identity's last withdrawal, whose outcome was unknown, executed
+    /// after all (its document `artifact` read back), so this one does not:
+    /// at most one of them goes through (DP6-02 D24). Read before signing,
+    /// nothing was sent and the grant is unredeemed; read after (the two
+    /// shared a nonce), this one was sent at a nonce now used, its grant
+    /// spent.
+    #[error("the earlier withdrawal {artifact} went through; this one does not")]
+    WithdrawalLanded { artifact: String },
+    /// An earlier "Move to Dash wallet" of the wallet, `id`, is still
+    /// pending (release 0.1, m4 §2.12): its outcome is read first, so its
+    /// credits are not spent twice.
+    #[error("the move {id} is still pending")]
+    MovePending { id: String },
+    /// A send's recipient is no Platform address it may pay (0.2, m4
+    /// §2.12): a Core or shielded address, one of another network, one of
+    /// the wallet's own, or none.
+    #[error("not a Platform address a send may pay: {}", reason.as_str())]
+    RecipientInvalid {
+        reason: super::platform_addresses::RecipientProblem,
+    },
+    /// A send of fewer than `min` credits (Platform's output minimum), or
+    /// an amount the addresses' inputs cannot carry at the input minimum.
+    #[error("a Platform send takes at least {min} credits")]
+    SendOutOfRange { min: u64 },
+    /// The balances changed since the send was quoted, so signing it now
+    /// would take its fee from another address than the one its Confirm
+    /// named, or take another amount from that address. Nothing was signed
+    /// and the grant is unredeemed: quote it again and review it.
+    #[error("the balances changed since this send was quoted; quote it again")]
+    QuoteChanged,
+    /// An earlier "Add from Dash wallet" of the wallet is not applied yet:
+    /// its lock `txid` waits for its proof or for `resume_platform_fund`,
+    /// and a new one would fund a second lock while it pends.
+    #[error("the fund {txid} is not applied yet")]
+    FundPending { txid: String },
+    /// The asset lock would spend `inputs` coins, more than `max`: its
+    /// InstantSend proof would no longer fit the transition. Combine coins
+    /// first.
+    #[error("the asset lock would spend {inputs} coins, at most {max}")]
+    TooManyInputs { inputs: u64, max: u64 },
+    /// A Core Max's build is not its plan (a coin came, went or changed
+    /// since the quote): refused unsigned, nothing tracked or sent. Quote
+    /// it again.
+    #[error("the Dash wallet changed since this was quoted")]
+    CoinsChanged,
+    /// A Core Max while the wallet mixes: it would take coins the mixer
+    /// spends. Stop mixing first, or enter an amount.
+    #[error("the wallet is mixing")]
+    MixingActive,
+    /// A Core Max while another move of the wallet's coins runs (a sweep,
+    /// a consolidation, a drain).
+    #[error("another move of the wallet's coins is running")]
+    MoveRunning,
+    /// A move between the Platform addresses and Shielded refused by the
+    /// pool's side (its gate, its key state), with the pool's code.
+    #[error(transparent)]
+    Shielded(ShieldedError),
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+/// The pool's `Platform` variant becomes this enum's own, so one code has
+/// one representation.
+impl From<ShieldedError> for CreditsError {
+    fn from(e: ShieldedError) -> Self {
+        match e {
+            ShieldedError::Platform(p) => Self::Platform(p),
+            other => Self::Shielded(other),
+        }
+    }
+}
+
+impl CreditsError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::FundingInsufficient { .. } => "credits.funding_insufficient",
+            Self::BelowMinimum { .. } => "credits.below_minimum",
+            Self::CoinsLocked => "credits.coins_locked",
+            Self::TopUpPending { .. } => "credits.top_up_pending",
+            Self::WithdrawalOutOfRange { .. } => "credits.withdrawal_out_of_range",
+            Self::WithdrawalLanded { .. } => "credits.withdrawal_landed",
+            Self::MovePending { .. } => "credits.move_pending",
+            Self::RecipientInvalid { .. } => "credits.recipient_invalid",
+            Self::SendOutOfRange { .. } => "credits.send_out_of_range",
+            Self::QuoteChanged => "credits.quote_changed",
+            Self::FundPending { .. } => "credits.fund_pending",
+            Self::TooManyInputs { .. } => "credits.too_many_inputs",
+            Self::CoinsChanged => "credits.coins_changed",
+            Self::MixingActive => "credits.mixing_active",
+            Self::MoveRunning => "credits.move_running",
+            Self::Shielded(e) => e.code(),
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Shielded(e) => e.platform(),
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// Shielded funds (m4 §2.13). Amounts in credits unless named duffs.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ShieldedError {
+    /// The network's protocol version is below the shielded pool's
+    /// activation: "Shielded is not active on this network yet".
+    #[error(
+        "shielded is not active on this network yet (protocol {protocol_version}, from {activation_version})"
+    )]
+    NotActive {
+        protocol_version: u32,
+        activation_version: u32,
+    },
+    /// Shielded is still syncing: what the call needs is not established
+    /// yet, and it clears on its own (`reason`, DEC-1058 #4). "Shielded is
+    /// still syncing; try again when it finishes." One exception for now:
+    /// `account` is also what a first bind returns when the vault cannot
+    /// give the viewing key (locked, mixing-only, or a watch-only wallet),
+    /// which does not clear by itself: it needs an unlock, or is not
+    /// supported (watch-only). It gets its own refusal in 0.1.x.
+    #[error("shielded is still syncing ({reason})")]
+    NotSynced { reason: ShieldedSyncWait },
+    /// `to` is not a shielded (or, for an unshield, Core) address of the
+    /// network.
+    #[error("not an address of this network: {detail}")]
+    InvalidAddress { detail: String },
+    /// The spendable shielded balance does not cover the spend and its fee.
+    #[error("insufficient shielded funds: {needed} credits needed, {available} available")]
+    InsufficientFunds { needed: u64, available: u64 },
+    /// The Core balance does not cover the asset lock and its fee (duffs).
+    #[error("insufficient funds: {needed} duffs needed, {available} available")]
+    FundingInsufficient { needed: u64, available: u64 },
+    /// The amount does not clear Platform's fee: at least `min` (duffs for a
+    /// shield, credits for a spend).
+    #[error("below the minimum of {min}")]
+    BelowMinimum { min: u64 },
+    /// A coin the funding account holds back would be selected (as
+    /// `credits.coins_locked`).
+    #[error("a locked coin of the funding accounts blocks the asset lock")]
+    CoinsLocked,
+    /// An earlier Core → Shielded lock is not applied yet: `resume_shield`
+    /// applies `txid` rather than funding again.
+    #[error("the shield {txid} is not applied yet")]
+    ShieldPending { txid: String },
+    /// The shield's asset lock would spend `inputs` coins, more than
+    /// `max`: its InstantSend proof would not fit a transition (from about
+    /// 65 inputs), which would strand the lock. "Combine coins first."
+    #[error("the shield needs {inputs} coins; at most {max} fit one asset lock")]
+    TooManyInputs { inputs: u64, max: u64 },
+    /// Platform refused a withdrawal from the pool because the pool holds
+    /// fewer than `required` notes (`InsufficientPoolNotesError`): "Shielded
+    /// withdrawals open once the network's shielded pool has enough
+    /// activity. Try again later." Shielding and shielded sends are exempt.
+    #[error("the shielded pool holds {notes} notes; withdrawals need {required}")]
+    PoolTooSmall { notes: u64, required: u64 },
+    /// The wallet has a shielded payment of unknown result whose record
+    /// was lost (`ShieldedStatus::unrecorded_spends`, DEC-1057): it may
+    /// still go through, and its notes read unspent. A send or unshield
+    /// runs only when confirmed (`confirm_unrecorded`): "A shielded
+    /// payment from before the restart may still go through; confirm to
+    /// send anyway." Nothing was selected or signed.
+    #[error(
+        "a shielded payment from before the restart may still go through; confirm to send anyway"
+    )]
+    UnrecordedSpend,
+    /// A send or unshield was refused before anything was sent: the
+    /// engine's check of the spend the library was about to send did not
+    /// pass (the session is closing, its notes are not the account's or
+    /// not the ones reserved for it, or it could not be recorded first),
+    /// or the key set released for it is not the account's. Nothing left
+    /// the wallet: "The payment was not sent."
+    #[error("the shielded payment was refused before it was sent")]
+    SpendRefused,
+    /// "Move mixed coins": the wallet mixes; stop mixing first.
+    #[error("stop mixing first")]
+    MixingActive,
+    /// "Move mixed coins": the CoinJoin account has no coins.
+    #[error("no mixed coins to move")]
+    NothingToMove,
+    /// "Move mixed coins": `coins` of the CoinJoin account are not in a
+    /// block yet, and the move takes them all.
+    #[error("{coins} mixed coins are not confirmed yet")]
+    CoinsUnconfirmed { coins: u64 },
+    /// "Move mixed coins": another move of the wallet's mixed coins (a
+    /// sweep, a consolidation, a send again of its chunks) runs.
+    #[error("a move of the mixed coins is running")]
+    MoveRunning,
+    /// "Move mixed coins": the drain's signer met a coin outside its plan
+    /// or past its grant, so the CoinJoin account changed since the quote;
+    /// nothing was tracked or sent. Quote again.
+    #[error("the mixed coins changed since the move was planned: review it again")]
+    CoinsChanged,
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl ShieldedError {
+    /// `shielded.not_synced` waiting for `reason`.
+    pub(crate) fn not_synced(reason: ShieldedSyncWait) -> Self {
+        Self::NotSynced { reason }
+    }
+
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotActive { .. } => "shielded.not_active",
+            Self::NotSynced { .. } => "shielded.not_synced",
+            Self::InvalidAddress { .. } => "shielded.invalid_address",
+            Self::InsufficientFunds { .. } => "shielded.insufficient_funds",
+            Self::FundingInsufficient { .. } => "shielded.funding_insufficient",
+            Self::BelowMinimum { .. } => "shielded.below_minimum",
+            Self::CoinsLocked => "shielded.coins_locked",
+            Self::ShieldPending { .. } => "shielded.shield_pending",
+            Self::PoolTooSmall { .. } => "shielded.pool_too_small",
+            Self::TooManyInputs { .. } => "shielded.too_many_inputs",
+            Self::UnrecordedSpend => "shielded.unrecorded_spend",
+            Self::SpendRefused => "shielded.spend_refused",
+            Self::MixingActive => "shielded.mixing_active",
+            Self::NothingToMove => "shielded.nothing_to_move",
+            Self::CoinsUnconfirmed { .. } => "shielded.coins_unconfirmed",
+            Self::MoveRunning => "shielded.move_running",
+            Self::CoinsChanged => "shielded.coins_changed",
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+// ---- The error mapping (m4-dashpay-engine.md §6; E0-05) -------------------
+//
+// One `From` per source into `PlatformError`. Each maps what has a facade
+// code and falls back to `Internal{detail}`; later tasks extend these in
+// place rather than mapping on their own.
+
+fn internal(e: impl std::fmt::Display) -> PlatformError {
+    PlatformError::Internal {
+        detail: e.to_string(),
+    }
+}
+
+/// `mapped`, or `fallback` when it is only `Internal`: a wrapper's own
+/// meaning when what it wraps has no code.
+fn or_else(mapped: PlatformError, fallback: impl FnOnce() -> PlatformError) -> PlatformError {
+    match mapped {
+        PlatformError::Internal { .. } => fallback(),
+        known => known,
+    }
+}
+
+impl From<dash_sdk::Error> for PlatformError {
+    fn from(e: dash_sdk::Error) -> Self {
+        // Retry envelopes are peeled in a loop, not by recursion: nothing
+        // bounds their depth (review r3 N2). The last attempt's error says
+        // why no node answered; if it says nothing, the envelope's own
+        // `unavailable`.
+        let mut leaf = e;
+        let mut retried = false;
+        while let dash_sdk::Error::NoAvailableAddressesToRetry(last) = leaf {
+            leaf = *last;
+            retried = true;
+        }
+        let mapped = sdk_leaf(leaf);
+        if retried {
+            or_else(mapped, || Self::Unavailable)
+        } else {
+            mapped
+        }
+    }
+}
+
+/// One SDK error that is not a retry envelope.
+fn sdk_leaf(e: dash_sdk::Error) -> PlatformError {
+    use dash_sdk::Error as Sdk;
+    // Platform's balance refusal keeps its figures. `e` is no retry
+    // envelope, so the library's helper does not descend.
+    if let Some(promoted) = platform_wallet::error::promote_identity_insufficient_balance(&e) {
+        return wallet_leaf(promoted);
+    }
+    match e {
+        Sdk::TimeoutReached(..) => PlatformError::Timeout,
+        Sdk::DapiClientError(_) | Sdk::StaleNode(_) => PlatformError::Unavailable,
+        // A quorum key the provider refused (§2.2): the proof was not judged.
+        Sdk::ContextProviderError(e)
+        | Sdk::Proof(dash_sdk::ProofVerifierError::ContextProviderError(e)) => {
+            if super::trust::is_trust_mismatch(&e) {
+                PlatformError::TrustMismatch
+            } else {
+                PlatformError::ContextUnavailable
+            }
+        }
+        Sdk::Proof(_) | Sdk::DriveProofError(..) | Sdk::InvalidProvedResponse(_) => {
+            PlatformError::ProofInvalid
+        }
+        other => internal(other),
+    }
+}
+
+impl From<platform_wallet::PlatformWalletError> for PlatformError {
+    fn from(e: platform_wallet::PlatformWalletError) -> Self {
+        use platform_wallet::PlatformWalletError as Pw;
+        // Restore envelopes are peeled in a loop (review r3 N2); they map as
+        // what they wrap, or `storage` when that has no code.
+        let mut leaf = e;
+        let mut restoring = false;
+        while let Pw::PersisterRestore(inner) = leaf {
+            leaf = *inner;
+            restoring = true;
+        }
+        match (wallet_leaf(leaf), restoring) {
+            (Self::Internal { detail }, true) => Self::Storage {
+                detail: format!("failed to restore persisted platform-address state: {detail}"),
+            },
+            (mapped, _) => mapped,
+        }
+    }
+}
+
+/// One library error that is not a restore envelope. Its SDK sources map
+/// through the shared conversion (review r2 N1), which does not recurse.
+fn wallet_leaf(e: platform_wallet::PlatformWalletError) -> PlatformError {
+    use platform_wallet::PlatformWalletError as Pw;
+    match e {
+        Pw::Sdk(source) | Pw::TokenOperationFailed { source, .. } => source.into(),
+        // The scan never reached Platform: `unavailable` unless the last
+        // probe's failure says more.
+        Pw::IdentityDiscoveryIncomplete { source, .. } => {
+            or_else(PlatformError::from(*source), || PlatformError::Unavailable)
+        }
+        Pw::InsufficientIdentityCredits {
+            required,
+            available,
+            ..
+        } => PlatformError::InsufficientCredits {
+            needed: required,
+            available,
+        },
+        Pw::WalletNotFound(_) => PlatformError::WalletNotFound,
+        Pw::WalletLocked => PlatformError::SignerUnavailable,
+        Pw::SeedMismatch { .. } => PlatformError::SeedMismatch,
+        Pw::SeedBindingUnanswered { .. } | Pw::FinalityTimeout(_) => PlatformError::Timeout,
+        Pw::IdentityNotFound(_) => PlatformError::Identity(IdentityError::NotFound),
+        Pw::ContactSyncUnreachable { .. } => PlatformError::Unavailable,
+        Pw::InvalidParameter(detail) => PlatformError::InvalidArgument { detail },
+        e @ (Pw::PersisterLoad(_) | Pw::PersisterStore(_) | Pw::Persistence(_)) => {
+            PlatformError::Storage {
+                detail: e.to_string(),
+            }
+        }
+        other => internal(other),
+    }
+}
+
+impl From<dw_vault::VaultError> for PlatformError {
+    fn from(e: dw_vault::VaultError) -> Self {
+        use dw_vault::VaultError as V;
+        match e {
+            // Unlock, enter the passphrase, or the wallet has no keys at all
+            // (watch-only): m4 §4 gives all of them `signer_unavailable`.
+            V::NoVault
+            | V::Locked
+            | V::MixingOnly
+            | V::CredentialRequired
+            | V::PassphraseStale
+            | V::NoSecret => Self::SignerUnavailable,
+            V::GrantInvalid | V::GrantPurposeMismatch => Self::GrantInvalid,
+            V::InvalidArgument(detail) => Self::InvalidArgument { detail },
+            e @ (V::Storage(_) | V::Corrupt(_) | V::OsStoreUnavailable(_)) => Self::Storage {
+                detail: e.to_string(),
+            },
+            other => internal(other),
+        }
+    }
+}
+
+impl From<crate::EngineError> for PlatformError {
+    fn from(e: crate::EngineError) -> Self {
+        use crate::EngineError as E;
+        match e {
+            E::InvalidArgument(detail) | E::InvalidConfig(detail) => {
+                Self::InvalidArgument { detail }
+            }
+            E::NetworkNotOpen(_) => Self::NetworkNotOpen,
+            E::WalletNotFound(_) => Self::WalletNotFound,
+            // A replay that runs: a wait for sync, as `PwLib::fence` reports it.
+            E::RescanInProgress => Self::ContextUnavailable,
+            E::RescanInterrupted => Self::RescanInterrupted,
+            e @ (E::Storage(_) | E::StorageInUse(_) | E::StorageTooNew(_) | E::Io(_)) => {
+                Self::Storage {
+                    detail: e.to_string(),
+                }
+            }
+            E::InsufficientCredits {
+                needed, available, ..
+            } => Self::InsufficientCredits { needed, available },
+            E::Vault(e) => e.into(),
+            E::Signer(dw_vault::SignerError::Locked) => Self::SignerUnavailable,
+            E::Signer(dw_vault::SignerError::Vault(e)) => e.into(),
+            E::NotImplemented(call) => Self::NotImplemented { call },
+            E::Contact(ContactError::Platform(e)) => e,
+            other => internal(other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod mapping_tests {
+    use super::*;
+    use crate::EngineError;
+    use dw_vault::{SignerError, VaultError};
+    use platform_wallet::PlatformWalletError;
+
+    #[test]
+    fn engine_errors_keep_their_common_codes() {
+        let cases = [
+            (EngineError::InvalidArgument("x".into()), "invalid_argument"),
+            (
+                EngineError::NetworkNotOpen("regtest".into()),
+                "network_not_open",
+            ),
+            (EngineError::WalletNotFound("w".into()), "wallet_not_found"),
+            (
+                EngineError::RescanInProgress,
+                "platform.context_unavailable",
+            ),
+            (EngineError::RescanInterrupted, "rescan_interrupted"),
+            (EngineError::Storage("disk".into()), "storage"),
+            (
+                EngineError::InsufficientCredits {
+                    identity_id: "i".into(),
+                    needed: 5,
+                    available: 2,
+                },
+                "platform.insufficient_credits",
+            ),
+            (
+                EngineError::Vault(VaultError::Locked),
+                "platform.signer_unavailable",
+            ),
+            (
+                EngineError::Signer(SignerError::Locked),
+                "platform.signer_unavailable",
+            ),
+            (
+                EngineError::Vault(VaultError::GrantInvalid),
+                "platform.grant_invalid",
+            ),
+            (
+                EngineError::NotImplemented("x".into()),
+                "platform.not_implemented",
+            ),
+            (EngineError::SpvNotRunning, "internal"),
+        ];
+        for (engine, code) in cases {
+            assert_eq!(PlatformError::from(engine).code(), code);
+        }
+        assert_eq!(
+            PlatformError::from(EngineError::InsufficientCredits {
+                identity_id: "i".into(),
+                needed: 5,
+                available: 2,
+            }),
+            PlatformError::InsufficientCredits {
+                needed: 5,
+                available: 2
+            }
+        );
+    }
+
+    #[test]
+    fn vault_errors_ask_for_a_signer_or_a_grant() {
+        for e in [
+            VaultError::NoVault,
+            VaultError::Locked,
+            VaultError::MixingOnly,
+            VaultError::CredentialRequired,
+            VaultError::PassphraseStale,
+            VaultError::NoSecret,
+        ] {
+            assert_eq!(PlatformError::from(e).code(), "platform.signer_unavailable");
+        }
+        assert_eq!(
+            PlatformError::from(VaultError::GrantPurposeMismatch).code(),
+            "platform.grant_invalid"
+        );
+        assert_eq!(
+            PlatformError::from(VaultError::Corrupt("x".into())).code(),
+            "storage"
+        );
+        assert_eq!(PlatformError::from(VaultError::NotEmpty).code(), "internal");
+    }
+
+    #[test]
+    fn library_errors_map_to_their_platform_codes() {
+        let id = dpp::prelude::Identifier::from([3u8; 32]);
+        let cases = [
+            (
+                PlatformWalletError::WalletLocked,
+                "platform.signer_unavailable",
+            ),
+            (
+                PlatformWalletError::SeedMismatch {
+                    wallet_id: "w".into(),
+                },
+                "platform.seed_mismatch",
+            ),
+            (
+                PlatformWalletError::SeedBindingUnanswered {
+                    wallet_id: "w".into(),
+                },
+                "platform.timeout",
+            ),
+            (
+                PlatformWalletError::IdentityNotFound(id),
+                "identity.not_found",
+            ),
+            (
+                PlatformWalletError::ContactSyncUnreachable { identities: 1 },
+                "platform.unavailable",
+            ),
+            (
+                PlatformWalletError::InvalidParameter("bad".into()),
+                "invalid_argument",
+            ),
+            (
+                PlatformWalletError::InsufficientIdentityCredits {
+                    identity_id: id,
+                    required: 9,
+                    available: 1,
+                },
+                "platform.insufficient_credits",
+            ),
+            (PlatformWalletError::NoPrimaryIdentity, "internal"),
+        ];
+        for (library, code) in cases {
+            assert_eq!(PlatformError::from(library).code(), code);
+        }
+    }
+
+    fn timeout() -> dash_sdk::Error {
+        dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(1), "x".into())
+    }
+
+    fn context() -> dash_sdk::Error {
+        dash_sdk::Error::ContextProviderError(dash_context_provider::ContextProviderError::Generic(
+            "x".into(),
+        ))
+    }
+
+    /// Platform's balance refusal as a broadcast error, as `error.rs` builds
+    /// it: 25 018 360 000 credits required, 24 818 360 000 available.
+    pub(super) fn balance_refusal() -> dash_sdk::Error {
+        use dpp::consensus::ConsensusError;
+        use dpp::consensus::codes::ErrorWithCode;
+        use dpp::consensus::state::identity::IdentityInsufficientBalanceError;
+        let cause: ConsensusError = IdentityInsufficientBalanceError::new(
+            dpp::prelude::Identifier::from([9u8; 32]),
+            24_818_360_000,
+            25_018_360_000,
+        )
+        .into();
+        dash_sdk::Error::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: cause.code(),
+                message: cause.to_string(),
+                cause: Some(cause),
+            },
+        )
+    }
+
+    /// Review DW-E0-05-r2-gpt N1: an SDK error inside a library wrapper gets
+    /// the same code as on its own; `internal` only when nothing maps.
+    #[test]
+    fn wrapped_sdk_errors_keep_their_codes() {
+        let token = |source| PlatformWalletError::TokenOperationFailed {
+            operation: "claim",
+            source,
+        };
+        let discovery = |source| PlatformWalletError::IdentityDiscoveryIncomplete {
+            start_index: 0,
+            probed: 1,
+            failed_probes: 1,
+            source: Box::new(source),
+        };
+        let retried = |last| dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(last));
+        let cases = [
+            (token(timeout()), "platform.timeout"),
+            (token(context()), "platform.context_unavailable"),
+            (token(retried(timeout())), "platform.timeout"),
+            (token(dash_sdk::Error::Generic("x".into())), "internal"),
+            (discovery(timeout()), "platform.timeout"),
+            (discovery(context()), "platform.context_unavailable"),
+            // The scan never reached Platform, whatever the probe said.
+            (
+                discovery(dash_sdk::Error::Generic("x".into())),
+                "platform.unavailable",
+            ),
+            (
+                PlatformWalletError::Sdk(retried(context())),
+                "platform.context_unavailable",
+            ),
+            (
+                PlatformWalletError::PersisterRestore(Box::new(PlatformWalletError::WalletLocked)),
+                "platform.signer_unavailable",
+            ),
+            (
+                PlatformWalletError::PersisterRestore(Box::new(
+                    PlatformWalletError::NoPrimaryIdentity,
+                )),
+                "storage",
+            ),
+        ];
+        let mut wrong: Vec<String> = cases
+            .into_iter()
+            .filter_map(|(library, code)| {
+                let shown = format!("{library:?}");
+                let got = PlatformError::from(library).code();
+                (got != code).then(|| format!("{shown}: {got}, want {code}"))
+            })
+            .collect();
+        // The balance refusal keeps its figures through every wrapper.
+        let figures = PlatformError::InsufficientCredits {
+            needed: 25_018_360_000,
+            available: 24_818_360_000,
+        };
+        for (path, library) in [
+            ("token", token(balance_refusal())),
+            ("token, retried", token(retried(balance_refusal()))),
+            ("sdk", PlatformWalletError::Sdk(balance_refusal())),
+        ] {
+            let got = PlatformError::from(library);
+            if got != figures {
+                wrong.push(format!("balance refusal via {path}: {got:?}"));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "wrapped errors mapped wrong:\n{}",
+            wrong.join("\n")
+        );
+    }
+
+    #[test]
+    fn sdk_errors_map_to_their_platform_codes() {
+        use dash_sdk::Error as Sdk;
+        let timeout = Sdk::TimeoutReached(std::time::Duration::from_secs(1), "x".into());
+        assert_eq!(PlatformError::from(timeout).code(), "platform.timeout");
+        let wrapped = PlatformWalletError::Sdk(Sdk::Generic("boom".into()));
+        assert_eq!(PlatformError::from(wrapped).code(), "internal");
+        let retry = Sdk::NoAvailableAddressesToRetry(Box::new(Sdk::Generic("x".into())));
+        assert_eq!(PlatformError::from(retry).code(), "platform.unavailable");
+    }
+}
+
+#[cfg(test)]
+mod deep_envelope_tests {
+    use super::*;
+    use platform_wallet::PlatformWalletError;
+
+    const DEPTH: usize = 1_000;
+
+    /// Review DW-E0-05-r3-gpt N2: envelopes map without recursing, on a
+    /// test thread's default stack; before the fix 128 overflowed it. The
+    /// promotion of Platform's balance refusal sees only the leaf.
+    #[test]
+    fn a_thousand_sdk_retry_envelopes_map_by_their_leaf() {
+        let deep = |leaf| {
+            (0..DEPTH).fold(leaf, |e, _| {
+                dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(e))
+            })
+        };
+        let timeout =
+            dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(1), "x".into());
+        assert_eq!(
+            PlatformError::from(deep(timeout)).code(),
+            "platform.timeout"
+        );
+        assert_eq!(
+            PlatformError::from(deep(super::mapping_tests::balance_refusal())),
+            PlatformError::InsufficientCredits {
+                needed: 25_018_360_000,
+                available: 24_818_360_000,
+            }
+        );
+        let unknown = PlatformError::from(deep(dash_sdk::Error::Generic("leaf".into())));
+        assert_eq!(unknown.code(), "platform.unavailable");
+    }
+
+    #[test]
+    fn a_thousand_persister_restore_envelopes_map_by_their_leaf() {
+        let deep = |leaf| {
+            (0..DEPTH).fold(leaf, |e, _| {
+                PlatformWalletError::PersisterRestore(Box::new(e))
+            })
+        };
+        assert_eq!(
+            PlatformError::from(deep(PlatformWalletError::WalletLocked)).code(),
+            "platform.signer_unavailable"
+        );
+        match PlatformError::from(deep(PlatformWalletError::NoPrimaryIdentity)) {
+            PlatformError::Storage { detail } => {
+                assert!(detail.contains("No primary identity"), "{detail}");
+                assert!(detail.len() < 200, "the whole chain was formatted");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Both shapes at once: a deep SDK chain inside a deep restore chain.
+        let sdk = (0..DEPTH).fold(
+            dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(1), "x".into()),
+            |e, _| dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(e)),
+        );
+        assert_eq!(
+            PlatformError::from(deep(PlatformWalletError::Sdk(sdk))).code(),
+            "platform.timeout"
+        );
+    }
+}

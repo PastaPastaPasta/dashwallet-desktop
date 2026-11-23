@@ -1,0 +1,205 @@
+{
+ "_comment": "MP-01 fiat conversion vectors: minor = roundHalfEven(duffs * price * 10^e / 10^8); duffs = roundHalfEven(minor * 10^8 / (price * 10^e)); e = ISO 4217 minor units. Generated with exact rational arithmetic.",
+ "duffsToMinor": [
+  {
+   "duffs": 100000000,
+   "price": "49.0967",
+   "currency": "USD",
+   "minor": "4910"
+  },
+  {
+   "duffs": 1,
+   "price": "49.0967",
+   "currency": "USD",
+   "minor": "0"
+  },
+  {
+   "duffs": 0,
+   "price": "49.0967",
+   "currency": "USD",
+   "minor": "0"
+  },
+  {
+   "duffs": 2100000000000000,
+   "price": "49.0967",
+   "currency": "USD",
+   "minor": "103103070000"
+  },
+  {
+   "duffs": 2100000000000000,
+   "price": "999999999999999.999999999999",
+   "currency": "USD",
+   "minor": "2100000000000000000000000"
+  },
+  {
+   "duffs": 12345678,
+   "price": "49.0967",
+   "currency": "USD",
+   "minor": "606"
+  },
+  {
+   "duffs": 10000000,
+   "price": "0.05",
+   "currency": "USD",
+   "minor": "0"
+  },
+  {
+   "duffs": 30000000,
+   "price": "0.05",
+   "currency": "USD",
+   "minor": "2"
+  },
+  {
+   "duffs": 50000000,
+   "price": "0.01",
+   "currency": "USD",
+   "minor": "0"
+  },
+  {
+   "duffs": 150000000,
+   "price": "0.01",
+   "currency": "USD",
+   "minor": "2"
+  },
+  {
+   "duffs": 250000000,
+   "price": "0.01",
+   "currency": "USD",
+   "minor": "2"
+  },
+  {
+   "duffs": 100000000,
+   "price": "7873.9517",
+   "currency": "JPY",
+   "minor": "7874"
+  },
+  {
+   "duffs": 50000000,
+   "price": "1",
+   "currency": "JPY",
+   "minor": "0"
+  },
+  {
+   "duffs": 150000000,
+   "price": "1",
+   "currency": "JPY",
+   "minor": "2"
+  },
+  {
+   "duffs": 250000000,
+   "price": "1",
+   "currency": "JPY",
+   "minor": "2"
+  },
+  {
+   "duffs": 100000000,
+   "price": "15.4476",
+   "currency": "KWD",
+   "minor": "15448"
+  },
+  {
+   "duffs": 123456789,
+   "price": "15.4476",
+   "currency": "KWD",
+   "minor": "19071"
+  },
+  {
+   "duffs": 5,
+   "price": "0.0001",
+   "currency": "KWD",
+   "minor": "0"
+  },
+  {
+   "duffs": 100000000,
+   "price": "0.000000000001",
+   "currency": "USD",
+   "minor": "0"
+  },
+  {
+   "duffs": 99999999,
+   "price": "44106.9536",
+   "currency": "VES",
+   "minor": "4410695"
+  },
+  {
+   "duffs": 3,
+   "price": "1.666666666667",
+   "currency": "USD",
+   "minor": "0"
+  },
+  {
+   "duffs": 77777777,
+   "price": "801234.123456789012",
+   "currency": "IDR",
+   "minor": "62318209"
+  }
+ ],
+ "minorToDuffs": [
+  {
+   "minor": "1000",
+   "price": "49.0967",
+   "currency": "USD",
+   "duffs": "20367968"
+  },
+  {
+   "minor": "1",
+   "price": "49.0967",
+   "currency": "USD",
+   "duffs": "20368"
+  },
+  {
+   "minor": "0",
+   "price": "49.0967",
+   "currency": "USD",
+   "duffs": "0"
+  },
+  {
+   "minor": "5",
+   "price": "1",
+   "currency": "USD",
+   "duffs": "5000000"
+  },
+  {
+   "minor": "15",
+   "price": "0.1",
+   "currency": "USD",
+   "duffs": "150000000"
+  },
+  {
+   "minor": "100",
+   "price": "7873.9517",
+   "currency": "JPY",
+   "duffs": "1270010"
+  },
+  {
+   "minor": "1",
+   "price": "15.4476",
+   "currency": "KWD",
+   "duffs": "6473"
+  },
+  {
+   "minor": "123456789",
+   "price": "49.0967",
+   "currency": "USD",
+   "duffs": "2514563891259"
+  },
+  {
+   "minor": "1",
+   "price": "0.000000000001",
+   "currency": "USD",
+   "duffs": "1000000000000000000"
+  },
+  {
+   "minor": "25",
+   "price": "0.5",
+   "currency": "USD",
+   "duffs": "50000000"
+  },
+  {
+   "minor": "75",
+   "price": "0.5",
+   "currency": "USD",
+   "duffs": "150000000"
+  }
+ ]
+}

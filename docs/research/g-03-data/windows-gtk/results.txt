@@ -1,0 +1,20 @@
+GTK: gvsbuild 2026.8.0, GTK 4.22.4
+build (gtk): core 1800 s, swift 583 s (release)
+stack reserve: 8388608 bytes
+U7 zip: 108683983 bytes, 102 entries (99 DLLs from /c/Users/runneradmin/AppData/Local/Programs/Swift/Runtimes/6.3.3/usr/bin and the build)
+u2-overview: ok 'overview-paint' after 11.8s; working set 210 MB
+u2-overview: alive after 601s; peak working set 212 MB
+u4-unlock: ok 'lock-paint' after 7.1s; working set 200 MB
+u4-unlock: UIA walk FAIL 0 elements, 0 interactive in the content, 0 unnamed, 'Passphrase' missing
+u4-overview: ok 'overview-paint' after 7.6s; working set 204 MB
+u4-overview: UIA walk FAIL 0 elements, 0 interactive in the content, 0 unnamed, 'Overview' missing
+u4-transactions: ok 'transactions-paint' after 8.1s; working set 245 MB
+u4-transactions: UIA walk FAIL 0 elements, 0 interactive in the content, 0 unnamed, 'Overview' missing
+light-unlock: ok 'lock-paint' after 6.1s; working set 189 MB
+light-overview: ok 'overview-paint' after 7.2s; working set 205 MB
+light-transactions: ok 'transactions-paint' after 7.6s; working set 241 MB
+light-detail: ok 'detail-paint' after 13.1s; working set 254 MB
+dark-unlock: ok 'lock-paint' after 6.1s; working set 189 MB
+dark-overview: ok 'overview-paint' after 7.6s; working set 205 MB
+dark-transactions: ok 'transactions-paint' after 7.7s; working set 241 MB
+dark-detail: ok 'detail-paint' after 13.6s; working set 257 MB
