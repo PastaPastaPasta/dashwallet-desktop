@@ -42,8 +42,12 @@ mirror_struct!(engine::SharedCapability => SharedCapability {
 )]
 pub enum OperatorChoice {
     /// 96 hex characters, basic serialization.
-    Given { public_key: String },
-    Keychain { index: u32 },
+    Given {
+        public_key: String,
+    },
+    Keychain {
+        index: u32,
+    },
     NextUnused,
 }
 
@@ -572,3 +576,106 @@ impl From<engine::SharedImport> for SharedImport {
         }
     }
 }
+
+/// Whether a share may dissolve or change keys now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedEligibilityName {
+    Ok,
+    UpgradeUnknown,
+    ListUnavailable,
+    TooEarly,
+    Delisted,
+}
+
+mirror_enum!(engine::SharedEligibility => SharedEligibilityName {
+    Ok, UpgradeUnknown, ListUnavailable, TooEarly, Delisted,
+});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RewardAttemptStateName {
+    Signed,
+    NotSent,
+    Sent,
+    Conflicted,
+}
+
+mirror_enum!(engine::RewardAttemptState => RewardAttemptStateName {
+    Signed, NotSent, Sent, Conflicted,
+});
+
+/// A reward change of this wallet that confirmed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RewardUpdate {
+    pub operation: String,
+    pub address: String,
+    pub confirmed_height: u32,
+}
+
+mirror_struct!(engine::RewardUpdate => RewardUpdate { operation, address, confirmed_height });
+
+/// This wallet's latest reward change, not confirmed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RewardAttempt {
+    pub operation: String,
+    pub address: String,
+    pub state: RewardAttemptStateName,
+    /// Unix seconds.
+    pub sent_at: Option<u64>,
+}
+
+mirror_struct!(engine::RewardAttempt => RewardAttempt { operation, address, state: into, sent_at });
+
+/// Where a share's rewards go, as far as this wallet knows: the
+/// registration's address and this wallet's own changes since.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RewardDestination {
+    pub at_registration: String,
+    pub latest_confirmed_local: Option<RewardUpdate>,
+    pub latest_attempt: Option<RewardAttempt>,
+}
+
+mirror_struct!(engine::RewardDestination => RewardDestination {
+    at_registration, latest_confirmed_local: opt, latest_attempt: opt,
+});
+
+/// One share of a registration, from the wallet's history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareFact {
+    pub index: u16,
+    /// Duffs.
+    pub amount: u64,
+    pub refund_address: String,
+    pub mine: bool,
+    pub reward: RewardDestination,
+}
+
+mirror_struct!(engine::ShareFact => ShareFact { index, amount, refund_address, mine, reward: into });
+
+/// A shared masternode's shares, early period and maintenance eligibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedShares {
+    pub registered_height: u32,
+    pub spend_height: u32,
+    pub early_period_blocks: u32,
+    /// Duffs.
+    pub early_penalty: u64,
+    /// The first height a full-principal dissolution is valid at.
+    pub full_valid_from: u32,
+    pub eligibility: SharedEligibilityName,
+    pub full_valid_now: bool,
+    /// The registration session's id, when the wallet holds it.
+    pub session: Option<String>,
+    pub shares: Vec<ShareFact>,
+}
+
+mirror_struct!(engine::SharedShares => SharedShares {
+    registered_height, spend_height, early_period_blocks, early_penalty, full_valid_from,
+    eligibility: into, full_valid_now, session, shares: vec,
+});

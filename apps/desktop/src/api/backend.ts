@@ -149,6 +149,8 @@ import type { SharedImport } from "./generated/SharedImport";
 import type { SharedMessage } from "./generated/SharedMessage";
 import type { SharedOutcome } from "./generated/SharedOutcome";
 import type { SharedSession } from "./generated/SharedSession";
+import type { SharedShares } from "./generated/SharedShares";
+import type { Standby } from "./generated/Standby";
 import type { StartSharedRequest } from "./generated/StartSharedRequest";
 import type { UntrackOutcome } from "./generated/UntrackOutcome";
 import type { RescanStart } from "./generated/RescanStart";
@@ -668,6 +670,10 @@ export interface Backend {
   mnSharedCapability(walletId: string): Promise<SharedCapability>;
   mnSharedSessions(walletId: string): Promise<SharedSession[]>;
   mnSharedSession(walletId: string, session: string): Promise<SharedSession>;
+  /** A shared masternode's shares from history, with or without its session (MG-10 S6). */
+  mnSharedShares(walletId: string, proTxHash: string): Promise<SharedShares>;
+  /** Stored standbys, described; their signed bytes stay in Rust. */
+  mnSharedStandby(walletId: string, proTxHash: string): Promise<Standby[]>;
   /** Reserves the coordinator's share and the fee; signs nothing. */
   mnSharedStart(walletId: string, request: StartSharedRequest): Promise<SharedOutcome>;
   mnSharedSetFee(walletId: string, session: string, fee: number): Promise<SharedOutcome>;

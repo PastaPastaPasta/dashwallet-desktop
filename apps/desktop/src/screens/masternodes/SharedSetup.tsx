@@ -80,12 +80,13 @@ export function SharedSetup({ wallet, network, onClose, onCreated }: { wallet: W
   const smallest = shares.length ? Math.min(...shares.map((s) => s.amount)) : 0;
   const penaltyDuffs = period === 0 ? 0 : parseDash(penalty);
   const operatorBp = parsePercent(operatorShare);
+  const keyProblem = operatorKeyProblem(operatorKey);
 
   const problems: Record<Step, string[]> = {
     shares: shareErrors(shares).map((e) => t(`${P}.error.${e}`)),
     masternode: [
       ...(isIpv4Service(service) ? [] : [t(`${P}.error.service`)]),
-      ...(operator === "given" && operatorKeyProblem(operatorKey) ? [t(`${P}.error.operator_${operatorKeyProblem(operatorKey)}`)] : []),
+      ...(operator === "given" && keyProblem ? [t(`${P}.error.operator_${keyProblem}`)] : []),
       ...(operatorBp === null ? [t(`${P}.error.operatorShare`)] : []),
       ...(voting === "address" && votingAddress.trim() === "" ? [t(`${P}.error.address`)] : []),
     ],
@@ -182,7 +183,7 @@ export function SharedSetup({ wallet, network, onClose, onCreated }: { wallet: W
                 <input id={`${id}-amount-${i}`} inputMode="decimal" data-testid={`sh-setup-amount-${i}`} value={r.amount} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))} />
               </div>
               {i > 0 && rows.length > 2 && (
-                <DashButton variant="plainGray" size="small" data-testid={`sh-setup-remove-${i}`} onClick={() => setRows(rows.filter((_, j) => j !== i))}>
+                <DashButton variant="tintedGray" size="small" data-testid={`sh-setup-remove-${i}`} onClick={() => setRows(rows.filter((_, j) => j !== i))}>
                   {t(`${P}.remove`)}
                 </DashButton>
               )}

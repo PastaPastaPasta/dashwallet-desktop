@@ -356,6 +356,8 @@ export class IpcBackend implements Backend {
   mnSharedCapability = cmd.mnSharedCapability;
   mnSharedSessions = cmd.mnSharedSessions;
   mnSharedSession = cmd.mnSharedSession;
+  mnSharedShares = cmd.mnSharedShares;
+  mnSharedStandby = cmd.mnSharedStandby;
   mnSharedStart = cmd.mnSharedStart;
   mnSharedSetFee = cmd.mnSharedSetFee;
   mnSharedJoin = cmd.mnSharedJoin;

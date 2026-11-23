@@ -28,6 +28,8 @@ export const mnKeys = {
   sharedCapability: (walletId: string) => [...m, "sharedCapability", walletId] as const,
   sharedSessions: (walletId: string) => [...m, "sharedSessions", walletId] as const,
   sharedSession: (walletId: string, session: string) => [...m, "sharedSession", walletId, session] as const,
+  sharedShares: (walletId: string, hash: string) => [...m, "sharedShares", walletId, hash] as const,
+  sharedStandby: (walletId: string, hash: string) => [...m, "sharedStandby", walletId, hash] as const,
 };
 
 export function useMasternodeListState() {
@@ -83,6 +85,18 @@ export function useSharedSessions(walletId: string, enabled = true) {
 export function useSharedSession(walletId: string, session: string, enabled = true) {
   const b = useBackend();
   return useQuery({ queryKey: mnKeys.sharedSession(walletId, session), queryFn: () => b.mnSharedSession(walletId, session), enabled });
+}
+
+/** A shared masternode's shares, early terms and eligibility from history (§2.4). */
+export function useSharedShares(walletId: string, hash: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.sharedShares(walletId, hash), queryFn: () => b.mnSharedShares(walletId, hash), enabled, retry: false });
+}
+
+/** The wallet's stored standbys of a shared masternode (§2.8). */
+export function useSharedStandby(walletId: string, hash: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.sharedStandby(walletId, hash), queryFn: () => b.mnSharedStandby(walletId, hash), enabled });
 }
 
 /** The wallet's masternode labels and services for governance's vote rows (MG-09 F3). */

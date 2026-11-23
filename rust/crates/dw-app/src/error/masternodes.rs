@@ -103,7 +103,9 @@ impl From<MasternodesError> for AppError {
             M::ShareNotMine => (C::ShareNotMine, None),
             M::SharedTooEarly => (C::SharedTooEarly, None),
             M::SharedRegistrationUnknown => (C::SharedRegistrationUnknown, None),
-            M::SharedActorFee { fee } => (C::SharedActorFee, Some(ErrorData::SharedActorFee { fee })),
+            M::SharedActorFee { fee } => {
+                (C::SharedActorFee, Some(ErrorData::SharedActorFee { fee }))
+            }
             M::WithdrawalKeyMissing => (C::WithdrawalKeyMissing, None),
             M::WithdrawalShared => (C::WithdrawalShared, None),
             M::WithdrawalNoPayoutKey { .. } => (C::WithdrawalNoPayoutKey, None),

@@ -10,7 +10,8 @@ use crate::dto::masternodes::{
     AttachedKeyRoleName, EvonodeCredits, JoinSharedRequest, KeyCheckName, ListedMasternode,
     MasternodeDetail, MasternodeKeyInfo, MasternodeKeyRoleName, MasternodeListState,
     MasternodeOverview, MasternodePayout, RevealedMasternodeKey, SharedCapability, SharedImport,
-    SharedMessage, SharedOutcome, SharedSession, StartSharedRequest, UntrackOutcome,
+    SharedMessage, SharedOutcome, SharedSession, SharedShares, Standby, StartSharedRequest,
+    UntrackOutcome,
 };
 use crate::error::AppError;
 use crate::ipc::commands;
@@ -65,12 +66,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "deferred (MG-10 S5b): needs the recovery read (EP 4)",
     ),
     ("Masternodes::send_standby", "deferred (MG-10 S6)"),
-    ("Masternodes::shared_shares", "deferred (MG-10 S6)"),
     (
         "Masternodes::sign_shared_funding",
         "deferred (MG-10 S5b): needs the recovery read (EP 4)",
     ),
-    ("Masternodes::standby", "deferred (MG-10 S6)"),
     (
         "Masternodes::start_dissolve_together",
         "deferred (MG-10 S6)",
@@ -239,6 +238,25 @@ commands! {
     fn mn_shared_session(state, wallet_id: String, session: String) -> SharedSession {
         let wallet = parse_wallet_id(&wallet_id)?;
         Ok(state.masternodes().await?.shared_session(wallet, session).await?.into())
+    }
+
+    /// A shared masternode's shares from the wallet's history: amounts,
+    /// refund and reward addresses, the early period and whether a share
+    /// may dissolve or change keys now. No session is needed.
+    #[facade("Masternodes::shared_shares")]
+    fn mn_shared_shares(state, wallet_id: String, pro_tx_hash: String) -> SharedShares {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let shares = state.masternodes().await?.shared_shares(wallet, pro_tx_hash).await?;
+        Ok(shares.into())
+    }
+
+    /// The wallet's stored standbys of a shared masternode, by share and
+    /// fee; their signed bytes stay in Rust.
+    #[facade("Masternodes::standby")]
+    fn mn_shared_standby(state, wallet_id: String, pro_tx_hash: String) -> Vec<Standby> {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let standbys = state.masternodes().await?.standby(wallet, pro_tx_hash).await?;
+        Ok(standbys.into_iter().map(Into::into).collect())
     }
 
     /// Starts a session as its coordinator: reserves the coordinator's share

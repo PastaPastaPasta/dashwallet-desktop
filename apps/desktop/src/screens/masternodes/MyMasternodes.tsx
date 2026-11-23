@@ -1,6 +1,7 @@
 // Masternodes ▸ My masternodes (MG-10 §1.2, S1): the summary, the groups, the read-only pane and
-// the page's states. Setting up, tracking, keys, changing keys, release and withdraw come with
-// later slices; nothing of theirs shows here yet.
+// the page's states; a shared masternode's pane reads its shares instead of the 30-day payouts
+// (§2.4, S6). Setting up, tracking, keys, changing keys, release and withdraw come with later
+// slices; nothing of theirs shows here yet.
 
 import { useState } from "react";
 import type { MasternodeDetail } from "../../api/generated/MasternodeDetail";
@@ -38,8 +39,10 @@ import {
   voteBlocked,
 } from "../../masternodes/model";
 import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh } from "../../masternodes/queries";
+import { isSharedRow } from "../../masternodes/shared";
 import { useT } from "../../i18n";
 import { MoreMenu, Notice, StatusChip } from "./common";
+import { SharedSection } from "./SharedPane";
 
 const DAY = 86_400;
 /** mn-engine's `MAX_MASTERNODE_LABEL`. */
@@ -192,6 +195,11 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
           <div className="chip-row mg-pane-chip">
             <StatusChip chip={statusChip(row.status)} testId="mn-pane-chip" />
             <span className="chip chip-neutral">{kindText(row.kind)}</span>
+            {row.shares && (
+              <span className="chip chip-neutral" data-testid="mn-pane-shares">
+                {t("masternodes.shared.detail.held", { held: row.shares.held, of: row.shares.of })}
+              </span>
+            )}
           </div>
         </div>
         {row.status === "pose_banned" && (
@@ -203,7 +211,7 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
         <dl className="mg-facts" data-testid="mn-facts">
           <Facts row={row} detail={d} shown={shown} />
         </dl>
-        <Payouts walletId={wallet.walletId} row={row} rows={rows} name={name} shown={shown} />
+        {isSharedRow(row) ? <SharedSection walletId={wallet.walletId} row={row} shown={shown} /> : <Payouts walletId={wallet.walletId} row={row} rows={rows} name={name} shown={shown} />}
         <div>
           <h3 className="mg-section-title">{t("masternodes.myMasternodes.inWallet")}</h3>
           <ul className="mg-roles" data-testid="mn-roles">

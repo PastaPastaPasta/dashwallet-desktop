@@ -1,6 +1,7 @@
 // dw-fixture-module: never in a production build (vite.config.ts, noFixtureModules).
-// The fixture's shared masternodes (MG-10 §5.1, MG-10b S5, over mn-engine §2.4): the capability, the
-// main wallet's sessions and the calls that move them, refusing in the engine's order. Messages are
+// The fixture's shared masternodes (MG-10 §5.1, MG-10b S5 and S6, over mn-engine §2.4): the capability,
+// the main wallet's sessions and the calls that move them, refusing in the engine's order, and a
+// confirmed shared masternode's shares and standbys (`sh-detail*`). Messages are
 // fixed fake JSON blobs (no keys, documentation IPs, `y…` addresses); an import looks its text up in
 // `SH_TEXT`, so a spec pastes what another party "sent". A change `emit`s `masternodes`.
 
@@ -9,12 +10,16 @@ import type { SharedCapability } from "../api/generated/SharedCapability";
 import type { SharedImport } from "../api/generated/SharedImport";
 import type { SharedMessage } from "../api/generated/SharedMessage";
 import type { SharedSession } from "../api/generated/SharedSession";
+import type { SharedShares } from "../api/generated/SharedShares";
+import type { Standby } from "../api/generated/Standby";
+import type { ShareFact } from "../api/generated/ShareFact";
 import type { ShareRow } from "../api/generated/ShareRow";
 import type { ShareTermsView } from "../api/generated/ShareTermsView";
 import type { StandbyDescription } from "../api/generated/StandbyDescription";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureWallet, World } from "./scenarios";
+import { roles, row } from "./masternodes";
 import { FIXTURE_NOW, secs } from "./wallet";
 
 const COIN = 100_000_000;
@@ -47,6 +52,10 @@ export interface SharedWorld {
   saved: string[];
   /** Standbys this wallet holds, by txid. */
   standbys: string[];
+  /** EP 5's answer by ProTx hash; absent: `shared_registration_unknown`. */
+  shares: Record<string, SharedShares>;
+  /** Stored standbys by ProTx hash. */
+  standby: Record<string, Standby[]>;
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -241,7 +250,94 @@ const REFUSALS: Partial<Record<string, [string, number | null]>> = {
 };
 
 export function newSharedWorld(): SharedWorld {
-  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [] };
+  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [], shares: {}, standby: {} };
+}
+
+// ---------------------------------------------------------------- a confirmed shared masternode (S6)
+
+/** The shared masternode Alice (this wallet) coordinated: Alice 400 · Bob 300 · Carol 300, registered 600
+ * blocks below the tip with a 105,120-block early period and a 20 Dash penalty. */
+export const SH_MN = h("ec");
+const SH_TIP = 1_214_880;
+export const SH_REGISTERED = SH_TIP - 600;
+const SH_PERIOD = 105_120;
+const SH_REWARD = addr("pAl");
+const SH_REWARD_CHANGED = addr("pNw");
+const SH_REWARD_ATTEMPT = addr("pQa");
+
+const fact = (index: number, label: string, dash: number, mine = false, reward: Partial<ShareFact["reward"]> = {}): ShareFact => ({
+  index,
+  amount: dash * COIN,
+  refundAddress: addr(`r${label.slice(0, 2)}`),
+  mine,
+  reward: { atRegistration: mine ? SH_REWARD : addr(`r${label.slice(0, 2)}`), latestConfirmedLocal: null, latestAttempt: null, ...reward },
+});
+
+/** EP 5's answer for `SH_MN`: in the early period, eligible, with Alice's registration session. */
+export function sharedShares(patch: Partial<SharedShares> = {}, aliceReward: Partial<ShareFact["reward"]> = {}): SharedShares {
+  const registeredHeight = patch.registeredHeight ?? SH_REGISTERED;
+  return {
+    registeredHeight,
+    spendHeight: SH_TIP + 1,
+    earlyPeriodBlocks: SH_PERIOD,
+    earlyPenalty: 20 * COIN,
+    fullValidFrom: registeredHeight + SH_PERIOD,
+    eligibility: "ok",
+    fullValidNow: false,
+    session: SH_COORD,
+    shares: [fact(0, "Alice", 400, true, aliceReward), fact(1, "Bob", 300), fact(2, "Carol", 300)],
+    ...patch,
+  };
+}
+
+/** The zero-penalty and immediate standbys of Alice's share, saved the day after the registration. */
+export function standbyPair(fullValidFrom = SH_REGISTERED + SH_PERIOD, patch: Partial<Standby> = {}): Standby {
+  return { proTxHash: SH_MN, shareIndex: 0, fee: 1_000, penalty: 20 * COIN, fullValidFrom, full: true, immediate: true, source: "created", createdAt: NOW - DAY, ...patch };
+}
+
+/** Alice's registration session, confirmed at `SH_REGISTERED`. */
+export function confirmedCoordinator(): SharedSession {
+  return coordinatorSession(["Bob", "Carol"], {
+    stage: { kind: "confirmed", height: SH_REGISTERED },
+    next: "nothing",
+    revision: 6,
+    consentHash: h("cd"),
+    proTxHash: SH_MN,
+    txid: SH_MN,
+    reserved: [],
+    discardable: false,
+    rows: [shareRow(0, "Alice", 400, { mine: true, approved: true, fundingSigned: true, rewardAddress: SH_REWARD }), ...[1, 2].map((i) => shareRow(i, ["Bob", "Carol"][i - 1], 300, { approved: true, fundingSigned: true }))],
+    createdAt: NOW - 4 * DAY,
+    updatedAt: NOW - DAY,
+  });
+}
+
+/** Puts `SH_MN` first in the main wallet's masternodes (so the pane opens on it), as the engine lists a
+ * version-3 registration: shared, its shares counted, payouts refused. */
+function withSharedMasternode(w: World, shares: SharedShares | null, standbys: Standby[] = []) {
+  const m = w.masternodes;
+  m.rows.unshift(
+    row(SH_MN, null, {
+      typeIndex: 4,
+      service: SH_SERVICE,
+      sharedUnsupported: true,
+      shares: { held: 1, of: 3 },
+      roles: roles({ owner: true }),
+      collateral: { kind: "unresolved" },
+    }),
+  );
+  m.listed.push({ proTxHash: SH_MN, facts: { kind: "regular", valid: true, service: SH_SERVICE, operatorPublicKey: OPERATOR, votingAddress: VOTING, platformNodeId: null, platformHttpPort: null } });
+  if (shares) {
+    m.registrations.push(SH_MN);
+    m.registeredHeights[SH_MN] = shares.registeredHeight;
+    w.shared.shares[SH_MN] = shares;
+  }
+  w.shared.standby[SH_MN] = standbys;
+}
+
+function checkHash(hash: string): string {
+  if (!/^[0-9a-fA-F]{64}$/.test(hash)) throw fail("invalid_argument", "not a 64-character hex ProTx hash");
+  return hash.toLowerCase();
 }
 
 function find(world: World, id: string): SharedSession {
@@ -398,6 +494,17 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_session: ({ walletId, session: id }, { world }) => {
       wallet(world, walletId);
       return copy(find(world, id));
+    },
+    mn_shared_shares: ({ walletId, proTxHash }, { world }) => {
+      wallet(world, walletId);
+      const hash = checkHash(proTxHash);
+      const shares = world.shared.shares[hash];
+      if (!shares) throw fail("masternodes.shared_registration_unknown", "this wallet's history doesn't hold the shared registration");
+      return copy(shares);
+    },
+    mn_shared_standby: ({ walletId, proTxHash }, { world }) => {
+      wallet(world, walletId);
+      return copy(world.shared.standby[checkHash(proTxHash)] ?? []);
     },
     mn_shared_start: ({ walletId, request }, ctx) => {
       const { world } = ctx;
@@ -598,6 +705,46 @@ export function sharedScenarios(base: Base) {
     /** Close before out (Keep / Discard) and out (no question). */
     "sh-close-before": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob"]))),
     "sh-close-out": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed"))),
+    /** A confirmed shared masternode in My masternodes, with Alice's registration session: a payout change
+     * confirmed and a newer one sent, the standby pair saved, in the early period (§2.4.1). */
+    "sh-detail": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator()];
+        withSharedMasternode(
+          w,
+          sharedShares({}, { latestConfirmedLocal: { operation: h("a7"), address: SH_REWARD_CHANGED, confirmedHeight: SH_TIP - 280 }, latestAttempt: { operation: h("a8"), address: SH_REWARD_ATTEMPT, state: "sent", sentAt: NOW - 2 * 3_600 } }),
+          [standbyPair()],
+        );
+      }),
+    /** Restored elsewhere: EP 5 answers from history, no session, no standby (§2.4.2). */
+    "sh-detail-no-session": (t: ThemeName | null) => shBase(base, t, (_, w) => withSharedMasternode(w, sharedShares({ session: null }))),
+    /** History doesn't hold the registration: EP 5 refuses `shared_registration_unknown`. */
+    "sh-detail-unknown": (t: ThemeName | null) => shBase(base, t, (_, w) => withSharedMasternode(w, null)),
+    /** The list trails the registration's block. */
+    "sh-detail-too-early": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator()];
+        withSharedMasternode(w, sharedShares({ eligibility: "too_early" }), [standbyPair()]);
+      }),
+    /** No synced list yet (likely early in a restore). */
+    "sh-detail-list-unavailable": (t: ThemeName | null) => shBase(base, t, (_, w) => withSharedMasternode(w, sharedShares({ session: null, eligibility: "list_unavailable" }))),
+    /** v24 not yet seen by this session (likely early in a restore). */
+    "sh-detail-upgrade-unknown": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.capability = { ...s.capability, v24: "unknown" };
+        withSharedMasternode(w, sharedShares({ session: null, eligibility: "upgrade_unknown" }));
+      }),
+    /** Registered long ago: the early period is over, so the full refund is valid now; Bob's full standby imported. */
+    "sh-detail-standby-valid": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        const registeredHeight = SH_TIP - 180_000;
+        const fullValidFrom = registeredHeight + SH_PERIOD;
+        s.sessions = [{ ...confirmedCoordinator(), stage: { kind: "confirmed", height: registeredHeight } }];
+        withSharedMasternode(w, sharedShares({ registeredHeight, fullValidNow: true }), [
+          standbyPair(fullValidFrom, { createdAt: NOW - 120 * DAY }),
+          standbyPair(fullValidFrom, { shareIndex: 1, immediate: false, source: "imported", createdAt: NOW - 30 * DAY }),
+        ]);
+      }),
     /** Both sessions, for the In progress list and the badge. */
     "sh-sessions": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob", "Carol"]), participantSession("signing"))),
   };

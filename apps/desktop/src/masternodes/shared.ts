@@ -1,12 +1,18 @@
-// Shared masternodes' view model (MG-10 §2, MG-10b S5): the session render table keyed by
+// Shared masternodes' view model (MG-10 §2, MG-10b S5, S6): the session render table keyed by
 // `next` (D2), the funding lines and grant caps from one value (§2.3.2), the consent diff, the
-// setup wizard's checks (§2.2), the stage strip, the badge set and the refusals as sentences
-// (§3.8). The engine decides every stage and every exit; nothing here infers one.
+// setup wizard's checks (§2.2), the stage strip, the badge set, the refusals as sentences (§3.8),
+// and a confirmed shared masternode's pane lines (§2.4, §2.8). The engine decides every stage,
+// every exit and every validity; nothing here infers one.
 
 import { isAppError } from "../api/backend";
+import type { MasternodeRow } from "../api/generated/MasternodeRow";
+import type { ShareFact } from "../api/generated/ShareFact";
 import type { ShareTermsView } from "../api/generated/ShareTermsView";
+import type { SharedEligibilityName } from "../api/generated/SharedEligibilityName";
 import type { SharedSession } from "../api/generated/SharedSession";
+import type { SharedShares } from "../api/generated/SharedShares";
 import type { SharedWarning } from "../api/generated/SharedWarning";
+import type { Standby } from "../api/generated/Standby";
 import { t } from "../i18n";
 
 export const COIN = 100_000_000;
@@ -333,3 +339,92 @@ export function sharedErrorText(e: unknown, ctx: { network: string; session?: Sh
       return t("masternodes.shared.error.fallback", { code: e.code });
   }
 }
+
+// ---------------------------------------------------------------- a shared masternode (§2.4, S6)
+
+/** A row the shared pane reads: it holds shares, or the engine marks it shared and it is the wallet's. */
+export const isSharedRow = (r: Pick<MasternodeRow, "shares" | "sharedUnsupported" | "mine">) => r.shares !== null || (r.sharedUnsupported && r.mine);
+
+/** "you hold 1 of 3 shares": the row's count, else EP 5's. */
+export function heldShares(r: Pick<MasternodeRow, "shares">, shares: SharedShares | undefined): { held: number; of: number } | null {
+  if (r.shares) return r.shares;
+  if (!shares) return null;
+  return { held: shares.shares.filter((s) => s.mine).length, of: shares.shares.length };
+}
+
+/** The registration session of `hash` (§2.4): kind registration, confirmed, same ProTx hash. */
+export function registrationSession(sessions: readonly SharedSession[] | undefined, hash: string, id: string | null = null): SharedSession | null {
+  const all = (sessions ?? []).filter((s) => s.kind === "registration" && s.stage.kind === "confirmed" && s.proTxHash === hash);
+  return all.find((s) => s.id === id) ?? all[0] ?? null;
+}
+
+export interface LegendEntry {
+  index: number;
+  /** The session's label, else "Share 1". */
+  label: string;
+  amount: number;
+  mine: boolean;
+  /** Percent of the collateral, for the bar. */
+  percent: number;
+}
+
+/** The share bar and its legend from EP 5's shares, labelled from the session's rows when present. */
+export function shareLegend(shares: SharedShares, session: SharedSession | null): LegendEntry[] {
+  const total = shares.shares.reduce((a, s) => a + s.amount, 0);
+  return shares.shares.map((s) => ({
+    index: s.index,
+    label: session?.rows.find((r) => r.index === s.index)?.label ?? t("masternodes.shared.detail.shareN", { n: s.index + 1 }),
+    amount: s.amount,
+    mine: s.mine,
+    percent: total > 0 ? (s.amount * 100) / total : 0,
+  }));
+}
+
+/** A percent with at most two decimals, "40" or "33.33". */
+export const percentText = (p: number) => String(Math.round(p * 100) / 100);
+
+/** Where this wallet believes a share's payouts go: only a confirmed update moves it (§2.4.1). */
+export const payoutAddress = (f: ShareFact) => f.reward.latestConfirmedLocal?.address ?? f.reward.atRegistration;
+
+/** The line for this wallet's latest unconfirmed reward change, or `null`. */
+export function attemptLine(f: ShareFact, address: (a: string) => string, date: (secs: number) => string): string | null {
+  const a = f.reward.latestAttempt;
+  if (!a) return null;
+  const v = { address: address(a.address) };
+  switch (a.state) {
+    case "signed":
+    case "not_sent":
+      return t("masternodes.shared.detail.attempt.notSent", v);
+    case "sent":
+      return a.sentAt === null ? t("masternodes.shared.detail.attempt.sentUndated", v) : t("masternodes.shared.detail.attempt.sent", { ...v, date: date(a.sentAt) });
+    case "conflicted":
+      return t("masternodes.shared.detail.attempt.conflicted", v);
+  }
+}
+
+/** The block the early period ends at, or `null` without one. */
+export const earlyEnd = (s: SharedShares) => (s.earlyPeriodBlocks > 0 ? s.registeredHeight + s.earlyPeriodBlocks : null);
+
+/** §2.4.2's eligibility line in place of the maintenance actions; `null` for `ok`. */
+export function eligibilityLine(e: SharedEligibilityName): string | null {
+  return e === "ok" ? null : t(`masternodes.shared.detail.eligibility.${e}`);
+}
+
+export interface StandbyLine {
+  variant: "full" | "immediate";
+  text: string;
+}
+
+/** A stored standby's variants (§2.8 Shown), each validity from EP 5's `full_valid_now`, never a height comparison.
+ * Once a held full refund is valid the engine refuses the immediate one, so it isn't listed. */
+export function standbyLines(s: Standby, fullValidNow: boolean, dash: (duffs: number) => string): StandbyLine[] {
+  const out: StandbyLine[] = [];
+  if (s.full) out.push({ variant: "full", text: fullValidNow ? t("masternodes.shared.detail.standby.fullNow") : t("masternodes.shared.detail.standby.full", { height: s.fullValidFrom }) });
+  if (s.immediate && !(s.full && fullValidNow))
+    out.push({ variant: "immediate", text: s.penalty === null ? t("masternodes.shared.detail.standby.immediateUnknown") : t("masternodes.shared.detail.standby.immediate", { penalty: dash(s.penalty) }) });
+  return out;
+}
+
+/** "Saved on this computer on Oct 15", or "Imported". */
+export const standbySource = (s: Standby, date: (secs: number) => string) =>
+  s.source === "imported" ? t("masternodes.shared.detail.standby.imported") : t("masternodes.shared.detail.standby.saved", { date: date(s.createdAt) });

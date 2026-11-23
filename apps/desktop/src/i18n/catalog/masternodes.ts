@@ -471,6 +471,8 @@ export const masternodes = {
     /** A row's default name: "Masternode 2", or a tracked one's short hash. */
     rowName: "{kind} {index}",
     rowSub: "{kind} · {service}",
+    /** `shares`: "you hold 1 of 3 shares". */
+    rowSubShared: "{kind} · {service} · {shares}",
     notInList: "not in the list",
     noticed: "noticed {date}",
     paid: "Paid {date}",
@@ -797,6 +799,7 @@ export const masternodes = {
       copied: "Copied",
       saveFile: "Save to file…",
       pasteReply: "Paste a reply",
+      ask: "Enter your passphrase to sign your consent.",
     },
     importPanel: {
       received: "You pasted message {code}. Ask the sender to read their code: it should be {code}.",
@@ -937,6 +940,54 @@ export const masternodes = {
         operatorShare: "Enter a percentage from 0 to 100, with at most two decimals.",
         address: "Enter an address.",
         service: "Use an IPv4 address and port, like 203.0.113.7:19999. IPv6 and Tor addresses aren't supported yet.",
+      },
+    },
+    /** A confirmed shared masternode in My masternodes (MG-10 §2.4, §2.8; UX-SPEC §4.25.8 "After registration"). */
+    detail: {
+      /** `of` is always 2 to 8. */
+      held: "you hold {held} of {of} shares",
+      shares: "Shares",
+      /** A share with no session label: its number, from 1. */
+      shareN: "Share {n}",
+      legend: "{label} · {amount}",
+      legendMine: "{label} · {amount} · yours",
+      noSession: "This wallet holds a share of this masternode but not the session it was created in, so share names and the operator terms aren't shown.",
+      unknown: "This wallet holds a key that may belong to this shared masternode, but its history doesn't hold the registration, so it can't act on it here.",
+      failed: "Couldn't read this shared masternode's shares. {reason}",
+      payouts: "Your payouts",
+      /** With more than one share of this wallet: each by its label. */
+      payoutsOf: "Your payouts · {label}",
+      /** `share` is a percent; `address` is shortened. */
+      headline: "<strong>As far as this wallet knows</strong>, {share}% of each payout goes to {address}.",
+      atRegistration: "At registration: {address}",
+      changed: "Changed to {address} by this wallet, confirmed at block {height}.",
+      attempt: {
+        notSent: "A change to {address} wasn't sent.",
+        sent: "A change to {address} was sent {date}, not confirmed yet.",
+        sentUndated: "A change to {address} was sent, not confirmed yet.",
+        conflicted: "A change to {address} didn't go through: a coin it used was spent elsewhere.",
+      },
+      caveat: "A change made from another wallet wouldn't show here.",
+      refund: "Your refund",
+      refundOf: "Your refund · {label}",
+      early: "Early period",
+      earlyEnds: "Ends at block {height}",
+      earlyNone: "None",
+      standby: {
+        title: "Standby dissolution",
+        full: "Full refund: valid from block {height}",
+        fullNow: "Full refund: valid now",
+        immediate: "Immediate: valid now, you pay the {penalty} penalty",
+        immediateUnknown: "Immediate: valid now, you pay the early-exit penalty",
+        saved: "Saved on this computer on {date}",
+        imported: "Imported",
+      },
+      backups: "Shared-masternode sessions and standbys aren't in wallet backups. Save a copy of the standby to keep a way out.",
+      eligibility: {
+        upgrade_unknown: "Available once the masternode list has synced.",
+        list_unavailable: "The masternode list is still loading. Available once it has synced.",
+        too_early: "Available once the masternode list includes the registration.",
+        delisted: "This masternode has left the list, so there's nothing to dissolve or change.",
       },
     },
     feeSheet: {

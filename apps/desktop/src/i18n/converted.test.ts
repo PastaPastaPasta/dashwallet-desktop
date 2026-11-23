@@ -41,7 +41,7 @@ const AREAS: Record<string, string[]> = {
 
   notifications: ["screens/notifications"],
 
-  masternodes: ["screens/masternodes/CreateProposalSheet.tsx", "screens/masternodes/MasternodesPage.tsx", "screens/masternodes/Mine.tsx", "screens/masternodes/MyMasternodes.tsx", "screens/masternodes/NameVoteSheet.tsx", "screens/masternodes/NamesTab.tsx", "screens/masternodes/NumbersSheet.tsx", "screens/masternodes/ProposalPane.tsx", "screens/masternodes/StatusItem.tsx", "screens/masternodes/VoteSheet.tsx", "screens/masternodes/common.tsx", "screens/masternodes/credential.tsx"],
+  masternodes: ["screens/masternodes/CreateProposalSheet.tsx", "screens/masternodes/MasternodesPage.tsx", "screens/masternodes/Mine.tsx", "screens/masternodes/MyMasternodes.tsx", "screens/masternodes/NameVoteSheet.tsx", "screens/masternodes/NamesTab.tsx", "screens/masternodes/NumbersSheet.tsx", "screens/masternodes/ProposalPane.tsx", "screens/masternodes/SharedPane.tsx", "screens/masternodes/StatusItem.tsx", "screens/masternodes/VoteSheet.tsx", "screens/masternodes/common.tsx", "screens/masternodes/credential.tsx"],
 
   tools: ["screens/tools"],
 
