@@ -79,7 +79,10 @@ for (const theme of THEMES) {
       await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
       await copyRaw.click();
       const copied = await page.evaluate(() => navigator.clipboard.readText());
-      expect(copied.length).toBeGreaterThan(32);
+      // The whole transaction, not the preview: two hex digits per byte of its Size.
+      const size = Number((await folded.getByText(/^\d+ bytes$/).textContent())!.split(" ")[0]);
+      expect(copied).toMatch(/^[0-9a-f]+$/);
+      expect(copied.length).toBe(size * 2);
       await expect(raw).toContainText(`${copied.slice(0, 32)}…`);
     }
 
