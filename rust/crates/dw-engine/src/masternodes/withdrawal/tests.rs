@@ -55,14 +55,14 @@ use dw_vault::{
 use zeroize::Zeroizing;
 
 use super::background::{Background, Job};
-use super::check::{Destination, gated, identity_of, look, quote};
+use super::check::{Destination, gated, identity_of, look, quote, unpaid_changes};
 use super::drive::{Window, candidates, identity_key, matches, window};
 use super::net::{Answer, MnWithdrawNet, Proved, classify};
 use super::recheck::{Outcome, mark, recheck_all, recheck_group, recheck_record};
 use super::sign::{Request, WithdrawalKeyChoice, retry, shown, withdraw};
 use super::{
-    Alarm, Authorize, Chain, Env, HeldKey, Hold, UNLOCKED, Waits, WalletKeys, WithdrawalError,
-    identity_lock, points,
+    Alarm, Authorize, Chain, Env, HeldKey, Hold, PayoutChange, UNLOCKED, Waits, WalletKeys,
+    WithdrawalError, identity_lock, points,
 };
 use crate::EngineError;
 use crate::masternodes::WithdrawalCheckingReason as CheckingReason;
@@ -678,6 +678,10 @@ impl Env for Scene {
             .cloned())
     }
 
+    fn payout_changes(&self, _: &[u8; 32]) -> Vec<PayoutChange> {
+        Vec::new()
+    }
+
     fn waits(&self) -> Waits {
         WAITS
     }
@@ -1102,6 +1106,41 @@ fn drives_window_pays_the_highest_transfer_key_or_the_highest_enabled_of_the_nex
             refused.script().unwrap_err().code(),
             "masternodes.withdrawal_no_payout_key"
         );
+    }
+}
+
+/// #361: with no window (no identity, or no TRANSFER key Drive would pay),
+/// no payout change is the paid one, so each counts.
+#[test]
+fn with_no_window_every_payout_change_counts() {
+    let proved = |value: Option<Identity>| Proved {
+        value,
+        height: 1,
+        core_height: 100,
+        time_ms: 0,
+        verified: true,
+    };
+    let paid = Some(payout_script().as_bytes().to_vec());
+    let changes = |height: Option<u32>| {
+        vec![PayoutChange {
+            script: paid.clone(),
+            height,
+        }]
+    };
+    let paying = proved(Some(masternode_identity(&PRO_TX, vec![payout_key(0)])));
+    assert_eq!(unpaid_changes(&changes(None), &paying), (false, false));
+    assert_eq!(unpaid_changes(&changes(Some(101)), &paying), (false, false));
+    for read in [
+        proved(None),
+        proved(Some(masternode_identity(&PRO_TX, vec![owner_key()]))),
+        proved(Some(masternode_identity(
+            &PRO_TX,
+            vec![disabled(payout_key(0))],
+        ))),
+    ] {
+        assert_eq!(unpaid_changes(&changes(None), &read), (true, false));
+        assert_eq!(unpaid_changes(&changes(Some(101)), &read), (false, true));
+        assert_eq!(unpaid_changes(&changes(Some(100)), &read), (false, false));
     }
 }
 

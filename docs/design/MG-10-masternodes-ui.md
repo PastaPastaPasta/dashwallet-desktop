@@ -491,6 +491,7 @@ Closing after step 1 asks "Discard this registration?" (nothing was sent). A pre
 | `checking{spv_unsynced}` | "Waiting for the wallet to finish syncing…" |
 | `checking{unverified}` | "Waiting for an answer from Platform the wallet can verify…" |
 | `checking{payout_change_pending}` | "A payout change you sent hasn't reached Platform yet. Withdrawing waits for it." |
+| `checking{payout_change_unconfirmed}` | "A payout change for this evonode hasn't confirmed yet. You can withdraw once it confirms, so the credits go to the new payout address." Refused on Withdraw: "This evonode's payout is changing, and the change hasn't confirmed yet. Withdraw once it confirms, so the credits go to the new payout address." and "If the change will never confirm, because it was replaced or dropped from the network, you can abandon it in History and withdraw then. Don't abandon a change that may still be on the network: if it confirms after you withdraw, the credits can go to the old payout address." |
 | `checking{platform_behind{lag}}` | "Waiting for Platform to catch up with Core ({lag} blocks)…"; with no lag: "Waiting for Platform to catch up with Core…" (MG-13 D14) |
 | locked, custody unknown | "Unlock to check added withdrawal keys" [Unlock] |
 | `withdrawal_key_missing` (custody known) / `withdrawal_no_payout_key` | "This wallet doesn't hold a key Platform accepts for this evonode." / "Platform has no single payout address for this evonode, so the owner key can't withdraw." |

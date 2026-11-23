@@ -864,12 +864,22 @@ impl NetworkSession {
             })
             .collect::<Result<Vec<_>, EngineError>>()?;
         // A legacy wallet's range and lookahead are applied before it is
-        // announced, as its file import does; its rows land after
-        // registration.
-        let state = crate::compat::ImportedState {
-            issued: bundled_issued(&tables, id)?,
-            ..Default::default()
-        };
+        // announced, as its file import does; its rows are stored with them,
+        // before its seed and its registration (#359).
+        // Listed as of its restore, as when its rows landed after the
+        // registration wrote its name.
+        let mut tables = tables;
+        let now = SqlValue::Integer(unix_now() as i64);
+        for t in tables.iter_mut().filter(|t| t.table == "wallets") {
+            if let Some(i) = t.columns.iter().position(|c| c == "created_at") {
+                for row in &mut t.rows {
+                    if let Some(v) = row.get_mut(i) {
+                        *v = now.clone();
+                    }
+                }
+            }
+        }
+        let issued = bundled_issued(&tables, id)?;
         let lookahead = bundled_lookahead(&tables, id)?;
         let existed = self.manager()?.get_wallet(&id.0).await.is_some();
         // A wallet already there gets back, if the restore fails later, the
@@ -884,6 +894,11 @@ impl NetworkSession {
             Some(tokio::task::spawn_blocking(move || appdb.prior_settings(&wid, &keys)).await??)
         } else {
             None
+        };
+        let state = crate::compat::ImportedState {
+            issued,
+            rows: Some(tables),
+            ..Default::default()
         };
         let options = ImportOptions {
             birth_height: Some(payload.birth_height.unwrap_or(0)),
@@ -911,11 +926,7 @@ impl NetworkSession {
             Err(EngineError::Vault(e)) => return Err(vault_failure(e)),
             Err(e) => return Err(e),
         }
-        let appdb = self.live()?.appdb;
-        let wid = id.to_string();
-        let inserted =
-            tokio::task::spawn_blocking(move || appdb.import_wallet_rows(&wid, &tables)).await??;
-        tracing::info!(wallet_id = %id, rows = inserted, "restored app metadata from backup");
+        tracing::info!(wallet_id = %id, "restored app metadata from backup");
         // The bell's count, which the imported rows moved (DP2-05).
         let tap = self.live()?.tap;
         tokio::task::spawn_blocking(move || tap.unread_moved(id)).await?;

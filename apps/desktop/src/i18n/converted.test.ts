@@ -1,7 +1,9 @@
 // Keeps converted screens converted (MP-14): a `.tsx` file listed in CONVERTED (a file, or every
 // file under a directory) may not show text that bypasses the catalog: JSX text, or a literal in
-// an attribute that is read or shown (`title`, `aria-label`, `placeholder`, …). Each later slice
-// adds the paths it converts.
+// an attribute that is read or shown (`title`, `aria-label`, `placeholder`, …). Nor may it build a
+// sentence from fragments: a copy button named from a noun, or a message given another message as a
+// value, where a translator cannot control case, inflection or word order. Each later slice adds the
+// paths it converts.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
@@ -58,6 +60,14 @@ const ALLOWED: Record<string, string[]> = {
   "screens/ShellDialogs.tsx": ["dash:"],
   // The proposal link's placeholder: the https:// scheme, typed as is in every language.
   "screens/masternodes/CreateProposalSheet.tsx": ["https://"],
+};
+
+/** Messages that take another message as a value on purpose: `file: [the value's key, …]`. Say why. */
+const ALLOWED_FRAGMENTS: Record<string, string[]> = {
+  // The rates disclosure is a whole sentence, set before or after another whole sentence.
+  "fiat/consent.tsx": ["rates.disclosure"],
+  // A choice's note and its vote count, set side by side with "·": no sentence around them.
+  "screens/masternodes/NameVoteSheet.tsx": ["masternodes.names.sheet.choiceNote.…"],
 };
 
 /** Attributes whose value a user reads or hears. Props of our components that carry copy too. */
@@ -131,6 +141,53 @@ export function hardCoded(file: string, source: string): string[] {
   return found.sort((a, b) => a.at - b.at).map((f) => `${line(f.at)}: ${f.text}`);
 }
 
+const MESSAGE_CALLS = new Set(["t", "tr", "tNow"]);
+
+/** A call of `t` (or `tr`, `tNow`, `t.rich`) with a literal key, and that key. */
+function messageKey(e: Node | null | undefined): string | null {
+  if (e?.type !== "CallExpression") return null;
+  const callee = e.callee as Node;
+  const named = callee.type === "Identifier" ? MESSAGE_CALLS.has(callee.name as string) : callee.type === "MemberExpression" && (callee.object as Node).type === "Identifier" && MESSAGE_CALLS.has((callee.object as Node).name as string);
+  const [key] = e.arguments as Node[];
+  return named ? keyText(key) : null;
+}
+
+/** A message key as written: a literal, a template (`a.${k}` reads "a.…"), or either side of `?:`. */
+function keyText(key: Node | undefined): string | null {
+  if (key?.type === "Literal" && typeof key.value === "string") return key.value;
+  if (key?.type === "TemplateLiteral") return (key.quasis as { value: { cooked: string } }[]).map((q) => q.value.cooked).join("…");
+  if (key?.type !== "ConditionalExpression") return null;
+  const [a, b] = [keyText(key.consequent as Node), keyText(key.alternate as Node)];
+  return a !== null && b !== null ? `${a} | ${b}` : null;
+}
+
+/** The sentences a `.tsx` source builds from fragments, as `line: what`: a CopyValue named from a
+ * noun (`label=`, read in "Copy {label}"), and a message given another message as a value. */
+export function fragments(file: string, source: string): string[] {
+  const { program, errors } = parseSync(file, source, { lang: "tsx" });
+  if (errors.length) throw new Error(`${file}: ${errors[0].message}`);
+  const found: { at: number; text: string }[] = [];
+  new Visitor({
+    JSXOpeningElement: (n) => {
+      const name = n.name as unknown as Node;
+      if (name.type !== "JSXIdentifier" || name.name !== "CopyValue") return;
+      for (const a of n.attributes as unknown as Node[])
+        if (a.type === "JSXAttribute" && (a.name as Node).name === "label") found.push({ at: a.start, text: "CopyValue label=" });
+    },
+    CallExpression: (n) => {
+      const outer = messageKey(n as unknown as Node);
+      const values = (n.arguments as unknown as Node[])[1];
+      if (outer === null || values?.type !== "ObjectExpression") return;
+      for (const p of values.properties as Node[]) {
+        const inner = p.type === "Property" ? messageKey(p.value as Node) : null;
+        if (inner !== null) found.push({ at: p.start, text: `${outer} takes ${inner}` });
+      }
+    },
+  }).visit(program);
+  const line = (at: number) => source.slice(0, at).split("\n").length;
+  return found.sort((a, b) => a.at - b.at).map((f) => `${line(f.at)}: ${f.text}`);
+}
+
 describe("converted screens", () => {
   for (const path of CONVERTED)
     for (const file of files(path)) {
@@ -139,6 +196,10 @@ describe("converted screens", () => {
         const allowed = new Set(ALLOWED[name] ?? []);
         const found = hardCoded(file, readFileSync(file, "utf8")).filter((f) => !allowed.has(f.slice(f.indexOf(": ") + 2)));
         expect(found).toEqual([]);
+      });
+      it(`${name} builds no sentence from fragments`, () => {
+        const allowed = ALLOWED_FRAGMENTS[name] ?? [];
+        expect(fragments(file, readFileSync(file, "utf8")).filter((f) => !allowed.some((key) => f.endsWith(` takes ${key}`)))).toEqual([]);
       });
     }
 
@@ -159,5 +220,23 @@ describe("converted screens", () => {
       ].join("\n"),
     );
     expect(found).toEqual(["2: Hello", "2: Shown", "2: Hidden", "3: Some text", "3: Yes", "3: Count", "4: Type here", "5: Because", "6: Copy", "6: Nobody", "6: Left", "7: Unnamed wallet", "10: Copied"]);
+  });
+
+  it("catches a copy button named from a noun and a message given another message", () => {
+    const found = fragments(
+      "probe.tsx",
+      [
+        "export const A = () => (",
+        '  <div title={t("a.sentence", { theme: t("a.noun") })}>',
+        '    <CopyValue value={v} label={t("a.address")} />',
+        '    <CopyValue value={v} action={t("a.copyAddress")} />',
+        '    {t.rich("a.rich", { who: tr("a.name"), count: 2, link: <b>{t("a.link")}</b> })}',
+        '    {t("a.line", { note: t(`a.note.${kind}`) })}',
+        '    {t("a.hint", { theme: t(dark ? "a.dark" : "a.light") })}',
+        "  </div>",
+        ");",
+      ].join("\n"),
+    );
+    expect(found).toEqual(["2: a.sentence takes a.noun", "3: CopyValue label=", "5: a.rich takes a.name", "6: a.line takes a.note.…", "7: a.hint takes a.dark | a.light"]);
   });
 });

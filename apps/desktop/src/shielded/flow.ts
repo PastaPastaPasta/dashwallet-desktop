@@ -13,7 +13,6 @@ import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import { SHIELDED_CODES } from "../api/pending";
 import { RESCAN_TEXT } from "../app/rescan";
-import { COPY as DASHPAY_COPY } from "../dashpay/status";
 import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
@@ -253,7 +252,9 @@ export const SHIELDED_COPY = {
   },
   /** A shield's or a move of mixed coins' lock that signed and may be out (`platform.broadcast_unknown`):
    * its step refuses the next one until Tools ▸ Repair settles it. */
-  fundingUnknown: `${DASHPAY_COPY.repair.unknown}. Open Tools ▸ Repair to settle it; you can move Dash into Shielded again once it has.`,
+  get fundingUnknown() {
+    return t("transfer.shielded.fundingUnknown");
+  },
   get close() {
     return t("transfer.shielded.close");
   },

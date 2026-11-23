@@ -338,7 +338,7 @@ export const dashpay = {
     share: "Share Username",
     usernames: "Usernames",
     identity: "Identity",
-    identityId: "identity id",
+    copyIdentityId: "Copy identity ID",
     noUsername: "No username",
     /** The requested name while its vote runs and no other name is held. */
     contested: "{username} · Pending",
@@ -632,8 +632,7 @@ export const dashpay = {
     confirm: {
       recipient: "A contact request will go to {who}. It carries your new identity's extended public key for payments between you, so {who} can see the payments you make to each other.",
       recipientId: "Their identity",
-      /** Read in "Copy {label}". */
-      identityId: "identity id",
+      copyIdentityId: "Copy identity ID",
       request: "Send a contact request to {who}",
       claim: "Claim invitation",
     },

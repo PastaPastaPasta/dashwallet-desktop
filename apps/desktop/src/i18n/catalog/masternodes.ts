@@ -723,5 +723,14 @@ export const masternodes = {
     unverified: "Dash Wallet can't check this masternode's details yet. Try again in a few minutes.",
     /** The destination row while the engine still checks where the withdrawal pays. */
     checking: "Checking…",
+    /** Under "Checking…" while a payout change only the wallet's history holds is unconfirmed. */
+    payoutUnconfirmed:
+      "A payout change for this evonode hasn't confirmed yet. You can withdraw once it confirms, so the credits go to the new payout address.",
+    /** The withdrawal refused over that change: first, wait for it. */
+    payoutUnconfirmedWait:
+      "This evonode's payout is changing, and the change hasn't confirmed yet. Withdraw once it confirms, so the credits go to the new payout address.",
+    /** Then when abandoning it is safe, and when it is not. */
+    payoutUnconfirmedAbandon:
+      "If the change will never confirm, because it was replaced or dropped from the network, you can abandon it in History and withdraw then. Don't abandon a change that may still be on the network: if it confirms after you withdraw, the credits can go to the old payout address.",
   },
 } as const satisfies Tree;

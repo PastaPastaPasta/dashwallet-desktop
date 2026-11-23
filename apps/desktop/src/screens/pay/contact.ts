@@ -231,7 +231,7 @@ export function payBanner(i: BannerInput): Banner | null {
   const request = acceptsToo(i.detail, i.accepted);
   if (relation !== "contact" && !request && !i.accepted) return { kind: "gone", text: t("pay.contact.banner.notContacts") };
   if (i.watchOnly) return { kind: "watchOnly", text: t("pay.contact.watchOnly") };
-  if (request && i.hasKeys === false) return { kind: "enable", text: `${t("contacts.pane.enableFirst")} ${t("pay.contact.banner.thenAccept")}` };
+  if (request && i.hasKeys === false) return { kind: "enable", text: t("pay.contact.banner.enableThenAccept") };
   if (i.detail.paymentLock) return { kind: "paymentLock", text: t("pay.contact.banner.paymentLock"), txid: i.detail.paymentLock.txid };
   if (channel === "broken") return { kind: "broken", text: t("contacts.pane.broken") };
   if (i.lock === "unlockedMixingOnly") return { kind: "mixingOnly", text: t("pay.contact.banner.mixingOnly") };
