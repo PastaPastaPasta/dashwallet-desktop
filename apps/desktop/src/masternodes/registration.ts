@@ -213,7 +213,7 @@ const ROLES = ["owner", "voting", "operator", "platform_node"] as const;
 const role = (e: AppError) => ROLES.find((r) => e.data?.kind === "keyRole" && e.data.role === r) ?? "owner";
 
 /** Where a registration refusal shows (§1.6): the step and field it belongs to, or `null` to show it on the current step. */
-export function refusalOf(e: unknown): Refusal | null {
+export function refusalOf(e: unknown, kind: MasternodeTypeName = "regular"): Refusal | null {
   if (!isAppError(e)) return null;
   const reason = e.data?.kind === "protxRefused" ? e.data.reason : null;
   switch (e.code) {
@@ -225,7 +225,7 @@ export function refusalOf(e: unknown): Refusal | null {
       if (reason === "bad-protx-payee-reuse") return { step: "keys", field: "payoutAddress", text: t(`${P}.refused.payeeReuse`) };
       if (reason === "bad-protx-operator-reward") return { step: "operator", field: "operatorShare", text: t(`${P}.error.share`) };
       if (reason?.startsWith("bad-protx-netinfo")) return { step: "operator", field: "service", text: t(`${P}.error.serviceIpv4`) };
-      if (reason?.startsWith("bad-protx-collateral")) return { step: "collateral", field: null, text: t(`${P}.refused.collateral`) };
+      if (reason?.startsWith("bad-protx-collateral")) return { step: "collateral", field: null, text: t(`${P}.refused.collateral`, { amount: collateralDash(kind) }) };
       return { step: "review", field: null, text: t(`${P}.refused.rules`, { reason: reason ?? e.message }) };
     case "masternodes.keys_exhausted": {
       const r = role(e);
@@ -235,7 +235,7 @@ export function refusalOf(e: unknown): Refusal | null {
     case "masternodes.collateral_unavailable":
       return { step: "collateral", field: "outpoint", text: t(`${P}.refused.collateralUnavailable`) };
     case "invalid_argument":
-      if (e.message.includes("collateral is this wallet's")) return { step: "collateral", field: "externalAddress", text: t(`${P}.error.collateralInWallet`, { amount: 1000 }) };
+      if (e.message.includes("collateral is this wallet's")) return { step: "collateral", field: "externalAddress", text: t(`${P}.error.collateralInWallet`, { amount: collateralDash(kind) }) };
       return null;
     case "masternodes.signature_mismatch":
       return { step: "prove", field: "signature", text: t(`${P}.refused.signatureMismatch`) };

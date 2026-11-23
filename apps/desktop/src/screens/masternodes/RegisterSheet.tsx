@@ -112,7 +112,7 @@ export function RegisterSheet({
   const figures = reviewed?.key === requestKey ? reviewed.p : undefined;
 
   const refuse = (e: unknown): boolean => {
-    const r = refusalOf(e);
+    const r = refusalOf(e, d.kind);
     if (!r) return false;
     if (r.field) setErrors({ [r.field]: r.text });
     else setGeneral(r.text);
@@ -417,7 +417,7 @@ export function RegisterSheet({
           <label className={`mg-field ${errors.service ? "has-error" : ""}`}>
             {t(`${R}.operator.service`)}
             <input data-testid="reg-service" className="mono" value={d.service} placeholder={`203.0.113.7:${ports.own}`} autoComplete="off" spellCheck={false} onChange={(e) => set({ service: e.target.value })} {...fieldProps("service")} />
-            <span className="mg-field-help">{self ? t(`${R}.operator.serviceHelpSelf`, { example: `203.0.113.7:${ports.own}` }) : t(`${R}.operator.serviceHelp`)}</span>
+            <span className="mg-field-help">{self ? t(`${R}.operator.serviceHelpSelf`, { port: String(ports.own) }) : t(`${R}.operator.serviceHelp`)}</span>
             {fieldError("service")}
           </label>
           <label className={`mg-field ${errors.operatorShare ? "has-error" : ""}`}>

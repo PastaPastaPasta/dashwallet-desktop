@@ -30,7 +30,7 @@ export const settings = {
     languageHint: "The language of Dash Wallet's own screens. Messages that come from the network stay in English.",
     showMasternodes: "Show Masternodes",
     showMasternodesHint:
-      "Masternodes in the sidebar: to set up and follow masternodes, and to vote on proposals and usernames. Automatic shows it while this wallet has or tracks a masternode, holds a 1,000 Dash output, or has a registration in progress.",
+      "Shows Masternodes in the sidebar, where you set up and follow masternodes and vote on proposals and usernames. Automatic shows it while this wallet has or tracks a masternode, holds an output of exactly 1,000 or 4,000 Dash, or has a registration in progress.",
     masternodesItem: { on: "Always", auto: "Automatic", off: "Never" },
     governanceAskTitle: "Load governance data?",
     governanceAskText: "Also load proposals and votes from the network? Governance data is off for this network.",
