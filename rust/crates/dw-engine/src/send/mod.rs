@@ -317,6 +317,9 @@ pub struct TxEstimate {
     pub change: Option<u64>,
     /// What the recipients receive, after any subtract-fee share.
     pub total_sent: u64,
+    /// The part of `fee` beyond the draft's rate for `size_bytes`: a
+    /// CoinJoin payment's change and a dust remainder (U-06b).
+    pub left_over: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1087,6 +1090,7 @@ impl TxDraft {
                     input_count: r.plan.inputs.len() as u32,
                     change: r.plan.change,
                     total_sent: r.plan.total_sent(),
+                    left_over: r.plan.left_over(r.fee_rate),
                 })
             })
             .await

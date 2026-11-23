@@ -39,6 +39,7 @@ import {
   failureText,
   isContact,
   keepsPromise,
+  mixedSendNotes,
   settleNotSent,
   subtractsFee,
   UNRECORDED,
@@ -154,6 +155,7 @@ export function ConfirmSheet({
   const { recipient, estimate, changeAddress, total } = confirmed;
   // The fee against what the payee gets (after a subtract-fee share; the change is not in it).
   const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
+  const mixed = mixedSendNotes(coins.coins, estimate);
   const toast = useActionToast(walletId);
 
   // A failed read of the policy counts as "on" (U-03 D3). With the signing window, an unread
@@ -427,7 +429,24 @@ export function ConfirmSheet({
             {feeWarningText(feeWarn)}
           </p>
         )}
+        {mixed?.manyCoins && (
+          <p className="fee-warning" role="alert" data-testid="pay-confirm-mixed-warning">
+            {t("pay.confirm.mixed.manyCoins")}
+          </p>
+        )}
         {subtractsFee(recipient) && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
+        {mixed && (
+          <>
+            <p className="placeholder-note" data-testid="pay-confirm-mixed-coins">
+              {t("pay.confirm.mixed.coins", { count: mixed.inputCount })}
+            </p>
+            {mixed.leftOver !== null && (
+              <p className="placeholder-note" data-testid="pay-confirm-mixed-change">
+                {t.rich("pay.confirm.mixed.noChange", { amount: <AmountText text={shown.full(mixed.leftOver)} unitName={unit} glyph={false} /> })}
+              </p>
+            )}
+          </>
+        )}
         {changeAddress !== null && <p className="placeholder-note">{t("pay.confirm.changeNote")}</p>}
         {!policyKnown ? (
           <LoadingState testId="pay-confirm-policy" text={t("pay.confirm.checkingPolicy")} />

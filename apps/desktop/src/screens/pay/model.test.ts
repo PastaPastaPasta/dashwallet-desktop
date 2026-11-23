@@ -24,6 +24,8 @@ import {
   DEFAULT_ADVANCED,
   feeMode,
   keepsPromise,
+  MIXED_INPUT_WARNING,
+  mixedSendNotes,
   unsignedKeepsPromise,
   outpointKey,
   outpointOf,
@@ -46,7 +48,7 @@ const lock = (over: Partial<LockStatus> = {}): LockStatus => ({
 });
 const PAYEE = "yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd";
 const recipient = recipientOf({ address: PAYEE, amount: 50_000_000, subtractFee: false, label: "  Alice ", message: " " });
-const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 50_000_000 };
+const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 50_000_000, leftOver: 0 };
 const confirmed = confirmedOf(recipient, estimate, { kind: "auto" });
 
 const summary = (over: Partial<PreparedTxSummary> = {}): PreparedTxSummary => ({
@@ -442,5 +444,27 @@ describe("why a payment cannot be reviewed yet (P15)", () => {
     expect(reviewBlockedReason(false, [null], false, "contact")).toBe(PAY_INCOMPLETE_CONTACT);
     expect(reviewBlockedReason(false, [null], false, "address")).toBe(PAY_INCOMPLETE);
     expect(reviewBlockedReason(false, [null], true, "contact")).toBe(PAY_CHECKING);
+  });
+});
+
+describe("mixedSendNotes (U-06b)", () => {
+  const est = (inputCount: number, leftOver = 0) => ({ inputCount, leftOver });
+
+  it("warns from 10 coins, as dash-qt does", () => {
+    expect(MIXED_INPUT_WARNING).toBe(10);
+    expect(mixedSendNotes("mixed", est(9))).toEqual({ inputCount: 9, manyCoins: false, leftOver: null });
+    expect(mixedSendNotes("mixed", est(10))?.manyCoins).toBe(true);
+    expect(mixedSendNotes("mixed", est(11))?.manyCoins).toBe(true);
+    expect(mixedSendNotes("mixed", est(1))?.manyCoins).toBe(false);
+  });
+
+  it("names the left-over only when there is one", () => {
+    expect(mixedSendNotes("mixed", est(2, 0))?.leftOver).toBeNull();
+    expect(mixedSendNotes("mixed", est(2, 49_999_660))?.leftOver).toBe(49_999_660);
+  });
+
+  it("says nothing for any other coin source", () => {
+    expect(mixedSendNotes("any", est(11, 500))).toBeNull();
+    expect(mixedSendNotes("selected", est(11, 500))).toBeNull();
   });
 });

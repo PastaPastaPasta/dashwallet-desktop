@@ -168,6 +168,11 @@ export const pay = {
     total: "Total",
     subtractNote: "The fee is subtracted from the amount: the payee receives the amount above.",
     changeNote: "The total includes the change: the custom change address may not belong to this wallet.",
+    mixed: {
+      coins: { one: "This payment spends {count} mixed coin.", other: "This payment spends {count} mixed coins." },
+      manyCoins: "Spending 10 or more mixed coins in one payment can link them together and weaken your privacy. Consider paying a smaller amount.",
+      noChange: "Mixed payments have no change: the {amount} left over after the payment goes to the network fee.",
+    },
     checkingPolicy: "Checking the payment settings",
     passphrase: "Passphrase",
     wait: "Too many attempts. Try again in {secs} s.",

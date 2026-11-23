@@ -374,7 +374,10 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   if (d.source.kind === "fullyMixedOnly" && change !== null) [fee, change] = [fee + change, null];
   if (subtract && totalSent < DUST) throw fail("send.amount_too_small_after_fee", "amount too small after the fee", { kind: "recipient", index: 0 });
   if (fee > MAX_TX_FEE) throw fail("send.absurd_fee", "absurd fee", { kind: "fee", fee, available: null });
-  return { fee, sizeBytes: sizeOf(inputs.length, outputs + (change === null ? 0 : 1)), inputCount: inputs.length, change, totalSent, inputs };
+  const sizeBytes = sizeOf(inputs.length, outputs + (change === null ? 0 : 1));
+  // The fee beyond the rate for the size: a dust rest, and a mixed spend's change (dw-engine `Plan::left_over`).
+  const leftOver = Math.max(0, fee - feeFor(sizeBytes, rate));
+  return { fee, sizeBytes, inputCount: inputs.length, change, totalSent, leftOver, inputs };
 }
 
 function maxSpendable(world: World, wallet: FixtureWallet, source: CoinSource, fee: FeeMode): number {

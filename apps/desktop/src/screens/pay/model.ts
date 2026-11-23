@@ -36,6 +36,22 @@ export interface Advanced {
   changeAddress: string | null;
 }
 
+/** A mixed payment of this many coins or more warns about privacy (U-06b D3, dash-qt sendcoinsdialog.cpp). */
+export const MIXED_INPUT_WARNING = 10;
+
+export interface MixedSendNotes {
+  inputCount: number;
+  manyCoins: boolean;
+  /** What the fee holds beyond the rate (the estimate's `leftOver`); `null` when nothing is left over. */
+  leftOver: number | null;
+}
+
+/** What the confirm sheet says about a payment from fully mixed coins (U-06b); `null` for any other source. */
+export function mixedSendNotes(coins: CoinChoice, estimate: Pick<TxEstimate, "inputCount" | "leftOver">): MixedSendNotes | null {
+  if (coins !== "mixed") return null;
+  return { inputCount: estimate.inputCount, manyCoins: estimate.inputCount >= MIXED_INPUT_WARNING, leftOver: estimate.leftOver > 0 ? estimate.leftOver : null };
+}
+
 /** dash-qt's default confirmation target (6 blocks), the engine draft's too. */
 export const DEFAULT_TARGET_BLOCKS = 6;
 
