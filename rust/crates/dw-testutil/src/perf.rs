@@ -1,7 +1,7 @@
 //! Timing helpers for the H-06 performance probes
 //! (docs/research/h-06-performance.md): wall and on-CPU time per call,
-//! percentiles, and the process's memory. Linux only; elsewhere CPU time
-//! and memory read as zero.
+//! percentiles, and the process's memory. CPU time is Unix only; memory is
+//! Linux only and reads as zero elsewhere.
 
 use std::time::{Duration, Instant};
 
@@ -33,25 +33,31 @@ impl std::fmt::Display for Stats {
     }
 }
 
-/// On-CPU time of every thread of this process so far, from each task's
-/// `schedstat`: the sum covers an async runtime's workers, which do the
-/// work of a call handed to them. Threads that already ended are not
-/// counted.
+/// This process's on-CPU time so far, every thread's included, from
+/// `CLOCK_PROCESS_CPUTIME_ID`: cumulative, so a worker thread that exits
+/// during a call still counts. Panics when the clock cannot be read.
+#[cfg(unix)]
 pub fn process_cpu() -> Duration {
-    let mut ns = 0u64;
-    for task in std::fs::read_dir("/proc/self/task")
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        let Ok(stat) = std::fs::read_to_string(task.path().join("schedstat")) else {
-            continue;
-        };
-        ns += (stat.split_whitespace().next())
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0);
-    }
-    Duration::from_nanos(ns)
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable timespec for the call's duration.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    assert_eq!(
+        rc,
+        0,
+        "clock_gettime(CLOCK_PROCESS_CPUTIME_ID): {}",
+        std::io::Error::last_os_error()
+    );
+    let secs = u64::try_from(ts.tv_sec).expect("process CPU seconds");
+    let nanos = u32::try_from(ts.tv_nsec).expect("process CPU nanoseconds");
+    Duration::new(secs, nanos)
+}
+
+#[cfg(not(unix))]
+pub fn process_cpu() -> Duration {
+    panic!("process CPU time is measured on Unix only")
 }
 
 /// One call's result, wall time and process CPU time.
@@ -59,7 +65,9 @@ pub fn sample<R>(f: impl FnOnce() -> R) -> (R, Sample) {
     let (cpu0, t0) = (process_cpu(), Instant::now());
     let r = f();
     let wall = t0.elapsed();
-    let cpu = process_cpu().saturating_sub(cpu0);
+    let cpu = process_cpu()
+        .checked_sub(cpu0)
+        .expect("process CPU time went backwards");
     (r, Sample { wall, cpu })
 }
 
@@ -132,5 +140,34 @@ mod tests {
         assert_eq!((s.n, s.wall_max), (100, 100.0));
         assert_eq!((s.wall_p50.round(), s.wall_p95), (51.0, 95.0));
         assert_eq!(s.cpu_p95, 47.0);
+    }
+
+    /// Work done on a thread that has exited by the second reading still
+    /// counts (the per-thread sum this replaced dropped it).
+    #[cfg(unix)]
+    #[test]
+    fn process_cpu_keeps_the_time_of_exited_threads() {
+        fn thread_cpu() -> Duration {
+            let mut ts = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: `ts` is a valid, writable timespec.
+            assert_eq!(
+                unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) },
+                0
+            );
+            Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+        }
+        let spin = Duration::from_millis(50);
+        let before = process_cpu();
+        std::thread::spawn(move || {
+            while thread_cpu() < spin {
+                std::hint::black_box(0u64);
+            }
+        })
+        .join()
+        .unwrap();
+        assert!(process_cpu() - before >= spin);
     }
 }
