@@ -2096,8 +2096,8 @@ fn stored_row(session: &NetworkSession, id: WalletId, outpoint: OutPoint) -> Opt
 /// child's change on to the wallet. Abandoning the payment takes the
 /// grandchild through the abandoned child and leaves no claim on the
 /// child's change in the store: once the payment and the child are mined
-/// without the grandchild, the change counts and is offered, after a
-/// restart too.
+/// without the grandchild, the change is held exactly once, counted and
+/// offered, after a restart too.
 #[test]
 fn abandoning_through_an_abandoned_child_leaves_its_change_unclaimed() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
@@ -2146,10 +2146,6 @@ fn abandoning_through_an_abandoned_child_leaves_its_change_unclaimed() {
     abandon(&engine, &session, id, payment.txid());
     assert!(abandoned(&engine, &session, id, grandchild.txid()));
     let row = stored_row(&session, id, left);
-    assert!(
-        row.is_none_or(|(spent, _)| !spent),
-        "the abandon claims the child's change in the store: {row:?}"
-    );
 
     mined(&engine, &session, id, TIP, vec![paid]);
     mined(&engine, &session, id, TIP + 1, vec![payment, child]);
@@ -2158,15 +2154,26 @@ fn abandoning_through_an_abandoned_child_leaves_its_change_unclaimed() {
         if state != "mined" {
             session = reopen(&engine, session);
         }
-        assert!(
-            held(&engine, &session, id).contains(&left),
-            "{state}: the child's change is missing"
+        let held = coins(&engine, &session, id);
+        assert_eq!(
+            held.iter().filter(|(o, _)| *o == left).count(),
+            1,
+            "{state}: the child's change is not held exactly once: {held:?}"
+        );
+        assert_eq!(
+            balances(&session, id).total,
+            held.iter().map(|(_, v)| v).sum::<u64>(),
+            "{state}: the balance does not count the coins held"
         );
         assert!(
             spendable(&engine, &session, id, left),
             "{state}: the child's change is not offered"
         );
     }
+    assert!(
+        row.is_none_or(|(spent, _)| !spent),
+        "the abandon claimed the child's change in the store: {row:?}"
+    );
 }
 
 /// A payment of this wallet that another device made, seen by its change
