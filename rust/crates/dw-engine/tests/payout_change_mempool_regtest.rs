@@ -568,6 +568,13 @@ fn a_change_only_the_payout_wallet_records_and_its_ways_out() {
     p.wait_scanned(node.height());
     let mined = p.status_after(&txid, Duration::from_secs(60));
     eprintln!("mined: the payout wallet reads {mined:?}");
+    assert!(
+        matches!(
+            mined,
+            Some(TxStatusKind::Confirming | TxStatusKind::Confirmed)
+        ),
+        "the payout wallet sees the change mined: {mined:?}"
+    );
 
     // A live change: a restore sees it again; Remove unconfirmed abandons
     // it while the network still has it.

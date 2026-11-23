@@ -81,7 +81,9 @@ fn payout_changes_in(
         }
     }
     let change = |(txid, (script, entries)): (Txid, (Option<Vec<u8>>, Vec<&TxEntry>))| {
-        let height = (entries.iter()).find_map(|e| e.context.block_info().map(|b| b.height()));
+        let height = (entries.iter())
+            .filter_map(|e| e.context.block_info().map(|b| b.height()))
+            .max();
         if height.is_none() {
             let locked = entries.iter().any(|e| instant_locked(e));
             let abandoned = !locked && entries.iter().any(|e| e.abandoned);

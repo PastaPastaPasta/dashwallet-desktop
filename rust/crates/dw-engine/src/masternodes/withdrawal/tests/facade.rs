@@ -1281,6 +1281,36 @@ fn an_instant_send_locked_payout_change_is_conflicted_only_by_a_chain_locked_blo
 /// In the wallet's own history a version-3 change makes the masternode
 /// shared (D25), refused before any hold; another loaded wallet's holds
 /// unless its one payee is the paid script.
+/// A plain block at or below the best ChainLock is ChainLocked: it beats
+/// an InstantSend-locked change.
+#[test]
+fn a_block_at_or_below_the_best_chain_lock_conflicts_an_instant_send_locked_change() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    for (chainlock, holds) in [(TIP - 4, true), (TIP - 3, false), (TIP, false)] {
+        let fa = Fa::new(true);
+        let change = payout_change(&PRO_TX, &moved, coin(1));
+        fa.seen(&change, TransactionContext::InstantSend(Default::default()));
+        fa.seen(&rival_of(&change), in_block(TIP - 3));
+        (fa.f.session.hub).note_chainlock(chainlock, dashcore::BlockHash::all_zeros());
+        match holds {
+            true => fa.held_by(Key::Owner, UNCONFIRMED),
+            false => fa.released(Key::Owner),
+        }
+    }
+}
+
+/// During a reorg one wallet may still read the change in an older, lower
+/// block: the highest block read decides, which holds longer.
+#[test]
+fn the_highest_block_any_wallet_reads_a_change_in_decides() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let fa = Fa::new(true);
+    let change = payout_change(&PRO_TX, &moved, coin(1));
+    fa.seen_in(OTHER_WALLET, &change, in_block(TIP - 3));
+    fa.seen(&change, in_block(TIP + 1));
+    fa.held_by(Key::Owner, "platform_behind");
+}
+
 #[test]
 fn a_v3_payout_change_holds_unless_its_one_payee_is_the_paid_script() {
     let moved = CoreScript::new_p2pkh([0x22; 20]);

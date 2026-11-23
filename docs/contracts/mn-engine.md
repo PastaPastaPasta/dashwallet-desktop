@@ -236,7 +236,12 @@ P16), `payout_change_unconfirmed` (a ProUpRegTx of the masternode in any loaded 
 abandoned in none of them and conflicted by no block in any of them (an InstantSend-locked one only by a ChainLocked
 block), whose payout Drive's window doesn't pay, or whose payload this version doesn't decode: another installation's
 change, which has no barrier here), `platform_behind` (the identity proof's Core chain-locked height is below the synced header tip, or such a
-ProUpRegTx is in a block above it; checked in this order). While only Platform is behind, the quote starts one wait per masternode in the background (every 20 s, for at
+ProUpRegTx is in a block above it, the highest block any wallet reads it in; checked in this order). A wallet the
+change only pays, or names a key of, records it with nothing of its own to abandon. A block spending one of its inputs
+drops it, and so does an abandon in a wallet that paid for it. Tools ▸ Repair ▸ Remove unconfirmed transactions
+(`drop_unconfirmed`) abandons it without asking the network, so it releases a live change too (#372). Removing that
+wallet and restoring it from its phrase drops a change the network forgot and sees a live one again; the UI copy offers
+that way out. Rescan keeps the entry. While only Platform is behind, the quote starts one wait per masternode in the background (every 20 s, for at
 most 240 s) and sends §6's event (`withdrawal_ready`) when the destination is fixed; the host reads the quote again
 and asks for consent then. The grant is that consent: a `MasternodeWithdraw{pro_tx_hash, max_credits, destination}`
 grant (m4 item 86) bound to the masternode the user acted on, whose `max_credits` covers the amount and Drive's fee
