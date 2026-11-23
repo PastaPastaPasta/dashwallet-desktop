@@ -912,13 +912,13 @@ fn unseen_collateral_sized(
 /// (BIP44, BIP32, DashPay receiving), whatever its maturity, locks or
 /// reservations, which the library does not all see (E0-04 §2a.3's
 /// `fee_bound_worst` counts a superset, so its bound stays an upper one).
-pub(crate) async fn funding_coin_count(wallet: &PlatformWallet) -> usize {
-    let state = wallet.state().await;
-    read_coins(&state.core_wallet)
+pub(crate) async fn funding_coin_count(wallet: &PlatformWallet) -> Result<usize, EngineError> {
+    let state = crate::wallet_read::info_of(wallet).await?;
+    Ok(read_coins(&state.core_wallet)
         .coins
         .iter()
         .filter(|c| c.send_account)
-        .count()
+        .count())
 }
 
 impl NetworkSession {
@@ -1248,7 +1248,7 @@ impl NetworkSession {
     ) -> Result<(), EngineError> {
         let wallet = self.wallet(&wallet_id).await?;
         let unspent: HashSet<OutPoint> = {
-            let state = wallet.state().await;
+            let state = crate::wallet_read::info_of(&wallet).await?;
             read_coins(&state.core_wallet)
                 .coins
                 .into_iter()

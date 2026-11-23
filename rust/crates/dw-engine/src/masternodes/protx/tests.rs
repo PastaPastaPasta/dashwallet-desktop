@@ -5186,3 +5186,25 @@ fn ep_r4_overdue_uses_resend_time_instead_of_signing_time() {
         assert_eq!(read.overdue, expected, "elapsed since resend {elapsed}");
     }
 }
+
+/// #263: the collateral follower of a wallet gone from the manager, with a
+/// collateral to lock (a contact's ProRegTx kept out of sight), fails that
+/// wallet's step, logged; no panic.
+#[test]
+fn the_collateral_follower_of_a_wallet_gone_from_the_manager_does_not_panic() {
+    let f = fx(Library::Accept);
+    let (tx, _) = f.foreign_registration(true, 2);
+    f.load_contact_with(tx, 700);
+    assert!(!f.hidden_registrations().is_empty());
+    crate::wallet_read::gone_tests::detach(&f.engine, &f.session, f.wallet);
+    f.session.hub.history.take_collateral_pending();
+    f.follow();
+    assert!(
+        !f.session
+            .hub
+            .history
+            .take_collateral_pending()
+            .contains(&f.wallet),
+        "a step that failed with wallet_not_found is not re-armed"
+    );
+}

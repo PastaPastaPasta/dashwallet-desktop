@@ -161,7 +161,7 @@ async fn settle(session: &NetworkSession, wallet: WalletId, txid: Txid, how: Top
 /// script a fake.
 pub(crate) trait TopUpLib: Send + Sync {
     /// The wallet's identities: index and base58 id.
-    fn identities(&self) -> impl Future<Output = Vec<(u32, String)>> + Send;
+    fn identities(&self) -> impl Future<Output = Result<Vec<(u32, String)>, PlatformError>> + Send;
     /// The wallet's tracked `IdentityTopUp` locks.
     fn top_up_locks(&self) -> impl Future<Output = Vec<LockInfo>> + Send;
     fn spendable(&self) -> impl Future<Output = Result<Spendable, PlatformError>> + Send;
@@ -251,7 +251,7 @@ async fn check<L: TopUpLib>(
     duffs: u64,
 ) -> Result<Plan, CreditsError> {
     let id = parse_identity(identity)?;
-    let index = (lib.identities().await.into_iter())
+    let index = (lib.identities().await?.into_iter())
         .find(|(_, i)| *i == identity)
         .map(|(index, _)| index)
         .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
@@ -427,7 +427,7 @@ pub(crate) async fn top_up<L: TopUpLib>(
         return Err(PlatformError::Unavailable.into());
     }
     let id = parse_identity(identity)?;
-    if !(lib.identities().await.iter()).any(|(_, i)| i == identity) {
+    if !(lib.identities().await?.iter()).any(|(_, i)| i == identity) {
         return Err(PlatformError::Identity(IdentityError::NotFound).into());
     }
     // Rule 5 (DP3-04): the identity the credits go to verified, before its
@@ -572,7 +572,7 @@ pub(crate) async fn pending<L: TopUpLib>(
     wallet: WalletId,
     lib: &L,
 ) -> Result<Vec<PendingTopUp>, PlatformError> {
-    let identities = lib.identities().await;
+    let identities = lib.identities().await?;
     let mut out: Vec<PendingTopUp> = (open_locks(session, wallet, lib).await?.into_iter())
         .map(|(l, standing)| PendingTopUp {
             txid: l.outpoint.txid.to_string(),
@@ -601,7 +601,7 @@ pub(crate) async fn stuck<L: TopUpLib>(
     }
     let steps =
         (session.leases.stuck_top_up_steps(wallet)).map_err(|_| PlatformError::Unavailable)?;
-    let identities = lib.identities().await;
+    let identities = lib.identities().await?;
     Ok((steps.into_iter())
         .map(|(step, state)| {
             let identity_index = step_index(&step);
@@ -638,7 +638,7 @@ pub(crate) async fn resume<L: TopUpLib>(
             .ok_or_else(|| invalid("no top-up lock has that txid"))
     };
     let index = lock_of().await?.identity_index;
-    let identity = identity_at(&lib.identities().await, index)
+    let identity = identity_at(&lib.identities().await?, index)
         .and_then(|id| parse_identity(id).ok())
         .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
     let locks = identity_locks(wallet, identity);
@@ -710,7 +710,7 @@ pub(crate) async fn resolve<L: TopUpLib>(
             .ok_or_else(|| invalid("no pending top-up of that txid is proved"))
     };
     let index = lock_of().await?.0.identity_index;
-    let identity = identity_at(&lib.identities().await, index)
+    let identity = identity_at(&lib.identities().await?, index)
         .cloned()
         .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
     let locks = identity_locks(wallet, parse_identity(&identity)?);
@@ -743,7 +743,13 @@ pub(crate) async fn finish<L: TopUpLib>(
     lease: &Lease,
     report: &mut FinishReport,
 ) {
-    let identities = lib.identities().await;
+    let identities = match lib.identities().await {
+        Ok(identities) => identities,
+        Err(e) => {
+            tracing::warn!(error = %e, "Finish transfers cannot read the identities for top-ups");
+            return;
+        }
+    };
     let signer = match lease.uncounted_funding_signer() {
         Ok(signer) => Some(signer),
         Err(e) => {
@@ -790,7 +796,7 @@ pub(crate) async fn finish<L: TopUpLib>(
 }
 
 impl TopUpLib for PwLib {
-    async fn identities(&self) -> Vec<(u32, String)> {
+    async fn identities(&self) -> Result<Vec<(u32, String)>, PlatformError> {
         Reg::identities(self).await
     }
 

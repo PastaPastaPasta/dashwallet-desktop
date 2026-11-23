@@ -4199,7 +4199,9 @@ impl MixingWallet for EngineMixingWallet {
             .map_err(|e| WalletError(e.to_string()))?;
         let network = s.network.core_network();
         let to_sign: Vec<(usize, ScriptBuf, DerivationPath)> = {
-            let state = wallet.state().await;
+            let state = crate::wallet_read::info_of(&wallet)
+                .await
+                .map_err(|e| WalletError(e.to_string()))?;
             inputs
                 .iter()
                 .map(|(i, script)| {
@@ -4260,7 +4262,7 @@ impl NetworkSession {
         let mut inputs = inputs.to_vec();
         inputs.shuffle(&mut rand::thread_rng());
         let to_sign: Vec<(usize, ScriptBuf, DerivationPath)> = {
-            let state = wallet.state().await;
+            let state = crate::wallet_read::info_of(&wallet).await?;
             inputs
                 .iter()
                 .enumerate()
