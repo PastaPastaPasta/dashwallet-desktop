@@ -608,12 +608,15 @@ function resolve(world: World, r: MnRegistrationRequest, commit: boolean): ProTx
     collateral: c.kind,
     collateralOutpoint: outpoint,
     collateralAddress: c.kind === "external" ? c.address.trim() : c.kind === "fund_new" && commit ? addr(`cN${issue(m, "", 2)}`) : null,
-    platform: nodeId ? { nodeId, p2pPort: r.evonode?.p2pPort ?? 36656, httpPort: r.evonode?.httpPort ?? 1443 } : null,
+    platform: nodeId ? { nodeId, p2pPort: r.evonode?.p2pPort ?? PLATFORM_PORTS[world.launch.network.dirName]?.[0] ?? 22_000, httpPort: r.evonode?.httpPort ?? PLATFORM_PORTS[world.launch.network.dirName]?.[1] ?? 22_001 } : null,
     platformNodeIndex,
   };
   checkPending(m, terms);
   return terms;
 }
+
+/** dw-protx `default_ports`: a network's Platform P2P and HTTPS ports. */
+const PLATFORM_PORTS: Record<string, [number, number]> = { mainnet: [26_656, 443], testnet: [22_000, 22_001], devnet: [22_100, 22_101], regtest: [22_200, 22_201] };
 
 /** `existing_coin`: one of the wallet's coins of exactly the type's amount (a user-locked one too: it stays locked). */
 function checkCollateral(m: MasternodesWorld, r: MnRegistrationRequest) {

@@ -390,7 +390,7 @@ export function RegisterSheet({
     body = (
       <>
         <p className="mg-small">
-          {self ? t(evo ? `${R}.operator.selfIntroEvo` : `${R}.operator.selfIntro`, { index: String((k?.operator.index ?? 0) + 1) }) : t(`${R}.operator.hostedIntro`)}
+          {self ? t(evo ? `${R}.operator.selfIntroEvo` : `${R}.operator.selfIntro`, { index: String((k?.operator.index ?? 0) + 1), node: String((k?.platformNode?.index ?? 0) + 1) }) : t(`${R}.operator.hostedIntro`)}
         </p>
         <div className="mg-form">
           <label className={`mg-field mg-span ${errors.operatorKey ? "has-error" : ""}`}>
@@ -571,7 +571,7 @@ export function RegisterSheet({
         className="mg-sheet-body"
         onSubmit={(e) => {
           e.preventDefault();
-          if (sendOff) return;
+          if (sendOff || askDiscard) return;
           void (proving || notSent ? submitOrResend() : next());
         }}
       >
@@ -709,7 +709,7 @@ function Review({ d, p, amount, changed }: { d: RegDraft; p: MnRegistrationPrevi
             : d.collateral === "existing"
               ? t.rich(`${R}.review.collateralExisting`, { outpoint: <span className="mono">{outpoint}</span>, amount: amount(p.collateralAmount) })
               : t.rich(`${R}.review.collateralExternal`, { outpoint: <span className="mono">{outpoint}</span> })}
-          <span className="mg-small mg-muted"> {t(`${R}.review.collateralLocked`)}</span>
+          {d.collateral !== "external" && <span className="mg-small mg-muted"> {t(`${R}.review.collateralLocked`)}</span>}
         </DetailRow>
         <DetailRow label={t(`${R}.review.server`)}>
           <span className="mono">{terms.service}</span>

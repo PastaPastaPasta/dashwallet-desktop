@@ -38,7 +38,7 @@ import {
   voteBlocked,
 } from "../../masternodes/model";
 import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh, useMasternodeOperations } from "../../masternodes/queries";
-import { inProgress } from "../../masternodes/operations";
+import { conflicted, inProgress } from "../../masternodes/operations";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import { InProgressGroup } from "./InProgress";
 import { REGISTRATION_SENDS, registrationCalls } from "../../masternodes/registration";
@@ -93,7 +93,7 @@ export function MyMasternodes({
   );
   const work = ops.data ?? [];
   const progress = <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />;
-  if (isEmpty(o) && inProgress(work).length === 0)
+  if (isEmpty(o) && inProgress(work).length === 0 && conflicted(work).length === 0)
     return (
       <>
         {watchNotice}

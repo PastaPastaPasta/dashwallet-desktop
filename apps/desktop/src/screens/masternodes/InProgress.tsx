@@ -15,7 +15,7 @@ import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { mnErrorText } from "../../masternodes/model";
-import { conflicted, inProgress, opRow, opTitle, resendCap, resendConfirmText, type OpAction } from "../../masternodes/operations";
+import { actsOn, conflicted, inProgress, opRow, opTitle, resendCap, resendConfirmText, type OpAction } from "../../masternodes/operations";
 import { useMasternodesRefresh } from "../../masternodes/queries";
 import { MoreMenu, StatusChip } from "./common";
 import { CredentialField, useCredential } from "./credential";
@@ -176,7 +176,7 @@ function ResendSheet({ op, wallet, network, onClose }: { op: ProTxOperation; wal
     };
   }, []);
   const send = async () => {
-    if (busy || !credential.ready) return;
+    if (busy || !credential.ready || !actsOn(op)) return;
     const gen = lockGeneration();
     setBusy(true);
     try {

@@ -124,7 +124,7 @@ test("self-run evonode: the wallet's operator key and Platform node, to Review",
   await next(page);
   await expect(step(page, "operator")).toContainText("Your server's details");
   // The list's masternodes use operator keypairs 1 and 2: the next unused one is the third.
-  await expect(step(page, "operator")).toContainText("come from this wallet's masternode keys (keypair 3)");
+  await expect(step(page, "operator")).toContainText("come from this wallet's masternode keys (operator keypair 3, Platform node keypair 1)");
   await expect(page.getByTestId("reg-operator-wallet-key")).toHaveText(keyInfo("operator", 2).publicKeyHex.slice(0, 8));
   await expect(page.getByTestId("reg-node-wallet")).toHaveText(keyInfo("platform_node", 0).platformNodeId!);
   await expect(page.getByTestId("reg-operator-key")).toHaveCount(0);
@@ -141,7 +141,7 @@ test("self-run evonode: the wallet's operator key and Platform node, to Review",
   await expect(sheet(page).getByRole("heading", { name: "Set up an evonode" })).toBeVisible();
   await expect(review).toContainText("Evonode, run by you");
   await expect(review).toContainText(`${keyInfo("operator", 2).publicKeyHex.slice(0, 8)}, keypair 3 of this wallet`);
-  await expect(review).toContainText(`${keyInfo("platform_node", 0).platformNodeId!.slice(0, 8)} · 36656 / 1443`);
+  await expect(review).toContainText(`${keyInfo("platform_node", 0).platformNodeId!.slice(0, 8)} · 36656 / 22001`);
   await expect(page.getByTestId("reg-review-fee")).toContainText("0.00000567");
   await expectSendOff(page);
   expect(errors).toEqual([]);

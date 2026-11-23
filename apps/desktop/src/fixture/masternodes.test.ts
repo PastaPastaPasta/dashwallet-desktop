@@ -465,7 +465,7 @@ describe("fixture masternodes: registration", () => {
     expect(p).toMatchObject({ fee: REG_FEE.regular, totalDebit: REG_FEE.regular, collateralAmount: 1_000 * 100_000_000 });
     expect(p.terms).toMatchObject({ payoutAddress: "", collateral: "fund_new", collateralOutpoint: null, collateralAddress: null, ownerIndex: 0, votingIndex: 1, operatorIndex: 2 });
     const evo = await cmd.mnPreviewRegistration(W, evonode({ collateral: { kind: "existing_utxo", outpoint: REG_COIN_EVO } }));
-    expect(evo.terms).toMatchObject({ collateralOutpoint: REG_COIN_EVO, platform: { nodeId: keyInfo("platform_node", 0).platformNodeId, p2pPort: 36656, httpPort: 1443 } });
+    expect(evo.terms).toMatchObject({ collateralOutpoint: REG_COIN_EVO, platform: { nodeId: keyInfo("platform_node", 0).platformNodeId, p2pPort: 22000, httpPort: 22001 } });
     // A user-locked coin is a collateral too (build.rs existing_coin); it stays locked.
     await expect(cmd.mnPreviewRegistration(W, request({ collateral: { kind: "existing_utxo", outpoint: REG_COIN_LOCKED } }))).resolves.toBeTruthy();
   });

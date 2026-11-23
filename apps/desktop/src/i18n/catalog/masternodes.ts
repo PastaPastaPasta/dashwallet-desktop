@@ -698,7 +698,7 @@ export const masternodes = {
       hostedIntro: "Copy these from your hosting provider. None of them is secret.",
       selfTitle: "Your server's details",
       selfIntro: "You run this masternode, so its operator key comes from this wallet's masternode keys (keypair {index}). After registering, copy the operator secret from Masternode keys to your server.",
-      selfIntroEvo: "You run this evonode, so the operator key and the Platform node key come from this wallet's masternode keys (keypair {index}). After registering, copy their secrets to the server from Masternode keys.",
+      selfIntroEvo: "You run this evonode, so the operator key and the Platform node key come from this wallet's masternode keys (operator keypair {index}, Platform node keypair {node}). After registering, copy their secrets to the server from Masternode keys.",
       key: "Operator public key",
       keyHelp: "The key the server signs with. Your operator keeps the matching secret on the server; never paste a secret here.",
       enterInstead: "Enter one instead",
