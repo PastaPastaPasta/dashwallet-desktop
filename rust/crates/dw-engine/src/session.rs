@@ -279,6 +279,8 @@ pub struct NetworkSession {
     /// session, replaced by a later one, cancelled by `lock_vault` and
     /// `close`. (generation, task).
     pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
+    /// Automatic backups (`backup.rs`).
+    pub(crate) backups: crate::backup::BackupRuntime,
     /// Orders every write of "ask for my passphrase for every payment"
     /// with what the vault is told of it (`keys.rs`).
     pub(crate) payment_auth: tokio::sync::Mutex<()>,
@@ -708,6 +710,7 @@ impl NetworkSession {
             unclean_previous,
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
+            backups: Default::default(),
             payment_auth: tokio::sync::Mutex::new(()),
             #[cfg(all(debug_assertions, feature = "test-support"))]
             payment_auth_fault: Default::default(),
@@ -838,11 +841,7 @@ impl NetworkSession {
         }
         session.load_history().await?;
         session.start_pump(&manager, appdb);
-        // dash-qt backs a wallet up when it loads (QT-116); skipped while
-        // the data key is not available.
-        for id in manager.list_wallet_ids_blocking() {
-            session.schedule_automatic_backup(WalletId(id));
-        }
+        session.back_up_every_wallet_once();
         session.spawn_ensure_background();
         session.spawn_reverify();
         tracing::info!(

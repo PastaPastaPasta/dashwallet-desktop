@@ -5,7 +5,7 @@ import { hasCode } from "../api/backend";
 import { t } from "../i18n";
 
 /** Why a destination still reads `checking` (MG-13 `WithdrawalCheckingReason`). */
-export type WithdrawCheckingReason = "platform_behind" | "payout_change_pending" | "unverified" | "spv_unsynced";
+export type WithdrawCheckingReason = "platform_behind" | "payout_change_pending" | "payout_change_unconfirmed" | "unverified" | "spv_unsynced";
 
 /** Where a withdrawal by one key pays (MG-13 `WithdrawalDestinationCheck`), as the quote's
  * `owner_destination` and `payout_destination` carry it. */
@@ -17,9 +17,20 @@ export function withdrawDestinationText(d: WithdrawDestination): string {
 }
 
 /** What the sheet says under a destination that still checks; `null` for one that is fixed or
- * checks for a reason other than unverified data. */
+ * checks for a reason other than unverified data or an unconfirmed payout change. */
 export function destinationNote(d: WithdrawDestination | null | undefined): string | null {
-  return d?.kind === "checking" && d.reason === "unverified" ? t("masternodes.withdraw.unverified") : null;
+  if (d?.kind !== "checking") return null;
+  if (d.reason === "unverified") return t("masternodes.withdraw.unverified");
+  if (d.reason === "payout_change_unconfirmed") return t("masternodes.withdraw.payoutUnconfirmed");
+  return null;
+}
+
+/** The refusal of a withdrawal held by an unconfirmed payout change, as its two paragraphs; `null`
+ * for any other error or destination. */
+export function payoutUnconfirmedRefusal(e: unknown, destination?: WithdrawDestination | null): [string, string] | null {
+  const held = destination?.kind === "checking" && destination.reason === "payout_change_unconfirmed";
+  if (!held || !hasCode(e, "masternodes.withdrawal_destination_checking")) return null;
+  return [t("masternodes.withdraw.payoutUnconfirmedWait"), t("masternodes.withdraw.payoutUnconfirmedAbandon")];
 }
 
 /** The withdrawal's refusals over unverified identity data; `null` for any other. `destination`:
@@ -27,6 +38,7 @@ export function destinationNote(d: WithdrawDestination | null | undefined): stri
  * still checks (its error carries no reason). */
 export function withdrawUnverifiedText(e: unknown, destination?: WithdrawDestination | null): string | null {
   if (hasCode(e, "masternodes.withdrawal_unverified")) return t("masternodes.withdraw.unverified");
-  if (hasCode(e, "masternodes.withdrawal_destination_checking")) return destinationNote(destination);
+  if (hasCode(e, "masternodes.withdrawal_destination_checking") && destination?.kind === "checking" && destination.reason === "unverified")
+    return t("masternodes.withdraw.unverified");
   return null;
 }

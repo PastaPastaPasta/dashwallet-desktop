@@ -173,6 +173,11 @@ pub enum EngineEvent {
     /// closed). Not a network's: prices are the engine's. Hosts re-read
     /// `Rates::status`. dw-ffi withholds it.
     Rates,
+    /// An automatic backup was written (QT-116): hosts re-read the
+    /// automatic backups and their failures. dw-ffi withholds it.
+    Backups {
+        network: DashNetwork,
+    },
 }
 
 impl EngineEvent {
@@ -187,7 +192,8 @@ impl EngineEvent {
             | Self::LockProgress { .. }
             | Self::DispatchResolved { .. }
             | Self::Governance { .. }
-            | Self::Rates => true,
+            | Self::Rates
+            | Self::Backups { .. } => true,
             Self::Notice { code, .. } => code.engine_side(),
             _ => false,
         }

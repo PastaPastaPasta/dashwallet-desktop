@@ -88,6 +88,7 @@ export const keys = {
   // Settings (U-04). Automatic backups and the policy share a prefix: a policy change trims them.
   backupsAll: ["backups"] as const,
   automaticBackups: ["backups", "automatic"] as const,
+  automaticBackupFailures: ["backups", "failures"] as const,
   backupPolicy: ["backups", "policy"] as const,
   backupDirectory: ["backups", "directory"] as const,
   dust: ["dust"] as const,
@@ -615,6 +616,11 @@ export function useAutomaticBackups() {
   // The engine writes an automatic backup on its own after an import or a restore and says nothing
   // when it is done, so the list is read again whenever the tab shows (D28).
   return useQuery({ queryKey: keys.automaticBackups, queryFn: () => b.automaticBackups(null), refetchOnMount: "always" });
+}
+
+export function useAutomaticBackupFailures() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.automaticBackupFailures, queryFn: () => b.automaticBackupFailures(), refetchOnMount: "always" });
 }
 
 export function useBackupPolicy() {

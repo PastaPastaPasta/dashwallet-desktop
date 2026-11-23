@@ -4,7 +4,8 @@
 //! rows scoped to the wallet, so tables added by later migrations are
 //! carried without changes here, except the ones in [`NOT_EXPORTED`].
 
-use rusqlite::types::Value;
+use rusqlite::ToSql;
+use rusqlite::types::{ToSqlOutput, ValueRef};
 
 use crate::{AppDb, Result};
 
@@ -15,30 +16,36 @@ pub enum SqlValue {
     Integer(i64),
     Real(f64),
     Text(String),
+    /// A TEXT value whose bytes are not valid UTF-8, kept as stored.
+    NonUtf8Text(Vec<u8>),
     Blob(Vec<u8>),
 }
 
-impl From<Value> for SqlValue {
-    fn from(v: Value) -> Self {
+impl From<ValueRef<'_>> for SqlValue {
+    fn from(v: ValueRef<'_>) -> Self {
         match v {
-            Value::Null => SqlValue::Null,
-            Value::Integer(i) => SqlValue::Integer(i),
-            Value::Real(r) => SqlValue::Real(r),
-            Value::Text(t) => SqlValue::Text(t),
-            Value::Blob(b) => SqlValue::Blob(b),
+            ValueRef::Null => SqlValue::Null,
+            ValueRef::Integer(i) => SqlValue::Integer(i),
+            ValueRef::Real(r) => SqlValue::Real(r),
+            ValueRef::Text(t) => match std::str::from_utf8(t) {
+                Ok(s) => SqlValue::Text(s.to_owned()),
+                Err(_) => SqlValue::NonUtf8Text(t.to_vec()),
+            },
+            ValueRef::Blob(b) => SqlValue::Blob(b.to_vec()),
         }
     }
 }
 
-impl From<&SqlValue> for Value {
-    fn from(v: &SqlValue) -> Self {
-        match v {
-            SqlValue::Null => Value::Null,
-            SqlValue::Integer(i) => Value::Integer(*i),
-            SqlValue::Real(r) => Value::Real(*r),
-            SqlValue::Text(t) => Value::Text(t.clone()),
-            SqlValue::Blob(b) => Value::Blob(b.clone()),
-        }
+impl ToSql for SqlValue {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::Borrowed(match self {
+            SqlValue::Null => ValueRef::Null,
+            SqlValue::Integer(i) => ValueRef::Integer(*i),
+            SqlValue::Real(r) => ValueRef::Real(*r),
+            SqlValue::Text(t) => ValueRef::Text(t.as_bytes()),
+            SqlValue::NonUtf8Text(t) => ValueRef::Text(t),
+            SqlValue::Blob(b) => ValueRef::Blob(b),
+        }))
     }
 }
 
@@ -137,7 +144,7 @@ impl AppDb {
             let rows: Vec<Vec<SqlValue>> = stmt
                 .query_map([wallet_id], |r| {
                     (0..cols.len())
-                        .map(|i| r.get::<_, Value>(i).map(SqlValue::from))
+                        .map(|i| r.get_ref(i).map(SqlValue::from))
                         .collect()
                 })?
                 .collect::<rusqlite::Result<_>>()?;
@@ -202,11 +209,11 @@ impl AppDb {
                 t.table
             ))?;
             for row in &t.rows {
-                let values: Vec<Value> = keep
+                let values: Vec<&SqlValue> = keep
                     .iter()
-                    .map(|i| row.get(*i).map(Value::from).unwrap_or(Value::Null))
+                    .map(|i| row.get(*i).unwrap_or(&SqlValue::Null))
                     .collect();
-                if values.get(scope_pos) != Some(&Value::Text(wallet_id.to_owned())) {
+                if !matches!(values.get(scope_pos), Some(SqlValue::Text(s)) if s == wallet_id) {
                     continue;
                 }
                 if exists.exists(rusqlite::params_from_iter(values.iter()))? {
@@ -264,6 +271,51 @@ mod tests {
         // Importing again inserts nothing; rows of another wallet are refused.
         assert_eq!(b.import_wallet_rows(&w, &rows).unwrap(), 0);
         assert_eq!(b.import_wallet_rows(&other, &rows).unwrap(), 0);
+    }
+
+    /// Issue 340: a TEXT value that is not valid UTF-8 is exported as its
+    /// bytes and imported as the same TEXT bytes, not a panic.
+    #[test]
+    fn a_text_value_that_is_not_utf8_exports_as_its_bytes_and_imports_byte_identical() {
+        let key = b"abandoned:\xff".to_vec();
+        let value = b"v\xfe1".to_vec();
+        let a = AppDb::open_in_memory().unwrap();
+        let w = "ab".repeat(32);
+        a.set_wallet_name(&w, "Savings", 10).unwrap();
+        a.set_setting(&w, "dust", Some("1")).unwrap();
+        a.conn()
+            .execute(
+                "INSERT INTO settings_kv (scope, key, value) \
+                 VALUES (?1, CAST(?2 AS TEXT), CAST(?3 AS TEXT))",
+                rusqlite::params![w, key, value],
+            )
+            .unwrap();
+        let rows = a.export_wallet_rows(&w).unwrap();
+        let settings = rows.iter().find(|t| t.table == "settings_kv").unwrap();
+        assert!(settings.rows.contains(&vec![
+            SqlValue::Text(w.clone()),
+            SqlValue::NonUtf8Text(key.clone()),
+            SqlValue::NonUtf8Text(value.clone()),
+        ]));
+
+        let b = AppDb::open_in_memory().unwrap();
+        let n = b.import_wallet_rows(&w, &rows).unwrap();
+        assert_eq!(n, rows.iter().map(|t| t.rows.len()).sum::<usize>());
+        let stored: Vec<(String, Vec<u8>, String, Vec<u8>)> = b
+            .conn()
+            .prepare(
+                "SELECT typeof(key), CAST(key AS BLOB), typeof(value), CAST(value AS BLOB) \
+                 FROM settings_kv WHERE scope = ?1 AND key <> 'dust'",
+            )
+            .unwrap()
+            .query_map([&w], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(stored, [("text".into(), key, "text".into(), value)]);
+        assert_eq!(b.setting(&w, "dust").unwrap().as_deref(), Some("1"));
+        assert_eq!(b.import_wallet_rows(&w, &rows).unwrap(), 0, "already there");
+        assert_eq!(b.export_wallet_rows(&w).unwrap(), rows);
     }
 
     /// `dp_contact_info` stays on its machine, out and in (DP2-04): a

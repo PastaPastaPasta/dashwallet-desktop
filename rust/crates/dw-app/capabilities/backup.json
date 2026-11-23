@@ -10,6 +10,7 @@
     "allow-backup-wallet",
     "allow-restore-backup",
     "allow-automatic-backups",
+    "allow-automatic-backup-failures",
     "allow-backup-directory",
     "allow-backup-policy",
     "allow-set-backup-policy",
