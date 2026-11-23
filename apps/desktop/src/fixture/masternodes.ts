@@ -104,6 +104,8 @@ export interface MasternodesWorld {
   trackedAt: Record<string, number>;
   /** The keychain owner key index of each own masternode with the owner role; other held registrations get their own fake owner address. */
   ownerKeys: Record<string, number>;
+  /** A held registration's operator reward in hundredths of a percent; absent: 0. */
+  operatorRewards: Record<string, number>;
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -211,6 +213,7 @@ export function newMasternodesWorld(): MasternodesWorld {
     platformDown: false,
     trackedAt: { [CLUB]: NOW - 12 * DAY },
     ownerKeys: { [HOME]: 0, [OFFICE]: 1 },
+    operatorRewards: {},
   };
 }
 
@@ -319,7 +322,7 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
               votingAddress: m.listed.find((l) => l.proTxHash === proTxHash)?.facts.votingAddress ?? addr(`rv${proTxHash.slice(0, 4)}`),
               payoutAddress: r.payoutAddress,
               payoutScript: r.payoutAddress ? `76a914${fake("5c", 40)}88ac` : null,
-              operatorReward: 0,
+              operatorReward: m.operatorRewards[proTxHash] ?? 0,
               revoked: r.status === "removed",
               revocationReason: r.status === "removed" ? 0 : null,
               transactions: 1,
