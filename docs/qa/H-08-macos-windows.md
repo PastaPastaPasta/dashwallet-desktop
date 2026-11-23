@@ -63,6 +63,11 @@ Sections 7 to 9 need more than one machine or account:
 | 8, Narrator | a Windows 11 PC with headphones | VM with working audio is enough |
 | 9.1, opening an invitation | on each OS two wallets, E and F, with no DashPay identity, and a testnet invitation link per OS made outside this app (each works once) | VM is enough |
 
+The **sink address**: payments that only need to leave a wallet (sections 3 and 8) go to one testnet address,
+the Receive address of a wallet you keep for the whole run outside every data root these sections empty, for
+example section 7's wallet B, or a testnet wallet on your phone. Copy it from that wallet's **Receive** page once
+and write it in the worksheet.
+
 Run sections 7 to 9 in **other test user accounts** than the one sections 2 to 5 use: section 3 empties that
 account's data root and section 4 removes the app, and the DashPay wallets must outlive both. On Windows the
 installer installs for the current user only, so install the candidate in each of these accounts too (section 2's
@@ -193,7 +198,7 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
        `dash.platform-wallet-storage/<64 hex digits>`. Windows: Credential Manager ▸ Windows Credentials ▸ Generic
        Credentials, the entry `dek.dash.platform-wallet-storage/<64 hex digits>`. Fund wallet A from the faucet.
 4. [ ] In wallet A:
-       - send 0.1 tDASH back to the faucet's return address with a recipient label;
+       - send 0.1 tDASH to the sink address with a recipient label;
        - add a transaction label to the faucet payment in Activity;
        - add an address-book entry;
        - create a receive request with an amount, a label and a message;
@@ -223,7 +228,7 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
        - Tools ▸ Sign/Verify verifies the baseline signature, and signing `h08 upgrade` with the same address gives
          the same signature.
 9. [ ] Quit and open again (a cold restart). Expected: the same as step 8, with no new prompt.
-10. [ ] Send 0.01 tDASH from wallet A to the faucet's return address, once: enter `10` in the amount field, which
+10. [ ] Send 0.01 tDASH from wallet A to the sink address, once: enter `10` in the amount field, which
         shows the unit `mtDASH` on testnet. Wait until it confirms. Write **baseline 2**: the new balance and the
         new Activity row with its txid; everything else as baseline 1.
 11. [ ] Quit and open again. Expected: baseline 2, read only (do not send again).
@@ -601,7 +606,7 @@ passphrase. Turn it off again at the end if you prefer.
       between them). Choose **To an address**.
 - [ ] **Pay to** (the field says "Dash address"), **Address Book…**, **Label**, **Message** and **Amount (<unit>)**
       each read with its label; a hint is read after its field. Type an address of another network, or a broken
-      one. Expected: the error is announced and tied to the field. Correct it: the faucet's return address.
+      one. Expected: the error is announced and tied to the field. Correct it: the sink address.
 - [ ] Type an amount larger than the balance. Expected: "The amount exceeds your balance." (or the fee variant)
       announced, and **Review** announced as unavailable with the reason. Correct it to 0.001 tDASH.
 - [ ] Choose **Review**. Expected: "Confirm payment" announced as a dialog; "Do you want to send this payment?",
@@ -744,7 +749,7 @@ back; the sender is told that it was ignored.
 - [ ] Quit and open A again. Expected: the alias and the note are kept.
 - [ ] On B: neither the alias nor the note shows anywhere (B's My Profile, and A's row in B's Contacts, are
       unchanged).
-- [ ] Clear both fields and **Save**. Expected: B's row shows B's own name again.
+- [ ] Back on A: Contacts ▸ B, clear both fields and **Save**. Expected: B's row shows B's own name again.
 - [ ] Repeat on B for A (`A on Mac`), checked on A.
 
 **Fail if:** **Save** fails; the alias or note is lost after the restart; either shows anywhere on the other side.
