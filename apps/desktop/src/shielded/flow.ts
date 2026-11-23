@@ -18,7 +18,7 @@ import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
-import { SHIELDED_SYNCING_TEXT, syncingRefusal } from "./syncing";
+import { SHIELDED_SYNC_COPY, syncingRefusal } from "./syncing";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 
 export type ShieldedApi = Pick<
@@ -270,7 +270,9 @@ export const SHIELDED_COPY = {
     get copy() {
       return t("transfer.shielded.receive.copy");
     },
-    notSynced: SHIELDED_SYNCING_TEXT,
+    get notSynced() {
+      return SHIELDED_SYNC_COPY.syncing;
+    },
     get loading() {
       return t("transfer.shielded.receive.loading");
     },
@@ -292,7 +294,7 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;
-  if (syncingRefusal(err.code, syncing)) return SHIELDED_SYNCING_TEXT;
+  if (syncingRefusal(err.code, syncing)) return SHIELDED_SYNC_COPY.syncing;
   switch (err.code) {
     case SHIELDED_CODES.notActive:
       return SHIELDED_COPY.card.inactive;

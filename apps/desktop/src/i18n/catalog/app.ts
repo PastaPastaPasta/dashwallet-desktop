@@ -29,8 +29,19 @@ export const app = {
     engine: "Engine",
     network: "Network",
   },
+  /** A lock the engine refused, as a toast. `error` is the engine's message. */
+  lockFailed: "Could not lock: {error}",
+  /** A command this build of dw-app does not have, where the screen needs it. */
+  unavailableInBuild: "This is not available in this build.",
+  /** The placeholder text of a route that is not built yet. */
+  notYet: {
+    explore: "Explore is not available yet.",
+  },
   /** Why a link was not opened. */
   link: {
+    /** `error` is the engine's message. */
+    failed: "Could not open the link: {error}",
+    whileWiping: "The link was not opened: close “Delete all wallet data?” first",
     addressRequest: "Dash Wallet does not hand addresses to other apps",
     dashConnect: "DashConnect links are not supported",
     integration: "Exchange links are not supported",

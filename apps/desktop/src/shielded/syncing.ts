@@ -12,8 +12,7 @@
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { SHIELDED_CODES } from "../api/pending";
 import { ago } from "../governance/model";
-
-export const SHIELDED_SYNCING_TEXT = "Shielded is still syncing; try again when it finishes.";
+import { t } from "../i18n";
 
 /** Shielded is on this network and its account is not established yet: Receive, Add, Send and Move
  * wait. `null` (no command, or not read yet) is not syncing: the card is not shown then. */
@@ -31,11 +30,16 @@ export function syncingRefusal(code: string, syncing: boolean): boolean {
 }
 
 export const SHIELDED_SYNC_COPY = {
-  scanning: "Scanning…",
+  get syncing() {
+    return t("transfer.shielded.sync.syncing");
+  },
+  get scanning() {
+    return t("transfer.shielded.sync.scanning");
+  },
   /** When the last pass ended, whatever its result (the engine stamps a failed pass too), or when an
    * idle pool was last proved unchanged and the pass skipped. */
-  lastChecked: (when: string) => `Last checked ${when}`,
-} as const;
+  lastChecked: (when: string) => t("transfer.shielded.sync.lastChecked", { when }),
+};
 
 /** The sheet's sync line at `now` (Unix seconds): "Scanning…" while a pass runs, else when the last
  * pass ended or the idle pool was last proved unchanged; `null` before a scan has completed, or while
