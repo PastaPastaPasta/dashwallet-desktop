@@ -1650,6 +1650,32 @@ mod tests {
         assert_eq!(windows_uri_path(r"D:\Wället\w.dat"), "/D:/Wället/w.dat");
     }
 
+    /// A legacy wallet's records in a SQLite file (`createfromdump
+    /// -format=sqlite`) are refused as in Berkeley DB: an account other
+    /// than 0 is `ExtraHdAccount`, never an unreadable file (#81 item 1).
+    #[test]
+    fn legacy_records_in_sqlite_get_the_same_refusal() {
+        let pairs =
+            crate::bdb::read_pairs(&std::fs::read(vector("bdb_account1.dat")).unwrap()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.dat");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("CREATE TABLE main (key BLOB PRIMARY KEY, value BLOB)", [])
+            .unwrap();
+        for (k, v) in &pairs {
+            conn.execute(
+                "INSERT INTO main VALUES (?1, ?2)",
+                rusqlite::params![&k[..], &v[..]],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        assert_eq!(
+            read_sqlite(&path).err(),
+            Some(WalletDatError::ExtraHdAccount(1))
+        );
+    }
+
     /// Review L5: odd characters and a leading `//` stay in the path; a
     /// pending `-wal` is reported instead of being read stale.
     #[test]

@@ -74,8 +74,8 @@ pub enum CompatFailure {
     /// The export file exists or cannot be written.
     DestinationUnwritable(String),
     /// A legacy `wallet.dat` read and refused on purpose: more keys on one
-    /// chain than the import restores. Restoring from the recovery phrase
-    /// finds the same funds by scanning.
+    /// chain than the import restores. Its funds move by sending them from
+    /// Dash Core.
     WalletTooLarge,
     /// A legacy `wallet.dat` with keys on an HD account other than 0.
     ExtraHdAccount {
@@ -288,6 +288,11 @@ pub fn inspect_wallet_file(path: &Path) -> Result<WalletFileKind, EngineError> {
                     encrypted: w.encrypted(),
                     has_mnemonic: w.has_mnemonic(),
                 },
+                // Legacy records in a SQLite file (`createfromdump
+                // -format=sqlite`) are refused as the import refuses them.
+                Err(e @ (WalletDatError::RangeTooLarge | WalletDatError::ExtraHdAccount(_))) => {
+                    return Err(walletdat_failure(e));
+                }
                 _ => WalletFileKind::Unknown,
             });
         }
