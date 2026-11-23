@@ -70,6 +70,21 @@ for (const theme of THEMES) {
     await expect(folded).toContainText("Network fee");
     await expect(page.getByTestId("tx-detail-inputs")).toBeVisible();
     await expect(page.getByTestId("tx-detail-outputs")).toBeVisible();
+    const raw = page.getByTestId("tx-detail-raw");
+    await expect(raw).toContainText("Raw transaction");
+    const copyRaw = raw.getByRole("button", { name: "Copy raw transaction" });
+    await expect(copyRaw).toBeVisible();
+    // The row shows the start; the button copies the whole hex (clipboard reads: Chromium only).
+    if (test.info().project.name === "chromium") {
+      await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+      await copyRaw.click();
+      const copied = await page.evaluate(() => navigator.clipboard.readText());
+      // The whole transaction, not the preview: two hex digits per byte of its Size.
+      const size = Number((await folded.getByText(/^\d+ bytes$/).textContent())!.split(" ")[0]);
+      expect(copied).toMatch(/^[0-9a-f]+$/);
+      expect(copied.length).toBe(size * 2);
+      await expect(raw).toContainText(`${copied.slice(0, 32)}…`);
+    }
 
     const received = await openKind(page, "received", theme);
     await expect(page.getByTestId("tx-detail-title")).toHaveText("Received");

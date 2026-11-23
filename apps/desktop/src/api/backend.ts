@@ -143,7 +143,14 @@ import type { MasternodeListState } from "./generated/MasternodeListState";
 import type { MasternodeOverview } from "./generated/MasternodeOverview";
 import type { MasternodePayout } from "./generated/MasternodePayout";
 import type { RevealedMasternodeKey } from "./generated/RevealedMasternodeKey";
+import type { MnRegistrationPreview } from "./generated/MnRegistrationPreview";
+import type { MnRegistrationRequest } from "./generated/MnRegistrationRequest";
+import type { MasternodeTypeName } from "./generated/MasternodeTypeName";
+import type { ProTxKeys } from "./generated/ProTxKeys";
 import type { UntrackOutcome } from "./generated/UntrackOutcome";
+import type { ProTxOperation } from "./generated/ProTxOperation";
+import type { UpdateRegistrarPreview } from "./generated/UpdateRegistrarPreview";
+import type { UpdateRegistrarRequest } from "./generated/UpdateRegistrarRequest";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
 import type { VerifyMessageResult } from "./generated/VerifyMessageResult";
@@ -657,6 +664,29 @@ export interface Backend {
   mnKeys(walletId: string, role: MasternodeKeyRoleName, start: number, count: number): Promise<MasternodeKeyInfo[]>;
   /** Consumes a `revealSecret` grant; the result is secret and never cached. */
   mnRevealKey(walletId: string, role: MasternodeKeyRoleName, index: number, grant: string): Promise<RevealedMasternodeKey>;
+  // Registration (MG-10 S2 over mn-engine §2.3).
+  /** The keychain keys a registration of `kind` would use; public data only. */
+  mnRegistrationKeys(walletId: string, kind: MasternodeTypeName): Promise<ProTxKeys>;
+  /** Checks and plans; locks, issues and signs nothing. */
+  mnPreviewRegistration(walletId: string, request: MnRegistrationRequest): Promise<MnRegistrationPreview>;
+  /** FundNew or ExistingUtxo, under a `masternodeOp` grant. */
+  mnRegister(walletId: string, request: MnRegistrationRequest, grant: string): Promise<ProTxOperation>;
+  /** External: saves `needs_signature` with the message to sign. No grant. */
+  mnPrepareExternalRegistration(walletId: string, request: MnRegistrationRequest): Promise<ProTxOperation>;
+  mnRefreshExternalRegistration(walletId: string, operation: string): Promise<ProTxOperation>;
+  mnSubmitExternalRegistration(walletId: string, operation: string, signature: string, grant: string): Promise<ProTxOperation>;
+  mnReleaseCollateral(walletId: string, proTxHash: string): Promise<null>;
+  mnLockCollateral(walletId: string, proTxHash: string): Promise<null>;
+  /** Plans a ProUpRegTx (owner-signed: voting key, operator public key, payout); signs nothing (MG-10 S3). */
+  mnPreviewUpdateRegistrar(walletId: string, request: UpdateRegistrarRequest): Promise<UpdateRegistrarPreview>;
+  /** Signs with the owner key and sends, under a `masternodeOp` grant covering the preview's `totalDebit`. */
+  mnUpdateRegistrar(walletId: string, request: UpdateRegistrarRequest, grant: string): Promise<ProTxOperation>;
+  /** The wallet's ProTx operations, states derived on this read. */
+  mnOperations(walletId: string): Promise<ProTxOperation[]>;
+  /** Sends a signed operation that didn't go out again, under a `masternodeOp` grant covering its `debit`. */
+  mnResendOperation(walletId: string, operation: string, grant: string): Promise<ProTxOperation>;
+  /** Deletes an operation that was never handed to the network. */
+  mnDiscardOperation(walletId: string, operation: string): Promise<null>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */

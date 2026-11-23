@@ -38,7 +38,7 @@ import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { Outcome } from "../tools/common";
 import { Tabs } from "../Routes";
-import { useActionToast, useRefocus } from "./afterAction";
+import { dropDetailFocusUnless, focusDetailWhenShown, focusInView, useActionToast, useRefocus } from "./afterAction";
 import { Avatar } from "./Avatar";
 import { Row } from "./ContactList";
 import { EnableButton, EnableFailure, SendRequestButton } from "./RequestButton";
@@ -52,20 +52,18 @@ export interface AddContext {
   listed: Listed<ContactSummaryInfo> | undefined;
 }
 
-/** Selects `contact` in the list, closing Add Contact (D4's Show). */
-const select = (contact: string) => ui.set({ contact, addContact: null, contactPrefill: null });
+/** Selects `contact` in the list, closing Add Contact (D4's Show); the button pressed goes with
+ * the slot, so the contact's detail takes focus at its name once it shows. */
+function select(contact: string) {
+  focusDetailWhenShown(contact);
+  ui.set({ contact, addContact: null, contactPrefill: null });
+}
 
 /** Closes the slot; focus goes back to the header's Add contact (D15). */
 function close() {
+  dropDetailFocusUnless(null);
   ui.set({ addContact: null, contactPrefill: null });
   requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="contacts-add"], [data-testid="contacts-empty-search"]')?.focus());
-}
-
-function focusContact(target: HTMLElement | null) {
-  if (!target) return;
-  target.focus({ preventScroll: true });
-  const box = target.getBoundingClientRect();
-  if (box.top < 0 || box.bottom > window.innerHeight || box.left < 0 || box.right > window.innerWidth) target.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: AddContactIntent | null; link: ContactPrefill | null }) {
@@ -169,7 +167,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
 
   // A new candidate takes focus (D15).
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => focusContact(heading.current), [c]);
+  useEffect(() => focusInView(heading.current), [c]);
   // Send leaves once the re-read says the request went: focus goes to the line that says so (D5).
   const status = useRef<HTMLDivElement>(null);
   const toast = useActionToast(ctx.walletId);
@@ -291,7 +289,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const tabs = document.activeElement?.closest('[role="tablist"]');
-    if (!tabs || !input.current?.closest(".add-contact")?.contains(tabs)) focusContact(input.current);
+    if (!tabs || !input.current?.closest(".add-contact")?.contains(tabs)) focusInView(input.current);
   }, [query]);
   // Another intent's search text (Show more on another search).
   useEffect(() => setText(query), [query]);

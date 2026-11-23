@@ -878,7 +878,7 @@ impl NetworkSession {
         .await?;
         if !collaterals.is_empty() {
             let w = self.wallet(&wallet).await?;
-            let coins = read_coins(&w.state().await.core_wallet).coins;
+            let coins = read_coins(&crate::wallet_read::info_of(&w).await?.core_wallet).coins;
             self.lock_collaterals(&fence, collaterals, &coins).await?;
         }
         Ok(true)
