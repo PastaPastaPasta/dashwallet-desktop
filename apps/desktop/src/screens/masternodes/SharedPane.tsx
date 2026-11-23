@@ -32,7 +32,7 @@ const P = "masternodes.shared.detail";
 const strong = (c: ReactNode) => <strong>{c}</strong>;
 const mono = (a: string) => <span className="mono">{shortAddress(a)}</span>;
 
-export function SharedSection({ walletId, row, shown }: { walletId: string; row: MasternodeRow; shown: Display }) {
+export function SharedSection({ walletId, row, shown, operatorReward }: { walletId: string; row: MasternodeRow; shown: Display; operatorReward: number | null }) {
   const t = useT();
   const shares = useSharedShares(walletId, row.proTxHash);
   const sessions = useSharedSessions(walletId);
@@ -60,6 +60,7 @@ export function SharedSection({ walletId, row, shown }: { walletId: string; row:
   const mine = s.shares.filter((f) => f.mine);
   const line = eligibilityLine(s.eligibility);
   const end = earlyEnd(s);
+  const operatorBp = operatorReward ?? session?.terms.operatorReward ?? 0;
   return (
     <div className="sh-detail" data-testid="sh-detail">
       <div>
@@ -74,6 +75,11 @@ export function SharedSection({ walletId, row, shown }: { walletId: string; row:
       {mine.map((f) => (
         <Payouts key={f.index} fact={f} legend={legend} many={mine.length > 1} />
       ))}
+      {operatorBp > 0 && (
+        <p className="mg-small" data-testid="sh-detail-operator-share">
+          {t(`${P}.operatorShare`, { pct: percentText(operatorBp / 100) })}
+        </p>
+      )}
       <dl className="mg-facts" data-testid="sh-detail-facts">
         {mine.map((f) => [
           <dt key={`refund-${f.index}-t`}>{mine.length > 1 ? t(`${P}.refundOf`, { label: labelOf(legend, f.index) }) : t(`${P}.refund`)}</dt>,

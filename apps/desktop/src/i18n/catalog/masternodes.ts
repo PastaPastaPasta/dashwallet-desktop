@@ -968,6 +968,7 @@ export const masternodes = {
         conflicted: "A change to {address} didn't go through: a coin it used was spent elsewhere.",
       },
       caveat: "A change made from another wallet wouldn't show here.",
+      operatorShare: "Operator's share: {pct}%, paid first once the operator sets a payout address. This wallet can't see yet whether that has happened.",
       refund: "Your refund",
       refundOf: "Your refund · {label}",
       early: "Early period",

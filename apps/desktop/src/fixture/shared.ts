@@ -330,6 +330,7 @@ function withSharedMasternode(w: World, shares: SharedShares | null, standbys: S
   if (shares) {
     m.registrations.push(SH_MN);
     m.registeredHeights[SH_MN] = shares.registeredHeight;
+    m.operatorRewards[SH_MN] = terms().operatorReward;
     w.shared.shares[SH_MN] = shares;
   }
   w.shared.standby[SH_MN] = standbys;
@@ -715,6 +716,18 @@ export function sharedScenarios(base: Base) {
           sharedShares({}, { latestConfirmedLocal: { operation: h("a7"), address: SH_REWARD_CHANGED, confirmedHeight: SH_TIP - 280 }, latestAttempt: { operation: h("a8"), address: SH_REWARD_ATTEMPT, state: "sent", sentAt: NOW - 2 * 3_600 } }),
           [standbyPair()],
         );
+      }),
+    /** No operator's share in the registration: the operator line is absent. */
+    "sh-detail-no-operator-share": (t: ThemeName | null) =>
+      shBase(base, t, (_, w) => {
+        withSharedMasternode(w, sharedShares({ session: null }));
+        w.masternodes.operatorRewards[SH_MN] = 0;
+      }),
+    /** An imported immediate standby whose penalty the engine doesn't know: listed, never offered to send. */
+    "sh-detail-penalty-unknown": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator()];
+        withSharedMasternode(w, sharedShares({}), [standbyPair(undefined, { penalty: null, source: "imported" })]);
       }),
     /** Restored elsewhere: EP 5 answers from history, no session, no standby (§2.4.2). */
     "sh-detail-no-session": (t: ThemeName | null) => shBase(base, t, (_, w) => withSharedMasternode(w, sharedShares({ session: null }))),

@@ -211,7 +211,7 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
         <dl className="mg-facts" data-testid="mn-facts">
           <Facts row={row} detail={d} shown={shown} />
         </dl>
-        {isSharedRow(row) ? <SharedSection walletId={wallet.walletId} row={row} shown={shown} /> : <Payouts walletId={wallet.walletId} row={row} rows={rows} name={name} shown={shown} />}
+        {isSharedRow(row) ? <SharedSection walletId={wallet.walletId} row={row} shown={shown} operatorReward={d?.registration?.operatorReward ?? null} /> : <Payouts walletId={wallet.walletId} row={row} rows={rows} name={name} shown={shown} />}
         <div>
           <h3 className="mg-section-title">{t("masternodes.myMasternodes.inWallet")}</h3>
           <ul className="mg-roles" data-testid="mn-roles">
