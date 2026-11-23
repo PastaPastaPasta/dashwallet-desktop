@@ -22,7 +22,7 @@ extension L10n {
 
         public static let abandonTitle = "Abandon transaction"
         public static let abandonQuestion =
-            "Abandon this transaction? Dash Wallet stops counting it. Coins it spent come back only if nothing else spent them; if the wallet later sees it confirmed, it counts again."
+            "Abandon this transaction? Dash Wallet stops counting it, and any coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again."
         public static let abandonMayConfirm =
             "This wallet cannot see whether the network still holds the transaction, so it may still confirm."
         public static let abandoned = "The transaction was abandoned."
