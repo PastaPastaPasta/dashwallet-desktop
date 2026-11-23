@@ -2227,7 +2227,7 @@ impl NetworkSession {
             kind: r.kind,
             inputs: inputs.clone(),
         });
-        self.spawn_session(
+        if let Err(addrs) = self.spawn_session(
             wallet_id,
             mn,
             denom,
@@ -2235,7 +2235,9 @@ impl NetworkSession {
             collateral_input,
             collateral_addrs,
             rebalance,
-        );
+        ) {
+            self.release_coinjoin_addresses(wallet_id, &addrs).await;
+        }
         Ok(())
     }
 
@@ -2391,7 +2393,9 @@ impl NetworkSession {
         }
     }
 
-    /// Starts one session task.
+    /// Starts one session task. A conversion whose input another owner
+    /// holds, or a wallet no longer mixing, starts none: the collateral
+    /// addresses come back for the caller to release.
     #[expect(clippy::too_many_arguments, reason = "one session's parts")]
     fn spawn_session(
         self: &Arc<Self>,
@@ -2402,14 +2406,26 @@ impl NetworkSession {
         collateral_input: OutPoint,
         collateral_addrs: Vec<Address>,
         rebalance: Option<RebalanceEntry>,
-    ) {
+    ) -> Result<(), Vec<Address>> {
         let settings = self.coinjoin.settings();
         let (stop, stop_rx) = watch::channel(false);
         let owner = SpendOwner::mixing_session();
+        let rebalance_inputs: Vec<OutPoint> = (rebalance.iter())
+            .flat_map(|e| e.inputs.iter().map(|c| c.outpoint))
+            .collect();
+        if self
+            .spends
+            .reserve_unless_held(wallet_id, owner, &rebalance_inputs)
+            .is_err()
+        {
+            return Err(collateral_addrs);
+        }
         let key = {
             let mut mixers = self.coinjoin.mixers();
             let Some(m) = mixers.get_mut(&wallet_id).filter(|m| m.mixing) else {
-                return;
+                self.spends
+                    .release_some(&wallet_id, owner, rebalance_inputs);
+                return Err(collateral_addrs);
             };
             let key = m.next_session;
             m.next_session += 1;
@@ -2437,8 +2453,6 @@ impl NetworkSession {
         let network = self.network.core_network();
         let params = match rebalance {
             Some(entry) => {
-                self.spends
-                    .reserve(wallet_id, owner, entry.inputs.iter().map(|c| c.outpoint));
                 SessionParams::rebalancing(network, mn, denom, collateral, settings.rounds, entry)
             }
             None => SessionParams::new(network, mn, denom, collateral, settings.rounds),
@@ -2519,6 +2533,7 @@ impl NetworkSession {
             }
             this.refresh_coinjoin_status(wallet_id).await;
         });
+        Ok(())
     }
 
     /// Releases held inputs older than the observation timeout and drops
@@ -4310,6 +4325,87 @@ mod unload_during_read_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A conversion never enters a coin another owner holds: the session
+    /// does not start, its collateral addresses come back, and a session
+    /// that cannot start (the wallet stopped mixing) keeps none of its
+    /// conversion inputs.
+    #[test]
+    fn a_conversion_whose_input_another_owner_holds_starts_no_session() {
+        let f = crate::platform::lease::session_tests::fixture(false);
+        let s = &f.session;
+        let coin = |vout| MixCoin {
+            outpoint: OutPoint::new(Txid::from_byte_array([7; 32]), vout),
+            value: 100_001,
+            script_pubkey: ScriptBuf::new(),
+            rounds: 4,
+        };
+        let entry = || RebalanceEntry {
+            kind: rebalance::RebalanceKind::Demotion,
+            inputs: vec![coin(0)],
+        };
+        let mn = PeerEntry {
+            pro_tx_hash: [1; 32],
+            service: None,
+            operator_public_key: [2; 48],
+            is_valid: true,
+            is_evonode: false,
+        };
+        let collateral = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![],
+            output: vec![],
+            special_transaction_payload: None,
+        };
+        let collateral_input = coin(9).outpoint;
+        let addr: Address = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf"
+            .parse::<Address<dashcore::address::NetworkUnchecked>>()
+            .unwrap()
+            .assume_checked();
+        s.coinjoin.mixers().entry(f.wallet).or_default().mixing = true;
+
+        let other = SpendOwner::mixing_session();
+        s.spends.reserve(f.wallet, other, [coin(0).outpoint]);
+        let refused = s.spawn_session(
+            f.wallet,
+            mn.clone(),
+            1,
+            collateral.clone(),
+            collateral_input,
+            vec![addr.clone()],
+            Some(entry()),
+        );
+        assert_eq!(refused, Err(vec![addr.clone()]));
+        assert!(s.coinjoin.mixers()[&f.wallet].sessions.is_empty());
+        let third = SpendOwner::mixing_session();
+        assert!(
+            s.spends
+                .reserve_unless_held(f.wallet, third, &[collateral_input])
+                .is_ok(),
+            "the collateral was not reserved"
+        );
+        s.spends.release_some(&f.wallet, third, [collateral_input]);
+        s.spends.release_some(&f.wallet, other, [coin(0).outpoint]);
+
+        s.coinjoin.mixers().get_mut(&f.wallet).unwrap().mixing = false;
+        let stopped = s.spawn_session(
+            f.wallet,
+            mn,
+            1,
+            collateral,
+            collateral_input,
+            vec![addr.clone()],
+            Some(entry()),
+        );
+        assert_eq!(stopped, Err(vec![addr]));
+        assert!(
+            s.spends
+                .reserve_unless_held(f.wallet, third, &[coin(0).outpoint])
+                .is_ok(),
+            "a session that did not start keeps its conversion inputs"
+        );
+    }
 
     /// Review P2b r1 item 4: a sweep chunk whose broadcast outcome is
     /// unknown keeps its claim; only the chunks never handed off are
