@@ -202,12 +202,15 @@ the asset lock is the inviter's.
   name and the session's network, then a body that is one whole JSON object (`{"bundles": [...]}`;
   no cut of the file leaves one, and only the final newline may be missing) holding one bundle of
   that wallet and network, of a version this build reads, the file at most 1 GiB. Backups written
-  by 0.3.0 meet it. Listing, rotation and the same-minute check count only complete backups. A
-  file that cannot be read (other than missing) is not taken for incomplete: at this minute's
-  name it fails the backup.
+  by 0.3.0 meet it. Listing, rotation and the same-minute check count only complete backups.
+  Anything but a regular file (a FIFO, a directory; a symlink is followed) is not complete and is
+  never opened. A file that cannot be read (other than missing) is not taken for incomplete: at
+  this minute's name it fails the backup.
 - A complete backup of the same name (an automatic backup of the same minute) is left as it is and
-  counts as this minute's backup (a failure record is deleted), whether it was there before or
-  appears while the backup is built. A file of that name that is not a complete backup is renamed
+  counts as this minute's backup, whether it was there before or appears while the backup is
+  built. One found before the backup is built deletes a failure record only if its header time is
+  in this minute or not before the recorded failure, so a backup written while the clock was ahead
+  does not hide a later failure. A file of that name that is not a complete backup is renamed
   `<name>.incomplete` (or `<name>.incomplete-<n>`) and the backup is written; if it cannot be
   renamed, the backup fails.
   A written backup sends `EngineEvent::Backups`.

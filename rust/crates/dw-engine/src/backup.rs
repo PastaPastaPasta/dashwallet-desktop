@@ -388,12 +388,14 @@ enum AtName {
 /// line, a header line of the same version naming just `id` and
 /// `network`, then a body that is one whole JSON object (no cut of the file
 /// leaves one) holding one readable bundle of that wallet and network, the
-/// file at most [`MAX_FILE_BYTES`]. A read error other than `NotFound` is
-/// returned: it says nothing about the file.
+/// file at most [`MAX_FILE_BYTES`]. Anything but a regular file (a symlink
+/// is followed) is incomplete and never opened, so a FIFO cannot block it.
+/// A read error other than `NotFound` is returned: it says nothing about
+/// the file.
 fn check_automatic(path: &Path, id: WalletId, network: &str) -> std::io::Result<AtName> {
     #[derive(Deserialize)]
     struct BodyShape {
-        bundles: Vec<BundleShape>,
+        bundles: OneBundle,
     }
     #[derive(Deserialize)]
     struct BundleShape {
@@ -401,15 +403,45 @@ fn check_automatic(path: &Path, id: WalletId, network: &str) -> std::io::Result<
         network: String,
         wallet_id: String,
     }
+    struct OneBundle(BundleShape);
+    impl<'de> Deserialize<'de> for OneBundle {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct Visit;
+            impl<'de> serde::de::Visitor<'de> for Visit {
+                type Value = OneBundle;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("exactly one bundle")
+                }
+                fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<OneBundle, A::Error> {
+                    use serde::de::Error;
+                    let first = seq
+                        .next_element::<BundleShape>()?
+                        .ok_or_else(|| A::Error::custom("no bundle"))?;
+                    if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                        return Err(A::Error::custom("more than one bundle"));
+                    }
+                    Ok(OneBundle(first))
+                }
+            }
+            d.deserialize_seq(Visit)
+        }
+    }
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(AtName::Missing),
+        Err(e) => return Err(e),
+    };
+    if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+        return Ok(AtName::Incomplete);
+    }
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(AtName::Missing),
         Err(e) => return Err(e),
     };
-    let meta = file.metadata()?;
-    if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
-        return Ok(AtName::Incomplete);
-    }
     let mut reader = std::io::BufReader::new(file);
     let mut start = Vec::new();
     for _ in 0..2 {
@@ -436,10 +468,10 @@ fn check_automatic(path: &Path, id: WalletId, network: &str) -> std::io::Result<
         Err(e) if e.is_io() => return Err(e.into()),
         Err(_) => return Ok(AtName::Incomplete),
     };
-    let complete = matches!(&shape.bundles[..], [bundle]
-        if dw_vault::reads_bundle_version(bundle.version)
-            && bundle.network == network
-            && bundle.wallet_id.parse::<WalletId>().ok() == Some(id));
+    let bundle = &shape.bundles.0;
+    let complete = dw_vault::reads_bundle_version(bundle.version)
+        && bundle.network == network
+        && bundle.wallet_id.parse::<WalletId>().ok() == Some(id);
     Ok(if complete {
         AtName::Complete(header)
     } else {
@@ -1091,7 +1123,13 @@ impl NetworkSession {
     /// Whether the latest automatic backup of `id` failed, or its record
     /// cannot be read; not while one is being written.
     async fn automatic_backup_failed(self: &Arc<Self>, id: WalletId) -> bool {
-        let Ok(live) = self.live() else { return false };
+        self.automatic_failure(id).await.is_some()
+    }
+
+    /// The failure record of `id`, with its time when it can be read; none
+    /// while a backup of `id` is being written.
+    async fn automatic_failure(self: &Arc<Self>, id: WalletId) -> Option<Option<u64>> {
+        let Ok(live) = self.live() else { return None };
         let this = Arc::clone(self);
         let scope = dw_appdb::local_scope(&id.to_string());
         let recorded = tokio::task::spawn_blocking(move || {
@@ -1102,7 +1140,11 @@ impl NetworkSession {
             live.appdb.setting(&scope, AUTO_FAILED_SETTING)
         })
         .await;
-        !matches!(recorded, Ok(Ok(None)))
+        match recorded {
+            Ok(Ok(None)) => None,
+            Ok(Ok(Some(at))) => Some(at.parse().ok()),
+            _ => Some(None),
+        }
     }
 
     /// Writes an automatic backup of `id` when the policy keeps any and the
@@ -1139,12 +1181,19 @@ impl NetworkSession {
         }
         let dir = self.backup_directory();
         let network = self.network.dir_name();
-        let path = dir.join(automatic_name(&id, unix_now()));
+        let now = unix_now();
+        let path = dir.join(automatic_name(&id, now));
         let (p, n) = (path.clone(), network.clone());
-        if let Ok(Ok(AtName::Complete(_))) =
+        if let Ok(Ok(AtName::Complete(header))) =
             tokio::task::spawn_blocking(move || check_automatic(&p, id, &n)).await
         {
-            if self.automatic_backup_failed(id).await {
+            let this_minute = header.created_at / 60 == now / 60;
+            let clears = match self.automatic_failure(id).await {
+                None => false,
+                Some(Some(failed_at)) => this_minute || header.created_at >= failed_at,
+                Some(None) => this_minute,
+            };
+            if clears {
                 self.record_automatic_outcome(id, None).await;
             }
             return AutomaticRun::Done;

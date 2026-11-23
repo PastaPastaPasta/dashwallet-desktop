@@ -1214,7 +1214,8 @@ fn with_header(bytes: &[u8], edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u
 
 /// A version 2 automatic backup is listed and rotated. A file whose body
 /// is whole JSON is not a backup when it holds a bundle more than its
-/// header names, or a bundle of another wallet; nor is a complete backup
+/// header names, a bundle of another wallet or of a version this build
+/// does not read, or anything after the body; nor is a complete backup
 /// under another wallet's name, or of another network. Both v0.3.0 release
 /// backups are.
 #[test]
@@ -1265,6 +1266,24 @@ fn an_automatic_backup_must_be_of_the_wallet_and_network_it_is_listed_for() {
     one_more.extend(serde_json::to_vec(&body).unwrap());
     one_more.push(b'\n');
     assert_eq!(listed_as(a, &one_more, "regtest"), 0, "a bundle more");
+
+    let mut trailing = bytes.clone();
+    trailing.extend(b"{}\n");
+    assert_eq!(
+        listed_as(a, &trailing, "regtest"),
+        0,
+        "something after the body"
+    );
+    let mut v3: serde_json::Value = serde_json::from_slice(&bytes[end..]).unwrap();
+    v3["bundles"][0]["version"] = 3.into();
+    let mut version_3 = bytes[..end].to_vec();
+    version_3.extend(serde_json::to_vec(&v3).unwrap());
+    version_3.push(b'\n');
+    assert_eq!(
+        listed_as(a, &version_3, "regtest"),
+        0,
+        "a bundle version this build does not read"
+    );
 
     let names_b = with_header(&bytes, |h| {
         h["wallet_ids"] = serde_json::json!([b.to_string()])
@@ -1761,5 +1780,126 @@ fn a_backup_dated_in_the_future_does_not_push_out_new_ones() {
     let listed = list_automatic(&backups, "regtest", None).unwrap();
     assert_eq!(listed.len(), 1);
     assert_ne!(listed[0].path, future);
+    assert!(!future.exists());
+}
+
+/// Runs `fut` on the session's runtime. If it takes over a minute, opens
+/// each of `fifos` for writing, which ends an open blocked on it, and fails.
+#[cfg(unix)]
+fn unless_stuck_on<T: Send + 'static>(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    fifos: &[&Path],
+    fut: impl std::future::Future<Output = T> + Send + 'static,
+) -> T {
+    use std::os::unix::fs::OpenOptionsExt;
+    let task = session.rt.spawn(fut);
+    match engine.block_on(tokio::time::timeout(Duration::from_secs(60), task)) {
+        Ok(out) => out.unwrap(),
+        Err(_) => {
+            for fifo in fifos {
+                let _ = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(fifo);
+            }
+            panic!("blocked on a FIFO");
+        }
+    }
+}
+
+#[cfg(unix)]
+fn mkfifo(path: &Path) {
+    let status = std::process::Command::new("mkfifo")
+        .arg("-m")
+        .arg("600")
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+/// A FIFO under an automatic backup's name is never opened: listing skips
+/// it, and one at this minute's name is set aside and that minute's backup
+/// written.
+#[cfg(unix)]
+#[test]
+fn a_fifo_at_a_backups_name_neither_hangs_nor_stops_a_backup() {
+    use std::os::unix::fs::FileTypeExt;
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session, id, _) = emptied(dir.path(), notices.clone());
+    let backups = session.backup_directory();
+    let old = backups.join(at_minute(id, 0));
+    mkfifo(&old);
+    let s = Arc::clone(&session);
+    let listed = unless_stuck_on(&engine, &session, &[&old], async move {
+        s.automatic_backups(None).await
+    });
+    assert!(listed.unwrap().is_empty());
+
+    not_at_a_minute_end();
+    let name = backups.join(automatic_name(&id, unix_now()));
+    mkfifo(&name);
+    let s = Arc::clone(&session);
+    unless_stuck_on(&engine, &session, &[&old, &name], async move {
+        s.automatic_backup(id).await
+    });
+
+    assert!(failures(&engine, &session).is_empty());
+    assert_eq!(notices.backup_failed(), 0);
+    let listed = list_automatic(&backups, "regtest", None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, name);
+    let mut aside = name.clone().into_os_string();
+    aside.push(".incomplete");
+    assert!(std::fs::metadata(aside).unwrap().file_type().is_fifo());
+    assert!(std::fs::metadata(&old).unwrap().file_type().is_fifo());
+}
+
+/// A complete backup at this minute's name that is older than a recorded
+/// failure (written while the clock was ahead) leaves the record.
+#[test]
+fn a_backup_at_this_minutes_name_older_than_a_failure_leaves_its_record() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session, id, bytes) = emptied(dir.path(), Arc::new(Notices::default()));
+    record_failure_at(&session, id, "3000");
+    not_at_a_minute_end();
+    let name = session
+        .backup_directory()
+        .join(automatic_name(&id, unix_now()));
+    let old = with_header(&bytes, |h| h["created_at"] = 2000.into());
+    std::fs::write(&name, &old).unwrap();
+
+    run_automatic(&engine, &session, id);
+
+    assert_eq!(failures(&engine, &session), [(id, 3000)]);
+    assert_eq!(std::fs::read(&name).unwrap(), old);
+}
+
+/// With "Backups to keep" 2, a backup dated in the future ranks below an
+/// older one: the new and the older backups are kept, the future-dated one
+/// goes.
+#[test]
+fn a_backup_dated_in_the_future_ranks_below_an_older_one() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session, id, bytes) = emptied(dir.path(), Arc::new(Notices::default()));
+    engine.block_on(session.set_backup_policy(2)).unwrap();
+    let backups = session.backup_directory();
+    let older = backups.join(at_minute(id, 1));
+    std::fs::write(&older, &bytes).unwrap();
+    let future = backups.join(at_minute(id, 0));
+    std::fs::write(
+        &future,
+        with_header(&bytes, |h| h["created_at"] = (unix_now() + 86_400).into()),
+    )
+    .unwrap();
+    assert_eq!(list_automatic(&backups, "regtest", None).unwrap().len(), 2);
+
+    run_automatic(&engine, &session, id);
+
+    let listed = list_automatic(&backups, "regtest", None).unwrap();
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().any(|b| b.path == older));
     assert!(!future.exists());
 }
