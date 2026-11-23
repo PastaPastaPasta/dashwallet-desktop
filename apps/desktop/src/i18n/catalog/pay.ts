@@ -168,6 +168,7 @@ export const pay = {
     total: "Total",
     subtractNote: "The fee is subtracted from the amount: the payee receives the amount above.",
     changeNote: "The total includes the change: the custom change address may not belong to this wallet.",
+    unmixed: "This payment uses coins that aren't mixed, so it can be traced back to where they came from. To pay privately, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).",
     checkingPolicy: "Checking the payment settings",
     passphrase: "Passphrase",
     wait: "Too many attempts. Try again in {secs} s.",

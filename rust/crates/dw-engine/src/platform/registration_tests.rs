@@ -664,8 +664,8 @@ impl RegistrationLib for Fake {
         self.w().locks.clone()
     }
 
-    async fn identities(&self) -> Vec<(u32, String)> {
-        self.w().identities.clone()
+    async fn identities(&self) -> Result<Vec<(u32, String)>, PlatformError> {
+        Ok(self.w().identities.clone())
     }
 
     async fn spendable(&self) -> Result<Spendable, PlatformError> {
@@ -1379,7 +1379,9 @@ fn a_grant_of_the_quote_runs_to_done() {
         lib.w().spendable.inputs = 0;
         let wallet = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
         assert_eq!(
-            f.engine.block_on(crate::coins::funding_coin_count(&wallet)),
+            f.engine
+                .block_on(crate::coins::funding_coin_count(&wallet))
+                .unwrap(),
             0,
             "the permit counts the fixture wallet's real coins"
         );
@@ -4815,4 +4817,33 @@ fn a_drain_lease_starts_no_registration() {
     assert_eq!(err.code(), "platform.grant_invalid");
     assert!(f.rows().is_empty());
     assert_eq!(lease.available(BudgetPurpose::Funding).unwrap(), 10 * COIN);
+}
+
+/// #263: the library's identities, for a wallet gone from the manager, fail
+/// (a registration reconciles on them; an empty list would mislead it); no
+/// panic.
+#[test]
+fn the_identities_of_a_wallet_gone_from_the_manager_fail() {
+    let f = fixture(false);
+    let wallet = crate::wallet_read::gone_tests::detach(&f.engine, &f.session, f.wallet);
+    let r = f
+        .engine
+        .block_on(RegistrationLib::identities(&f.pw_lib(&wallet)));
+    assert!(matches!(r, Err(PlatformError::WalletNotFound)), "{r:?}");
+}
+
+/// #263: a drain's credit script, for a wallet gone from the manager, is
+/// refused; no panic.
+#[test]
+fn a_credit_script_of_a_wallet_gone_from_the_manager_is_refused() {
+    let f = fixture(false);
+    let wallet = crate::wallet_read::gone_tests::detach(&f.engine, &f.session, f.wallet);
+    let r = f.engine.block_on(super::core_max::credit_script(
+        &f.pw_lib(&wallet),
+        platform_wallet::AssetLockFundingType::AssetLockAddressTopUp,
+    ));
+    assert!(
+        matches!(r, Err(FundError::Refused(PlatformError::WalletNotFound))),
+        "{r:?}"
+    );
 }
