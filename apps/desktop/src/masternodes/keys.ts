@@ -9,7 +9,8 @@ import type { MasternodeKeyInfo } from "../api/generated/MasternodeKeyInfo";
 import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
 import type { RevealedMasternodeKey } from "../api/generated/RevealedMasternodeKey";
 import { LockModel } from "../onboarding/lock";
-import { Model } from "../onboarding/model";
+import { isAppError } from "../api/backend";
+import { failureText, Model } from "../onboarding/model";
 import { mnErrorText } from "./model";
 
 export const KEY_ROLES: readonly MasternodeKeyRoleName[] = ["owner", "voting", "operator", "platform_node"];
@@ -28,7 +29,9 @@ export interface KeyMatch {
   service: string | null;
 }
 
-const same = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+/** Base58Check addresses are case-sensitive; BLS keys and node ids are hex, of either case. */
+const sameAddress = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a === b;
+const sameHex = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 
 /** The known masternodes whose registration or list entry carries `key` (D8). */
 export function keyMatches(key: MasternodeKeyInfo, details: readonly MasternodeDetail[], name: (d: MasternodeDetail) => string): KeyMatch[] {
@@ -36,13 +39,14 @@ export function keyMatches(key: MasternodeKeyInfo, details: readonly MasternodeD
     .filter((d) => {
       switch (key.role) {
         case "owner":
-          return same(key.address, d.registration?.ownerAddress);
+          return sameAddress(key.address, d.registration?.ownerAddress);
         case "voting":
-          return same(key.address, d.list?.votingAddress) || same(key.address, d.registration?.votingAddress);
+          // The live list wins: after a key change the registration record still names the old one.
+          return sameAddress(key.address, d.list ? d.list.votingAddress : d.registration?.votingAddress);
         case "operator":
-          return same(key.publicKeyHex, d.list?.operatorPublicKey) || same(key.legacyPublicKeyHex, d.list?.operatorPublicKey);
+          return sameHex(key.publicKeyHex, d.list?.operatorPublicKey) || sameHex(key.legacyPublicKeyHex, d.list?.operatorPublicKey);
         case "platform_node":
-          return same(key.platformNodeId, d.list?.platformNodeId);
+          return sameHex(key.platformNodeId, d.list?.platformNodeId);
       }
     })
     .map((d) => ({ proTxHash: d.row.proTxHash, name: name(d), service: d.list?.service ?? d.row.service }));
@@ -50,7 +54,10 @@ export function keyMatches(key: MasternodeKeyInfo, details: readonly MasternodeD
 
 type Api = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "authorize" | "mnRevealKey" | "revokeGrant">;
 
-export type RevealStep = "loading" | "hidden" | "working" | "shown";
+export type RevealStep = "loading" | "failed" | "hidden" | "working" | "shown";
+
+/** A keys call's error as a catalogued sentence: the masternodes table, else the shared one. */
+export const keysErrorText = (e: unknown) => (isAppError(e) && e.code.startsWith("masternodes.") ? mnErrorText(e) : failureText(e));
 
 /** The one keypair whose secret may show. Dropped on hide, on another keypair, and on dispose. */
 export class KeyRevealModel extends Model {
@@ -61,6 +68,8 @@ export class KeyRevealModel extends Model {
   error: string | null = null;
   secret: RevealedMasternodeKey | null = null;
   #epoch = 0;
+  /** A grant issued and not yet known to be redeemed: dispose revokes it. */
+  #grant: string | null = null;
 
   constructor(
     private readonly api: Api,
@@ -73,11 +82,13 @@ export class KeyRevealModel extends Model {
   }
 
   async load() {
+    // Without the vault's state and its throttle, Reveal stays off (the lock policy is unknown).
     try {
       this.encrypted = (await this.api.lockStatus()).encrypted;
       if (this.encrypted) await this.lock.load();
     } catch (e) {
-      this.error = mnErrorText(e);
+      this.error = keysErrorText(e);
+      return this.#go("failed");
     }
     this.#go("hidden");
   }
@@ -99,7 +110,7 @@ export class KeyRevealModel extends Model {
       authorized = await authorize("").then(
         () => true,
         (e) => {
-          this.error = mnErrorText(e);
+          this.error = keysErrorText(e);
           return false;
         },
       );
@@ -107,16 +118,19 @@ export class KeyRevealModel extends Model {
     }
     if (!authorized || !grant) return this.changed();
     if (epoch !== this.#epoch) return this.#revoke(grant);
+    this.#grant = grant;
     this.#go("working");
     try {
       const secret = await this.api.mnRevealKey(this.walletId, this.role, this.index, grant);
+      this.#grant = null;
       if (epoch !== this.#epoch) return;
       this.secret = secret;
       this.#go("shown");
     } catch (e) {
+      this.#grant = null;
       this.#revoke(grant);
       if (epoch !== this.#epoch) return;
-      this.error = mnErrorText(e);
+      this.error = keysErrorText(e);
       this.#go("hidden");
     }
   }
@@ -131,6 +145,9 @@ export class KeyRevealModel extends Model {
   dispose() {
     this.#epoch++;
     this.secret = null;
+    // A reveal still in flight: its grant is revoked now, whether or not the call redeems it first.
+    if (this.#grant) this.#revoke(this.#grant);
+    this.#grant = null;
   }
 
   #revoke(grant: string) {

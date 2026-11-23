@@ -19,8 +19,8 @@ import { noCopy, ProtectionPending } from "../../components/phrase";
 import { Sheet } from "../../components/sheet";
 import { shortAddress } from "../../format/tx";
 import { useT } from "../../i18n";
-import { canCopySecret, KEY_ROLES, KEYS_PAGE, KeyRevealModel, keyMatches, type KeyMatch } from "../../masternodes/keys";
-import { mnErrorText, rowName } from "../../masternodes/model";
+import { canCopySecret, KEY_ROLES, KEYS_PAGE, KeyRevealModel, keyMatches, keysErrorText, type KeyMatch } from "../../masternodes/keys";
+import { rowName } from "../../masternodes/model";
 import { mnKeys, useMasternodes } from "../../masternodes/queries";
 import { useModel } from "../../onboarding/model";
 import { useLockTimer } from "../LockScreen";
@@ -32,7 +32,7 @@ export function MasternodeKeysSheet({ walletId, role: initialRole, onClose }: { 
   const [role, setRole] = useState<MasternodeKeyRoleName>(initialRole ?? "owner");
   const [pages, setPages] = useState(1);
   const [open, setOpen] = useState<number | null>(null);
-  const details = useKnownDetails(walletId);
+  const { details, pending } = useKnownDetails(walletId);
   const keys = useKeyPages(walletId, role, pages);
   const choose = (r: MasternodeKeyRoleName) => {
     setRole(r);
@@ -79,7 +79,7 @@ export function MasternodeKeysSheet({ walletId, role: initialRole, onClose }: { 
                       <span className="mono">{shortKey(key)}</span>
                       {" · "}
                       <span className="mg-muted" data-testid={`mn-key-${key.index}-match`}>
-                        {matchText(t, matches)}
+                        {matches.length === 0 && pending ? t("masternodes.myMasternodes.loading") : matchText(t, matches)}
                       </span>
                     </span>
                     <DashButton
@@ -140,21 +140,22 @@ function useKeyPages(walletId: string, role: MasternodeKeyRoleName, pages: numbe
   return {
     keys,
     watchOnly,
-    error: failed !== null && !watchOnly ? mnErrorText(failed) : null,
+    error: failed !== null && !watchOnly ? keysErrorText(failed) : null,
     loading: results.some((r) => r.isPending),
     more: last?.data?.length === KEYS_PAGE,
   };
 }
 
-/** The details of the masternodes this wallet knows (its own and tracked), for matching. */
-function useKnownDetails(walletId: string): MasternodeDetail[] {
+/** The details of the masternodes this wallet knows (its own and tracked), for matching, and
+ * whether some are still being read (a key then isn't called unmatched yet). */
+function useKnownDetails(walletId: string): { details: MasternodeDetail[]; pending: boolean } {
   const b = useBackend();
   const list = useMasternodes(walletId);
   const hashes = (list.data?.masternodes ?? []).map((r) => r.proTxHash);
   const details = useQueries({
     queries: hashes.map((h) => ({ queryKey: mnKeys.detail(walletId, h), queryFn: () => b.mnMasternode(walletId, h) })),
   });
-  return details.flatMap((d) => (d.data ? [d.data] : []));
+  return { details: details.flatMap((d) => (d.data ? [d.data] : [])), pending: list.isPending || list.isError || details.some((d) => d.isPending || d.isError) };
 }
 
 function KeyPanel({ walletId, k }: { walletId: string; k: MasternodeKeyInfo }) {
@@ -253,7 +254,7 @@ function Reveal({ walletId, k }: { walletId: string; k: MasternodeKeyInfo }) {
         </p>
       )}
       {!asking ? (
-        <DashButton variant="tintedBlue" size="small" data-testid={`mn-key-${k.index}-reveal`} disabled={model.step === "loading"} onClick={() => setAsking(true)}>
+        <DashButton variant="tintedBlue" size="small" data-testid={`mn-key-${k.index}-reveal`} disabled={model.step === "loading" || model.step === "failed"} onClick={() => setAsking(true)}>
           {t(`${P}.reveal`)}
         </DashButton>
       ) : model.encrypted ? (

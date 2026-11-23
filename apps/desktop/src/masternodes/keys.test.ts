@@ -35,10 +35,18 @@ describe("matching keys to known masternodes (D8)", () => {
     detail("h2", { voting: "yVote2", operator: "cc".repeat(48), node: "ab12" }),
   ];
 
-  it("matches owner and voting keys by address, case aside", () => {
-    expect(keyMatches(key("owner", { address: "yowner1" }), nodes, name)).toEqual([{ proTxHash: "h1", name: "node h1", service: "203.0.113.7:19999" }]);
+  it("matches owner and voting keys by address, exactly", () => {
+    expect(keyMatches(key("owner", { address: "yOwner1" }), nodes, name)).toEqual([{ proTxHash: "h1", name: "node h1", service: "203.0.113.7:19999" }]);
     expect(keyMatches(key("voting", { address: "yVote2" }), nodes, name).map((m) => m.proTxHash)).toEqual(["h2"]);
     expect(keyMatches(key("owner", { address: "yVote1" }), nodes, name)).toEqual([]);
+    // Base58Check is case-sensitive: another case is another address.
+    expect(keyMatches(key("owner", { address: "yowner1" }), nodes, name)).toEqual([]);
+  });
+
+  it("takes the live voting address over the registration's after a key change", () => {
+    const changed = [{ ...detail("h3", { voting: "yNewVote" }), registration: { ownerAddress: null, votingAddress: "yOldVote" } } as unknown as MasternodeDetail];
+    expect(keyMatches(key("voting", { address: "yNewVote" }), changed, name).map((m) => m.proTxHash)).toEqual(["h3"]);
+    expect(keyMatches(key("voting", { address: "yOldVote" }), changed, name)).toEqual([]);
   });
 
   it("matches an operator key by either BLS form", () => {
@@ -128,6 +136,39 @@ describe("revealing a masternode key", () => {
     expect(m2.step).toBe("hidden");
     expect(m2.error).not.toBeNull();
     expect(w.revoked).toEqual(["grant-1", "grant-2"]);
+  });
+});
+
+describe("revealing a masternode key when something goes wrong", () => {
+  it("keeps Reveal off when the vault's state could not be read", async () => {
+    const w = world();
+    w.lockStatus = async () => {
+      throw appError("storage");
+    };
+    const m = new KeyRevealModel(w, WALLET_A, "owner", 0);
+    await m.load();
+    expect(m.step).toBe("failed");
+    await m.reveal("right");
+    expect(w.authorizations).toEqual([]);
+  });
+
+  it("revokes the grant of a reveal still running when the panel closes", async () => {
+    const w = world(false);
+    let release: () => void = () => undefined;
+    w.mnRevealKey = (_wallet, role, index, grant) =>
+      new Promise((resolve) => {
+        w.reveals.push({ role, index, grant });
+        release = () => resolve(SECRET);
+      });
+    const m = new KeyRevealModel(w, WALLET_A, "owner", 0);
+    await m.load();
+    const pending = m.reveal("");
+    await expect.poll(() => w.reveals.length).toBe(1);
+    m.dispose();
+    expect(w.revoked).toEqual([w.reveals[0].grant]);
+    release();
+    await pending;
+    expect(m.secret).toBeNull();
   });
 });
 
