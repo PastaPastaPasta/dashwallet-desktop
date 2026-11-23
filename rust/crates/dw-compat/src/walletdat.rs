@@ -1440,6 +1440,15 @@ fn plain_key_matches(pubkey: &[u8], der: &[u8]) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_linked_sqlite_has_the_wal_close_deadlock_fix() {
+        assert!(
+            rusqlite::version_number() >= 3_051_002,
+            "SQLite {} can deadlock closing a WAL database (#105); 3.51.2 fixes it",
+            rusqlite::version()
+        );
+    }
+
     fn vector(name: &str) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../testdata/compat/walletdat")
