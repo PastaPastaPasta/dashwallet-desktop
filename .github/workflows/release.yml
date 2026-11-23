@@ -427,8 +427,8 @@ jobs:
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
-      # Cached, so a crates.io outage cannot stop the SBOMs; installed only when the cached binary
-      # is missing or another version.
+      # CycloneDX's release tarball, cached and checked against its pinned SHA-256 on every use,
+      # cache hit or download (ci/github/install-cargo-cyclonedx.sh).
       - id: cyclonedx
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
