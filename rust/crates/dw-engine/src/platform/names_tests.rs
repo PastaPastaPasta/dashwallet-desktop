@@ -1812,3 +1812,30 @@ fn the_live_read_waits_out_a_writer_holding_the_manager() {
     assert_eq!(f.summary(), carol);
     writer.join().unwrap();
 }
+
+/// #263: the identity's names read, for a wallet gone from the manager,
+/// fails; no panic.
+#[test]
+fn names_of_a_wallet_gone_from_the_manager_do_not_panic() {
+    use crate::wallet_read::gone_tests::{assert_gone, detached};
+    let d = detached();
+    let identity = Identifier::from([1; 32]);
+    let r = (d.engine).block_on(own_names(&d.wallet, &identity, &MainNamePrefs::default()));
+    assert_gone(r.map(drop).map_err(|e| e.code()));
+}
+
+/// #263: a names edit, for a wallet gone from the manager, fails; no panic.
+#[test]
+fn a_names_edit_of_a_wallet_gone_from_the_manager_does_not_panic() {
+    use crate::wallet_read::gone_tests::{assert_gone, detached};
+    let d = detached();
+    let ask = Registration {
+        wallet_id: d.id,
+        identity: Identifier::from([1; 32]),
+        label: "carol".into(),
+        check: valid_label("carol").unwrap(),
+        ours: false,
+    };
+    let r = (d.engine).block_on(DashPay::edit_names(&d.wallet, &ask, |_, _| {}));
+    assert_gone(r.map_err(|e| e.code()));
+}

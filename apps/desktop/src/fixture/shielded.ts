@@ -66,6 +66,9 @@ export interface ShieldedWorld {
   shield: "applied" | "proofWaiting" | "checking" | "notApplied";
   /** The pool has too few notes to withdraw from (`shielded.pool_too_small`). */
   poolTooSmall: boolean;
+  /** The notes are resting until then (Unix seconds; C-funding F17): a registration cannot use
+   * them yet. Unset: rested. */
+  restingUntil?: number;
   /** A shield from the main balance whose lock signed and got no verdict (`SHIELD_STEP`): Tools ▸
    * Repair lists it, priced on every spendable coin of the main balance. */
   shieldUnknown?: boolean;

@@ -353,6 +353,11 @@ export class IpcBackend implements Backend {
   mnDetachKey = cmd.mnDetachKey;
   mnKeys = cmd.mnKeys;
   mnRevealKey = cmd.mnRevealKey;
+  mnPreviewUpdateRegistrar = cmd.mnPreviewUpdateRegistrar;
+  mnUpdateRegistrar = cmd.mnUpdateRegistrar;
+  mnOperations = cmd.mnOperations;
+  mnResendOperation = cmd.mnResendOperation;
+  mnDiscardOperation = cmd.mnDiscardOperation;
   onEvent = (listener: (e: AppEvent) => void) => tracked(listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload)));
   onShellEvent = (listener: (e: ShellEvent) => void) => tracked(listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload)));
   now = () => this.clock();
