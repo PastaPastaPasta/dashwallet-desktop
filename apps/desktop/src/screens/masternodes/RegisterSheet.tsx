@@ -588,7 +588,13 @@ export function RegisterSheet({
           <div className="mg-step" data-testid={`reg-step-${step}`}>
             <h3 className="mg-step-title">{stepHeading(step, d.kind, d.runner === "self", t)}</h3>
             {body}
-            {(reviewing || proving || notSent) && !sendOff && <CredentialField c={credential} busy={busy} testId="reg" />}
+            {sendOff ? (
+              <p className="mg-notice mg-notice-warning" data-testid="reg-send-off">
+                {t(`${R}.sendOff`)}
+              </p>
+            ) : (
+              (reviewing || proving || notSent) && <CredentialField c={credential} busy={busy} testId="reg" />
+            )}
             <p className="form-problem" role="alert" data-testid="reg-general">
               {general}
             </p>
@@ -642,11 +648,7 @@ export function RegisterSheet({
                       {t(`${R}.back`)}
                     </DashButton>
                   )}
-                  {sendOff ? (
-                    <span className="mg-small mg-muted" role="note" data-testid="reg-send-off">
-                      {t(`${R}.sendOff`)}
-                    </span>
-                  ) : (
+                  {sendOff ? null : (
                     <DashButton
                       type="submit"
                       variant="filledBlue"
