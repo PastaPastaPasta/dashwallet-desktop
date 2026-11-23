@@ -23,6 +23,7 @@ import { findContact, subtitle } from "../contacts/model";
 import { contactListQuery, useContactsOwner } from "../contacts/queries";
 import { FiatLine, timeText, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
+import { useT } from "../i18n";
 import { explorerUrl } from "../format/explorer";
 import { fiatText } from "../format/fiat";
 import { Avatar } from "./contacts/Avatar";
@@ -303,6 +304,7 @@ function ContactFact({
 }
 
 function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: NetworkInfo; walletId: string; onViewContact: () => void }) {
+  const t = useT();
   const backend = useBackend();
   const row = d.rows[0];
   const amount = d.rows.reduce((sum, r) => sum + r.amount, 0);
@@ -386,6 +388,11 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             <CopyValue value={d.txid} label="transaction ID" mono />
           </DetailRow>
           <DetailRow label="Size">{`${d.sizeBytes} bytes`}</DetailRow>
+          {d.rawHex && (
+            <DetailRow label={t("activity.detail.rawTransaction")} testId="tx-detail-raw">
+              <CopyValue value={d.rawHex} label={t("activity.detail.rawTransactionNoun")} mono display={d.rawHex.length > 32 ? `${d.rawHex.slice(0, 32)}…` : d.rawHex} />
+            </DetailRow>
+          )}
         </dl>
         <p className="io-heading">Inputs ({d.inputs.length})</p>
         <ul role="list" className="io-list" data-testid="tx-detail-inputs">

@@ -70,6 +70,9 @@ for (const theme of THEMES) {
     await expect(folded).toContainText("Network fee");
     await expect(page.getByTestId("tx-detail-inputs")).toBeVisible();
     await expect(page.getByTestId("tx-detail-outputs")).toBeVisible();
+    const raw = page.getByTestId("tx-detail-raw");
+    await expect(raw).toContainText("Raw transaction");
+    await expect(raw.getByRole("button", { name: "Copy raw transaction" })).toBeVisible();
 
     const received = await openKind(page, "received", theme);
     await expect(page.getByTestId("tx-detail-title")).toHaveText("Received");
