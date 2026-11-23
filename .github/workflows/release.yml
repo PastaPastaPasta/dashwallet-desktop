@@ -136,8 +136,6 @@ jobs:
         with:
           persist-credentials: false
       - run: ci/github/release-version.sh
-      - name: protoc
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml) and both macOS targets
         working-directory: rust
         run: |
@@ -149,6 +147,7 @@ jobs:
           workspaces: rust -> target
           shared-key: release-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/pinned-sources
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: apps/desktop/package.json
@@ -236,8 +235,6 @@ jobs:
         with:
           persist-credentials: false
       - run: ci/github/release-version.sh
-      - name: protoc
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
@@ -246,6 +243,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: apps/desktop/package.json
@@ -334,10 +332,8 @@ jobs:
       - run: ci/github/release-version.sh
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
-      - name: protoc
-        run: ci/github/install-protoc.sh
       - name: Linux packages (WebKitGTK, Xvfb, ImageMagick)
-        run: ci/github/linux-host-deps.sh tauri
+        uses: ./.github/actions/linux-host-deps
       # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
@@ -347,6 +343,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: apps/desktop/package.json
@@ -426,8 +423,19 @@ jobs:
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
+      # Cached, so a crates.io outage cannot stop the SBOMs; installed only when the cached binary
+      # is missing or another version.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/cargo-cyclonedx
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: cargo-cyclonedx-${{ runner.os }}-${{ runner.arch }}-0.5.9
       - name: cargo-cyclonedx
-        run: cargo install --locked cargo-cyclonedx --version 0.5.9
+        run: |
+          cargo cyclonedx --version 2>/dev/null | grep -qE ' 0[.]5[.]9$' ||
+            cargo install --locked cargo-cyclonedx --version 0.5.9
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: apps/desktop/package.json

@@ -29,6 +29,29 @@ esac
 
 apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
 install=(apt-get "${apt_opts[@]}" install -y --no-install-recommends)
+
+# DW_APT_CACHE (.github/actions/linux-host-deps): a directory restored from the Actions cache.
+# When it holds .deb files, ci/github/apt-cache.sh verifies them against the image's Ubuntu
+# keyring and they are installed without the network; a break in that chain fails the job. When
+# it is empty, the packages are downloaded as below and saved into it.
+cache=${DW_APT_CACHE:-}
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [[ -n "$cache" ]] && compgen -G "$cache/archives/*.deb" > /dev/null; then
+  "$here/apt-cache.sh" verify "$cache"
+  # The files themselves, with no source configured, so apt can fetch nothing and needs no index
+  # (it refuses local files with --no-download).
+  none=$(mktemp -d)
+  sudo DEBIAN_FRONTEND=noninteractive "${install[@]}" -qq -o Dir::Etc::SourceList=/dev/null \
+    -o Dir::Etc::SourceParts="$none" "$cache"/archives/*.deb
+  rmdir "$none"
+  if ! status=$(dpkg-query -W -f '${Status}\n' "${packages[@]}") || grep -vqx 'install ok installed' <<< "$status"; then
+    echo "::error::linux-host-deps: the cached .deb files did not install every package of the $1 set" >&2
+    exit 1
+  fi
+  echo "linux-host-deps: the $1 set from the Actions cache, no download"
+  exit 0
+fi
+
 # Only the network steps run under a deadline and are tried again. A deadline that fired while
 # dpkg was unpacking would leave a journal that apt refuses to continue from.
 # The runner image lists its regional mirror first (mirror+file:/etc/apt/apt-mirrors.txt), then
@@ -80,4 +103,12 @@ for attempt in 1 2 3; do
   use_fallback_mirror || echo "could not switch apt mirrors" >&2
 done
 [ -n "$downloaded" ] || exit 1
+if [[ -n "$cache" ]]; then
+  if "$here/apt-cache.sh" save "$cache"; then
+    [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "saved=1" >> "$GITHUB_OUTPUT"
+  else
+    rm -rf "$cache"
+    echo "::warning::linux-host-deps: the downloaded .deb files are not cached (see above)"
+  fi
+fi
 sudo DEBIAN_FRONTEND=noninteractive "${install[@]}" -qq --no-download "${packages[@]}"

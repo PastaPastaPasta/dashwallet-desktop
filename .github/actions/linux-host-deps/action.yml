@@ -1,0 +1,31 @@
+# ci/github/linux-host-deps.sh tauri with its .deb files kept in the Actions cache, per runner
+# image: one entry (about 96 MB) for every Linux job that needs WebKitGTK. The tauri set includes
+# the rust set, so the Rust jobs install it too, which costs them a few seconds. A hit installs
+# without the network once ci/github/apt-cache.sh has verified every .deb against the image's
+# Ubuntu archive keyring (release file signature, then the Packages index, then the .deb); any
+# break fails the job. A miss downloads as before (retries, mirror fallback) and saves.
+name: Linux packages (cached)
+description: ci/github/linux-host-deps.sh tauri, with the .deb files cached and verified on every use
+runs:
+  using: composite
+  steps:
+    - id: image
+      shell: bash
+      run: echo "image=${ImageOS:?}-${ImageVersion:?}" >> "$GITHUB_OUTPUT"
+    - id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/apt-cache
+        key: apt-tauri-${{ steps.image.outputs.image }}-${{ runner.arch }}-${{ hashFiles('ci/github/linux-host-deps.sh', 'ci/github/apt-cache.sh') }}
+    - id: deps
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        DW_APT_CACHE: ${{ runner.temp }}/apt-cache
+        APT_CACHE_KEY: ${{ steps.restore.outputs.cache-primary-key }}
+      run: ci/github/linux-host-deps.sh tauri
+    - if: steps.restore.outputs.cache-hit != 'true' && steps.deps.outputs.saved == '1'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/apt-cache
+        key: ${{ steps.restore.outputs.cache-primary-key }}

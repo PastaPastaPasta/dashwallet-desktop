@@ -87,7 +87,10 @@ row):
 
 | What | Where | Check |
 |---|---|---|
-| protoc 29.3 (release zip, every OS) | `ci/github/install-protoc.sh`; the `ci/linux` Dockerfiles | SHA-256 per asset, kept in the script and the Dockerfiles (protobuf publishes none) |
+| protoc 29.3 (release zip, every OS) | `ci/github/install-protoc.sh` through `.github/actions/pinned-sources` (Actions cache, download on a miss); the `ci/linux` Dockerfiles | SHA-256 per asset, kept in the script and the Dockerfiles (protobuf publishes none), checked on every use: a cache hit too |
+| Tenderdash v1.8.0 sources (`github.com/dashpay/tenderdash/archive/v1.8.0.zip`), which tenderdash-proto's build script would download | `ci/github/tenderdash-sources.sh` through `.github/actions/pinned-sources` | SHA-256 pinned in the script, checked on every use; the pin names the rs-tenderdash-abci rev in `rust/Cargo.lock`, and the job fails when the lock moves |
+| Ubuntu packages of the `tauri` set (a superset of `rust`) | `ci/github/linux-host-deps.sh` through `.github/actions/linux-host-deps` (Actions cache per runner image) | apt's signed indexes on a download; on a cache hit, `ci/github/apt-cache.sh verify` (below) |
+| cargo-cyclonedx 0.5.9 | `release.yml`, sbom (Actions cache) | `cargo install --locked` of the exact version on a miss |
 | swiftly 1.1.1 (Linux) | `ci/github/linux-swiftly.sh` | SHA-256 per architecture; swiftly then GPG-verifies the Swift toolchain |
 | Windows App Runtime 1.5 installer | `ci.yml`, windows-swift | the resolved `download.microsoft.com` URL, SHA-256 (`Get-FileHash`) and a valid Microsoft Authenticode signature |
 | Dash Core v24.0.0 | `regtest/scripts/fetch-dashcore.sh` | SHA-256 per platform, also on every cache restore |
@@ -110,8 +113,8 @@ row):
 | Windows (engine) | `windows-latest` | `cargo build --workspace --locked`, `cargo test --workspace --exclude dw-app --locked` (see "Known gaps") and `cargo clippy --workspace --all-targets -- -D warnings` (MSVC; clippy lints the Windows code paths, which the Linux job never compiles) |
 | Windows Swift | `windows-latest` | **non-blocking**, see "Known gaps": the Windows core bundle, the headless Swift suites, `dash-wallet` with WinUIBackend, then a launch screenshot if it built |
 
-The Linux Rust jobs install the WebKitGTK development packages first (`ci/github/linux-host-deps.sh rust`,
-the list in G-01's `apps/desktop/README.md`): once the Tauri crate `rust/crates/dw-app` lands,
+The Linux Rust jobs install the WebKitGTK development packages first (the `rust` set of
+`ci/github/linux-host-deps.sh`, the list in G-01's `apps/desktop/README.md`, through the cached `tauri` set below): once the Tauri crate `rust/crates/dw-app` lands,
 `cargo build --workspace` needs them. `ci/linux/Dockerfile`, the Rust builder image, has them too. The
 Swift images build only `dw-ffi` and do not.
 
@@ -130,6 +133,40 @@ the two Rust jobs set 1 minute, since a download takes seconds and a stalled reg
 held them for the whole 6 minutes before the Azure mirror served the packages in about a second.
 `ci/github/linux-host-deps-test.sh` covers this with stand-ins for apt and runs in the "Release scripts"
 job.
+
+**No live download where a cache can serve.** On 2026-11-23 a refused connection to the Tenderdash
+archive failed Release's Linux bundle, and an apt outage failed Rust lint. Those two no longer depend on
+the network once the cache holds them:
+
+- `.github/actions/pinned-sources`, in every job that ran `install-protoc.sh`, after rust-cache, restores
+  protoc and the Tenderdash sources from the Actions cache (key: OS, architecture, protoc version and a
+  hash of both scripts), downloads them on a miss with retries, checks each against its pinned SHA-256
+  on every use, and saves on a miss. A mismatch stops the job before anything is built, with the cache
+  key to delete when the cached copy is the bad one. tenderdash-proto's build script reads
+  `$CARGO_TARGET_DIR/tenderdash-<commitish>.zip` when it exists instead of downloading, so the action puts
+  the archive in `rust/target` and exports `CARGO_TARGET_DIR` as that same directory: every job that runs
+  the action already builds there (the release bundles and `ci/github/release-stage.sh` read
+  `rust/target`, as do the e2e scripts and `scripts/build-core.sh`; the fuzz job's own `--target-dir`
+  wins for its output, and its build script still finds the archive). It runs after rust-cache because
+  rust-cache hashes `CARGO*` variables into its key.
+- `.github/actions/linux-host-deps` runs `linux-host-deps.sh tauri` with its `.deb` files in the Actions
+  cache, keyed on the runner image (`ImageOS`, `ImageVersion`), the architecture and a hash of the two
+  scripts. Every Linux job that needs WebKitGTK uses it: the tauri set includes the rust set, so Rust lint
+  and Rust tests install the few GUI packages more (seconds) and share one entry of about 96 MB per image
+  version with the Tauri jobs and Release's Linux job (measured 2026-11-23: rust set 92 MB, tauri set
+  96 MB, compressed). A miss downloads as above and saves the `.deb` files with the Ubuntu
+  `InRelease` files and `Packages` indexes that list them. A hit installs the cached `.deb` files directly, with no apt source
+  configured, once
+  `ci/github/apt-cache.sh verify` has checked the chain from the image: each `InRelease` against the
+  image's `/usr/share/keyrings/ubuntu-archive-keyring.gpg` with gpgv (only its signed text is read), each
+  `Packages` index against the SHA-256 its `InRelease` gives it, and each `.deb` against a `Packages`
+  index; release files must also name this image's Ubuntu release. Any break fails the job, with the
+  cache key to delete. The `flatpak` and `swiftcrossui` sets are not cached, to spare the repository's
+  cache budget for rust-cache.
+- Still downloaded live: Rust toolchains (rustup), the Flatpak job's packages and Flathub runtime, the
+  `swiftcrossui` set, Swift through swiftly or `compnerd/gha-setup-swift`, the Windows App Runtime
+  installer, nightly's `dash_hash` and Docker base images, plus cargo's registry and git sources when
+  rust-cache has none. On a miss, each cache above downloads as before.
 
 The Linux Swift job installs Swift 6.3.3 (the version of the `swift:6.3.3-noble` image the Docker scripts
 use) with swiftly, and GTK 4 with `ci/github/linux-host-deps.sh swiftcrossui`. It builds the package's test
