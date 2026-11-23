@@ -19,6 +19,7 @@ import { showToast } from "../../components/toast";
 import { useT } from "../../i18n";
 import { useMasternodesRefresh } from "../../masternodes/queries";
 import {
+  COIN,
   DEFAULT_FEE,
   isIpv4Service,
   MAX_SHARES,
@@ -75,6 +76,7 @@ export function SharedSetup({ wallet, network, onClose, onCreated }: { wallet: W
   const [showProblems, setShowProblems] = useState(false);
   const [created, setCreated] = useState<SharedOutcome | null>(null);
 
+  const whole = (duffs: number) => new Intl.NumberFormat(t.language.tag, { maximumFractionDigits: 8 }).format(duffs / COIN);
   const shares: SetupShare[] = rows.map((r) => ({ label: r.label, amount: parseDash(r.amount) ?? 0 }));
   const sum = shares.reduce((a, s) => a + s.amount, 0);
   const smallest = shares.length ? Math.min(...shares.map((s) => s.amount)) : 0;
@@ -196,8 +198,8 @@ export function SharedSetup({ wallet, network, onClose, onCreated }: { wallet: W
           </DashButton>
         )}
         <p className="mg-small" data-testid="sh-setup-total" aria-live="polite">
-          {t(`${P}.total`, { sum: dash(sum), count: String(rows.length) })}
-          {sum !== SHARE_TOTAL && ` · ${t(sum < SHARE_TOTAL ? `${P}.unassigned` : `${P}.tooMuch`, { amount: dash(Math.abs(SHARE_TOTAL - sum)) })}`}
+          {t(`${P}.total`, { sum: whole(sum), count: String(rows.length) })}
+          {sum !== SHARE_TOTAL && ` · ${t(sum < SHARE_TOTAL ? `${P}.unassigned` : `${P}.tooMuch`, { amount: whole(Math.abs(SHARE_TOTAL - sum)) })}`}
         </p>
         <p className="mg-muted mg-small">{t(`${P}.sharesHelp`)}</p>
       </>
@@ -256,7 +258,7 @@ export function SharedSetup({ wallet, network, onClose, onCreated }: { wallet: W
           "penalty",
           t(`${P}.penalty`),
           <input id={`${id}-penalty`} inputMode="decimal" data-testid="sh-setup-penalty" disabled={period === 0} value={period === 0 ? "0" : penalty} onChange={(e) => setPenalty(e.target.value)} />,
-          t(`${P}.penaltyHelp`, { smallest: dash(smallest) }),
+          t(`${P}.penaltyHelp`, { smallest: whole(smallest) }),
         )}
         {period > 0 && penaltyDuffs === 0 && (
           <p className="mg-notice" data-testid="sh-setup-zero-penalty">

@@ -86,6 +86,7 @@ describe("fixture backend", () => {
       "sentinels.test.ts",
       "settings.test.ts",
       "settings.ts",
+      "shared.test.ts",
       "shared.ts",
       "shielded.ts",
       "tools.test.ts",

@@ -110,7 +110,7 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
   const inProgress = sessionsInProgress(sessions.data);
   return (
     <Sheet title={t(`${P}.title`)} width="large" testId="sh-start" onClose={onClose}>
-      <div className="mg-sheet-body">
+      <div className="mg-sheet-body mg-step">
         <p className="mg-muted">{t(`${P}.intro`)}</p>
         <section className="card-l1 sh-choice" data-testid="sh-start-one">
           <h3>{t(`${P}.startTitle`)}</h3>
@@ -304,7 +304,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   if (closing)
     return (
       <Sheet title={t(`${P}.close.title`)} width="small" testId="sh-close" onClose={() => setClosing(false)}>
-        <div className="mg-sheet-body">
+        <div className="mg-sheet-body mg-step">
           <p>{t(`${P}.close.text`, { debit: dash(debit) })}</p>
           <p className="form-problem" role="alert" data-testid="sh-close-error">
             {error}
@@ -349,7 +349,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
 
   return (
     <Sheet title={t(`${P}.session.title`, { code: s.code })} width="large" testId="sh-session" onClose={close}>
-      <div className="mg-sheet-body">
+      <div className="mg-sheet-body mg-step">
         <StageStrip s={s} />
         <p className="mg-muted mg-small" data-testid="sh-codes">
           {t(`${P}.session.checkCode`, { code: s.messageCode })} · {t(`${P}.session.sessionCode`, { code: s.code })}
@@ -383,11 +383,11 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
             {s.terms.serviceRead && <span className="mg-node-sub">{t(`${P}.session.serviceRead`, { read: s.terms.serviceRead })}</span>}
           </dd>
           <dt>{t(`${P}.session.operator`)}</dt>
-          <dd className="mg-mono">{shortKey(s.terms.operatorPublicKey)}</dd>
+          <dd className="mono">{shortKey(s.terms.operatorPublicKey)}</dd>
           <dt>{t(`${P}.session.operatorShare`)}</dt>
           <dd>{t(`${P}.session.operatorShareValue`, { share: basisPoints(s.terms.operatorReward) })}</dd>
           <dt>{t(`${P}.session.voting`)}</dt>
-          <dd className="mg-mono">{s.terms.votingAddress}</dd>
+          <dd className="mono">{s.terms.votingAddress}</dd>
           {s.nodeRunBy && (
             <>
               <dt>{t(`${P}.session.runBy`)}</dt>
@@ -436,7 +436,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
         {s.next !== "join" && s.stage.kind !== "confirmed" && s.stage.kind !== "dead" && (
           <div className="form-field">
             <label htmlFor={replyId}>{t(`${P}.session.pasteReply`)}</label>
-            <textarea id={replyId} className="mg-json" rows={3} spellCheck={false} data-testid="sh-reply" value={reply} disabled={busy} onChange={(e) => setReply(e.target.value)} />
+            <textarea id={replyId} className="settings-textarea" rows={3} spellCheck={false} data-testid="sh-reply" value={reply} disabled={busy} onChange={(e) => setReply(e.target.value)} />
             <DashButton variant="tintedGray" size="small" data-testid="sh-reply-read" disabled={busy || reply.trim() === ""} onClick={() => void pasteReply()}>
               {t(`${P}.readPasted`)}
             </DashButton>
@@ -583,7 +583,7 @@ function FeeSheet({ wallet, network, session, onDone }: { wallet: WalletSummary;
   const duffs = /^\d{1,9}$/.test(fee.trim()) ? Number(fee.trim()) : null;
   return (
     <Sheet title={t(`${P}.feeSheet.title`)} width="small" testId="sh-fee" onClose={() => onDone(null)}>
-      <div className="mg-sheet-body">
+      <div className="mg-sheet-body mg-step">
         <div className="form-field">
           <label htmlFor={id}>{t(`${P}.feeSheet.label`)}</label>
           <input id={id} inputMode="numeric" data-testid="sh-fee-input" value={fee} onChange={(e) => setFee(e.target.value)} />
