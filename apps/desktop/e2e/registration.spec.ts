@@ -180,6 +180,40 @@ test("D13: a relaunch on step 1 or 2 starts from the Join card; nothing was paid
   expect(await assetLocks(page)).toBe(0);
 });
 
+test("C-funding F19: Pay another way lists the sources; only Dash wallet can pay here, selected each time; Continue and Back", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  await toJoin(page);
+  await page.getByTestId("join-pay-another").click();
+  const step = page.getByTestId("registration-pay-with");
+  await expect(step.getByRole("heading", { level: 2 })).toHaveText("Pay with");
+  const radio = (s: string) => page.getByTestId(`pay-with-${s}`).getByRole("radio");
+  await expect(radio("core")).toBeChecked();
+  await expect(radio("core")).toBeEnabled();
+  await expect(page.getByTestId("pay-with-core-reason")).toHaveCount(0);
+  for (const s of ["platform", "shielded"]) {
+    await expect(radio(s)).toBeDisabled();
+    await expect(page.getByTestId(`pay-with-${s}-reason`)).toHaveText("Not available on this network yet.");
+    await expect(radio(s)).toHaveAccessibleDescription("Not available on this network yet.");
+  }
+  expect(await seriousAxeViolations(page)).toEqual([]);
+
+  await page.getByTestId("registration-next").click();
+  await expect(page.getByTestId("registration-step")).toHaveText("Step 1 of 2 · Choose a username");
+  await chooseName(page, LABEL);
+  await page.getByTestId("registration-back").click();
+  await expect(page.getByTestId("registration-step")).toHaveText("Step 1 of 2 · Choose a username");
+  // Opened from "Pay with", step 1's Back returns to it, Dash wallet still selected; Cancel leaves.
+  await page.getByTestId("registration-back").click();
+  await expect(radio("core")).toBeChecked();
+  await page.getByTestId("registration-cancel").click();
+  await expect(page.getByTestId("join-create")).toBeVisible();
+  // Create username skips the step.
+  await page.getByTestId("join-create").click();
+  await expect(page.getByTestId("registration-step")).toHaveText("Step 1 of 2 · Choose a username");
+  expect(await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "start_registration").length)).toBe(0);
+  expect(errors).toEqual([]);
+});
+
 test("D14: a passphrase change parks the run; the page shows Continue, which resumes it", async ({ page }) => {
   await open(page, "dashpay-no-identity");
   const draft = await register(page);
