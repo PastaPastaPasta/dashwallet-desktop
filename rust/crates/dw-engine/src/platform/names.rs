@@ -726,7 +726,9 @@ async fn own_names(
     identity: &Identifier,
     prefs: &MainNamePrefs,
 ) -> Result<OwnNames, NameError> {
-    let state = wallet.state().await;
+    let state = crate::wallet_read::info_of(wallet)
+        .await
+        .map_err(PlatformError::from)?;
     let managed = state
         .identity_manager
         .managed_identity(identity)
@@ -1330,7 +1332,9 @@ impl DashPay {
         ask: &Registration,
         edit: impl FnOnce(&mut ManagedIdentity, &WalletPersister),
     ) -> Result<(), NameError> {
-        let mut state = wallet.state_mut().await;
+        let mut state = crate::wallet_read::info_mut_of(wallet)
+            .await
+            .map_err(PlatformError::from)?;
         let managed = state
             .identity_manager
             .managed_identity_mut(&ask.identity)

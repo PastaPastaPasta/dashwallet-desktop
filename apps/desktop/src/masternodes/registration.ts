@@ -229,7 +229,7 @@ const role = (e: AppError) => ROLES.find((r) => e.data?.kind === "keyRole" && e.
 /** Where a registration refusal shows (§1.6): the step and field it belongs to, or `null` to show it on the current step. */
 export function refusalOf(e: unknown, kind: MasternodeTypeName = "regular"): Refusal | null {
   if (!isAppError(e)) return null;
-  const reason = e.data?.kind === "protxRefused" ? e.data.reason : null;
+  const reason = e.data?.kind === "reason" ? e.data.reason : null;
   switch (e.code) {
     case "masternodes.protx_refused":
       if (reason === "bad-protx-dup-netinfo-entry") return { step: "operator", field: "service", text: t(`${P}.refused.dupService`) };

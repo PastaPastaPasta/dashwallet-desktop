@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as cmd from "../api/generated/commands";
 import type { AppEvent } from "../api/generated/commands";
 import { installFixture } from "./index";
+import type { UpdateRegistrarRequest } from "../api/generated/UpdateRegistrarRequest";
 import type { MnRegistrationRequest } from "../api/generated/MnRegistrationRequest";
 import {
   CLUB,
@@ -80,6 +81,7 @@ const SCENARIOS: ScenarioName[] = [
   "reg-prepared-spent",
   "mn-ops",
   "mn-released",
+  "mn-update-not-sent",
 ];
 
 const install = (scenario: ScenarioName) => installFixture({ scenario });
@@ -504,11 +506,11 @@ describe("fixture masternodes: registration", () => {
   it("refuses keyed inputs as Core would", async () => {
     install("reg");
     const refused = async (r: MnRegistrationRequest) => {
-      const e = await cmd.mnPreviewRegistration(W, r).catch((x: { code: string; data: { reason: string; operation: string | null } }) => x);
+      const e = await cmd.mnPreviewRegistration(W, r).catch((x: { code: string; data: { reason: string } }) => x);
       expect(e).toMatchObject({ code: "masternodes.protx_refused" });
-      return (e as { data: { reason: string; operation: string | null } }).data;
+      return (e as { data: { reason: string } }).data;
     };
-    expect(await refused(request({ service: DUP_SERVICE }))).toEqual({ kind: "protxRefused", reason: "bad-protx-dup-netinfo-entry", operation: null });
+    expect(await refused(request({ service: DUP_SERVICE }))).toEqual({ kind: "reason", reason: "bad-protx-dup-netinfo-entry" });
     expect((await refused(request({ service: "203.0.113.7:19999" }))).reason).toBe("bad-protx-dup-netinfo-entry");
     expect((await refused(request({ operator: { kind: "given", publicKey: DUP_OPERATOR_KEY } }))).reason).toBe("bad-protx-dup-key");
     expect((await refused(evonode({ evonode: { node: { kind: "given", nodeId: DUP_NODE_ID }, p2pPort: null, httpPort: null } }))).reason).toBe("bad-protx-dup-platformnodeid");
@@ -550,7 +552,7 @@ describe("fixture masternodes: registration", () => {
     // Its keys and collateral are taken now.
     expect((await cmd.mnRegistrationKeys(W, "regular")).owner.index).toBe(1);
     await expect(cmd.mnPreviewRegistration(W, request({ collateral: { kind: "existing_utxo", outpoint: REG_COIN } }))).rejects.toMatchObject({ code: "masternodes.collateral_unavailable" });
-    await expect(cmd.mnPreviewRegistration(W, request({ service: op.terms.service }))).rejects.toMatchObject({ code: "masternodes.protx_refused", data: { reason: "protx-dup", operation: op.id } });
+    await expect(cmd.mnPreviewRegistration(W, request({ service: op.terms.service }))).rejects.toMatchObject({ code: "masternodes.protx_refused", data: { kind: "reason", reason: "protx-dup" } });
   });
 
   it("reg-not-sent: the first hand-off is not_sent, Send again sends it", async () => {
@@ -687,5 +689,81 @@ describe("fixture masternodes: operations", () => {
   it("mn-released: Home's collateral reads released", async () => {
     install("mn-released");
     expect((await cmd.mnList(W)).masternodes.filter((r) => r.collateralReleased).map((r) => r.proTxHash)).toEqual([HOME]);
+  });
+});
+
+describe("Change keys or payout (MG-10 S3, ProUpRegTx)", () => {
+  const keep = { kind: "keep" } as const;
+  const req = (proTxHash: string, patch: Partial<UpdateRegistrarRequest> = {}): UpdateRegistrarRequest => ({ proTxHash, operator: keep, voting: keep, payout: { kind: "new_address" } as const, ...patch });
+
+  it("plans what changes, signed by the keychain or the attached owner key", async () => {
+    install("mn-list");
+    const p = await cmd.mnPreviewUpdateRegistrar(W, req(HOME, { operator: { kind: "next_unused" } }));
+    expectShape("UpdateRegistrarPreview", p);
+    expectShape("ProTxTerms", p.terms);
+    expect(p).toMatchObject({ operatorChanges: true, poseBans: true, votingChanges: false, payoutChanges: true, ownerKey: { kind: "keychain", index: 0 } });
+    expect(p.totalDebit).toBe(p.fee);
+    // Office's list key is the legacy form of keychain key 1: keeping it is no change (MG-04 D39).
+    const office = await cmd.mnPreviewUpdateRegistrar(W, req(OFFICE, { operator: { kind: "keychain", index: 1 } }));
+    expect(office).toMatchObject({ operatorChanges: false, poseBans: false });
+  });
+
+  it("refuses without the owner key, the registration or the list", async () => {
+    const f = install("mn-list");
+    await expect(cmd.mnPreviewUpdateRegistrar(W, req(CLUB))).rejects.toMatchObject({ code: "masternodes.no_owner_key" });
+    await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME, { operator: { kind: "given", publicKey: "ab" } }))).rejects.toMatchObject({ code: "invalid_argument" });
+    f.world.masternodes.listState = { synced: false, height: null };
+    await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME))).rejects.toMatchObject({ code: "masternodes.list_unavailable" });
+  });
+
+  it("sends under a masternodeOp grant covering the fee, then blocks the next until listed (MG-04 D49)", async () => {
+    install("mn-list");
+    const seen = await events();
+    const p = await cmd.mnPreviewUpdateRegistrar(W, req(HOME));
+    const small = (await cmd.authorize({ kind: "masternodeOp", maxDuffs: p.totalDebit - 1 }, W, PASS)).id;
+    await expect(cmd.mnUpdateRegistrar(W, req(HOME), small)).rejects.toMatchObject({ code: "send.grant_exceeded", data: { kind: "spendCap", outflow: p.totalDebit } });
+    const vote = (await cmd.authorize({ kind: "governance" }, W, PASS)).id;
+    await expect(cmd.mnUpdateRegistrar(W, req(HOME), vote)).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    const grant = (await cmd.authorize({ kind: "masternodeOp", maxDuffs: p.totalDebit }, W, PASS)).id;
+    const op = await cmd.mnUpdateRegistrar(W, req(HOME), grant);
+    expectShape("ProTxOperation", op);
+    expect(op).toMatchObject({ kind: "update_registrar", proTxHash: HOME, state: { kind: "sent" }, fee: p.fee });
+    expect(seen.some((e) => e.kind === "masternodes")).toBe(true);
+    await expect(cmd.mnUpdateRegistrar(W, req(HOME), grant)).rejects.toMatchObject({ code: "masternodes.update_pending" });
+    await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME))).rejects.toMatchObject({ code: "masternodes.update_pending" });
+  });
+
+  it("refuses a payout to the owner or voting key's address (bad-protx-payee-reuse)", async () => {
+    install("mn-list");
+    await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME, { payout: { kind: "address", address: keyInfo("voting", 0).address! } }))).rejects.toMatchObject({
+      code: "masternodes.protx_refused",
+      data: { kind: "reason", reason: "bad-protx-payee-reuse" },
+    });
+  });
+
+  it("saves an update that found no peers as not_sent; resend or discard it (MG-04 D7)", async () => {
+    const f = install("mn-update-not-sent");
+    const p = await cmd.mnPreviewUpdateRegistrar(W, req(HOME));
+    const g = async () => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: p.totalDebit }, W, PASS)).id;
+    const op = await cmd.mnUpdateRegistrar(W, req(HOME), await g());
+    expect(op).toMatchObject({ state: { kind: "not_sent" }, lastError: "send.no_peers" });
+    await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME))).rejects.toMatchObject({ code: "masternodes.update_pending" });
+    expect((await cmd.mnOperations(W)).map((o) => o.id)).toEqual([op.id]);
+    const sent = await cmd.mnResendOperation(W, op.id, await g());
+    expect(sent.state).toEqual({ kind: "sent" });
+    await expect(cmd.mnDiscardOperation(W, op.id)).rejects.toMatchObject({ code: "masternodes.operation_state" });
+    f.world.masternodes.nextUpdateNotSent = true;
+    f.world.masternodes.operations = [];
+    const again = await cmd.mnUpdateRegistrar(W, req(HOME), await g());
+    expect(await cmd.mnDiscardOperation(W, again.id)).toBeNull();
+    expect(await cmd.mnOperations(W)).toEqual([]);
+    await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME))).resolves.toMatchObject({ fee: p.fee });
+  });
+
+  it("refuses an operator key another listed masternode uses (bad-protx-dup-key)", async () => {
+    install("mn-list");
+    await expect(cmd.mnPreviewUpdateRegistrar(W, req(OFFICE, { operator: { kind: "keychain", index: 0 } }))).rejects.toMatchObject({
+      data: { kind: "reason", reason: "bad-protx-dup-key" },
+    });
   });
 });

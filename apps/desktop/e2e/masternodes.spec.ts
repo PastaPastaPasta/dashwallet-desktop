@@ -33,15 +33,18 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("mn-group-tracked")).toBeVisible();
     await expect(page.getByTestId("mn-group-retired")).toContainText("Retired (1)");
     await expect(page.getByTestId("mn-summary")).toContainText("2 yours");
-    // The first row is selected: Office, banned, with MG-00's notice and no Change keys action.
+    // The first row is selected: Office, banned, with MG-00's notice; its owner key is here, so
+    // Change keys or payout is offered and the notice names it.
     await expect(row(page, OFFICE)).toHaveAttribute("aria-current", "true");
     await expect(page.getByTestId("mn-banned")).toContainText("This masternode is banned and earns nothing.");
+    await expect(page.getByTestId("mn-banned")).toContainText("To move to another operator, use Change keys or payout.");
+    await expect(page.getByTestId("mn-change-keys")).toBeVisible();
     await expect(page.getByTestId("mn-vote")).toBeDisabled();
     await expect(pane(page)).toContainText("A banned masternode can't vote");
     await expect(page.getByTestId("sidebar-masternodes-badge")).toHaveText("1");
-    // S2 adds Set up a masternode, Release collateral and In progress (none here); the rest come later.
+    // S2 adds Set up a masternode, Release collateral and In progress (none here); S3 adds Change keys.
     await expect(page.getByTestId("mn-set-up")).toHaveText("Set up a masternode");
-    for (const hidden of ["Track a masternode", "Change keys", "Withdraw", "In progress", "Masternode keys", "Keys you added", "Add keys"])
+    for (const hidden of ["Track a masternode", "Withdraw", "In progress", "Masternode keys", "Keys you added", "Add keys"])
       await expect(page.getByText(hidden, { exact: false })).toHaveCount(0);
     await fontsReady(page);
     expect(await seriousAxeViolations(page)).toEqual([]);
@@ -56,7 +59,7 @@ test("list → pane → rename → copy", async ({ page }) => {
   await expect(page.getByTestId("mn-fact-service")).toHaveText("203.0.113.7:19999");
   await expect(page.getByTestId("mn-vote")).toBeEnabled();
   await page.getByTestId("mn-more").click();
-  await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash", "Copy collateral outpoint", "Release collateral…"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash", "Copy collateral outpoint", "Release collateral…", "Service update or revoke…"]);
   await page.getByTestId("mn-more-rename").click();
   await page.getByTestId("mn-rename-input").fill("Basement node");
   await page.getByTestId("mn-rename-save").click();
@@ -69,7 +72,7 @@ test("list → pane → rename → copy", async ({ page }) => {
   // A tracked evonode's collateral isn't resolved: no outpoint to copy.
   await row(page, CLUB).click();
   await page.getByTestId("mn-more").click();
-  await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash", "Service update or revoke…"]);
   await page.keyboard.press("Escape");
   await row(page, HOME).click();
   // Vote goes to Governance, filtered to what needs a vote.

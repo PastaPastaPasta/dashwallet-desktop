@@ -2,7 +2,14 @@
 import type { OwnerKeySource } from "./OwnerKeySource";
 import type { ProTxTerms } from "./ProTxTerms";
 
-export type UpdateRegistrarPreview = { terms: ProTxTerms, version: number, fee: number, totalDebit: number, ownerKey: OwnerKeySource, operatorChanges: boolean, votingChanges: boolean,
+/**
+ * A ProUpRegTx's plan before anything is signed.
+ */
+export type UpdateRegistrarPreview = { terms: ProTxTerms, version: number, fee: number,
+/**
+ * What the `masternodeOp` grant must cover.
+ */
+totalDebit: number, ownerKey: OwnerKeySource, operatorChanges: boolean, votingChanges: boolean,
 /**
  * `null` when the wallet holds no payout of the masternode.
  */

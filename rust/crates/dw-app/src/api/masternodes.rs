@@ -9,13 +9,11 @@ use zeroize::Zeroizing;
 use crate::dto::masternodes::{
     AttachedKeyRoleName, EvonodeCredits, KeyCheckName, ListedMasternode, MasternodeDetail,
     MasternodeKeyInfo, MasternodeKeyRoleName, MasternodeListState, MasternodeOverview,
-    MasternodePayout, RevealedMasternodeKey, UntrackOutcome,
-};
-use crate::dto::governance::MasternodeTypeName;
-use crate::dto::protx::{
-    MnRegistrationPreview, MnRegistrationRequest, ProTxKeys, ProTxOperation,
+    MasternodePayout, ProTxOperation, RevealedMasternodeKey, UntrackOutcome,
     UpdateRegistrarPreview, UpdateRegistrarRequest,
 };
+use crate::dto::governance::MasternodeTypeName;
+use crate::dto::protx::{MnRegistrationPreview, MnRegistrationRequest, ProTxKeys};
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
 
@@ -205,13 +203,80 @@ commands! {
         RevealedMasternodeKey::try_from(revealed)
     }
 
-    /// Every ProTx operation of the wallet, newest first, its state derived
-    /// now. Settled rows' input locks are released on the way.
+    /// Plans a ProUpRegTx (owner-signed: the voting key, the operator's
+    /// public key and the payout) against the synced list: its fee, the
+    /// owner key that would sign and what changes. Signs and locks nothing.
+    #[facade("Masternodes::preview_update_registrar")]
+    fn mn_preview_update_registrar(
+        state,
+        wallet_id: String,
+        request: UpdateRegistrarRequest,
+    ) -> UpdateRegistrarPreview {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let preview = state
+            .masternodes()
+            .await?
+            .preview_update_registrar(wallet, request.into())
+            .await?;
+        Ok(preview.into())
+    }
+
+    /// Signs the ProUpRegTx with the masternode's owner key and sends it,
+    /// under a `masternodeOp` grant covering the preview's `totalDebit`
+    /// (a `key_change` lease). Never signs with an operator key.
+    #[facade("Masternodes::update_registrar")]
+    fn mn_update_registrar(
+        state,
+        wallet_id: String,
+        request: UpdateRegistrarRequest,
+        grant: String,
+    ) -> ProTxOperation {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let operation = state
+            .masternodes()
+            .await?
+            .update_registrar(wallet, request.into(), grant)
+            .await?;
+        Ok(operation.into())
+    }
+
+    /// The wallet's ProTx operations (registrations and registrar
+    /// updates), each with its state derived on this read.
     #[facade("Masternodes::operations")]
     fn mn_operations(state, wallet_id: String) -> Vec<ProTxOperation> {
         let wallet = parse_wallet_id(&wallet_id)?;
         let ops = state.masternodes().await?.operations(wallet).await?;
         Ok(ops.into_iter().map(Into::into).collect())
+    }
+
+    /// Hands a signed operation that didn't go out to the network again,
+    /// under a `masternodeOp` grant covering its `debit`.
+    #[facade("Masternodes::resend_operation")]
+    fn mn_resend_operation(
+        state,
+        wallet_id: String,
+        operation: String,
+        grant: String,
+    ) -> ProTxOperation {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let op = state
+            .masternodes()
+            .await?
+            .resend_operation(wallet, operation, grant)
+            .await?;
+        Ok(op.into())
+    }
+
+    /// Deletes an operation that was never handed to the network and
+    /// releases its coins.
+    #[facade("Masternodes::discard_operation")]
+    fn mn_discard_operation(state, wallet_id: String, operation: String) -> () {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        Ok(state
+            .masternodes()
+            .await?
+            .discard_operation(wallet, operation)
+            .await?)
     }
 
     /// The keychain keys a registration of `kind` would use by default.
@@ -298,27 +363,6 @@ commands! {
         Ok(op.into())
     }
 
-    /// Sends a `signed`, `not_sent` or `sent` operation again under a
-    /// `masternodeOp` grant of its `debit`.
-    #[facade("Masternodes::resend_operation")]
-    fn mn_resend_operation(
-        state,
-        wallet_id: String,
-        operation: String,
-        grant: String,
-    ) -> ProTxOperation {
-        let wallet = parse_wallet_id(&wallet_id)?;
-        let masternodes = state.masternodes().await?;
-        Ok(masternodes.resend_operation(wallet, operation, grant).await?.into())
-    }
-
-    /// Ends an operation nothing of which may be out, unlocking its coins.
-    #[facade("Masternodes::discard_operation")]
-    fn mn_discard_operation(state, wallet_id: String, operation: String) -> () {
-        let wallet = parse_wallet_id(&wallet_id)?;
-        Ok(state.masternodes().await?.discard_operation(wallet, operation).await?)
-    }
-
     /// Unlocks a masternode's collateral coin and remembers it. Sends nothing.
     #[facade("Masternodes::release_collateral")]
     fn mn_release_collateral(state, wallet_id: String, pro_tx_hash: String) -> () {
@@ -331,32 +375,5 @@ commands! {
     fn mn_lock_collateral(state, wallet_id: String, pro_tx_hash: String) -> () {
         let wallet = parse_wallet_id(&wallet_id)?;
         Ok(state.masternodes().await?.lock_collateral(wallet, pro_tx_hash).await?)
-    }
-
-    /// Plans a ProUpRegTx: the fee, the owner key that would sign, what
-    /// changes. Issues, locks and signs nothing.
-    #[facade("Masternodes::preview_update_registrar")]
-    fn mn_preview_update_registrar(
-        state,
-        wallet_id: String,
-        request: UpdateRegistrarRequest,
-    ) -> UpdateRegistrarPreview {
-        let wallet = parse_wallet_id(&wallet_id)?;
-        let masternodes = state.masternodes().await?;
-        Ok(masternodes.preview_update_registrar(wallet, request.into()).await?.into())
-    }
-
-    /// Sends a ProUpRegTx signed by the masternode's owner key under a
-    /// `masternodeOp` grant of the preview's `totalDebit`.
-    #[facade("Masternodes::update_registrar")]
-    fn mn_update_registrar(
-        state,
-        wallet_id: String,
-        request: UpdateRegistrarRequest,
-        grant: String,
-    ) -> ProTxOperation {
-        let wallet = parse_wallet_id(&wallet_id)?;
-        let masternodes = state.masternodes().await?;
-        Ok(masternodes.update_registrar(wallet, request.into(), grant).await?.into())
     }
 }

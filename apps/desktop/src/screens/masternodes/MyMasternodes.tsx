@@ -1,6 +1,6 @@
 // Masternodes ▸ My masternodes (MG-10 §1.2): the summary, the groups with In progress (S2), the
-// pane with Release collateral / Lock it again (S2), and the page's states. Tracking, keys,
-// changing keys and withdraw come with later slices; nothing of theirs shows here yet.
+// pane with Release collateral / Lock it again (S2), Change keys or payout (S3) and the operator
+// explanation sheet, and the page's states. Tracking, keys and withdraw come with other slices.
 
 import { Fragment, useState } from "react";
 import type { MasternodeDetail } from "../../api/generated/MasternodeDetail";
@@ -37,12 +37,13 @@ import {
   summary,
   voteBlocked,
 } from "../../masternodes/model";
-import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh, useOperations } from "../../masternodes/queries";
+import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh, useMasternodeOperations } from "../../masternodes/queries";
 import { inProgress } from "../../masternodes/operations";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import { InProgressGroup } from "./InProgress";
 import { collateralErrorText, ReleaseSheet } from "./ReleaseSheet";
 import { useT } from "../../i18n";
+import { ChangeKeysSheet, OperatorSheet } from "./ChangeKeysSheet";
 import { MoreMenu, Notice, StatusChip } from "./common";
 
 const DAY = 86_400;
@@ -61,7 +62,7 @@ export function MyMasternodes({
   onContinue: (op: ProTxOperation) => void;
 }) {
   const list = useMasternodes(wallet.walletId);
-  const ops = useOperations(wallet.walletId);
+  const ops = useMasternodeOperations(wallet.walletId);
   const refresh = useMasternodesRefresh();
   const t = useT();
   const shown = useDisplay(network);
@@ -186,13 +187,13 @@ export function MyMasternodes({
           ])}
           {all.every((g) => g.id === "attention") && progress}
         </div>
-        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} shown={shown} onVote={onVote} />}
+        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} network={network} shown={shown} onVote={onVote} />}
       </div>
     </>
   );
 }
 
-function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: MasternodeRow[]; wallet: WalletSummary; shown: Display; onVote: () => void }) {
+function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRow; rows: MasternodeRow[]; wallet: WalletSummary; network: NetworkInfo; shown: Display; onVote: () => void }) {
   const t = useT();
   const detail = useMasternode(wallet.walletId, row.proTxHash);
   const backend = useBackend();
@@ -210,11 +211,13 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
     }
     void refresh();
   };
+  const [sheet, setSheet] = useState<"change-keys" | "operator" | null>(null);
   const d = detail.isError ? undefined : detail.data;
   const name = rowName(row);
   const blocked = voteBlocked(row, wallet.watchOnly);
   const outpoint = row.collateral.kind === "known" ? row.collateral.outpoint : null;
   const line = d ? registrarLine(d) : null;
+  const canChange = d?.registrar.kind === "available" && !wallet.watchOnly && row.status !== "removed";
   return (
     <aside className="contacts-pane" aria-label={t("masternodes.myMasternodes.pane")} data-testid="mn-pane">
       <section className="mg-pane card-l1">
@@ -230,6 +233,7 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
         {row.status === "pose_banned" && (
           <p className="mg-notice mg-notice-danger mn-banned-notice" data-testid="mn-banned">
             <strong>{MnText.banned}</strong> {MnText.bannedText(row.bannedSeenAt === null ? null : shortDate(row.bannedSeenAt))}
+            {canChange && <> {t("masternodes.myMasternodes.bannedMove")}</>}
           </p>
         )}
         {detail.isError && <p className="mg-field-error" data-testid="mn-detail-failed">{mnErrorText(detail.error)}</p>}
@@ -276,6 +280,11 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
               {MnText.vote}
             </DashButton>
           )}
+          {canChange && (
+            <DashButton variant="tintedBlue" size="small" data-testid="mn-change-keys" onClick={() => setSheet("change-keys")}>
+              {t("masternodes.myMasternodes.changeKeys.action")}
+            </DashButton>
+          )}
           <MoreMenu
             testId="mn-more"
             items={[
@@ -289,12 +298,15 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
                       : { id: "release", title: t("masternodes.release.action"), onSelect: () => setReleasing(true) },
                   ]
                 : []),
+              ...(row.status !== "removed" ? [{ id: "operator", title: t("masternodes.myMasternodes.operatorSheet.menu"), onSelect: () => setSheet("operator") }] : []),
             ]}
           />
         </div>
       </section>
       {renaming && <RenameSheet row={row} onClose={() => setRenaming(false)} />}
       {releasing && <ReleaseSheet row={row} wallet={wallet} onClose={() => setReleasing(false)} />}
+      {sheet === "change-keys" && d && canChange && <ChangeKeysSheet wallet={wallet} network={network} row={row} detail={d} onClose={() => setSheet(null)} />}
+      {sheet === "operator" && <OperatorSheet row={row} detail={d} onChangeKeys={canChange ? () => setSheet("change-keys") : null} onClose={() => setSheet(null)} />}
     </aside>
   );
 }

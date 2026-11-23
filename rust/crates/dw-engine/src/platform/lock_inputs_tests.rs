@@ -163,3 +163,13 @@ fn a_build_of_fifty_inputs_passes_and_one_of_fifty_one_is_refused_before_signing
     );
     assert_eq!(capped.refusal().to_string(), too_many(Some(51)).to_string());
 }
+
+/// #263: the bound's coin read, for a wallet gone from the manager, fails;
+/// no panic.
+#[test]
+fn the_bound_of_a_wallet_gone_from_the_manager_does_not_panic() {
+    use crate::wallet_read::gone_tests::{assert_gone, detached};
+    let d = detached();
+    let r = d.engine.block_on(check(&d.wallet, 100_000));
+    assert_gone(r.map_err(|e| e.code()));
+}

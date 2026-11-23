@@ -93,7 +93,6 @@ const SAMPLES: Samples = {
     code: "stuck_funding",
     data: { kind: "stuckFunding", refusal: { kind: "spendUnsettled", txid: TXID }, retryLater: true },
   },
-  protxRefused: { code: "masternodes.protx_refused", data: { kind: "protxRefused", reason: "bad-protx-dup-netinfo-entry", operation: null } },
   operationState: { code: "masternodes.operation_state", data: { kind: "operationState", state: "inputs_spent" } },
   keyRole: { code: "masternodes.keys_exhausted", data: { kind: "keyRole", role: "voting" } },
   operation: { code: "masternodes.update_pending", data: { kind: "operation", operation: "op-1" } },

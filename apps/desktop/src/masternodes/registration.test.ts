@@ -137,11 +137,11 @@ describe("the register grant (D5)", () => {
 });
 
 describe("refusals go to their step and field (§1.6)", () => {
-  const refused = (reason: string, operation: string | null = null) => refusalOf(err("masternodes.protx_refused", { kind: "protxRefused", reason, operation }));
+  const refused = (reason: string) => refusalOf(err("masternodes.protx_refused", { kind: "reason", reason }));
   it("maps Core's reasons", () => {
     expect(refused("bad-protx-dup-netinfo-entry")).toEqual({ step: "operator", field: "service", text: t(`${R}.refused.dupService`) });
     expect(refused("bad-protx-dup-key")).toEqual({ step: "operator", field: "operatorKey", text: t(`${R}.refused.dupKey`) });
-    expect(refused("protx-dup", "op1")).toEqual({ step: "operator", field: null, text: t(`${R}.refused.pendingDup`) });
+    expect(refused("protx-dup")).toEqual({ step: "operator", field: null, text: t(`${R}.refused.pendingDup`) });
     expect(refused("bad-protx-payee-reuse")).toEqual({ step: "keys", field: "payoutAddress", text: t(`${R}.refused.payeeReuse`) });
     expect(refused("bad-protx-something")?.step).toBe("review");
   });

@@ -416,6 +416,24 @@ const JOIN: Record<string, { scenario: string; ready: string }> = {
 
 // DP1-09: the registration wizard's two steps and a registration's screens on the Join page.
 const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  // C-funding F19: "Pay another way".
+  "pay-with": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-pay-another").click();
+      await expect(page.getByTestId("pay-with-shielded-reason")).toBeVisible();
+      await expect(page.getByTestId("pay-with-core-balance")).toBeVisible();
+    },
+  },
+  // Dash wallet short of the cost: its reason; Continue off.
+  "pay-with-short": {
+    scenario: "empty",
+    reach: async (page) => {
+      await page.getByTestId("join-pay-another").click();
+      await expect(page.getByTestId("pay-with-core-reason")).toBeVisible();
+      await expect(page.getByTestId("registration-next")).toBeDisabled();
+    },
+  },
   name: {
     scenario: "dashpay-no-identity",
     reach: async (page) => {

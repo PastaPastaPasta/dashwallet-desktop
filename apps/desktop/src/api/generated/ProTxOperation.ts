@@ -7,12 +7,4 @@ import type { SignRequest } from "./SignRequest";
 /**
  * One of the wallet's ProTx operations.
  */
-export type ProTxOperation = { id: string, kind: ProTxOperationKindName, proTxHash: string | null, txid: string | null, state: ProTxOperationStateName, signRequest: SignRequest | null, fee: number,
-/**
- * The cap a resend's `masternodeOp` grant takes.
- */
-debit: number, overdue: boolean, createdAt: number, signedAt: number | null, sentAt: number | null,
-/**
- * The last attempt's failure code.
- */
-lastError: string | null, terms: ProTxTerms, };
+export type ProTxOperation = { id: string, kind: ProTxOperationKindName, proTxHash: string | null, txid: string | null, state: ProTxOperationStateName, signRequest: SignRequest | null, fee: number, debit: number, overdue: boolean, createdAt: number, signedAt: number | null, sentAt: number | null, lastError: string | null, terms: ProTxTerms, };

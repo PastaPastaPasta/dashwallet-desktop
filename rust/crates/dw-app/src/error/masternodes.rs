@@ -80,10 +80,7 @@ impl From<MasternodesError> for AppError {
             M::NotEvonode => (C::NotEvonode, None),
             M::NoIdentity => (C::NoIdentity, None),
             M::PlatformUnavailable { .. } => (C::PlatformUnavailable, None),
-            M::ProtxRefused { reason, operation } => (
-                C::ProtxRefused,
-                Some(ErrorData::ProtxRefused { reason, operation }),
-            ),
+            M::ProtxRefused { reason, .. } => (C::ProtxRefused, Some(ErrorData::Reason { reason })),
             M::CollateralUnavailable => (C::CollateralUnavailable, None),
             M::SignatureMismatch => (C::SignatureMismatch, None),
             M::OperationNotFound => (C::OperationNotFound, None),
@@ -245,10 +242,10 @@ mod tests {
         );
         assert_eq!(
             data(MasternodesError::ProtxRefused {
-                reason: "protx-dup".into(),
-                operation: Some("op1".into())
+                reason: "bad-protx-payee-reuse".into(),
+                operation: None
             }),
-            serde_json::json!({ "kind": "protxRefused", "reason": "protx-dup", "operation": "op1" })
+            serde_json::json!({ "kind": "reason", "reason": "bad-protx-payee-reuse" })
         );
         assert_eq!(
             data(MasternodesError::OperationState {

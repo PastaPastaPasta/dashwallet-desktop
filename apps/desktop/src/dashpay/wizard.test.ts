@@ -327,3 +327,54 @@ describe("DP5-03 the claim (invitation mode)", () => {
     expect(wiz).toMatchObject({ step: null, draft: null, error: null });
   });
 });
+
+describe("the Pay with step (C-funding F18, F19)", () => {
+  it("opens on Dash wallet every time, never the last choice (M4)", () => {
+    const { wiz } = setup();
+    wiz.begin({ kind: "core" }, "source");
+    expect(wiz).toMatchObject({ step: "source", source: "core" });
+    wiz.setSource("shielded");
+    wiz.close();
+    wiz.begin({ kind: "core" }, "source");
+    expect(wiz.source).toBe("core");
+    wiz.setSource("platform");
+    wiz.begin({ kind: "core" });
+    expect(wiz.source).toBe("core");
+  });
+
+  it("continues to the name only from a source this build can start, and Back returns to it", () => {
+    const { wiz } = setup();
+    wiz.begin({ kind: "core" }, "source");
+    for (const s of ["shielded", "platform"] as const) {
+      wiz.setSource(s);
+      wiz.pickSource();
+      expect(wiz.step).toBe("source");
+    }
+    wiz.setSource("core");
+    wiz.pickSource();
+    expect(wiz.step).toBe("name");
+    wiz.back();
+    expect(wiz.step).toBe("source");
+    wiz.back();
+    expect(wiz.step).toBeNull();
+  });
+
+  it("Create username skips the step, and its Back closes", () => {
+    const { wiz } = setup();
+    wiz.begin({ kind: "core" });
+    expect(wiz.step).toBe("name");
+    wiz.back();
+    expect(wiz.step).toBeNull();
+  });
+
+  it("a start through the step is the Core-funded request", async () => {
+    const { wiz, api } = setup();
+    wiz.begin({ kind: "core" }, "source");
+    wiz.pickSource();
+    wiz.setLabel("alice-77");
+    wiz.next();
+    await wiz.confirm(quote("alice-77").grant);
+    expect(api.startRegistration).toHaveBeenCalledTimes(1);
+    expect(api.startRegistration.mock.calls[0][1]).toEqual(coreRequest("alice-77"));
+  });
+});
