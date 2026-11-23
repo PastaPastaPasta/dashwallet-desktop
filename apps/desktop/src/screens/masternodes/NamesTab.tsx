@@ -209,7 +209,7 @@ function ContestRowButton({ contest, names, now, current, onSelect }: { contest:
 
 /** The selected contest (D5–D9): when voting ends, the tally with who leads, the wallet's voters
  * with their present choice and votes left, and Vote. */
-function NamePane({
+export function NamePane({
   contest,
   names,
   nodeNames,

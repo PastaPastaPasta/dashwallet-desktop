@@ -180,6 +180,52 @@ describe("the list", () => {
   });
 });
 
+describe("contenders by their own spelling (F1)", () => {
+  /** a11ce with two look-alike spellings, each its own contender. */
+  const lookAlike = (): ContestedName => ({
+    ...structuredClone(A11CE),
+    contenders: [
+      { identity: ID_1, votes: 9, name: "Alice" },
+      { identity: ID_2, votes: 4, name: "A11ce" },
+    ],
+  });
+
+  it("tells look-alike spellings apart by the identity in every sentence", () => {
+    const c = lookAlike();
+    const n = names();
+    n.voters[0].current[0].choice = towards(ID_2);
+    expect(tallyView(c).rows.slice(0, 2).map((r) => r.title)).toEqual(["Alice (8ZtW…R97P)", "A11ce (4EfA…iSeF)"]);
+    expect(tallyView(c).lead).toBe("Alice (8ZtW…R97P) leads with 9 of 18 votes");
+    expect(choiceOptions(c).slice(0, 2).map((o) => o.title)).toEqual(["Alice (8ZtW…R97P)", "A11ce (4EfA…iSeF)"]);
+    expect([voteButtonText(towards(ID_1), c), voteButtonText(towards(ID_2), c)]).toEqual(["Vote for Alice (8ZtW…R97P)", "Vote for A11ce (4EfA…iSeF)"]);
+    expect(voterLine(n.voters[0], c, 5)).toBe("Votes A11ce (4EfA…iSeF) · 3 votes left");
+    expect(youText([n.voters[0]], c)).toBe("You: A11ce (4EfA…iSeF)");
+    expect(nameVoterRows(n.voters, c, towards(ID_2), 5)[0].sub).toBe("Votes A11ce (4EfA…iSeF) already");
+    expect(nameVoteResult([cast(VOTER_C, null)], n.voters, c, towards(ID_1)).line).toBe("For Alice (8ZtW…R97P) on a11ce · weight 1 of 1");
+    expect(nameVoteResult([cast(VOTER_C, null)], n.voters, c, towards(ID_2)).line).toBe("For A11ce (4EfA…iSeF) on a11ce · weight 1 of 1");
+  });
+
+  it("shows a contender without a spelling by its identity alone", () => {
+    const c = { ...lookAlike(), contenders: [{ identity: ID_1, votes: 9, name: null }, { identity: ID_2, votes: 4, name: "" }] };
+    expect(choiceOptions(c).slice(0, 2).map((o) => [o.title, o.named])).toEqual([
+      ["8ZtW…R97P", false],
+      ["4EfA…iSeF", false],
+    ]);
+    expect(tallyView(c).lead).toBe("8ZtW…R97P leads with 9 of 18 votes");
+    expect(voteButtonText(towards(ID_1), c)).toBe("Vote for 8ZtW…R97P");
+    expect(contenderText(ID_1, c)).toBe("8ZtW…R97P");
+  });
+
+  it("keeps a spelling's exact characters, markup and placeholders included, as plain text", () => {
+    for (const name of ["<b>Alice</b>", "<img src=x onerror=alert(1)>", "{identity}", "{name} {count}", "ALiCE", "a&amp;b"]) {
+      const c = { ...lookAlike(), contenders: [{ identity: ID_1, votes: 9, name }] };
+      expect(contenderText(ID_1, c)).toBe(`${name} (8ZtW…R97P)`);
+      expect(tallyView(c).lead).toBe(`${name} (8ZtW…R97P) leads with 9 of 14 votes`);
+      expect(voteButtonText(towards(ID_1), c)).toBe(`Vote for ${name} (8ZtW…R97P)`);
+    }
+  });
+});
+
 describe("the vote sheet's voters", () => {
   it("offers every voter with a vote left, a banned one too, and says whose key it is", () => {
     const n = names();
