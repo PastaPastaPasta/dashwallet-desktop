@@ -56,6 +56,9 @@ export function finalAction(step: Step, external: boolean, sends: boolean = REGI
 }
 export type CollateralPick = "fund_new" | "existing" | "external";
 
+/** Review's line under the collateral: this wallet locks its own coin; another wallet's must stay unspent there. */
+export const collateralNote = (pick: CollateralPick) => (pick === "external" ? `${P}.review.collateralKeepUnspent` : `${P}.review.collateralLocked`);
+
 /** Everything the wizard asks, as typed. */
 export interface RegDraft {
   kind: MasternodeTypeName;

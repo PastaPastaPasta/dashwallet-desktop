@@ -743,6 +743,7 @@ export const masternodes = {
       collateralExisting: "{outpoint}, {amount} in this wallet",
       collateralExternal: "{outpoint}, in another wallet",
       collateralLocked: "Locked against spending while the masternode is registered",
+      collateralKeepUnspent: "Keep it unspent in the wallet that holds it. Spending it removes this masternode from the masternode list.",
       server: "Server",
       operatorKey: "Operator key",
       fromOperator: "{key}, from your operator",

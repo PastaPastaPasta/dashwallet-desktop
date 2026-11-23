@@ -114,6 +114,20 @@ test("hosted regular, FundNew: Type → Review, which can't send yet; 0 serious 
   expect(errors).toEqual([]);
 });
 
+test("self-run evonode with an entered Platform node ID: the intro names only the operator keypair", async ({ page }) => {
+  const errors = await open(page, "reg");
+  await setUp(page);
+  await page.getByTestId("reg-kind-evonode").click();
+  await page.getByTestId("reg-runner-self").click();
+  await next(page);
+  await next(page);
+  await expect(step(page, "operator")).toContainText("(operator keypair 3, Platform node keypair 1)");
+  await page.getByTestId("reg-node-enter").click();
+  await expect(step(page, "operator")).toContainText("its operator key comes from this wallet's masternode keys (keypair 3)");
+  await expect(step(page, "operator")).not.toContainText("Platform node keypair");
+  expect(errors).toEqual([]);
+});
+
 test("self-run evonode: the wallet's operator key and Platform node, to Review", async ({ page }) => {
   const errors = await open(page, "reg");
   await setUp(page);
@@ -185,6 +199,7 @@ test("External: Review names the other wallet's coin and can't send; nothing is 
   await expect(page.getByTestId("reg-owner")).toBeVisible();
   await toReview(page);
   await expect(page.getByTestId("reg-review-collateral")).toContainText(`${EXTERNAL_OUTPOINT.slice(0, 8)}:0, in another wallet`);
+  await expect(page.getByTestId("reg-review-collateral-note")).toHaveText("Keep it unspent in the wallet that holds it. Spending it removes this masternode from the masternode list.");
   await expectSendOff(page);
   await expect(page.getByTestId("reg-continue")).toHaveCount(0);
   await fontsReady(page);

@@ -9,7 +9,7 @@ import type { CollateralCoin } from "../api/generated/CollateralCoin";
 import type { MnRegistrationPreview } from "../api/generated/MnRegistrationPreview";
 import type { ProTxKeys } from "../api/generated/ProTxKeys";
 import { t } from "../i18n";
-import { HELD_CALLS, REGISTRATION_SENDS, SENDING_CALLS, buildRequest, registrationCalls, coinsFor, finalAction, newDraft, normalOutpoint, refusalOf, registerCap, samePreview, serviceError, shareBasisPoints, stepErrors, type Ports, type RegDraft } from "./registration";
+import { collateralNote, HELD_CALLS, REGISTRATION_SENDS, SENDING_CALLS, buildRequest, registrationCalls, coinsFor, finalAction, newDraft, normalOutpoint, refusalOf, registerCap, samePreview, serviceError, shareBasisPoints, stepErrors, type Ports, type RegDraft } from "./registration";
 
 const R = "masternodes.register";
 const COIN = 100_000_000;
@@ -219,5 +219,15 @@ describe("a held wizard only reads (D14)", () => {
       }
     }
     expect(readFileSync(join(dir, "RegisterSheet.tsx"), "utf8")).toMatch(/const b = registrationCalls\(backend\);/);
+  });
+});
+
+describe("Review's collateral line", () => {
+  it.each([
+    ["fund_new", "Locked against spending while the masternode is registered"],
+    ["existing", "Locked against spending while the masternode is registered"],
+    ["external", "Keep it unspent in the wallet that holds it. Spending it removes this masternode from the masternode list."],
+  ] as const)("%s", (pick, line) => {
+    expect(t(collateralNote(pick))).toBe(line);
   });
 });

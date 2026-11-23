@@ -44,6 +44,7 @@ import {
   type Ports,
   type RegDraft,
   type Step,
+  collateralNote,
   finalAction,
   registrationCalls,
 } from "../../masternodes/registration";
@@ -387,11 +388,17 @@ export function RegisterSheet({
     const self = d.runner === "self";
     const evo = d.kind === "evonode";
     const k = keys.data;
+    const walletOperator = self && d.operatorFromWallet && k;
+    const intro = !self
+      ? t(`${R}.operator.hostedIntro`)
+      : walletOperator && evo && d.nodeFromWallet && k.platformNode
+        ? t(`${R}.operator.selfIntroEvo`, { index: String(k.operator.index + 1), node: String(k.platformNode.index + 1) })
+        : walletOperator
+          ? t(`${R}.operator.selfIntro`, { index: String(k.operator.index + 1) })
+          : null;
     body = (
       <>
-        <p className="mg-small">
-          {self ? t(evo ? `${R}.operator.selfIntroEvo` : `${R}.operator.selfIntro`, { index: String((k?.operator.index ?? 0) + 1), node: String((k?.platformNode?.index ?? 0) + 1) }) : t(`${R}.operator.hostedIntro`)}
-        </p>
+        {intro && <p className="mg-small">{intro}</p>}
         <div className="mg-form">
           <label className={`mg-field mg-span ${errors.operatorKey ? "has-error" : ""}`}>
             {t(`${R}.operator.key`)}
@@ -709,7 +716,7 @@ function Review({ d, p, amount, changed }: { d: RegDraft; p: MnRegistrationPrevi
             : d.collateral === "existing"
               ? t.rich(`${R}.review.collateralExisting`, { outpoint: <span className="mono">{outpoint}</span>, amount: amount(p.collateralAmount) })
               : t.rich(`${R}.review.collateralExternal`, { outpoint: <span className="mono">{outpoint}</span> })}
-          {d.collateral !== "external" && <span className="mg-small mg-muted"> {t(`${R}.review.collateralLocked`)}</span>}
+          <span className="mg-small mg-muted" data-testid="reg-review-collateral-note"> {t(collateralNote(d.collateral))}</span>
         </DetailRow>
         <DetailRow label={t(`${R}.review.server`)}>
           <span className="mono">{terms.service}</span>
