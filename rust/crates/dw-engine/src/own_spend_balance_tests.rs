@@ -1595,6 +1595,44 @@ fn a_payment_abandoned_and_then_locked_is_left_by_the_load() {
     );
 }
 
+/// A payment abandoned and then locked, whose Abandon mark's saved copy is
+/// damaged, keeps the claim of its sent mark while the store holds it: after
+/// a restart and a scan of its funding block, A is neither offered nor
+/// counted.
+#[test]
+fn a_locked_payment_whose_abandon_mark_is_damaged_keeps_its_coin_out() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    abandon(&engine, &session, id, p.txid());
+    let session = reopen(&engine, session);
+    mempool(&engine, &session, id, &p);
+    instant_lock(&engine, &session, id, &p);
+    wait_stored_locked(&session, id, p.txid());
+    (session.live().unwrap().appdb)
+        .set_setting(
+            &id.to_string(),
+            &format!("abandoned:{}", p.txid()),
+            Some("zz"),
+        )
+        .unwrap();
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+    let coins = held(&engine, &session, id);
+    assert!(!coins.contains(&a), "A is counted: {coins:?}");
+}
+
 /// D spends A and B, stored and pending, its Abandon marked but its sweep
 /// not stored; E, stored in `context`, spends B too. Returns D, E, A and B.
 fn half_done_beside_a_spender_of_b(
@@ -2209,10 +2247,10 @@ fn a_payment_marked_abandoned_is_never_resent() {
 }
 
 /// Remove unconfirmed transactions whose read of the sent marks fails says
-/// so, rather than reporting nothing removed.
+/// so, rather than reporting nothing removed, and abandons nothing.
 #[test]
 fn remove_unconfirmed_fails_when_the_sent_marks_do_not_read() {
-    let (_dir, engine, session, id, _payment, _a, _paid) = pending_payment_of_one_coin();
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
     engine.block_on(session.start_spv()).unwrap();
     eventually("SPV runs", || {
         session.spv_state().unwrap() == crate::SpvState::Running
@@ -2222,4 +2260,8 @@ fn remove_unconfirmed_fails_when_the_sent_marks_do_not_read() {
     let removed = engine.block_on(session.drop_unconfirmed(Some(id)));
     dw_appdb::fault::disarm(&path);
     assert!(removed.is_err(), "{removed:?}");
+    assert!(
+        (session.hub.history.get(&id, &payment.txid())).is_some_and(|e| !e.is_abandoned()),
+        "the payment was abandoned"
+    );
 }

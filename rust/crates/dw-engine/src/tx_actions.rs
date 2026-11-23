@@ -769,9 +769,10 @@ impl NetworkSession {
         let copies: Vec<(Txid, Transaction)> = (copies.into_iter())
             .filter(|(t, _)| abandoned.contains(t))
             .collect();
-        self.hub
-            .history
-            .with_wallet(wallet, |h| h.mark_abandoned(&copies));
+        self.hub.history.with_wallet(wallet, |h| {
+            h.mark_abandoned(&copies);
+            h.abandoned_here.extend(abandoned.iter().copied());
+        });
         // Each abandoned transaction's own claim (DEC-179); a coin another
         // owner holds stays reserved.
         for t in &abandoned {
@@ -1027,6 +1028,14 @@ impl NetworkSession {
             };
             let mut dropped = 0u32;
             for id in wallets {
+                // Read before anything is abandoned: a wallet whose marks
+                // don't read is left as it is.
+                let (sent, complete) = this.appdb_op(move |db| Ok(load_sent(db, id))).await?;
+                if !complete {
+                    return Err(EngineError::Storage(
+                        "removing unconfirmed transactions: the sent marks do not read".into(),
+                    ));
+                }
                 let candidates: Vec<Txid> = this
                     .with_view(&manager, id, |view| {
                         view.history
@@ -1054,12 +1063,6 @@ impl NetworkSession {
                 // A payment whose saved copy does not read back is listed
                 // nowhere but keeps its coins out: retired here, unless a
                 // payment under way holds one of them.
-                let (sent, complete) = this.appdb_op(move |db| Ok(load_sent(db, id))).await?;
-                if !complete {
-                    return Err(EngineError::Storage(
-                        "removing unconfirmed transactions: the sent marks do not read".into(),
-                    ));
-                }
                 let damaged: Vec<Txid> = (sent.into_iter())
                     .filter(|(t, m)| {
                         m.kept && m.tx.is_none() && this.hub.history.get(&id, t).is_none()

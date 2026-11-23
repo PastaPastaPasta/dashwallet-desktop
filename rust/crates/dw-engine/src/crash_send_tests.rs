@@ -1085,43 +1085,32 @@ fn a_queued_event_of_an_abandoned_child_does_not_bring_it_back() {
     assert_holds(&engine, &session, id, &want, "reopened");
 }
 
-/// The child's queued event arrives after a restart, with the Abandon
-/// stored: the child stays abandoned and can't be resent, and nothing of it
-/// is counted, claimed again or offered.
+/// After a restart key-wallet no longer holds the Abandon's dismissal (it
+/// keeps it in memory only), so a peer's mempool can bring the payment back
+/// and key-wallet counts it again: that event's balance is applied, as on
+/// main.
 #[test]
-fn a_queued_event_of_an_abandoned_child_after_a_restart_does_not_bring_it_back() {
-    use dash_spv::EventHandler;
-    let (_dir, engine, session, id, paid, parent, child, queued) =
-        child_recorded_before_its_event();
-    abandon(&engine, &session, id, parent.txid());
-
-    let session = reopen(&engine, session);
-    let restarted_coins = held(&engine, &session, id);
-    let restarted = assert_holds(&engine, &session, id, &restarted_coins, "reopened");
-    for event in &queued {
-        session.hub.on_wallet_event(event);
-    }
-    assert_child_gone(&engine, &session, id, &child, "the event delivered");
-    assert_eq!(
-        assert_holds(
-            &engine,
-            &session,
-            id,
-            &restarted_coins,
-            "the event delivered"
-        ),
-        restarted,
-        "the event changed the balance"
-    );
-    mined(&engine, &session, id, TIP, vec![paid.clone()]);
-    assert_holds(
+fn an_abandoned_payment_seen_again_after_a_restart_applies_its_balance() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
         &engine,
         &session,
         id,
-        &outputs(&paid),
-        "the funding scanned",
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
     );
-    assert_child_gone(&engine, &session, id, &child, "the funding scanned");
+    mempool(&engine, &session, id, &payment);
+    abandon(&engine, &session, id, payment.txid());
+
+    let session = reopen(&engine, session);
+    let before = held(&engine, &session, id);
+    assert_holds(&engine, &session, id, &before, "reopened");
+    mempool(&engine, &session, id, &payment);
+    let after = held(&engine, &session, id);
+    assert_ne!(before, after, "key-wallet didn't count it again");
+    assert_holds(&engine, &session, id, &after, "seen again");
 }
 
 /// A height-only row without a height (an unconfirmed coin's) beside a

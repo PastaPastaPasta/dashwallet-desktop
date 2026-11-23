@@ -2351,7 +2351,6 @@ mod tests {
         assert_eq!(value("durable").as_deref(), Some("2"), "the delete is lost");
     }
 
-    /// Several settings commit together or not at all, durably.
     #[test]
     fn a_lossy_setting_reads_only_its_key_and_skips_a_value_that_is_not_text() {
         let db = AppDb::open_in_memory().unwrap();
@@ -2371,6 +2370,7 @@ mod tests {
         assert!(db.setting("g", "bin").is_err(), "the strict read takes it");
     }
 
+    /// Several settings commit together or not at all, durably.
     #[test]
     fn settings_in_one_batch_commit_together() {
         let dir = tempfile::tempdir().unwrap();

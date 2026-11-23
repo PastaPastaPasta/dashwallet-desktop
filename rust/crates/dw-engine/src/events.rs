@@ -1396,12 +1396,11 @@ impl SessionHub {
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
-                // Queued before an Abandon took it: its balance is older.
-                let abandoned = matches!(record.context, TransactionContext::Mempool)
-                    && (self.history).read_wallet(&id, |h| {
-                        h.txs.get(&record.txid).is_some_and(|e| e.abandoned)
-                    });
-                if !abandoned && self.update_balance(id, balance, account_balances) {
+                // Queued before an Abandon this session took it: its balance
+                // is older.
+                let queued = matches!(record.context, TransactionContext::Mempool)
+                    && (self.history).read_wallet(&id, |h| h.abandoned_here.contains(&record.txid));
+                if !queued && self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
                 }
                 // First seen through its InstantSend lock: evidence. In

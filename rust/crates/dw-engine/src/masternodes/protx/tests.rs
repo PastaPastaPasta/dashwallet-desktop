@@ -783,6 +783,10 @@ fn mg10_a_failed_sent_mark_on_a_first_hand_off_is_not_sent() {
     assert_eq!(op.state, ProTxOperationState::NotSent);
     assert_eq!(op.sent_at, None);
     assert!(op.last_error.is_some());
+    assert!(
+        f.reserved().is_empty(),
+        "the hand-off's reservation released"
+    );
 
     f.engine
         .block_on(f.mn().discard_operation(f.wallet, op.id))

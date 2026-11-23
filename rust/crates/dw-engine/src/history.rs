@@ -395,6 +395,9 @@ pub(crate) fn unmined_own_spends(
     sent: &crate::tx_actions::Sent,
     chainlock: Option<u32>,
 ) -> Vec<(OutPoint, Txid)> {
+    if sent.is_empty() {
+        return Vec::new();
+    }
     let beats = |winner: &TxEntry, payment: &TxEntry| match instant_locked(payment) {
         true => chain_locked(&winner.context, chainlock),
         false => winner.context.block_info().is_some() || instant_locked(winner),
@@ -500,6 +503,10 @@ pub(crate) struct WalletHistory {
     /// Transactions a conflict sweep removed this session: a load whose
     /// marks were read before the sweep restores none of them.
     pub swept: HashSet<Txid>,
+    /// Transactions an Abandon took this session. key-wallet dismissed
+    /// them, which it keeps in memory only, so a mempool event of one is
+    /// one queued before the Abandon.
+    pub abandoned_here: HashSet<Txid>,
     /// The wallet's coins each payment restored from its sent mark
     /// (`add_unrecorded_sends`) signed, which a later record of it may not
     /// name.

@@ -139,6 +139,18 @@ pub(crate) struct Persisted {
     pub(crate) dropped: HashSet<Txid>,
 }
 
+impl Persisted {
+    /// Whether a load restores `txid`'s claims from its sent mark: not a
+    /// spend the store's open dropped, nor an abandoned payment whose saved
+    /// copy doesn't read back (`unread`) unless the store still holds it.
+    pub(crate) fn keeps_mark(&self, txid: &Txid, unread: &BTreeSet<Txid>) -> bool {
+        !self.dropped.contains(txid)
+            && (!unread.contains(txid)
+                || self.records.contains(txid)
+                || self.recordless.contains(txid))
+    }
+}
+
 /// Txids of the stored transactions per wallet, read from `wallet.sqlite`
 /// over a read-only connection (SqlitePersister has no enumeration API;
 /// `get_core_tx_record` then reads each record).
@@ -376,9 +388,7 @@ impl NetworkSession {
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
                     let (mut sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
-                    sent.retain(|t, _| {
-                        !persisted.dropped.contains(t) && !abandoned.unread.contains(t)
-                    });
+                    sent.retain(|t, _| persisted.keeps_mark(t, &abandoned.unread));
                     let abandoned = abandoned.copies;
                     let stored: HashSet<Txid> = match clean {
                         true => (persisted.records.into_iter())
@@ -712,7 +722,7 @@ impl NetworkSession {
             let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
             history.mark_abandoned(&abandoned.copies);
             let (mut sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
-            sent.retain(|t, _| !persisted.dropped.contains(t) && !abandoned.unread.contains(t));
+            sent.retain(|t, _| persisted.keeps_mark(t, &abandoned.unread));
             if !(read && marks_read && sent_read) {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
                 return (history, crate::tx_actions::Sent::new());
