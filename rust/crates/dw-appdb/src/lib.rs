@@ -512,12 +512,25 @@ pub struct DpContactPayoutRow {
 }
 
 /// Settings and lock rows of one wallet as they were before
-/// [`AppDb::write_settings_and_locks`] replaced them.
+/// [`AppDb::write_settings_and_locks`] replaced them, and the settings rows
+/// a backup's rows added, which putting them back deletes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PriorRows {
     wallet_id: String,
     settings: Vec<(String, Option<String>)>,
     locks: Vec<PriorLock>,
+    /// Settings rows a backup's rows added (rowids).
+    added_settings: Vec<i64>,
+}
+
+/// A backup's rows of one wallet, for [`AppDb::write_settings_and_locks`].
+#[derive(Debug, Clone, Copy)]
+pub struct BackupRows<'a> {
+    pub tables: &'a [TableRows],
+    /// The wallet's rows stored already (an interrupted restore's, of a
+    /// wallet not registered) are deleted first, as [`AppDb::readmit_wallet`]
+    /// deletes a removed wallet's: the proposals its removal kept stay.
+    pub replace: bool,
 }
 
 /// An outpoint and its lock row (reason, created, released), if it had one.
@@ -1182,8 +1195,10 @@ impl AppDb {
     }
 
     /// Sets `settings` in wallet scope `wallet_id` and a manual lock on each
-    /// of `locks`, all in one transaction, and returns what they replaced
-    /// for [`Self::restore_settings_and_locks`]. Where a key already has a
+    /// of `locks`, then inserts `backup`'s rows as
+    /// [`Self::import_wallet_rows`] does, all in one transaction, and returns
+    /// what the settings and locks replaced, and the settings rows the
+    /// backup's rows added, for [`Self::restore_settings_and_locks`]. Where a key already has a
     /// value, `merge(key, stored, new)` is what is stored, read and written
     /// in the same transaction.
     pub fn write_settings_and_locks(
@@ -1193,13 +1208,19 @@ impl AppDb {
         merge: &dyn Fn(&str, &str, &str) -> String,
         locks: &[(String, u32)],
         now: u64,
+        backup: Option<BackupRows<'_>>,
     ) -> Result<PriorRows> {
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(BackupRows { replace: true, .. }) = backup {
+            delete_wallet_rows(&tx, wallet_id)?;
+            proposals::restore_kept(&tx, wallet_id)?;
+        }
         let mut prior = PriorRows {
             wallet_id: wallet_id.to_owned(),
             settings: Vec::with_capacity(settings.len()),
             locks: Vec::with_capacity(locks.len()),
+            added_settings: Vec::new(),
         };
         for (key, value) in settings {
             let old = tx
@@ -1228,6 +1249,19 @@ impl AppDb {
             Self::lock_manual_on(&tx, wallet_id, txid, *vout, now)?;
             prior.locks.push((txid.clone(), *vout, old));
         }
+        if let Some(backup) = backup {
+            // The settings rows it adds (by rowid: a key need not be
+            // UTF-8), deleted again by the put-back.
+            let rowids = |tx: &rusqlite::Transaction<'_>| -> Result<HashSet<i64>> {
+                let mut stmt = tx.prepare("SELECT rowid FROM settings_kv WHERE scope = ?1")?;
+                let ids = stmt.query_map([wallet_id], |r| r.get(0))?;
+                Ok(ids.collect::<rusqlite::Result<_>>()?)
+            };
+            let before = rowids(&tx)?;
+            rows::insert_rows(&tx, wallet_id, backup.tables)?;
+            let added = rowids(&tx)?.into_iter().filter(|id| !before.contains(id));
+            prior.added_settings.extend(added);
+        }
         tx.commit()?;
         Ok(prior)
     }
@@ -1251,6 +1285,7 @@ impl AppDb {
             wallet_id: wallet_id.to_owned(),
             settings,
             locks: Vec::new(),
+            added_settings: Vec::new(),
         })
     }
 
@@ -1260,6 +1295,12 @@ impl AppDb {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let id = &prior.wallet_id;
+        for rowid in &prior.added_settings {
+            tx.execute(
+                "DELETE FROM settings_kv WHERE rowid = ?1 AND scope = ?2",
+                params![rowid, id],
+            )?;
+        }
         // Newest first, so a key or outpoint written twice ends as it began.
         for (key, value) in prior.settings.iter().rev() {
             Self::put_setting(&tx, id, key, value.as_deref())?;
@@ -1449,6 +1490,48 @@ impl AppDb {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// The values of `key` in every wallet's `local:` scope
+    /// ([`local_scope`]), as `(wallet id, value)` in wallet id order. A row
+    /// whose scope or value is not UTF-8 text is skipped.
+    pub fn local_settings_of_key(&self, key: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT scope, value FROM settings_kv
+             WHERE key = ?1 AND scope >= 'local:' AND scope < 'local;' ORDER BY scope",
+        )?;
+        let mut rows = stmt.query([key])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            let text = |i: usize| r.get_ref(i).ok().and_then(|v| v.as_str().ok());
+            if let (Some(scope), Some(value)) = (text(0), text(1))
+                && let Some(wallet) = scope.strip_prefix("local:")
+            {
+                out.push((wallet.to_owned(), value.to_owned()));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Sets `key` of `scope` (`None` deletes it) and deletes `cleared` from
+    /// every wallet's `local:` scope, in one transaction.
+    pub fn set_setting_clearing_local(
+        &self,
+        scope: &str,
+        key: &str,
+        value: Option<&str>,
+        cleared: &str,
+    ) -> Result<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        Self::put_setting(&tx, scope, key, value)?;
+        tx.execute(
+            "DELETE FROM settings_kv WHERE key = ?1 AND scope >= 'local:' AND scope < 'local;'",
+            [cleared],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Sets a value, or deletes the key for `None`.
@@ -2666,7 +2749,7 @@ mod tests {
         ];
         let settings = [("a", "new".to_owned()), ("b", "x".to_owned())];
         let prior = db
-            .write_settings_and_locks(W, &settings, &|_, _, new| new.to_owned(), &locks, 9)
+            .write_settings_and_locks(W, &settings, &|_, _, new| new.to_owned(), &locks, 9, None)
             .unwrap();
         assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("new"));
         assert_eq!(db.setting(W, "b").unwrap().as_deref(), Some("x"));
@@ -2692,7 +2775,7 @@ mod tests {
         let merge = |key: &str, stored: &str, new: &str| format!("{key}:{stored}+{new}");
         let settings = [("a", "new".to_owned()), ("b", "x".to_owned())];
         let prior = db
-            .write_settings_and_locks(W, &settings, &merge, &[], 9)
+            .write_settings_and_locks(W, &settings, &merge, &[], 9, None)
             .unwrap();
         assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("a:old+new"));
         assert_eq!(db.setting(W, "b").unwrap().as_deref(), Some("x"));
@@ -2715,6 +2798,36 @@ mod tests {
         db.restore_settings_and_locks(&prior).unwrap();
         assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("old"));
         assert_eq!(db.setting(W, "b").unwrap(), None);
+    }
+
+    /// A backup's settings rows a restore added, a non-UTF-8 key among
+    /// them, are deleted again by the put-back; the wallet's own stay.
+    #[test]
+    fn settings_a_backup_added_are_deleted_by_the_put_back() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(W, "own", Some("mine")).unwrap();
+        let row = |key: SqlValue| vec![SqlValue::Text(W.into()), key, SqlValue::Text("v".into())];
+        let tables = [TableRows {
+            table: "settings_kv".into(),
+            columns: vec!["scope".into(), "key".into(), "value".into()],
+            rows: vec![
+                row(SqlValue::Text("own".into())),
+                row(SqlValue::NonUtf8Text(b"k\xff".to_vec())),
+            ],
+        }];
+        let backup = BackupRows {
+            tables: &tables,
+            replace: false,
+        };
+        let keep = |_: &str, _: &str, new: &str| new.to_owned();
+        let prior = (db.write_settings_and_locks(W, &[], &keep, &[], 1, Some(backup))).unwrap();
+        let count = || db.export_wallet_rows(W).unwrap()[0].rows.len();
+        assert_eq!(count(), 2);
+
+        db.restore_settings_and_locks(&prior).unwrap();
+
+        assert_eq!(count(), 1);
+        assert_eq!(db.setting(W, "own").unwrap().as_deref(), Some("mine"));
     }
 
     #[test]
@@ -2857,6 +2970,50 @@ mod tests {
             ]
         );
         assert!(db.settings_with_prefix(W, "none").unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_settings_of_a_key_skip_unreadable_rows_and_clear_with_a_write() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(&local_scope(W2), "k", Some("2")).unwrap();
+        db.set_setting(&local_scope(W), "k", Some("1")).unwrap();
+        db.set_setting(W, "k", Some("wallet")).unwrap();
+        db.set_setting("", "k", Some("app")).unwrap();
+        db.set_setting(&local_scope(W), "other", Some("x")).unwrap();
+        let insert = "INSERT INTO settings_kv (scope, key, value) VALUES (CAST(?1 AS TEXT), 'k', CAST(?2 AS TEXT))";
+        db.conn()
+            .execute(insert, params![b"local:cc".to_vec(), b"\xff".to_vec()])
+            .unwrap();
+        db.conn()
+            .execute(insert, params![b"local:\xfe".to_vec(), b"3".to_vec()])
+            .unwrap();
+        assert_eq!(
+            db.local_settings_of_key("k").unwrap(),
+            vec![
+                (W.to_string(), "1".to_string()),
+                (W2.to_string(), "2".to_string())
+            ]
+        );
+
+        db.set_setting_clearing_local("", "keep", Some("0"), "k")
+            .unwrap();
+        assert!(db.local_settings_of_key("k").unwrap().is_empty());
+        let left: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM settings_kv WHERE key = 'k' AND scope >= 'local:' AND scope < 'local;'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+        assert_eq!(db.setting("", "keep").unwrap().as_deref(), Some("0"));
+        assert_eq!(db.setting(W, "k").unwrap().as_deref(), Some("wallet"));
+        assert_eq!(db.setting("", "k").unwrap().as_deref(), Some("app"));
+        assert_eq!(
+            db.setting(&local_scope(W), "other").unwrap().as_deref(),
+            Some("x")
+        );
     }
 
     #[test]

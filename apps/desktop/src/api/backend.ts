@@ -151,6 +151,7 @@ import type { AccountXpub } from "./generated/AccountXpub";
 import type { BackupFileHeader } from "./generated/BackupFileHeader";
 import type { BackupPolicyInfo } from "./generated/BackupPolicyInfo";
 import type { BackupSummary } from "./generated/BackupSummary";
+import type { AutomaticBackupFailure } from "./generated/AutomaticBackupFailure";
 import type { CoreExportFormatName } from "./generated/CoreExportFormatName";
 import type { CoreExportReport } from "./generated/CoreExportReport";
 import type { CoreImportReport } from "./generated/CoreImportReport";
@@ -399,6 +400,8 @@ export interface Backend {
   /** Restores the wallets of a `.dwbackup`; returns their ids. */
   restoreBackup(path: string, passphrase: string | null): Promise<string[]>;
   automaticBackups(walletId: string | null): Promise<BackupSummary[]>;
+  /** Wallets whose latest automatic backup failed, and when. */
+  automaticBackupFailures(): Promise<AutomaticBackupFailure[]>;
   backupDirectory(): Promise<string>;
   backupPolicy(): Promise<BackupPolicyInfo>;
   setBackupPolicy(keep: number): Promise<BackupPolicyInfo>;

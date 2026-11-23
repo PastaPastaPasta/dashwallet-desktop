@@ -394,6 +394,38 @@ test.describe("Backups", () => {
     await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(0);
   });
 
+  // Issue 340: the engine's failed automatic backup shows as a toast at once and stays in the card,
+  // with what to do, until backups are turned off (or one succeeds, which the engine decides).
+  test("QT116_aFailedAutomaticBackupSaysWhatToDo", async ({ page }) => {
+    await settings(page, "backups");
+    await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(2);
+    await expect(page.getByTestId("settings-backup-failed")).toHaveCount(0);
+    const failedAt = await world(page, (w) => w.settings.backups[0].createdAt + 60);
+    await page.evaluate((failedAt) => {
+      const f = window.__dwFixture!;
+      f.world.settings.backupFailures.push({ walletId: f.world.wallets[0].summary.walletId, failedAt });
+      f.emit({ kind: "notice", network: "testnet", code: "backupFailed", detail: "wallet: cannot write" });
+    }, failedAt);
+    await expect(page.locator(".toast")).toHaveText("An automatic backup failed. Open Settings ▸ Backups to see what to do.");
+    const row = page.getByTestId("settings-backup-failed");
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("The latest automatic backup failed");
+    const year = new Date(failedAt * 1000).getUTCFullYear();
+    await expect(row).toContainText(new RegExp(`Dash Wallet could not write an automatic backup of Main on [^.]*${year}`));
+    await expect(row).toContainText("and that Dash Wallet can write to it.");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await row.getByTestId("settings-backup-failed-back-up").click();
+    await expect(page.getByTestId("settings-backup-sheet")).toContainText("Back up Main");
+    await page.getByRole("button", { name: "Close" }).click();
+    // A reload reads it again from the engine; turning automatic backups off clears it.
+    await page.getByTestId("settings-tabs-general").click();
+    await page.getByTestId("settings-tabs-backups").click();
+    await expect(row).toHaveCount(1);
+    await page.getByTestId("settings-backup-keep").selectOption("0");
+    await page.getByTestId("settings-backup-keep-confirm").click();
+    await expect(row).toHaveCount(0);
+  });
+
   test("QT116_aBackupWrittenAfterTheListWasReadIsNotDeletedWithoutAsking", async ({ page }) => {
     await settings(page, "backups");
     await expect(page.getByTestId("settings-backup-list").locator("li")).toHaveCount(2);

@@ -290,7 +290,7 @@ Service and Revoke, the Unban parts of IOS-081/082) are marked "node/CLI, out of
 | H-02 | Fuzzing: `dw-uri` (payment URIs, user and invitation links, `dapk`), QR payloads, PSBT, avatar decoding | DP2-03, DP5-01 | M | Y | 24 h without a crash; 10 min nightly. |
 | H-03 | Kill -9 equivalence (DESIGN G5) across registration, request, payment and profile | DP3-01, DP4-01 | M | Y | Equal state ≤ 60 s after restart. |
 | H-04 | Real-node GUI flows: Linux (T2/T3), Windows and macOS (CI runners) | U-01…U-07, the DP UI tasks | L | N | Every DP story passes on all three OSes. |
-| H-05 | Accessibility: Orca, Narrator (CI or T-04), VoiceOver checks in the B4 session; keyboard-only DashPay flows | H-04 | M | N | No blockers. |
+| H-05 | Accessibility: Orca, Narrator (CI or T-04), VoiceOver checks in the B4 session (VoiceOver and Narrator by hand: `docs/qa/H-08-macos-windows.md` section 8); keyboard-only DashPay flows | H-04 | M | N | No blockers. |
 | H-06 | Performance: a large wallet with 500 contacts; a 10k-row history; cold restore with DashPay; contacts query < 100 ms at 1k contacts | DP3-02 | M | Y | The U5 budgets still hold. |
 | H-07 | Mainnet canary (T4): a non-contested name, a contact round trip **with an iOS user**, payments both ways, one faucet invitation claim | DP5-02, **B3** | M | Y | Interoperability confirmed. |
 | H-08 | `agentic-qa` full pass with evidence | H-04 | L | N | Report published; no open blocker or critical defect. |

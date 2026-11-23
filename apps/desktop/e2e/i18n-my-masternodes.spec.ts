@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { CLUB, HOME, OLD } from "../src/fixture/masternodes";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
-import { checkArea, PSEUDO } from "./pseudo";
+import { checkArea, PSEUDO, readFirst } from "./pseudo";
 
 // Localization (MP-14): Masternodes ▸ My masternodes under the two pseudo-locales (./pseudo.ts): the
 // summary, the groups and rows, the pane (facts, payouts, keys, the registrar line), rename and the
@@ -104,40 +104,6 @@ test("My masternodes follows a language change with no reload", async ({ page })
   for (const id of ["masternodes-tabs-myMasternodes", "masternodes-tabs-names", "mn-list-height", "mn-pane-chip", "mn-retired-toggle"]) await expect(page.getByTestId(id)).toHaveText(/^⟦.+⟧$/);
   expect(errors).toEqual([]);
 });
-
-/** Under a right-to-left language a number is read before the word after it: it sits right of
- * it. `re`'s first group is the number's first digit, its second the word. */
-async function readFirst(root: Locator, what: string, re: RegExp) {
-  await expect(root).toContainText(re);
-  const at = await root.evaluate(
-    (el, [source, flags]) => {
-      const re = new RegExp(source, flags);
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      const nodes: Text[] = [];
-      for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
-      const text = nodes.map((n) => n.data).join("");
-      const m = re.exec(text);
-      if (!m?.indices) return null;
-      const left = (g: number) => {
-        let i = m.indices![g]![0];
-        for (const n of nodes) {
-          if (i < n.data.length) {
-            const r = document.createRange();
-            r.setStart(n, i);
-            r.setEnd(n, i + 1);
-            return r.getBoundingClientRect().left;
-          }
-          i -= n.data.length;
-        }
-        return 0;
-      };
-      return [left(1), left(2)] as [number, number];
-    },
-    [re.source, `${re.flags}d`] as const,
-  );
-  expect(at, what).not.toBeNull();
-  expect(at![0], what).toBeGreaterThan(at![1]);
-}
 
 /** An amount drawn with the Dash glyph: its number comes before the glyph. */
 async function glyphAfter(amount: Locator, what: string) {

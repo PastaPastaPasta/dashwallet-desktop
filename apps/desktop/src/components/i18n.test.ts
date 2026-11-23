@@ -1,6 +1,6 @@
 // The shared controls and text modules read the language in use (MP-14): the sheet's Close and
 // Cancel, the passphrase field and its busy label, copy names, empty states, the detail date's
-// joiner, and the refused network switch's whole sentences.
+// joiner, the refused network switch's whole sentences, and Coin Selection's Tree mode rows.
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -11,6 +11,10 @@ import { en } from "../i18n/en";
 import { LANGUAGES, type Language } from "../i18n";
 import { NetworkText } from "../network/choice";
 import { detailDate } from "../format/tx";
+import type { Utxo } from "../api/generated/Utxo";
+import { display } from "../format/display";
+import { groupCoins } from "../tools/coins";
+import { CoinTable } from "./coins";
 import { CopyValue } from "./detail";
 import { EMPTY } from "./emptyStates";
 import { PassphrasePrompt } from "./passphrase";
@@ -114,6 +118,57 @@ describe("a refused network switch", () => {
       expect(NetworkText.busy(["payment", "topUp", "withdraw"], false)).toBe("Wait for die Zahlung, die Aufladung und die Auszahlung to finish before switching networks.");
     } finally {
       LANGUAGES.splice(LANGUAGES.indexOf(de), 1);
+    }
+  });
+});
+
+describe("Coin Selection's Tree mode rows", () => {
+  const coin = (n: number, address: string): Utxo => ({
+    outpoint: { txid: n.toString(16).padStart(64, "0"), vout: 0 },
+    address,
+    amount: 100_000_000,
+    confirmations: 10,
+    blockHeight: 100,
+    timestamp: 1_700_000_000,
+    instantLocked: false,
+    chainLocked: true,
+    userLocked: false,
+    reserved: false,
+    label: null,
+    isChange: false,
+    isCoinbase: false,
+    coinjoinDenominated: false,
+    coinjoinRounds: null,
+    spendable: true,
+  });
+  const ONE = "yAddressOne0000000000000000000001";
+  const TWO = "yAddressTwo0000000000000000000002";
+  const coins = [coin(1, ONE), coin(2, TWO), coin(3, TWO)];
+  const groups = () => {
+    const html = renderToStaticMarkup(
+      createElement(CoinTable, {
+        coins,
+        shown: display({ unit: "dash", decimalDigits: 2 }, { kind: "testnet", dirName: "testnet", unitName: "tDASH" }),
+        selected: new Set<string>(),
+        onToggle: () => {},
+        detail: { sort: { column: "amount", ascending: false }, onSort: () => {}, groups: groupCoins(coins), onToggleGroup: () => {}, actions: () => null },
+      }),
+    );
+    return [...html.matchAll(/<tr class="coin-group"[^>]*>.*?aria-label="([^"]*)".*?<td colSpan="5">([^<]*)<\/td><\/tr>/g)].map((m) => [unescape(m[1]), m[2]]);
+  };
+
+  it("count a group's coins and name its checkbox in English as before", () => {
+    expect(groups()).toEqual([
+      ["Use every coin at yAddressOne0…000000000001", "1 coin"],
+      ["Use every coin at yAddressTwo0…000000000002", "2 coins"],
+    ]);
+  });
+
+  it("take both from the catalog under the long pseudo-locale", () => {
+    choose("en-XA");
+    for (const [name, count] of groups()) {
+      expect(name).toMatch(/^⟦.+⟧$/);
+      expect(count).toMatch(/^⟦.+⟧$/);
     }
   });
 });

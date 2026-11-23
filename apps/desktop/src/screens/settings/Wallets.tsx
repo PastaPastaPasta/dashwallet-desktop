@@ -276,7 +276,7 @@ function XpubSheet({ row, onClose }: { row: WalletRow; onClose: () => void }) {
               {xpub.data.derivationPath}
             </DetailRow>
             <DetailRow label={t("settings.wallets.key")} testId="settings-xpub-key">
-              <CopyValue value={xpub.data.xpub} label={t("settings.wallets.xpubValue")} mono />
+              <CopyValue value={xpub.data.xpub} action={t("settings.wallets.copyXpub")} mono />
             </DetailRow>
           </dl>
         </>

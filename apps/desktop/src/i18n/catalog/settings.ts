@@ -17,7 +17,10 @@ export const settings = {
     themeSystem: "System",
     themeLight: "Light",
     themeDark: "Dark",
-    themeForced: "{theme} is in use for this session. Your choice below applies the next time Dash Wallet starts normally.",
+    themeForced: {
+      light: "Light is in use for this session. Your choice below applies the next time Dash Wallet starts normally.",
+      dark: "Dark is in use for this session. Your choice below applies the next time Dash Wallet starts normally.",
+    },
     unit: "Unit to show amounts in",
     subtractFee: "Subtract the fee from the amount by default",
     language: "Language",
@@ -121,6 +124,14 @@ export const settings = {
       unknown: "Dash Wallet is busy. Try again when it has finished.",
     },
   },
+  backups: {
+    backUp: "Back up wallet…",
+    automaticFailed: {
+      title: "The latest automatic backup failed",
+      body: "Dash Wallet could not write an automatic backup of {wallet} on {date}. Your funds are not affected, and your recovery phrase still restores them. Make a backup now with Back up wallet…, and check that the backup folder has free space and that Dash Wallet can write to it.",
+      toast: "An automatic backup failed. Open Settings ▸ Backups to see what to do.",
+    },
+  },
   dashpay: {
     title: "DashPay",
     joined: "Your DashPay identity",
@@ -170,8 +181,7 @@ export const settings = {
     xpubQr: "QR code of the extended public key of {name}",
     account: "Account",
     key: "Key",
-    /** The copy button's label for the key: "Copy extended public key". */
-    xpubValue: "extended public key",
+    copyXpub: "Copy extended public key",
     watchOnlyTitle: "Add watch-only wallet",
     watchOnlyHint: "Paste the account's extended public key (tpub or xpub). The wallet shows its balance and history; it cannot spend.",
     watchOnlyField: "Extended public key",
@@ -271,10 +281,9 @@ export const settings = {
     network: "Network",
     userAgent: "User agent",
     dataDir: "Data directory",
-    /** The copy button's label: "Copy data directory". */
-    dataDirValue: "data directory",
+    copyDataDir: "Copy data directory",
     backups: "Backup folder",
-    backupsValue: "backup folder",
+    copyBackups: "Copy backup folder",
     more: "More",
     commandLine: "Command-line options",
     commandLineWhy: "These options are not available here yet.",

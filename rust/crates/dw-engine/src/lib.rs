@@ -47,6 +47,8 @@ pub mod rates;
 mod receive;
 mod replay_record;
 mod restore;
+#[cfg(all(test, unix))]
+mod restore_order_tests;
 #[cfg(test)]
 mod restore_tests;
 pub(crate) mod send;
