@@ -191,6 +191,8 @@ import type { SyncLoopStatus } from "./SyncLoopStatus";
 import type { SyncPassReport } from "./SyncPassReport";
 import type { SyncStatus } from "./SyncStatus";
 import type { TimedHistoryRows } from "./TimedHistoryRows";
+import type { TopUpFromPlatformOutcome } from "./TopUpFromPlatformOutcome";
+import type { TopUpFromPlatformQuote } from "./TopUpFromPlatformQuote";
 import type { TopUpOutcome } from "./TopUpOutcome";
 import type { TopUpQuote } from "./TopUpQuote";
 import type { TxDetailExtrasInfo } from "./TxDetailExtrasInfo";
@@ -1828,6 +1830,22 @@ export function creditsWithdrawToPlatform(walletId: string, identity: string, to
 }
 
 /**
+ * What topping the identity up with `amount` of the Platform
+ * addresses' credits takes.
+ */
+export function creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote> {
+  return invoke<TopUpFromPlatformQuote>("credits_top_up_from_platform_quote", { walletId, identity, amount });
+}
+
+/**
+ * Tops the identity up with `amount` of the Platform addresses'
+ * credits under `grant`.
+ */
+export function creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome> {
+  return invoke<TopUpFromPlatformOutcome>("credits_top_up_from_platform", { walletId, identity, amount, grant });
+}
+
+/**
  * The identity's recent withdrawals on Platform, the most recently
  * updated first (at most 20).
  */
@@ -3187,6 +3205,8 @@ export type CommandArgs = {
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_withdraw_to_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw_to_platform: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
+  credits_top_up_from_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
+  credits_top_up_from_platform: { walletId: string; identity: string; amount: WithdrawAmount; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
   platform_addresses: { walletId: string };
   platform_activity: { walletId: string };
@@ -3525,6 +3545,8 @@ export type CommandResults = {
   credits_withdraw: WithdrawOutcome;
   credits_withdraw_to_platform_quote: WithdrawToPlatformQuote;
   credits_withdraw_to_platform: WithdrawToPlatformOutcome;
+  credits_top_up_from_platform_quote: TopUpFromPlatformQuote;
+  credits_top_up_from_platform: TopUpFromPlatformOutcome;
   credits_withdrawals: Array<Withdrawal>;
   platform_addresses: PlatformAddressBalance;
   platform_activity: Array<PlatformActivity>;
@@ -3865,6 +3887,8 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_withdraw: "identity",
   credits_withdraw_to_platform_quote: "identity",
   credits_withdraw_to_platform: "identity",
+  credits_top_up_from_platform_quote: "identity",
+  credits_top_up_from_platform: "identity",
   credits_withdrawals: "identity",
   platform_addresses: "identity",
   platform_activity: "identity",
