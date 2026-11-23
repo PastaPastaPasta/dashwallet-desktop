@@ -7,7 +7,7 @@ import type { MasternodeKeyInfo } from "../api/generated/MasternodeKeyInfo";
 import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
 import type { RevealedMasternodeKey } from "../api/generated/RevealedMasternodeKey";
 import { appError, FakeWorld, status, WALLET_A } from "../onboarding/testWorld";
-import { KeyRevealModel, keyMatches } from "./keys";
+import { canCopySecret, KeyRevealModel, keyMatches } from "./keys";
 
 const key = (role: MasternodeKeyRoleName, over: Partial<MasternodeKeyInfo> = {}): MasternodeKeyInfo => ({
   role,
@@ -128,5 +128,11 @@ describe("revealing a masternode key", () => {
     expect(m2.step).toBe("hidden");
     expect(m2.error).not.toBeNull();
     expect(w.revoked).toEqual(["grant-1", "grant-2"]);
+  });
+});
+
+describe("which revealed secrets copy (#428, MG ruling (c))", () => {
+  it("copies operator and platform node secrets only", () => {
+    expect(["owner", "voting", "operator", "platform_node"].filter((r) => canCopySecret(r as MasternodeKeyRoleName))).toEqual(["operator", "platform_node"]);
   });
 });

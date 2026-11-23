@@ -5666,6 +5666,12 @@ button.bell-row-open:focus-visible {
   justify-items: start;
 }
 
+.mg-key-no-copy {
+  user-select: none;
+  -webkit-user-select: none;
+  overflow-wrap: anywhere;
+}
+
 .mg-key-secret-line {
   display: grid;
   gap: 2px;

@@ -749,17 +749,21 @@ export const masternodes = {
     revealing: "Checking…",
     /** Under the private key before a reveal, per role. */
     revealNote: {
-      owner: "Anyone with this key controls the masternode's registration.",
+      owner: "Anyone with this key controls the masternode's registration: who runs it and where its rewards go.",
       voting: "Anyone with this key can vote with the masternode.",
-      operator: "Anyone with this key runs the masternode's server. Copy it only to your own server.",
-      platform_node: "Anyone with this key runs the evonode's Platform node. Copy it only to your own server.",
+      operator: "Anyone with this key can run the masternode's server. Copy it only to the server that runs this masternode.",
+      platform_node: "Anyone with this key can run the evonode's Platform node. Copy it only to the server that runs this evonode's Platform node.",
     },
     needsPassphrase: "Needs your passphrase.",
     wif: "Private key (WIF)",
     hex: "Private key (hex)",
     tenderdash: "Tenderdash key",
     hideSecret: "Hide private key",
-    watchOnly: "This wallet can't show masternode keys: it holds no seed.",
+    /** Under the copy button of a revealed operator or platform node secret. */
+    copyWarning: "Paste this only into your masternode's configuration. Copied text can stay in your clipboard history, and anyone with this key can run the masternode as you.",
+    /** Under a revealed owner or voting secret, where a copy button would be (it has none). */
+    noCopy: "This key can't be copied, so it doesn't end up in your clipboard. Keep it in this wallet unless you're moving the masternode to another wallet.",
+    watchOnly: "This wallet is watch-only, so it can't show masternode keys.",
   },
   withdraw: {
     /** An evonode credit withdrawal whose identity data the wallet could not verify (H-09). */

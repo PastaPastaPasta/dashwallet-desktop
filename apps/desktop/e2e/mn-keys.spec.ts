@@ -42,9 +42,43 @@ test("Masternode keys lists each role, pages, and reveals one secret behind the 
   await field.fill("demo");
   await field.press("Enter");
   await expect(sheet.getByTestId("mn-key-secret-wif")).toContainText(TEST_VECTOR_WIF);
+  // An owner secret refuses copying; an operator secret, which goes to the server, copies.
+  await expect(sheet.getByTestId("mn-key-secret-wif").getByRole("button")).toHaveCount(0);
+  await expect(sheet.getByTestId("mn-key-no-copy")).toContainText("This key can't be copied");
+  await expect(sheet.getByTestId("mn-key-copy-warning")).toHaveCount(0);
+  // Ctrl/Cmd-C on the revealed owner key copies nothing.
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.evaluate(() => navigator.clipboard.writeText("before"));
+  const wif = sheet.getByTestId("mn-key-secret-wif").locator(".mg-key-no-copy");
+  await wif.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  await page.keyboard.press("ControlOrMeta+C");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("before");
   await sheet.getByTestId("mn-key-0-hide-secret").click();
   await expect(sheet.getByTestId("mn-key-secret-wif")).toHaveCount(0);
   await expect(sheet.getByTestId("mn-key-0-hidden")).toBeVisible();
+  // Shown again, then the window loses focus: the secret hides.
+  await sheet.getByTestId("mn-key-0-reveal").click();
+  const again = sheet.getByTestId("mn-key-0-passphrase-form").getByLabel("Passphrase");
+  await again.fill("demo");
+  await again.press("Enter");
+  await expect(sheet.getByTestId("mn-key-secret-wif")).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(sheet.getByTestId("mn-key-secret-wif")).toHaveCount(0);
+  await sheet.getByTestId("mn-keys-role-operator").click();
+  await sheet.getByTestId("mn-key-0-show").click();
+  await sheet.getByTestId("mn-key-0-reveal").click();
+  const op = sheet.getByTestId("mn-key-0-passphrase-form").getByLabel("Passphrase");
+  await op.fill("demo");
+  await op.press("Enter");
+  await expect(sheet.getByTestId("mn-key-secret-hex").getByRole("button")).toHaveCount(1);
+  await expect(sheet.getByTestId("mn-key-copy-warning")).toContainText("Paste this only into your masternode's configuration.");
+  await expect(sheet.getByTestId("mn-key-no-copy")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

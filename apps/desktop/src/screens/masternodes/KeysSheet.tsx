@@ -10,16 +10,16 @@ import type { MasternodeDetail } from "../../api/generated/MasternodeDetail";
 import type { MasternodeKeyInfo } from "../../api/generated/MasternodeKeyInfo";
 import type { MasternodeKeyRoleName } from "../../api/generated/MasternodeKeyRoleName";
 import { hasCode } from "../../api/backend";
-import { useBackend } from "../../api/queries";
+import { useBackend, useLockStatus } from "../../api/queries";
 import { useSecretScreen } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { PassphrasePrompt } from "../../components/passphrase";
-import { ProtectionPending } from "../../components/phrase";
+import { noCopy, ProtectionPending } from "../../components/phrase";
 import { Sheet } from "../../components/sheet";
 import { shortAddress } from "../../format/tx";
 import { useT } from "../../i18n";
-import { KEY_ROLES, KEYS_PAGE, KeyRevealModel, keyMatches, type KeyMatch } from "../../masternodes/keys";
+import { canCopySecret, KEY_ROLES, KEYS_PAGE, KeyRevealModel, keyMatches, type KeyMatch } from "../../masternodes/keys";
 import { mnErrorText, rowName } from "../../masternodes/model";
 import { mnKeys, useMasternodes } from "../../masternodes/queries";
 import { useModel } from "../../onboarding/model";
@@ -203,13 +203,27 @@ function Reveal({ walletId, k }: { walletId: string; k: MasternodeKeyInfo }) {
     void model.load();
     return () => model.dispose();
   }, [model]);
+  // A shown secret hides when the window loses focus and when the vault locks (MG, #428).
+  const lock = useLockStatus();
+  const locked = lock.data?.state === "locked" || lock.data?.state === "unlockedMixingOnly";
+  useEffect(() => {
+    if (locked) model.hide();
+  }, [locked, model]);
+  useEffect(() => {
+    const away = () => model.hide();
+    window.addEventListener("blur", away);
+    return () => window.removeEventListener("blur", away);
+  }, [model]);
   const s = model.secret;
   if (model.step === "shown" && s) {
     return (
       <div className="mg-key-secret" data-testid={`mn-key-${k.index}-revealed`}>
-        {s.wif && <SecretLine label={t(`${P}.wif`)} value={s.wif} testId="wif" />}
-        <SecretLine label={t(`${P}.hex`)} value={s.privateKeyHex} testId="hex" />
-        {s.tenderdashKey && <SecretLine label={t(`${P}.tenderdash`)} value={s.tenderdashKey} testId="tenderdash" />}
+        {s.wif && <SecretLine label={t(`${P}.wif`)} value={s.wif} testId="wif" role={k.role} />}
+        <SecretLine label={t(`${P}.hex`)} value={s.privateKeyHex} testId="hex" role={k.role} />
+        {s.tenderdashKey && <SecretLine label={t(`${P}.tenderdash`)} value={s.tenderdashKey} testId="tenderdash" role={k.role} />}
+        <p className="mg-small mg-muted" data-testid={canCopySecret(k.role) ? "mn-key-copy-warning" : "mn-key-no-copy"}>
+          {t(canCopySecret(k.role) ? `${P}.copyWarning` : `${P}.noCopy`)}
+        </p>
         <DashButton
           variant="plainBlue"
           size="small"
@@ -267,11 +281,17 @@ function Reveal({ walletId, k }: { walletId: string; k: MasternodeKeyInfo }) {
   );
 }
 
-function SecretLine({ label, value, testId }: { label: string; value: string; testId: string }) {
+function SecretLine({ label, value, testId, role }: { label: string; value: string; testId: string; role: MasternodeKeyRoleName }) {
   return (
     <div className="mg-key-secret-line" data-testid={`mn-key-secret-${testId}`}>
       <span className="mg-small mg-muted">{label}</span>
-      <CopyValue value={value} label={label} mono />
+      {canCopySecret(role) ? (
+        <CopyValue value={value} label={label} mono />
+      ) : (
+        <span className="mono mg-key-no-copy" translate="no" onCopy={noCopy} onCut={noCopy}>
+          {value}
+        </span>
+      )}
     </div>
   );
 }
