@@ -3,9 +3,11 @@
 //! a named point and reports; the parent sends it SIGKILL, opens the same
 //! data folder again and checks the state it finds.
 //!
-//! Every row is opt-in: `cargo test -p dw-engine --lib kill9 -- --ignored`,
-//! run by the nightly job. A child test does nothing unless this harness
-//! started it.
+//! Every row is opt-in, run by the nightly job:
+//! `cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding`.
+//! A `kill9_finding_<issue>` row reproduces an open issue and stays out of
+//! it until the fix. A child test does nothing unless this harness started
+//! it.
 
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};

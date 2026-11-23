@@ -167,19 +167,19 @@ fn killed(name: &str) {
 }
 
 #[test]
-#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored"]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r1_registration_killed_with_its_lock_tracked_resumes_to_one_registration() {
     killed("fund_tracked");
 }
 
 #[test]
-#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored"]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r1_registration_killed_after_its_identity_resumes_to_one_registration() {
     killed("register_identity_after");
 }
 
 #[test]
-#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored"]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r1_registration_killed_after_its_profile_resumes_to_one_registration() {
     killed("create_profile_after");
 }

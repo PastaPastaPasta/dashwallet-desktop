@@ -73,7 +73,7 @@ fn payment_child() {
 }
 
 #[test]
-#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored"]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r5a_payment_killed_after_its_reservation_leaves_bob_payable() {
     let (dir, _) = kill9::killed_at(CHILD, ROW, "reserved");
     let root = dir.path().to_path_buf();

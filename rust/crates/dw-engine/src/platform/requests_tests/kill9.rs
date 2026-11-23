@@ -3,18 +3,26 @@
 //! Platform accepted it, or as a failed write is read back; done again after
 //! the relaunch, it ends with one request of ours on Platform, which the
 //! wallet shows as pending (R2) or as an established contact (R3).
+//!
+//! R4: a profile edit killed before Platform has the document or once it
+//! accepted it, before the wallet remembers it; made again after the
+//! relaunch, Platform holds the edit once and the wallet shows it.
 
 use std::sync::Arc;
 
 use zeroize::Zeroizing;
 
 use super::super::super::journal_tests::ABANDON_12;
+use super::super::super::profile::{AvatarChange, ProfileEdit};
+use super::super::super::profiles::{merged, update};
 use super::*;
 use crate::ImportOptions;
 use crate::kill9;
 
 const ROW: &str = "contact_request";
 const CHILD: &str = "platform::requests::tests::kill9::request_child";
+const PROFILE_ROW: &str = "profile";
+const PROFILE_CHILD: &str = "platform::requests::tests::kill9::profile_child";
 /// Encrypted: an unencrypted vault's key is in an OS store the relaunch
 /// would not have.
 const PASS: &[u8] = b"kill9 requests";
@@ -183,37 +191,123 @@ fn killed(op: &str, point: &str) {
 }
 
 #[test]
-#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored"]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r2_send_killed_before_platform_has_it_sends_one_request() {
     killed("send", "before_write");
 }
 
 #[test]
-#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored"]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r2_send_killed_once_platform_accepted_it_keeps_one_request() {
     killed("send", "accepted");
 }
 
 #[test]
-#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored"]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r2_send_killed_reading_back_its_failed_write_keeps_one_request() {
     killed("send", "before_remember");
 }
 
 #[test]
-#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored"]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r3_accept_killed_before_platform_has_it_establishes_once() {
     killed("accept", "before_write");
 }
 
 #[test]
-#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored"]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r3_accept_killed_once_platform_accepted_it_establishes_once() {
     killed("accept", "accepted");
 }
 
 #[test]
-#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored"]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
 fn kill9_r3_accept_killed_reading_back_its_failed_write_establishes_once() {
     killed("accept", "before_remember");
+}
+
+/// R4's edit: a name and a message on a wallet with no profile yet.
+fn edit() -> ProfileEdit {
+    ProfileEdit {
+        display_name: Some("Alice".into()),
+        public_message: Some("hi".into()),
+        avatar: AvatarChange::Keep,
+        baseline: None,
+    }
+}
+
+fn update_profile(f: &Fixture) -> Result<(), PlatformError> {
+    let (net, wallet, grant) = (Arc::clone(&f.net), f.wallet, grant(&f.s, f.wallet));
+    let me = b58(ME);
+    let dp = f.s.dashpay(f.wallet);
+    f.engine.block_on(dp.on_wallet(move |s, _, w| async move {
+        update(&*net, &s, &w, (wallet, &me), edit(), grant).await
+    }))
+}
+
+/// Run by [`profile_killed`] in a child process: [`edit`] taken to the
+/// point, then reported with whether Platform has the document.
+#[test]
+#[ignore = "a child process of the H-03 kill -9 matrix"]
+fn profile_child() {
+    let Some(child) = kill9::child(PROFILE_ROW) else {
+        return;
+    };
+    let f = fixture_at(dw_testutil::private_tempdir(), &child.root, true, false);
+    let landed = match child.point.as_str() {
+        "before_write" => false,
+        "accepted" => true,
+        other => panic!("no profile kill point {other:?}"),
+    };
+    let report = serde_json::json!({ "landed": landed }).to_string();
+    let child = Arc::new(child);
+    *f.net.during.lock().unwrap() = Some(Box::new(move || kill9::reached(&child, &report)));
+    let r = update_profile(&f);
+    panic!("the edit ended before its kill point: {r:?}");
+}
+
+/// R4 at `point`: killed, relaunched, made again.
+fn profile_killed(point: &str) {
+    let (dir, report) = kill9::killed_at(PROFILE_CHILD, PROFILE_ROW, point);
+    let report: serde_json::Value = serde_json::from_str(&report).unwrap();
+    let landed = report["landed"].as_bool().unwrap();
+    let root = dir.path().to_path_buf();
+    let f = fixture_at(dir, &root, false, landed);
+    let wanted = merged(None, &edit());
+    if landed {
+        let doc = ProfileDocument {
+            id: Identifier::from([9; 32]),
+            revision: 1,
+            properties: wanted.clone(),
+        };
+        f.net.profiles.lock().unwrap().insert(id(ME), doc);
+    }
+    let shown = || f.s.dashpay(f.wallet).profile(b58(ME)).unwrap();
+    assert_eq!(shown(), None, "the killed edit remembered nothing");
+
+    update_profile(&f).unwrap();
+
+    assert_eq!(f.net.writes(), u32::from(!landed), "written once in all");
+    let doc = f.net.profiles.lock().unwrap()[&id(ME)].clone();
+    assert_eq!((doc.revision, doc.properties), (1, wanted));
+    let shown = shown().unwrap();
+    assert_eq!(
+        (
+            shown.display_name.as_deref(),
+            shown.public_message.as_deref()
+        ),
+        (Some("Alice"), Some("hi"))
+    );
+}
+
+#[test]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
+fn kill9_r4_profile_edit_killed_before_platform_has_it_publishes_once() {
+    profile_killed("before_write");
+}
+
+#[test]
+#[ignore = "H-03 kill -9 matrix (nightly): cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding"]
+fn kill9_r4_profile_edit_killed_once_platform_accepted_it_shows_it() {
+    profile_killed("accepted");
 }
