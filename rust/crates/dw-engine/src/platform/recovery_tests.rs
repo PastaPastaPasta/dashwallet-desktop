@@ -2785,12 +2785,22 @@ fn the_refetch_walks_sent_incoming_and_established_requests() {
     });
     let mut requests: Vec<_> = (held.into_iter())
         .filter_map(|h| match h {
-            Held::ContactRequest(r) => Some(r),
+            Held::SentRequest(r) => Some((true, r)),
+            Held::ContactRequest(r) => Some((false, r)),
             _ => None,
         })
         .collect();
-    requests.sort_by_key(|r| r.created_at);
-    assert_eq!(requests, vec![sent, incoming, ours, theirs]);
+    requests.sort_by_key(|(_, r)| r.created_at);
+    assert_eq!(
+        requests,
+        vec![
+            (true, sent),
+            (false, incoming),
+            (true, ours),
+            (false, theirs)
+        ],
+        "our own requests are held as sent"
+    );
 }
 
 /// Sol r1 R1, the reviewer's probe: an identity whose name verified as

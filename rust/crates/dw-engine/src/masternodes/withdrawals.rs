@@ -187,7 +187,8 @@ fn check_id(id: &str) -> Result<(), EngineError> {
     }
 }
 
-/// Whether a destination of the quote waits only for Platform (P4 (a)).
+/// Whether a destination of the quote waits only for Platform to catch up
+/// (P4 (a)) or for SPV to verify its read (H-09).
 fn behind(quote: &Quote) -> bool {
     [&quote.owner_destination, &quote.payout_destination]
         .into_iter()
@@ -197,6 +198,7 @@ fn behind(quote: &Quote) -> bool {
                 d,
                 Destination::Checking {
                     reason: WithdrawalCheckingReason::PlatformBehind
+                        | WithdrawalCheckingReason::Unverified
                 }
             )
         })

@@ -56,7 +56,7 @@ impl Env for SessionEnv {
     }
 
     fn rule_5(&self) -> Rule5 {
-        self.session.trust.rule_5()
+        self.session.trust.strict_rule_5()
     }
 
     /// The synced header tip (`sync.rs` `tip_height()`, not the chain-locked
@@ -482,8 +482,9 @@ impl NetworkSession {
     }
 
     /// P4's `withdrawal_ready`: after a quote whose destination read
-    /// `checking{platform_behind}`, the look again every `Waits::poll` for at
-    /// most `Waits::quote` (240 s) while only (a) fails, and §6's event once
+    /// `checking{platform_behind}` or `checking{unverified}` (H-09), the look
+    /// again every `Waits::poll` for at most `Waits::quote` (240 s) while
+    /// only (a) or (c) fails, and §6's event once
     /// (a)–(c) hold, so the host reads the quote again. Before consent: no
     /// grant waits on it. One per masternode; none starts once the close
     /// has begun, and the close stops the running ones.

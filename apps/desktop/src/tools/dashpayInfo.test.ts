@@ -253,7 +253,11 @@ describe("the rows (D4, D5)", () => {
     expect(quorumRow("spv", false)).toEqual({ title: "Quorum keys", value: "SPV (verified masternode list)" });
     expect(quorumRow("trustedFallback", false).value).toBe("Trusted service until masternode sync finishes");
     expect(quorumRow("trusted", false).value).toBe("Trusted service (degraded mode)");
-    expect(quorumRow("trusted", true).value).toBe("Trusted service only (developer setting)");
+    expect(quorumRow("trusted", true)).toEqual({
+      title: "Quorum keys",
+      value: "Trusted service only (developer setting)",
+      note: "Dash Wallet's own checks are off. Payments to contacts rely on the Platform service's data without them.",
+    });
     // The toggle unread is the default degraded mode, not the developer setting.
     expect(quorumRow("trusted", undefined).value).toBe("Trusted service (degraded mode)");
     // n8: the toggle's read failed: neither the degraded mode nor the developer setting is claimed.

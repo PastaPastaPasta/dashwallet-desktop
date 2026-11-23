@@ -15,7 +15,7 @@ import { CopyValue } from "../../components/detail";
 import { useRowContext } from "../../components/history";
 import { navigate, ui } from "../../app/ui";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
-import { avatarLetters, channelTitle, relationTitle, rowChips, shownName, subtitle } from "../../contacts/model";
+import { avatarLetters, channelTitle, relationTitle, rowChips, shownName, subtitle, unverifiedWarning } from "../../contacts/model";
 import { ACTIVITY_FILTERS, activityRow, detailsChanged, detailsForm, detailsOf, paneActions, type DetailsForm } from "../../contacts/pane";
 import { useContactActivity, useContactDetail } from "../../contacts/queries";
 import { useT } from "../../i18n";
@@ -139,9 +139,11 @@ function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo
   const pay = () => navigate("pay", { payTab: "contact", payContact: { walletId: pane.walletId, contact: c.contact } });
   let buttons;
   let note: string | null = null;
+  let warning: string | null = null;
   switch (offer.kind) {
     case "request":
       note = offer.acceptBlocked;
+      warning = unverifiedWarning("accept", c.unverified);
       buttons = (
         <>
           <DashButton
@@ -185,6 +187,11 @@ function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo
   }
   return (
     <div className="contact-pane-actions" data-testid="contact-pane-actions" ref={area}>
+      {warning && (
+        <p className="sheet-warning" role="note" data-testid="contact-pane-unverified">
+          {warning}
+        </p>
+      )}
       {buttons && <span className="add-contact-actions">{buttons}</span>}
       {note && (
         <p className="placeholder-note" data-testid="contact-pane-note">
