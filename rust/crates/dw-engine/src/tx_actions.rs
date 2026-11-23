@@ -648,7 +648,27 @@ impl NetworkSession {
                 .filter(|(t, _)| planned.contains(*t))
                 .map(|(t, r)| (*t, r.transaction.clone()))
                 .collect();
-            let checkpoint = self.abandon_rewind(wallet, &planned, &links, &info.core_wallet);
+            // A coin another transaction of the wallet still spends stays
+            // spent, and is neither released nor rescanned for: one
+            // key-wallet records and does not abandon (it keeps conflicting
+            // mempool spends), or one the history holds and this abandon
+            // leaves (it loads every stored record; key-wallet holds none
+            // for a payment hydrated at load).
+            let mut still_spent: HashSet<OutPoint> = (info.core_wallet.accounts.all_accounts())
+                .into_iter()
+                .flat_map(|a| a.transactions().iter())
+                .filter(|(t, _)| !planned.contains(*t))
+                .flat_map(|(_, r)| r.transaction.input.iter().map(|i| i.previous_output))
+                .collect();
+            (self.hub.history).read(&wallet, |txs| {
+                let left = (txs.iter()).filter(|(t, e)| {
+                    !e.is_abandoned() && !planned.contains(*t) && !links.contains(*t)
+                });
+                still_spent
+                    .extend(left.flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output)));
+            });
+            let checkpoint =
+                self.abandon_rewind(wallet, &planned, &links, &still_spent, &info.core_wallet);
             if let Some(checkpoint) = checkpoint {
                 self.record_rewind_locked(wallet, info, checkpoint).await?;
                 *recorded = (*recorded).into_iter().chain([checkpoint]).min();
@@ -666,23 +686,7 @@ impl NetworkSession {
                     info.core_wallet.observed_spent_outpoints(),
                 )
             });
-            // A coin another transaction of the wallet still spends stays
-            // spent: one key-wallet records (it keeps conflicting mempool
-            // spends), or one the history holds and this abandon leaves (it
-            // loads every stored record; key-wallet holds none for a
-            // payment hydrated at load).
-            let mut still_spent: HashSet<OutPoint> = (info.core_wallet.accounts.all_accounts())
-                .into_iter()
-                .flat_map(|a| a.transactions().values())
-                .flat_map(|r| r.transaction.input.iter().map(|i| i.previous_output))
-                .collect();
-            (self.hub.history).read(&wallet, |txs| {
-                let left = (txs.iter()).filter(|(t, e)| {
-                    !e.is_abandoned() && !abandoned.contains(*t) && !links.contains(*t)
-                });
-                still_spent
-                    .extend(left.flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output)));
-            });
+            debug_assert_eq!(abandoned, planned);
             released.retain(|o| !still_spent.contains(o));
             (abandoned, released, overridden.is_some(), copies, links)
         };
@@ -1065,12 +1069,15 @@ impl NetworkSession {
     /// name and those the history's record names (key-wallet holds none for
     /// a send an earlier session recorded, and may name fewer); one that
     /// neither holds replays from the birth height. No coins released, no
-    /// rewind. A coin of the abandoned `links` between them is none.
+    /// rewind. A coin of the abandoned `links` between them is none, and so
+    /// is one another transaction still spends (`still_spent`): it stays
+    /// spent, so nothing needs to be scanned for it again.
     fn abandon_rewind(
         &self,
         wallet: WalletId,
         abandoned: &BTreeSet<Txid>,
         links: &BTreeSet<Txid>,
+        still_spent: &HashSet<OutPoint>,
         info: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     ) -> Option<u32> {
         let birth = info.birth_height().saturating_sub(1);
@@ -1092,11 +1099,9 @@ impl NetworkSession {
             let recorded = (records.iter())
                 .flat_map(|r| own(&r.transaction, &mut r.input_details.iter().map(|i| i.index)));
             let held = (entry.iter()).flat_map(|e| own(&e.tx, &mut e.own_inputs.keys().copied()));
-            released.extend(
-                recorded
-                    .chain(held)
-                    .filter(|o| !abandoned.contains(&o.txid) && !links.contains(&o.txid)),
-            );
+            released.extend(recorded.chain(held).filter(|o| {
+                !abandoned.contains(&o.txid) && !links.contains(&o.txid) && !still_spent.contains(o)
+            }));
         }
         let mut lowest = None::<u32>;
         for o in &released {

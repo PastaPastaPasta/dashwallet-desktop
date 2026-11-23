@@ -2869,8 +2869,30 @@ fn second_spend_of(
     )
 }
 
-/// Asserts that U is stored spent and not offered (`held`), or stored
-/// unspent and offered; after a restart first when `restart`.
+/// Waits until the store has applied every wallet event sent before: the
+/// persistence adapter applies them in order, so once a marker payment to
+/// the wallet is stored, everything before it is.
+fn store_settled(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) {
+    static SEED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(200);
+    let seed = SEED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let marker = funding(seed, &[fresh_address(engine, session, id)], 1_000);
+    mempool(engine, session, id, &marker);
+    wait_stored(session, id, &[marker.txid()]);
+}
+
+/// The scan an abandon asked for, if one is pending: the funding block of
+/// `paid` again.
+fn scan_if_pending(engine: &Engine, session: &NetworkSession, id: WalletId, paid: &Transaction) {
+    let replay = Arc::clone(&session.live().unwrap().replay);
+    if engine.block_on(replay.get(id)).unwrap().is_some() {
+        mined(engine, session, id, TIP, vec![paid.clone()]);
+    }
+}
+
+/// Asserts that U is stored spent, not counted and not offered (`held`), or
+/// stored unspent: once any scan the app asked for has run and the store
+/// has applied it, then after a restart the same. A released U is counted
+/// and offered from the restart on (as any abandoned payment's coin is).
 fn coin_state(
     engine: &Engine,
     session: Arc<NetworkSession>,
@@ -2885,19 +2907,27 @@ fn coin_state(
         if !after.is_empty() {
             session = reopen(engine, session);
             start_spv(engine, &session);
-            mined(engine, &session, id, TIP, vec![paid.clone()]);
         }
+        scan_if_pending(engine, &session, id, paid);
+        store_settled(engine, &session, id);
         let row = stored_row(&session, id, u);
         assert_eq!(
             row.map(|(spent, _)| spent),
             Some(held),
             "{state}{after}: U stored spent: {row:?}"
         );
-        assert_eq!(
-            spendable(engine, &session, id, u),
-            !held,
-            "{state}{after}: U offered"
-        );
+        if held || !after.is_empty() {
+            assert_eq!(
+                coins(engine, &session, id).iter().any(|(o, _)| *o == u),
+                !held,
+                "{state}{after}: U counted"
+            );
+            assert_eq!(
+                spendable(engine, &session, id, u),
+                !held,
+                "{state}{after}: U offered"
+            );
+        }
     }
     session
 }
@@ -2915,32 +2945,43 @@ fn abandoning_one_of_two_spends_of_a_coin_keeps_it_until_the_other_goes() {
     coin_state(&engine, session, id, &paid, u, false, "both abandoned");
 }
 
-/// As above, both abandoned in one session: U is released in the store at
-/// once, and offered after a restart (as the coin of a single abandoned
-/// payment is).
+/// As above, both abandoned in one session: U is released at once, and
+/// counted and offered after a restart.
 #[test]
 fn abandoning_both_spends_of_a_coin_in_one_session_releases_it() {
     let (_dir, engine, session, id, paid, u, first, second) = two_spends_of_a_coin();
     start_spv(&engine, &session);
     abandon(&engine, &session, id, first.txid());
     abandon(&engine, &session, id, second.txid());
-    let row = stored_row(&session, id, u);
-    assert!(
-        row.is_some_and(|(spent, _)| !spent),
-        "U is not released: {row:?}"
-    );
+    coin_state(&engine, session, id, &paid, u, false, "both abandoned");
+}
+
+/// An abandon of one of two spends of U releases nothing, so it asks for no
+/// scan: a restart before any scan ran resumes none, and U stays stored
+/// spent, not counted and not offered (after a restart key-wallet holds no
+/// record of the other spend, so a scan would credit U).
+#[test]
+fn an_abandon_that_releases_nothing_leaves_no_scan_for_a_restart() {
+    let (_dir, engine, session, id, paid, u, first, _second) = two_spends_of_a_coin();
+    start_spv(&engine, &session);
+    abandon(&engine, &session, id, first.txid());
+    let replay = Arc::clone(&session.live().unwrap().replay);
+    let record = engine.block_on(replay.get(id)).unwrap();
     let session = reopen(&engine, session);
     start_spv(&engine, &session);
-    mined(&engine, &session, id, TIP, vec![paid.clone()]);
-    coin_state(
-        &engine,
-        session,
-        id,
-        &paid,
-        u,
-        false,
-        "both abandoned, a restart",
+    scan_if_pending(&engine, &session, id, &paid);
+    store_settled(&engine, &session, id);
+    let row = stored_row(&session, id, u);
+    assert_eq!(
+        row.map(|(spent, _)| spent),
+        Some(true),
+        "U stored spent: {row:?}"
     );
+    assert!(
+        !coins(&engine, &session, id).iter().any(|(o, _)| *o == u),
+        "U is counted"
+    );
+    assert!(record.is_none(), "the abandon asked for a scan: {record:?}");
 }
 
 /// As above, with a restart before the first abandon: key-wallet then holds
@@ -2954,7 +2995,6 @@ fn abandoning_one_of_two_spends_of_a_coin_after_a_restart_keeps_it_until_the_oth
         (false, false)
     );
     start_spv(&engine, &session);
-    mined(&engine, &session, id, TIP, vec![paid.clone()]);
     abandon(&engine, &session, id, first.txid());
     let session = coin_state(&engine, session, id, &paid, u, true, "one abandoned");
     abandon(&engine, &session, id, second.txid());
@@ -3072,6 +3112,143 @@ fn abandoning_a_spend_of_a_coin_an_abandoned_payment_locked_later_spends_keeps_i
         row.is_some_and(|(spent, _)| spent),
         "A is released although P's lock spends it: {row:?}"
     );
+}
+
+/// A coin U of the wallet that only a pending payment from elsewhere
+/// spends: another device of the wallet's, or a payment with another
+/// party's input too (as a CoinJoin mix or a co-signed one is). key-wallet
+/// keeps no record of it across a restart; the history does. After the
+/// restart U stays stored spent. A rescan from the wallet's birth credits U
+/// again: it is stored unspent and counted in the balance, but the
+/// history's pending spend keeps it reserved, after a restart too: never
+/// offered, coin control's send of it refuses and the automatic choice
+/// passes it over. Once that payment is in a block, U is gone.
+#[test]
+fn a_coin_a_pending_payment_from_elsewhere_spends_is_never_offered_after_a_rescan() {
+    for multi_party in [false, true] {
+        let tag = if multi_party {
+            "multi-party"
+        } else {
+            "other device"
+        };
+        let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+        mined(&engine, &session, id, TIP, vec![paid.clone()]);
+        let u = OutPoint::new(paid.txid(), 0);
+        let owner = Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest)
+            .unwrap();
+        let mut spend = super::spend_of(
+            u,
+            vec![
+                (
+                    fresh_address(&engine, &session, id).script_pubkey(),
+                    COIN / 4,
+                ),
+                (elsewhere(), COIN * 3 / 4 - 2_000),
+            ],
+        );
+        if multi_party {
+            spend.input.push(TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([77; 32]), 3),
+                ..Default::default()
+            });
+            spend.output[1].value += COIN;
+        }
+        let other = super::signed_by_wallet(&engine, &session, id, &owner, spend);
+        mempool(&engine, &session, id, &other);
+        wait_stored(&session, id, &[other.txid()]);
+
+        let session = reopen(&engine, session);
+        assert_eq!(
+            held_in(&engine, &session, id, other.txid()),
+            (false, false),
+            "{tag}"
+        );
+        start_spv(&engine, &session);
+        store_settled(&engine, &session, id);
+        let counted = |s: &Arc<NetworkSession>| coins(&engine, s, id).iter().any(|(o, _)| *o == u);
+        let row = stored_row(&session, id, u);
+        assert_eq!(
+            row.map(|(spent, _)| spent),
+            Some(true),
+            "{tag}, a restart: {row:?}"
+        );
+        assert!(!counted(&session), "{tag}, a restart: U is counted");
+
+        engine
+            .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+            .unwrap();
+        mined(&engine, &session, id, TIP, vec![paid.clone()]);
+        store_settled(&engine, &session, id);
+        let mut session = session;
+        for state in ["a rescan", "a rescan and a restart"] {
+            if state != "a rescan" {
+                session = reopen(&engine, session);
+                start_spv(&engine, &session);
+                store_settled(&engine, &session, id);
+            }
+            let row = stored_row(&session, id, u);
+            assert_eq!(
+                row.map(|(spent, _)| spent),
+                Some(false),
+                "{tag}, {state}: {row:?}"
+            );
+            assert!(counted(&session), "{tag}, {state}: U is not counted");
+            let b = balances(&session, id);
+            let sum: u64 = coins(&engine, &session, id).iter().map(|(_, v)| v).sum();
+            assert_eq!(b.total, sum, "{tag}, {state}");
+            assert!(
+                !spendable(&engine, &session, id, u),
+                "{tag}, {state}: U is offered"
+            );
+            let (_draft, by_outpoint) = prepare(
+                &engine,
+                &session,
+                id,
+                CoinSource::Outpoints(vec![u]),
+                COIN / 2,
+                false,
+                &Arc::new(Accept::default()),
+            );
+            assert!(
+                matches!(
+                    &by_outpoint,
+                    Err(crate::EngineError::Send(crate::send::SendFailure::OutpointUnavailable(o)))
+                        if *o == u
+                ),
+                "{tag}, {state}: {:?}",
+                by_outpoint.map(|_| ())
+            );
+            let (_draft, by_any) = prepare(
+                &engine,
+                &session,
+                id,
+                CoinSource::Any,
+                11 * COIN + COIN / 2,
+                false,
+                &Arc::new(Accept::default()),
+            );
+            assert!(
+                matches!(
+                    &by_any,
+                    Err(crate::EngineError::Send(
+                        crate::send::SendFailure::AmountExceedsBalance { .. }
+                    ))
+                ),
+                "{tag}, {state}: the automatic choice takes U: {:?}",
+                by_any.map(|_| ())
+            );
+        }
+
+        mined(&engine, &session, id, TIP + 1, vec![other.clone()]);
+        store_settled(&engine, &session, id);
+        let row = stored_row(&session, id, u);
+        assert_eq!(
+            row.map(|(spent, _)| spent),
+            Some(true),
+            "{tag}, in a block: {row:?}"
+        );
+        assert!(!counted(&session), "{tag}, in a block: U is counted");
+    }
 }
 
 /// A single Abandon of a locked payment a ChainLock beat, stopped after
