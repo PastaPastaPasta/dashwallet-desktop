@@ -153,6 +153,12 @@ fn rows(engine: &Engine, session: &NetworkSession, id: WalletId) -> Rows {
         .unwrap()
 }
 
+/// The label and address-book rows of `rows` (two labels, one entry from
+/// [`store_rows`]).
+fn label_rows(rows: &Rows) -> usize {
+    rows.labels.iter().map(|t| t.rows.len()).sum()
+}
+
 fn no_rows() -> Rows {
     Rows {
         locks: vec![],
@@ -172,7 +178,7 @@ fn restored_rows(dir: &Path, backup: &Path, id: WalletId) -> Rows {
     let (engine, session) = launch(&dir.join("control"));
     assert_eq!(restore(&engine, &session, backup).unwrap(), vec![id]);
     let rows = rows(&engine, &session, id);
-    assert!(rows.locks.len() == 1 && rows.salt.is_some() && rows.labels.len() == 2);
+    assert!(rows.locks.len() == 1 && rows.salt.is_some() && label_rows(&rows) == 3);
     rows
 }
 
@@ -677,7 +683,7 @@ fn a_restore_to_a_registered_wallet_failing_after_its_rows_puts_its_settings_bac
     let left = rows(&engine, &session, id);
     assert_eq!(left.salt, None);
     assert_eq!(left.locks, vec![(TXID.to_owned(), 3)]);
-    assert_eq!(left.labels.len(), 2);
+    assert_eq!(label_rows(&left), 3);
 }
 
 /// A bundle carrying no app rows still replaces the rows a stopped restore

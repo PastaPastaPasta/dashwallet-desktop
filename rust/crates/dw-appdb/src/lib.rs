@@ -512,7 +512,8 @@ pub struct DpContactPayoutRow {
 }
 
 /// Settings and lock rows of one wallet as they were before
-/// [`AppDb::write_settings_and_locks`] replaced them.
+/// [`AppDb::write_settings_and_locks`] replaced them, and the settings rows
+/// a backup's rows added, which putting them back deletes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PriorRows {
     wallet_id: String,
@@ -2797,6 +2798,36 @@ mod tests {
         db.restore_settings_and_locks(&prior).unwrap();
         assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("old"));
         assert_eq!(db.setting(W, "b").unwrap(), None);
+    }
+
+    /// A backup's settings rows a restore added, a non-UTF-8 key among
+    /// them, are deleted again by the put-back; the wallet's own stay.
+    #[test]
+    fn settings_a_backup_added_are_deleted_by_the_put_back() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(W, "own", Some("mine")).unwrap();
+        let row = |key: SqlValue| vec![SqlValue::Text(W.into()), key, SqlValue::Text("v".into())];
+        let tables = [TableRows {
+            table: "settings_kv".into(),
+            columns: vec!["scope".into(), "key".into(), "value".into()],
+            rows: vec![
+                row(SqlValue::Text("own".into())),
+                row(SqlValue::NonUtf8Text(b"k\xff".to_vec())),
+            ],
+        }];
+        let backup = BackupRows {
+            tables: &tables,
+            replace: false,
+        };
+        let keep = |_: &str, _: &str, new: &str| new.to_owned();
+        let prior = (db.write_settings_and_locks(W, &[], &keep, &[], 1, Some(backup))).unwrap();
+        let count = || db.export_wallet_rows(W).unwrap()[0].rows.len();
+        assert_eq!(count(), 2);
+
+        db.restore_settings_and_locks(&prior).unwrap();
+
+        assert_eq!(count(), 1);
+        assert_eq!(db.setting(W, "own").unwrap().as_deref(), Some("mine"));
     }
 
     #[test]
