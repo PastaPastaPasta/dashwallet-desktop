@@ -1604,22 +1604,37 @@ impl AppDb {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    /// [`Self::settings_with_prefix`], a value that is not text read as `None`
-    /// instead of failing the read of every row.
+    /// [`Self::settings_with_prefix`] that no stored row can fail: a row whose
+    /// key is not text is left out, and a value that is not text reads as
+    /// `None`. Only the query itself (I/O, a locked or damaged database)
+    /// fails the read.
     pub fn settings_with_prefix_lossy(
         &self,
         scope: &str,
         prefix: &str,
     ) -> Result<Vec<(String, Option<String>)>> {
         let conn = self.conn();
+        #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+        fault::hit_on(
+            &conn,
+            &format!("settings.read_{prefix}"),
+            fault::Stage::Before,
+        )?;
         let mut stmt = conn.prepare(
             "SELECT key, value FROM settings_kv WHERE scope = ?1 AND substr(key, 1, ?3) = ?2
              ORDER BY key",
         )?;
+        let text = |v: rusqlite::types::ValueRef<'_>| v.as_str().ok().map(str::to_owned);
         let rows = stmt.query_map(params![scope, prefix, prefix.chars().count() as i64], |r| {
-            Ok((r.get(0)?, r.get_ref(1)?.as_str().ok().map(str::to_owned)))
+            Ok((text(r.get_ref(0)?), text(r.get_ref(1)?)))
         })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        let mut out = Vec::new();
+        for row in rows {
+            if let (Some(key), value) = row? {
+                out.push((key, value));
+            }
+        }
+        Ok(out)
     }
 
     // ---- DashPay identity choices ----

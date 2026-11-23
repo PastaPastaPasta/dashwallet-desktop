@@ -1830,12 +1830,16 @@ fn a_half_done_abandon_without_a_record_or_a_readable_copy_releases_its_coins() 
     );
 }
 
-/// A half-done abandon whose coins only its sent mark names, while the
-/// sent marks don't read (a key that isn't text fails the query): the load
-/// fails and changes nothing; once they read, it releases A.
-#[test]
-fn a_half_done_abandon_fails_the_load_while_its_sent_marks_do_not_read() {
-    let (_dir, engine, session, id, payment, a, _paid) = pending_payment_of_one_coin();
+/// A half-done abandon whose coins only its sent mark names (no stored
+/// record, no readable copy).
+fn half_done_named_by_its_sent_mark() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    OutPoint,
+) {
+    let (dir, engine, session, id, payment, a, _paid) = pending_payment_of_one_coin();
     let txid = payment.txid();
     fail_the_next_sweep(&session);
     assert!(try_abandon(&engine, &session, id, txid).is_err());
@@ -1848,31 +1852,90 @@ fn a_half_done_abandon_fails_the_load_while_its_sent_marks_do_not_read() {
         txid,
         "DELETE FROM core_transactions WHERE wallet_id = ?1 AND txid = ?2",
     );
-    let conn = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
-    conn.busy_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
-    let bad_key = "CAST(X'73656e743aff' AS TEXT)";
-    conn.execute(
-        &format!("INSERT INTO settings_kv (scope, key, value) VALUES (?1, {bad_key}, '')"),
-        [id.to_string()],
-    )
-    .unwrap();
-
-    assert!(
-        finish_now(&session, id).is_err(),
-        "swept with nothing released"
-    );
     assert_eq!(stored_spent(&session, id, a), Some(true));
-    conn.execute(
-        &format!("DELETE FROM settings_kv WHERE scope = ?1 AND key = {bad_key}"),
-        [id.to_string()],
-    )
-    .unwrap();
-    finish_now(&session, id).unwrap();
+    (dir, engine, session, id, a)
+}
+
+/// A read of the sent marks that fails at the start fails the start and
+/// changes nothing; the next start, with the read back, finishes the
+/// abandon and releases A.
+#[test]
+fn a_failed_read_of_the_sent_marks_fails_the_start_until_it_reads() {
+    let (_dir, engine, session, id, a) = half_done_named_by_its_sent_mark();
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(crate::DashNetwork::Regtest))
+            .unwrap()
+    );
+    let stage = dw_appdb::fault::Stage::Before;
+    dw_appdb::fault::arm(&path, "settings.read_sent:", stage);
+    let failed =
+        engine.block_on(engine.open_network(crate::DashNetwork::Regtest, super::offline()));
+    assert!(failed.is_err(), "the start swept with nothing released");
+    dw_appdb::fault::disarm(&path);
+
+    let session = super::open(&engine);
     assert_eq!(
         stored_spent(&session, id, a),
         Some(false),
         "A was not released"
+    );
+}
+
+/// A sent mark row whose key isn't text, and another whose value doesn't
+/// parse, fail neither the start nor the abandon it finishes: A is released
+/// from the intact mark.
+#[test]
+fn a_bad_sent_row_does_not_fail_the_start() {
+    use dashcore::hashes::Hash;
+    let (_dir, engine, session, id, a) = half_done_named_by_its_sent_mark();
+    let conn = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    conn.execute(
+        "INSERT INTO settings_kv (scope, key, value) VALUES (?1, CAST(X'73656e743aff' AS TEXT), '')",
+        [id.to_string()],
+    )
+    .unwrap();
+    let other = Txid::from_byte_array([0x42; 32]);
+    conn.execute(
+        "INSERT INTO settings_kv (scope, key, value) VALUES (?1, ?2, 'not an outpoint')",
+        [id.to_string(), format!("sent:{other}")],
+    )
+    .unwrap();
+    drop(conn);
+
+    let session = reopen(&engine, session);
+    assert_eq!(
+        stored_spent(&session, id, a),
+        Some(false),
+        "A was not released"
+    );
+}
+
+/// An abandoned mark row whose key isn't text fails neither the start nor
+/// the half-done abandon beside it, which the start finishes.
+#[test]
+fn a_bad_abandoned_row_does_not_fail_the_start() {
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, payment.txid()).is_err());
+    let conn = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    conn.execute(
+        "INSERT INTO settings_kv (scope, key, value) VALUES (?1, CAST(X'6162616e646f6e65643aff' AS TEXT), '')",
+        [id.to_string()],
+    )
+    .unwrap();
+    drop(conn);
+
+    let session = reopen(&engine, session);
+    assert!(
+        !record_stored(&session, id, payment.txid()),
+        "the abandon is not finished"
     );
 }
 
