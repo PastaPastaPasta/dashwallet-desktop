@@ -148,6 +148,9 @@ struct FakeNet {
     fetched: Mutex<Vec<(Identifier, bool)>>,
     /// The wallet whose locks the fetch checks.
     wallet: Option<crate::WalletId>,
+    /// A wallet the next fetch takes out of the manager (its handle stays)
+    /// before it answers.
+    detach_on_fetch: Mutex<Option<Arc<platform_wallet::PlatformWallet>>>,
 }
 
 impl IdentityNet for FakeNet {
@@ -160,7 +163,16 @@ impl IdentityNet for FakeNet {
             Some(e) => Err(e),
             None => Ok(self.identities.lock().unwrap().get(&id).cloned()),
         };
-        noted(self.verified, answer)
+        let answer = noted(self.verified, answer);
+        match self.detach_on_fetch.lock().unwrap().take() {
+            None => answer,
+            Some(w) => Box::pin(async move {
+                let mut wm = w.wallet_manager().write().await;
+                wm.remove_wallet(&w.wallet_id()).unwrap();
+                drop(wm);
+                answer.await
+            }),
+        }
     }
 
     fn domain(
@@ -834,4 +846,40 @@ fn set_main_signals_the_identities_and_the_status() {
     let marks = pump.platform_marks.lock().unwrap().take().unwrap();
     let both = BTreeSet::from([PlatformChange::Identities, PlatformChange::Startup]);
     assert!(marks.contains(&(f.wallet, both)), "{marks:?}");
+}
+
+/// #263: a refresh whose wallet leaves the manager while Platform's answer
+/// is fetched fails; no panic.
+#[test]
+fn a_refresh_whose_wallet_goes_during_the_fetch_does_not_panic() {
+    use crate::wallet_read::gone_tests::assert_gone;
+    let f = fixture(false);
+    give_identities(&f);
+    let net = install(
+        &f,
+        FakeNet {
+            identities: Mutex::new(HashMap::from([(
+                id(MINE),
+                identity(MINE, base_keys(), 999_999, 4),
+            )])),
+            ..FakeNet::default()
+        },
+    );
+    let w = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+    *net.detach_on_fetch.lock().unwrap() = Some(w);
+    let r = f.engine.block_on(dp(&f).refresh_identity(b58(MINE)));
+    assert_gone(r.map(drop).map_err(|e| e.code()));
+    assert_eq!(net.fetched.lock().unwrap().len(), 1, "gone while fetched");
+}
+
+/// #263: a refresh of a wallet gone from the manager before its first read
+/// fails; no panic.
+#[test]
+fn a_refresh_of_a_wallet_gone_from_the_manager_does_not_panic() {
+    use crate::wallet_read::gone_tests::{assert_gone, detach};
+    let f = fixture(false);
+    give_identities(&f);
+    detach(&f.engine, &f.session, f.wallet);
+    let r = f.engine.block_on(dp(&f).refresh_identity(b58(MINE)));
+    assert_gone(r.map(drop).map_err(|e| e.code()));
 }

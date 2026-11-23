@@ -1385,3 +1385,32 @@ fn the_unconfirmed_nonce_is_reused_only_where_drive_takes_it() {
     );
     assert_eq!(at(5, 0).next(id, 5).unwrap(), 6, "used at the tip");
 }
+
+/// #263: a withdrawal's identity read, for a wallet gone from the manager,
+/// fails; no panic.
+#[test]
+fn a_withdrawal_of_a_wallet_gone_from_the_manager_does_not_panic() {
+    let world = World::new(u64::MAX / 2);
+    let w = world.f.detach();
+    let r = world.f.engine.block_on(own(&w, id(ME)));
+    assert!(matches!(r, Err(PlatformError::WalletNotFound)), "{r:?}");
+}
+
+/// #263: the recent withdrawals' identity read, for a wallet gone from the
+/// manager, fails; no panic.
+#[test]
+fn recent_withdrawals_of_a_wallet_gone_from_the_manager_do_not_panic() {
+    let world = World::new(u64::MAX / 2);
+    let f = &world.f;
+    let w = f.detach();
+    let me = id(ME).to_string(Encoding::Base58);
+    let network = f.s.vault.network();
+    let r = (f.engine).block_on(recent(&*world.net, &w, network, &me));
+    assert!(
+        matches!(
+            r,
+            Err(CreditsError::Platform(PlatformError::WalletNotFound))
+        ),
+        "{r:?}"
+    );
+}

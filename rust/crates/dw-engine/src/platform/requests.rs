@@ -101,7 +101,9 @@ struct Own {
 impl Own {
     /// `identity` of the wallet, else `identity.not_found`.
     async fn of(wallet: &PlatformWallet, pair: &Pair) -> Result<Self, ContactError> {
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(wallet)
+            .await
+            .map_err(PlatformError::from)?;
         let m = (state.identity_manager.managed_identity(&pair.identity))
             .filter(|m| m.wallet_id == Some(wallet.wallet_id()))
             .ok_or_else(not_found)?;
@@ -585,7 +587,9 @@ async fn read_back(
 /// records one it sent: eligibility and the contact list see it before the
 /// next DashPay pass. A failure to persist is logged; the pass records it.
 async fn remember_sent(wallet: &PlatformWallet, request: &ContactRequest) {
-    let mut state = wallet.state_mut().await;
+    let Ok(mut state) = crate::wallet_read::info_mut_of(wallet).await else {
+        return;
+    };
     let Some(managed) = (state.identity_manager).managed_identity_mut(&request.sender_id) else {
         return;
     };

@@ -5272,6 +5272,15 @@ button.bell-row-open:focus-visible {
   line-height: var(--dw-type-footnote-line);
 }
 
+/* C-funding F19: a source that cannot pay shows why and cannot be chosen. */
+.pay-with-source[data-disabled] {
+  cursor: default;
+}
+
+.pay-with-source[data-disabled] .topup-choice-amount {
+  color: var(--dw-role-text-secondary);
+}
+
 .topup-title {
   display: flex;
   align-items: center;
@@ -6205,6 +6214,32 @@ button.bell-row-open:focus-visible {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+/* Change keys or payout: the review card and a gap above each key's choices. */
+.mg-change-review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+}
+
+.sheet .mg-operator-body {
+  gap: var(--dw-space-s);
+}
+
+.mg-operator-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding-inline-start: var(--dw-space-l);
+}
+
+.mg-change-keys .mg-choices + .mg-choices,
+.mg-change-keys .mg-choices:first-of-type {
+  margin-top: var(--dw-space-s);
 }
 
 .page-masternodes .mg-notice {
