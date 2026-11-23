@@ -49,7 +49,7 @@ describe("transaction detail status", () => {
 });
 
 describe("the abandon confirmation", () => {
-  const OUTGOING = "Abandon this transaction? Dash Wallet stops counting it. Coins it spent come back only if nothing else spent them. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.";
+  const OUTGOING = "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.";
   const INCOMING = "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.";
 
   it("warns about paying twice when the wallet spent inputs", () => {

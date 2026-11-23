@@ -822,7 +822,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-action-note")).toBeVisible();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it. Coins it spent come back only if nothing else spent them. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");

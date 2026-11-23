@@ -25,6 +25,7 @@ import { FiatLine, timeText, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
 import { explorerUrl } from "../format/explorer";
 import { fiatText } from "../format/fiat";
+import { t } from "../i18n";
 import { Avatar } from "./contacts/Avatar";
 import { contactLetters, contactName, detailDate, detailWhat, detailWho, isProblem, rowDate, shownAmount, txIcon } from "../format/tx";
 
@@ -162,9 +163,7 @@ function LabelEditor({ walletId, txid, label }: { walletId: string; txid: string
  * `from_me`), not the amount's sign: a payment to yourself nets only the fee but spends this wallet's
  * coins. An unknown debit takes the spending text. */
 export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit">): string {
-  return x.totalDebit === 0
-    ? "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again."
-    : "Abandon this transaction? Dash Wallet stops counting it. Coins it spent come back only if nothing else spent them. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.";
+  return x.totalDebit === 0 ? t("activity.abandon.notSpending") : t("activity.abandon.spending");
 }
 
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
