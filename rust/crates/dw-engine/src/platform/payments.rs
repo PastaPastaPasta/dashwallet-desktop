@@ -9,6 +9,7 @@ use super::contacts::ContactSummary;
 use super::dashpay::DashPay;
 use super::errors::{ContactError, PlatformError};
 use super::flows::GrantRequest;
+use super::shielded_pool::{on_pool, on_pool_signing};
 
 /// A per-contact send lock: a Core payment after an ambiguous broadcast
 /// (`dp_payment_lock`), or a `pending` payout from another balance
@@ -187,6 +188,16 @@ impl DashPay {
         source: PaymentSource,
     ) -> Result<ContactPayQuote, ContactError> {
         let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        if source == PaymentSource::Shielded {
+            {
+                let _op = self.session.try_enter().map_err(PlatformError::from)?;
+                (self.session).payout_quote_gates(id, &identity, &contact, credits, source)?;
+            }
+            let quoted = on_pool(&self.session, id, move |_, lib| async move {
+                Ok(super::shielded_payout::quote(&lib, credits).await)
+            });
+            return quoted.await?;
+        }
         self.session
             .on_runtime(async move {
                 Ok(session
@@ -224,6 +235,25 @@ impl DashPay {
             grant,
             confirm_unrecorded,
         };
+        if source == PaymentSource::Shielded {
+            // The payee, the pair's lock and rule 5 before the pool opens.
+            let gated = self
+                .session
+                .on_runtime(async move {
+                    let _op = session.enter().await?;
+                    Ok(session
+                        .payout_gates(id, &call)
+                        .await
+                        .map(|pair| (pair, call)))
+                })
+                .await
+                .map_err(PlatformError::from)?;
+            let (pair, call) = gated?;
+            let paid = on_pool_signing(&self.session, id, move |session, lib| async move {
+                Ok(super::shielded_payout::pay_gated(&session, id, &lib, pair, call).await)
+            });
+            return paid.await?;
+        }
         self.session
             .on_runtime(async move { Ok(session.contact_pay_of(id, call).await) })
             .await

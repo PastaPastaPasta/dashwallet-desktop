@@ -655,6 +655,11 @@ pub struct ShieldedActivity {
     pub block_height: Option<u64>,
     pub status: ShieldedActivityStatus,
     pub created_at: Option<u64>,
+    /// The DashPay contact a withdrawal paid, when it was a contact
+    /// payment.
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<crate::dto::history::TxCounterparty>,
 }
 
 impl From<engine::ShieldedActivity> for ShieldedActivity {
@@ -670,6 +675,7 @@ impl From<engine::ShieldedActivity> for ShieldedActivity {
             block_height,
             status,
             created_at,
+            contact,
         } = a;
         ShieldedActivity {
             id,
@@ -682,6 +688,7 @@ impl From<engine::ShieldedActivity> for ShieldedActivity {
             block_height,
             status: status.into(),
             created_at,
+            contact: contact.map(Into::into),
         }
     }
 }

@@ -151,6 +151,7 @@ use super::credits::FundAmount;
 use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait as Wait};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
+use super::payments::PaymentSource;
 use super::registration::{RegistrationWait, ShieldedFacts, funding_cap, grant_cap};
 use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable,
@@ -172,7 +173,7 @@ pub(crate) const SHIELDED_DB_FILE: &str = "shielded.sqlite";
 /// The most rows one history page returns.
 const MAX_HISTORY: u32 = 500;
 /// Orchard's memo field.
-const MEMO_BYTES: usize = 36;
+pub(super) const MEMO_BYTES: usize = 36;
 /// The fewest actions a spend's bundle carries (Orchard pads a one-note
 /// spend to two), which the library's selection and fee assume.
 pub(crate) const MIN_ACTIONS: usize = 2;
@@ -610,7 +611,7 @@ pub(crate) async fn marked_status(
 /// dispatch journal is read no marker can be (a relaunch's), so every
 /// spend waits then, as a shield does ([`journal_unread`]); read failures
 /// refuse too.
-async fn confirm_unrecorded(
+pub(super) async fn confirm_unrecorded(
     session: &NetworkSession,
     wallet: WalletId,
     confirmed: bool,
@@ -862,13 +863,14 @@ pub(crate) fn activity(e: ShieldedActivityEntry, network: Network) -> ShieldedAc
             Status::Unknown => ShieldedActivityStatus::Unknown,
         },
         created_at: (e.created_at_ms != 0).then_some(e.created_at_ms / 1000),
+        contact: None,
     }
 }
 
 // MARK: spends
 
 /// Where a spend goes.
-enum To {
+pub(super) enum To {
     Shielded(OrchardAddress, String),
     Core(Address),
 }
@@ -973,7 +975,7 @@ fn spend_quote(credits: u64, fee: u64, expected_duffs: Option<u64>) -> ShieldedS
 
 /// The quote of an unshield of `credits`: Platform's withdrawal range
 /// (`withdrawal::Rules`, the range a payout clears dust in) and its fee.
-async fn unshield_plan(
+pub(super) async fn unshield_plan(
     lib: &impl ShieldedLib,
     credits: u64,
 ) -> Result<ShieldedSpendQuote, ShieldedError> {
@@ -1018,6 +1020,10 @@ pub(super) async fn authority(
             }
             Ok(lease)
         }
+        // A pool spend's payout is the Shielded source's (C-funding P15).
+        None if flow == FlowKind::ContactPayFromBalance => Ok(session
+            .begin_payout_lease(wallet, PaymentSource::Shielded, &[grant.to_owned()])
+            .await?),
         None => Ok(session
             .begin_lease(wallet, flow, &[grant.to_owned()])
             .await?),
@@ -1064,9 +1070,9 @@ fn pool_notes(text: &str) -> Option<(u64, u64)> {
 }
 
 /// What a spend that went out left.
-struct Spent {
+pub(super) struct Spent {
     balance: u64,
-    state: ShieldedSpendState,
+    pub(super) state: ShieldedSpendState,
     unresolved: Option<UnresolvedSpend>,
 }
 
@@ -1111,6 +1117,21 @@ async fn mark_unrecorded(
         .await
 }
 
+/// What a spend is quoted as before anything is signed: a send to a
+/// shielded address, or a withdrawal to Core.
+pub(super) enum Quoting<'a> {
+    Send(&'a str),
+    Withdraw,
+}
+
+/// A spend past its gates under the wallet's lock: the passes held, its
+/// quote under the hold, the lease that signs it.
+pub(super) struct Armed<'s> {
+    hold: tokio::sync::RwLockWriteGuard<'s, ()>,
+    pub(super) quote: ShieldedSpendQuote,
+    pub(super) lease: Lease,
+}
+
 /// A spend of `credits` under a `ShieldedSpend` lease from `grant`,
 /// charged the total of its quote under the hold, so what the lease is
 /// charged is what the library builds (Opus r1 m1). One the library could
@@ -1125,10 +1146,34 @@ async fn spend(
     to: &To,
     memo: [u8; MEMO_BYTES],
 ) -> Result<Spent, ShieldedError> {
-    let operation = match to {
-        To::Shielded(..) => "transfer",
-        To::Core(_) => "withdraw",
+    let quoting = match to {
+        To::Shielded(_, text) => Quoting::Send(text),
+        To::Core(_) => Quoting::Withdraw,
     };
+    let armed = arm(
+        session,
+        wallet,
+        lib,
+        (credits, quoting),
+        grant,
+        FlowKind::ShieldedSpend,
+    )
+    .await?;
+    send_armed(session, wallet, lib, armed, to, memo).await
+}
+
+/// A spend's steps up to its signature, under the wallet's lock: the hook
+/// again, the passes held, the quote again under the hold, the grant's
+/// cap, then the `flow` lease redeemed from `grant`. Every refusal keeps
+/// the grant.
+pub(super) async fn arm<'s>(
+    session: &'s Arc<NetworkSession>,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    (credits, quoting): (u64, Quoting<'_>),
+    grant: &str,
+    flow: FlowKind,
+) -> Result<Armed<'s>, ShieldedError> {
     // Again under the wallet's lock, before the quote, the grant or a key.
     unhooked(lib).await?;
     // No pass runs from here until the library's call has returned and its
@@ -1141,9 +1186,9 @@ async fn spend(
     // `priced_gate` reads now. Checked against the grant before it is
     // redeemed, so every refusal keeps it: a fee above what the grant
     // confirmed is `platform.grant_exceeded`, nothing signed (Opus r1 m1).
-    let quote = match to {
-        To::Shielded(_, text) => send_quote(lib, text, credits).await?,
-        To::Core(_) => unshield_plan(lib, credits).await?,
+    let quote = match quoting {
+        Quoting::Send(text) => send_quote(lib, text, credits).await?,
+        Quoting::Withdraw => unshield_plan(lib, credits).await?,
     };
     let remaining = grant_cap(session, wallet, grant, BudgetPurpose::Credits).await?;
     if quote.total_credits > remaining {
@@ -1154,7 +1199,24 @@ async fn spend(
         }
         .into());
     }
-    let lease = authority(session, wallet, grant, FlowKind::ShieldedSpend).await?;
+    let lease = authority(session, wallet, grant, flow).await?;
+    Ok(Armed { hold, quote, lease })
+}
+
+/// Signs and sends the spend `armed` holds to `to`; see [`spend`].
+pub(super) async fn send_armed(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    armed: Armed<'_>,
+    to: &To,
+    memo: [u8; MEMO_BYTES],
+) -> Result<Spent, ShieldedError> {
+    let operation = match to {
+        To::Shielded(..) => "transfer",
+        To::Core(_) => "withdraw",
+    };
+    let Armed { hold, quote, lease } = armed;
     let permit = write_permit(&lease, operation, quote.total_credits)?;
     // The records and reservations before, to tell this spend's (spends of
     // the wallet run one at a time, under its lock, and no pass runs
@@ -1300,7 +1362,7 @@ async fn spend(
 /// would send what the engine never accepted. `send` and `unshield` ask
 /// before anything else, so the refusal quotes nothing, issues no address
 /// and keeps the grant.
-async fn unhooked(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
+pub(super) async fn unhooked(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
     if !lib.hooked().await {
         return Err(PlatformError::Unavailable.into());
     }
@@ -2284,10 +2346,16 @@ impl ShieldedDispatch for EngineDispatch {
             selected: selected.into_iter().collect(),
             published: payload.published_nullifiers,
         };
+        let wallet = WalletId(payload.wallet_id);
+        // A contact payout's row names the transition before its artifact
+        // exists (C-funding P6).
+        (session
+            .accept_payout_spend(wallet, &payload.kind, payload.st_hash)
+            .await)
+            .map_err(refused)?;
         if let Some(why) = session.platform.hook_fence.refusal() {
             return Err(refused(why));
         }
-        let wallet = WalletId(payload.wallet_id);
         match (session.leases.record_shielded_artifact(wallet, artifact)).await {
             Ok(true) => Ok(()),
             Ok(false) => Err(refused("the activity already has an artifact")),
@@ -3528,6 +3596,8 @@ async fn pass(
     }
     for wallet in pass_wallets(manager, &coordinator).await {
         consume_dispositions(session, &coordinator, WalletId(wallet)).await;
+        // A contact payout settles on its artifact's status (C-funding P7).
+        session.settle_shielded_payouts(WalletId(wallet)).await;
     }
     for (&id, outcome) in &summary.wallet_results {
         let WalletShieldedOutcome::Ok(scan) = outcome else {

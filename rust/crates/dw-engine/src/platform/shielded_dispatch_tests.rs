@@ -1141,3 +1141,101 @@ fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
         assert_eq!(pool::spend_error(refused).code(), "shielded.spend_refused");
     }
 }
+
+/// A pending shielded payout's row for spend tests of `f`'s wallet.
+fn payout_row(f: &topup_tests::Fixture, reference: &str) {
+    let row = dw_appdb::DpContactPayoutRow {
+        reference: reference.into(),
+        identity: "6B8Dtk3Ut7cvQqSvK1Ys4fRqmDQEuoqCv5QrsrQAsh2j".into(),
+        contact: "8iuLe3Ufbo8r9RNjN5dgK38fbQq5ZrQvEoyqEx6bBrph".into(),
+        source: "shielded".into(),
+        st_hash: None,
+        address: core_address(4).to_string(),
+        credits: NOTE,
+        expected_duffs: 1_000,
+        note: None,
+        state: "pending".into(),
+        since: 1,
+    };
+    let w = f.wallet.to_string();
+    let written = (f.engine)
+        .block_on(
+            f.session
+                .appdb_op(move |db| db.insert_dp_contact_payout_durable(&w, &row)),
+        )
+        .unwrap();
+    assert_eq!(written, None);
+}
+
+/// The `st_hash` a payout's row names.
+fn payout_hash(f: &topup_tests::Fixture, reference: &str) -> Option<String> {
+    let w = f.wallet.to_string();
+    (f.engine)
+        .block_on(f.session.appdb_op(move |db| db.dp_contact_payouts(&w)))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.reference == reference)
+        .and_then(|r| r.st_hash)
+}
+
+/// C-funding P6: with a contact payout armed, the hook names the spend's
+/// transition in the payout's row, durably, before it writes the spend's
+/// artifact; a spend that is not a withdrawal, or whose row it cannot
+/// name, is refused with no artifact written, so nothing is sent.
+/// Mutant: write the artifact first (the held write finds it).
+#[test]
+fn a_payout_spend_is_named_in_its_row_before_its_artifact() {
+    let h = Hooked::new();
+    let (session, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    payout_row(&h.f, "sh-a");
+    let arm = session.arm_payout(wallet, "sh-a");
+
+    let transfer = h.staged(1, &[1]);
+    let refused = h.dispatch(transfer).unwrap_err();
+    assert!(refused.contains("withdrawal"), "{refused}");
+    assert!(h.artifact(1).is_none());
+    assert_eq!(payout_hash(&h.f, "sh-a"), None);
+
+    let mut withdrawal = h.staged(2, &[2]);
+    withdrawal.kind = ShieldedDispatchKind::Withdraw;
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.platform.payments.hold_st_hash.lock().unwrap() = Some(Arc::clone(&pause));
+    let hook = Arc::clone(&h.hook);
+    let accepted = session
+        .rt
+        .spawn(async move { hook.dispatch(withdrawal).await });
+    assert!(pause.wait_reached(Duration::from_secs(30)));
+    assert!(
+        h.artifact(2).is_none(),
+        "no artifact before the row names it"
+    );
+    pause.release.notify_one();
+    h.f.engine.block_on(accepted).unwrap().unwrap();
+    assert_eq!(payout_hash(&h.f, "sh-a"), Some(hex::encode(st_hash(2))));
+    assert_eq!(h.artifact(2).unwrap().st_hash, Some(st_hash(2)));
+
+    let mut again = h.staged(3, &[3]);
+    again.kind = ShieldedDispatchKind::Withdraw;
+    assert!(h.dispatch(again).unwrap_err().contains("accepted already"));
+    assert!(h.artifact(3).is_none());
+    drop(arm);
+
+    let settle = |reference: &'static str, state: &'static str| {
+        let w = wallet.to_string();
+        (h.f.engine)
+            .block_on(session.appdb_op(move |db| db.settle_dp_contact_payout(&w, reference, state)))
+            .unwrap();
+    };
+    settle("sh-a", "sent");
+    payout_row(&h.f, "sh-b");
+    settle("sh-b", "not_sent");
+    let _arm = session.arm_payout(wallet, "sh-b");
+    let mut settled = h.staged(4, &[4]);
+    settled.kind = ShieldedDispatchKind::Withdraw;
+    assert!(h.dispatch(settled).unwrap_err().contains("not pending"));
+    assert!(
+        h.artifact(4).is_none(),
+        "a refused accept writes no artifact"
+    );
+    assert_eq!(payout_hash(&h.f, "sh-b"), None);
+}

@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 74
+Contract-Version: 75
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -483,10 +483,10 @@ bodies decided where the rows leave room:
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `payment_lock(identity, contact)` | sync | The lock an ambiguous broadcast set (`dp_payment_lock`), if any: a contact payment whose broadcast outcome was unknown (`send.broadcast_unknown`), or a `pending` payout from the Shielded or Platform balance (`dp_contact_payout`, item 90). `source` says which; `txid` equals `reference` and is a Core txid only for `core`. Memory only; the locks load with the wallet's identity choices. While it stands, a new payment to the contact from any source is `contact.payment_locked{txid}` (item 48). **Implemented (DP3-01).** | `ContactError` |
-| `resolve_payment_lock(identity, contact)` | async | Reconciles the lock with E0-04 §16.6's evidence (§4.1) for the locked payment's txid. `Sent` (an attempt or a Resend finished `Sent`, or the wallet has seen the transaction) clears the lock. `NotSent` clears it only on **positive evidence**: in this process, `dispatch_status(txid)` is `Some(NotSent)` (the send's tombstone), or a ChainLocked conflicting spend of one of its inputs exists. Never "not found on chain or in the wallet": a peer may be withholding it. Anything else is `Unknown`, which reads like `MaybeSent` and `None`: the lock stays. The wallet's sighting means a block or an InstantSend lock, never its mempool view (BL-76); the inputs come from the wallet's record of the payment, else this process's. A payout's lock is settled by its source's evidence (item 90); until a source lands it is `Unknown`. No lock for the pair is `invalid_argument`. **Implemented (DP3-01).** | `ContactError` |
+| `resolve_payment_lock(identity, contact)` | async | Reconciles the lock with E0-04 §16.6's evidence (§4.1) for the locked payment's txid. `Sent` (an attempt or a Resend finished `Sent`, or the wallet has seen the transaction) clears the lock. `NotSent` clears it only on **positive evidence**: in this process, `dispatch_status(txid)` is `Some(NotSent)` (the send's tombstone), or a ChainLocked conflicting spend of one of its inputs exists. Never "not found on chain or in the wallet": a peer may be withholding it. Anything else is `Unknown`, which reads like `MaybeSent` and `None`: the lock stays. The wallet's sighting means a block or an InstantSend lock, never its mempool view (BL-76); the inputs come from the wallet's record of the payment, else this process's. A payout's lock is settled by its source's evidence (item 90): a Shielded payout's by its dispatch artifact (item 96), with the same outcome a pass's settlement gives; the Platform source's is `Unknown` until it lands. No lock for the pair is `invalid_argument`. **Implemented (DP3-01).** | `ContactError` |
 | `contact_activity(identity, contact, cursor, f)` | async | Payments to and from the contact, newest first, filtered All / Sent / Received; 50 per page, `cursor` the previous page's `next_cursor`. Attributed as history records are (item 47): one item per transaction and direction, `amount` what the contact got or sent (no fee), mined ones by block time with unmined ones first (`timestamp` the block time, else first-seen), abandoned, not-accepted and conflicted ones left out. A contact never paid is an empty page, not an error. Re-query on `Platform{Payments}`, `Platform{Contacts}` and the wallet's `HistoryChanged`. **Implemented (DP3-02).** | `ContactError`: unknown wallet; `invalid_argument` (an id, or a cursor this call did not issue, including one another query issued); `contact.self`; `identity.not_found` (not this wallet's) |
-| `contact_pay_quote(identity, contact, credits, source)` | async | What paying `contact` `credits` from the `shielded` or `platform` balance costs (C-funding P1, P13): `credits` leaves the balance, `expected_duffs` is what the contact receives, about, with the fee estimate and the `PlatformOp` grant to ask for. No Max (M3). `core` is `invalid_argument` first (its payment is the `TxDraft`). Then the payee as `set_contact_recipient` checks it and the pair's lock, then the source: each other source is `platform.feature_off{feature}` (`shielded_contact_payment`, `platform_contact_payment`) until its slice lands (C5a, C5b). **Implemented (C5-0).** | `ContactError`: unknown wallet; `invalid_argument` (an id, a zero amount, not a contact); `contact.self`; `contact.ineligible`; `contact.channel_broken`; `contact.payment_locked`; `platform.feature_off` |
-| `contact_pay(identity, contact, credits, source, note, grant, confirm_unrecorded)` | async | Pays `contact` from the `shielded` or `platform` balance under `grant` (C-funding P2): `core` refused first, then the live payee check, the pair's lock (any source's) and rule 5 on the payee, then the source's gates; the grant's cap, the lease (`ContactPayFromBalance`, never a `ContactPayment` lease), the address reservation and rule 5's re-check, the claim, the reference, the payout row and the source record follow, in that order, before anything is signed (item 90). Every refusal before the reservation takes no address; every refusal before the lease keeps the grant. `note` stays in this wallet (M5). Until a source's slice lands it is refused at that source's gates as `contact_pay_quote` says. **Implemented (C5-0).** | `ContactError`: as `contact_pay_quote`; `invalid_argument` (an empty grant); rule 5's refusals (`platform.context_unavailable`, `platform.trust_mismatch`, `platform.signer_unavailable`) |
+| `contact_pay_quote(identity, contact, credits, source)` | async | What paying `contact` `credits` from the `shielded` or `platform` balance costs (C-funding P1, P13): `credits` leaves the balance, `expected_duffs` is what the contact receives, about, with the fee estimate and the `PlatformOp` grant to ask for. No Max (M3). `core` is `invalid_argument` first (its payment is the `TxDraft`). Then the payee as `set_contact_recipient` checks it and the pair's lock, then the source. `shielded`: the unshield's quote (`unshield_quote`'s withdrawal range and fee; `grant` asks for `credits` plus the fee, `expected_duffs` is the withdrawal's payout) and its refusals as `ContactError::Shielded` (item 96). `platform` is `platform.feature_off{feature: platform_contact_payment}` until its slice lands (C5b). **Implemented (C5-0, C5a).** | `ContactError`: unknown wallet; `invalid_argument` (an id, a zero amount, not a contact, above the largest withdrawal); `contact.self`; `contact.ineligible`; `contact.channel_broken`; `contact.payment_locked`; `platform.feature_off`; the pool's codes (`shielded.not_active`, `shielded.not_synced`, `shielded.below_minimum`, `shielded.insufficient_funds`) |
+| `contact_pay(identity, contact, credits, source, note, grant, confirm_unrecorded)` | async | Pays `contact` from the `shielded` or `platform` balance under `grant` (C-funding P2): `core` refused first, then the live payee check, the pair's lock (any source's) and rule 5 on the payee, then the source's gates; the grant's cap, the lease (`ContactPayFromBalance`, never a `ContactPayment` lease), the address reservation and rule 5's re-check, the claim, the reference, the payout row and the source record follow, in that order, before anything is signed (item 90). Every refusal before the reservation takes no address; every refusal before the lease keeps the grant. `note` stays in this wallet (M5). `shielded` pays as item 96 says; `platform` is refused at its gates as `contact_pay_quote` says until its slice lands. **Implemented (C5-0, C5a).** | `ContactError`: as `contact_pay_quote`; `invalid_argument` (an empty grant); rule 5's refusals (`platform.context_unavailable`, `platform.trust_mismatch`, `platform.signer_unavailable`); for `shielded` `shielded.unrecorded_spend`, `shielded.pool_too_small` (the contact stays locked), `shielded.spend_refused` (nothing sent), `platform.broadcast_unknown{artifact: reference}` (the contact stays locked), `platform.grant_invalid`, `platform.grant_exceeded`, `platform.unavailable` (no dispatch hook) |
 | `frequent_contacts(identity, limit)` | sync | The Pay screen's frequent strip (Android's rule): at most `limit` (clamped to 1–20) established contacts that are not hidden, the ones `identity` paid most often in the last 90 days first, then the ones that paid it most often; ties by the latest payment, then the id; none without a payment. In memory (the contacts read model and the history); while a writer holds the library's state it answers from the last view it read, empty before one. **Implemented (DP3-02).** | `ContactError`: as `contacts` |
 
 ### 2.6 Notifications
@@ -871,7 +871,7 @@ again after a restart (the step's signed-lock record, the library's tracked row,
 | `shielded_send(to, credits, memo, grant, confirm_unrecorded)` | async | Shielded → Shielded: `invalid_argument` for a memo over 36 bytes and `shielded.invalid_address`, then `shielded.not_synced{journal}` while the dispatch journal is not read (only a closing session's, §2.13) (`platform.unavailable` if it cannot be) and `shielded.unrecorded_spend` while the wallet holds an unrecorded spend and `confirm_unrecorded` is false (DEC-1057, above), then the quote's refusals, then under the `ShieldedSpend` lease, quoted again once no sync pass can move the notes and charged that total (a fee above what the grant confirmed is `platform.grant_exceeded`, nothing signed), the library's transfer from account 0's notes to `to` (change to the account's own address), proved, accepted by the dispatch hook and broadcast, waiting for Platform's proved result. `platform.unavailable` while the hook is not set, before the grant is redeemed; `shielded.spend_refused` when the spend was refused before anything was sent (§2.13 "The dispatch hook"). Returns `ShieldedSpendOutcome{credits, balance, to, state, unresolved}`: `state` `done`, or `pending` for a broadcast with no proved answer ("Unconfirmed spends" above; no retry) and for a send that failed after the library stored it (`unresolved` names the retained armed transition, or is `null` when only an unresolved disposition holds the notes; "The dispatch hook"). | `ShieldedError` |
 | `unshield_quote(credits, to)` | async | As `shielded_send_quote` for a withdrawal to Core: `to` a P2PKH or P2SH address of the network, or the wallet's next receive address when `None` (`shielded.invalid_address` otherwise), plus `expected_duffs`, what reaches the address. | `ShieldedError` |
 | `unshield_to_core(credits, to, grant, confirm_unrecorded)` | async | Shielded → Core: the journal and `confirm_unrecorded` gates as `shielded_send`'s, then the quote's refusals, then under the `ShieldedSpend` lease the library's `withdraw` to `to` at Core fee rate 1, as `shielded_send` otherwise. The duffs arrive when Platform's asset unlock is mined. Platform refuses a withdrawal from a pool holding fewer than its minimum of notes (250 in every version at the pin, `minimum_pool_notes_for_outgoing`); that refusal is `shielded.pool_too_small{notes, required}` ("Shielded withdrawals open once the network's shielded pool has enough activity. Try again later."). The engine does not check the floor first: mainnet and testnet are past it. | `ShieldedError` |
-| `shielded_history(offset, limit)` | async | The account's activity rows (`ShieldedActivity`), pending first, then by block height, newest first: kind, direction, credits, fee, counterparty (a shielded, Platform or Core address), memo, block height, status and when this device recorded it. `limit` above 500 is `invalid_argument`. The gate. | `ShieldedError` |
+| `shielded_history(offset, limit)` | async | The account's activity rows (`ShieldedActivity`), pending first, then by block height, newest first: kind, direction, credits, fee, counterparty (a shielded, Platform or Core address), memo, block height, status, when this device recorded it, and for a withdrawal that paid a DashPay contact its `contact` (item 96). `limit` above 500 is `invalid_argument`. The gate. | `ShieldedError` |
 
 ### 2.14 Unfinished transfers (`unfinished.rs`; 0.2 RECOVERY)
 
@@ -960,7 +960,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 9422d9117ef77de4c54b66c358d9f93dce8c5491a8825cce8627e9e9a13a66c9 version: 74 -->
+<!-- surface-sha256: a8167f4355f2e778322e2a2d5e5ee2c363a1f3df43d802112e1c9b9767fd92a4 version: 75 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1361,8 +1361,10 @@ pub enum ContactError {
     ScanUnverified,
     NoUsername,
     DetailsTooLong { bytes: u32, max: u32 },
+    Shielded(ShieldedError),
     Platform(PlatformError),
 }
+impl From<ShieldedError> for ContactError;
 impl ContactError {
     pub fn code(&self) -> &'static str;
     pub fn platform(&self) -> Option<&PlatformError>;
@@ -2482,6 +2484,7 @@ pub struct ShieldedActivity {
     pub block_height: Option<u64>,
     pub status: ShieldedActivityStatus,
     pub created_at: Option<u64>,
+    pub contact: Option<super::payments::Counterparty>,
 }
 impl DashPay {
     pub async fn shielded_status(&self) -> Result<ShieldedStatus, ShieldedError>;
@@ -4585,6 +4588,27 @@ renames or reshapes them takes the next version bump:
     fallback was never used (a wallet store may come from an installation that used it). A session whose wallet
     store holds a wallet app.sqlite never named also shows its Platform data as unverified until re-fetched. A
     withdrawal's recovery takes candidate scripts only from a verified identity read.
+96. **Paying a contact from the Shielded balance (C-funding D-C5, C5a, version 75).** `contact_pay_quote` and
+    `contact_pay` take `source: shielded`: an unshield to the contact's reserved DIP-15 address, which no host input
+    names (P4). Its gates are the unshield's (P3): the dispatch hook, the wallet's shielded lock, `confirm_unrecorded`,
+    the quote again under the pass hold, Platform's withdrawal range; the pair's lock is read again under the shielded
+    lock, and every refusal before the reservation takes no address, every one before the lease keeps the grant. The
+    lease is `ContactPayFromBalance` from a `PlatformOp` grant (or a `begin_flow(ContactPayFromBalance, shielded)`
+    lease): the shielded spend key and the contact crypto, no identity key, no funding or Core spend signer; a
+    `ContactPayment` lease is refused before an address is taken (`platform.grant_exceeded`: it caps no credits).
+    `begin_flow(AcceptAndPay, shielded)` stays `platform.feature_off`. The payout's reference is `sh-` and 32 hex digits. **The hook (P6):** with a payout
+    armed under the wallet's shielded lock, the hook accepts only a withdrawal to Core, and only once it has written
+    the spend's `st_hash` into the payout's row, synced; that write runs before the artifact's, and any failure
+    refuses the spend, so the library sends nothing. **Outcomes (P5, P7):** a `Done` spend is sent; a spend whose
+    transition never reached the journal (no `st_hash`, or an `st_hash` with no artifact) is not sent, the lock clears
+    and the address goes back to the pair; a pending spend, a pool-floor refusal (`shielded.pool_too_small`) and any
+    other failure once the artifact exists hold the contact with the address consumed, the last as
+    `platform.broadcast_unknown{artifact: reference}`. **Settlement (P9):** the artifact's status alone settles a held
+    payout: `executed` is sent, `not_executed` is not sent with the address consumed; anything else, the user's
+    acknowledgement in Repair included, keeps the lock. Each pass's tail, `resolve_payment_lock` and a load settle it
+    the same way. **History (P10):** `ShieldedActivity.contact` names the contact a withdrawal paid, from the payout
+    row whose `st_hash` the row's artifact carries, else by the destination address through the payee scripts with
+    their shared-xpub exclusion. `ContactError` gains `Shielded(ShieldedError)` with the pool's codes.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

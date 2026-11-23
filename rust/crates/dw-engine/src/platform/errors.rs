@@ -389,8 +389,23 @@ pub enum ContactError {
     /// `contactInfo` holds (DIP-15 `privateData`, DP2-04).
     #[error("private details too long: {bytes} bytes, at most {max}")]
     DetailsTooLong { bytes: u32, max: u32 },
+    /// A payment from the Shielded balance refused by the pool's side (its
+    /// gate, its notes, its floor), with the pool's code (C-funding P3).
+    #[error(transparent)]
+    Shielded(ShieldedError),
     #[error(transparent)]
     Platform(#[from] PlatformError),
+}
+
+/// The pool's `Platform` variant becomes this enum's own, so one code has
+/// one representation.
+impl From<ShieldedError> for ContactError {
+    fn from(e: ShieldedError) -> Self {
+        match e {
+            ShieldedError::Platform(p) => Self::Platform(p),
+            other => Self::Shielded(other),
+        }
+    }
 }
 
 impl ContactError {
@@ -406,12 +421,14 @@ impl ContactError {
             Self::ScanUnverified => "contact.scan_unverified",
             Self::NoUsername => "contact.no_username",
             Self::DetailsTooLong { .. } => "contact.details_too_long",
+            Self::Shielded(e) => e.code(),
             Self::Platform(e) => e.code(),
         }
     }
 
     pub fn platform(&self) -> Option<&PlatformError> {
         match self {
+            Self::Shielded(e) => e.platform(),
             Self::Platform(e) => Some(e),
             _ => None,
         }

@@ -2043,6 +2043,28 @@ impl AppDb {
         })
     }
 
+    /// Names `st_hash` (hex) as the transition of the `pending` shielded
+    /// payout `reference`, durable as
+    /// [`Self::insert_dp_contact_payout_durable`] (C-funding P6): whether
+    /// the row now names it. A row that is not pending, not shielded, or
+    /// names another transition is left as it is (`false`).
+    pub fn set_dp_contact_payout_st_hash_durable(
+        &self,
+        wallet_id: &str,
+        reference: &str,
+        st_hash: &str,
+    ) -> Result<bool> {
+        self.durably(|conn| {
+            let n = conn.execute(
+                "UPDATE dp_contact_payout SET st_hash = ?3
+                 WHERE wallet_id = ?1 AND reference = ?2 AND state = 'pending'
+                     AND source = 'shielded' AND (st_hash IS NULL OR st_hash = ?3)",
+                params![wallet_id, reference, st_hash],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
     /// Settles a `pending` payout as `state` (`sent` or `not_sent`);
     /// whether it was pending.
     pub fn settle_dp_contact_payout(
@@ -2401,6 +2423,51 @@ mod tests {
             ..bob
         };
         assert_eq!(db.dp_contact_payouts(W).unwrap(), vec![settled]);
+    }
+
+    /// C-funding P6: the hook names a pending shielded payout's transition
+    /// once; never another transition, a settled row or a Platform one.
+    #[test]
+    fn a_shielded_payout_names_one_transition_while_pending() {
+        let db = AppDb::open_in_memory().unwrap();
+        let row = |c: &str, reference: &str, source: &str| DpContactPayoutRow {
+            reference: reference.into(),
+            identity: "me".into(),
+            contact: c.into(),
+            source: source.into(),
+            st_hash: None,
+            address: "yaddr".into(),
+            credits: 5_000,
+            expected_duffs: 4,
+            note: None,
+            state: "pending".into(),
+            since: 10,
+        };
+        let st_hash = |reference: &str| {
+            (db.dp_contact_payouts(W).unwrap().into_iter())
+                .find(|r| r.reference == reference)
+                .and_then(|r| r.st_hash)
+        };
+        let name = |reference: &str, hash: &str| {
+            db.set_dp_contact_payout_st_hash_durable(W, reference, hash)
+                .unwrap()
+        };
+        db.insert_dp_contact_payout_durable(W, &row("bob", "sh-1", "shielded"))
+            .unwrap();
+        db.insert_dp_contact_payout_durable(W, &row("carol", "move-1", "platform"))
+            .unwrap();
+        assert!(!name("sh-0", "aa"), "no such payout");
+        assert!(!name("move-1", "aa"), "a Platform payout has no st_hash");
+        assert!(name("sh-1", "aa"));
+        assert!(name("sh-1", "aa"), "the same transition again");
+        assert!(!name("sh-1", "bb"), "never a second transition");
+        assert_eq!(st_hash("sh-1").as_deref(), Some("aa"));
+        db.settle_dp_contact_payout(W, "sh-1", "sent").unwrap();
+        db.insert_dp_contact_payout_durable(W, &row("dave", "sh-2", "shielded"))
+            .unwrap();
+        db.settle_dp_contact_payout(W, "sh-2", "not_sent").unwrap();
+        assert!(!name("sh-2", "cc"), "a settled payout");
+        assert_eq!(st_hash("sh-2"), None);
     }
 
     /// MG-03 D34: a durable setting survives power loss, with every commit

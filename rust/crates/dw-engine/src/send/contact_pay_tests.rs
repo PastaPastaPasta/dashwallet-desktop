@@ -375,11 +375,11 @@ fn a_core_lock_and_a_payout_row_refuse_each_other() {
 }
 
 /// P2's order: the arguments, the live payee, the pair's lock and rule 5
-/// before the source's gates, which refuse `platform.feature_off` for
-/// every source until its slice lands. Nothing before takes an address
-/// or the grant.
+/// before the source's gates; the Platform source refuses
+/// `platform.feature_off` until its slice lands. Nothing before takes an
+/// address or the grant.
 #[test]
-fn contact_pay_refuses_in_order_and_every_source_is_off() {
+fn contact_pay_refuses_in_order_and_the_platform_source_is_off() {
     let f = fixture(false);
     let grant = f.grant(GrantPurpose::PlatformOp {
         max_duffs: 0,
@@ -395,10 +395,6 @@ fn contact_pay_refuses_in_order_and_every_source_is_off() {
     assert_eq!(
         pay(CAROL, 1_000, PaymentSource::Shielded),
         "contact.ineligible"
-    );
-    assert_eq!(
-        pay(BOB, 1_000, PaymentSource::Shielded),
-        "platform.feature_off"
     );
     assert_eq!(
         pay(BOB, 1_000, PaymentSource::Platform),

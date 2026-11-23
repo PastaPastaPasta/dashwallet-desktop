@@ -19,6 +19,7 @@ use super::credits::{CoreMax, FundAmount};
 use super::dashpay::DashPay;
 use super::errors::ShieldedError;
 use super::flows::{DispatchState, GrantRequest};
+use super::payments::Counterparty;
 use super::shielded_pool::{self as pool, on_pool, on_pool_signing};
 use crate::EngineError;
 
@@ -392,6 +393,9 @@ pub struct ShieldedActivity {
     /// scan derived (another wallet's payment, or a shield from another
     /// device), restored or not.
     pub created_at: Option<u64>,
+    /// The DashPay contact a withdrawal paid (C-funding P10): from the
+    /// contact payout's row, else by the destination address.
+    pub contact: Option<Counterparty>,
 }
 
 impl DashPay {
@@ -601,8 +605,11 @@ impl DashPay {
         offset: u32,
         limit: u32,
     ) -> Result<Vec<ShieldedActivity>, ShieldedError> {
-        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
-            pool::history(&lib, offset, limit).await
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |session, lib| async move {
+            let mut rows = pool::history(&lib, offset, limit).await?;
+            session.name_shielded_payouts(wallet, &mut rows).await;
+            Ok(rows)
         })
         .await
     }

@@ -929,6 +929,7 @@ fn contact_params(e: &ContactError) -> Value {
         | C::ScanExpired
         | C::ScanUnverified
         | C::NoUsername => json!({}),
+        C::Shielded(s) => shielded_params(s),
         C::Platform(p) => platform_params(p),
     }
 }
