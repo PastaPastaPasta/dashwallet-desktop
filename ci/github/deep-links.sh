@@ -33,10 +33,14 @@ if [[ "$os" != linux && -z "${CI:-}" && -z "${DW_LINKS_LOCAL:-}" ]]; then
   exit 2
 fi
 work=${DW_LINKS_WORK:-$(mktemp -d)}
-trace="$work/links.trace"
 out=${DW_LINKS_OUT:-$work/out}
 mkdir -p "$out"
+# In the uploaded directory from the start, so a run cut short still leaves its trace.
+trace="$out/links.trace"
 : > "$trace"
+
+# A timestamped line before each hand-off to the OS, so a hang shows where it stopped.
+step() { echo "deep-links: $(date -u +%H:%M:%SZ) $*"; }
 
 # A Base58Check regtest address (version 140, hash160 of twenty 0x11 bytes) and a Base58
 # identity id (32 bytes of 7).
@@ -67,6 +71,7 @@ expect() {
 app_pid=
 stop_app() {
   [[ -n "$app_pid" ]] || return 0
+  step "stopping the app"
   case "$os" in
     windows) kill "$app_pid" 2>/dev/null || taskkill //IM dash-wallet.exe //F >/dev/null 2>&1 || true ;;
     *) kill "$app_pid" 2>/dev/null || true ;;
@@ -78,6 +83,7 @@ trap stop_app EXIT
 case "$os" in
   linux)
     root="$work/root"
+    step "extracting $bundle"
     dpkg-deb -x "$bundle" "$root"
     desktop=$(find "$root/usr/share/applications" -name '*.desktop' | head -n 1)
     [[ -n "$desktop" ]] || fail "no .desktop file in $bundle"
@@ -99,12 +105,13 @@ case "$os" in
     done
     export PATH="$root/usr/bin:$PATH"
     exe=$(sed -n 's/^Exec=\([^ ]*\).*/\1/p' "$desktop")
-    open_link() { xdg-open "$1"; }
+    open_link() { step "opening a ${1%%:*}: link"; xdg-open "$1"; }
     ;;
   macos)
     apps="$HOME/Applications"
     mkdir -p "$apps"
     rm -rf "$apps/Dash Wallet.app"
+    step "copying and registering $bundle"
     ditto "$bundle" "$apps/Dash Wallet.app"
     plist="$apps/Dash Wallet.app/Contents/Info.plist"
     cp "$plist" "$out/"
@@ -113,9 +120,10 @@ case "$os" in
     done
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$apps/Dash Wallet.app"
     exe="$apps/Dash Wallet.app/Contents/MacOS/dash-wallet"
-    open_link() { open "$1"; }
+    open_link() { step "opening a ${1%%:*}: link"; open "$1"; }
     ;;
   windows)
+    step "installing $bundle silently"
     "$bundle" //S
     # NSIS installs per user by default, into %LOCALAPPDATA%\<productName>.
     exe="$(cygpath -u "$LOCALAPPDATA")/Dash Wallet/dash-wallet.exe"
@@ -126,7 +134,7 @@ case "$os" in
     done
     # Not `cmd /c start`: Git Bash does not quote an argument without spaces, so cmd would
     # split the link at `&`. The URL handler takes the rest of its command line as is.
-    open_link() { rundll32 url.dll,FileProtocolHandler "$1"; }
+    open_link() { step "opening a ${1%%:*}: link"; rundll32 url.dll,FileProtocolHandler "$1"; }
     ;;
   *)
     echo "unknown OS $os" >&2
@@ -137,6 +145,7 @@ esac
 # The first launch: a link argument, as when a click starts the app. The data root is new, so
 # the network has no wallet: a payment or contact link is kept in the link stash for after
 # onboarding (`routed saved`, DP5-01 D2), and an invitation always is (`routed invitation`).
+step "first launch"
 "$exe" "${CHAIN[@]}" --selftest-link-trace "$trace" "dash:$ADDRESS?amount=0.5&label=Launch" > "$out/app.log" 2>&1 &
 app_pid=$!
 expect "received launch dash"
@@ -168,5 +177,4 @@ kill -0 "$app_pid" 2>/dev/null || fail "the app is no longer running"
 for secret in "$ADDRESS" "$IDENTITY" cDeepLinksPlantedKey; do
   ! grep -qF -- "$secret" "$trace" "$out/app.log" || fail "a log carries $secret"
 done
-cp "$trace" "$out/"
 echo "deep-links: PASS ($os)"
