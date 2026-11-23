@@ -2029,6 +2029,83 @@ fn an_override_abandon_cut_before_its_sweep_ends_with_the_next() {
     }
 }
 
+/// An unlocked payment and its child, the child abandoned; after a
+/// restart the child comes back InstantSend-locked, stored before the
+/// history hears of it. Abandoning the payment then is refused as locked:
+/// the child is never swept, and after a restart its record, its lock and
+/// its change are as the network left them.
+#[test]
+fn abandoning_a_payment_under_a_child_locked_before_the_history_heard_is_refused() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change]),
+        COIN / 8,
+        false,
+    );
+    mempool(&engine, &session, id, &child);
+    wait_stored(&session, id, &[payment.txid(), child.txid()]);
+    start_spv(&engine, &session);
+    abandon(&engine, &session, id, child.txid());
+
+    let session = reopen(&engine, session);
+    let manager = session.manager().unwrap();
+    let locked = child.clone();
+    engine.block_on(async move {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let lock = InstantLock {
+            txid: locked.txid(),
+            ..InstantLock::default()
+        };
+        wm.process_mempool_transaction(&locked, Some(lock)).await;
+    });
+    wait_stored(&session, id, &[child.txid()]);
+    assert!(
+        (session.hub.history.get(&id, &child.txid())).is_some_and(|e| e.is_abandoned()),
+        "the history heard of the lock"
+    );
+    let child_change = change_of(&child, &own_scripts(&engine, &session, id));
+    start_spv(&engine, &session);
+    let refused = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(
+        matches!(
+            refused,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::InstantLocked
+            ))
+        ),
+        "{refused:?}"
+    );
+    let session = reopen(&engine, session);
+    assert!(
+        super::own_spend_balance_tests::record_stored(&session, id, child.txid()),
+        "the child's record is gone"
+    );
+    assert!(
+        held(&engine, &session, id).contains(&child_change),
+        "the child's change is not held"
+    );
+    assert!(
+        !abandoned(&engine, &session, id, payment.txid()),
+        "the payment"
+    );
+}
+
 /// A payment of A and B, InstantSend-locked, and its child spending its
 /// change, abandoned; after a restart a grandchild spending the child's
 /// change pays the wallet. Another device's spend of B is mined and

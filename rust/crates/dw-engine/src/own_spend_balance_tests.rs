@@ -1709,7 +1709,7 @@ fn finish_now(session: &NetworkSession, id: WalletId) -> Result<(), crate::Engin
     crate::tx_actions::finish_marked_abandons(&live.persister, &live.appdb, &db_path, &[id])
 }
 
-fn record_stored(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
+pub(super) fn record_stored(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
     use platform_wallet::changeset::PlatformWalletPersistence;
     (session.live().unwrap().persister)
         .get_core_tx_record(id.0, &txid)

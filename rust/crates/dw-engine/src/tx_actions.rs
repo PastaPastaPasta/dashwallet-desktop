@@ -659,6 +659,28 @@ fn override_blocked<'a>(
     }
 }
 
+/// How key-wallet holds `t` in this wallet's own accounts when it is
+/// settled: in a block or finalized (`Confirmed`), or InstantSend-locked
+/// (`InstantLocked`). The history can lag key-wallet.
+fn held_settled(core: &ManagedWalletInfo, t: &Txid) -> Option<TxActionRefusal> {
+    let mut locked = core.instant_send_locks().contains(t);
+    for a in core.accounts.all_accounts() {
+        if a.managed_account_type().is_contact_owned() {
+            continue;
+        }
+        if a.transaction_is_finalized(t) {
+            return Some(TxActionRefusal::Confirmed);
+        }
+        if let Some(r) = a.transactions().get(t) {
+            if r.context.block_info().is_some() {
+                return Some(TxActionRefusal::Confirmed);
+            }
+            locked |= matches!(r.context, TransactionContext::InstantSend(_));
+        }
+    }
+    locked.then_some(TxActionRefusal::InstantLocked)
+}
+
 /// The transactions out of a block that descend from `root` and are not
 /// InstantSend-locked, every child of an output followed, in the history
 /// `txs` and in key-wallet's records of `core` (which credits a mempool
@@ -1005,6 +1027,13 @@ impl NetworkSession {
             let (descendants, links) = (self.hub.history).read(&wallet, |txs| {
                 unmined_descendants(txs, &info.core_wallet, root)
             });
+            // Never one key-wallet holds settled, whatever the history
+            // still says of it: its parents are the network's too.
+            if let Some(refusal) =
+                (descendants.iter().chain(&links)).find_map(|t| held_settled(&info.core_wallet, t))
+            {
+                return Err(EngineError::TxActionRefused(refusal));
+            }
             let (planned, overridden) =
                 self.plan_abandon(wallet, root, &descendants, &proof, &info.core_wallet)?;
             // What key-wallet abandons and the history has not heard of is
