@@ -59,7 +59,7 @@ const summary = (over: Partial<PreparedTxSummary> = {}): PreparedTxSummary => ({
   fee: 226,
   feeRatePerKb: 1000,
   sizeBytes: 226,
-  inputs: [],
+  inputs: [{ outpoint: { txid: "cd".repeat(32), vout: 0 }, address: null, amount: 50_000_236 }],
   outputs: [
     { address: PAYEE, amount: 50_000_000, isChange: false, label: null, isMine: false },
     { address: "yChange", amount: 10, isChange: true, label: null, isMine: true },
@@ -283,6 +283,15 @@ describe("the payment policy (E0-13 D11, U-03 D3)", () => {
 });
 
 describe("the confirm sheet's promise (U-03 D2)", () => {
+  it("is broken by a payment re-planned with other coins of the same total", () => {
+    // Ten 0.100001 denominations make the same total as one 1.00001: Send must not quietly spend
+    // ten mixed coins where the sheet showed one.
+    expect(keepsPromise(confirmed, summary())).toBe(true);
+    const input = summary().inputs[0];
+    const ten = Array.from({ length: 10 }, (_, vout) => ({ ...input, outpoint: { ...input.outpoint, vout }, amount: 5_000_023 }));
+    expect(keepsPromise(confirmed, summary({ inputs: [...ten, { ...input, amount: 6 }] }))).toBe(false);
+  });
+
   it("caps the grant at the amount plus the fee", () => {
     expect(confirmed.total).toBe(50_000_226);
   });

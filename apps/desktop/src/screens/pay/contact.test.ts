@@ -220,7 +220,7 @@ describe("IOS-050 U-03's promise and refusals for a contact (D9, D13)", () => {
     fee: 226,
     feeRatePerKb: 1000,
     sizeBytes: 226,
-    inputs: [],
+    inputs: [{ outpoint: { txid: "cd".repeat(32), vout: 0 }, address: null, amount: 1_000_236 }],
     outputs,
     totalSent: 1_000_000,
     totalDebit: 1_000_226,

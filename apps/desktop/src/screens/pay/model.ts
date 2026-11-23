@@ -445,6 +445,9 @@ export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
   const back = sum(s.outputs.filter((o) => o.isMine && (!o.isChange || c.changeAddress !== null)));
   return (
     shown &&
+    // As many coins as the sheet counted: denominations can make the same total from other coins,
+    // ten mixed ones where it showed one (the input count is what the mixed-coin warnings read).
+    s.inputs.length === estimate.inputCount &&
     paid === estimate.totalSent &&
     s.totalSent === estimate.totalSent &&
     s.fee === estimate.fee &&
