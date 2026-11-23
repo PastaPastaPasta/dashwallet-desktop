@@ -205,6 +205,13 @@ pub(crate) fn stage_refusal(stage: SharedStage) -> MasternodesError {
     }
 }
 
+/// D17's rule for a registration or key-change session: `discard_shared_session`
+/// deletes it only while nothing of it may be out, and `SharedSession.discardable`
+/// reads this same rule.
+pub(crate) fn may_discard(row: &SharedSessionRow) -> bool {
+    row.out_at.is_none()
+}
+
 pub(crate) fn message_refusal(reason: &str) -> MasternodesError {
     MasternodesError::SharedMessage {
         reason: reason.into(),
@@ -701,6 +708,7 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
             .map(super::super::outpoint_string)
             .collect(),
         next: next_of(l, stage),
+        discardable: may_discard(&l.row),
         warnings: warnings(l),
         approved_terms: l.approved.as_ref().map(|a| a.terms.clone()),
         base_keys: l

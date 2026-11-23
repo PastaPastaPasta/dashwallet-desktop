@@ -46,7 +46,7 @@ use self::flow::{
     OwnRow, check_placeholder, check_reward, put_own_side, recorded_of, signer_refusal,
 };
 use self::store::{
-    Approved, Loaded, bad_signature, envelope_refusal, message_name, message_refusal,
+    Approved, Loaded, bad_signature, envelope_refusal, may_discard, message_name, message_refusal,
     stage_refusal, terms_view, view,
 };
 use super::protx::build::{Context, invalid, shared_voting};
@@ -909,7 +909,7 @@ impl Masternodes {
             }
             let out = match row.kind == together::KIND {
                 true => s.together_discard(wallet, row).await?,
-                false if row.out_at.is_some() => {
+                false if !may_discard(&row) => {
                     return Err(stage_refusal(s.stored_stage(wallet, &row).await?));
                 }
                 false => None,

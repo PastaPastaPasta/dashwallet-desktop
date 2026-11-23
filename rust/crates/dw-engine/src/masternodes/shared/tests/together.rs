@@ -361,6 +361,7 @@ fn test_QT_127_three_wallets_dissolve_together() {
     )
     .unwrap();
     assert_eq!(f.net.sent().len(), 2);
+    assert!(!f.session_of(2, &id).discardable, "handed off");
     let discard = f.run(f.mn().discard_shared_session(f.wallets[2], id.clone()));
     assert_stage(discard.unwrap_err(), "sent");
     assert_invalid(
@@ -656,6 +657,7 @@ fn test_QT_127_a_delisted_masternode_kills_the_session() {
         import_into(&f, 1, &a.message.text, None).unwrap_err(),
         "dead",
     );
+    assert!(f.session_of(0, &id).discardable, "dead, never out");
     discard(&f, 0, &id).unwrap();
     assert!(matches!(
         f.run(f.mn().shared_session(f.wallets[0], id)),
@@ -688,6 +690,7 @@ fn test_QT_127_a_session_waits_for_the_scan_before_reading_dead() {
     delisted(&f, 105);
     scanned_to(&f, 0, 104);
     assert_eq!(f.session_of(0, &id).stage, SharedStage::Signing);
+    assert!(!f.session_of(0, &id).discardable, "too early");
     assert_eq!(
         discard(&f, 0, &id).unwrap_err().code(),
         "masternodes.shared_too_early"
@@ -780,6 +783,7 @@ fn test_QT_127_a_session_out_but_never_handed_off_can_be_discarded() {
             .unwrap()
     );
     assert_eq!(f.session_of(2, &id).stage, SharedStage::Combined);
+    assert!(f.session_of(2, &id).discardable, "out, never handed off");
     discard(&f, 2, &id).unwrap();
     assert!(matches!(
         f.run(f.mn().shared_session(f.wallets[2], id)),

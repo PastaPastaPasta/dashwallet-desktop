@@ -3395,3 +3395,106 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
         }
     }
 }
+
+fn assert_discard_refused(f: &Fx, w: usize, id: &str) {
+    let e = f
+        .run(f.mn().discard_shared_session(f.wallets[w], id.to_string()))
+        .unwrap_err();
+    assert_eq!(code(e), "masternodes.shared_stage");
+}
+
+/// `SharedSession.discardable` (MG-10 S5) reads the rule
+/// `discard_shared_session` refuses by: true at every stage before `out_at`
+/// for the coordinator and each participant, false from the `out_at` write
+/// on, a crash between that write and the return included, with the call
+/// refusing wherever it reads false.
+#[test]
+fn test_discardable_reads_the_discard_rule_at_every_stage() {
+    let mut f = fx(3, true);
+    f.credit(0, 1, 401 * COIN);
+    f.credit(1, 2, 300 * COIN + 50_000);
+    f.credit(2, 3, 350 * COIN);
+    let inv = start(&f, 0, request(&[("A", 400), ("B", 300), ("C", 300)], FEE)).unwrap();
+    let id = inv.session.id.clone();
+    assert!(inv.session.discardable, "draft");
+    for w in [1, 2] {
+        let (s, _) = f.imported(w, &inv.message.text);
+        assert_eq!(s.stage, SharedStage::Invited);
+        assert!(s.discardable, "invited");
+        let joined = f.join(w, &id);
+        assert!(joined.session.discardable, "joined");
+        f.imported(0, &joined.message.text);
+    }
+    assert!(f.session_of(0, &id).discardable, "every row in");
+    let locked = f.lock(0, &id).unwrap();
+    assert_eq!(locked.session.stage, SharedStage::Signing);
+    assert!(locked.session.discardable, "locked");
+    for w in [1, 2] {
+        f.imported(w, &locked.message.text);
+        let approved = f.approve(w, &id).unwrap();
+        assert!(approved.session.discardable, "approved");
+        f.imported(0, &approved.message.text);
+    }
+    let combined = f.session_of(0, &id);
+    assert_eq!(combined.stage, SharedStage::Combined);
+    assert!(combined.discardable, "combined");
+    let signing_request = f.message(0, &id);
+
+    f.imported(1, &signing_request);
+    assert!(f.session_of(1, &id).discardable, "combined, unsigned");
+    let signed = f.sign(1, &id, 301 * COIN).unwrap();
+    assert_eq!(signed.session.stage, SharedStage::FundingSigned);
+    assert!(!signed.session.discardable, "signed");
+    assert_discard_refused(&f, 1, &id);
+    f.imported(0, &signed.message.text);
+    assert!(
+        f.session_of(0, &id).discardable,
+        "a coordinator holding a signature, its own inputs unsigned"
+    );
+
+    // A crash after the participant's `out_at` write, before the return.
+    f.imported(2, &signing_request);
+    *f.seam.crash.lock().unwrap() = Some(CrashPoint::SharedOut);
+    assert!(f.sign(2, &id, 301 * COIN).is_err());
+    *f.seam.crash.lock().unwrap() = None;
+    assert!(f.row(2, &id).out_at.is_some());
+    assert!(!f.session_of(2, &id).discardable, "out, never returned");
+    assert_discard_refused(&f, 2, &id);
+    f.restart();
+    assert!(!f.session_of(2, &id).discardable, "out, after a restart");
+    assert_discard_refused(&f, 2, &id);
+    let signed = f.message(2, &id);
+    f.imported(0, &signed);
+    assert!(f.session_of(0, &id).discardable, "every other input signed");
+
+    let sent = f.send(0, &id, 400 * COIN + FEE).unwrap();
+    assert!(!sent.session.discardable, "sent");
+    assert_discard_refused(&f, 0, &id);
+}
+
+/// A fee raised with `set_shared_fee` re-reserves the coordinator's coins;
+/// Discard, which `discardable` allows, releases every one of them, and a
+/// new session selects them again.
+#[test]
+fn test_a_discard_after_a_fee_change_frees_every_fee_coin() {
+    let f = fx(3, true);
+    let share = f.credit(0, 1, 400 * COIN + FEE);
+    let extra = f.credit(0, 2, COIN);
+    let req = || request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
+    let inv = start(&f, 0, req()).unwrap();
+    let id = inv.session.id.clone();
+    assert_eq!(f.locked(0), HashSet::from([share]));
+    let raised = f
+        .run(f.mn().set_shared_fee(f.wallets[0], id.clone(), 2 * FEE))
+        .unwrap();
+    assert_eq!(f.locked(0), HashSet::from([share, extra]));
+    assert!(raised.session.discardable);
+    f.run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
+        .unwrap();
+    assert!(f.locked(0).is_empty());
+    let mut again = req();
+    again.fee = 2 * FEE;
+    let inv = start(&f, 0, again).unwrap();
+    assert_eq!(inv.session.reserved.len(), 2);
+    assert_eq!(f.locked(0), HashSet::from([share, extra]));
+}
