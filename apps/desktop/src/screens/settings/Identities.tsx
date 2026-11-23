@@ -24,6 +24,7 @@ import { useIdentityDetail, useIdentityList } from "../../dashpay/identityQuerie
 import { creditBalance, PROFILE_COPY } from "../../dashpay/profile";
 import { useCostTable } from "../../dashpay/profileQueries";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { Avatar } from "../contacts/Avatar";
 import { chooseName } from "../dashpay/MyProfile";
@@ -39,6 +40,7 @@ export function AdvancedTab({ network }: { network: NetworkInfo }) {
 }
 
 function IdentitiesCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  useT();
   const b = useBackend();
   const model = useModel(identitiesFor(b, walletId));
   const list = useIdentityList(walletId);
@@ -108,6 +110,7 @@ function IdentitiesCard({ walletId, network }: { walletId: string; network: Netw
 }
 
 function ResultLine({ ok, text, testId }: { ok: boolean; text: string; testId: string }) {
+  useT();
   return (
     <p className={ok ? "form-ok" : "form-problem"} role={ok ? "status" : "alert"} data-testid={testId}>
       {text}
@@ -116,6 +119,7 @@ function ResultLine({ ok, text, testId }: { ok: boolean; text: string; testId: s
 }
 
 function IdentityRowView({ row, model, balance, onKeys }: { row: IdentityRow; model: IdentitiesModel; balance: (c: string | null) => string; onKeys: () => void }) {
+  useT();
   const b = useBackend();
   const walletId = model.walletId;
   const busy = model.running !== null;
@@ -125,7 +129,7 @@ function IdentityRowView({ row, model, balance, onKeys }: { row: IdentityRow; mo
       <Avatar letters={row.initials} identity={row.identity} own />
       <div className="identity-row-text">
         <p className="identity-row-title">
-          <span data-testid="identity-username">{row.username}</span>
+          <bdi data-testid="identity-username">{row.username}</bdi>
           {row.isMain && (
             <span className="identity-badge" data-testid="identity-main-badge">
               {C.main}
@@ -138,10 +142,10 @@ function IdentityRowView({ row, model, balance, onKeys }: { row: IdentityRow; mo
           )}
         </p>
         <p className="field-hint">
-          {row.index} · <CopyValue value={row.identity} display={shortId(row.identity)} label="identity id" mono />
+          {row.index} · <CopyValue value={row.identity} display={shortId(row.identity)} label={PROFILE_COPY.identityId} mono />
         </p>
         <p className="identity-row-balance" data-testid="identity-balance">
-          {balance(row.credits)}
+          <bdi>{balance(row.credits)}</bdi>
           {row.stale && row.credits !== null && <span className="profile-credits-updating">{C.updating}</span>}
         </p>
         {result && <ResultLine ok={result.ok} text={result.text} testId="identity-result" />}
@@ -169,9 +173,11 @@ function IdentityRowView({ row, model, balance, onKeys }: { row: IdentityRow; mo
 }
 
 function KeysTable({ keys, testId }: { keys: KeyRow[]; testId: string }) {
+  useT();
   const T = C.table;
   return (
-    <div className="identity-keys-wrap">
+    // It scrolls sideways when the columns are wider than the card, so it takes focus to scroll by keyboard.
+    <div className="identity-keys-wrap" role="region" aria-label={C.detail.keys} tabIndex={0}>
       <table className="data-table identity-keys" data-testid={testId}>
         <thead>
           <tr>
@@ -201,6 +207,7 @@ function KeysTable({ keys, testId }: { keys: KeyRow[]; testId: string }) {
 }
 
 function DetailSheet({ walletId, identity, model, onClose }: { walletId: string; identity: string; model: IdentitiesModel; onClose: () => void }) {
+  useT();
   const q = useIdentityDetail(walletId, identity);
   const D = C.detail;
   const d = q.data;
@@ -226,7 +233,7 @@ function DetailSheet({ walletId, identity, model, onClose }: { walletId: string;
         <>
           <dl className="detail-list">
             <DetailRow label={D.identity} testId="identity-detail-id">
-              <CopyValue value={d.summary.identity} label="identity id" mono />
+              <CopyValue value={d.summary.identity} label={PROFILE_COPY.identityId} mono />
             </DetailRow>
             <DetailRow label={D.index} testId="identity-detail-index">
               {d.summary.index}
@@ -241,7 +248,7 @@ function DetailSheet({ walletId, identity, model, onClose }: { walletId: string;
                 <ul className="identity-names">
                   {d.summary.names.map((n) => (
                     <li key={n} data-testid="identity-name" data-main={n === d.summary.mainName || undefined}>
-                      @{n}
+                      <bdi dir="ltr">{`@${n}`}</bdi>
                       {n === d.summary.mainName ? (
                         <span className="identity-badge">{D.mainName}</span>
                       ) : (
@@ -280,6 +287,7 @@ function DetailSheet({ walletId, identity, model, onClose }: { walletId: string;
 }
 
 function FindPanel({ model, balance }: { model: IdentitiesModel; balance: (c: string | null) => string }) {
+  useT();
   const F = C.find;
   const id = useId();
   const [text, setText] = useState("");
@@ -332,13 +340,13 @@ function FindPanel({ model, balance }: { model: IdentitiesModel; balance: (c: st
         <div className="identity-found" data-testid="identity-found">
           <dl className="detail-list">
             <DetailRow label={C.detail.identity} testId="identity-found-id">
-              <CopyValue value={s.found.identity} label="identity id" mono />
+              <CopyValue value={s.found.identity} label={PROFILE_COPY.identityId} mono />
             </DetailRow>
             <DetailRow label={C.detail.usernames} testId="identity-found-names">
-              {s.found.usernames}
+              <bdi>{s.found.usernames}</bdi>
             </DetailRow>
             <DetailRow label={F.balance} testId="identity-found-balance">
-              {balance(s.found.credits)}
+              <bdi>{balance(s.found.credits)}</bdi>
             </DetailRow>
             <DetailRow label={C.detail.revision} testId="identity-found-revision">
               {s.found.revision}
