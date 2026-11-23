@@ -1450,7 +1450,10 @@ fn a_user_backup_stopped_before_its_publish_leaves_nothing_at_its_path() {
     assert!(!names.contains(&"w.dwbackup".to_owned()), "{names:?}");
     stopped.unwrap();
     assert_eq!(names.len(), 1);
-    assert!(names[0].starts_with(".w.dwbackup.tmp-"), "{names:?}");
+    assert!(
+        names[0].starts_with(".dash-wallet-backup.tmp-"),
+        "{names:?}"
+    );
 }
 
 /// An automatic backup stopped between its sync and its publish leaves no
@@ -1582,7 +1585,7 @@ fn a_stale_temporary_file_goes_only_once_a_newer_backup_of_its_wallet_is_there()
     std::fs::write(backups.join(at_minute(a, 0)), three_hours_old).unwrap();
     assert_eq!(list_automatic(&backups, "regtest", None).unwrap().len(), 1);
     let temp = |id: WalletId, minute: u32, ago: Duration| {
-        let path = backups.join(format!(".{}.tmp-1-{minute:016x}", at_minute(id, minute)));
+        let path = backups.join(format!(".{id}.tmp-1-{minute:016x}"));
         std::fs::write(&path, &bytes).unwrap();
         written_ago(&path, ago);
         path
@@ -2001,4 +2004,311 @@ fn a_symlink_to_a_fifo_at_this_minutes_name_is_set_aside() {
             .file_type()
             .is_symlink()
     );
+}
+
+/// `bytes`, a complete backup, with its bundle's sealed payload taken out:
+/// its metadata still matches, but restore refuses it.
+fn without_payload(bytes: &[u8]) -> Vec<u8> {
+    let end = header_end(bytes);
+    let mut body: serde_json::Value = serde_json::from_slice(&bytes[end..]).unwrap();
+    body["bundles"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("payload")
+        .unwrap();
+    let mut out = bytes[..end].to_vec();
+    out.extend(serde_json::to_vec(&body).unwrap());
+    out.push(b'\n');
+    out
+}
+
+/// A newer file missing its payload, which restore refuses, is neither
+/// counted as a backup nor deleted, and with one kept the older restorable
+/// backup stays.
+#[test]
+fn a_newer_backup_missing_its_payload_costs_no_restorable_one() {
+    let dir = dw_testutil::private_tempdir();
+    let (_engine, session, id, bytes) = automatic_bytes(dir.path(), PHRASE);
+    let backups = session.backup_directory();
+    let older = backups.join(at_minute(id, 1));
+    std::fs::write(&older, &bytes).unwrap();
+    let damaged = backups.join(at_minute(id, 2));
+    std::fs::write(&damaged, without_payload(&bytes)).unwrap();
+
+    let listed = list_automatic(&backups, "regtest", None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, older);
+    prune(&backups, "regtest", None, 1, None).unwrap();
+
+    assert_eq!(std::fs::read(&older).unwrap(), bytes);
+    assert!(damaged.exists());
+}
+
+/// A file missing its payload at this minute's name does not stand for
+/// that minute's backup or clear a failure: it is set aside and the backup
+/// written.
+#[test]
+fn a_backup_missing_its_payload_at_this_minutes_name_is_set_aside() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session, id, bytes) = emptied(dir.path(), notices.clone());
+    let backups = session.backup_directory();
+    record_failure_at(&session, id, "5");
+    not_at_a_minute_end();
+    let name = backups.join(automatic_name(&id, unix_now()));
+    let damaged = without_payload(&bytes);
+    std::fs::write(&name, &damaged).unwrap();
+
+    run_automatic(&engine, &session, id);
+
+    let mut aside = name.clone().into_os_string();
+    aside.push(".incomplete");
+    assert_eq!(std::fs::read(&aside).unwrap(), damaged);
+    assert!(matches!(
+        check_automatic(&name, id, "regtest").unwrap(),
+        AtName::Complete(_)
+    ));
+    assert!(failures(&engine, &session).is_empty());
+}
+
+/// A backup published but whose folder could not be synced fails: the
+/// older copy is not pruned and the failure stays recorded. A retry in the
+/// same minute takes the name for the backup only once it is durable.
+#[test]
+fn a_backup_not_made_durable_keeps_the_older_copy_and_its_failure() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session, id, bytes) = emptied(dir.path(), notices.clone());
+    engine.block_on(session.set_backup_policy(1)).unwrap();
+    wait_until("no backup in flight", || {
+        session.backups.in_flight().is_empty()
+    });
+    let backups = session.backup_directory();
+    for f in list_automatic(&backups, "regtest", None).unwrap() {
+        std::fs::remove_file(f.path).unwrap();
+    }
+    let older = backups.join(at_minute(id, 1));
+    std::fs::write(&older, &bytes).unwrap();
+    not_at_a_minute_end();
+    let publish_after = || {
+        dw_appdb::fault::arm(&backups, "backup.publish", dw_appdb::fault::Stage::After);
+    };
+
+    publish_after();
+    run_automatic(&engine, &session, id);
+
+    let name = backups.join(automatic_name(&id, unix_now()));
+    assert!(name.exists());
+    assert_eq!(std::fs::read(&older).unwrap(), bytes);
+    assert_eq!(failures(&engine, &session).len(), 1);
+    notices.wait_for_backup_failed(1);
+
+    publish_after();
+    run_automatic(&engine, &session, id);
+    assert_eq!(failures(&engine, &session).len(), 1);
+
+    run_automatic(&engine, &session, id);
+    assert!(failures(&engine, &session).is_empty());
+    assert_eq!(std::fs::read(&older).unwrap(), bytes);
+}
+
+/// The failure record an automatic backup writes as it starts is durable:
+/// after a power loss, a backup that had started still shows as failed.
+#[test]
+fn a_started_automatic_backup_is_recorded_through_a_power_loss() {
+    use dw_appdb::durability_sim::{arm, power_loss};
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session, id, _) = emptied(dir.path(), Arc::new(Notices::default()));
+    let db = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    drop(session);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    arm(&db, false);
+    let session = engine
+        .block_on(engine.open_network(
+            DashNetwork::Regtest,
+            SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    wait_for_listed(&engine, &session, 1);
+    drop(session);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    power_loss(&db);
+
+    let recorded: Option<String> = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+            [
+                dw_appdb::local_scope(&id.to_string()).as_str(),
+                AUTO_FAILED_SETTING,
+            ],
+            |r| r.get(0),
+        )
+        .ok();
+    assert!(recorded.is_some());
+}
+
+/// A dangling symlink at this minute's name is there: it is set aside and
+/// the backup written.
+#[cfg(unix)]
+#[test]
+fn a_dangling_symlink_at_this_minutes_name_is_set_aside() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session, id, _) = emptied(dir.path(), notices.clone());
+    let backups = session.backup_directory();
+    not_at_a_minute_end();
+    let name = backups.join(automatic_name(&id, unix_now()));
+    std::os::unix::fs::symlink(dir.path().join("missing"), &name).unwrap();
+
+    run_automatic(&engine, &session, id);
+
+    let mut aside = name.clone().into_os_string();
+    aside.push(".incomplete");
+    let aside = PathBuf::from(aside);
+    assert!(aside.symlink_metadata().unwrap().file_type().is_symlink());
+    assert!(matches!(
+        check_automatic(&name, id, "regtest").unwrap(),
+        AtName::Complete(_)
+    ));
+    assert!(failures(&engine, &session).is_empty());
+}
+
+/// A failure record cleared without a backup written (one already at this
+/// minute's name, or backups off) still sends `Backups`.
+#[test]
+fn clearing_a_failure_sends_backups() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session, id, bytes) = emptied(dir.path(), notices.clone());
+    let backups = session.backup_directory();
+    not_at_a_minute_end();
+    std::fs::write(backups.join(automatic_name(&id, unix_now())), &bytes).unwrap();
+    record_failure_at(&session, id, "5");
+    let before = notices.written();
+    run_automatic(&engine, &session, id);
+    assert!(failures(&engine, &session).is_empty());
+    assert_eq!(notices.written(), before + 1);
+
+    engine.block_on(session.set_backup_policy(0)).unwrap();
+    record_failure_at(&session, id, "6");
+    let before = notices.written();
+    run_automatic(&engine, &session, id);
+    assert!(failures(&engine, &session).is_empty());
+    assert_eq!(notices.written(), before + 1);
+}
+
+fn export_notices(notices: &Notices) -> Vec<(NoticeCode, String)> {
+    let seen = notices.notices.lock().unwrap();
+    seen.iter()
+        .filter(|(c, _)| {
+            matches!(
+                c,
+                NoticeCode::ExportStagingDeleted | NoticeCode::ExportStagingNotDeleted
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+/// A Dash Core export stopped between its staging file's sync and its
+/// publish leaves only that file, which holds keys in the clear; the next
+/// start deletes it and says so.
+#[test]
+fn an_export_stopped_before_its_publish_is_cleaned_up_at_the_next_start() {
+    if let Some(root) = std::env::var_os(CHILD_DIR) {
+        let root = PathBuf::from(root);
+        let (engine, session) = launch(
+            root.join("data"),
+            Arc::new(Notices::default()),
+            &Arc::new(MemoryOsStore::new()),
+        );
+        engine
+            .block_on(session.vault_op(|v| v.create(Some(VAULT_PASSPHRASE))))
+            .unwrap();
+        engine.block_on(session.set_backup_policy(0)).unwrap();
+        let id = import(&engine, &session, PHRASE);
+        let grant = session
+            .vault()
+            .authorize(
+                dw_vault::GrantPurpose::RevealSecret,
+                Some(&id.0),
+                dw_vault::Credential::Passphrase(VAULT_PASSPHRASE),
+            )
+            .unwrap()
+            .id;
+        let _ = engine.block_on(session.export_for_core(
+            id,
+            crate::compat::CoreExportFormat::DumpWallet,
+            root.join("chosen/wallet.txt"),
+            grant,
+        ));
+        return;
+    }
+    let dir = dw_testutil::private_tempdir();
+    let chosen = private_dir(&dir.path().join("chosen"));
+    let stopped = stopped_in_child(
+        "backup::backup_tests::an_export_stopped_before_its_publish_is_cleaned_up_at_the_next_start",
+        dir.path(),
+    );
+    let names = file_names(&chosen);
+    stopped.unwrap();
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(
+        names[0].starts_with(".dash-wallet-export.tmp-"),
+        "{names:?}"
+    );
+
+    let notices = Arc::new(Notices::default());
+    let (_engine, _session) = launch(
+        dir.path().join("data"),
+        notices.clone(),
+        &Arc::new(MemoryOsStore::new()),
+    );
+
+    assert!(file_names(&chosen).is_empty());
+    assert_eq!(
+        export_notices(&notices),
+        [(
+            NoticeCode::ExportStagingDeleted,
+            chosen.join(&names[0]).display().to_string()
+        )]
+    );
+}
+
+/// An export staging file the start cannot delete is named in its notice,
+/// at every start until it is gone.
+#[test]
+fn an_export_staging_file_the_start_cannot_delete_is_named_in_its_notice() {
+    let dir = dw_testutil::private_tempdir();
+    let notices = Arc::new(Notices::default());
+    let (engine, session) = open(dir.path().join("a"), notices.clone());
+    let chosen = private_dir(&dir.path().join("chosen"));
+    let dest = chosen.join("wallet.txt");
+    let stuck = crate::compat::staging_path(&dest, crate::compat::EXPORT_STAGING_TAG).unwrap();
+    std::fs::create_dir(&stuck).unwrap();
+    std::fs::write(stuck.join("x"), b"").unwrap();
+    crate::compat::record_export_staging(&session.live().unwrap().appdb, &stuck, &dest).unwrap();
+    let named = (
+        NoticeCode::ExportStagingNotDeleted,
+        stuck.display().to_string(),
+    );
+
+    engine.block_on(session.clean_export_staging());
+    assert_eq!(export_notices(&notices), std::slice::from_ref(&named));
+    engine.block_on(session.clean_export_staging());
+    assert_eq!(export_notices(&notices), [named.clone(), named]);
+
+    std::fs::remove_dir_all(&stuck).unwrap();
+    engine.block_on(session.clean_export_staging());
+    assert_eq!(export_notices(&notices).len(), 2);
 }

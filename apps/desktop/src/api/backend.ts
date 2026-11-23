@@ -198,6 +198,7 @@ import type { FoundIdentity } from "./generated/FoundIdentity";
 import type { IdentityDetail } from "./generated/IdentityDetail";
 import type { IdentityRefresh } from "./generated/IdentityRefresh";
 import type { ProtocolCompatibility } from "./generated/ProtocolCompatibility";
+import type { RecentNotice } from "./generated/RecentNotice";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -205,6 +206,8 @@ export interface Backend {
   openNetwork(): Promise<OpenedNetwork>;
   listWallets(): Promise<WalletSummary[]>;
   lockStatus(): Promise<LockStatus>;
+  /** The engine's latest notices, oldest first: those sent before the renderer listened too. */
+  recentNotices(): Promise<RecentNotice[]>;
   unlock(passphrase: string): Promise<LockStatus>;
   /** dash-qt "Unlock for mixing only" (QT-112). */
   unlockMixingOnly(passphrase: string): Promise<LockStatus>;

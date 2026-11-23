@@ -2630,6 +2630,7 @@ dependencies = [
  "dw-testutil",
  "rustix 1.1.6",
  "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

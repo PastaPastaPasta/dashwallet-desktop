@@ -272,6 +272,14 @@ pub enum NoticeCode {
     /// `platform.trust_mismatch`. Once per quorum and session; the detail
     /// names the quorum. Engine-side.
     PlatformTrustMismatch,
+    /// At the session's open, a Dash Core export that did not end had left
+    /// its staging file, which holds keys unencrypted; it was deleted. The
+    /// detail is its path.
+    ExportStagingDeleted,
+    /// As [`Self::ExportStagingDeleted`], but the file could not be
+    /// deleted: the detail is its path, for the user to delete. Sent again
+    /// at each open until a delete succeeds.
+    ExportStagingNotDeleted,
 }
 
 impl NoticeCode {
