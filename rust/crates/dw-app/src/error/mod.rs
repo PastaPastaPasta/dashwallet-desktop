@@ -391,6 +391,17 @@ pub enum ErrorData {
     MasternodeKey {
         role: crate::dto::masternodes::AttachedKeyRoleName,
     },
+    /// `masternodes.shared_message`: why a message was refused (never its
+    /// text), and the share whose approval doesn't verify.
+    SharedMessage { reason: String, share: Option<u16> },
+    /// `masternodes.shared_stage`: the stage that refused the call.
+    SharedStage { stage: String },
+    /// `masternodes.shared_funding_mismatch`: the check that failed, and the
+    /// least fee in duffs for `fee_low`.
+    SharedFunding { reason: String, needed: Option<u64> },
+    /// `masternodes.shared_actor_fee`: the fee in duffs the request takes
+    /// from this wallet's share.
+    SharedActorFee { fee: u64 },
     /// `masternodes.unsupported`: what the call needs that the libraries
     /// lack, and the field that needs it.
     Unsupported {

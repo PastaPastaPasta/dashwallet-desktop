@@ -32,6 +32,9 @@ pub enum FilePurpose {
     QrImage,
     /// A profile picture (DP4-03): the formats the avatar pipeline decodes (DP4-02 D8).
     AvatarImage,
+    /// A shared-masternode message or standby file to open, or a message to
+    /// save (MG-10 D15): at most 2 MiB, what the engine reads.
+    SharedMasternodeMessage,
 }
 
 /// A dialog's words and filter.
@@ -43,6 +46,9 @@ pub struct PurposeSpec {
     /// `open_file` refuses a file of this many bytes or more.
     pub max_bytes: u64,
 }
+
+/// The largest shared-masternode message the engine reads (MG-04b §2.2).
+const MAX_SHARED_MESSAGE_BYTES: u64 = 2 << 20;
 
 /// Files other than PSBTs that `open_file` reads: far above any real one.
 const MAX_OTHER_BYTES: u64 = 16 * 1024 * 1024;
@@ -110,6 +116,13 @@ impl FilePurpose {
                 filter: "Images",
                 extensions: &["png", "jpg", "jpeg", "gif"],
                 max_bytes: MAX_AVATAR_FILE_BYTES + 1,
+            },
+            FilePurpose::SharedMasternodeMessage => PurposeSpec {
+                open_title: "Open Shared Masternode File",
+                save_title: "Save Shared Masternode Message",
+                filter: "Shared masternode files",
+                extensions: &["json", "txt"],
+                max_bytes: MAX_SHARED_MESSAGE_BYTES + 1,
             },
         }
     }

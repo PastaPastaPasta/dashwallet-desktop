@@ -409,6 +409,10 @@ impl TryFrom<dw_engine::RevealedMasternodeKey> for RevealedMasternodeKey {
     }
 }
 
+#[path = "masternodes_shared.rs"]
+mod shared;
+pub use shared::*;
+
 #[cfg(test)]
 mod tests {
     use zeroize::Zeroizing;

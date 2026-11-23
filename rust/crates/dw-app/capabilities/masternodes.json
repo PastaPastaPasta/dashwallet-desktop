@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "masternodes",
-  "description": "My masternodes: the masternode list's state, the wallet's masternodes and their payouts, tracking and attached keys, evonode credits, and the masternode keychain with its reveal (MG-10 S1). Granted to the main window only.",
+  "description": "My masternodes: the masternode list's state, the wallet's masternodes and their payouts, tracking and attached keys, evonode credits, the masternode keychain with its reveal (MG-10 S1), and shared-masternode sessions up to approval (MG-10b S5). Granted to the main window only.",
   "windows": [
     "main"
   ],
@@ -19,6 +19,19 @@
     "allow-mn-attach-key",
     "allow-mn-detach-key",
     "allow-mn-keys",
-    "allow-mn-reveal-key"
+    "allow-mn-reveal-key",
+    "allow-mn-shared-capability",
+    "allow-mn-shared-sessions",
+    "allow-mn-shared-session",
+    "allow-mn-shared-start",
+    "allow-mn-shared-set-fee",
+    "allow-mn-shared-join",
+    "allow-mn-shared-message",
+    "allow-mn-shared-lock",
+    "allow-mn-shared-unlock",
+    "allow-mn-shared-approve",
+    "allow-mn-shared-discard",
+    "allow-mn-shared-import",
+    "allow-mn-shared-import-file"
   ]
 }

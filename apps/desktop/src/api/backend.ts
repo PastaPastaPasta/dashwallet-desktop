@@ -143,6 +143,13 @@ import type { MasternodeListState } from "./generated/MasternodeListState";
 import type { MasternodeOverview } from "./generated/MasternodeOverview";
 import type { MasternodePayout } from "./generated/MasternodePayout";
 import type { RevealedMasternodeKey } from "./generated/RevealedMasternodeKey";
+import type { JoinSharedRequest } from "./generated/JoinSharedRequest";
+import type { SharedCapability } from "./generated/SharedCapability";
+import type { SharedImport } from "./generated/SharedImport";
+import type { SharedMessage } from "./generated/SharedMessage";
+import type { SharedOutcome } from "./generated/SharedOutcome";
+import type { SharedSession } from "./generated/SharedSession";
+import type { StartSharedRequest } from "./generated/StartSharedRequest";
 import type { UntrackOutcome } from "./generated/UntrackOutcome";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
@@ -657,6 +664,26 @@ export interface Backend {
   mnKeys(walletId: string, role: MasternodeKeyRoleName, start: number, count: number): Promise<MasternodeKeyInfo[]>;
   /** Consumes a `revealSecret` grant; the result is secret and never cached. */
   mnRevealKey(walletId: string, role: MasternodeKeyRoleName, index: number, grant: string): Promise<RevealedMasternodeKey>;
+  // Shared masternodes (MG-10b S5 over mn-engine §2.4): sessions up to approval.
+  mnSharedCapability(walletId: string): Promise<SharedCapability>;
+  mnSharedSessions(walletId: string): Promise<SharedSession[]>;
+  mnSharedSession(walletId: string, session: string): Promise<SharedSession>;
+  /** Reserves the coordinator's share and the fee; signs nothing. */
+  mnSharedStart(walletId: string, request: StartSharedRequest): Promise<SharedOutcome>;
+  mnSharedSetFee(walletId: string, session: string, fee: number): Promise<SharedOutcome>;
+  /** Reserves exactly the share; signs nothing. */
+  mnSharedJoin(walletId: string, session: string, request: JoinSharedRequest): Promise<SharedOutcome>;
+  mnSharedMessage(walletId: string, session: string): Promise<SharedMessage>;
+  /** Consumes a `masternodeOp` grant of 0. */
+  mnSharedLock(walletId: string, session: string, revision: number, grant: string): Promise<SharedOutcome>;
+  mnSharedUnlock(walletId: string, session: string): Promise<SharedOutcome>;
+  /** Consumes a `masternodeOp` grant of 0. */
+  mnSharedApprove(walletId: string, session: string, consentHash: string, grant: string): Promise<SharedOutcome>;
+  /** Only while `discardable`; releases the reserved coins. */
+  mnSharedDiscard(walletId: string, session: string): Promise<null>;
+  mnSharedImport(walletId: string, text: string, target: string | null): Promise<SharedImport>;
+  /** The open dialog runs in dw-app; the file's text never reaches the renderer. `null` on cancel. */
+  mnSharedImportFile(walletId: string, target: string | null): Promise<SharedImport[] | null>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */

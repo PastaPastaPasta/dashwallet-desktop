@@ -91,13 +91,19 @@ impl From<MasternodesError> for AppError {
             M::UpdatePending { .. } => (C::UpdatePending, None),
             M::UpdateSuperseded { .. } => (C::UpdateSuperseded, None),
             M::SharedSessionNotFound => (C::SharedSessionNotFound, None),
-            M::SharedStage { .. } => (C::SharedStage, None),
-            M::SharedMessage { .. } => (C::SharedMessage, None),
-            M::SharedFundingMismatch { .. } => (C::SharedFundingMismatch, None),
+            M::SharedStage { stage } => (C::SharedStage, Some(ErrorData::SharedStage { stage })),
+            M::SharedMessage { reason, share } => (
+                C::SharedMessage,
+                Some(ErrorData::SharedMessage { reason, share }),
+            ),
+            M::SharedFundingMismatch { reason, needed } => (
+                C::SharedFundingMismatch,
+                Some(ErrorData::SharedFunding { reason, needed }),
+            ),
             M::ShareNotMine => (C::ShareNotMine, None),
             M::SharedTooEarly => (C::SharedTooEarly, None),
             M::SharedRegistrationUnknown => (C::SharedRegistrationUnknown, None),
-            M::SharedActorFee { .. } => (C::SharedActorFee, None),
+            M::SharedActorFee { fee } => (C::SharedActorFee, Some(ErrorData::SharedActorFee { fee })),
             M::WithdrawalKeyMissing => (C::WithdrawalKeyMissing, None),
             M::WithdrawalShared => (C::WithdrawalShared, None),
             M::WithdrawalNoPayoutKey { .. } => (C::WithdrawalNoPayoutKey, None),
@@ -232,6 +238,30 @@ mod tests {
                 call: "Masternodes.list".into()
             }),
             serde_json::json!({ "kind": "call", "call": "Masternodes.list" })
+        );
+        assert_eq!(
+            data(MasternodesError::SharedMessage {
+                reason: "bad_signature".into(),
+                share: Some(2)
+            }),
+            serde_json::json!({ "kind": "sharedMessage", "reason": "bad_signature", "share": 2 })
+        );
+        assert_eq!(
+            data(MasternodesError::SharedStage {
+                stage: "replied".into()
+            }),
+            serde_json::json!({ "kind": "sharedStage", "stage": "replied" })
+        );
+        assert_eq!(
+            data(MasternodesError::SharedFundingMismatch {
+                reason: "fee_low".into(),
+                needed: Some(120_000)
+            }),
+            serde_json::json!({ "kind": "sharedFunding", "reason": "fee_low", "needed": 120_000 })
+        );
+        assert_eq!(
+            data(MasternodesError::SharedActorFee { fee: 1_000 }),
+            serde_json::json!({ "kind": "sharedActorFee", "fee": 1_000 })
         );
         assert_eq!(
             data(MasternodesError::PlatformUnavailable {

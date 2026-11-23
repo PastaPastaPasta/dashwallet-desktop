@@ -25,6 +25,9 @@ export const mnKeys = {
   find: (query: string) => [...m, "find", query] as const,
   keychain: (walletId: string, role: MasternodeKeyRoleName, start: number, count: number) => [...m, "keychain", walletId, role, start, count] as const,
   credits: (hash: string) => ["mnPlatform", hash, "credits"] as const,
+  sharedCapability: (walletId: string) => [...m, "sharedCapability", walletId] as const,
+  sharedSessions: (walletId: string) => [...m, "sharedSessions", walletId] as const,
+  sharedSession: (walletId: string, session: string) => [...m, "sharedSession", walletId, session] as const,
 };
 
 export function useMasternodeListState() {
@@ -62,6 +65,24 @@ export function useEvonodeCredits(hash: string, enabled = true) {
 export function useMasternodeKeys(walletId: string, role: MasternodeKeyRoleName, start: number, count: number) {
   const b = useBackend();
   return useQuery({ queryKey: mnKeys.keychain(walletId, role, start, count), queryFn: () => b.mnKeys(walletId, role, start, count) });
+}
+
+/** What the wallet can do with shared masternodes (MG-10 §2.9). */
+export function useSharedCapability(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.sharedCapability(walletId), queryFn: () => b.mnSharedCapability(walletId), enabled });
+}
+
+/** Every shared session of the wallet: the In progress list, the badge and Auto's discovery read (§3.6). */
+export function useSharedSessions(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.sharedSessions(walletId), queryFn: () => b.mnSharedSessions(walletId), enabled });
+}
+
+/** One session; the sheet renders the record a command returns at once and lets the event re-read it. */
+export function useSharedSession(walletId: string, session: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.sharedSession(walletId, session), queryFn: () => b.mnSharedSession(walletId, session), enabled });
 }
 
 /** The wallet's masternode labels and services for governance's vote rows (MG-09 F3). */
