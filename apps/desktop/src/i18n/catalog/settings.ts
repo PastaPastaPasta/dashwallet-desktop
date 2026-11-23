@@ -281,4 +281,93 @@ export const settings = {
     support: "Support, source code and log export",
     supportWhy: "Support and log export are coming soon.",
   },
+  security: {
+    encryption: "Wallet encryption",
+    status: "Status",
+    encrypted: "Encrypted",
+    notEncrypted: "Not encrypted",
+    encryptHint: "Anyone who can use this computer can spend from this wallet. Encrypt it with a passphrase.",
+    encrypt: "Encrypt wallet…",
+    change: "Change passphrase…",
+    showPhrase: "Show recovery phrase…",
+    forgot: "Forgot passphrase?",
+    /** dash-qt `AskPassphraseDialog` after `encryptWallet`, then the lock that follows. */
+    encryptedLocked:
+      "Your wallet is now encrypted. Remember that encrypting your wallet cannot fully protect your funds from being stolen by malware infecting your computer. The wallet is locked: unlock it with the new passphrase.",
+    /** dash-qt `AskPassphraseDialog` after `changePassphrase`. */
+    passphraseChanged: "Wallet passphrase was successfully changed.",
+    sameAsOld: "The new passphrase is the same as the current one.",
+    unlocking: "Unlocking",
+    quickUnlock: "Touch ID or Windows Hello, and its spending limit",
+    quickUnlockUnavailable: "Not available on this computer",
+    quickUnlockWhy: "Touch ID and Windows Hello are coming soon.",
+    autoLock: "Lock automatically after",
+    autoLockHint: "Counts from the last key press, click or scroll in this window.",
+    never: "Never",
+    /** `amount` is `count` as written, ungrouped. */
+    seconds: { one: "{amount} second", other: "{amount} seconds" },
+    minutes: { one: "{amount} minute", other: "{amount} minutes" },
+    hours: { one: "{amount} hour", other: "{amount} hours" },
+    lockedAutomatically: "Locked automatically.",
+    privacy: "Privacy",
+    autohideBalance: "Hide balances when the app starts",
+    payments: "Payments",
+    requireAuthentication: "Ask for my passphrase for every payment",
+    requireAuthenticationHint: "Every payment asks for the passphrase, even just after you unlock.",
+    signingWindowHint:
+      "For 5 minutes after you unlock, payments can add up to the spending limit without asking again. A total over the limit still asks. Locking, sleep and quitting end it.",
+    turnOnText: "Turn on: every payment asks for the passphrase.",
+    turnOffText: "Turn off: for 5 minutes after you unlock, payments can add up to the spending limit without asking again. A total over the limit still asks.",
+    turnOn: "Turn on",
+    turnOff: "Turn off",
+    spendLimit: "Spending limit",
+    spendLimitHint:
+      "The total payments can add up to during those 5 minutes. Touch ID, when available, checks each payment against this limit on its own, not a running total.",
+    /** A spending limit: `amount` is a number of DASH. */
+    dash: "{amount} DASH",
+    duffs: "{amount} duffs",
+    spendLimitChange:
+      "Change the limit from {from} to {to}. Payments during the 5 minutes after you unlock can add up to {to}. A total over that still asks for the passphrase.",
+    encryptFirst: "Encrypt the wallet first.",
+    encryptTitle: "Encrypt wallet",
+    encrypting: "Encrypting…",
+    encryptSubmit: "Encrypt wallet",
+    changeTitle: "Change passphrase",
+    current: "Current passphrase",
+    new: "New passphrase",
+    repeat: "Repeat the new passphrase",
+    changeSubmit: "Change passphrase",
+    wipeCard: "Delete wallet data",
+    wipeHint: "Removes every wallet of this network from this computer.",
+    wipe: "Wipe wallet…",
+    /** IOS-009 "Delete All Wallets?". */
+    wipeTitle: "Delete all wallet data?",
+    wipeMessage:
+      "Every wallet on this network is removed from this computer: its keys, its recovery phrase, its history and its settings. Your coins stay on the network. A wallet that spends comes back from its recovery phrase, or from a backup or export you kept; a watch-only wallet comes back with its extended public key. A governance proposal you paid for is kept, so it comes back when you add its wallet again.",
+    /** iOS's sentence, which the user types exactly, in the app's language. */
+    wipeAcceptPhrase: "I accept that I will lose my coins if I no longer possess the recovery phrase",
+    wipeType: "Type: {sentence}",
+    acceptPhraseMismatch: "Type the sentence exactly as shown.",
+    continue: "Continue",
+    deleteEverything: "Delete everything",
+    deleting: "Deleting…",
+    tryAgain: "Try again",
+    wiped: "The wallets and the vault were deleted. Backups and exports were kept.",
+    /** Backups and exports are files the user chose to keep: the wipe leaves them (D27). */
+    wipeKeeps:
+      "Backups and exports in {dir} are not deleted. An export for Dash Core holds private keys in plain text: delete it yourself if you no longer need it.",
+    /** The folder, while its path is not known yet. */
+    backupFolder: "the backup folder",
+    wipeNoList: "The list of every wallet could not be read: {reason} Nothing was deleted.",
+    /** The wallets are gone but not all of the vault (D33, D45). */
+    vaultKept:
+      "Every wallet was removed, but the vault could not be fully deleted: {reason} Try again. If you close this instead, part of it may stay on this computer, and a wallet you add next may be kept under the old passphrase.",
+    vaultKeptNoReason:
+      "Every wallet was removed, but the vault could not be fully deleted. Try again. If you close this instead, part of it may stay on this computer, and a wallet you add next may be kept under the old passphrase.",
+    wipeStoppedNone: "{name} could not be removed: {reason} Nothing was deleted.",
+    wipeStopped: {
+      one: "{name} could not be removed: {reason} The wallet before it was removed; the others and the vault were kept.",
+      other: "{name} could not be removed: {reason} The {count} wallets before it were removed; the others and the vault were kept.",
+    },
+  },
 } as const satisfies Tree;
