@@ -1939,6 +1939,88 @@ fn a_bad_abandoned_row_does_not_fail_the_start() {
     );
 }
 
+/// The way out when a half-done Abandon's own mark has a damaged key: the
+/// start skips it, so the payment is pending again with Abandon offered;
+/// abandoning it again finishes it as a normal Abandon (A comes back once
+/// its funding is scanned, the change goes), also after a restart.
+#[test]
+fn a_half_done_abandon_whose_own_mark_key_is_damaged_can_be_abandoned_again() {
+    let (_dir, engine, session, id, payment, a, paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    let c = change_of(&payment, &own_scripts(&engine, &session, id));
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    let conn = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let key = format!("abandoned:{txid}");
+    let damaged: Vec<u8> = (key.as_bytes()[..key.len() - 1].iter().copied())
+        .chain([0xff])
+        .collect();
+    let changed = conn
+        .execute(
+            "UPDATE settings_kv SET key = CAST(?3 AS TEXT) WHERE scope = ?1 AND key = ?2",
+            rusqlite::params![id.to_string(), key, damaged],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    drop(conn);
+
+    let session = reopen(&engine, session);
+    assert!(record_stored(&session, id, txid), "the start finished it");
+    assert!(
+        (session.hub.history.get(&id, &txid))
+            .is_some_and(|e| e.context.block_info().is_none() && !e.is_abandoned()),
+        "not listed pending"
+    );
+    let extras = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
+    assert!(extras.can_abandon, "Abandon is not offered: {extras:?}");
+    engine.block_on(session.start_spv()).unwrap();
+    eventually("SPV runs", || {
+        session.spv_state().unwrap() == crate::SpvState::Running
+    });
+    engine
+        .block_on(session.abandon_transaction(id, txid))
+        .unwrap();
+    assert!(
+        !record_stored(&session, id, txid),
+        "the Abandon did not sweep it"
+    );
+    assert_eq!(
+        stored_spent(&session, id, a),
+        Some(false),
+        "A is not released"
+    );
+    assert_eq!(
+        stored_spent(&session, id, c),
+        None,
+        "the change stays stored"
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert_holds(
+        &engine,
+        &session,
+        id,
+        &paid_outputs(&paid),
+        "abandoned again, then scanned",
+    );
+
+    let session = reopen(&engine, session);
+    assert!(!record_stored(&session, id, txid), "back after a restart");
+    assert_eq!(
+        stored_spent(&session, id, c),
+        None,
+        "the change is back after a restart"
+    );
+    assert_holds(
+        &engine,
+        &session,
+        id,
+        &paid_outputs(&paid),
+        "then a restart",
+    );
+}
+
 /// The way out of a half-done abandon that releases nothing (no stored
 /// record, no readable copy, no sent mark), its coin's funding already
 /// mined: Tools ▸ Repair's rescan from the wallet's birth gives A back
