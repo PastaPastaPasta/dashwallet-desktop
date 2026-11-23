@@ -22,6 +22,8 @@ import { onRecoverySettled } from "../recovery/model";
 import { onShieldedSettled } from "../shielded/flow";
 import { closeWalletGate, confirmLockState, disposeConfirm, followLockStatus, lockStateChanged, subscribeWalletGate, walletGateClosed } from "./lockGate";
 import { keys, scanHeightsStale } from "./queries";
+import { showShellToast } from "../components/toast";
+import { t } from "../i18n";
 import { announceable, feedSync } from "./syncDisplay";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
@@ -117,10 +119,15 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // A fetch, a setting, a price turning stale or expiring, mainnet opened or closed (MP-01).
     case "rates":
       return [keys.ratesAll];
-    // No screen reads these yet (the notice view comes with its task).
+    // A failed automatic backup is shown in Settings ▸ Backups; no screen reads the other notices
+    // yet (the notice view comes with its task).
+    case "notice":
+      return event.code === "backupFailed" ? [keys.backupsAll] : [];
+    // An automatic backup was written: Settings ▸ Backups lists it, and its failure row goes.
+    case "backups":
+      return [keys.backupsAll];
     // `newTransactions` is announced above (payments/received.ts), not read as a query.
     case "newTransactions":
-    case "notice":
       return [];
     default:
       return unreachable(event);
@@ -221,6 +228,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
     }
     // A notice's detail can name a wallet or an asset lock: not while locked.
     if (event.kind === "notice") console.warn("engine notice", event.code, ...(walletGateClosed() ? [] : [event.detail]));
+    if (event.kind === "notice" && event.code === "backupFailed") showShellToast(t("settings.backups.automaticFailed.toast"));
     // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
     // below. Not the query's, which only follows once its refetch is back.
     if (event.kind === "sync") feedSync(backend, event.status);

@@ -135,6 +135,19 @@ describe("fixture settings engine", () => {
     expect(await cmd.backupDirectory()).toBe(FIXTURE_BACKUP_DIR);
   });
 
+  it("lists the wallets whose latest automatic backup failed, until backups are turned off", async () => {
+    expect(await cmd.automaticBackupFailures()).toEqual([]);
+    fixture.world.settings.backupFailures = [
+      { walletId: W, failedAt: 1_800_000_000 },
+      { walletId: "ff".repeat(32), failedAt: 1_800_000_001 },
+    ];
+    expect(await cmd.automaticBackupFailures()).toEqual([{ walletId: W, failedAt: 1_800_000_000 }]);
+    await cmd.setBackupPolicy(3);
+    expect(await cmd.automaticBackupFailures()).toHaveLength(1);
+    await cmd.setBackupPolicy(0);
+    expect(await cmd.automaticBackupFailures()).toEqual([]);
+  });
+
   it("detects files by content and imports Dash Core wallets", async () => {
     expect((await cmd.inspectWalletFile(FIXTURE_FILES.psbt)).kind).toBe("psbt");
     expect((await cmd.inspectWalletFile(FIXTURE_FILES.unknown)).kind).toBe("unknown");

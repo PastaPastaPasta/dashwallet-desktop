@@ -121,6 +121,14 @@ export const settings = {
       unknown: "Dash Wallet is busy. Try again when it has finished.",
     },
   },
+  backups: {
+    backUp: "Back up wallet…",
+    automaticFailed: {
+      title: "The latest automatic backup failed",
+      body: "Dash Wallet could not write an automatic backup of {wallet} on {date}. Your funds are not affected, and your recovery phrase still restores them. Make a backup now with Back up wallet…, and check that the backup folder has free space and that Dash Wallet can write to it.",
+      toast: "An automatic backup failed. Open Settings ▸ Backups to see what to do.",
+    },
+  },
   dashpay: {
     title: "DashPay",
     joined: "Your DashPay identity",
