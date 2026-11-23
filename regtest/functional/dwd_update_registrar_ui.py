@@ -53,6 +53,10 @@ def source_head():
 
 
 class DwdUpdateRegistrarUi(DwdProtx):
+    def set_test_params(self):
+        # The framework wants it defined here; the network is dwd_protx.py's.
+        super().set_test_params()
+
     def skip_test_if_missing_module(self):
         super().skip_test_if_missing_module()
         for name in ("DW_APP", "TAURI_DRIVER", "DISPLAY"):
