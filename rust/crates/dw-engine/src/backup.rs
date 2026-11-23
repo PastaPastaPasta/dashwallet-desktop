@@ -1499,7 +1499,7 @@ impl BackupRuntime {
     }
 
     /// Tests: how many wait for the policy lock.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn policy_waiting(&self) -> usize {
         self.policy_waiting.load(Ordering::SeqCst)
     }
