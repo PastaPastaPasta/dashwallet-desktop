@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ProTxOperation } from "../api/generated/ProTxOperation";
 import type { ProTxOperationStateName } from "../api/generated/ProTxOperationStateName";
 import { t } from "../i18n";
-import { conflicted, inProgress, lastErrorText, opRow, resendCap, resendConfirmText, resends } from "./operations";
+import { conflicted, inProgress, lastErrorText, opRow, resendCap, resendConfirmText, actsOn } from "./operations";
 import { REGISTRATION_SENDS } from "./registration";
 
 const I = "masternodes.inProgress";
@@ -58,19 +58,20 @@ describe("In progress (§1.10)", () => {
   });
 
   it("gives each state its row and actions", () => {
-    expect(opRow(every[0])).toMatchObject({ status: t(`${I}.status.needsSignature`), primary: "continue", more: ["discard"] });
-    expect(opRow(every[1])).toMatchObject({ status: t(`${I}.status.inputsSpent`), primary: "refresh", more: ["discard"] });
+    expect(opRow(every[0])).toMatchObject({ status: t(`${I}.status.needsSignature`), primary: null, more: ["discard"] });
+    expect(opRow(every[1])).toMatchObject({ status: t(`${I}.status.inputsSpent`), primary: null, more: ["discard"] });
     expect(opRow(every[2])).toMatchObject({ status: t(`${I}.status.notSentPlain`), primary: null, more: ["discard"] });
     expect(opRow(every[3]).status).toBe(t(`${I}.status.notSent`, { reason: lastErrorText("send.no_peers")! }));
     expect(opRow(every[4])).toMatchObject({ primary: null, more: [], overdueLine: null, activityTxid: null });
     expect(opRow(every[6])).toMatchObject({ primary: null, more: [] });
   });
 
-  it("offers Send again on a registration row only while registrations send (D14)", () => {
+  it("acts on a registration row only while registrations send (D14), and keeps Discard", () => {
     expect(REGISTRATION_SENDS).toBe(false);
     const sent = op("s", { kind: "sent" });
-    expect(resends(sent)).toBe(false);
-    expect(resends(sent, true)).toBe(true);
+    expect(actsOn(sent)).toBe(false);
+    expect(actsOn(sent, true)).toBe(true);
+    for (const state of [{ kind: "needs_signature" }, { kind: "inputs_spent" }, { kind: "not_sent" }] as const) expect(opRow(op("r", state))).toMatchObject({ primary: null, more: ["discard"] });
     expect(opRow(op("d", { kind: "sent" }, { kind: "dissolve" })).primary).toBe("resend");
     expect(opRow(op("d", { kind: "not_sent" }, { kind: "dissolve" })).primary).toBe("resend");
   });

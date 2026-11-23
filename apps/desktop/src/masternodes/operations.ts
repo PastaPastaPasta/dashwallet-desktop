@@ -23,8 +23,8 @@ export function lastErrorText(code: string | null): string | null {
   return sendErrorText(e, "test")?.text ?? t(`${P}.unknownError`, { code });
 }
 
-/** Send again, except on a registration while registrations don't send (D14). */
-export const resends = (o: ProTxOperation, sends: boolean = REGISTRATION_SENDS) => o.kind !== "registration" || sends;
+/** A registration row is acted on only while registrations send (D14); Discard always stays. */
+export const actsOn = (o: ProTxOperation, sends: boolean = REGISTRATION_SENDS) => o.kind !== "registration" || sends;
 
 /** A fee-input row can be abandoned in Activity; a dissolve row locks no coin (MG-04 D49, mn §2.4). */
 const hasFeeInputs = (o: ProTxOperation) => o.kind !== "dissolve";
@@ -49,19 +49,19 @@ export function opRow(o: ProTxOperation): OpRowView {
   const base = { title, overdueLine: null, activityTxid: null };
   switch (o.state.kind) {
     case "needs_signature":
-      return { ...base, status: t(`${P}.status.needsSignature`), primary: "continue", more: ["discard"] };
+      return { ...base, status: t(`${P}.status.needsSignature`), primary: actsOn(o) ? "continue" : null, more: ["discard"] };
     case "inputs_spent":
-      return { ...base, status: t(`${P}.status.inputsSpent`), primary: "refresh", more: ["discard"] };
+      return { ...base, status: t(`${P}.status.inputsSpent`), primary: actsOn(o) ? "refresh" : null, more: ["discard"] };
     case "signed":
     case "not_sent":
-      return { ...base, status: error ? t(`${P}.status.notSent`, { reason: error }) : t(`${P}.status.notSentPlain`), primary: resends(o) ? "resend" : null, more: ["discard"] };
+      return { ...base, status: error ? t(`${P}.status.notSent`, { reason: error }) : t(`${P}.status.notSentPlain`), primary: actsOn(o) ? "resend" : null, more: ["discard"] };
     case "sent":
       return {
         title,
         status: t(`${P}.status.sent`, { title }),
         overdueLine: o.overdue ? t(hasFeeInputs(o) ? `${P}.overdue` : `${P}.overdueDissolve`) : null,
         activityTxid: o.overdue && hasFeeInputs(o) ? o.txid : null,
-        primary: resends(o) ? "resend" : null,
+        primary: actsOn(o) ? "resend" : null,
         more: [],
       };
     default:

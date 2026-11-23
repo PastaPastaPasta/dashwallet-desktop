@@ -1,7 +1,7 @@
 // The registration wizard's model (MG-10 §1.6, D5): what the user picked, the request it builds,
 // the field checks made before any call, the register grant's cap, and where a refusal shows.
 
-import { isAppError } from "../api/backend";
+import { isAppError, type Backend } from "../api/backend";
 import type { AppError } from "../api/generated/commands";
 import type { CollateralCoin } from "../api/generated/CollateralCoin";
 import type { MnRegistrationPreview } from "../api/generated/MnRegistrationPreview";
@@ -17,17 +17,40 @@ export type Step = (typeof STEPS)[number] | "prove" | "done";
 
 export type Runner = "hosted" | "self";
 
-/** Off until a sent registration that never confirms can give its coins back (D14): the wizard
- * reviews, and saves an External one to In progress, but nothing is sent. */
+/** Off until a registration's locked coins can always come back (D14): the wizard reads keys and
+ * previews, and nothing is prepared, sent, released or locked. */
 export const REGISTRATION_SENDS = false;
 
-/** The step's main button: Continue, Register (Review), Register (Prove), or, while sending is
- * off, none and the send-off line in its place. */
+/** The calls a held wizard may make: they read, and lock no coin. */
+export const HELD_CALLS = ["mnRegistrationKeys", "mnPreviewRegistration"] as const;
+/** The calls that lock, spend or release a coin, refused while held. */
+export const SENDING_CALLS = [
+  "mnRegister",
+  "mnPrepareExternalRegistration",
+  "mnRefreshExternalRegistration",
+  "mnSubmitExternalRegistration",
+  "mnResendOperation",
+  "mnReleaseCollateral",
+  "mnLockCollateral",
+] as const;
+export type RegistrationCalls = Pick<Backend, (typeof HELD_CALLS)[number] | (typeof SENDING_CALLS)[number]>;
+
+/** The backend as the wizard, its rows and the collateral actions see it: while held, every
+ * sending call rejects before it reaches the backend. */
+export function registrationCalls(b: Backend, sends: boolean = REGISTRATION_SENDS): RegistrationCalls {
+  const calls = Object.fromEntries(HELD_CALLS.map((k) => [k, b[k].bind(b)])) as Pick<Backend, (typeof HELD_CALLS)[number]>;
+  const held = () => Promise.reject(new Error("registration sending is held"));
+  const sending = Object.fromEntries(SENDING_CALLS.map((k) => [k, sends ? b[k].bind(b) : held]));
+  return { ...calls, ...sending } as RegistrationCalls;
+}
+
+/** The step's main button: Continue, Register (Review), Register (Prove), or, while held, none at
+ * Review and the send-off line in its place. */
 export type FinalAction = "continue" | "register" | "submit" | "sendOff";
 
 export function finalAction(step: Step, external: boolean, sends: boolean = REGISTRATION_SENDS): FinalAction {
   if (step === "prove") return sends ? "submit" : "sendOff";
-  if (step === "review" && !external) return sends ? "register" : "sendOff";
+  if (step === "review") return !sends ? "sendOff" : external ? "continue" : "register";
   return "continue";
 }
 export type CollateralPick = "fund_new" | "existing" | "external";

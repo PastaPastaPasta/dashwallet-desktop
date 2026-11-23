@@ -45,6 +45,7 @@ import {
   type RegDraft,
   type Step,
   finalAction,
+  registrationCalls,
 } from "../../masternodes/registration";
 import { failureText } from "../pay/model";
 import { CredentialField, useCredential } from "./credential";
@@ -72,7 +73,8 @@ export function RegisterSheet({
   onClose: () => void;
 }) {
   const t = useT();
-  const b = useBackend();
+  const backend = useBackend();
+  const b = registrationCalls(backend);
   const shown = useDisplay(network);
   const id = useId();
   const refresh = useMasternodesRefresh();
@@ -202,7 +204,7 @@ export function RegisterSheet({
       const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: registerCap(confirmed) });
       if (!grant) return;
       if (departed()) {
-        void b.revokeGrant(grant.id).catch(() => null);
+        void backend.revokeGrant(grant.id).catch(() => null);
         return;
       }
       const sent = await b.mnRegister(wallet.walletId, request, grant.id);
@@ -236,7 +238,7 @@ export function RegisterSheet({
       const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: op.debit });
       if (!grant) return;
       if (departed()) {
-        void b.revokeGrant(grant.id).catch(() => null);
+        void backend.revokeGrant(grant.id).catch(() => null);
         return;
       }
       const result =

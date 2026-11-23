@@ -10,7 +10,7 @@ import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useT, type Translate } from "../../i18n";
 import { mnErrorText, rowName } from "../../masternodes/model";
-import { collateralDash } from "../../masternodes/registration";
+import { collateralDash, registrationCalls } from "../../masternodes/registration";
 import { useMasternodesRefresh } from "../../masternodes/queries";
 
 const L = "masternodes.release";
@@ -21,7 +21,7 @@ export const collateralErrorText = (e: unknown, t: Translate) =>
 
 export function ReleaseSheet({ row, wallet, onClose }: { row: MasternodeRow; wallet: WalletSummary; onClose: () => void }) {
   const t = useT();
-  const b = useBackend();
+  const b = registrationCalls(useBackend());
   const refresh = useMasternodesRefresh();
   const [understood, setUnderstood] = useState(false);
   const [busy, setBusy] = useState(false);

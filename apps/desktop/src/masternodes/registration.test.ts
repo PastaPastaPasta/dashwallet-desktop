@@ -1,12 +1,15 @@
 // The registration wizard's model (registration.ts, MG-10 §1.6, D5).
 
-import { describe, expect, it } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import type { Backend } from "../api/backend";
 import type { AppError } from "../api/generated/commands";
 import type { CollateralCoin } from "../api/generated/CollateralCoin";
 import type { MnRegistrationPreview } from "../api/generated/MnRegistrationPreview";
 import type { ProTxKeys } from "../api/generated/ProTxKeys";
 import { t } from "../i18n";
-import { REGISTRATION_SENDS, buildRequest, coinsFor, finalAction, newDraft, normalOutpoint, refusalOf, registerCap, samePreview, serviceError, shareBasisPoints, stepErrors, type Ports, type RegDraft } from "./registration";
+import { HELD_CALLS, REGISTRATION_SENDS, SENDING_CALLS, buildRequest, registrationCalls, coinsFor, finalAction, newDraft, normalOutpoint, refusalOf, registerCap, samePreview, serviceError, shareBasisPoints, stepErrors, type Ports, type RegDraft } from "./registration";
 
 const R = "masternodes.register";
 const COIN = 100_000_000;
@@ -170,7 +173,7 @@ describe("sending is off (D14)", () => {
     expect(REGISTRATION_SENDS).toBe(false);
     expect(finalAction("review", false)).toBe("sendOff");
     expect(finalAction("prove", true)).toBe("sendOff");
-    expect(finalAction("review", true)).toBe("continue");
+    expect(finalAction("review", true)).toBe("sendOff");
     expect(finalAction("keys", false)).toBe("continue");
   });
 
@@ -178,5 +181,43 @@ describe("sending is off (D14)", () => {
     expect(finalAction("review", false, true)).toBe("register");
     expect(finalAction("prove", true, true)).toBe("submit");
     expect(finalAction("review", true, true)).toBe("continue");
+  });
+});
+
+describe("a held wizard only reads (D14)", () => {
+  const backend = () => {
+    const b = Object.fromEntries([...HELD_CALLS, ...SENDING_CALLS].map((k) => [k, vi.fn(async () => null)]));
+    return b as unknown as Backend & Record<string, ReturnType<typeof vi.fn>>;
+  };
+
+  it("reaches the backend with keys and preview, and with nothing else", async () => {
+    expect(REGISTRATION_SENDS).toBe(false);
+    const b = backend();
+    const calls = registrationCalls(b) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    for (const k of HELD_CALLS) await calls[k]("w");
+    for (const k of SENDING_CALLS) await expect(calls[k]("w")).rejects.toThrow();
+    for (const k of HELD_CALLS) expect(b[k]).toHaveBeenCalledOnce();
+    for (const k of SENDING_CALLS) expect(b[k]).not.toHaveBeenCalled();
+  });
+
+  it("passes every call through once sending is on", async () => {
+    const b = backend();
+    const calls = registrationCalls(b, true) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    for (const k of SENDING_CALLS) await calls[k]("w");
+    for (const k of SENDING_CALLS) expect(b[k]).toHaveBeenCalledOnce();
+  });
+
+  it("is the only way the masternode screens reach a registration's sending calls", () => {
+    const dir = join(__dirname, "../screens/masternodes");
+    const named = SENDING_CALLS.filter((k) => k !== "mnResendOperation");
+    for (const f of readdirSync(dir).filter((x) => /\.tsx?$/.test(x) && !x.includes(".test."))) {
+      const src = readFileSync(join(dir, f), "utf8");
+      const gated = /const b = registrationCalls\(/.test(src);
+      for (const k of named) {
+        expect(src.match(new RegExp(`\\bbackend\\.${k}\\(`)), `${f} calls ${k} on the backend`).toBeNull();
+        if (!gated) expect(src.match(new RegExp(`\\bb\\.${k}\\(`)), `${f} calls ${k} on the backend`).toBeNull();
+      }
+    }
+    expect(readFileSync(join(dir, "RegisterSheet.tsx"), "utf8")).toMatch(/const b = registrationCalls\(backend\);/);
   });
 });

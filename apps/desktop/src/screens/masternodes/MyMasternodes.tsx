@@ -41,6 +41,7 @@ import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefr
 import { inProgress } from "../../masternodes/operations";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import { InProgressGroup } from "./InProgress";
+import { REGISTRATION_SENDS, registrationCalls } from "../../masternodes/registration";
 import { collateralErrorText, ReleaseSheet } from "./ReleaseSheet";
 import { useT } from "../../i18n";
 import { ChangeKeysSheet, OperatorSheet } from "./ChangeKeysSheet";
@@ -205,7 +206,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
   const lockAgain = async () => {
     setLockError(null);
     try {
-      await backend.mnLockCollateral(wallet.walletId, row.proTxHash);
+      await registrationCalls(backend).mnLockCollateral(wallet.walletId, row.proTxHash);
     } catch (e) {
       setLockError(collateralErrorText(e, t));
     }
@@ -240,9 +241,11 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
         {holdsCollateral && row.collateralReleased && (
           <p className="mg-notice mg-notice-warning mg-notice-row" data-testid="mn-released">
             <span>{t("masternodes.release.released")}</span>
-            <DashButton variant="tintedBlue" size="small" data-testid="mn-lock-again" onClick={() => void lockAgain()}>
-              {t("masternodes.release.lockAgain")}
-            </DashButton>
+            {REGISTRATION_SENDS && (
+              <DashButton variant="tintedBlue" size="small" data-testid="mn-lock-again" onClick={() => void lockAgain()}>
+                {t("masternodes.release.lockAgain")}
+              </DashButton>
+            )}
           </p>
         )}
         {lockError && (
@@ -291,7 +294,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
               { id: "rename", title: MnText.rename, onSelect: () => setRenaming(true) },
               { id: "copy-hash", title: MnText.copyHash, onSelect: () => void copyWithToast(row.proTxHash) },
               ...(outpoint ? [{ id: "copy-outpoint", title: MnText.copyOutpoint, onSelect: () => void copyWithToast(outpoint) }] : []),
-              ...(holdsCollateral
+              ...(holdsCollateral && REGISTRATION_SENDS
                 ? [
                     row.collateralReleased
                       ? { id: "lock-again", title: t("masternodes.release.lockAgain"), onSelect: () => void lockAgain() }
