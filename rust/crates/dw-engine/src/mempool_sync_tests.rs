@@ -21,6 +21,8 @@ use crate::{DashNetwork, Engine, WalletBalances, WalletId};
 
 #[path = "crash_send_tests.rs"]
 mod crash_send_tests;
+#[path = "dismissed_spend_disk_tests.rs"]
+mod dismissed_spend_disk_tests;
 #[path = "h03_kill9_core_tests.rs"]
 mod h03_kill9_core_tests;
 #[path = "own_spend_balance_tests.rs"]
