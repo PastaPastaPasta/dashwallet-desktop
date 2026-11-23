@@ -66,6 +66,9 @@ codes! {
         /// A lease ended before the hand-off; nothing was sent (dw-ffi
         /// folds it into `send.prepared_tx_spent`).
         Cancelled = "send.cancelled",
+        /// Not sent, but its saved copy could not be removed: its coins stay
+        /// reserved until a restart.
+        HeldUntilRestart = "send.held_until_restart",
     }
 }
 
@@ -305,6 +308,7 @@ impl From<SendFailure> for AppError {
                 Some(ErrorData::Reason { reason }),
             ),
             F::Cancelled => (SendCode::Cancelled.into(), None),
+            F::HeldUntilRestart => (SendCode::HeldUntilRestart.into(), None),
         };
         build(message, mapped)
     }
@@ -546,6 +550,7 @@ mod tests {
                 "send.broadcast_unknown",
             ),
             (SendFailure::Cancelled, "send.cancelled"),
+            (SendFailure::HeldUntilRestart, "send.held_until_restart"),
         ];
         assert_eq!(send.len(), SendCode::ALL.len());
         for (f, expected) in send {

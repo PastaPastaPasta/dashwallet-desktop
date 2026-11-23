@@ -19199,6 +19199,12 @@ enum SendError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case BroadcastUnknown(reason: String
     )
+    /**
+     * Code `send.held_until_restart`: not sent, but its saved copy could
+     * not be removed. The inputs stay reserved until a restart lists the
+     * payment pending, where it can be abandoned.
+     */
+    case HeldUntilRestart
 
     
     /**
@@ -19309,6 +19315,7 @@ public struct FfiConverterTypeSendError: FfiConverterRustBuffer {
         case 28: return .BroadcastUnknown(
             reason: try FfiConverterString.read(from: &buf)
             )
+        case 29: return .HeldUntilRestart
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -19453,6 +19460,10 @@ public struct FfiConverterTypeSendError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(28))
             FfiConverterString.write(reason, into: &buf)
             
+        
+        case .HeldUntilRestart:
+            writeInt(&buf, Int32(29))
+        
         }
     }
 }
