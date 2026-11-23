@@ -1,13 +1,8 @@
 import { useSyncExternalStore } from "react";
 import type { ProtocolCompatibility } from "../api/generated/ProtocolCompatibility";
+import { messageTable } from "../i18n";
 
-export const PROTOCOL_ADVISORY_COPY = {
-  label: "App update available",
-  text: "The network has upgraded. Check for an app update.",
-  link: "GitHub releases",
-  dismiss: "Dismiss",
-  openFailed: "Could not open the releases page.",
-} as const;
+export const PROTOCOL_ADVISORY_COPY = messageTable("home.advisory", ["label", "text", "link", "dismiss", "openFailed"] as const);
 
 const dismissedNetworks = new Set<string>();
 const listeners = new Set<() => void>();

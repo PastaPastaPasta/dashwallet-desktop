@@ -30,7 +30,8 @@
 //!    `couldnt_confirm`.
 //!
 //! Under `Enforce`, step 1's positive match, (i), (ii) and (iv) must pass
-//! rule 5 (P8 step 4, P12). No path signs again.
+//! rule 5 (P8 step 4, P12), and so must the nonce read a hand-off or a
+//! `Stale` decision rests on (H-09). No path signs again.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -275,9 +276,12 @@ async fn identity_for(
     if !group.iter().any(needs_identity) {
         return Ok(None);
     }
-    reached(env, height, "the identity", top, || net.identity(*id))
-        .await
-        .map(Some)
+    let read = reached(env, height, "the identity", top, || net.identity(*id)).await?;
+    // H-09: its keys name the candidate scripts a document must pay.
+    if !read.passed {
+        return Err(unverified("the identity"));
+    }
+    Ok(Some(read))
 }
 
 /// Raises the group's floor from `floor` to `top`, the highest
@@ -398,6 +402,11 @@ async fn step_nonce(
     fault_after(env.db(), points::READ_NONCE)?;
     let h = read.read.height;
     let floor = raise_floor(env, id, nonce, floor, top).await?;
+    // H-09: nothing is decided, and nothing handed off, on a read rule 5
+    // did not pass.
+    if !read.passed {
+        return Ok(Err(Round::Undecidable(unverified("the nonce"))));
+    }
     let state = read.read.value;
     let tip = state & IDENTITY_NONCE_VALUE_FILTER;
     if takes(state, nonce, *id) {
@@ -410,9 +419,6 @@ async fn step_nonce(
         return Ok(Err(Round::Decided(Outcome::Stale)));
     }
     // (i) holds: n ≤ tip at H, and Drive no longer takes it.
-    if !read.passed {
-        return Ok(Err(Round::Undecidable(unverified("the nonce"))));
-    }
     Ok(Ok(Some((h, tip, floor))))
 }
 

@@ -4561,6 +4561,31 @@ renames or reshapes them takes the next version bump:
     `identity` once known; funding version 1) is decoded, and a row of it reads `registration.unsupported` here: never
     funded, advanced or discarded until C4b-2.
 
+**From H-09** (the trust release gate; MG's 1.0 ruling, no surface change):
+
+95. **Rule 5 for contact payments and masternode withdrawals in every mode.** 1.0 ships the degraded mode (DEC-168:
+    the masternode list SPV holds is not yet chained to the blockchain, rust-dashcore #1200 is not in the graph), and
+    key serving is unchanged. Rule 5 is no longer suspended where Platform data says where money goes or confirms it
+    to the user: a contact payment's `prepare` (and "Accept and pay") and a masternode credit withdrawal hold item 55's
+    `Enforcing` rule under the degraded default too (`TrustProvider::strict_rule_5`). A contact whose shown data has no
+    `dp_trust_verified` record of its current content waits up to 60 s for a re-fetch on SPV-verified quorum keys, then
+    is `platform.context_unavailable`; a withdrawal on an unverified identity read is
+    `masternodes.withdrawal_destination_checking` (the engine's reason `unverified`, which dw-app does not carry; the
+    quote's destinations read `checking{reason: unverified}`).
+    A record, once written, is durable and covers only the content it was written for, so a later payment to the same
+    contact moves without a fetch, and a replaced request waits again. Top-up, credit transfer and credit withdrawal
+    keep item 55's degraded reading (DP3-04 D4: they pay the wallet's own identity or addresses). An address a
+    contact payment's broadcast gave back unsent keeps the re-check flag it had (a retry pays it again). The
+    trusted-only toggle turns rule 5 off as before, and only in developer builds: a release build ignores a stored
+    `trust.trusted_only` and cannot set it. A contact's data that changes while the gate waits is
+    `platform.context_unavailable` too. Our own request held without the `autoAcceptProof` Platform has verifies when
+    every other field matches, and is recorded under its own kind (`contact_request_sent`); a received request
+    must match exactly. A request held under the payee that names another identity refuses the payment in every
+    mode, the toggle too. A contact payment needs a record of the contact's current content even where the
+    fallback was never used (a wallet store may come from an installation that used it). A session whose wallet
+    store holds a wallet app.sqlite never named also shows its Platform data as unverified until re-fetched. A
+    withdrawal's recovery takes candidate scripts only from a verified identity read.
+
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 
 These are the desktop app's own commands and launch rules, recorded here for the UI lane; no contract test checks this

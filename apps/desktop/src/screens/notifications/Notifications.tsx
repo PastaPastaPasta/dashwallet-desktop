@@ -9,7 +9,7 @@ import type { DashPayEventInfo } from "../../api/generated/DashPayEventInfo";
 import { errorMessage } from "../../api/backend";
 import { useBackend } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
-import { DashButton } from "../../components/basics";
+import { Chip, DashButton } from "../../components/basics";
 import { EmptyArt } from "../../components/emptyArt";
 import { EMPTY } from "../../components/emptyStates";
 import { EmptyState, LoadingState } from "../../components/history";
@@ -70,8 +70,21 @@ function openEvent(e: DashPayEventInfo) {
 }
 
 /** The popover under the bell (D11). Escape or a click outside closes it, except while an action
- * or its passphrase prompt is open; `close` gives focus back to the bell. */
-export function NotificationsPopover({ walletId, identity, network, id, close }: { walletId: string; identity: string; network: NetworkInfo; id: string; close: () => void }) {
+ * or its passphrase prompt is open, and so does focus moving out of it; `close` gives focus back to
+ * the bell unless told not to. */
+export function NotificationsPopover({
+  walletId,
+  identity,
+  network,
+  id,
+  close,
+}: {
+  walletId: string;
+  identity: string;
+  network: NetworkInfo;
+  id: string;
+  close: (o?: { refocus?: boolean }) => void;
+}) {
   const t = useT();
   const { feed, shown, nameOf, actions, hasKeys } = useBell(walletId, identity);
   useModel(actions);
@@ -93,11 +106,19 @@ export function NotificationsPopover({ walletId, identity, network, id, close }:
       // The bell toggles on its own click.
       if (!root.current?.contains(t) && !t?.closest?.("[data-bell]")) close();
     };
+    const left = (t: Element | null) => !!t && t !== document.body && !root.current?.contains(t) && !t.closest?.('[data-bell], [aria-modal="true"]');
+    const onFocus = (e: FocusEvent) => {
+      if (left(e.target as Element | null)) close({ refocus: false });
+    };
+    // Focus may have left while an action ran.
+    if (left(document.activeElement)) return close({ refocus: false });
     document.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onDown);
+    document.addEventListener("focusin", onFocus);
     return () => {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("focusin", onFocus);
     };
   }, [busy, close]);
   const go = (then: () => void) => {
@@ -128,7 +149,7 @@ export function NotificationsPopover({ walletId, identity, network, id, close }:
         <Requests contacts={cut.pending} more={cut.morePending} actions={actions} hasKeys={hasKeys} onOpen={(c) => go(() => openContact(c))} onDone={onDone} testId="bell-requests" />
       )}
       {cut.fresh.length > 0 && <Events title={t("notifications.section.new")} events={cut.fresh} fresh more={cut.moreFresh} nameOf={nameOf} onOpen={(e) => go(() => openEvent(e))} testId="bell-new" />}
-      <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="bell-outcome" />
+      <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="bell-outcome" polite />
       <DashButton variant="plainBlue" size="small" className="bell-all" data-testid="bell-see-all" onClick={() => go(() => navigate("notifications"))}>
         {t("notifications.seeAll")}
       </DashButton>
@@ -196,7 +217,7 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
     );
   return (
     <div className="notifications" data-testid="notifications" ref={root}>
-      <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="notifications-outcome" />
+      <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="notifications-outcome" polite />
       {!hasPayments && shown.pending.length === 0 && shown.fresh.length === 0 && shown.earlier.length === 0 && EMPTY.notifications.action && (
         <EmptyState
           testId="notifications-empty"
@@ -262,6 +283,7 @@ function Requests({
                 <span className="bell-row-text">
                   <span className="bell-row-title">
                     <bdi>{shownName(c)}</bdi>
+                    {c.unverified && <Chip tone="warning">{t("contacts.unverified")}</Chip>}
                   </span>
                   {sub && (
                     <span className="bell-row-sub">

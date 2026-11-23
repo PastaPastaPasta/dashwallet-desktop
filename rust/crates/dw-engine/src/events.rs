@@ -535,6 +535,9 @@ pub(crate) struct SessionHub {
     /// truncated the header chain, or Rebuild Index) checks every wallet
     /// for a truncation ([`Self::detect_truncation`]).
     header_tip: Mutex<Option<u32>>,
+    /// Payments whose own block a wallet's ChainLock named, by wallet:
+    /// their sent marks go at the next history flush.
+    final_sends: Mutex<Vec<(WalletId, Vec<Txid>)>>,
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -553,6 +556,10 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next wallet open before its spend claims are set.
     #[cfg(test)]
     pub(crate) pause_claims: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next spend-claim restore before it takes the
+    /// wallet manager's write lock.
+    #[cfg(test)]
+    pub(crate) pause_spend_claims: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next history load once it has read the stored
     /// records, before it reads the wallet.
     #[cfg(test)]
@@ -693,6 +700,7 @@ impl SessionHub {
             sweep_retry: OnceLock::new(),
             headers: RwLock::new(None),
             header_tip: Mutex::new(None),
+            final_sends: Mutex::new(Vec::new()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
@@ -704,6 +712,8 @@ impl SessionHub {
             on_published: Mutex::new(None),
             #[cfg(test)]
             pause_claims: Mutex::new(None),
+            #[cfg(test)]
+            pause_spend_claims: Mutex::new(None),
             #[cfg(test)]
             pause_history: Mutex::new(None),
             #[cfg(test)]
@@ -1507,16 +1517,35 @@ impl SessionHub {
                 ..
             } => {
                 self.note_chainlock(chain_lock.block_height, chain_lock.block_hash);
-                let locked: Vec<Txid> = self.history.with_wallet(id, |h| {
-                    locked_transactions
-                        .values()
-                        .flatten()
+                let (locked, settled): (Vec<Txid>, Vec<Txid>) = self.history.with_wallet(id, |h| {
+                    // key-wallet promotes by height; only a record whose own
+                    // block the lock names is final for its sent mark. This
+                    // relies on dash-spv dispatching only validated locks
+                    // (BLS-verified, header-matched): recheck that on any
+                    // rust-dashcore bump.
+                    let settled = (locked_transactions.values().flatten())
+                        .filter(|t| {
+                            (h.txs.get(*t).and_then(|e| e.context.block_info())).is_some_and(|b| {
+                                b.height() == chain_lock.block_height
+                                    && b.block_hash() == chain_lock.block_hash
+                            })
+                        })
+                        .copied()
+                        .collect();
+                    let locked = (locked_transactions.values().flatten())
                         .filter(|t| h.set_chain_locked(t))
                         .copied()
-                        .collect()
+                        .collect();
+                    (locked, settled)
                 });
-                if !locked.is_empty() {
-                    self.pump.mark_history(id, Some(&locked));
+                let mut changed = locked;
+                if !settled.is_empty() {
+                    changed.extend(&settled);
+                    (self.final_sends.lock().unwrap_or_else(|p| p.into_inner()))
+                        .push((id, settled));
+                }
+                if !changed.is_empty() {
+                    self.pump.mark_history(id, Some(&changed));
                 }
                 self.note_seen(id, locked_transactions.values().flatten().copied());
             }
@@ -1716,7 +1745,9 @@ impl PumpTarget for SessionPump {
                 txids,
             });
         }
-        if seen.is_empty() {
+        let finals =
+            std::mem::take(&mut *(self.hub.final_sends.lock()).unwrap_or_else(|p| p.into_inner()));
+        if seen.is_empty() && finals.is_empty() {
             return;
         }
         // First-seen times keep a mempool payment's arrival time across
@@ -1735,6 +1766,13 @@ impl PumpTarget for SessionPump {
                 if let Err(e) = appdb.stamp_tx_fiat(&wallet_id.to_string(), &rows, now) {
                     tracing::warn!(%wallet_id, error = %e, "could not store price stamps");
                 }
+            }
+            for (wallet_id, txids) in finals {
+                let (sent, _) = crate::tx_actions::load_sent(&appdb, wallet_id);
+                let marked: Vec<Txid> = (txids.into_iter())
+                    .filter(|t| sent.contains_key(t))
+                    .collect();
+                crate::tx_actions::forget_sent(&appdb, wallet_id, &marked);
             }
         };
         #[cfg(test)]

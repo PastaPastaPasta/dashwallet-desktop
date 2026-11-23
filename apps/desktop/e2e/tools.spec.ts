@@ -300,12 +300,14 @@ test.describe("Sign/Verify", () => {
     await page.getByTestId("verify-signature").fill(signature);
     await page.getByTestId("verify-verify").click();
     await expect(page.getByTestId("verify-result")).toHaveText("Message verified.");
-    await expect(page.getByTestId("verify-result")).toHaveClass("form-ok");
+    await expect(page.getByTestId("verify-result")).toContainClass("form-ok");
+    await expect(page.getByTestId("verify-result")).not.toContainClass("form-problem");
     await page.getByTestId("verify-message").fill("hello dash!");
     await page.getByTestId("verify-verify").click();
-    await expect(page.getByTestId("verify-result")).toHaveClass("form-problem");
+    await expect(page.getByTestId("verify-result")).toContainClass("form-problem");
+    await expect(page.getByTestId("verify-result")).not.toContainClass("form-ok");
     await page.getByTestId("verify-clear").click();
-    await expect(page.getByTestId("verify-result")).toHaveCount(0);
+    await expect(page.getByTestId("verify-result")).toBeEmpty();
   });
 
   test("D38: an edit clears the signature or outcome it no longer describes", async ({ page }) => {
@@ -317,17 +319,17 @@ test.describe("Sign/Verify", () => {
     await expect(page.getByTestId("sign-result")).toHaveText("Message signed.");
     const signature = await page.getByTestId("sign-signature").inputValue();
     await page.getByTestId("sign-message").fill("hello dash!");
-    await expect(page.getByTestId("sign-result")).toHaveCount(0);
+    await expect(page.getByTestId("sign-result")).toBeEmpty();
     await expect(page.getByTestId("sign-signature")).toHaveCount(0);
     // The address, typed or chosen again, clears it too.
     await page.getByTestId("sign-sign").click();
     await expect(page.getByTestId("sign-result")).toHaveText("Message signed.");
     await page.getByTestId("sign-address").fill(`${address} `);
-    await expect(page.getByTestId("sign-result")).toHaveCount(0);
+    await expect(page.getByTestId("sign-result")).toBeEmpty();
     await page.getByTestId("sign-sign").click();
     await expect(page.getByTestId("sign-result")).toHaveText("Message signed.");
     await chooseToSign(page, "Payroll");
-    await expect(page.getByTestId("sign-result")).toHaveCount(0);
+    await expect(page.getByTestId("sign-result")).toBeEmpty();
 
     await page.getByTestId("verify-address").fill(address);
     await page.getByTestId("verify-message").fill("hello dash");
@@ -337,7 +339,7 @@ test.describe("Sign/Verify", () => {
     for (const field of ["verify-message", "verify-address", "verify-signature"]) {
       const before = await page.getByTestId(field).inputValue();
       await page.getByTestId(field).fill(`${before} `);
-      await expect(page.getByTestId("verify-result")).toHaveCount(0);
+      await expect(page.getByTestId("verify-result")).toBeEmpty();
       await page.getByTestId(field).fill(before);
       await page.getByTestId("verify-verify").click();
       await expect(page.getByTestId("verify-result")).toHaveText("Message verified.");

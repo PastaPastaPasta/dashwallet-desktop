@@ -30,16 +30,12 @@ async function pickMallory(page: Page, theme: Theme, lang: string) {
   await expect(page.getByTestId("add-contact-send")).toBeVisible();
 }
 
-/** The fixture's people, their usernames, initials and identity ids, and the pane's dates (format/tx.ts's). */
+/** The fixture's people, their usernames, initials and identity ids. */
 const PEOPLE = [
   /^(heidi|Grace Hopper|Bob Builder|Carol|dave|Erin|Frank|Ivan|Judy \(work\)|Mallory|mallory|Marta|mateo|Maxine|Mayumi)$/,
   /^\p{Lu}{2}$/u,
   /^[1-9A-HJ-NP-Za-km-z]{32,}$/,
-  /^\S+ \S+,? \p{Nd}{4} at \p{Nd}{1,2}:\p{Nd}{2}( \S+)?$/u,
 ];
-
-/** Still English, from components/emptyStates.ts: the empty list's card. */
-const EMPTY_CARD = [/^No contacts yet$/, /^Add contact$/, /^Search for a user by their username to send them a contact request\.$/];
 
 const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) => Promise<void>; data?: RegExp[] }> = {
   list: {
@@ -54,7 +50,6 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
       await openContacts(page, theme, lang, "dashpay-contacts-empty");
       await expect(page.getByTestId("contacts-empty")).toBeVisible();
     },
-    data: EMPTY_CARD,
   },
   pane: {
     open: async (page, theme, lang) => {

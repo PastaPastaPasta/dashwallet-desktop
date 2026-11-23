@@ -10,19 +10,13 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { UriRejected } from "../api/generated/UriRejected";
 import { inTauri, tauriTools } from "../api/tauri";
+import { messageTable, t } from "../i18n";
 import { showShellToast } from "../components/toast";
 import { NetworkText } from "../network/choice";
 import { noteLiveLink, SavedLinksText } from "./savedLinks";
 import { navigate, openPayForm, ui } from "./ui";
 
-const PAYMENT_REJECTED: Record<UriRejected["kind"], string> = {
-  doubleSlash: "This payment link starts with dash:// — Dash links start with dash: alone",
-  notDashUri: "This is not a Dash payment link",
-  unparsable: "This payment link could not be read",
-  bip70Unsupported: "Payment requests (BIP70) are not supported",
-  invalidAddress: "The address in this payment link is not valid on this network",
-  invalidAmount: "The amount in this payment link is not valid",
-};
+const PAYMENT_REJECTED: Readonly<Record<UriRejected["kind"], string>> = messageTable("app.link.payment", ["doubleSlash", "notDashUri", "unparsable", "bip70Unsupported", "invalidAddress", "invalidAmount"] as const);
 
 /** Why a link was not opened, as the window says it; `null` when it opens. */
 export function linkProblem(route: LinkRoute): string | null {
@@ -30,25 +24,25 @@ export function linkProblem(route: LinkRoute): string | null {
     case "unsupported":
       switch (route.what) {
         case "addressRequest":
-          return "Dash Wallet does not hand addresses to other apps";
+          return t("app.link.addressRequest");
         case "dashConnect":
-          return "DashConnect links are not supported";
+          return t("app.link.dashConnect");
         case "integration":
-          return "Exchange links are not supported";
+          return t("app.link.integration");
         case "paymentRequest":
-          return "Payment requests (BIP70) are not supported";
+          return t("app.link.paymentRequest");
       }
       break;
     case "rejected":
       switch (route.reason.kind) {
         case "notALink":
-          return "This is not a link Dash Wallet can open";
+          return t("app.link.notALink");
         case "tooLong":
-          return "This link is too long to open";
+          return t("app.link.tooLong");
         case "payment":
           return PAYMENT_REJECTED[route.reason.reason.kind];
         case "notSaved":
-          return "This invitation could not be saved. Open the link again once Dash Wallet has started";
+          return t("app.link.notSaved");
       }
   }
   return null;
@@ -108,13 +102,13 @@ export function focusPage() {
 }
 
 /** Said when a link arrives while the wipe sheet is open (D38). */
-export const WIPE_OPEN = "The link was not opened: close “Delete all wallet data?” first";
+export const wipeOpenText = () => t("app.link.whileWiping");
 
 /** Opens what `route` leads to. Links open while the vault is locked too: the page is there
  * once it unlocks. While the wipe sheet is open nothing opens: the page would go from under it,
  * and a wipe that then failed would say so nowhere (D38). */
 export function applyLink(route: LinkRoute) {
-  if (ui.get().wiping) return showShellToast(WIPE_OPEN);
+  if (ui.get().wiping) return showShellToast(wipeOpenText());
   noteLiveLink();
   ui.set({ dialog: null });
   switch (route.kind) {
@@ -285,7 +279,7 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
         }
         apply(routes);
       } catch (e) {
-        showShellToast(`Could not open the link: ${errorMessage(e)}`);
+        showShellToast(t("app.link.failed", { error: errorMessage(e) }));
       }
     };
     const take = () => (drains = drains.then(drain));

@@ -3,7 +3,7 @@ import { createElement, isValidElement, type ReactElement, type ReactNode } from
 import { DEFAULT_PREFS, ui } from "../app/ui";
 import { build, fill, flatten, pluralForm, pseudoCatalog, renderTag, tokenize, type Catalog, type Params } from "./core";
 import { en } from "./en";
-import { formatLocale, isComplete, LANGUAGES, resolveLanguage, systemLanguage, t, type Language } from "./index";
+import { formatLocale, isComplete, LANGUAGES, resolveLanguage, runtimeFormatLocale, systemLanguage, t, type Language } from "./index";
 
 const choose = (language: string | null) => ui.set({ prefs: { ...DEFAULT_PREFS, language } });
 afterEach(() => choose(null));
@@ -168,6 +168,44 @@ describe("the language in use", () => {
       LANGUAGES.pop();
     }
   });
+
+  it("drops ICU's POSIX variant from the runtime's default locale, and only that", () => {
+    expect(runtimeFormatLocale("en-US-u-va-posix")).toBe("en-US");
+    expect(runtimeFormatLocale("en-US-POSIX")).toBe("en-US");
+    expect(runtimeFormatLocale("en-US")).toBe(undefined);
+    expect(runtimeFormatLocale("de-DE-u-nu-latn")).toBe(undefined);
+  });
+
+  it("keeps a POSIX locale's language and its other keywords, so it formats as that locale", () => {
+    expect(runtimeFormatLocale("de-DE-u-va-posix")).toBe("de-DE");
+    expect(new Intl.NumberFormat(runtimeFormatLocale("de-DE-u-va-posix")).format(1596000)).toBe("1.596.000");
+    expect(runtimeFormatLocale("en-US-u-nu-arab-va-posix")).toBe("en-US-u-nu-arab");
+    expect(runtimeFormatLocale("en-US-u-va-posix-nu-arab")).toBe("en-US-u-nu-arab");
+    expect(runtimeFormatLocale("ar-EG-u-nu-latn-va-posix")).toBe("ar-EG-u-nu-latn");
+    expect(new Intl.NumberFormat(runtimeFormatLocale("ar-EG-u-nu-latn-va-posix")).format(1596000)).toMatch(/^1\D596\D000$/);
+  });
+
+  it("groups digits when the runtime's default is POSIX, as WebKitGTK's is under LANG=C.UTF-8", () => {
+    const Real = Intl.NumberFormat;
+    // WebKitGTK under LANG=C.UTF-8: navigator.languages is ["C"] and the default is en-US-u-va-posix,
+    // which formats with no grouping; the same tag passed explicitly groups.
+    function PosixDefault(locales?: string | string[], options?: Intl.NumberFormatOptions) {
+      if (locales !== undefined) return new Real(locales, options);
+      const nf = new Real("en-US", { ...options, useGrouping: false });
+      nf.resolvedOptions = () => ({ ...Real.prototype.resolvedOptions.call(nf), locale: "en-US-u-va-posix" });
+      return nf;
+    }
+    Intl.NumberFormat = PosixDefault as unknown as typeof Intl.NumberFormat;
+    try {
+      expect(t("onboarding.options.startsAt", { height: 1596000 })).toBe("The scan starts at block 1,596,000.");
+      expect(formatLocale(undefined, null, ["C"])).toBe("en-US");
+      expect(formatLocale(undefined, "en", ["C"])).toBe("en");
+    } finally {
+      Intl.NumberFormat = Real;
+    }
+    expect(t("onboarding.options.startsAt", { height: 1596000 })).toBe("The scan starts at block 1,596,000.");
+    expect(formatLocale(undefined, null, ["C"])).toBe(undefined);
+  });
 });
 
 describe("pseudo-locales", () => {
@@ -206,6 +244,38 @@ describe("pseudo-locales", () => {
     choose("ar-XB");
     expect(t.language.dir).toBe("rtl");
     expect(t("network.confirmTitle", { network: "@alice" })).toBe("\u202eSwitch to \u202c\u2068@alice\u2069\u202e?\u202c");
+  });
+});
+
+describe("cached formatters and catalog checks", () => {
+  it("follow each language switch, there and back", () => {
+    const ru: Language = { tag: "ru-x-dwtest", name: "Русский", dir: "ltr", messages: new Map([["shell.status.peers", { one: "{count} пир", few: "{count} пира", many: "{count} пиров", other: "{count} пира" }]]) };
+    const de: Language = { tag: "de-x-dwtest", name: "Deutsch", dir: "ltr", messages: new Map([["shell.status.peers", { one: "{count} Peer", other: "{count} Peers" }]]) };
+    LANGUAGES.push(ru, de);
+    try {
+      const peers = () => [21, 5, 1234].map((count) => t("shell.status.peers", { count }));
+      const english = peers();
+      expect(english).toEqual(["21 peers", "5 peers", "1,234 peers"]);
+      choose("ru-x-dwtest");
+      const russian = peers();
+      expect(russian).toEqual(["21 пир", "5 пиров", `${new Intl.NumberFormat("ru").format(1234)} пира`]);
+      choose("de-x-dwtest");
+      expect(peers()).toEqual(["21 Peers", "5 Peers", "1.234 Peers"]);
+      choose(null);
+      expect(peers()).toEqual(english);
+      choose("ru-x-dwtest");
+      expect(peers()).toEqual(russian);
+    } finally {
+      LANGUAGES.pop();
+      LANGUAGES.pop();
+    }
+  });
+
+  it("check a swapped-in catalog afresh", () => {
+    const xx: Language = { tag: "xx", name: "X", dir: "ltr", messages: new Map([["shell.status.synced", "Synkd"]]) };
+    expect(isComplete(xx)).toBe(false);
+    xx.messages = new Map(flatten(en));
+    expect(isComplete(xx)).toBe(true);
   });
 });
 

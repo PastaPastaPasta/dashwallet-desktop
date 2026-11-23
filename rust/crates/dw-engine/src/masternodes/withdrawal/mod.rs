@@ -224,7 +224,8 @@ pub(crate) struct Alarm {
 pub(crate) trait Env: Send + Sync {
     /// The app database (records and barriers are app-wide).
     fn db(&self) -> &Arc<AppDb>;
-    /// Rule 5 now (DP3-04, P12).
+    /// Rule 5 now (DP3-04, P12), enforced in every mode since H-09
+    /// (`TrustProvider::strict_rule_5`).
     fn rule_5(&self) -> Rule5;
     fn chain(&self) -> Chain;
     /// Whether the open's barrier backfill completed (P16); `false` reads

@@ -56,10 +56,14 @@ impl Fa {
     }
 
     fn tip(&self, header_tip: Option<u32>) {
+        self.seam(header_tip, FACADE_WAITS);
+    }
+
+    fn seam(&self, header_tip: Option<u32>, waits: Waits) {
         *self.f.session.masternodes.withdrawals.seam.lock().unwrap() = Some(Seam {
             platform: Arc::clone(&self.plat),
             header_tip,
-            waits: FACADE_WAITS,
+            waits,
         });
     }
 
@@ -733,6 +737,100 @@ fn each_failing_condition_is_withdrawal_destination_checking_with_its_reason() {
     let e = (fa.withdraw_with(Key::Owner, AMOUNT, None, grant)).unwrap_err();
     assert_eq!(reason(e), WithdrawalCheckingReason::PayoutChangePending);
     assert!(fa.plat.sent().is_empty());
+}
+
+/// H-09 (MG's 1.0 ruling): in the degraded default a masternode
+/// withdrawal holds rule 5 too. An identity read SPV did not verify, its
+/// probe unverified as well, never shows a destination as checked and
+/// sends nothing; an unverified nonce read refuses. Once the reads verify,
+/// the same grant withdraws.
+#[test]
+fn the_degraded_default_refuses_a_withdrawal_on_unverified_reads() {
+    let fa = Fa::new(true);
+    fa.f.session
+        .trust
+        .set_mode(crate::platform::trust::TrustMode::Degraded);
+    assert_eq!(fa.f.session.trust.rule_5(), Rule5::Probe);
+    let grant = fa.grant(AMOUNT + fee(), None);
+    fa.plat.deviate(Read::Identity, Dev::Unverified, ALWAYS);
+    let checking = Some(WithdrawalDestinationCheck::Checking {
+        reason: WithdrawalCheckingReason::Unverified,
+    });
+    let q = fa.quote().unwrap();
+    assert_eq!(q.owner_destination, checking);
+    assert_eq!(q.payout_destination, checking);
+    assert_eq!(
+        code(fa.withdraw_with(Key::Owner, AMOUNT, None, grant.clone())),
+        "masternodes.withdrawal_destination_checking"
+    );
+    assert!(fa.plat.sent().is_empty());
+    assert!(fa.records().is_empty());
+
+    fa.plat.calm();
+    fa.plat.deviate(Read::Nonce, Dev::Unverified, ALWAYS);
+    assert_eq!(
+        code(fa.withdraw_with(Key::Owner, AMOUNT, None, grant.clone())),
+        "masternodes.withdrawal_unverified"
+    );
+    assert!(fa.plat.sent().is_empty());
+
+    fa.plat.calm();
+    let r = fa.withdraw_with(Key::Owner, AMOUNT, None, grant);
+    assert_eq!(r.unwrap().state, State::Sent);
+}
+
+/// H-09: a quote whose destinations read `checking{unverified}` starts the
+/// ready wait, and §6's event goes out once SPV verifies the read.
+#[test]
+fn an_unverified_quote_signals_once_its_read_verifies() {
+    let fa = Fa::new(true);
+    fa.f.session
+        .trust
+        .set_mode(crate::platform::trust::TrustMode::Degraded);
+    fa.plat.deviate(Read::Identity, Dev::Unverified, ALWAYS);
+    let before = fa.generation();
+    let q = fa.quote().unwrap();
+    let checking = Some(WithdrawalDestinationCheck::Checking {
+        reason: WithdrawalCheckingReason::Unverified,
+    });
+    assert_eq!(q.owner_destination, checking);
+    assert!(until(Duration::from_millis(500), || fa
+        .plat
+        .reads(Read::Identity)
+        >= 2));
+    assert_eq!(
+        fa.generation(),
+        before,
+        "no withdrawal_ready while unverified"
+    );
+    fa.plat.calm();
+    assert!(
+        until(Duration::from_secs(3), || fa.generation() > before),
+        "withdrawal_ready"
+    );
+}
+
+/// H-09 (Astra M5): an identity read that is unverified at first, and
+/// verified a moment later, withdraws in the same call: `withdraw` waits
+/// for SPV within its bound rather than refusing on the first read. The
+/// sign wait is long here so a loaded machine cannot run it out before the
+/// verified read (#344).
+#[test]
+fn an_identity_read_verified_during_the_wait_withdraws() {
+    let fa = Fa::new(true);
+    fa.seam(
+        Some(TIP),
+        Waits {
+            sign: Duration::from_secs(10),
+            ..FACADE_WAITS
+        },
+    );
+    fa.f.session
+        .trust
+        .set_mode(crate::platform::trust::TrustMode::Degraded);
+    fa.plat.deviate(Read::Identity, Dev::Unverified, 2);
+    let r = fa.withdraw(Key::Owner, AMOUNT, None);
+    assert_eq!(r.unwrap().state, State::Sent);
 }
 
 #[test]

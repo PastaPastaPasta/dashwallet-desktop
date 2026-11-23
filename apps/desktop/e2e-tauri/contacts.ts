@@ -15,11 +15,11 @@
 // session bus, on the private X display in $DISPLAY.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { newPassphrase } from "./flow-secrets.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
+import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver, fillSecret } from "./driver.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const WALLET = env("DW_CONTACTS_WALLET", "A");
@@ -77,7 +77,7 @@ const isRow = (r: Row, username: string) => r.name === username || r.username ==
 
 async function run(passphrase: string, wd: WebDriver, step: (s: string) => void): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {};
-  await wd.fill(tid("lock-field"), passphrase);
+  await fillSecret(wd, tid("lock-field"), passphrase);
   await wd.press(tid("lock-submit"));
   await wd.waitGone(tid("lock-screen"), "the lock screen");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
@@ -169,7 +169,7 @@ async function main() {
   work = mkdtempSync(join(tmpdir(), "dw-contacts-")); // mode 0700
   const dataRoot = join(work, "app");
   const passFile = join(work, "passphrase");
-  const passphrase = randomBytes(18).toString("base64url");
+  const passphrase = newPassphrase();
   const phrase = readFileSync(join(FIXTURE, `${WALLET}.mnemonic`), "utf8").trim();
   secrets.push(...new Set([phrase, phrase.split(/\s+/).join(" "), passphrase]));
   writeFileSync(passFile, `${passphrase}\n`, { mode: 0o600 });

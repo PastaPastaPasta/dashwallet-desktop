@@ -6,22 +6,9 @@
 import { errorMessage, hasCode } from "../api/backend";
 import type { StashedLinkInfo } from "../api/generated/StashedLinkInfo";
 import type { StashedLinkKindName } from "../api/generated/StashedLinkKindName";
+import { messageTable, t } from "../i18n";
 
-export const SavedLinksText = {
-  title: "Links you opened",
-  intro: "You opened these links before your wallet was ready. Open one now, or remove it.",
-  open: "Open",
-  remove: "Remove",
-  later: "Later",
-  /** The toast for a link kept while there is no wallet yet. */
-  saved: "Link saved. It opens once your wallet is set up.",
-  /** The toast for an invitation opened during onboarding. */
-  invitationSaved: "Invitation saved. It is waiting for you once your wallet is set up.",
-  gone: "This link is no longer saved.",
-  loadFailed: "Could not read the saved links.",
-  /** DP5-03 D12: the stash keeps an invitation an open claim holds. */
-  held: "This invitation is being claimed. Finish that claim first.",
-} as const;
+export const SavedLinksText = messageTable("app.savedLinks", ["title", "intro", "open", "remove", "later", "saved", "invitationSaved", "gone", "loadFailed", "held"] as const);
 
 /** Why a link was not removed. `invalid_argument` is also a malformed id's, but the window sends only
  * ids the stash listed, so only a claim's hold reaches this today (DP5-03 D12, Opus-h r1 n3). */
@@ -29,21 +16,16 @@ export function removeErrorText(e: unknown): string {
   return hasCode(e, "invalid_argument") ? SavedLinksText.held : errorMessage(e);
 }
 
-export const KIND_TITLE: Record<StashedLinkKindName, string> = {
-  payment: "Payment request",
-  contact: "Contact",
-  invitation: "DashPay invitation",
-};
+export const KIND_TITLE: Readonly<Record<StashedLinkKindName, string>> = messageTable("app.savedLinks.kind", ["payment", "contact", "invitation"] as const);
 
 /** "Opened 5 minutes ago" for a link stashed at `stashedAt` (UNIX seconds), at `nowSecs`. */
 export function openedAgo(stashedAt: number, nowSecs: number): string {
   const secs = Math.max(0, nowSecs - stashedAt);
-  const unit = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
-  if (secs < 60) return "Opened just now";
-  if (secs < 3600) return `Opened ${unit(Math.floor(secs / 60), "minute")} ago`;
-  if (secs < 86_400) return `Opened ${unit(Math.floor(secs / 3600), "hour")} ago`;
+  if (secs < 60) return t("app.savedLinks.opened.justNow");
+  if (secs < 3600) return t("app.savedLinks.opened.minutes", { count: Math.floor(secs / 60) });
+  if (secs < 86_400) return t("app.savedLinks.opened.hours", { count: Math.floor(secs / 3600) });
   const days = Math.floor(secs / 86_400);
-  return days === 1 ? "Opened yesterday" : `Opened ${days} days ago`;
+  return days === 1 ? t("app.savedLinks.opened.yesterday") : t("app.savedLinks.opened.days", { count: days });
 }
 
 /** One row of the sheet. */

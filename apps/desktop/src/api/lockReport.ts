@@ -27,7 +27,7 @@ import { en } from "../i18n/en";
 /** E0-04 §16.10 C4 after a manual lock, by outcome. */
 export const OUTCOME_LINE: Readonly<Record<FlowOutcomeName, string>> = messageTable("lock.outcome", Object.keys(en.lock.outcome satisfies Record<FlowOutcomeName, string>) as FlowOutcomeName[]);
 
-/** Each flow's name, as the lock report and a refused network switch say it. */
+/** Each flow's name, as the lock report says it (a refused network switch has `network.busyItem`). */
 export const FLOW_NAME: Readonly<Record<FlowKindName, string>> = messageTable("lock.flow", Object.keys(en.lock.flow satisfies Record<FlowKindName, string>) as FlowKindName[]);
 
 const PENDING: ReadonlySet<FlowOutcomeName> = new Set(["maybeSent", "willBeSent"]);

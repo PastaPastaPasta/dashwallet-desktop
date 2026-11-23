@@ -8,9 +8,6 @@ import { checkArea, PSEUDO } from "./pseudo";
 // Onboarding, Forgot passphrase, Show Recovery Phrase and the first-run notice under the two
 // pseudo-locales (./pseudo.ts), reached as e2e/onboarding.spec.ts reaches them.
 
-/** Still English, from the shared controls in components/passphrase.tsx and components/phrase.tsx. */
-const SHARED = [/^New passphrase$/, /^Repeat the passphrase$/, /^Passphrase$/, /^Recovery phrase$/, /^BIP39 passphrase \(optional\)$/, /^The recovery phrase is valid\.$/];
-
 /** The fixture's data: its second wallet's name and the phrase typed with an unknown word. */
 const TYPED = "enjoy congxx layer";
 const DATA = [/^Savings$/, new RegExp(`^${TYPED}$`)];
@@ -228,6 +225,35 @@ for (const theme of THEMES)
       test(`${state.name} shows only catalog text under ${pseudo[0]}, fits, and passes axe, ${theme}`, async ({ page }, info) => {
         test.setTimeout(120_000);
         const errors = trackPageErrors(page);
-        await checkArea(page, info, theme, pseudo, { name: state.name, roots: state.roots, panes: panesOf(state.roots), data: [...SHARED, ...DATA, WORDS], open: (lang) => state.open(page, theme, lang) });
+        await checkArea(page, info, theme, pseudo, { name: state.name, roots: state.roots, panes: panesOf(state.roots), data: [...DATA, WORDS], open: (lang) => state.open(page, theme, lang) });
         expect(errors).toEqual([]);
       });
+
+test("Restore options' block height keeps its digit groups in order under ar-XB", async ({ page }) => {
+  await restore(page, "light", "ar-XB");
+  await page.getByTestId("restore-input").fill(SECOND_PHRASE);
+  await page.getByTestId("restore-valid").waitFor();
+  await page.getByTestId("restore-continue").click();
+  await page.getByTestId("restore-scan-height").check();
+  await page.getByTestId("restore-height").fill("1596000");
+  const hint = page.getByTestId("restore-scan-start");
+  await expect(hint).toContainText(/\p{Nd}[^\p{Nd}\s]\p{Nd}{3}[^\p{Nd}\s]\p{Nd}{3}/u);
+  const lefts = await hint.evaluate((el) => {
+    const re = /(\p{Nd})\p{Nd}*[^\p{Nd}\s](\p{Nd})\p{Nd}*[^\p{Nd}\s](\p{Nd})/du;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const m = re.exec(n.textContent ?? "");
+      if (!m?.indices) continue;
+      return [1, 2, 3].map((g) => {
+        const r = document.createRange();
+        r.setStart(n!, m.indices![g]![0]);
+        r.setEnd(n!, m.indices![g]![0] + 1);
+        return r.getBoundingClientRect().left;
+      });
+    }
+    return null;
+  });
+  expect(lefts, "the height's three digit groups").not.toBeNull();
+  expect(lefts![0]).toBeLessThan(lefts![1]);
+  expect(lefts![1]).toBeLessThan(lefts![2]);
+});

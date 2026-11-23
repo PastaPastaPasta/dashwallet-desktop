@@ -12,10 +12,12 @@ import { applyLink } from "../app/shellBridge";
 import { DashButton } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { showToast } from "../components/toast";
+import { useT } from "../i18n";
 
 export const SAVED_LINKS_KEY = ["stashedLinks"] as const;
 
 export function SavedLinksSheet({ onClose }: { onClose: () => void }) {
+  useT();
   const backend = useBackend();
   const client = useQueryClient();
   // Read afresh at every offer: links come and go without an event (intake, expiry).

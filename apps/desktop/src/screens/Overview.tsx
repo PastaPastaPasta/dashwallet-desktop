@@ -22,7 +22,7 @@ import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
 import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type HeroSync, type PoolReading } from "../format/homeBalance";
-import { isSyncing, syncPercent } from "../format/sync";
+import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
 import { buyCredits } from "./dashpay/MyProfile";
@@ -31,14 +31,17 @@ import { FrequentStrip } from "./pay/FrequentStrip";
 import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
-import { defaultRoute, transferFor, TRANSFER_COPY } from "../transfer/model";
+import { defaultRoute, transferFor } from "../transfer/model";
+import { t, useT } from "../i18n";
 
 /** dash-qt's overview shows this many recent transactions. */
 const RECENT_COUNT = 5;
 const RECENT_FILTER: HistoryFilter = { categories: [], text: null, sort: "newestFirst" };
 
+
 /** `amount` null: the read failed, shown as "—" with no unit; `undefined`: still being read. */
 function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { title: string; subtitle: string; amount: string | null | undefined; unitName: string; testId: string; fiat: ReactNode }) {
+  const tr = useT();
   return (
     <div className="breakdown-cell" data-testid={testId}>
       <span className="breakdown-text">
@@ -48,7 +51,7 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
       {amount === null || amount === undefined ? (
         <span className="breakdown-amount">
           <span aria-hidden="true">{amount === null ? "—" : "…"}</span>
-          <VisuallyHidden>{amount === null ? "not available" : "loading"}</VisuallyHidden>
+          <VisuallyHidden>{amount === null ? tr("home.hero.notAvailable") : tr("home.hero.loading")}</VisuallyHidden>
         </span>
       ) : (
         <span className="breakdown-amounts">
@@ -61,6 +64,7 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
 }
 
 function BalanceHero({ balances, shielded, platform, network, hero }: { balances: Balances | null; shielded: PoolReading; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
+  const tr = useT();
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
   const fmt = (duffs: number) => (discreet ? shown.masked() : shown.compact(duffs));
@@ -74,7 +78,7 @@ function BalanceHero({ balances, shielded, platform, network, hero }: { balances
   const digits = home ? heroDigits(fmt(home.total)) : null;
   const fiat = useFiat();
   return (
-    <section className="hero" data-testid="hero" aria-label="Balance" data-breakdown={home && rows.length === 0 ? "none" : undefined}>
+    <section className="hero" data-testid="hero" aria-label={tr("home.hero.label")} data-breakdown={home && rows.length === 0 ? "none" : undefined}>
       {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}
       <span className="hero-caption" role="status" data-testid="hero-sync-line">
         {heroSyncLine(balances, hero)}
@@ -84,15 +88,15 @@ function BalanceHero({ balances, shielded, platform, network, hero }: { balances
           type="button"
           className="hero-amount"
           data-testid="hero-amount"
-          title={discreet ? "Click to show balance" : "Click to hide balance"}
+          title={discreet ? tr("home.hero.show") : tr("home.hero.hide")}
           onClick={() => ui.set({ discreet: !discreet })}
         >
           <AmountText text={digits.major} minor={digits.minor} unitName={unit} title={full(home.total)} />
         </button>
       ) : (
-        <div className="hero-amount hero-unknown" data-testid="hero-amount" title="Not available until sync completes">
+        <div className="hero-amount hero-unknown" data-testid="hero-amount" title={tr("home.hero.unavailableTitle")}>
           <span className="amount-number">—</span>
-          <span className="hero-unknown-caption">Balance unavailable</span>
+          <span className="hero-unknown-caption">{tr("home.hero.unavailable")}</span>
         </div>
       )}
       {home && <HeroFiat fiat={fiat} duffs={home.total} hidden={discreet} />}
@@ -154,17 +158,19 @@ function openPay(focusAddress: boolean) {
 // U-03 D16: the mobile shortcut bar. The desktop has no camera, so Scan QR opens the address
 // field to paste into, as U-01 routes a scanQr link; Back up comes with the recovery phrase (U-02).
 // Transfer opens the sheet at Dash wallet → Shielded, or → Platform when Shielded is not active.
-const SHORTCUTS: { id: string; icon: UsedIcon; title: string; run: ((transfer: () => void) => void) | null; why?: string }[] = [
-  { id: "receive", icon: "shortcutReceive", title: "Receive", run: () => navigate("receive") },
-  { id: "send", icon: "shortcutSend", title: "Send", run: () => openPay(false) },
-  { id: "transfer", icon: "transfer", title: TRANSFER_COPY.shortcut, run: (transfer) => transfer() },
-  { id: "scan", icon: "shortcutScanQR", title: "Scan QR", run: () => openPay(true) },
-  { id: "backup", icon: "shortcutBackup", title: "Back up", run: null, why: "Backing up the recovery phrase is not available yet" },
+// Titles are read at render, so a language change shows at once.
+const SHORTCUTS: { id: string; icon: UsedIcon; title: () => string; run: ((transfer: () => void) => void) | null; why?: () => string }[] = [
+  { id: "receive", icon: "shortcutReceive", title: () => t("home.shortcuts.receive"), run: () => navigate("receive") },
+  { id: "send", icon: "shortcutSend", title: () => t("home.shortcuts.send"), run: () => openPay(false) },
+  { id: "transfer", icon: "transfer", title: () => t("transfer.shortcut"), run: (transfer) => transfer() },
+  { id: "scan", icon: "shortcutScanQR", title: () => t("home.shortcuts.scan"), run: () => openPay(true) },
+  { id: "backup", icon: "shortcutBackup", title: () => t("home.shortcuts.backup"), run: null, why: () => t("home.shortcuts.backupWhy") },
 ];
 
 function ShortcutCard({ onTransfer }: { onTransfer: () => void }) {
+  const tr = useT();
   return (
-    <nav className="shortcut-card" aria-label="Shortcuts" data-testid="shortcut-card">
+    <nav className="shortcut-card" aria-label={tr("home.shortcuts.label")} data-testid="shortcut-card">
       {SHORTCUTS.map((s) => (
         <button
           key={s.id}
@@ -172,11 +178,11 @@ function ShortcutCard({ onTransfer }: { onTransfer: () => void }) {
           className="shortcut-item"
           data-testid={`shortcut-${s.id}`}
           aria-disabled={s.run ? undefined : "true"}
-          title={s.why}
+          title={s.why?.()}
           onClick={() => s.run?.(onTransfer)}
         >
           <Icon id={s.icon} size={46} className="shortcut-icon" />
-          <span className="shortcut-title">{s.title}</span>
+          <span className="shortcut-title">{s.title()}</span>
         </button>
       ))}
     </nav>
@@ -233,6 +239,7 @@ function HistoryEmpty({ arrival, recheck }: { arrival: ListArrival; recheck: () 
 }
 
 export function Overview({ walletId, network, onOpen }: { walletId: string; network: NetworkInfo; onOpen: (row: TxRow) => void }) {
+  const tr = useT();
   const balance = useBalance(walletId);
   const pools = usePoolBalances(walletId);
   const sync = useSyncStatus();
@@ -263,7 +270,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
 
   return (
     <main className="page page-overview" data-testid="page-home">
-      <h1 className="sr-only">Home</h1>
+      <h1 className="sr-only">{tr("home.title")}</h1>
       <div className="hero-band" data-testid="hero-band">
         <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} hero={hero} />
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
@@ -278,29 +285,29 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         {/* Who the wallet pays most is payment history: discreet mode hides it too (D8). */}
         {!discreet && <HomeFrequent walletId={walletId} />}
         <div className="history-header" data-testid="history-header">
-          <h2 className="history-title">History</h2>
+          <h2 className="history-title">{tr("home.history.title")}</h2>
           <span className="history-actions">
-            {syncing && percent !== null && <span className="history-syncing">Syncing {percent.toFixed(1)}%</span>}
+            {syncing && percent !== null && <span className="history-syncing">{tr("home.history.syncing", { percent: oneDecimal(percent) })}</span>}
             <DashButton variant="plainBlue" size="small" onClick={() => navigate("activity")}>
-              Filter
+              {tr("home.history.filter")}
             </DashButton>
           </span>
         </div>
         {discreet ? (
-          <EmptyState testId="history-hidden" title="Recent transactions are hidden in discreet mode" />
+          <EmptyState testId="history-hidden" title={tr("home.history.hidden")} />
         ) : historyList.kind === "failed" ? (
           <EmptyState
             testId="history-error"
-            title="Could not load transactions"
+            title={tr("home.history.failed")}
             message={errorMessage(recent.error)}
             action={
               <DashButton variant="plainBlue" data-testid="history-retry" onClick={() => void recent.refetch()}>
-                Try again
+                {tr("home.history.tryAgain")}
               </DashButton>
             }
           />
         ) : historyList.kind === "arriving" && historyList.why === "pending" ? (
-          <LoadingState testId="history-loading" text="Loading transactions" />
+          <LoadingState testId="history-loading" text={tr("home.history.loading")} />
         ) : historyList.kind === "arriving" && historyList.why !== "pending" ? (
           <HistoryEmpty arrival={historyList.why} recheck={recheck} />
         ) : historyList.kind === "empty" ? (
@@ -310,7 +317,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
             <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="overview" />
             <div className="see-all" data-testid="see-all">
               <DashButton variant="plainBlue" size="medium" onClick={() => navigate("activity")}>
-                See all transactions
+                {tr("home.history.seeAll")}
               </DashButton>
             </div>
           </>

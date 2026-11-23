@@ -26,6 +26,7 @@ import {
 } from "../../dashpay/withdraw";
 import { useWithdrawals, useWithdrawQuote } from "../../dashpay/withdrawQueries";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 
@@ -34,6 +35,7 @@ const C = WITHDRAW_COPY;
 /** W1: Max or an amount, and the destination, each checked before Continue; a warning while the
  * last withdrawal's outcome is unknown (D23). */
 function FormStep({ flow, walletId, identity, costs, network }: { flow: WithdrawFlow; walletId: string; identity: string; costs: CostTable | undefined; network: NetworkInfo }) {
+  useT();
   const b = useBackend();
   const unconfirmed = flow.unconfirmedFor(identity);
   // My Profile reads the list; the form reads it itself only while one is unconfirmed.
@@ -81,7 +83,7 @@ function FormStep({ flow, walletId, identity, costs, network }: { flow: Withdraw
       </fieldset>
       {!flow.max && (
         <label className="form-field">
-          {C.form.amount} ({shown.name})
+          {C.form.amountUnit(shown.name)}
           <input
             data-testid="withdraw-amount"
             inputMode="decimal"
@@ -119,7 +121,7 @@ function FormStep({ flow, walletId, identity, costs, network }: { flow: Withdraw
         <DashButton variant="tintedGray" size="large" type="button" data-testid="withdraw-cancel" onClick={() => flow.close()}>
           {C.form.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="withdraw-next" disabled={!ready} why="Enter an amount first.">
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="withdraw-next" disabled={!ready} why={C.form.first}>
           {C.form.next}
         </DashButton>
       </div>
@@ -129,6 +131,7 @@ function FormStep({ flow, walletId, identity, costs, network }: { flow: Withdraw
 
 /** W2: the quote and Confirm & withdraw under its grant. */
 function ConfirmStep({ flow, walletId, credits, amount }: { flow: WithdrawFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string }) {
+  useT();
   const quote = useWithdrawQuote(walletId, flow.identity, flow.amount);
   const q = quote.data;
   return (
@@ -147,23 +150,25 @@ function ConfirmStep({ flow, walletId, credits, amount }: { flow: WithdrawFlow; 
           <div className="detail-row">
             <dt className="detail-label">{C.confirm.withdraw}</dt>
             <dd className="detail-value" data-testid="withdraw-quote-credits">
-              {credits(q.credits)}
+              <bdi dir="ltr">{credits(q.credits)}</bdi>
             </dd>
           </div>
           <div className="detail-row">
             <dt className="detail-label">{C.confirm.fee}</dt>
             <dd className="detail-value" data-testid="withdraw-quote-fee">
-              {credits(q.feeCredits)}
+              <bdi dir="ltr">{credits(q.feeCredits)}</bdi>
             </dd>
           </div>
           <div className="detail-row topup-total">
             <dt className="detail-label">{C.confirm.total}</dt>
-            <dd className="detail-value">{credits(String(BigInt(q.credits) + BigInt(q.feeCredits)))}</dd>
+            <dd className="detail-value" data-testid="withdraw-quote-total">
+              <bdi dir="ltr">{credits(String(BigInt(q.credits) + BigInt(q.feeCredits)))}</bdi>
+            </dd>
           </div>
           <div className="detail-row">
             <dt className="detail-label">{C.confirm.receive}</dt>
             <dd className="detail-value" data-testid="withdraw-quote-duffs">
-              {amount(q.expectedDuffs)}
+              <bdi dir="ltr">{amount(q.expectedDuffs)}</bdi>
             </dd>
           </div>
           <div className="detail-row">
@@ -187,6 +192,7 @@ function ConfirmStep({ flow, walletId, credits, amount }: { flow: WithdrawFlow; 
 }
 
 export function WithdrawSheet({ flow, walletId, network, costs }: { flow: WithdrawFlow; walletId: string; network: NetworkInfo; costs: CostTable | undefined }) {
+  useT();
   useModel(flow);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
@@ -258,6 +264,7 @@ export function WithdrawSheet({ flow, walletId, network, costs }: { flow: Withdr
 
 /** My Profile's Withdraw (D9): beside Top up; nothing to take while the balance is unknown or 0. */
 export function WithdrawButton({ flow, identity, balance }: { flow: WithdrawFlow; identity: string; balance: string | null }) {
+  useT();
   const empty = balance === null || BigInt(balance) === 0n;
   return (
     <DashButton variant="tintedBlue" data-testid="profile-withdraw" disabled={empty || flow.running} onClick={() => flow.begin(identity)}>
@@ -275,6 +282,7 @@ export function RecentWithdrawals({ flow, walletId, identity, costs, amount, dat
   amount: (duffs: number) => string;
   date: (secs: number) => string;
 }) {
+  useT();
   const recent = useWithdrawals(walletId, identity, flow.unconfirmedFor(identity));
   const rows = withdrawalRows(recent.data, costs, amount);
   const unconfirmed = unconfirmedIn(recent.data, flow.unconfirmedFor(identity));

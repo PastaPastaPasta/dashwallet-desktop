@@ -168,7 +168,7 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
           {backups.data.map((b) => (
             <li key={b.path} className="settings-backup">
               <span>
-                {names.get(b.walletId) ?? `${b.walletId.slice(0, 8)}…`} · {detailDate(new Date(b.createdAt * 1000))}
+                {names.get(b.walletId) ?? `${b.walletId.slice(0, 8)}…`} · {detailDate(new Date(b.createdAt * 1000), backend.locale)}
               </span>
               <CopyValue value={b.path} label="backup path" mono />
             </li>

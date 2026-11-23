@@ -13,11 +13,12 @@ import { DashButton } from "../components/basics";
 import { CopyValue } from "../components/detail";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
+import { useT } from "../i18n";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { sendMax, sendMaxLine } from "../shielded/sendMax";
-import { SHIELDED_SYNC_COPY, SHIELDED_SYNCING_TEXT, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
+import { SHIELDED_SYNC_COPY, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
 import { TRANSFER_COPY } from "../transfer/model";
 import { useNowSecs } from "./masternodes/common";
 import { Qr } from "./Receive";
@@ -34,6 +35,7 @@ export function useFormats(network: NetworkInfo) {
 }
 
 function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: NetworkInfo; status: ShieldedStatus | null }) {
+  const tr = useT();
   const b = useBackend();
   const id = useId();
   const { shown, duffs: fmt, credits } = useFormats(network);
@@ -61,13 +63,13 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   // What Next waits for, said beside it: the same text the card gives while Shielded syncs.
   const syncing = shieldedSyncing(status);
   const maxRefusal = line.state.kind === "refused" ? shieldedErrorText(line.state.error, credits, fmt, "send", syncing) : null;
-  const maxWhy = syncing ? SHIELDED_SYNCING_TEXT : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
+  const maxWhy = syncing ? SHIELDED_SYNC_COPY.syncing : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
   const nextWhy = syncing
-    ? SHIELDED_SYNCING_TEXT
+    ? SHIELDED_SYNC_COPY.syncing
     : amountProblem ?? (amount === null || amount <= 0 ? C.form.why.amount : kind === "send" && to === "" ? C.form.why.to : memoTooLong ? C.form.why.memo : null);
   const amountField = (
     <label className="form-field">
-      {C.form.amount} ({shown.name})
+      {tr("transfer.amountIn", { unit: shown.name })}
       <input
         data-testid="shielded-amount"
         inputMode="decimal"
@@ -188,7 +190,7 @@ function Row({ label, value, testId, total }: { label: string; value: string; te
     <div className={`detail-row ${total ? "topup-total" : ""}`}>
       <dt className="detail-label">{label}</dt>
       <dd className="detail-value" data-testid={testId}>
-        {value}
+        <bdi dir="ltr">{value}</bdi>
       </dd>
     </div>
   );
@@ -256,7 +258,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
         <DashButton variant="tintedGray" size="large" data-testid="shielded-back" disabled={flow.running} onClick={() => flow.back()}>
           {C.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={syncing ? SHIELDED_SYNCING_TEXT : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing} onClick={() => q && (unrecorded ? setAsking(true) : void flow.run(q.quote.grant))}>
+        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={syncing ? SHIELDED_SYNC_COPY.syncing : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing} onClick={() => q && (unrecorded ? setAsking(true) : void flow.run(q.quote.grant))}>
           {C.confirm.go}
         </DashButton>
       </div>
@@ -383,6 +385,7 @@ export function ShieldedSheet({ flow, walletId, network, status }: { flow: Shiel
 
 /** The Shielded address with its QR (Receive's Shielded section). */
 export function useShieldedReceiveContent(walletId: string, network: NetworkInfo, enabled = true) {
+  const tr = useT();
   const b = useBackend();
   const fmt = useFormats(network);
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled });
@@ -394,7 +397,7 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
           {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
         </p>
       ) : address.data ? (
-        <Qr text={address.data.address} label={`QR code of ${address.data.address}`} testId="shielded-receive-qr" />
+        <Qr text={address.data.address} label={tr("transfer.shielded.receive.qr", { address: address.data.address })} testId="shielded-receive-qr" />
       ) : (
         <p className="sheet-text" role="status">
           {C.receive.loading}
@@ -403,7 +406,7 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
     </>,
     after: !address.isError && address.data ? (
       <p className="withdraw-to" data-testid="shielded-receive-address">
-        <CopyValue value={address.data.address} label="Shielded address" mono />
+        <CopyValue value={address.data.address} label={tr("transfer.shielded.receive.address")} mono />
       </p>
     ) : null,
   };
@@ -432,7 +435,7 @@ export function ShieldedReceiveCard({ walletId, network }: { walletId: string; n
         aria-expanded={open && !syncing}
         aria-controls={`${id}-body`}
         disabled={syncing}
-        title={syncing ? SHIELDED_SYNCING_TEXT : undefined}
+        title={syncing ? SHIELDED_SYNC_COPY.syncing : undefined}
         aria-describedby={syncing ? `${id}-why` : undefined}
         onClick={() => setOpen(!open)}
       >
@@ -440,7 +443,7 @@ export function ShieldedReceiveCard({ walletId, network }: { walletId: string; n
       </button>
       {syncing && (
         <p className="field-hint disclosure-why" id={`${id}-why`} data-testid="shielded-receive-why">
-          {SHIELDED_SYNCING_TEXT}
+          {SHIELDED_SYNC_COPY.syncing}
         </p>
       )}
       {open && !syncing && (
@@ -462,7 +465,7 @@ export function ShieldedSendLink({ walletId, network }: { walletId: string; netw
   const sheet = <ShieldedSheet flow={flow} walletId={walletId} network={network} status={status} />;
   if (!status?.active) return sheet;
   const syncing = shieldedSyncing(status);
-  const why = syncing ? SHIELDED_SYNCING_TEXT : flow.running ? C.card.why.busy : !shieldedDuffs(status) ? C.card.why.empty : null;
+  const why = syncing ? SHIELDED_SYNC_COPY.syncing : flow.running ? C.card.why.busy : !shieldedDuffs(status) ? C.card.why.empty : null;
   return (
     <>
       <p className="pay-shielded" data-testid="pay-shielded">

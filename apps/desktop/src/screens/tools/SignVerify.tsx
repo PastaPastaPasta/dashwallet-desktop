@@ -107,7 +107,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
               )}
             </Field>
           )}
-          {model.signResult && <Outcome ok={model.signResult.ok} text={model.signResult.text} testId="sign-result" />}
+          <Outcome ok={model.signResult?.ok ?? true} text={model.signResult?.text ?? null} testId="sign-result" polite />
           <div className="tool-actions">
             <DashButton type="submit" variant="filledBlue" size="small" data-testid="sign-sign" disabled={model.signing || signAddress.trim() === ""}>
               {model.signing ? t("tools.signVerify.signing") : t("tools.signVerify.signButton")}
@@ -184,7 +184,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
               />
             )}
           </Field>
-          {verified && <Outcome ok={model.verified} text={verified.text} testId="verify-result" />}
+          <Outcome ok={!verified || model.verified} text={verified?.text ?? null} testId="verify-result" polite />
           <div className="tool-actions">
             <DashButton type="submit" variant="filledBlue" size="small" data-testid="verify-verify" disabled={verifyAddress.trim() === "" || signature.trim() === ""}>
               {t("tools.signVerify.verifyButton")}

@@ -544,6 +544,17 @@ input[type="radio"]:disabled {
   overflow-wrap: anywhere;
 }
 
+/* The wipe's warning and its sentence are long runs in some languages: they wrap rather than widening the sheet. */
+.settings-wipe-warning,
+.settings-wipe-label {
+  overflow-wrap: anywhere;
+}
+
+/* A banned masternode's notice is a long run in some languages: it wraps rather than widening the pane. */
+.mn-banned-notice {
+  overflow-wrap: anywhere;
+}
+
 .share-who {
   display: flex;
   align-items: center;
@@ -2853,6 +2864,11 @@ input[type="radio"]:disabled {
   color: var(--dw-role-success-text);
 }
 
+.outcome:empty {
+  position: absolute;
+  margin: 0;
+}
+
 .onboarding-warning,
 .sheet-warning {
   padding: var(--dw-space-sm) var(--dw-space-m);
@@ -3886,7 +3902,15 @@ button.bell-row-open:focus-visible {
   min-width: 0;
 }
 
+.bell-row-title .chip-warning {
+  background: linear-gradient(var(--dw-role-warning-tint), var(--dw-role-warning-tint)), var(--dw-role-card-raised);
+}
+
 .bell-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-xs);
   font-size: var(--dw-type-subhead-size);
   line-height: var(--dw-type-subhead-line);
 }

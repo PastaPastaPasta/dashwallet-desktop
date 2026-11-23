@@ -86,7 +86,7 @@ test("D3: Sync now asks the engine for a pass, says so, and reads the card again
 test("D3: a refused Sync now says why", async ({ page }) => {
   const { c } = await card(page, "dashpay-info-spv", "light", "&fail=dashpay_sync_soon:none");
   await c.getByTestId("information-dashpay-sync-now").click();
-  await expect(page.getByTestId("information-dashpay-outcome")).toHaveAttribute("role", "alert");
+  await expect(page.getByTestId("information-dashpay-outcome")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("information-dashpay-outcome")).toContainText("Could not ask for a DashPay pass");
 });
 

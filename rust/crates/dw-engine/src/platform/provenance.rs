@@ -52,6 +52,10 @@ pub(crate) mod kind {
     pub(crate) const DPNS_LABEL: &str = "dpns_label";
     /// A contact request; the key is [`super::contact_request_key`].
     pub(crate) const CONTACT_REQUEST: &str = "contact_request";
+    /// The wallet's own sent copy of a contact request, same key: it may
+    /// verify without its `autoAcceptProof`, so it never shares a record
+    /// with a received copy.
+    pub(crate) const CONTACT_REQUEST_SENT: &str = "contact_request_sent";
     /// A DashPay payment; the key is the txid.
     #[expect(
         dead_code,
@@ -156,6 +160,25 @@ impl Provenance {
         Ok(())
     }
 
+    /// The wallet store holds data this installation did not fetch (H-09):
+    /// latch as if the fallback had served it. A latch that cannot be made
+    /// durable still counts in memory. Blocking (app.sqlite).
+    pub(crate) fn data_fetched_elsewhere(&self) {
+        if self.fallback_used() {
+            return;
+        }
+        if let Err(e) = self.fallback_in_use() {
+            tracing::warn!(error = %e, "could not latch data from another installation");
+            self.fallback_used.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Forgets the records in memory (a test that also deletes them on file).
+    #[cfg(test)]
+    pub(crate) fn forget_records_for_tests(&self) {
+        guard(&self.verified).clear();
+    }
+
     /// A fetch of `entity`, with this content, verified against SPV-held
     /// quorum keys (E0-10b). An entity without a digest records nothing.
     /// Blocking (app.sqlite).
@@ -197,11 +220,15 @@ impl Provenance {
     /// used and no verification of this content is on record (DEC-183: a
     /// record of other content does not count). In memory.
     pub(crate) fn is_unverified(&self, entity: &Entity) -> bool {
-        self.fallback_used.load(Ordering::SeqCst) && {
-            let key = (entity.kind.to_string(), entity.key.clone());
-            let verified = guard(&self.verified);
-            entity.digest.is_none() || verified.get(&key) != entity.digest.as_ref()
-        }
+        self.fallback_used.load(Ordering::SeqCst) && self.lacks_record(entity)
+    }
+
+    /// No verification of this content is on record, whether or not the
+    /// fallback was used: H-09's strict gate needs a record, since a wallet
+    /// store may come from an installation that used it. In memory.
+    pub(crate) fn lacks_record(&self, entity: &Entity) -> bool {
+        let key = (entity.kind.to_string(), entity.key.clone());
+        entity.digest.is_none() || guard(&self.verified).get(&key) != entity.digest.as_ref()
     }
 }
 

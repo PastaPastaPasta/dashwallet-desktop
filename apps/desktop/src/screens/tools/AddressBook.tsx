@@ -249,8 +249,8 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
       <p className="placeholder-note" data-testid="address-book-header">
         {model.header}
       </p>
-      {saved && <Outcome ok={saved.ok} text={saved.text} testId="address-book-exported" />}
-      {model.error && editing === undefined && <Outcome ok={false} text={model.error} testId="address-book-problem" />}
+      <Outcome ok={saved?.ok ?? true} text={saved?.text ?? null} testId="address-book-exported" polite />
+      <Outcome ok={false} text={editing === undefined ? model.error : null} testId="address-book-problem" />
       <AddressList
         model={model}
         emptyActions={{
@@ -314,7 +314,7 @@ export function AddressBookPicker({
     <Sheet title={purpose === "send" ? t("tools.addressBook.chooseSend") : t("tools.addressBook.chooseSign")} width="medium" testId="address-book-picker" onClose={onClose}>
       <div className="tool-stack">
         <p className="placeholder-note">{model.header}</p>
-        {model.error && <Outcome ok={false} text={model.error} testId="address-book-problem" />}
+        <Outcome ok={false} text={model.error} testId="address-book-problem" />
         <AddressList
           model={model}
           emptyActions={{}}

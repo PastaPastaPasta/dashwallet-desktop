@@ -39,13 +39,19 @@ export const LANGUAGES: Language[] = [
 export const byTag = (tag: string) => LANGUAGES.find((l) => l.tag.toLowerCase() === tag.toLowerCase());
 const primary = (tag: string) => tag.split("-")[0].toLowerCase();
 
+const scripts = new Map<string, string | undefined>();
+
 /** The script a tag is written in, given or implied (`zh-TW` is Hant), if the runtime knows it. */
 function script(tag: string): string | undefined {
+  if (scripts.has(tag)) return scripts.get(tag);
+  let found: string | undefined;
   try {
-    return new Intl.Locale(tag).maximize().script;
+    found = new Intl.Locale(tag).maximize().script;
   } catch {
-    return undefined;
+    found = undefined;
   }
+  scripts.set(tag, found);
+  return found;
 }
 
 /** The same language in a script that does not conflict: `pt-PT` takes `pt`, `zh-Hans-CN` takes
@@ -58,8 +64,15 @@ function sameLanguage(catalog: string, wanted: string): boolean {
 
 export const isLanguage = (tag: string) => byTag(tag) !== undefined;
 
-/** A catalog with every English key. */
-export const isComplete = (l: Language) => [...english.keys()].every((k) => l.messages.has(k));
+const completeness = new WeakMap<Map<string, Message>, boolean>();
+
+/** A catalog with every English key. A catalog does not change once built, so each is checked once:
+ * `t` asks on every call. */
+export function isComplete(l: Language): boolean {
+  let complete = completeness.get(l.messages);
+  if (complete === undefined) completeness.set(l.messages, (complete = [...english.keys()].every((k) => l.messages.has(k))));
+  return complete;
+}
 
 /** The system's languages, most preferred first. */
 export function systemLanguages(): readonly string[] {
@@ -100,14 +113,37 @@ export function resolveLanguage(choice: string | null, system: readonly string[]
 
 export const currentLanguage = (): Language => resolveLanguage(ui.get().prefs.language);
 
+/** The runtime's default formatting locale: `undefined` (the runtime's own) unless that is ICU's
+ * POSIX variant, which WebKitGTK takes from LANG=C.UTF-8 and which formats numbers with no digit
+ * grouping; then the same locale without it, its other keywords (`nu`, `ca`, …) kept. */
+export function runtimeFormatLocale(resolved: string = new Intl.NumberFormat().resolvedOptions().locale): string | undefined {
+  if (!resolved.split("-").some((s) => s.toLowerCase() === "posix")) return undefined;
+  let canonical: string;
+  try {
+    canonical = new Intl.Locale(resolved).toString();
+  } catch {
+    return "en";
+  }
+  const kept = canonical.replace(/-va-posix(?=-|$)/i, "").replace(/-u(?=-.(?:-|$)|$)/i, "");
+  return kept === canonical ? undefined : kept;
+}
+
+let runtimeDefault: { from: typeof Intl.NumberFormat; locale: string | undefined } | undefined;
+function runtimeDefaultLocale(): string | undefined {
+  if (runtimeDefault?.from !== Intl.NumberFormat) runtimeDefault = { from: Intl.NumberFormat, locale: runtimeFormatLocale() };
+  return runtimeDefault.locale;
+}
+
 /** The locale numbers, dates and fiat are formatted with, for `base` (the system's, `undefined`,
  * or the fixture's): `base` while the language follows the system or is the system's own in a
- * script that does not conflict (its regional formats stay), the chosen language's otherwise. */
+ * script that does not conflict (its regional formats stay), the chosen language's otherwise.
+ * The system's is the runtime's default, `undefined`, unless that is ICU's POSIX variant. */
 export function formatLocale(base: string | undefined, choice: string | null = ui.get().prefs.language, system: readonly string[] = systemLanguages()): string | undefined {
   const chosen = choice === null ? undefined : byTag(choice);
-  if (!chosen) return base;
-  const own = base ?? system[0];
-  return own !== undefined && sameLanguage(chosen.tag, own) ? base : chosen.tag;
+  const own = base ?? runtimeDefaultLocale();
+  if (!chosen) return own;
+  const ownLanguage = base ?? system[0];
+  return ownLanguage !== undefined && sameLanguage(chosen.tag, ownLanguage) ? own : chosen.tag;
 }
 
 type Args<K extends Key> = [ParamNames<At<typeof en, K>>] extends [never] ? [] : [values: Params<At<typeof en, K>, string | number>];

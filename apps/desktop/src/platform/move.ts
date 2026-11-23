@@ -12,6 +12,7 @@ import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import { platformOp } from "../dashpay/topup";
+import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 
@@ -20,45 +21,113 @@ export type PlatformMoveApi = Pick<Backend, "platformMoveToCore" | "authorize" |
 export const MOVE_COPY = {
   card: {
     /** What one move cannot take (below the minimum input, beyond the inputs one transition takes, or the fee reserve): it stays on Platform. */
-    dust: (amount: string) => `${amount} on your Platform addresses cannot be moved to your Dash wallet right now.`,
+    dust: (amount: string) => t("transfer.move.dust", { amount }),
   },
-  message: "Everything on your Platform addresses moves to your Dash wallet. Dash Platform pays it to the address below.",
-  rows: { taken: "Taken from Platform, about", fee: "Network fee, about", receive: "You receive about", to: "To your Dash wallet" },
-  quoting: "Working out the fee…",
-  quoteFailed: "The fee could not be worked out.",
-  back: "Back",
-  go: "Confirm & move",
-  cancel: "Cancel",
-  running: { title: "Moving…", text: "Dash Platform confirms the move. You can close this: Activity shows it." },
+  get message() {
+    return t("transfer.move.message");
+  },
+  rows: {
+    get taken() {
+      return t("transfer.move.rows.taken");
+    },
+    get fee() {
+      return t("transfer.move.rows.fee");
+    },
+    get receive() {
+      return t("transfer.move.rows.receive");
+    },
+    get to() {
+      return t("transfer.move.rows.to");
+    },
+  },
+  get quoting() {
+    return t("transfer.move.quoting");
+  },
+  get quoteFailed() {
+    return t("transfer.move.quoteFailed");
+  },
+  get back() {
+    return t("transfer.move.back");
+  },
+  get go() {
+    return t("transfer.move.go");
+  },
+  get cancel() {
+    return t("common.cancel");
+  },
+  running: {
+    get title() {
+      return t("transfer.move.running.title");
+    },
+    get text() {
+      return t("transfer.move.running.text");
+    },
+  },
   done: {
-    title: "Moved",
-    text: (amount: string, fee: string | null) =>
-      `About ${amount} is on its way to your Dash wallet.${fee === null ? "" : ` The network fee was ${fee}.`} It shows in Activity once it arrives.`,
+    get title() {
+      return t("transfer.move.done.title");
+    },
+    text: (amount: string, fee: string | null) => (fee === null ? t("transfer.move.done.text", { amount }) : t("transfer.move.done.textWithFee", { amount, fee })),
     /** The engine proved the debit but not what arrives. */
-    debitOnly: (taken: string) => `${taken} left your Platform addresses. Activity shows what arrives in your Dash wallet.`,
+    debitOnly: (taken: string) => t("transfer.move.done.debitOnly", { taken }),
   },
   pending: {
-    title: "Not confirmed yet",
-    text: (amount: string) => `Dash Platform has not said whether the move of about ${amount} went through. Activity shows it when it does. Do not move again until it does.`,
-    debitOnly: (taken: string) => `Dash Platform has not said whether the move of ${taken} went through. Activity shows it when it does. Do not move again until it does.`,
+    get title() {
+      return t("transfer.move.pending.title");
+    },
+    text: (amount: string) => t("transfer.move.pending.text", { amount }),
+    debitOnly: (taken: string) => t("transfer.move.pending.debitOnly", { taken }),
   },
   /** A move the engine superseded with a retry: not a loss, and nothing to wait for. */
-  replaced: { title: "Replaced by a retry", text: "This move was replaced by a retry. Activity shows the retry." },
-  unseen: "Your move has an update.",
+  replaced: {
+    get title() {
+      return t("transfer.move.replaced.title");
+    },
+    get text() {
+      return t("transfer.move.replaced.text");
+    },
+  },
+  get unseen() {
+    return t("transfer.move.unseen");
+  },
   waiting: {
-    text: "A move to your Dash wallet is not confirmed yet. Do not move again until Activity shows that it went through.",
-    held: "An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.",
+    get text() {
+      return t("transfer.move.waiting.text");
+    },
+    get held() {
+      return t("transfer.move.waiting.held");
+    },
     /** A payment (not a move) from Platform is unsettled: Move waits until it settles. */
-    sendHeld: "A payment from Platform may still go through. Moving waits until it settles.",
+    get sendHeld() {
+      return t("transfer.move.waiting.sendHeld");
+    },
     /** Move refused beside a held payment: that payment's own retry (in Pay) is the way out. */
-    heldSend: "An earlier payment from Platform may still go through. Wait for it to finish, or send that same payment again from Pay and press Retry that payment, then move again.",
-    action: "View in Activity",
+    get heldSend() {
+      return t("transfer.move.waiting.heldSend");
+    },
+    get action() {
+      return t("transfer.move.waiting.action");
+    },
   },
   /** Before Move is offered, Activity must say no move is unfinished (after a relaunch the flow remembers nothing). */
-  check: { loading: "Checking for an unfinished move…", failed: "Could not check for an unfinished move.", again: "Check again" },
-  show: "Show",
-  close: "Close",
-} as const;
+  check: {
+    get loading() {
+      return t("transfer.move.check.loading");
+    },
+    get failed() {
+      return t("transfer.move.check.failed");
+    },
+    get again() {
+      return t("transfer.move.check.again");
+    },
+  },
+  get show() {
+    return t("transfer.move.show");
+  },
+  get close() {
+    return t("transfer.move.close");
+  },
+};
 
 /** What holds Move back: the Activity read has not answered (`checking`) or failed (`failed`), or it names
  * a move Platform has not confirmed (`pending`). `null`: Move may be offered. */
@@ -78,7 +147,7 @@ export type MoveStep = "confirm" | "running" | "done" | "refused";
  * "consolidate coins first"): show that detail, not the code. */
 export function invalidArgumentText(e: { message: string; data: { kind: string; reason?: string } | null }): string {
   const detail = e.data?.kind === "reason" && e.data.reason ? e.data.reason : e.message;
-  return detail.trim() === "" ? "That was not accepted." : /[.!?]$/.test(detail) ? detail : `${detail}.`;
+  return detail.trim() === "" ? t("transfer.move.notAccepted") : /[.!?]$/.test(detail) ? detail : `${detail}.`;
 }
 
 /** A move's refusal, by code. `credits` shows a credit figure as Dash. */
@@ -86,32 +155,32 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "platform.insufficient_credits":
-      return e.data?.kind === "credits" ? `Not enough on your Platform addresses: ${credits(e.data.needed)} needed with the fee, ${credits(e.data.available)} available.` : "There is not enough on your Platform addresses to cover the fee.";
+      return e.data?.kind === "credits" ? t("transfer.move.error.insufficient", { needed: credits(e.data.needed), available: credits(e.data.available) }) : t("transfer.move.error.insufficientFee");
     case "credits.withdrawal_out_of_range":
-      return e.data?.kind === "creditRange" ? `Dash Platform moves between ${credits(e.data.min)} and ${credits(e.data.max)} at a time.` : "Dash Platform does not take a move of this amount.";
+      return e.data?.kind === "creditRange" ? t("transfer.move.error.outOfRange", { min: credits(e.data.min), max: credits(e.data.max) }) : t("transfer.move.error.outOfRangeAmount");
     case "credits.move_pending": {
       const id = e.data?.kind === "artifact" ? e.data.artifact : null;
       return activity?.find((a) => a.id === id)?.kind === "send" ? MOVE_COPY.waiting.heldSend : MOVE_COPY.waiting.held;
     }
     case "platform.broadcast_unknown":
-      return "It may have been sent. Check Activity before trying again.";
+      return t("transfer.move.error.broadcastUnknown");
     case "platform.context_unavailable":
-      return "Waiting for the network to sync and verify your Platform addresses. Try again shortly.";
+      return t("transfer.move.error.contextUnavailable");
     case "platform.trust_mismatch":
-      return "Your Platform addresses could not be verified against the network. Nothing was moved.";
+      return t("transfer.move.error.trustMismatch");
     case "platform.unavailable":
     case "platform.timeout":
-      return "Dash Platform did not answer. Try again.";
+      return t("transfer.move.error.unavailable");
     case "platform.signer_unavailable":
-      return "Unlock the wallet fully and try again.";
+      return t("transfer.move.error.signerUnavailable");
     case "platform.grant_exceeded":
-      return "The cost went above what you approved. Try again.";
+      return t("transfer.move.error.grantExceeded");
     case "platform.feature_off":
-      return "Platform addresses are turned off.";
+      return t("transfer.move.error.featureOff");
     case "invalid_argument":
       return invalidArgumentText(e);
     default:
-      return `It stopped with ${e.code}.`;
+      return t("transfer.move.error.stopped", { code: e.code });
   }
 }
 

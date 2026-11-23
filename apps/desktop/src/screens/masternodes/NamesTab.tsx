@@ -29,6 +29,8 @@ import {
   type NameSort,
 } from "../../governance/names";
 import { useContestedNames } from "../../governance/queries";
+import { formatLocale, useT } from "../../i18n";
+import { numberFormat } from "../../i18n/core";
 import { Notice, StatusChip, useNowSecs } from "./common";
 import { NameVoteSheet } from "./NameVoteSheet";
 
@@ -36,6 +38,7 @@ import { NameVoteSheet } from "./NameVoteSheet";
 const TALLY_BAR: Record<string, string> = { lock: "mg-tally-lock", abstain: "mg-tally-abstain" };
 
 export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: NetworkInfo }) {
+  const t = useT();
   const names = useContestedNames(wallet.walletId);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<NameSort>("ending");
@@ -114,7 +117,7 @@ export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: 
                 />
               </label>
               <label className="filter-select">
-                <span>Sort by</span>
+                <span>{t("masternodes.names.sortBy")}</span>
                 <select data-testid="names-sort" value={sort} onChange={(e) => setSort(e.target.value as NameSort)}>
                   {NAME_SORTS.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -125,7 +128,7 @@ export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: 
               </label>
             </div>
             {listed.length === 0 ? (
-              <EmptyState testId="names-no-match" title={`No username matches “${search.trim()}”`} message={NameText.normalized} />
+              <EmptyState testId="names-no-match" title={t("masternodes.names.noMatch", { search: search.trim() })} message={NameText.normalized} />
             ) : (
               <div className="contacts-split">
                 <div className="contacts-list">
@@ -181,6 +184,7 @@ export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: 
 }
 
 function ContestRowButton({ contest, names, now, current, onSelect }: { contest: ContestedName; names: ContestedNames; now: number; current: boolean; onSelect: () => void }) {
+  useT();
   const row = contestRow(contest, names.voters, now);
   return (
     <button type="button" className="mg-row mg-row-wide" aria-current={current ? "true" : undefined} data-testid={`name-row-${row.label}`} onClick={onSelect}>
@@ -188,7 +192,7 @@ function ContestRowButton({ contest, names, now, current, onSelect }: { contest:
         <span className="mg-row-title">{row.label}</span>
         <span className="mg-row-sub">
           {row.sub}
-          {row.you && ` · ${row.you}`}
+          {row.you && <span>{` · ${row.you}`}</span>}
         </span>
       </span>
       <span className="mg-row-trailing">
@@ -202,12 +206,13 @@ function ContestRowButton({ contest, names, now, current, onSelect }: { contest:
 /** The selected contest (D5–D9): when voting ends, the tally with who leads, the wallet's voters
  * with their present choice and votes left, and Vote. */
 function NamePane({ contest, names, watchOnly, now, onVote }: { contest: ContestedName; names: ContestedNames; watchOnly: boolean; now: number; onVote: () => void }) {
+  const t = useT();
   const tally = tallyView(contest);
   const chip = contestChip(contest, now);
   const closed = isClosed(contest, now);
   const blocked = voteBlocked(contest, names, watchOnly, now);
   return (
-    <aside className="contacts-pane" aria-label="Username vote" data-testid="name-pane">
+    <aside className="contacts-pane" aria-label={t("masternodes.names.pane.label")} data-testid="name-pane">
       <section className="mg-pane card-l1">
         <div>
           <h2 className="mg-pane-title">{contest.label}</h2>
@@ -220,12 +225,12 @@ function NamePane({ contest, names, watchOnly, now, onVote }: { contest: Contest
         </div>
         {closed && (
           <Notice tone="info" testId="name-closed">
-            Voting has ended. Platform gives the name out by these votes in its next block, and then it leaves this list.
+            {t("masternodes.names.pane.closed")}
           </Notice>
         )}
         <div className="mg-stack">
           <div className="mg-spread mg-small">
-            <strong>Votes, weighted</strong>
+            <strong>{t("masternodes.names.pane.votesWeighted")}</strong>
             <span className="mg-muted" data-testid="name-pane-lead">
               {tally.lead}
             </span>
@@ -239,14 +244,14 @@ function NamePane({ contest, names, watchOnly, now, onVote }: { contest: Contest
                       <span className="mono" title={r.identity}>
                         {r.title}
                       </span>
-                      <CopyIconButton text={r.identity!} label={`Copy identity ${r.title}`} title="Copy identity" size={16} />
+                      <CopyIconButton text={r.identity!} label={t("masternodes.names.pane.copyIdentity", { identity: r.title })} title={t("masternodes.names.pane.copyIdentityTitle")} size={16} />
                     </span>
                   ) : (
                     r.title
                   )}
-                  {r.leading && <span className="chip chip-success">{closed ? "Most votes" : "Leading"}</span>}
+                  {r.leading && <span className="chip chip-success">{closed ? t("masternodes.names.pane.mostVotes") : t("masternodes.names.pane.leading")}</span>}
                 </span>
-                <span className="mg-tally-votes">{r.votes.toLocaleString("en-US")}</span>
+                <span className="mg-tally-votes">{numberFormat(formatLocale(undefined)).format(r.votes)}</span>
                 <span className="mg-tally-bar" aria-hidden="true">
                   <span className={TALLY_BAR[r.key] ?? "mg-tally-fill"} style={{ width: `${r.pct}%` }} />
                 </span>
@@ -262,13 +267,13 @@ function NamePane({ contest, names, watchOnly, now, onVote }: { contest: Contest
         </div>
         {names.voters.length > 0 && (
           <div>
-            <h3 className="mg-section-title">Your masternodes</h3>
+            <h3 className="mg-section-title">{t("masternodes.names.pane.yourMasternodes")}</h3>
             <ul className="mg-roles mg-roles-votes" data-testid="name-pane-masternodes">
               {names.voters.map((v) => (
                 <li key={v.proTxHash} className="mg-roles-pair">
                   <span>
                     {nodeName(v)}
-                    {v.weight > 1 && <span className="mg-muted"> · weight {v.weight}</span>}
+                    {v.weight > 1 && <span className="mg-muted"> {t("masternodes.names.pane.weight", { weight: v.weight })}</span>}
                   </span>
                   <span className="mg-muted">{voterLine(v, contest.label, names.votesAllowed)}</span>
                 </li>
@@ -279,7 +284,7 @@ function NamePane({ contest, names, watchOnly, now, onVote }: { contest: Contest
         )}
         <div className="mg-actions">
           <DashButton variant="filledBlue" size="small" data-testid="name-vote" disabled={blocked !== null} title={blocked ?? undefined} onClick={onVote}>
-            Vote
+            {t("masternodes.names.vote")}
           </DashButton>
         </div>
         {blocked && (

@@ -69,3 +69,4 @@ test, with the reason).
 |---|---|---|---|---|
 | v0.1.0 | `dash-wallet-0.1.0-linux-amd64.deb` | `1ac5c6690fc8394935fd62b7ff5b134d2206d8a856943553af264144f0b4b6a1` | 2026-11-19 | 24.0.0 |
 | v0.2.0 | `dash-wallet-0.2.0-linux-amd64.deb` | `981af3a867cdd8560af5feb73c66cac443923d5541ed70c3440ff4a6b64f6e0f` | 2026-11-20 | 24.0.0 |
+| v0.3.0 | `dash-wallet-0.3.0-linux-amd64.deb` | `04c22e604936ef4bba27dca345c58d932096bc8fdf05e6e14d09722cc0983999` | 2026-11-22 | 24.0.0 |

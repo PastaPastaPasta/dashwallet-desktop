@@ -88,8 +88,9 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// Settings key prefix (wallet scope) of a payment this app signed and
 /// handed to the network (#88): the evidence a spend claim is restored
 /// from at load. Written before the first broadcast, removed when it was
-/// never sent, and dropped at load once the payment is in a block,
-/// abandoned or gone from the store.
+/// never sent, and dropped once the payment is gone from the history or
+/// proven ChainLocked: in the session by its wallet's ChainLock of its own
+/// block, or at load by the SPV header chain.
 pub(crate) const SENT_PREFIX: &str = "sent:";
 
 /// The marks of `wallet` under `prefix` that `parse` reads from their txid
@@ -137,8 +138,8 @@ pub(crate) fn load_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, bool) {
 /// The payments this app sent, each with the wallet's coins it signed.
 pub(crate) type Sent = BTreeMap<Txid, BTreeSet<OutPoint>>;
 
-/// Drops the marks of the payments of `wallet` no longer out of a block
-/// in its history (`gone`): in a block, abandoned, or not stored.
+/// Drops the marks of the payments of `wallet` (`gone`) gone from the
+/// history or ChainLocked.
 pub(crate) fn forget_sent(appdb: &AppDb, wallet: WalletId, gone: &[Txid]) {
     if gone.is_empty() {
         return;

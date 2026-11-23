@@ -1081,7 +1081,7 @@ impl NetworkSession {
             wallet_id.0,
             "the fence of another wallet"
         );
-        let (mut snapshot, lock_inputs, unseen) = {
+        let (mut snapshot, lock_inputs, unseen, applied) = {
             let state = crate::wallet_read::info_of(wallet).await?;
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
@@ -1089,6 +1089,7 @@ impl NetworkSession {
                 snapshot,
                 pending_lock_inputs(state.tracked_asset_locks.values()),
                 unseen,
+                crate::history_ops::applied_chainlock(&state),
             )
         };
         // Coins before the history: a ProRegTx that lands between the two
@@ -1152,7 +1153,11 @@ impl NetworkSession {
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
-        let spent = (self.hub.history).read(&wallet_id, crate::history::spent_outpoints);
+        let chainlock = (applied.max(self.hub.tracker().chainlock_height()))
+            .max(self.hub.best_chainlock().map(|(h, _)| h));
+        let spent = (self.hub.history).read(&wallet_id, |txs| {
+            crate::history::spent_outpoints(txs, chainlock)
+        });
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             let lock = locked.get(&lock_key(&o));

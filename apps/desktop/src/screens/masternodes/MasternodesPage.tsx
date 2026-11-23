@@ -39,7 +39,7 @@ import {
   type SortOrder,
 } from "../../governance/model";
 import { useGovernanceInfo, useGovernanceRefresh, useGovernanceSyncState, useMyProposals, useProposals, useTurnOnGovernance, useVotingByProposal } from "../../governance/queries";
-import { NameText } from "../../governance/names";
+import { useT } from "../../i18n";
 import { MnText } from "../../masternodes/model";
 import { useMasternodeListState } from "../../masternodes/queries";
 import { savePrefs } from "../../settings/prefs";
@@ -55,15 +55,16 @@ import { VoteSheet } from "./VoteSheet";
 
 const SEARCH_DEBOUNCE_MS = 200;
 
-const TABS: Tab<MasternodesTab>[] = [
-  { id: "myMasternodes", title: MnText.tab },
-  { id: "governance", title: "Governance" },
-  { id: "names", title: NameText.tab },
-];
 
 export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; network: NetworkInfo }) {
+  const t = useT();
   const backend = useBackend();
   const launch = useLaunch();
+  const tabs: Tab<MasternodesTab>[] = [
+    { id: "myMasternodes", title: t("masternodes.myMasternodes.tab") },
+    { id: "governance", title: t("masternodes.governance.tab") },
+    { id: "names", title: t("masternodes.names.tab") },
+  ];
   const saved = useUi((s) => s.prefs.masternodesTab);
   // Shown at once; the setting follows (a failed save keeps the page on the chosen tab this time).
   const [tab, setShownTab] = useState<MasternodesTab>(saved);
@@ -92,9 +93,9 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   // Without the list (governance off, syncing or failed) Mine still shows below (D32).
   const mineBelow = (mine.data?.length ?? 0) > 0 && <MineList walletId={walletId} network={network} mine={mine.data!} heading />;
   let body;
-  if (sync.isPending || info.isPending) body = <LoadingState testId="governance-loading" text="Loading governance…" />;
+  if (sync.isPending || info.isPending) body = <LoadingState testId="governance-loading" text={t("masternodes.governance.page.loading")} />;
   else if (sync.isError || info.isError)
-    body = <EmptyState testId="governance-error" title="Couldn't read governance" message={errorMessage(sync.error ?? info.error)} />;
+    body = <EmptyState testId="governance-error" title={t("masternodes.governance.page.readFailed")} message={errorMessage(sync.error ?? info.error)} />;
   else if (state?.kind === "disabled")
     body = (
       <>
@@ -123,7 +124,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
         )}
         {state?.kind === "syncing" && (
           <section className="card-l1 mg-loading" data-testid="governance-syncing">
-            <LoadingState testId="governance-syncing-progress" text={`Loading proposals from the network… ${state.line}`} />
+            <LoadingState testId="governance-syncing-progress" text={t("masternodes.governance.sync.loading", { line: state.line })} />
           </section>
         )}
         {state?.kind === "failed" && (
@@ -159,7 +160,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           <h1 className="top-intro-title">{GovText.title}</h1>
           {/* Governance's actions; Username voting has none (MG-11 D2). */}
           {tab === "governance" && (
-            <span className="mg-header-actions">
+            <span className="mg-header-actions" data-testid="governance-actions">
               <MoreMenu
                 testId="governance-more"
                 items={[
@@ -180,7 +181,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
             </span>
           )}
         </header>
-        <Tabs label="Masternodes" tabs={TABS} current={tab} onSelect={setTab} testId="masternodes-tabs">
+        <Tabs label={GovText.title} tabs={tabs} current={tab} onSelect={setTab} testId="masternodes-tabs">
           {!mnList.isError && mnList.data?.synced && mnList.data.height !== null && (
             <p className="mg-muted mg-small" data-testid="mn-list-height">
               {MnText.listHeight(mnList.data.height)}
@@ -226,6 +227,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
 
 /** §4.25.3's two cards: the cycle with the estimated cutoff, and the budget. */
 function ClockCard({ info, shown, synced }: { info: GovernanceInfo; shown: Display; synced: boolean }) {
+  const t = useT();
   const now = useNowSecs();
   // The list's own query (the current proposals, no search): the over-budget part is summed from it.
   const rows = useProposals("current", "", synced).data;
@@ -252,7 +254,7 @@ function ClockCard({ info, shown, synced }: { info: GovernanceInfo; shown: Displ
       <div data-testid="governance-budget">
         <div className="mg-spread mg-small">
           <strong>{budget.title}</strong>
-          {budget.synced && <span className="mg-muted">from peers, an estimate</span>}
+          {budget.synced && <span className="mg-muted">{t("masternodes.governance.budget.estimate")}</span>}
         </div>
         <div className="mg-budget-bar" aria-hidden="true">
           {budget.synced && (
@@ -265,20 +267,18 @@ function ClockCard({ info, shown, synced }: { info: GovernanceInfo; shown: Displ
         {budget.synced ? (
           <>
             <div className="mg-small">
-              {amount(budget.synced.allocated)} of {amount(budget.budget)} goes to {budget.synced.passing} passing{" "}
-              {budget.synced.passing === 1 ? "proposal" : "proposals"}
+              {t.rich("masternodes.governance.budget.passing", { allocated: amount(budget.synced.allocated), budget: amount(budget.budget), count: budget.synced.passing })}
             </div>
             {budget.synced.overCount > 0 && (
               <div className="mg-muted mg-small">
-                {budget.synced.overCount} more {budget.synced.overCount === 1 ? "passes" : "pass"} the vote but {budget.synced.overCount === 1 ? "doesn't" : "don't"} fit (
-                {amount(budget.synced.overAmount)})
+                {t.rich("masternodes.governance.budget.over", { count: budget.synced.overCount, amount: amount(budget.synced.overAmount) })}
               </div>
             )}
           </>
         ) : (
           <>
-            <div className="mg-small">{amount(budget.budget)} available</div>
-            <div className="mg-muted mg-small">What passing proposals take shows after sync</div>
+            <div className="mg-small">{t.rich("masternodes.governance.budget.available", { amount: amount(budget.budget) })}</div>
+            <div className="mg-muted mg-small">{t("masternodes.governance.budget.afterSync")}</div>
           </>
         )}
       </div>
@@ -286,10 +286,10 @@ function ClockCard({ info, shown, synced }: { info: GovernanceInfo; shown: Displ
   );
 }
 
-const FILTERS: { id: ListFilter; title: string }[] = [
-  { id: "all", title: "All" },
-  { id: "needsVote", title: "Needs my vote" },
-  { id: "mine", title: "Mine" },
+const FILTERS: { id: ListFilter; key: "masternodes.governance.page.all" | "masternodes.governance.page.needsVote" | "masternodes.governance.mine.title" }[] = [
+  { id: "all", key: "masternodes.governance.page.all" },
+  { id: "needsVote", key: "masternodes.governance.page.needsVote" },
+  { id: "mine", key: "masternodes.governance.mine.title" },
 ];
 
 /** The synced list: search, filter, sort, rows and the selected proposal's pane. */
@@ -310,6 +310,7 @@ function ProposalsView({
   setFilter: (f: ListFilter) => void;
   onVote: (row: ProposalRow) => void;
 }) {
+  const t = useT();
   const walletId = wallet.walletId;
   const shown = useDisplay(network);
   const [search, setSearch] = useState("");
@@ -330,13 +331,19 @@ function ProposalsView({
 
   let list;
   if (filter === "mine") list = <MineList walletId={walletId} network={network} mine={mine.data ?? []} />;
-  else if (proposals.isPending) list = <LoadingState testId="proposals-loading" text="Loading proposals…" />;
-  else if (proposals.isError) list = <EmptyState testId="proposals-error" title="Couldn't read the proposals" message={errorMessage(proposals.error)} />;
+  else if (proposals.isPending) list = <LoadingState testId="proposals-loading" text={t("masternodes.governance.page.proposalsLoading")} />;
+  else if (proposals.isError) list = <EmptyState testId="proposals-error" title={t("masternodes.governance.page.proposalsFailed")} message={errorMessage(proposals.error)} />;
   else if (listed.length === 0)
     list = (
       <EmptyState
         testId="proposals-empty"
-        title={text !== "" ? `No proposal matches “${text}”` : filter === "needsVote" ? GovText.emptyNeedsVote : "No proposals this cycle"}
+        title={
+          text !== ""
+            ? t("masternodes.governance.page.noMatch", { text })
+            : filter === "needsVote"
+              ? GovText.emptyNeedsVote
+              : t("masternodes.governance.page.noneThisCycle")
+        }
       />
     );
   else
@@ -376,7 +383,7 @@ function ProposalsView({
           <strong>{GovText.browsingOnly}</strong> {GovText.browsingOnlyText}
         </Notice>
       )}
-      <div className="tx-filter-bar mg-toolbar">
+      <div className="tx-filter-bar mg-toolbar" data-testid="governance-toolbar">
         <label className="search-field" data-testid="governance-search">
           <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
           <input
@@ -393,10 +400,10 @@ function ProposalsView({
             }}
           />
         </label>
-        <div className="segmented" role="group" aria-label="Show" data-testid="governance-filter">
+        <div className="segmented" role="group" aria-label={t("masternodes.governance.page.show")} data-testid="governance-filter">
           {FILTERS.map((f) => (
             <button key={f.id} type="button" className="segment" aria-pressed={filter === f.id} data-testid={`governance-filter-${f.id}`} onClick={() => setFilter(f.id)}>
-              {f.title} {count[f.id]}
+              {t(f.key)} {count[f.id]}
             </button>
           ))}
         </div>
@@ -433,15 +440,16 @@ function ProposalRowButton({
   current: boolean;
   onSelect: () => void;
 }) {
+  const t = useT();
   const you = youSummary(nodes);
+  const ask = { amount: <AmountText text={shown.compact(row.paymentAmount)} unitName={shown.name} />, payments: paymentsSuffix(row.paymentsRequested) };
   const margin = marginText(row, info.passingThreshold);
   return (
     <button type="button" className="mg-row mg-row-wide" aria-current={current ? "true" : undefined} data-testid={`proposal-row-${row.name}`} onClick={onSelect}>
       <span className="mg-row-text">
         <span className="mg-row-title">{row.name}</span>
         <span className="mg-row-sub">
-          <AmountText text={shown.compact(row.paymentAmount)} unitName={shown.name} /> {paymentsSuffix(row.paymentsRequested)}
-          {you && ` · ${you}`}
+          {you ? t.rich("masternodes.governance.withYou", { ...ask, you }) : t.rich("masternodes.governance.ask", ask)}
         </span>
         {!isEnded(row) && <VoteBar tally={row.tally} threshold={info.passingThreshold} weight={info.validWeight} />}
       </span>

@@ -105,6 +105,13 @@ export function rowChips(c: Pick<ContactSummaryInfo, "relation" | "channel" | "u
   return chips;
 }
 
+/** Beside Accept or Send Contact Request when the other side's profile is not verified yet
+ * (H-09): the action stays on, and a payment to them waits until their data is checked. */
+export function unverifiedWarning(action: "accept" | "send", unverified: boolean): string | null {
+  if (!unverified) return null;
+  return action === "accept" ? t("contacts.unverifiedAccept") : t("contacts.unverifiedSend");
+}
+
 const RELATIONS: Readonly<Record<UserRelation, string>> = messageTable("contacts.relation", ["contact", "pendingOutgoing", "pendingIncoming", "ignored", "stranger", "isSelf"]);
 
 /** A row's trailing note (D7): which way a request goes, or an ignored sender. */
