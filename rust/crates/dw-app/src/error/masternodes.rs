@@ -84,12 +84,19 @@ impl From<MasternodesError> for AppError {
             M::CollateralUnavailable => (C::CollateralUnavailable, None),
             M::SignatureMismatch => (C::SignatureMismatch, None),
             M::OperationNotFound => (C::OperationNotFound, None),
-            M::OperationState { .. } => (C::OperationState, None),
+            M::OperationState { state } => {
+                (C::OperationState, Some(ErrorData::OperationState { state }))
+            }
             M::InFlight => (C::InFlight, None),
-            M::KeysExhausted { .. } => (C::KeysExhausted, None),
+            M::KeysExhausted { role } => (C::KeysExhausted, Some(ErrorData::KeyRole { role })),
             M::NoOwnerKey => (C::NoOwnerKey, None),
-            M::UpdatePending { .. } => (C::UpdatePending, None),
-            M::UpdateSuperseded { .. } => (C::UpdateSuperseded, None),
+            M::UpdatePending { operation } => {
+                (C::UpdatePending, Some(ErrorData::Operation { operation }))
+            }
+            M::UpdateSuperseded { operation } => (
+                C::UpdateSuperseded,
+                Some(ErrorData::Operation { operation }),
+            ),
             M::SharedSessionNotFound => (C::SharedSessionNotFound, None),
             M::SharedStage { .. } => (C::SharedStage, None),
             M::SharedMessage { .. } => (C::SharedMessage, None),
@@ -239,6 +246,24 @@ mod tests {
                 operation: None
             }),
             serde_json::json!({ "kind": "reason", "reason": "bad-protx-payee-reuse" })
+        );
+        assert_eq!(
+            data(MasternodesError::OperationState {
+                state: "sent".into()
+            }),
+            serde_json::json!({ "kind": "operationState", "state": "sent" })
+        );
+        assert_eq!(
+            data(MasternodesError::KeysExhausted {
+                role: "owner".into()
+            }),
+            serde_json::json!({ "kind": "keyRole", "role": "owner" })
+        );
+        assert_eq!(
+            data(MasternodesError::UpdatePending {
+                operation: "op2".into()
+            }),
+            serde_json::json!({ "kind": "operation", "operation": "op2" })
         );
         assert_eq!(
             data(MasternodesError::PlatformUnavailable {

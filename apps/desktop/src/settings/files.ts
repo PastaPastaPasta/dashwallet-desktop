@@ -26,6 +26,7 @@ export const FilesText = {
   psbtFile: "This is a partially signed transaction. Open it in Tools ▸ PSBT.",
   unknownFile: "Dash Wallet does not recognise this file. It reads Dash Wallet backups, dumpwallet files and wallet.dat files.",
   otherNetwork: (name: string) => `This file is for ${name}, not for the network this window uses.`,
+  emptyBackup: "This backup holds no wallet.",
   restored: (n: number) => (n === 1 ? "The wallet was restored." : `${n} wallets were restored.`),
   /** QT-107. */
   imported: (labels: number) => (labels === 1 ? "The wallet was imported with 1 label." : `The wallet was imported with ${labels} labels.`),
@@ -159,16 +160,22 @@ export interface ImportPlan {
 export function importPlan(info: WalletFileInfo, network: string): ImportPlan {
   const base = { kind: info.kind, refusal: null, passphrase: null, named: false };
   const other = (n: { dirName: string } | null) => (n !== null && n.dirName !== network ? FilesText.otherNetwork(n.dirName) : null);
+  // A dumpwallet's keys tell only mainnet from the test networks (dw-engine compat.rs `check_key_network`):
+  // the engine reports every test-family file as testnet, which regtest and devnet import too.
+  const otherFamily = (n: { dirName: string } | null) => (n !== null && (n.dirName === "mainnet") !== (network === "mainnet") ? FilesText.otherNetwork(n.dirName) : null);
   switch (info.kind) {
     case "dwBackup":
       return {
         ...base,
-        refusal: info.network === null ? FilesText.otherNetwork("a network this version does not know") : other(info.network),
+        refusal:
+          info.network === null
+            ? FilesText.otherNetwork("a network this version does not know")
+            : (other(info.network) ?? (info.walletCount === 0 ? FilesText.emptyBackup : null)),
         passphrase: "Backup passphrase",
         summary: info.walletCount === 1 ? "A Dash Wallet backup of 1 wallet." : `A Dash Wallet backup of ${info.walletCount} wallets.`,
       };
     case "dumpWallet":
-      return { ...base, refusal: other(info.network), named: true, summary: "A Dash Core dumpwallet file." };
+      return { ...base, refusal: otherFamily(info.network), named: true, summary: "A Dash Core dumpwallet file." };
     case "walletDatSqlite":
     case "walletDatBdb": {
       const encrypted = info.kind === "walletDatSqlite" ? info.encrypted : info.encrypted === true;
@@ -190,6 +197,8 @@ export function importPlan(info: WalletFileInfo, network: string): ImportPlan {
 export interface ImportDone {
   walletIds: string[];
   lines: string[];
+  /** A Dash Core import's report: what it left out. */
+  report: CoreImportReport | null;
 }
 
 export function importLines(report: CoreImportReport): string[] {
@@ -199,7 +208,7 @@ export function importLines(report: CoreImportReport): string[] {
   return lines;
 }
 
-type ImportApi = Pick<Backend, "inspectWalletFile" | "restoreBackup" | "importDumpWallet" | "importWalletDat">;
+export type ImportApi = Pick<Backend, "inspectWalletFile" | "restoreBackup" | "importDumpWallet" | "importWalletDat">;
 
 const options = (name: string | null): ImportOptions => ({ name, birthHeight: null, coreCompat: false, lookahead: null });
 
@@ -207,7 +216,11 @@ export class ImportFileModel extends Model {
   step: ImportStep = "path";
   path = "";
   plan: ImportPlan | null = null;
+  /** What `inspect` detected. */
+  info: WalletFileInfo | null = null;
   error: string | null = null;
+  /** The last run's refusal as the engine gave it (its code), `null` after a success. */
+  failure: unknown = null;
   done: ImportDone | null = null;
 
   constructor(
@@ -217,25 +230,68 @@ export class ImportFileModel extends Model {
     super();
   }
 
+  /** Bumped whenever the selection is dropped (Back, reset): a reply for an older one is ignored. */
+  generation = 0;
+
   async inspect(path: string) {
     if (this.step !== "path") return;
+    const generation = this.generation;
     const p = path.trim();
     if (!p) return this.#fail("Enter the file's full path.");
     this.path = p;
     this.error = null;
     this.#go("inspecting");
     try {
-      this.plan = importPlan(await this.api.inspectWalletFile(p), this.network);
+      const info = await this.api.inspectWalletFile(p);
+      if (generation !== this.generation) return;
+      this.info = info;
+      this.plan = importPlan(info, this.network);
       this.#go("details");
     } catch (e) {
+      if (generation !== this.generation) return;
       this.error = failureText(e);
       this.#go("path");
     }
   }
 
   back() {
+    this.generation++;
     this.plan = null;
+    this.info = null;
     this.error = null;
+    this.#go("path");
+  }
+
+  /** Why `run` would refuse these inputs before reading the file, or `null`. */
+  problem(passphrase: string | null, nameText: string): string | null {
+    const plan = this.plan;
+    if (!plan || plan.refusal) return plan?.refusal ?? null;
+    if (plan.passphrase && !passphrase) return `Enter the ${plan.passphrase.toLowerCase()}.`;
+    if (plan.named && optionalName(nameText) === undefined) return WalletsText.nameRule;
+    return null;
+  }
+
+  /** A field changed: the last refusal no longer applies. */
+  edited() {
+    if (this.error === null) return;
+    this.error = null;
+    this.changed();
+  }
+
+  /** Shows a refusal found before `run` (onboarding checks first, then makes the vault). */
+  refuse(message: string) {
+    this.#fail(message);
+  }
+
+  /** Back to an empty path, as when the sheet opens. */
+  reset() {
+    this.generation++;
+    this.path = "";
+    this.plan = null;
+    this.info = null;
+    this.error = null;
+    this.failure = null;
+    this.done = null;
     this.#go("path");
   }
 
@@ -243,24 +299,26 @@ export class ImportFileModel extends Model {
   async run(passphrase: string | null, nameText: string) {
     const plan = this.plan;
     if (this.step !== "details" || !plan || plan.refusal) return;
-    if (plan.passphrase && !passphrase) return this.#fail(`Enter the ${plan.passphrase.toLowerCase()}.`);
-    const name = plan.named ? optionalName(nameText) : null;
-    if (name === undefined) return this.#fail(WalletsText.nameRule);
+    const problem = this.problem(passphrase, nameText);
+    if (problem) return this.#fail(problem);
+    const name = plan.named ? (optionalName(nameText) ?? null) : null;
     this.error = null;
+    this.failure = null;
     this.#go("working");
     try {
       if (plan.kind === "dwBackup") {
         const ids = await this.api.restoreBackup(this.path, passphrase);
-        this.done = { walletIds: ids, lines: [FilesText.restored(ids.length)] };
+        this.done = { walletIds: ids, lines: [FilesText.restored(ids.length)], report: null };
       } else {
         const report =
           plan.kind === "dumpWallet"
             ? await this.api.importDumpWallet(this.path, options(name))
             : await this.api.importWalletDat(this.path, plan.passphrase ? passphrase : null, options(name));
-        this.done = { walletIds: [report.walletId], lines: importLines(report) };
+        this.done = { walletIds: [report.walletId], lines: importLines(report), report };
       }
       this.#go("done");
     } catch (e) {
+      this.failure = e;
       this.error = failureText(e);
       this.#go("details");
     }
@@ -325,7 +383,7 @@ export class ImportKeysModel extends Model {
     this.changed();
     try {
       const report = await this.api.importKeyMaterial(material, options(name));
-      this.done = { walletIds: [report.walletId], lines: importLines(report) };
+      this.done = { walletIds: [report.walletId], lines: importLines(report), report };
     } catch (e) {
       this.error = failureText(e);
     }
