@@ -16,7 +16,7 @@ unicode-normalization = "0.1"
 zeroize = "1.8"
 # wallet.dat (SQLite descriptor wallets): same rusqlite as dw-appdb and
 # platform-wallet-storage, so one bundled libsqlite3 is linked.
-rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # Dash Core's wallet crypter: AES-256-CBC + SHA-512 key derivation.
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
