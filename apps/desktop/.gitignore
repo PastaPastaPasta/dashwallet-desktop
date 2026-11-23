@@ -1,6 +1,0 @@
-node_modules/
-dist/
-dist-fixture/
-test-results/
-playwright-report/
-.e2e-cache/

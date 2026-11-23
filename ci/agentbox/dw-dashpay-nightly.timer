@@ -1,9 +1,0 @@
-[Unit]
-Description=dashwallet-desktop DashPay suites on testnet, nightly at 04:47 UTC
-
-[Timer]
-OnCalendar=*-*-* 04:47:00 UTC
-Persistent=false
-
-[Install]
-WantedBy=timers.target

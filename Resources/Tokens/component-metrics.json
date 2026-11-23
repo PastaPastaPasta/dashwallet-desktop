@@ -1,8 +1,0 @@
-{
-  "DashButtonMetrics": {
-    "large": { "horizontalPadding": 20, "verticalPadding": 14, "gap": 10, "cornerRadius": 16, "fontSize": 16 },
-    "medium": { "horizontalPadding": 16, "verticalPadding": 10, "gap": 8, "cornerRadius": 14, "fontSize": 14 },
-    "small": { "horizontalPadding": 12, "verticalPadding": 6, "gap": 6, "cornerRadius": 11, "fontSize": 13 },
-    "extraSmall": { "horizontalPadding": 8, "verticalPadding": 4, "gap": 6, "cornerRadius": 9, "fontSize": 12 }
-  }
-}
