@@ -207,3 +207,15 @@ pub fn hold_platform_send(
     *session.hold_platform_send.lock().unwrap() = Some((reached_tx, released));
     (reached, release)
 }
+
+/// The txids `wallet`'s durable sent marks name
+/// (`tx_actions::SENT_PREFIX`), straight from the app database.
+pub fn sent_marks(session: &NetworkSession, wallet: crate::WalletId) -> Vec<String> {
+    let live = session.live().expect("a live session");
+    let prefix = crate::tx_actions::SENT_PREFIX;
+    (live.appdb.settings_with_prefix(&wallet.to_string(), prefix))
+        .expect("read the sent marks")
+        .into_iter()
+        .map(|(key, _)| key[prefix.len()..].to_string())
+        .collect()
+}

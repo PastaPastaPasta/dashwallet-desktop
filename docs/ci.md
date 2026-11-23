@@ -122,7 +122,7 @@ The script downloads the packages under a deadline, up to three times, and insta
 are all on disk. The runner image lists its regional Ubuntu mirror first, then `archive.ubuntu.com` and
 `security.ubuntu.com`, and reads `noble-security` from `security.ubuntu.com`. apt leaves a stalled mirror too
 slowly to finish under the deadline, and all three can be down together (2026-11-19). So when a download
-attempt fails, the script puts `azure.archive.ubuntu.com` first, drops the mirrors listed ahead of
+attempt fails (except under Release's live-first, below, which leaves the mirrors alone), the script puts `azure.archive.ubuntu.com` first, drops the mirrors listed ahead of
 `archive.ubuntu.com`, and points the `noble-security` source at the same mirror list, so it keeps
 `archive.ubuntu.com` and `security.ubuntu.com` as fallbacks. When the mirror that failed is the Azure one
 (some runners have it as their regional mirror, and on 2026-11-20 it was too slow for three attempts), it
@@ -167,7 +167,7 @@ the network once the cache holds them:
   job, with the cache key to delete. Pull requests read the entry and never save one, as above.
   Release's Linux job sets `live-first`: with an entry restored, it tries one live download first (60 s
   for the update, 180 s for the download) so that a WebKitGTK security update published since the entry
-  was saved reaches the AppImage, and installs the verified cached set only when that download fails. The `flatpak` and `swiftcrossui` sets are not cached, to spare the repository's
+  was saved reaches the AppImage, and installs the verified cached set only when that download fails. That fallback writes `apt: cache fallback used` to the run summary, so a release built from the cache can be found by searching for that line. The `flatpak` and `swiftcrossui` sets are not cached, to spare the repository's
   cache budget for rust-cache.
 - Still downloaded live: Rust toolchains (rustup), the Flatpak job's packages and Flathub runtime, the
   `swiftcrossui` set, Swift through swiftly or `compnerd/gha-setup-swift`, the Windows App Runtime

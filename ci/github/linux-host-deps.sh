@@ -35,12 +35,14 @@ install=(apt-get "${apt_opts[@]}" install -y --no-install-recommends)
 # keyring and they are installed without the network; a break in that chain fails the job. When
 # it is empty, the packages are downloaded as below and saved into it.
 # DW_APT_LIVE_FIRST=1 (Release): with a cache, one live attempt under short deadlines comes first,
-# and the cached files install only if it fails.
+# and the cached files install only if it fails. DW_APT_SAVE=0 (pull requests, which never save an
+# entry): a download is not copied into the cache directory.
 cache=${DW_APT_CACHE:-}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+apt_cache=${DW_APT_CACHE_TOOL:-$here/apt-cache.sh}
 from_cache() {
   local none status
-  "$here/apt-cache.sh" verify "$cache"
+  "$apt_cache" verify "$cache"
   # The files themselves, with no source configured, so apt can fetch nothing and needs no index
   # (it refuses local files with --no-download).
   none=$(mktemp -d)
@@ -114,16 +116,20 @@ for ((attempt = 1; attempt <= attempts; attempt++)); do
     break
   fi
   echo "apt download attempt $attempt failed" >&2
-  use_fallback_mirror || echo "could not switch apt mirrors" >&2
+  # A live-first attempt is the only one: the verified cache follows, not another mirror.
+  [[ -n "$cached" ]] || use_fallback_mirror || echo "could not switch apt mirrors" >&2
 done
 if [ -z "$downloaded" ]; then
   [[ -n "$cached" ]] || exit 1
   echo "::warning::linux-host-deps: the live download failed; installing the verified $pkgset set from the Actions cache"
   from_cache
+  # Greppable in the run summary, so a release whose WebKitGTK may predate a security update is found.
+  [[ -z "${GITHUB_STEP_SUMMARY:-}" ]] ||
+    echo "apt: cache fallback used: the live download failed, so the verified cached $pkgset set was installed" >> "$GITHUB_STEP_SUMMARY"
   exit 0
 fi
-if [[ -n "$cache" && -z "$cached" ]]; then
-  if "$here/apt-cache.sh" save "$cache"; then
+if [[ -n "$cache" && -z "$cached" && "${DW_APT_SAVE:-1}" == 1 ]]; then
+  if "$apt_cache" save "$cache"; then
     [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "saved=1" >> "$GITHUB_OUTPUT"
   else
     rm -rf "$cache"
