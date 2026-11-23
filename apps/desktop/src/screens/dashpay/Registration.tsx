@@ -134,13 +134,86 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
   );
 }
 
+const lost = () => document.activeElement === null || document.activeElement === document.body;
+
+/** While the wizard runs a call its button is disabled, and once the row shows its progress the
+ * button is gone, so focus falls to <body>; a passphrase sheet closing onto a disabled button
+ * cannot give it back either. A frame after a render (after the sheet gave focus back itself if it
+ * could), focus lost goes to `target` if it was lost on mount, when a call or a passphrase sheet
+ * ended, while a call runs, or because this screen's control that had it went away or was
+ * disabled. When the passphrase was cancelled meanwhile and nothing runs, focus parked there goes
+ * back to that control if it is enabled again. A sheet over it does not count; focus the user moved
+ * elsewhere, a click on text included, stays. */
+function useFocusFallback(wiz: RegistrationWizard, target: () => HTMLElement | null | undefined, off = false) {
+  useModel(wiz);
+  const { pending } = useModel(wiz.grants);
+  const busy = wiz.running !== null;
+  // This screen's control that had focus last, while it may still lose it to the screen.
+  const last = useRef<HTMLButtonElement | null>(null);
+  // Not parked, or the control focus was lost from and the grants' cancel count then.
+  const parked = useRef<{ from: HTMLButtonElement | null; epoch: number } | undefined>(undefined);
+  const seen = useRef<{ busy: boolean; pending: unknown } | null>(null);
+  const due = useRef(false);
+  useEffect(() => {
+    const foreign = (at: HTMLElement, t: HTMLElement | null | undefined) => {
+      const sheet = at.closest('[role="dialog"]');
+      return sheet !== null && !sheet.contains(t ?? null);
+    };
+    const into = (e: FocusEvent) => {
+      const at = e.target;
+      const t = target();
+      if (!(at instanceof HTMLElement) || at === t || foreign(at, t)) return;
+      parked.current = undefined;
+      const scope = t?.closest('[role="dialog"]') ?? t?.closest("section");
+      last.current = at instanceof HTMLButtonElement && scope?.contains(at) ? at : null;
+    };
+    // Judged after the event: Chromium blurs a control as it is removed, before it leaves the page.
+    const away = (e: FocusEvent) => {
+      const at = last.current;
+      if (at === null || e.target !== at) return;
+      queueMicrotask(() => {
+        if (last.current === at && at.isConnected && !at.matches(":disabled")) last.current = null;
+      });
+    };
+    document.addEventListener("focusin", into);
+    document.addEventListener("focusout", away);
+    return () => {
+      document.removeEventListener("focusin", into);
+      document.removeEventListener("focusout", away);
+    };
+  }, []);
+  useEffect(() => {
+    if (seen.current === null || seen.current.busy !== busy || seen.current.pending !== pending) due.current = true;
+    seen.current = { busy, pending };
+    if (off || pending) return;
+    const frame = requestAnimationFrame(() => {
+      const edge = due.current;
+      due.current = false;
+      const t = target();
+      const p = parked.current;
+      const from = p?.from;
+      if (!busy && p && p.epoch !== wiz.grants.epoch && from?.isConnected && !from.matches(":disabled") && document.activeElement === t) return from.focus();
+      const held = document.activeElement?.matches(":disabled") === true;
+      if (!lost() && !held) return;
+      const dropped = last.current !== null && (!last.current.isConnected || last.current.matches(":disabled"));
+      if (!(edge || busy || held || dropped)) return;
+      parked.current = p ?? { from: last.current, epoch: wiz.grants.epoch };
+      last.current = null;
+      t?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  });
+}
+
 /** The wedge (m4 §2.2, DEC-197): a start refused behind a registration whose funding is unknown.
  * A refusal of the start past it shows here, over the step. */
 function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: RegistrationQuote; inputs: StatusInputs }) {
   useT();
+  const text = useRef<HTMLParagraphElement>(null);
+  useFocusFallback(wiz, () => text.current?.closest<HTMLElement>('[role="dialog"]'));
   return (
     <Sheet title={REG_COPY.wedge.title} width="small" testId="registration-wedge" onClose={() => wiz.dismissWedge()}>
-      <p className="sheet-text">{REG_COPY.wedge.text}</p>
+      <p className="sheet-text" ref={text}>{REG_COPY.wedge.text}</p>
       <ErrorLine wiz={wiz} inputs={inputs} />
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" data-testid="registration-wedge-cancel" onClick={() => wiz.dismissWedge()}>
@@ -301,17 +374,11 @@ export function RegistrationScreen({
   // keyboard users at the title then, and on any screen that appears with focus lost. Focus still
   // somewhere else stays, and the welcome is announced instead, as it is when the title already
   // has focus and so does not take it anew.
+  useFocusFallback(wiz, () => title.current, welcome);
   useEffect(() => {
     const from = shown.current;
     shown.current = welcome;
-    const lost = () => document.activeElement === null || document.activeElement === document.body;
-    if (!welcome) {
-      setAnnounced("");
-      const take = () => lost() && title.current?.focus();
-      take();
-      const frame = requestAnimationFrame(take);
-      return () => cancelAnimationFrame(frame);
-    }
+    if (!welcome) return setAnnounced("");
     const active = document.activeElement;
     if (active !== title.current && (lost() || section.current?.contains(active))) title.current?.focus();
     else if (active !== title.current || from === false) setAnnounced(REG_COPY.announced(model.title, model.lines));
