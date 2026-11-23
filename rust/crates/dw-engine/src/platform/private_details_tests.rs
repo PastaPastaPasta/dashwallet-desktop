@@ -58,6 +58,9 @@ pub(crate) struct FakeInfos {
     pub(crate) down: AtomicBool,
     pub(crate) reads: AtomicU32,
     clock: AtomicU64,
+    /// A wallet the next read takes out of the manager (its handle stays)
+    /// before it answers.
+    detach_on_read: Mutex<Option<Arc<platform_wallet::PlatformWallet>>>,
 }
 
 impl FakeInfos {
@@ -122,7 +125,12 @@ impl InfoSource for FakeInfos {
         &self,
         owner: Identifier,
     ) -> BoxedFuture<'_, Result<Vec<InfoDocument>, PlatformError>> {
+        let detach = self.detach_on_read.lock().unwrap().take();
         Box::pin(async move {
+            if let Some(w) = detach {
+                let mut wm = w.wallet_manager().write().await;
+                wm.remove_wallet(&w.wallet_id()).unwrap();
+            }
             self.reads.fetch_add(1, Ordering::SeqCst);
             if self.down.load(Ordering::SeqCst) {
                 return Err(PlatformError::Unavailable);
@@ -1618,4 +1626,33 @@ fn t2_testnet_private_details() {
         started.elapsed()
     );
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #263: the settle of a wallet gone from the manager reads no identity and
+/// settles nothing; no panic.
+#[test]
+fn settling_the_details_of_a_wallet_gone_from_the_manager_does_not_panic() {
+    let f = published();
+    let (s, wallet) = (Arc::clone(&f.s), f.wallet);
+    let crypto = (f.engine).block_on(s.prompt_free_crypto(wallet)).unwrap();
+    let w = f.detach();
+    let settled = (f.engine).block_on(s.settle_contact_infos(&w, wallet, &crypto, None));
+    assert!(settled, "nothing to settle");
+}
+
+/// #263: an identity's settle whose wallet leaves the manager while
+/// Platform's details are read fails at its contacts read; no panic.
+#[test]
+fn settling_an_identity_whose_wallet_goes_during_the_read_does_not_panic() {
+    let f = published();
+    let (s, wallet) = (Arc::clone(&f.s), f.wallet);
+    let crypto = (f.engine).block_on(s.prompt_free_crypto(wallet)).unwrap();
+    let w = f.engine.block_on(s.wallet(&wallet)).unwrap();
+    *f.net.infos.detach_on_read.lock().unwrap() = Some(Arc::clone(&w));
+    let r = (f.engine).block_on(s.settle_identity(&w, (wallet, 0, id(ME)), &crypto));
+    assert!(matches!(r, Err(PlatformError::WalletNotFound)), "{r:?}");
+    assert!(
+        f.net.infos.detach_on_read.lock().unwrap().is_none(),
+        "gone during the read"
+    );
 }

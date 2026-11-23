@@ -386,7 +386,7 @@ pub(crate) async fn apply_lookahead(
         wider.fold(gap, u32::max)
     };
     let accounts: Vec<(AccountTypePreference, u32, u32)> = {
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(wallet).await?;
         let accounts = &state.core_wallet.accounts;
         (accounts.standard_bip44_accounts.iter())
             .map(|(i, a)| (AccountTypePreference::BIP44, *i, widest(a)))
@@ -1934,7 +1934,7 @@ impl NetworkSession {
             // Not a DashPay contact's address: the wallet does not own it
             // (MG-05 D19).
             let path = {
-                let state = wallet.state().await;
+                let state = crate::wallet_read::info_of(&wallet).await?;
                 crate::coins::own_address_info(&state.core_wallet, &parsed).map(|info| info.path)
             }
             .ok_or_else(|| EngineError::AddressNotMine(address.clone()))?;
