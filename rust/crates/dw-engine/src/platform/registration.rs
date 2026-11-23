@@ -547,7 +547,7 @@ async fn plan<L: RegistrationLib>(
             let id = Identifier::from_string(identity, Encoding::Base58)
                 .map_err(|_| invalid("identity is not a base58 identifier"))?;
             let identity = flow::b58(&id);
-            if !lib.identities().await.iter().any(|(_, i)| *i == identity) {
+            if !lib.identities().await?.iter().any(|(_, i)| *i == identity) {
                 return Err(PlatformError::Identity(IdentityError::NotFound).into());
             }
             let credits_held = lib.credit_balance(&identity).await?.unwrap_or(0);
@@ -725,7 +725,7 @@ async fn invitation_plan<L: RegistrationLib>(
     credits: u64,
     base: Plan,
 ) -> Result<Plan, RegistrationError> {
-    if !lib.identities().await.is_empty() {
+    if !lib.identities().await?.is_empty() {
         return Err(InvitationError::AlreadyHasIdentity.into());
     }
     let (status, identity) = lib.invitation(link_id).await?;
@@ -974,7 +974,7 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
         .collect::<Result<Vec<_>, _>>()?;
     // Checked here so a refused start keeps its grant, and again with the
     // insert, in the one job of the wallet's actor (DEC-173).
-    let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
+    let (locks, identities) = (lib.tracked_locks().await, lib.identities().await?);
     let leases = Arc::clone(&session.leases);
     let (l, i, p) = (locks.clone(), identities.clone(), past.clone());
     let (blocking, passed, found) = flow::ledger_op(session, wallet, move |db, flows| {
@@ -1340,7 +1340,7 @@ async fn clear_failure<L: RegistrationLib>(
     wallet: WalletId,
     lib: &L,
 ) -> Result<Result<(), String>, PlatformError> {
-    let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
+    let (locks, identities) = (lib.tracked_locks().await, lib.identities().await?);
     let (w, id, owner) = (wallet.to_string(), claim.draft(), claim.owner());
     let now = crate::events::unix_now();
     let leases = Arc::clone(&session.leases);
@@ -1470,28 +1470,32 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
     let (w, id, owner) = (wallet.to_string(), row.id, claim.owner());
     let leases = Arc::clone(&session.leases);
-    let decided = flow::ledger_op(session, wallet, move |db, flows| {
-        let ledger = Ledger::read(db, flows, &leases, wallet, locks, identities)?;
-        let Some(row) = ledger.rows().iter().find(|r| r.id == id).cloned() else {
-            return Ok(Err("unknown draft"));
-        };
-        // The claim taken holds no call: the run it took has none running.
-        if let Some(why) = ledger
-            .discard_refused(&row)
-            .or_else(|| flow::claim_discard_refused(&row, claim_step(&leases, id)))
-        {
-            return Ok(Err(why));
-        }
-        let outpoint = row.asset_lock_outpoint.as_deref();
-        if !db
-            .delete_registration(&w, id, owner, &row.phase, outpoint)
-            .map_err(flow::db_error)?
-        {
-            return Ok(Err("the registration changed meanwhile"));
-        }
-        flows.forget(key);
-        Ok(Ok(()))
-    })
+    let decided = async {
+        let identities = identities?;
+        flow::ledger_op(session, wallet, move |db, flows| {
+            let ledger = Ledger::read(db, flows, &leases, wallet, locks, identities)?;
+            let Some(row) = ledger.rows().iter().find(|r| r.id == id).cloned() else {
+                return Ok(Err("unknown draft"));
+            };
+            // The claim taken holds no call: the run it took has none running.
+            if let Some(why) = ledger
+                .discard_refused(&row)
+                .or_else(|| flow::claim_discard_refused(&row, claim_step(&leases, id)))
+            {
+                return Ok(Err(why));
+            }
+            let outpoint = row.asset_lock_outpoint.as_deref();
+            if !db
+                .delete_registration(&w, id, owner, &row.phase, outpoint)
+                .map_err(flow::db_error)?
+            {
+                return Ok(Err("the registration changed meanwhile"));
+            }
+            flows.forget(key);
+            Ok(Ok(()))
+        })
+        .await
+    }
     .await
     .map_err(RegistrationError::from)
     .and_then(|judged| judged.map_err(invalid));
@@ -1536,7 +1540,7 @@ async fn finish_under<L: RegistrationLib>(
     lease: &Lease,
 ) -> Result<FinishReport, RegistrationError> {
     let mut report = FinishReport::default();
-    let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
+    let (locks, identities) = (lib.tracked_locks().await, lib.identities().await?);
     let held = lib.funding_hold().is_some();
     let now = crate::events::unix_now();
     let leases = Arc::clone(&session.leases);
