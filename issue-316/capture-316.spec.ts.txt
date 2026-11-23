@@ -1,0 +1,143 @@
+import { mkdirSync } from "node:fs";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { fixtureUrl, fontsReady } from "./helpers";
+
+const OUT = process.env.CAP_OUT ?? `${import.meta.dirname}/../.e2e-cache/o5b-out`;
+test.describe.configure({ timeout: 120_000 });
+
+async function tabTo(page: Page, target: Locator, back = false) {
+  await target.waitFor();
+  for (let i = 0; i <= 80; i++) {
+    if (await target.evaluate((el) => el === document.activeElement)) return;
+    await page.keyboard.press(back ? "Shift+Tab" : "Tab");
+  }
+  throw new Error("never reached");
+}
+
+async function passphrase(page: Page) {
+  const sheet = page.getByTestId("grant-sheet");
+  await expect(sheet.locator("input[type=password]")).toBeFocused();
+  await page.keyboard.type("demo");
+  await page.keyboard.press("Enter");
+  await expect(sheet).toHaveCount(0);
+}
+
+const frames = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+
+async function shoot(page: Page, name: string) {
+  mkdirSync(OUT, { recursive: true });
+  await frames(page);
+  await page.waitForTimeout(400);
+  await page.mouse.move(1279, 819);
+  await page.screenshot({ path: `${OUT}/${name}.png` });
+  await page.evaluate(() => {
+    const a = document.activeElement;
+    const body = !a || a === document.body;
+    const r = body ? { left: 8, top: 8, width: innerWidth - 16, height: innerHeight - 16 } : a.getBoundingClientRect();
+    const id = body ? "<body>" : (a.getAttribute("data-testid") ?? `${a.tagName.toLowerCase()}${a.getAttribute("role") ? `[role=${a.getAttribute("role")}]` : ""} "${(a.textContent ?? "").trim().slice(0, 40)}"`);
+    const box = document.createElement("div");
+    box.id = "o5b-focus-mark";
+    Object.assign(box.style, { position: "fixed", left: `${r.left - 4}px`, top: `${r.top - 4}px`, width: `${r.width + 8}px`, height: `${r.height + 8}px`, outline: "3px dashed #ff00ff", zIndex: "2147483647", pointerEvents: "none", boxSizing: "border-box" });
+    const label = document.createElement("div");
+    label.textContent = `document.activeElement: ${id}`;
+    Object.assign(label.style, { position: "fixed", left: `${Math.max(4, r.left - 4)}px`, top: `${body ? 10 : Math.max(4, r.top - 30)}px`, background: "#ff00ff", color: "#fff", font: "600 13px/1.2 system-ui, sans-serif", padding: "4px 8px", borderRadius: "3px", zIndex: "2147483647", pointerEvents: "none" });
+    document.body.append(box, label);
+  });
+  await page.screenshot({ path: `${OUT}/${name}-focus.png` });
+  await page.evaluate(() => document.querySelectorAll("#o5b-focus-mark, #o5b-focus-mark + div").forEach((e) => e.remove()));
+}
+
+async function toJoin(page: Page) {
+  await tabTo(page, page.getByTestId("sidebar-joinDashPay"));
+  await page.keyboard.press("Enter");
+}
+
+const ACTIONS = [
+  { action: "continue", scenario: "dashpay-registration-paused", call: "resume_registration" },
+  { action: "finish", scenario: "dashpay-registration-needs-finish", call: "finish_asset_locks" },
+] as const;
+
+for (const theme of ["light", "dark"] as const) {
+  for (const a of ACTIONS)
+    test(`capture ${a.action} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(a.scenario, theme));
+      await page.getByTestId("toolbar").waitFor();
+      await fontsReady(page);
+      await toJoin(page);
+      const button = page.getByTestId(`registration-${a.action}`);
+      await tabTo(page, button);
+      await page.evaluate((c) => void window.__dwFixture!.hold(c), a.call);
+      await page.keyboard.press("Enter");
+      await passphrase(page);
+      await expect.poll(() => page.evaluate((c) => window.__dwFixture!.calls.includes(c), a.call)).toBe(true);
+      await shoot(page, `${a.action}-${theme}`);
+    });
+
+  test(`capture wedge-ok ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("tools-stuck-funding", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await fontsReady(page);
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.world.dashpay.status = { kind: "noIdentity", reason: null };
+      const draft = f.world.dashpay.registrations[0].draft;
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "registration", draft } });
+    });
+    await toJoin(page);
+    await tabTo(page, page.getByTestId("join-create"), true);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("registration-name-field")).toBeFocused();
+    await page.keyboard.type("alice-77");
+    await expect(page.getByTestId("registration-availability")).toHaveText("Username available");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("registration-fee")).toBeVisible();
+    await tabTo(page, page.getByTestId("registration-pay"));
+    await page.keyboard.press("Enter");
+    await passphrase(page);
+    const ok = page.getByTestId("registration-wedge-ok");
+    await tabTo(page, ok);
+    await page.evaluate(() => void window.__dwFixture!.hold("start_registration_past_unknown_funding"));
+    await page.keyboard.press("Enter");
+    await passphrase(page);
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("start_registration_past_unknown_funding"))).toBe(true);
+    await expect(page.getByTestId("registration-wedge")).toBeVisible();
+    await shoot(page, `wedge-ok-${theme}`);
+  });
+  test(`capture no-passphrase ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-registration-paused", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await fontsReady(page);
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.world.lock = { ...f.world.lock, state: "unencrypted", encrypted: false };
+    });
+    await toJoin(page);
+    await tabTo(page, page.getByTestId("registration-continue"));
+    await page.evaluate(() => void window.__dwFixture!.hold("resume_registration"));
+    await page.keyboard.press("Enter");
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("resume_registration"))).toBe(true);
+    await expect(page.getByTestId("registration-screen")).toHaveAttribute("data-kind", "progress");
+    await shoot(page, `no-passphrase-${theme}`);
+  });
+
+  test(`capture escape-slow-quote ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-registration-paused", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await fontsReady(page);
+    await toJoin(page);
+    const button = page.getByTestId("registration-continue");
+    await tabTo(page, button);
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("registration_quote"));
+    await page.keyboard.press("Enter");
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("registration_quote"))).toBe(true);
+    await frames(page);
+    await release.evaluate((r) => r());
+    const sheet = page.getByTestId("grant-sheet");
+    await expect(sheet.locator("input[type=password]")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
+    await expect(button).toBeEnabled();
+    await shoot(page, `escape-slow-quote-${theme}`);
+  });
+}
+
