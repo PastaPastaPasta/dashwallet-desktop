@@ -1255,9 +1255,10 @@ pub(crate) enum StagingCleanup {
 }
 
 /// Deletes the staging files of Dash Core exports that did not end
-/// (recorded by [`write_export`]). A record whose file is gone, or names
-/// no staging file of ours, is cleared silently; one whose file could not
-/// be deleted stays for the next start.
+/// (recorded by [`write_export`]). A record whose file is gone from a folder
+/// that is there, or names no staging file of ours, is cleared silently;
+/// one whose folder is not there (a volume not mounted) stays, silently,
+/// and one whose file could not be deleted stays, for the next start.
 pub(crate) fn clean_export_staging(appdb: &dw_appdb::AppDb) -> Vec<StagingCleanup> {
     let records = match appdb.settings_with_prefix(dw_appdb::GLOBAL_SCOPE, EXPORT_STAGING_PREFIX) {
         Ok(r) => r,
@@ -1288,7 +1289,9 @@ pub(crate) fn clean_export_staging(appdb: &dw_appdb::AppDb) -> Vec<StagingCleanu
                     out.push(StagingCleanup::Deleted(staging));
                     false
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    !staging.parent().is_some_and(Path::is_dir)
+                }
                 Err(e) => {
                     tracing::warn!(path = %staging.display(), error = %e, "could not delete an export's staging file");
                     out.push(StagingCleanup::NotDeleted(staging));
@@ -2210,6 +2213,29 @@ mod tests {
         );
         std::fs::remove_dir_all(&stuck).unwrap();
         assert_eq!(clean_export_staging(&db), []);
+        assert_eq!(staging_records(&db), 0);
+    }
+
+    #[test]
+    fn an_export_record_whose_folder_is_not_there_stays_until_it_is() {
+        let dir = dw_testutil::private_tempdir();
+        let db_dir = dw_testutil::private_tempdir();
+        let db = app_db(db_dir.path());
+        let volume = dir.path().join("stick");
+        let dest = volume.join("wallet.txt");
+        let staging = staging_path(&dest, EXPORT_STAGING_TAG).unwrap();
+        record_export_staging(&db, &staging, &dest).unwrap();
+
+        assert_eq!(clean_export_staging(&db), []);
+        assert_eq!(staging_records(&db), 1);
+
+        std::fs::create_dir(&volume).unwrap();
+        std::fs::write(&staging, b"keys").unwrap();
+        assert_eq!(
+            clean_export_staging(&db),
+            [StagingCleanup::Deleted(staging.clone())]
+        );
+        assert!(!staging.exists());
         assert_eq!(staging_records(&db), 0);
     }
 

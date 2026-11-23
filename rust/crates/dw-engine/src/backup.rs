@@ -1212,17 +1212,19 @@ impl NetworkSession {
             if clears {
                 let (p, d) = (path.clone(), dir.clone());
                 let durable = tokio::task::spawn_blocking(move || {
+                    #[cfg(unix)]
                     std::fs::File::open(&p)?.sync_all()?;
+                    #[cfg(not(unix))]
+                    let _ = p;
                     sync_dir(&d)
                 })
-                .await;
+                .await
+                .map_err(std::io::Error::other)
+                .and_then(|r| r);
                 match durable {
-                    Ok(Ok(())) => {
+                    Ok(()) => {
                         self.record_automatic_outcome(id, None).await;
                         self.emit_backups();
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!(wallet_id = %id, error = %e, "an automatic backup is not durable yet");
                     }
                     Err(e) => {
                         tracing::warn!(wallet_id = %id, error = %e, "an automatic backup is not durable yet");
