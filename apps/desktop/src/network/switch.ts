@@ -6,11 +6,10 @@
 import type { Backend } from "../api/backend";
 import { errorMessage, isAppError } from "../api/backend";
 import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
-import { FLOW_NAME } from "../api/lockReport";
 import { releaseListeners } from "../api/tauri";
 import { linksTaken } from "../app/shellBridge";
 import { prefsWritten } from "../settings/prefs";
-import { NetworkText } from "./choice";
+import { NetworkText, type BusyItem } from "./choice";
 
 /** Where a failed switch leaves its note for the page that boots after it. */
 const NOTE_KEY = "dw-network-switch-note";
@@ -42,17 +41,16 @@ export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNet
     const data = e.data;
     if (e.code === "app.network_busy" && data?.kind === "networkBusy") {
       if (data.draining) return { problem: NetworkText.busyDraining };
-      const flows = data.flows.map((f) => FLOW_NAME[f]);
-      const waits = [...(data.broadcast ? ["the payment"] : []), ...flows];
-      if (waits.length > 0 || data.mixing) return { problem: NetworkText.busy(waits, data.mixing, data.stalled && canLock ? flows : []) };
+      const waits: BusyItem[] = [...(data.broadcast ? (["payment"] as const) : []), ...data.flows];
+      if (waits.length > 0 || data.mixing) return { problem: NetworkText.busy(waits, data.mixing, data.stalled && canLock ? data.flows : []) };
     }
     if (data?.kind === "networkCloseRefused" && data.reason === "walletOpening") return { problem: NetworkText.walletOpening };
     if (data?.kind === "networkCloseRefused" && data.reason === "shieldedSpendUnresolved") return { problem: NetworkText.shieldedUnresolved };
     if (e.code === "app.network_switch_failed" && data?.kind === "networkSwitch")
       return { reboot: data.rolledBack ? NetworkText.backOn(target, from) : NetworkText.noneOpen(target, from) };
-    return { problem: `${NetworkText.notSwitched} ${errorMessage(e)} (${e.code})` };
+    return { problem: NetworkText.notSwitchedBecause(errorMessage(e), e.code) };
   }
-  return { problem: `${NetworkText.notSwitched} ${errorMessage(e)}` };
+  return { problem: NetworkText.notSwitchedBecause(errorMessage(e)) };
 }
 
 /** Boots the page again on the window's network: after the settings write in flight, with every

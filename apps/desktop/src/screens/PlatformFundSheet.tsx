@@ -23,12 +23,13 @@ function useFormats(network: NetworkInfo) {
 
 type Formats = ReturnType<typeof useFormats>;
 
-function Row({ label, value, testId, total }: { label: string; value: string; testId: string; total?: boolean }) {
+/** A confirm row; an amount or address `value` reads left to right in any language, a `text` one follows the page. */
+function Row({ label, value, testId, total, text }: { label: string; value: string; testId: string; total?: boolean; text?: boolean }) {
   return (
     <div className={`detail-row ${total ? "topup-total" : ""}`}>
       <dt className="detail-label">{label}</dt>
       <dd className="detail-value" data-testid={testId}>
-        {value}
+        {text ? value : <bdi dir="ltr">{value}</bdi>}
       </dd>
     </div>
   );
@@ -53,7 +54,7 @@ function ConfirmStep({ flow, walletId, fmt }: { flow: PlatformFundFlow; walletId
         </p>
       ) : (
         <dl className="detail-list topup-quote" data-testid="platform-fund-confirm">
-          <Row label={C.confirm.rows.from} value={C.confirm.rows.fromValue} testId="platform-fund-confirm-from" />
+          <Row label={C.confirm.rows.from} value={C.confirm.rows.fromValue} testId="platform-fund-confirm-from" text />
           <div className="detail-row">
             <dt className="detail-label">{C.confirm.rows.to}</dt>
             <dd className="detail-value">

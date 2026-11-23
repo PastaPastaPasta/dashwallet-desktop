@@ -48,6 +48,9 @@ pub(crate) struct PaymentLocks {
     /// Each pair's reserved address that no broadcast handed out (D21),
     /// and whether rule 5's re-check passed when it was kept (DP3-04 §4).
     reserved: Mutex<HashMap<(WalletId, Pair), (Address, bool)>>,
+    /// Each pair's address its last broadcast took off `reserved`, with its
+    /// flag there, for [`Self::give_back`].
+    taken: Mutex<HashMap<(WalletId, Pair), (Address, bool)>>,
     /// Each wallet's payout rows, for contact activity (P10–P12).
     payouts: Mutex<HashMap<WalletId, Vec<Payout>>>,
     /// Orders the lock changes (memory and row together): no clear's
@@ -69,6 +72,7 @@ impl PaymentLocks {
     pub(crate) fn forget(&self, id: &WalletId) {
         guard(&self.locks).remove(id);
         guard(&self.reserved).retain(|(w, _), _| w != id);
+        guard(&self.taken).retain(|(w, _), _| w != id);
         guard(&self.payouts).remove(id);
     }
 
@@ -84,6 +88,7 @@ impl PaymentLocks {
         guard(&self.inputs).clear();
         guard(&self.in_flight).clear();
         guard(&self.reserved).clear();
+        guard(&self.taken).clear();
         guard(&self.payouts).clear();
     }
 
@@ -110,6 +115,16 @@ impl PaymentLocks {
         guard(&self.reserved)
             .entry((id, pair))
             .or_insert((address, checked));
+    }
+
+    /// A broadcast that never went out gives `address` back to the pair,
+    /// checked if rule 5's re-check had passed for it when the broadcast
+    /// took it (H-09: a retry under rule 5 pays it again, rather than
+    /// walking the contact's addresses).
+    pub(crate) fn give_back(&self, id: WalletId, pair: Pair, address: Address) {
+        let taken = guard(&self.taken).remove(&(id, pair));
+        let checked = taken.is_some_and(|(a, checked)| a == address && checked);
+        self.keep(id, pair, address, checked);
     }
 
     /// Drops `address` as the pair's reserved one (DP3-04: it was taken
@@ -446,7 +461,9 @@ impl NetworkSession {
             if reserved.get(&key).is_none_or(|(a, _)| a != address) {
                 return Err(ClaimRefused::Spent);
             }
-            reserved.remove(&key);
+            if let Some(taken) = reserved.remove(&key) {
+                guard(&payments.taken).insert(key, taken);
+            }
         }
         in_flight.insert(key, txid.to_owned());
         Ok(InFlight {

@@ -1,6 +1,8 @@
 // "Most of this goes to fees" (DEC-1058 #8): the confirm sheets of the Platform and Shielded moves
 // say so when the fees are a tenth of the amount or more. Credits, as the quotes have them.
 
+import { t } from "../i18n";
+
 /** The share of the amount, in percent, from which the fees are worth a warning. */
 export const FEE_WARNING_PERCENT = 10n;
 
@@ -17,7 +19,7 @@ export function feeWarning(fees: bigint, amount: bigint): FeeWarning | null {
   return { percent: Number((fees * 100n) / amount), most: fees * 2n > amount };
 }
 
-export const feeWarningText = (w: FeeWarning): string => (w.most ? "Most of this goes to fees." : `Fees are ${w.percent}% of this amount.`);
+export const feeWarningText = (w: FeeWarning): string => (w.most ? t("app.feeWarning.most") : t("app.feeWarning.percent", { percent: w.percent }));
 
 /** Pay's confirm sheet: `fee` against what the payee receives, both in duffs. `received` is the sheet's
  * Amount: after a subtract-fee share, and never the change, which comes back to the wallet. */

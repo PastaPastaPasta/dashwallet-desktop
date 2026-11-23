@@ -5,6 +5,7 @@
 // This file holds the words.
 
 import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
+import type { FlowKindName } from "../api/generated/FlowKindName";
 import { t } from "../i18n";
 
 export const NETWORK_CHOICES: { choice: ChosenNetwork; readonly label: string }[] = (["mainnet", "testnet"] as const).map((choice) => ({
@@ -17,9 +18,16 @@ export const NETWORK_CHOICES: { choice: ChosenNetwork; readonly label: string }[
 export const networkName = (choice: string) =>
   choice === "mainnet" || choice === "testnet" || choice === "regtest" || choice === "devnet" ? t(`network.${choice}`) : choice[0]?.toUpperCase() + choice.slice(1);
 
-/** "a", "a and b", "a, b and c". */
-const listed = (items: string[]) =>
-  items.length < 2 ? items.join("") : t("common.listLast", { rest: items.slice(0, -1).join(t("common.listSeparator")), last: items.at(-1)! });
+/** "a", "a and b", "a, b and c": the catalog's own words in English and the pseudo-locales, the
+ * language's list pattern in a translation. */
+export const listed = (items: string[]) => {
+  const { tag, pseudo } = t.language;
+  if (tag !== "en" && !pseudo) return new Intl.ListFormat(tag, { type: "conjunction" }).format(items);
+  return items.length < 2 ? items.join("") : t("common.listLast", { rest: items.slice(0, -1).join(t("common.listSeparator")), last: items.at(-1)! });
+};
+
+/** What a refused switch waits for: the payment being sent, or a flow. */
+export type BusyItem = "payment" | FlowKindName;
 
 export const NetworkText = {
   get title() {
@@ -31,9 +39,9 @@ export const NetworkText = {
   get unavailable() {
     return t("network.unavailable");
   },
-  get notSwitched() {
-    return t("network.notSwitched");
-  },
+  /** A switch refused for a reason the renderer has no words of its own for: the engine's message. */
+  notSwitchedBecause: (message: string, code?: string) =>
+    code === undefined ? t("network.notSwitchedBecause", { message }) : t("network.notSwitchedCode", { message, code }),
   /** After a switch that went through but whose choice was not written: the next start opens the old network. */
   get notSaved() {
     return t("network.notSaved");
@@ -56,12 +64,14 @@ export const NetworkText = {
     return t("network.checking");
   },
   /** Refused: closing the network would cut what runs on it. `lockStops`: flows waiting for a
-   * proof or a grant, whose leases a lock ends. */
-  busy: (waits: string[], mixing: boolean, lockStops: string[] = []) => {
-    const lower = (items: string[]) => listed(items.map((w) => w[0].toLocaleLowerCase(t.language.tag) + w.slice(1)));
-    const wait = waits.length > 0 ? t("network.waitFor", { flows: lower(waits) }) : "";
-    const text = !wait ? t("network.stopMixing") : mixing ? t("network.waitOrStopMixing", { wait }) : t("network.waitBeforeSwitching", { wait });
-    return lockStops.length > 0 ? `${text} ${t("network.lockStops", { flows: lower(lockStops) })}` : text;
+   * proof or a grant, whose leases a lock ends; each of `waits`. */
+  busy: (waits: BusyItem[], mixing: boolean, lockStops: FlowKindName[] = []) => {
+    const named = (items: BusyItem[]) => listed(items.map((w) => t(`network.busyItem.${w}`)));
+    if (waits.length === 0) return t("network.stopMixing");
+    const flows = named(waits);
+    if (lockStops.length === 0) return mixing ? t("network.waitOrStopMixing", { flows }) : t("network.waitBeforeSwitching", { flows });
+    const stops = named(lockStops);
+    return mixing ? t("network.waitOrStopMixingLockStops", { flows, stops }) : t("network.waitBeforeSwitchingLockStops", { flows, stops });
   },
   /** Refused: the network's work in progress did not finish in time. */
   get busyDraining() {

@@ -5,7 +5,7 @@
 
 import type { Backend } from "../api/backend";
 import { hasCode, isAppError } from "../api/backend";
-import { RESCAN_INTERRUPTED } from "../app/rescan";
+import { RESCAN_TEXT } from "../app/rescan";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { CostTable } from "../api/generated/CostTable";
 import type { GrantRequest } from "../api/generated/GrantRequest";
@@ -13,8 +13,9 @@ import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { TopUpOutcome } from "../api/generated/TopUpOutcome";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
-import { PROFILE_COPY } from "./profile";
-import { COPY } from "./status";
+import { messageTable, t } from "../i18n";
+import { creditCount } from "./profile";
+import { COPY, withTable } from "./status";
 
 export type TopUpApi = Pick<
   Backend,
@@ -39,35 +40,24 @@ export const topUpCredits = (duffs: number, costs: Pick<CostTable, "creditsPerDu
  * unlocks; nothing is spent (m4 §2.8). */
 export const FINISH_GRANT: GrantRequest = { maxDuffs: 1, maxCredits: "0" };
 
-export const TOPUP_COPY = {
-  title: "Top up credits",
-  amount: {
-    intro: "Credits pay for contact requests and profile changes on Dash Platform.",
-    other: "Other amount",
-    field: "Amount",
-    below: (min: string) => `The smallest top-up is ${min}.`,
-    invalid: "Enter an amount.",
-    next: "Continue",
-    cancel: "Cancel",
+const top = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(`dashpay.topUp.${prefix}`, keys);
+
+export const TOPUP_COPY = withTable(messageTable("dashpay.topUp", ["title", "done", "close"]), {
+  amount: withTable(top("amount", ["intro", "field", "invalid", "first", "next", "cancel"]), {
+    get other() {
+      return t("dashpay.topUp.amount.custom");
+    },
+    fieldUnit: (unit: string) => t("dashpay.topUp.amount.fieldUnit", { unit }),
+    below: (min: string) => t("dashpay.topUp.amount.below", { min }),
+  }),
+  confirm: withTable(top("confirm", ["message", "amount", "fee", "total", "quoting", "back", "pay"]), {
+    adds: (credits: string, estimate: string) => t("dashpay.topUp.confirm.adds", { credits, estimate }),
+  }),
+  running: top("running", ["title", "text"]),
+  get repair() {
+    return COPY.repair.action;
   },
-  confirm: {
-    message: "You have chosen to top up your identity. The following amount will be deducted from your balance.",
-    amount: "Amount",
-    fee: "Top-up fee",
-    total: "Total",
-    adds: (credits: string, estimate: string) => `Adds about ${credits} credits: ${estimate}`,
-    quoting: "Working out the fee…",
-    back: "Back",
-    pay: "Confirm & pay",
-  },
-  running: {
-    title: "Adding credits…",
-    text: "The network confirms the payment first. This can take a minute. You can close this: My Profile shows the top-up.",
-  },
-  done: "Done",
-  close: "Close",
-  repair: COPY.repair.action,
-} as const;
+});
 
 export type TopUpStep = "amount" | "confirm" | "running" | "done" | "refused";
 
@@ -79,22 +69,24 @@ export function outcomeText(o: TopUpOutcome, balance: (credits: string) => strin
   switch (o.state.kind) {
     case "applied":
     case "alreadyApplied": {
-      const added = o.state.kind === "applied" && o.state.creditsAdded !== null ? `+${BigInt(o.state.creditsAdded).toLocaleString("en-US")} credits. ` : "";
-      const now = o.state.balance === null ? "" : `Your balance is ${balance(o.state.balance)}.`;
-      return { title: "Credits added", text: `${added}${now}`.trim() };
+      const added = o.state.kind === "applied" && o.state.creditsAdded !== null ? creditCount(o.state.creditsAdded) : null;
+      const now = o.state.balance === null ? null : balance(o.state.balance);
+      const text =
+        added === null
+          ? now === null
+            ? ""
+            : t("dashpay.topUp.outcome.balance", { balance: now })
+          : now === null
+            ? t("dashpay.topUp.outcome.plus", { credits: added })
+            : t("dashpay.topUp.outcome.plusBalance", { credits: added, balance: now });
+      return { title: t("dashpay.topUp.outcome.added"), text };
     }
     case "proofWaiting":
-      return {
-        title: "Payment sent",
-        text: "The network has not confirmed the payment yet. Your credits are added once it does; My Profile shows the top-up until then.",
-      };
+      return { title: t("dashpay.topUp.outcome.sent.title"), text: t("dashpay.topUp.outcome.sent.text") };
     case "notApplied":
-      return { title: "The credits were not added yet", text: "Your payment is safe. Finish the top-up from My Profile." };
+      return { title: t("dashpay.topUp.outcome.notApplied.title"), text: t("dashpay.topUp.outcome.notApplied.text") };
     case "consumptionUnknown":
-      return {
-        title: "Check your credit balance",
-        text: "The network says this payment was already used. If your credits went up, choose 'Credits arrived' in My Profile; otherwise Finish tries again.",
-      };
+      return { title: t("dashpay.topUp.outcome.unknown.title"), text: t("dashpay.topUp.outcome.unknown.text") };
   }
 }
 
@@ -103,42 +95,42 @@ export function topUpErrorText(e: unknown, amount: (duffs: number) => string, di
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "credits.funding_insufficient": {
-      if (e.data?.kind !== "duffs" || e.data.needed === null) return "Not enough Dash.";
-      const needed = `Not enough Dash: ${amount(e.data.needed)} needed`;
-      return discreet ? `${needed}.` : `${needed}, ${amount(e.data.available)} available.`;
+      if (e.data?.kind !== "duffs" || e.data.needed === null) return t("dashpay.topUp.error.short");
+      const needed = amount(e.data.needed);
+      return discreet ? t("dashpay.topUp.error.needed", { needed }) : t("dashpay.topUp.error.neededAvailable", { needed, available: amount(e.data.available) });
     }
     case "credits.below_minimum":
-      return e.data?.kind === "limit" ? `The smallest top-up is ${amount(e.data.duffs)}.` : "The amount is below the smallest top-up.";
+      return e.data?.kind === "limit" ? t("dashpay.topUp.error.belowMin", { min: amount(e.data.duffs) }) : t("dashpay.topUp.error.below");
     case "credits.top_up_pending":
-      return PROFILE_COPY.credits.pendingFirst;
+      return t("dashpay.credits.pendingFirst");
     case "credits.coins_locked":
-      return "The coins to pay with are held by another payment.";
+      return t("dashpay.topUp.error.coinsLocked");
     case "platform.broadcast_unknown":
-      return `${COPY.repair.unknown}. Open Tools ▸ Repair to settle it; you can top up again once it has.`;
+      return t("dashpay.topUp.error.maybeSent");
     case "platform.will_be_sent":
-      return "The payment is still being sent. Try again in a minute.";
+      return t("dashpay.topUp.error.willBeSent");
     case "platform.context_unavailable":
-      return "Waiting for the network to sync and verify this identity. Try again shortly.";
+      return t("dashpay.topUp.error.context");
     case "rescan_interrupted":
-      return RESCAN_INTERRUPTED;
+      return RESCAN_TEXT.interrupted;
     case "platform.trust_mismatch":
-      return "This identity's data could not be verified against the network. Nothing was paid.";
+      return t("dashpay.topUp.error.trust");
     case "platform.unavailable":
     case "platform.timeout":
-      return "Dash Platform did not answer. Try again.";
+      return t("dashpay.topUp.error.unavailable");
     case "platform.signer_unavailable":
-      return "Unlock the wallet fully and try again.";
+      return t("dashpay.topUp.error.signer");
     case "platform.grant_exceeded":
-      return "The cost went above what you approved.";
+      return t("dashpay.topUp.error.grantExceeded");
     case "invalid_argument": {
       // The engine's detail, when there is one, is the advice (the 50-coin bound of a payment).
       const detail = e.message.replace(/^invalid argument:\s*/, "").trim();
-      if (detail === "" || detail === e.code) return `It stopped with ${e.code}.`;
+      if (detail === "" || detail === e.code) return t("dashpay.topUp.error.stoppedWith", { code: e.code });
       const text = detail[0].toUpperCase() + detail.slice(1);
       return /[.!?]$/.test(text) ? text : `${text}.`;
     }
     default:
-      return `It stopped with ${e.code}.`;
+      return t("dashpay.topUp.error.stoppedWith", { code: e.code });
   }
 }
 

@@ -203,13 +203,17 @@ pub(super) fn owner_contacts(
         (dp.pending_contact_crypto.iter())
             .any(|p| p.contact_id == *contact && kinds.contains(&p.op.kind()))
     };
-    let entry = |contact: Identifier, relation: Relation, requests: &[&ContactRequest]| {
+    let entry = |contact: Identifier,
+                 relation: Relation,
+                 sent: &[&ContactRequest],
+                 received: &[&ContactRequest]| {
         let cached = (dp.contact_profiles.get(&contact)).and_then(|e| e.profile.as_ref());
         let profile = cached.map(|p| Held::Profile {
             id: contact,
             shown: ShownProfile::of(p),
         });
-        let requests = requests.iter().map(|r| Held::ContactRequest((*r).clone()));
+        let requests = (sent.iter().map(|r| Held::SentRequest((*r).clone())))
+            .chain(received.iter().map(|r| Held::ContactRequest((*r).clone())));
         Entry {
             contact,
             relation,
@@ -233,7 +237,7 @@ pub(super) fn owner_contacts(
     for (recipient, request) in dp.sent_contact_requests() {
         let e = Entry {
             outgoing: Some(request.into()),
-            ..entry(*recipient, Relation::PendingOutgoing, &[request])
+            ..entry(*recipient, Relation::PendingOutgoing, &[request], &[])
         };
         entries.insert(*recipient, e);
     }
@@ -241,12 +245,12 @@ pub(super) fn owner_contacts(
         let e = Entry {
             incoming: Some(request.into()),
             setup_pending: queued(sender, &[PendingContactCryptoKind::AutoAccept]),
-            ..entry(*sender, Relation::PendingIncoming, &[request])
+            ..entry(*sender, Relation::PendingIncoming, &[], &[request])
         };
         entries.insert(*sender, e);
     }
     for sender in dp.ignored_senders() {
-        entries.insert(*sender, entry(*sender, Relation::Ignored, &[]));
+        entries.insert(*sender, entry(*sender, Relation::Ignored, &[], &[]));
     }
     for (contact, c) in dp.established_contacts() {
         // As the library sees it: it builds the paying account when it is
@@ -271,7 +275,8 @@ pub(super) fn owner_contacts(
             ..entry(
                 *contact,
                 Relation::Contact,
-                &[&c.outgoing_request, &c.incoming_request],
+                &[&c.outgoing_request],
+                &[&c.incoming_request],
             )
         };
         entries.insert(*contact, e);

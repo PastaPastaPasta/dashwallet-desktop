@@ -11,9 +11,11 @@ import type { DashPayProfile } from "../api/generated/DashPayProfile";
 import type { DashPayProfileLimits } from "../api/generated/DashPayProfileLimits";
 import type { ProfileEditArgs } from "../api/generated/ProfileEditArgs";
 import { base64ToBytes, bytesToBase64 } from "../app/files";
+import { messageTable, t } from "../i18n";
 import { Model } from "../onboarding/model";
 import { GrantModel } from "../tools/grant";
 import { cropRect, initialView, type CropView } from "./crop";
+import { withTable } from "./status";
 
 export type EditProfileApi = Pick<
   Backend,
@@ -37,87 +39,50 @@ export const MAX_FILE_BYTES = 5 << 20;
 /** DP4-02's decoder refuses a picture wider or higher than this (`avatar_image.rs`). */
 export const MAX_PICTURE_SIDE = 4096;
 
-export const EDIT_COPY = {
-  title: "Edit Profile",
-  displayName: "Display Name",
-  aboutMe: "About me",
-  count: (n: number, max: number) => `${n}/${max} characters`,
-  tooLong: (max: number) => `At most ${max} characters.`,
-  save: "Save Changes",
-  saving: "Saving…",
-  uploading: "Uploading your picture to the network",
-  cancel: "Cancel",
-  saved: "Your profile was saved.",
-  empty: "A profile needs a display name, an about text or a picture.",
-  picture: {
-    change: "Change picture",
-    chooseFile: "Choose File…",
-    url: "Public URL",
-    gravatar: "Gravatar",
-    remove: "Remove picture",
-    undo: "Undo",
-    isNew: "New picture",
-    isRemoved: "Picture removed",
-    drop: "Drop or paste a picture here",
-    noUpload: "Pictures from this computer need an upload service this version does not have yet. Use a public URL or Gravatar.",
-    off: "Profile pictures are off. Turn on “Load contact pictures” in Settings to choose a new picture.",
-    openSettings: "Open Settings",
-  },
-  url: {
-    title: "Public URL",
-    text: "You can specify any URL which is publicly available on the internet so users can see it on the Dash network.",
-    field: "Paste your image URL",
-    fetch: "Fetch Image",
-    fetching: "Fetching Image",
-  },
-  gravatar: {
-    title: "Gravatar",
-    field: "Enter your Gravatar Email ID",
-    placeholder: "sample@email.com",
-    disclaimer:
-      "Your Email is not stored in the DashPay wallet nor on any servers. It is used once to get your Gravatar account details and then discarded.",
-    fetch: "Fetch Gravatar",
-    fetching: "Fetching your Gravatar",
-  },
-  crop: {
-    title: "Move and zoom your photo to find the perfect fit",
-    zoom: "Zoom",
-    use: "Use Photo",
-    preparing: "Preparing your picture…",
-    frame: "Picture crop. Drag, or use the arrow keys to move it and + or − to zoom.",
-  },
-  back: "Back",
-  discard: {
-    title: "Discard your changes?",
-    text: "You made changes to your profile that are not saved.",
-    keep: "Keep Editing",
-    confirm: "Discard",
-  },
-  errors: {
-    tooLarge: "This picture is too large. Choose one under 5 MB.",
-    tooManyPixels: `This picture is too large. Choose one at most ${MAX_PICTURE_SIDE} pixels wide and high.`,
-    unsupported: "Use a PNG, JPEG or GIF picture.",
-    unreadable: "This picture could not be read.",
-    urlFailed: "Unable to fetch image. Please enter a valid image URL.",
-    urlInvalid: "Enter the picture's https:// address.",
-    gravatarFailed: "Unable to fetch your Gravatar. Please enter a valid Gravatar email ID.",
-    emailInvalid: "Enter a valid email address.",
-    uploadFailed: "Unable to upload your picture. Please try again.",
-    uploadUnconfigured: "Uploading pictures is not available in this version.",
-    candidateGone: "The picture you chose is no longer ready. Choose it again.",
-    conflict: "Your profile was changed on another device since you opened it. Save again to replace it with your changes, or cancel to keep the new one.",
-    conflictMatches: "Your profile was changed on another device since you opened it, and it now matches your changes.",
-    unsupportedContract: "This version cannot edit profiles on the network's DashPay contract. Update Dash Wallet.",
-    credits: "Not enough credits. Top up your credits and try again.",
-    unavailable: "Could not reach Dash Platform. Try again.",
-    unlock: "Unlock the wallet and try again.",
-    context: "Waiting for the network to sync and verify this identity. Try again shortly.",
-    trust: "This identity's data could not be verified against the network. Nothing was changed.",
-    grant: "The cost went above what you approved.",
-    dialog: "The file dialog could not be shown.",
-    fileRead: "The file could not be read.",
-  },
-} as const;
+const ed = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(prefix ? `dashpay.edit.${prefix}` : "dashpay.edit", keys);
+
+export const EDIT_COPY = withTable(ed("", ["title", "displayName", "aboutMe", "save", "saving", "uploading", "cancel", "saved", "empty", "back"]), {
+  /** `n` of `max` characters typed; the two are one value, so they keep their order. */
+  count: (n: number, max: number) => t("dashpay.edit.count", { count: `${n}/${max}` }),
+  countOver: (n: number, max: number) => t("dashpay.edit.countOver", { count: `${n}/${max}`, max: String(max) }),
+  picture: ed("picture", ["change", "chooseFile", "url", "gravatar", "remove", "undo", "isNew", "isRemoved", "drop", "noUpload", "off", "openSettings"]),
+  url: ed("url", ["title", "text", "field", "fetch", "fetching"]),
+  gravatar: ed("gravatar", ["title", "field", "placeholder", "disclaimer", "fetch", "fetching"]),
+  crop: ed("crop", ["title", "zoom", "use", "preparing", "frame"]),
+  discard: ed("discard", ["title", "text", "keep", "confirm"]),
+  errors: withTable(
+    ed("errors", [
+      "tooLarge",
+      "unsupported",
+      "unreadable",
+      "urlFailed",
+      "urlInvalid",
+      "gravatarFailed",
+      "emailInvalid",
+      "uploadFailed",
+      "uploadUnconfigured",
+      "candidateGone",
+      "conflict",
+      "conflictMatches",
+      "unsupportedContract",
+      "credits",
+      "unavailable",
+      "unlock",
+      "context",
+      "trust",
+      "grant",
+      "dialog",
+      "fileRead",
+    ]),
+    {
+      get tooManyPixels() {
+        return t("dashpay.edit.errors.tooManyPixels", { max: String(MAX_PICTURE_SIDE) });
+      },
+      displayNameTooLong: (max: number) => t("dashpay.edit.errors.displayNameTooLong", { max: String(max) }),
+      aboutTooLong: (max: number) => t("dashpay.edit.errors.aboutTooLong", { max: String(max) }),
+    },
+  ),
+});
 
 /** What the save does to the picture. */
 export type PictureSource = "file" | "url" | "gravatar";
@@ -151,9 +116,9 @@ export function sniffImage(bytes: Uint8Array): "image/png" | "image/jpeg" | "ima
 
 /** D9: a fetch's and an argument's refusal, by where the picture came from. */
 const BY_SOURCE = {
-  file: { fetch: EDIT_COPY.errors.unreadable, invalid: EDIT_COPY.errors.unreadable },
-  url: { fetch: EDIT_COPY.errors.urlFailed, invalid: EDIT_COPY.errors.urlInvalid },
-  gravatar: { fetch: EDIT_COPY.errors.gravatarFailed, invalid: EDIT_COPY.errors.emailInvalid },
+  file: { fetch: "unreadable", invalid: "unreadable" },
+  url: { fetch: "urlFailed", invalid: "urlInvalid" },
+  gravatar: { fetch: "gravatarFailed", invalid: "emailInvalid" },
 } as const;
 
 /** D9: why a picture could not be prepared, by where it came from. */
@@ -163,8 +128,8 @@ export function prepareErrorText(e: unknown, source: PictureSource): string {
   if (hasCode(e, "avatar.unsupported")) return E.unsupported;
   if (hasCode(e, "app.file_dialog")) return E.dialog;
   if (hasCode(e, "app.file_read")) return E.fileRead;
-  if (hasCode(e, "avatar.fetch_failed")) return BY_SOURCE[source].fetch;
-  if (hasCode(e, "invalid_argument")) return BY_SOURCE[source].invalid;
+  if (hasCode(e, "avatar.fetch_failed")) return E[BY_SOURCE[source].fetch];
+  if (hasCode(e, "invalid_argument")) return E[BY_SOURCE[source].invalid];
   return errorMessage(e);
 }
 
@@ -179,7 +144,7 @@ const isCandidateGoneRefusal = (e: unknown): boolean => hasCode(e, "invalid_argu
 export function saveErrorText(e: unknown): string {
   const E = EDIT_COPY.errors;
   if (hasCode(e, "profile.too_long") && e.data?.kind === "profileTooLong")
-    return e.data.field === "displayName" ? `The display name can be at most ${e.data.max} characters.` : `About me can be at most ${e.data.max} characters.`;
+    return e.data.field === "displayName" ? E.displayNameTooLong(e.data.max) : E.aboutTooLong(e.data.max);
   if (hasCode(e, "profile.empty")) return EDIT_COPY.empty;
   if (hasCode(e, "profile.conflict")) return E.conflict;
   if (hasCode(e, "profile.unsupported_contract")) return E.unsupportedContract;

@@ -12,9 +12,10 @@ import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import { SHIELDED_CODES } from "../api/pending";
-import { RESCAN_INTERRUPTED } from "../app/rescan";
+import { RESCAN_TEXT } from "../app/rescan";
 import { COPY as DASHPAY_COPY } from "../dashpay/status";
 import { platformOp } from "../dashpay/topup";
+import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
 import { SHIELDED_SYNCING_TEXT, syncingRefusal } from "./syncing";
@@ -41,84 +42,240 @@ export type ShieldedResult = { kind: "shield"; outcome: ShieldOutcome } | { kind
 
 export const SHIELDED_COPY = {
   card: {
-    inactive: "Shielded is not active on this network yet.",
-    finish: "Finish",
+    get inactive() {
+      return t("transfer.shielded.card.inactive");
+    },
+    get finish() {
+      return t("transfer.shielded.card.finish");
+    },
     /** A lock that may already be applied: the same outpoint is read again, never a new lock. */
-    checkAgain: "Check again",
-    why: { empty: "Nothing in Shielded to send yet.", busy: "Another Shielded move is running." },
-    unfinished: (amount: string) => `${amount} was locked to add to Shielded and is not applied yet.`,
+    get checkAgain() {
+      return t("transfer.shielded.card.checkAgain");
+    },
+    why: {
+      get empty() {
+        return t("transfer.shielded.card.why.empty");
+      },
+      get busy() {
+        return t("transfer.shielded.card.why.busy");
+      },
+    },
+    unfinished: (amount: string) => t("transfer.shielded.card.unfinished", { amount }),
   },
-  titles: { add: "Add to Shielded", send: "Send from Shielded", receive: "Receive in Shielded" },
+  titles: {
+    get add() {
+      return t("transfer.shielded.titles.add");
+    },
+    get send() {
+      return t("transfer.shielded.titles.send");
+    },
+    get receive() {
+      return t("transfer.shielded.titles.receive");
+    },
+  },
   form: {
-    why: { amount: "Enter an amount first.", to: "Enter a Shielded address first.", memo: "The note is too long." },
-    add: "Move Dash from your wallet into Shielded. It is locked first, then Dash Platform adds it to your private balance.",
-    send: "Send privately to another Shielded address.",
-    out: "Move Shielded funds to your Dash wallet's next receive address.",
-    amount: "Amount",
-    to: "To (a Shielded address)",
-    memo: "Memo (optional)",
-    memoHint: "Up to 36 bytes, visible to the recipient only.",
-    available: (amount: string) => `Available: ${amount}`,
-    invalidAmount: "Enter an amount.",
-    next: "Continue",
-    cancel: "Cancel",
+    why: {
+      get amount() {
+        return t("transfer.shielded.form.why.amount");
+      },
+      get to() {
+        return t("transfer.shielded.form.why.to");
+      },
+      get memo() {
+        return t("transfer.shielded.form.why.memo");
+      },
+    },
+    get add() {
+      return t("transfer.shielded.form.add");
+    },
+    get send() {
+      return t("transfer.shielded.form.send");
+    },
+    get out() {
+      return t("transfer.shielded.form.out");
+    },
+    get to() {
+      return t("transfer.shielded.form.to");
+    },
+    get memo() {
+      return t("transfer.shielded.form.memo");
+    },
+    get memoHint() {
+      return t("transfer.shielded.form.memoHint");
+    },
+    available: (amount: string) => t("transfer.shielded.form.available", { amount }),
+    get invalidAmount() {
+      return t("transfer.shielded.form.invalidAmount");
+    },
+    get next() {
+      return t("transfer.shielded.form.next");
+    },
+    get cancel() {
+      return t("common.cancel");
+    },
   },
   confirm: {
-    quoting: "Working out the fee…",
-    quoteFailed: "The fee could not be worked out.",
-    amount: "Amount",
-    fee: "Network fee",
-    coreFee: "Core network fee",
-    poolFee: "Platform pool fee",
-    poolFeeFixed: (amount: string) => `The Platform pool fee is fixed at about ${amount}, whatever you add.`,
-    total: "Total",
-    totalFromWallet: "Total from your wallet",
-    lock: "Amount to add",
-    gain: "Added to Shielded",
-    receive: "You receive about",
-    to: "To",
-    slow: "Making the private proof takes up to a minute. Keep Dash Wallet open.",
-    slowFirst: "The first Shielded payment after starting takes longer: the prover is still getting ready.",
-    back: "Back",
-    go: "Confirm",
+    get quoting() {
+      return t("transfer.shielded.confirm.quoting");
+    },
+    get quoteFailed() {
+      return t("transfer.shielded.confirm.quoteFailed");
+    },
+    get amount() {
+      return t("transfer.shielded.confirm.amount");
+    },
+    get fee() {
+      return t("transfer.shielded.confirm.fee");
+    },
+    get coreFee() {
+      return t("transfer.shielded.confirm.coreFee");
+    },
+    get poolFee() {
+      return t("transfer.shielded.confirm.poolFee");
+    },
+    poolFeeFixed: (amount: string) => t("transfer.shielded.confirm.poolFeeFixed", { amount }),
+    get total() {
+      return t("transfer.shielded.confirm.total");
+    },
+    get totalFromWallet() {
+      return t("transfer.shielded.confirm.totalFromWallet");
+    },
+    get lock() {
+      return t("transfer.shielded.confirm.lock");
+    },
+    get gain() {
+      return t("transfer.shielded.confirm.gain");
+    },
+    get receive() {
+      return t("transfer.shielded.confirm.receive");
+    },
+    get to() {
+      return t("transfer.shielded.confirm.to");
+    },
+    get slow() {
+      return t("transfer.shielded.confirm.slow");
+    },
+    get slowFirst() {
+      return t("transfer.shielded.confirm.slowFirst");
+    },
+    get back() {
+      return t("transfer.shielded.confirm.back");
+    },
+    get go() {
+      return t("transfer.shielded.confirm.go");
+    },
   },
   running: {
-    title: "Working…",
-    prove: "Proving the transaction. This takes up to a minute; keep Dash Wallet open. You can close this: Activity shows it.",
-    lock: "Locking the Dash and waiting for the network. You can close this: Activity shows it.",
+    get title() {
+      return t("transfer.shielded.running.title");
+    },
+    get prove() {
+      return t("transfer.shielded.running.prove");
+    },
+    get lock() {
+      return t("transfer.shielded.running.lock");
+    },
   },
   done: {
-    add: { title: "Added to Shielded", text: (balance: string) => `Your Shielded balance is now ${balance}.` },
-    waiting: { title: "Locked, not applied yet", text: "Your Dash is locked and waiting for the network's confirmation. Finish it from Unfinished transfers on Home: nothing is lost." },
-    checking: { title: "Checking", text: "This amount may already be in your shielded balance; we can't confirm it yet." },
-    notApplied: { title: "Locked, not applied", text: (why: string) => `Your Dash is locked but Dash Platform did not add it yet (${why}). Finish it from Unfinished transfers on Home: nothing is lost.` },
-    send: { title: "Sent", text: (amount: string) => `${amount} was sent privately.` },
+    add: {
+      get title() {
+        return t("transfer.shielded.done.add.title");
+      },
+      text: (balance: string) => t("transfer.shielded.done.add.text", { balance }),
+    },
+    waiting: {
+      get title() {
+        return t("transfer.shielded.done.waiting.title");
+      },
+      get text() {
+        return t("transfer.shielded.done.waiting.text");
+      },
+    },
+    checking: {
+      get title() {
+        return t("transfer.shielded.done.checking.title");
+      },
+      get text() {
+        return t("transfer.shielded.done.checking.text");
+      },
+    },
+    notApplied: {
+      get title() {
+        return t("transfer.shielded.done.notApplied.title");
+      },
+      text: (why: string) => t("transfer.shielded.done.notApplied.text", { why }),
+    },
+    send: {
+      get title() {
+        return t("transfer.shielded.done.send.title");
+      },
+      text: (amount: string) => t("transfer.shielded.done.send.text", { amount }),
+    },
     /** The spend went out and its result is not confirmed: pending, never failed, never offered for a resend. */
-    unconfirmed: { title: "Not confirmed yet", text: "Your payment went out and Dash Platform has not confirmed it yet. Activity shows it as pending until it does. Do not send it again: the wallet checks it itself." },
-    out: { title: "Moved", text: (amount: string) => `About ${amount} is on its way to your Dash wallet. It arrives when Dash Platform's withdrawal is mined.` },
+    unconfirmed: {
+      get title() {
+        return t("transfer.shielded.done.unconfirmed.title");
+      },
+      get text() {
+        return t("transfer.shielded.done.unconfirmed.text");
+      },
+    },
+    out: {
+      get title() {
+        return t("transfer.shielded.done.out.title");
+      },
+      text: (amount: string) => t("transfer.shielded.done.out.text", { amount }),
+    },
   },
   /** The confirmation a send or move from a wallet with an unrecorded spend needs (DEC-1057). */
   unrecorded: {
-    title: "An earlier payment may still go through",
-    text: "A shielded payment from before the restart may still go through, and the wallet no longer has its record. If you go on, you may pay twice.",
-    go: { send: "Send anyway", out: "Move anyway" },
-    back: "Go back",
+    get title() {
+      return t("transfer.shielded.unrecorded.title");
+    },
+    get text() {
+      return t("transfer.shielded.unrecorded.text");
+    },
+    go: {
+      get send() {
+        return t("transfer.shielded.unrecorded.go.send");
+      },
+      get out() {
+        return t("transfer.shielded.unrecorded.go.out");
+      },
+    },
+    get back() {
+      return t("transfer.shielded.unrecorded.back");
+    },
     /** The engine's refusal when no confirmation came with the call. */
-    refused: "A shielded payment from before the restart may still go through. Confirm to send anyway.",
+    get refused() {
+      return t("transfer.shielded.unrecorded.refused");
+    },
   },
   /** A shield's or a move of mixed coins' lock that signed and may be out (`platform.broadcast_unknown`):
    * its step refuses the next one until Tools ▸ Repair settles it. */
   fundingUnknown: `${DASHPAY_COPY.repair.unknown}. Open Tools ▸ Repair to settle it; you can move Dash into Shielded again once it has.`,
-  close: "Close",
-  show: "Show",
-  unseen: "Your Shielded move has an update.",
-  receive: {
-    text: "Money sent to this address stays private. Anyone with a Shielded balance can pay it.",
-    copy: "Copy address",
-    notSynced: SHIELDED_SYNCING_TEXT,
-    loading: "Getting your Shielded address…",
+  get close() {
+    return t("transfer.shielded.close");
   },
-} as const;
+  get show() {
+    return t("transfer.shielded.show");
+  },
+  get unseen() {
+    return t("transfer.shielded.unseen");
+  },
+  receive: {
+    get text() {
+      return t("transfer.shielded.receive.text");
+    },
+    get copy() {
+      return t("transfer.shielded.receive.copy");
+    },
+    notSynced: SHIELDED_SYNCING_TEXT,
+    get loading() {
+      return t("transfer.shielded.receive.loading");
+    },
+  },
+};
 
 /** An error as dw-app sends it: its code (the generated `ErrorCode` lists the shielded ones) and data. */
 function errorLike(e: unknown): { code: string; data: Record<string, unknown> | null } | null {
@@ -140,33 +297,33 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
     case SHIELDED_CODES.notActive:
       return SHIELDED_COPY.card.inactive;
     case SHIELDED_CODES.poolTooSmall:
-      return "Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.";
+      return t("transfer.shielded.error.poolTooSmall");
     case SHIELDED_CODES.invalidAddress:
-      return "Enter a Shielded address of this network.";
+      return t("transfer.shielded.error.invalidAddress");
     case SHIELDED_CODES.insufficientFunds:
-      return d?.kind === "credits" ? `Not enough in Shielded: ${credits(String(d.needed))} needed with the fee, ${credits(String(d.available))} available.` : "Not enough in Shielded.";
+      return d?.kind === "credits" ? t("transfer.shielded.error.insufficient", { needed: credits(String(d.needed)), available: credits(String(d.available)) }) : t("transfer.shielded.error.insufficientShort");
     case SHIELDED_CODES.fundingInsufficient:
-      return d?.kind === "duffs" ? `Not enough Dash in your wallet: ${duffs(Number(d.needed))} needed with the fee, ${duffs(Number(d.available))} available.` : "Not enough Dash in your wallet.";
+      return d?.kind === "duffs" ? t("transfer.shielded.error.fundingInsufficient", { needed: duffs(Number(d.needed)), available: duffs(Number(d.available)) }) : t("transfer.shielded.error.fundingInsufficientShort");
     case SHIELDED_CODES.belowMinimum:
       // The engine's minimum is in duffs for a shield, in credits for a spend.
-      if (d?.kind !== "number") return "Enter a larger amount.";
-      return kind === "add" ? `Too small to add: the smallest amount is ${duffs(Number(d.value))}.` : `Too small: the smallest amount is ${credits(String(d.value))}.`;
+      if (d?.kind !== "number") return t("transfer.shielded.error.largerAmount");
+      return kind === "add" ? t("transfer.shielded.error.belowMinimumAdd", { amount: duffs(Number(d.value)) }) : t("transfer.shielded.error.belowMinimum", { amount: credits(String(d.value)) });
     case SHIELDED_CODES.coinsLocked:
-      return "Your Dash is reserved right now (for example by CoinJoin). Try again shortly.";
+      return t("transfer.shielded.error.coinsLocked");
     case SHIELDED_CODES.unrecordedSpend:
       return SHIELDED_COPY.unrecorded.refused;
     case SHIELDED_CODES.tooManyInputs:
-      return "That takes too many separate amounts at once. Consolidate your coins first, then try again.";
+      return t("transfer.shielded.error.tooManyInputs");
     case SHIELDED_CODES.shieldPending:
-      return "An earlier add to Shielded is not finished. Finish it from Unfinished transfers on Home first.";
+      return t("transfer.shielded.error.pending");
     case "platform.context_unavailable":
-      return "Waiting for the network to sync before Shielded can be used. Try again shortly.";
+      return t("transfer.shielded.error.contextUnavailable");
     case "rescan_interrupted":
-      return RESCAN_INTERRUPTED;
+      return RESCAN_TEXT.interrupted;
     case "platform.trust_mismatch":
-      return "Your Shielded account could not be verified against the network. Nothing was moved.";
+      return t("transfer.shielded.error.trustMismatch");
     case "platform.feature_off":
-      return "Shielded is turned off.";
+      return t("transfer.shielded.error.featureOff");
     case "platform.broadcast_unknown":
       return kind === "add" ? SHIELDED_COPY.fundingUnknown : moveErrorText(e, credits);
     default:

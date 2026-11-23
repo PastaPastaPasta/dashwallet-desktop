@@ -17,13 +17,13 @@ const AREAS: Record<string, string[]> = {
 
   settings: ["screens/settings/General.tsx", "screens/settings/LocalCurrency.tsx", "screens/settings/Privacy.tsx", "screens/settings/SettingsPage.tsx", "screens/settings/Updates.tsx", "screens/settings/parts.tsx"],
 
-  components: [],
+  components: ["components/basics.tsx", "components/coins.tsx", "components/copy.tsx", "components/detail.tsx", "components/emptyArt.tsx", "components/history.tsx", "components/passphrase.tsx", "components/phrase.tsx", "components/qr.tsx", "components/sheet.tsx", "components/toast.tsx"],
 
-  app: [],
+  app: ["app/App.tsx", "screens/ShellDialogs.tsx", "screens/Routes.tsx", "screens/SavedLinks.tsx", "fiat/entry.tsx"],
 
   onboarding: ["screens/Onboarding.tsx", "screens/ForgotPassphrase.tsx", "screens/RecoveryPhrase.tsx", "screens/PreReleaseNotice.tsx", "fiat/consent.tsx"],
 
-  home: [],
+  home: ["screens/Overview.tsx", "screens/UnfinishedTransfersCard.tsx", "screens/ProtocolAdvisoryBanner.tsx"],
 
   activity: [],
 
@@ -33,7 +33,7 @@ const AREAS: Record<string, string[]> = {
 
   contacts: ["screens/contacts"],
 
-  dashpay: [],
+  dashpay: ["screens/dashpay/AboutDashPay.tsx", "screens/dashpay/Claim.tsx", "screens/dashpay/DashPayCard.tsx", "screens/dashpay/EditProfileSheet.tsx", "screens/dashpay/JoinDashPay.tsx", "screens/dashpay/MyProfile.tsx", "screens/dashpay/Registration.tsx", "screens/dashpay/ShareSheet.tsx", "screens/dashpay/TopUpSheet.tsx", "screens/dashpay/Welcome.tsx", "screens/dashpay/WithdrawSheet.tsx"],
 
   coinjoin: ["screens/coinjoin"],
 
@@ -43,13 +43,20 @@ const AREAS: Record<string, string[]> = {
 
   tools: ["screens/tools"],
 
-  transfer: [],
+  transfer: ["screens/TransferSheet.tsx", "screens/PlatformMoveSheet.tsx", "screens/PlatformFundSheet.tsx", "screens/ShieldedSheet.tsx"],
 };
 
 export const CONVERTED = Object.values(AREAS).flat();
 
 /** Text that may stay literal: `file: [text, …]`. Keep it short and say why. */
-const ALLOWED: Record<string, string[]> = {};
+const ALLOWED: Record<string, string[]> = {
+  // The route header's hidden " to " between two pool names: needs a whole-sentence key.
+  "screens/TransferSheet.tsx": ["to"],
+  // The brand, the wordmark's name in every language (glossary).
+  "components/basics.tsx": ["Dash"],
+  // The Open URI field's placeholder: the dash: scheme, typed as is in every language.
+  "screens/ShellDialogs.tsx": ["dash:"],
+};
 
 /** Attributes whose value a user reads or hears. Props of our components that carry copy too. */
 const TEXT_ATTRIBUTES = new Set(["title", "aria-label", "aria-description", "aria-placeholder", "aria-roledescription", "placeholder", "alt", "label", "text", "why", "confirm", "message", "submitLabel"]);

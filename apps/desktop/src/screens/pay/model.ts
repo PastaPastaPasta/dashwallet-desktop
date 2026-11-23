@@ -5,7 +5,7 @@
 
 import { hasCode, isAppError, retryAfterSecs } from "../../api/backend";
 import { CREDITS_PER_DUFF } from "../../api/pending";
-import { RESCAN_INTERRUPTED, RESCAN_RUNNING } from "../../app/rescan";
+import { RESCAN_TEXT } from "../../app/rescan";
 import type { AddressClass } from "../../api/generated/AddressClass";
 import type { AppError } from "../../api/generated/AppError";
 import type { ChangePolicy } from "../../api/generated/ChangePolicy";
@@ -241,9 +241,9 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
     case "send.no_peers":
       return { text: t("pay.error.noPeers"), field: null };
     case "rescan_in_progress":
-      return { text: RESCAN_RUNNING, field: null };
+      return { text: RESCAN_TEXT.running, field: null };
     case "rescan_interrupted":
-      return { text: RESCAN_INTERRUPTED, field: null };
+      return { text: RESCAN_TEXT.interrupted, field: null };
     case "send.broadcast_rejected":
       return {
         text: e.data?.kind === "reason" ? t("pay.error.rejectedReason", { reason: e.data.reason }) : t("pay.error.rejected"),
@@ -287,6 +287,15 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
     default:
       return null;
   }
+}
+
+/** A contact payment's refusals over the contact's data (H-09): `prepare` waits for it to verify,
+ * then refuses with `platform.context_unavailable`, or `platform.trust_mismatch` when it does not
+ * match. `null` for any other refusal; other Platform calls keep their own words for these. */
+export function contactDataText(e: unknown): string | null {
+  if (hasCode(e, "platform.context_unavailable")) return t("pay.error.contactUnchecked");
+  if (hasCode(e, "platform.trust_mismatch")) return t("pay.error.contactMismatch");
+  return null;
 }
 
 // ---------------------------------------------------------------- the payment policy (E0-13 D11)
@@ -338,13 +347,20 @@ export function contactConfirmActions(watchOnly: boolean | undefined): ReturnTyp
 }
 
 export const PAY_INCOMPLETE = en.pay.incomplete;
+export const PAY_INCOMPLETE_CONTACT = en.pay.incompleteContact;
 export const PAY_CHECKING = en.pay.checking;
+
+/** The form a payment is drafted in: an address and an amount, or a picked contact and an amount. */
+export type PayForm = "address" | "contact";
+
+/** What an incomplete form still needs: the contact form has no address to ask for. */
+export const incompleteText = (form: PayForm) => (form === "contact" ? t("pay.incompleteContact") : t("pay.incomplete"));
 
 /** Why a payment cannot be reviewed yet (P15): the first field problem the form shows, then the
  * draft's own, then whether it is still incomplete or being checked; `null` once it can. */
-export function reviewBlockedReason(ready: boolean, problems: (string | null | undefined)[], complete: boolean): string | null {
+export function reviewBlockedReason(ready: boolean, problems: (string | null | undefined)[], complete: boolean, form: PayForm = "address"): string | null {
   if (ready) return null;
-  return problems.find((p): p is string => !!p) ?? (complete ? t("pay.checking") : t("pay.incomplete"));
+  return problems.find((p): p is string => !!p) ?? (complete ? t("pay.checking") : incompleteText(form));
 }
 
 /** What an `authorize` refusal means for the confirm sheet. */
@@ -486,7 +502,10 @@ export function broadcastFailure(
   return { kind: "unknown", text, retry: !gone, ...held };
 }
 
-export function failureText(e: unknown, chain: Chain, unit: Unit = "DASH"): string {
+/** `contact`: the payment pays a DashPay contact, whose data refusals say so (`contactDataText`). */
+export function failureText(e: unknown, chain: Chain, unit: Unit = "DASH", contact = false): string {
+  const data = contact ? contactDataText(e) : null;
+  if (data) return data;
   const send = sendErrorText(e, chain, unit);
   if (send) return send.text;
   if (isAppError(e)) return e.message;

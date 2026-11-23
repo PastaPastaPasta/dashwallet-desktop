@@ -26,11 +26,13 @@ import type { StatusInputs } from "../../dashpay/status";
 import type { RegistrationWizard } from "../../dashpay/wizard";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
+import { useT } from "../../i18n";
 import { VotingInfoSheet } from "./AboutDashPay";
 import { ShareSheet } from "./ShareSheet";
 import { WelcomeSteps } from "./Welcome";
 
 export function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; title: string; id: string }) {
+  useT();
   return (
     <header className="registration-header">
       <p className="registration-step" data-testid="registration-step">
@@ -45,6 +47,7 @@ export function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; tit
 
 /** The last call's refusal; a claim's (`claim`, DP5-03 C12) in its own words. */
 export function ErrorLine({ wiz, inputs, claim = false }: { wiz: RegistrationWizard; inputs: StatusInputs; claim?: boolean }) {
+  useT();
   if (wiz.error === null) return null;
   return (
     <p className="registration-error" role="alert" data-testid="registration-error">
@@ -55,6 +58,7 @@ export function ErrorLine({ wiz, inputs, claim = false }: { wiz: RegistrationWiz
 
 /** Step 1 (IOS-066, F4): the checklist as the user types, then the network's answer. */
 function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string }) {
+  useT();
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
   // The engine checks the label as given; the host trims it.
@@ -130,12 +134,86 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
   );
 }
 
+const lost = () => document.activeElement === null || document.activeElement === document.body;
+
+/** While the wizard runs a call its button is disabled, and once the row shows its progress the
+ * button is gone, so focus falls to <body>; a passphrase sheet closing onto a disabled button
+ * cannot give it back either. A frame after a render (after the sheet gave focus back itself if it
+ * could), focus lost goes to `target` if it was lost on mount, when a call or a passphrase sheet
+ * ended, while a call runs, or because this screen's control that had it went away or was
+ * disabled. When the passphrase was cancelled meanwhile and nothing runs, focus parked there goes
+ * back to that control if it is enabled again. A sheet over it does not count; focus the user moved
+ * elsewhere, a click on text included, stays. */
+function useFocusFallback(wiz: RegistrationWizard, target: () => HTMLElement | null | undefined, off = false) {
+  useModel(wiz);
+  const { pending } = useModel(wiz.grants);
+  const busy = wiz.running !== null;
+  // This screen's control that had focus last, while it may still lose it to the screen.
+  const last = useRef<HTMLButtonElement | null>(null);
+  // Not parked, or the control focus was lost from and the grants' cancel count then.
+  const parked = useRef<{ from: HTMLButtonElement | null; epoch: number } | undefined>(undefined);
+  const seen = useRef<{ busy: boolean; pending: unknown } | null>(null);
+  const due = useRef(false);
+  useEffect(() => {
+    const foreign = (at: HTMLElement, t: HTMLElement | null | undefined) => {
+      const sheet = at.closest('[role="dialog"]');
+      return sheet !== null && !sheet.contains(t ?? null);
+    };
+    const into = (e: FocusEvent) => {
+      const at = e.target;
+      const t = target();
+      if (!(at instanceof HTMLElement) || at === t || foreign(at, t)) return;
+      parked.current = undefined;
+      const scope = t?.closest('[role="dialog"]') ?? t?.closest("section");
+      last.current = at instanceof HTMLButtonElement && scope?.contains(at) ? at : null;
+    };
+    // Judged after the event: Chromium blurs a control as it is removed, before it leaves the page.
+    const away = (e: FocusEvent) => {
+      const at = last.current;
+      if (at === null || e.target !== at) return;
+      queueMicrotask(() => {
+        if (last.current === at && at.isConnected && !at.matches(":disabled")) last.current = null;
+      });
+    };
+    document.addEventListener("focusin", into);
+    document.addEventListener("focusout", away);
+    return () => {
+      document.removeEventListener("focusin", into);
+      document.removeEventListener("focusout", away);
+    };
+  }, []);
+  useEffect(() => {
+    if (seen.current === null || seen.current.busy !== busy || seen.current.pending !== pending) due.current = true;
+    seen.current = { busy, pending };
+    if (off || pending) return;
+    const frame = requestAnimationFrame(() => {
+      const edge = due.current;
+      due.current = false;
+      const t = target();
+      const p = parked.current;
+      const from = p?.from;
+      if (!busy && p && p.epoch !== wiz.grants.epoch && from?.isConnected && !from.matches(":disabled") && document.activeElement === t) return from.focus();
+      const held = document.activeElement?.matches(":disabled") === true;
+      if (!lost() && !held) return;
+      const dropped = last.current !== null && (!last.current.isConnected || last.current.matches(":disabled"));
+      if (!(edge || busy || held || dropped)) return;
+      parked.current = p ?? { from: last.current, epoch: wiz.grants.epoch };
+      last.current = null;
+      t?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  });
+}
+
 /** The wedge (m4 §2.2, DEC-197): a start refused behind a registration whose funding is unknown.
  * A refusal of the start past it shows here, over the step. */
 function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: RegistrationQuote; inputs: StatusInputs }) {
+  useT();
+  const text = useRef<HTMLParagraphElement>(null);
+  useFocusFallback(wiz, () => text.current?.closest<HTMLElement>('[role="dialog"]'));
   return (
     <Sheet title={REG_COPY.wedge.title} width="small" testId="registration-wedge" onClose={() => wiz.dismissWedge()}>
-      <p className="sheet-text">{REG_COPY.wedge.text}</p>
+      <p className="sheet-text" ref={text}>{REG_COPY.wedge.text}</p>
       <ErrorLine wiz={wiz} inputs={inputs} />
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" data-testid="registration-wedge-cancel" onClick={() => wiz.dismissWedge()}>
@@ -157,6 +235,7 @@ function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: Re
 
 /** Step 2's cost: the quote in Dash (D2), or what the identity's credits may pay (D6). */
 function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizard; walletId: string; identity: string | null; inputs: StatusInputs }) {
+  useT();
   const quote = useLabelQuote(walletId, wiz.label, identity === null);
   const credits = useNameCredits(walletId, identity, wiz.label);
   // Either read failing says so (review r2 L1).
@@ -189,6 +268,7 @@ function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizar
 
 /** Step 2 (IOS-067): the cost in Dash (D2) from the wallet's coins, or the identity's credits (D6). */
 function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
+  useT();
   const id = useId();
   const [accepted, setAccepted] = useState(false);
   const identity = wiz.mode.kind === "credits" ? wiz.mode.identity : null;
@@ -238,6 +318,7 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
 
 /** Steps 1 and 2, and the passphrase prompt their grants ask for. */
 export function WizardSteps({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
+  useT();
   useModel(wiz);
   return (
     <>
@@ -270,6 +351,7 @@ export function RegistrationScreen({
   /** Whose username the welcome's Share my username shows, once known. */
   share?: { walletId: string; identity: string; username: string | null } | null;
 }) {
+  const tr = useT();
   useModel(wiz);
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
@@ -287,14 +369,19 @@ export function RegistrationScreen({
   const section = useRef<HTMLElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
   const [announced, setAnnounced] = useState("");
+  const shown = useRef<boolean | null>(null);
   // The progress screen's controls go when it turns into the welcome, and focus with them; start
-  // keyboard users at the title then. Focus still somewhere else stays, and the welcome is
-  // announced instead.
+  // keyboard users at the title then, and on any screen that appears with focus lost. Focus still
+  // somewhere else stays, and the welcome is announced instead, as it is when the title already
+  // has focus and so does not take it anew.
+  useFocusFallback(wiz, () => title.current, welcome);
   useEffect(() => {
+    const from = shown.current;
+    shown.current = welcome;
     if (!welcome) return setAnnounced("");
     const active = document.activeElement;
-    if (active === null || active === document.body || section.current?.contains(active)) title.current?.focus();
-    else setAnnounced(`${model.title}. ${model.lines.join(" ")}`);
+    if (active !== title.current && (lost() || section.current?.contains(active))) title.current?.focus();
+    else if (active !== title.current || from === false) setAnnounced(REG_COPY.announced(model.title, model.lines));
     // Only the switch to the welcome moves focus or speaks, not a later change of its text.
   }, [welcome]);
   return (
@@ -317,7 +404,7 @@ export function RegistrationScreen({
           className="registration-title"
           id={`${id}-title`}
           ref={title}
-          tabIndex={welcome ? -1 : undefined}
+          tabIndex={-1}
           aria-describedby={welcome ? `${id}-lines` : undefined}
         >
           {model.title}
@@ -325,10 +412,8 @@ export function RegistrationScreen({
         </h2>
         {step && (
           <div className="dashpay-card-step" data-testid="registration-progress-step">
-            <span>
-              ({step.n}/3) {step.text}
-            </span>
-            <progress className="dashpay-card-progress" max={3} value={step.n} aria-label="Registration progress" />
+            <span>{tr("dashpay.step.shown", { step: `${step.n}/3`, text: step.text })}</span>
+            <progress className="dashpay-card-progress" max={3} value={step.n} aria-label={tr("dashpay.step.progress")} />
           </div>
         )}
         <div data-testid="registration-lines" id={`${id}-lines`}>

@@ -78,7 +78,7 @@ test("D3 a cancelled passphrase sends nothing; the request stays", async ({ page
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
   await expect(page.getByTestId("contact-accept")).toHaveText("Accept");
-  await expect(page.getByTestId("contact-pane-outcome")).toHaveCount(0);
+  await expect(page.getByTestId("contact-pane-outcome")).toBeEmpty();
   await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
 });
 

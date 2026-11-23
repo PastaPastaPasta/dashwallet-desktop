@@ -230,9 +230,10 @@ async fn clears(
 }
 
 /// The look, again every `poll` until (a)–(c) hold, while only (a) fails
-/// (Platform behind: it catches up), for at most `wait` (P4's bounded
-/// waits: the quote's 240 s before consent, `withdraw`'s 60 s before the
-/// lock and the grant). Any other reason ends the wait at once.
+/// (Platform behind: it catches up) or (c) (unverified: SPV may verify the
+/// quorum meanwhile, H-09), for at most `wait` (P4's bounded waits: the
+/// quote's 240 s before consent, `withdraw`'s 60 s before the lock and the
+/// grant). Any other reason ends the wait at once.
 pub(crate) async fn look_until(
     env: &impl Env,
     net: &impl MnWithdrawNet,
@@ -243,9 +244,11 @@ pub(crate) async fn look_until(
     loop {
         let seen = look(env, net, pro_tx_hash).await?;
         let poll = env.waits().poll;
-        if seen.reason != Some(WithdrawalCheckingReason::PlatformBehind)
-            || Instant::now() + poll > deadline
-        {
+        let retried = matches!(
+            seen.reason,
+            Some(WithdrawalCheckingReason::PlatformBehind | WithdrawalCheckingReason::Unverified)
+        );
+        if !retried || Instant::now() + poll > deadline {
             return Ok(seen);
         }
         tokio::time::sleep(poll).await;

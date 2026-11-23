@@ -2853,6 +2853,11 @@ input[type="radio"]:disabled {
   color: var(--dw-role-success-text);
 }
 
+.outcome:empty {
+  position: absolute;
+  margin: 0;
+}
+
 .onboarding-warning,
 .sheet-warning {
   padding: var(--dw-space-sm) var(--dw-space-m);
@@ -3886,7 +3891,15 @@ button.bell-row-open:focus-visible {
   min-width: 0;
 }
 
+.bell-row-title .chip-warning {
+  background: linear-gradient(var(--dw-role-warning-tint), var(--dw-role-warning-tint)), var(--dw-role-card-raised);
+}
+
 .bell-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-xs);
   font-size: var(--dw-type-subhead-size);
   line-height: var(--dw-type-subhead-line);
 }

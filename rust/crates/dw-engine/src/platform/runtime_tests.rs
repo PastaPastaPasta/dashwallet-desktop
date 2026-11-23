@@ -342,16 +342,81 @@ fn session_with(
 }
 
 /// As [`session_on`], with DAPI attempt timeouts disabled: a request to
-/// `hole` stays open until those listeners are closed.
-fn session_held(
-    dir: &std::path::Path,
-    hole: &[std::net::TcpListener],
-) -> (Engine, Arc<NetworkSession>) {
-    let urls = hole
-        .iter()
-        .map(|l| format!("http://{}", l.local_addr().unwrap()))
-        .collect();
-    session_with_timeout(engine(dir, 4), urls, false, Some(Duration::ZERO))
+/// `hole` stays open until the hole is released.
+fn session_held(dir: &std::path::Path, hole: &HeldHole) -> (Engine, Arc<NetworkSession>) {
+    session_with_timeout(
+        engine(dir, 4),
+        hole.urls.clone(),
+        false,
+        Some(Duration::ZERO),
+    )
+}
+
+/// Four DAPI addresses that accept every connection and never answer.
+/// Released, each held connection is shut down and each later one is shut
+/// down as it arrives, so a request on it fails at once on every OS: a
+/// closed listener's unaccepted connections and a refused connect end at
+/// an OS's own pace (#182: Windows outlived the test's wait). Dropped, it
+/// releases first, so a test that fails cannot leave a pass waiting.
+struct HeldHole {
+    urls: Vec<String>,
+    held: Arc<Mutex<(bool, Vec<std::net::TcpStream>)>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl HeldHole {
+    fn new() -> Self {
+        let held = Arc::new(Mutex::new((false, Vec::new())));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut urls = Vec::new();
+        let mut threads = Vec::new();
+        for _ in 0..4 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            urls.push(format!("http://{}", listener.local_addr().unwrap()));
+            let (held, stop) = (Arc::clone(&held), Arc::clone(&stop));
+            threads.push(std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            let mut held = guard(&held);
+                            if held.0 {
+                                let _ = stream.shutdown(std::net::Shutdown::Both);
+                            } else {
+                                held.1.push(stream);
+                            }
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                    }
+                }
+            }));
+        }
+        Self {
+            urls,
+            held,
+            stop,
+            threads,
+        }
+    }
+
+    fn release(&self) {
+        let mut held = guard(&self.held);
+        held.0 = true;
+        for stream in held.1.drain(..) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+impl Drop for HeldHole {
+    fn drop(&mut self) {
+        self.release();
+        self.stop.store(true, Ordering::SeqCst);
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
 }
 
 fn session_with_timeout(
@@ -472,18 +537,6 @@ fn the_stop_check_takes_whichever_blackholed_loops_are_stuck() {
     ))));
 }
 
-/// Closes the black-hole listeners a pass is blocked on. Dropped if the
-/// test fails first, so a pass with no request deadline cannot hold the
-/// engine's shutdown.
-struct ReleaseListeners(Vec<std::net::TcpListener>);
-
-impl Drop for ReleaseListeners {
-    fn drop(&mut self) {
-        // Reset the connections the passes are blocked on.
-        self.0.clear();
-    }
-}
-
 /// Review DW-E0-05-r1-gpt M1: a loop pass that outlives the drain deadline
 /// makes `stop_spv` fail visibly (SPV is stopped anyway), and the next
 /// `start_spv` does not wait for that pass: the drain is retried inside the
@@ -497,22 +550,19 @@ impl Drop for ReleaseListeners {
 /// `manager/mod.rs:95`, `dashpay_sync.rs:287`). On a loaded runner the
 /// attempt finishes as the budget runs out, the stop finds nothing left,
 /// and it returns `Ok(())`. This session disables the attempt deadline
-/// (`dapi_request_timeout: Some(0)`) and holds the listeners until after
-/// the stop and the next start, then closes them.
+/// (`dapi_request_timeout: Some(0)`) and holds the passes' connections
+/// until after the stop and the next start, then releases them
+/// ([`HeldHole`]).
 #[test]
-#[cfg_attr(
-    windows,
-    ignore = "on Windows the held passes outlive the closed listeners, see #182"
-)]
 fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     let _serial = serial();
     let dir = dw_testutil::private_tempdir();
-    let hole = blackhole();
+    let hole = HeldHole::new();
     let (engine, s) = session_held(dir.path(), &hole);
     // After the engine, so a panic — the stop, restart, and shutdown
-    // bounds below included — drops this first and closes the listeners
-    // before the engine's drop thread joins the passes.
-    let release = ReleaseListeners(hole);
+    // bounds below included — drops this first and releases the passes
+    // before the engine's drop thread joins them.
+    let release = hole;
     let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
     give_identity(&engine, &s, id);
     engine.block_on(s.start_spv()).unwrap();
@@ -550,7 +600,7 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
         "restart returned while the DashPay pass was still in flight"
     );
     assert_ne!(s.spv_state().unwrap(), SpvState::Stopped);
-    drop(release);
+    release.release();
     wait_until("the held passes end", Duration::from_secs(10), || {
         !manager.dashpay_sync().is_syncing()
             && !manager.identity_sync().is_syncing()

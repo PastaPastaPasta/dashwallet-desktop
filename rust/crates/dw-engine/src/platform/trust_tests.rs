@@ -72,10 +72,14 @@ impl SpvQuorums for FakeSpv {
     }
 }
 
+type Hook = Box<dyn Fn() + Send + Sync>;
+
 #[derive(Default)]
 struct FakeTrusted {
     keys: Mutex<HashMap<Quorum, [u8; 48]>>,
     calls: AtomicUsize,
+    /// Runs inside every lookup, before it answers.
+    during: Mutex<Option<Hook>>,
 }
 
 impl FakeTrusted {
@@ -90,6 +94,9 @@ impl FakeTrusted {
 impl TrustedQuorums for FakeTrusted {
     fn quorum_key(&self, t: u32, h: [u8; 32], _: u32) -> Result<[u8; 48], ContextProviderError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(during) = &*self.during.lock().unwrap() {
+            during();
+        }
         self.keys
             .lock()
             .unwrap()
@@ -255,6 +262,40 @@ fn after_masternode_sync_a_quorum_verified_during_the_wait_is_served() {
     assert_eq!(r.lookup(A).unwrap(), REAL);
     later.join().unwrap();
     assert_eq!(r.trusted.calls(), 0);
+}
+
+/// H-09, E0-10b Opus-high N3: masternode sync that completes while the
+/// trusted service answers the lookup (the service marks it inside
+/// `quorum_key`) ends the fallback for that very lookup. It waits for SPV
+/// and fails closed rather than serving the trusted key, and sets no latch.
+#[test]
+fn sync_marked_inside_the_trusted_lookup_waits_and_fails_closed() {
+    let r = rig_with(TrustMode::Enforcing, |t| {
+        t.with_waits(Duration::from_millis(300), Duration::from_millis(50))
+    });
+    r.trusted.set(A, REAL);
+    r.spv.set(A, SpvAnswer::Held(REAL));
+    let trust = Arc::downgrade(&r.trust);
+    *r.trusted.during.lock().unwrap() = Some(Box::new(move || {
+        if let Some(t) = trust.upgrade() {
+            t.note_masternodes_synced();
+        }
+    }));
+    assert_eq!(r.trust.source(), QuorumSource::TrustedFallback);
+
+    let started = Instant::now();
+    let refused = r.lookup(A).unwrap_err();
+    assert!(
+        matches!(&refused, ContextProviderError::InvalidQuorum(m) if m.contains("not verified by SPV")),
+        "failed closed, not served: {refused:?}"
+    );
+    assert!(started.elapsed() >= Duration::from_millis(250), "it waited");
+    assert_eq!(r.trusted.calls(), 1);
+    assert!(r.spv.calls() >= 3, "SPV was polled during the wait");
+    assert!(!r.latched(), "no fallback was served");
+    assert!(!r.latched_on_reopen());
+    assert!(r.lookup(A).is_err(), "and stays closed");
+    assert_eq!(r.trusted.calls(), 1, "never the fallback after sync");
 }
 
 /// Rule 4 in both modes, against a verified or a held SPV key: a refusal
@@ -681,6 +722,55 @@ async fn the_post_sync_refetch_records_verified_matches_only() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn our_sent_request_held_without_its_proof_verifies() {
+    let r = rig(TrustMode::Degraded);
+    r.spv.set(A, SpvAnswer::Verified(REAL));
+    r.trusted.set(A, REAL);
+    let with = |proof: Option<Vec<u8>>| ContactRequest {
+        auto_accept_proof: proof,
+        ..request(7, 8, 1_700_000_000_123)
+    };
+    let check = |held: Held, on_platform: ContactRequest| {
+        let fetch = FakeRefetch {
+            trust: Arc::clone(&r.trust),
+            keys: BTreeMap::new(),
+            profile: ShownProfile::default(),
+            domain: (String::new(), Identifier::new([0; 32])),
+            requests: vec![on_platform],
+            quorum: HashMap::from([(kind::CONTACT_REQUEST, A)]),
+        };
+        tokio::spawn(async move { reverify(&held, &fetch).await })
+    };
+    let sent = Held::SentRequest;
+    let cases = [
+        (sent(with(None)), with(Some(vec![1; 38])), true),
+        (
+            sent(with(Some(vec![1; 38]))),
+            with(Some(vec![2; 38])),
+            false,
+        ),
+        (sent(with(Some(vec![1; 38]))), with(None), false),
+        (
+            sent(with(None)),
+            ContactRequest {
+                encrypted_public_key: vec![5; 96],
+                ..with(Some(vec![1; 38]))
+            },
+            false,
+        ),
+        // A received request gets no such exception.
+        (
+            Held::ContactRequest(with(None)),
+            with(Some(vec![1; 38])),
+            false,
+        ),
+    ];
+    for (i, (held, on_platform, want)) in cases.into_iter().enumerate() {
+        assert_eq!(check(held, on_platform).await.unwrap(), want, "case {i}");
+    }
+}
+
 /// DP2-01's rows look up contact requests by m4 §5's key:
 /// `sender:recipient:$createdAt`, Base58 ids and milliseconds. The record a
 /// verified request writes is exactly that key.
@@ -721,6 +811,31 @@ fn a_verified_contact_request_records_the_contacts_model_key() {
         r.provenance.is_unverified(&changed.entity()),
         "other content"
     );
+}
+
+/// H-09 (Astra round 3): one installation holds both copies of a request,
+/// ours as sent and the other party's as received. A record our sent copy
+/// earned under the missing-proof tolerance never vouches for the received
+/// copy, across a reopen too, and verifying one side leaves the other's
+/// record in place.
+#[test]
+fn a_sent_copys_record_never_vouches_for_the_received_copy() {
+    let r = rig(TrustMode::Degraded);
+    r.trusted.set(A, REAL);
+    r.lookup(A).unwrap();
+    let copy = request(7, 8, 1_700_000_000_123);
+    let sent = Held::SentRequest(copy.clone());
+    let received = Held::ContactRequest(copy);
+    assert_eq!(sent.entity().key, received.entity().key, "one document");
+    r.provenance.record_verified(&sent.entity()).unwrap();
+    assert!(!r.provenance.is_unverified(&sent.entity()));
+    assert!(r.provenance.is_unverified(&received.entity()));
+    let reopened = Provenance::open(Arc::new(AppDb::open(&r.path).unwrap()));
+    assert!(!reopened.is_unverified(&sent.entity()));
+    assert!(reopened.is_unverified(&received.entity()), "after a reopen");
+    reopened.record_verified(&received.entity()).unwrap();
+    assert!(!reopened.is_unverified(&sent.entity()), "not overwritten");
+    assert!(!reopened.is_unverified(&received.entity()));
 }
 
 /// Design §5: a verified fetch is recorded only if the library still holds

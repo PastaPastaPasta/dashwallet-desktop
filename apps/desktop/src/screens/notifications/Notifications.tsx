@@ -9,7 +9,7 @@ import type { DashPayEventInfo } from "../../api/generated/DashPayEventInfo";
 import { errorMessage } from "../../api/backend";
 import { useBackend } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
-import { DashButton } from "../../components/basics";
+import { Chip, DashButton } from "../../components/basics";
 import { EmptyArt } from "../../components/emptyArt";
 import { EMPTY } from "../../components/emptyStates";
 import { EmptyState, LoadingState } from "../../components/history";
@@ -128,7 +128,7 @@ export function NotificationsPopover({ walletId, identity, network, id, close }:
         <Requests contacts={cut.pending} more={cut.morePending} actions={actions} hasKeys={hasKeys} onOpen={(c) => go(() => openContact(c))} onDone={onDone} testId="bell-requests" />
       )}
       {cut.fresh.length > 0 && <Events title={t("notifications.section.new")} events={cut.fresh} fresh more={cut.moreFresh} nameOf={nameOf} onOpen={(e) => go(() => openEvent(e))} testId="bell-new" />}
-      <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="bell-outcome" />
+      <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="bell-outcome" polite />
       <DashButton variant="plainBlue" size="small" className="bell-all" data-testid="bell-see-all" onClick={() => go(() => navigate("notifications"))}>
         {t("notifications.seeAll")}
       </DashButton>
@@ -196,7 +196,7 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
     );
   return (
     <div className="notifications" data-testid="notifications" ref={root}>
-      <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="notifications-outcome" />
+      <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="notifications-outcome" polite />
       {!hasPayments && shown.pending.length === 0 && shown.fresh.length === 0 && shown.earlier.length === 0 && EMPTY.notifications.action && (
         <EmptyState
           testId="notifications-empty"
@@ -262,6 +262,7 @@ function Requests({
                 <span className="bell-row-text">
                   <span className="bell-row-title">
                     <bdi>{shownName(c)}</bdi>
+                    {c.unverified && <Chip tone="warning">{t("contacts.unverified")}</Chip>}
                   </span>
                   {sub && (
                     <span className="bell-row-sub">

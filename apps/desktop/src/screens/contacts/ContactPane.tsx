@@ -8,13 +8,14 @@ import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { errorMessage } from "../../api/backend";
+import { useBackend } from "../../api/queries";
 import { AmountText, DashButton, Icon } from "../../components/basics";
 import { EmptyArt } from "../../components/emptyArt";
 import { CopyValue } from "../../components/detail";
 import { useRowContext } from "../../components/history";
 import { navigate, ui } from "../../app/ui";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
-import { avatarLetters, channelTitle, relationTitle, rowChips, shownName, subtitle } from "../../contacts/model";
+import { avatarLetters, channelTitle, relationTitle, rowChips, shownName, subtitle, unverifiedWarning } from "../../contacts/model";
 import { ACTIVITY_FILTERS, activityRow, detailsChanged, detailsForm, detailsOf, paneActions, type DetailsForm } from "../../contacts/pane";
 import { useContactActivity, useContactDetail } from "../../contacts/queries";
 import { useT } from "../../i18n";
@@ -56,6 +57,7 @@ export function ContactPane({ adding, selected, pane }: { adding: ReactNode; sel
 /** The selected contact: its row's facts at once, then what its detail adds (DP2-09 D1). */
 function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: PaneContext }) {
   const t = useT();
+  const { locale } = useBackend();
   const sub = subtitle(c);
   const chips = rowChips(c);
   // Only a contact has private details (DP2-09 D7).
@@ -97,7 +99,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
           <>
             {/* When the row's time was: a contact's start, else its request's. */}
             <dt>{t(`contacts.pane.since.${c.relation}`)}</dt>
-            <dd>{detailDate(new Date(c.since * 1000))}</dd>
+            <dd>{detailDate(new Date(c.since * 1000), locale)}</dd>
           </>
         )}
       </dl>
@@ -137,9 +139,11 @@ function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo
   const pay = () => navigate("pay", { payTab: "contact", payContact: { walletId: pane.walletId, contact: c.contact } });
   let buttons;
   let note: string | null = null;
+  let warning: string | null = null;
   switch (offer.kind) {
     case "request":
       note = offer.acceptBlocked;
+      warning = unverifiedWarning("accept", c.unverified);
       buttons = (
         <>
           <DashButton
@@ -183,13 +187,18 @@ function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo
   }
   return (
     <div className="contact-pane-actions" data-testid="contact-pane-actions" ref={area}>
+      {warning && (
+        <p className="sheet-warning" role="note" data-testid="contact-pane-unverified">
+          {warning}
+        </p>
+      )}
       {buttons && <span className="add-contact-actions">{buttons}</span>}
       {note && (
         <p className="placeholder-note" data-testid="contact-pane-note">
           {note}
         </p>
       )}
-      <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-pane-outcome" />
+      <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-pane-outcome" polite />
     </div>
   );
 }
@@ -264,7 +273,7 @@ function PrivateDetails({ walletId, contact: c, detail, actions }: { walletId: s
             {saving ? t("contacts.details.saving") : t("contacts.details.save")}
           </DashButton>
         </span>
-        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-details-outcome" />
+        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-details-outcome" polite />
       </form>
     </section>
   );

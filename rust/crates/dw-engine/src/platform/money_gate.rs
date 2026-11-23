@@ -3,10 +3,11 @@
 //! contact payment or a top-up whose payee the library holds unverified
 //! (no `dp_trust_verified` record of its current content, DEC-183) waits
 //! while the gate re-fetches it against SPV-held quorum keys, and refuses
-//! if it does not verify in time. In the degraded mode rule 5 is suspended:
-//! one bounded round of re-fetches looks for a mismatch, which still
-//! refuses, and the payment proceeds otherwise. The trusted-only toggle
-//! proceeds. In every mode a payee whose paying account is not the one
+//! if it does not verify in time. A contact payment is held to that in
+//! every mode (H-09, `TrustProvider::strict_rule_5`). For a top-up in the
+//! degraded mode rule 5 is suspended: one bounded round of re-fetches looks
+//! for a mismatch, which still refuses, and the top-up proceeds otherwise.
+//! The trusted-only toggle proceeds. In every mode a payee whose paying account is not the one
 //! their current request designates is refused (D12, D21, D25, D28).
 //!
 //! The gate records what verifies itself, as the background re-fetch
@@ -301,30 +302,47 @@ pub(super) fn payee_held(
     username: Option<&str>,
 ) -> Option<Vec<Held>> {
     let dp = m.dashpay();
-    let requests = if let Some(c) = dp.established_contacts().get(contact) {
-        vec![c.outgoing_request.clone(), c.incoming_request.clone()]
-    } else if dp.ignored_senders().contains(contact) {
-        Vec::new()
-    } else {
-        let incoming = dp.incoming_contact_requests().get(contact);
-        vec![
-            incoming
-                .or_else(|| dp.sent_contact_requests().get(contact))?
-                .clone(),
-        ]
-    };
+    let requests = payee_requests(m, contact)?;
     let cached = (dp.contact_profiles.get(contact)).and_then(|e| e.profile.as_ref());
     let profile = cached.map(|p| Held::Profile {
         id: *contact,
         shown: ShownProfile::of(p),
     });
     let label = username.map(|name| Held::label(name, *contact));
-    Some(
-        (profile.into_iter())
-            .chain(requests.into_iter().map(Held::ContactRequest))
-            .chain(label)
-            .collect(),
-    )
+    Some((profile.into_iter()).chain(requests).chain(label).collect())
+}
+
+/// The requests a payment to `contact` rests on, by the read model's
+/// precedence (see `payee_held`).
+fn payee_requests(m: &ManagedIdentity, contact: &Identifier) -> Option<Vec<Held>> {
+    let dp = m.dashpay();
+    Some(if let Some(c) = dp.established_contacts().get(contact) {
+        vec![
+            Held::SentRequest(c.outgoing_request.clone()),
+            Held::ContactRequest(c.incoming_request.clone()),
+        ]
+    } else if dp.ignored_senders().contains(contact) {
+        Vec::new()
+    } else if let Some(incoming) = dp.incoming_contact_requests().get(contact) {
+        vec![Held::ContactRequest(incoming.clone())]
+    } else {
+        vec![Held::SentRequest(
+            dp.sent_contact_requests().get(contact)?.clone(),
+        )]
+    })
+}
+
+/// H-09: a request held under `contact` that is not between us and it.
+/// What a payment verifies and pays is then always this contact's, never
+/// another identity's, in every mode.
+fn names_another_party(m: &ManagedIdentity, contact: &Identifier) -> bool {
+    let me = m.identity.id();
+    let ours = |r: &Held| match r {
+        Held::SentRequest(r) => r.sender_id == me && r.recipient_id == *contact,
+        Held::ContactRequest(r) => r.sender_id == *contact && r.recipient_id == me,
+        _ => false,
+    };
+    payee_requests(m, contact).is_some_and(|requests| !requests.iter().all(ours))
 }
 
 /// Design D12: the account a payment to `contact` derives its address
@@ -386,6 +404,10 @@ struct SessionEnv<'a> {
     /// The re-check: the address reserved for the payee (D12's strict
     /// reading, D21).
     reserved: Option<&'a Address>,
+    /// H-09: a payee's data as the gate first saw it. If it changes
+    /// during the wait the gate refuses: what verifies must be what was
+    /// shown.
+    seen: Mutex<Option<Vec<Held>>>,
 }
 
 impl SessionEnv<'_> {
@@ -394,14 +416,17 @@ impl SessionEnv<'_> {
     /// the reserved address is not in that account (D21). Whether or not
     /// anything came through the fallback, and in every mode: it is where
     /// the money goes, not what the data was verified by. A missing stamp
-    /// is a stale account too (D28).
+    /// is a stale account too (D28). A payee holding a request between
+    /// other parties is not payable either (H-09).
     fn payable(&self, wm: &WalletManager<PlatformWalletInfo>) -> bool {
         let Subject::Payee(wallet, pair) = self.subject else {
             return true;
         };
         // A subject the library no longer holds is `unverified`'s `None`.
-        let stale = (self.managed(wm))
-            .is_some_and(|m| paying_account_stale(m, &pair.1, self.reserved.is_some()));
+        let stale = (self.managed(wm)).is_some_and(|m| {
+            names_another_party(m, &pair.1)
+                || paying_account_stale(m, &pair.1, self.reserved.is_some())
+        });
         !stale
             && self
                 .reserved
@@ -435,15 +460,11 @@ impl SessionEnv<'_> {
             .find(|m| m.identity.id() == owner)
     }
 
-    /// The subject's entities `provenance` holds unverified; `None` if the
-    /// library no longer holds the subject.
-    fn unverified(
-        &self,
-        wm: &WalletManager<PlatformWalletInfo>,
-        provenance: &Provenance,
-    ) -> Option<Vec<Held>> {
+    /// Every entity the subject rests on; `None` if the library no longer
+    /// holds the subject.
+    fn held(&self, wm: &WalletManager<PlatformWalletInfo>) -> Option<Vec<Held>> {
         let m = self.managed(wm)?;
-        let held = match self.subject {
+        match self.subject {
             Subject::Payee(_, (_, contact)) => {
                 let username = self.session.platform.contacts.names.label(&contact);
                 payee_held(m, &contact, username.as_deref())
@@ -452,12 +473,33 @@ impl SessionEnv<'_> {
                 id,
                 keys: m.identity.public_keys().clone(),
             }]),
-        };
-        Some(
-            (held?.into_iter())
-                .filter(|h| provenance.is_unverified(&h.entity()))
-                .collect(),
-        )
+        }
+    }
+
+    /// The subject's entities `provenance` holds unverified; `None` if the
+    /// library no longer holds the subject.
+    fn unverified(
+        &self,
+        wm: &WalletManager<PlatformWalletInfo>,
+        provenance: &Provenance,
+    ) -> Option<Vec<Held>> {
+        Some(self.unverified_of(self.held(wm)?, provenance))
+    }
+
+    /// Of `held`, what `provenance` does not count as verified. A payee
+    /// needs a record of its current content (H-09).
+    fn unverified_of(&self, held: Vec<Held>, provenance: &Provenance) -> Vec<Held> {
+        let payee = matches!(self.subject, Subject::Payee(..));
+        (held.into_iter())
+            .filter(|h| {
+                let e = h.entity();
+                if payee {
+                    provenance.lacks_record(&e)
+                } else {
+                    provenance.is_unverified(&e)
+                }
+            })
+            .collect()
     }
 }
 
@@ -471,7 +513,16 @@ impl GateEnv for SessionEnv<'_> {
         if !self.payable(&wm) {
             return Err(Refusal::NotPayable);
         }
-        Ok(self.unverified(&wm, &live.provenance))
+        let held = self.held(&wm);
+        if let Subject::Payee(..) = self.subject {
+            let mut seen = guard(&self.seen);
+            match &*seen {
+                None => *seen = Some(held.clone().unwrap_or_default()),
+                Some(first) if Some(first) != held.as_ref() => return Err(Refusal::Unverified),
+                Some(_) => {}
+            }
+        }
+        Ok(held.map(|held| self.unverified_of(held, &live.provenance)))
     }
 
     async fn record(&self, verified: Vec<Held>) {
@@ -502,7 +553,10 @@ impl NetworkSession {
     /// nothing it rests on is unverified, or the mode lets it move anyway.
     /// May wait (`Enforce`: up to a minute plus one quorum lookup's wait).
     pub(crate) async fn money_gate(&self, subject: Subject) -> Result<(), Refusal> {
-        let rule = self.trust.rule_5();
+        let rule = match subject {
+            Subject::Payee(..) => self.trust.strict_rule_5(),
+            Subject::Identity(..) => self.trust.rule_5(),
+        };
         let signals = Signals {
             rule,
             lock: self.platform.lock.subscribe(),
@@ -512,6 +566,7 @@ impl NetworkSession {
             session: self,
             subject,
             reserved: None,
+            seen: Mutex::default(),
         };
         let gated = run(&env, || self.gate_refetcher(), signals, waits).await;
         if let Err(refusal) = &gated {
@@ -557,6 +612,7 @@ impl NetworkSession {
             session: self,
             subject,
             reserved: Some(address),
+            seen: Mutex::default(),
         };
         let checked = match rule {
             Rule5::Enforce => recheck(&env, || self.gate_refetcher(), waits).await,
@@ -569,5 +625,25 @@ impl NetworkSession {
             self.rebuild_soon(refusal);
         }
         checked.map(|()| rule == Rule5::Enforce)
+    }
+}
+
+#[cfg(test)]
+impl NetworkSession {
+    /// Records `subject`'s data as the library holds it now as verified, as
+    /// an earlier verified fetch would have.
+    pub(crate) async fn record_verified_for_tests(&self, subject: Subject) {
+        let env = SessionEnv {
+            session: self,
+            subject,
+            reserved: None,
+            seen: Mutex::default(),
+        };
+        let live = self.live().unwrap();
+        let wm = live.manager.wallet_manager_arc();
+        let held = env.held(&*wm.read().await).unwrap_or_default();
+        for h in held {
+            live.provenance.record_verified(&h.entity()).unwrap();
+        }
     }
 }

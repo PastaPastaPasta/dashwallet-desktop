@@ -170,6 +170,16 @@ for (const theme of THEMES) {
   });
 }
 
+test("a picked contact with no amount asks only for an amount; To an address still asks for both", async ({ page }) => {
+  await openPay(page);
+  await page.getByTestId("pay-frequent-chip").first().click();
+  await expect(page.getByTestId("pay-payee-name")).toHaveText("Bob Builder");
+  await expect(page.getByTestId("pay-incomplete")).toHaveText("Enter an amount first.");
+  await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  await page.getByTestId("pay-tabs-address").click();
+  await expect(page.getByTestId("pay-incomplete")).toHaveText("Enter an address and an amount first.");
+});
+
 test("IOS-050 the picker searches the contacts and requests, and Change goes back to it", async ({ page }) => {
   await openPay(page);
   await expect(page.getByTestId("pay-picker-contacts").locator(".contact-row-name")).toContainText(["Bob Builder", "Carol"]);

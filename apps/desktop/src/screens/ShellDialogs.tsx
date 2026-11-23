@@ -8,11 +8,13 @@ import { applyLink, linkProblem } from "../app/shellBridge";
 import { ui } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { Sheet } from "../components/sheet";
+import { useT } from "../i18n";
 
 const close = () => ui.set({ dialog: null });
 
 /** Opens a `dash:`, `pay:`, `dashwallet:` or `dashpay:` link, routed as a clicked one is. */
 export function OpenUriSheet({ network }: { network: string }) {
+  const tr = useT();
   const backend = useBackend();
   const id = useId();
   const [text, setText] = useState("");
@@ -29,10 +31,10 @@ export function OpenUriSheet({ network }: { network: string }) {
     }
   };
   return (
-    <Sheet title="Open URI" width="small" testId="open-uri" onClose={close}>
+    <Sheet title={tr("app.openUri.title")} width="small" testId="open-uri" onClose={close}>
       <form className="pay-form" onSubmit={(e) => void submit(e)}>
         <div className="form-field">
-          <label htmlFor={id}>Payment request or link</label>
+          <label htmlFor={id}>{tr("app.openUri.field")}</label>
           <input
             id={id}
             className="mono"
@@ -54,7 +56,7 @@ export function OpenUriSheet({ network }: { network: string }) {
           </p>
         )}
         <DashButton variant="filledWhiteBlue" type="submit" disabled={!text.trim()} data-testid="open-uri-open">
-          Open
+          {tr("app.openUri.open")}
         </DashButton>
       </form>
     </Sheet>
@@ -62,14 +64,15 @@ export function OpenUriSheet({ network }: { network: string }) {
 }
 
 export function AboutSheet({ launch }: { launch: LaunchInfo }) {
+  const tr = useT();
   return (
-    <Sheet title="About Dash Wallet" width="small" testId="about" onClose={close}>
+    <Sheet title={tr("app.about.title")} width="small" testId="about" onClose={close}>
       <dl className="about-list">
-        <dt>Version</dt>
+        <dt>{tr("app.about.version")}</dt>
         <dd data-testid="about-version">{launch.appVersion}</dd>
-        <dt>Engine</dt>
+        <dt>{tr("app.about.engine")}</dt>
         <dd>{launch.engineVersion}</dd>
-        <dt>Network</dt>
+        <dt>{tr("app.about.network")}</dt>
         <dd>{launch.network.dirName}</dd>
       </dl>
     </Sheet>
