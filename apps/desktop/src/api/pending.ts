@@ -5,6 +5,7 @@
 // m4-dashpay-engine §2.12, §8) and lane E1's shielded funds (§2.13), integrated at m4 v47.
 
 import type { ShieldedCode } from "./generated/ShieldedCode";
+import { t } from "../i18n";
 
 /** Platform's credits per duff (dpp's `CREDITS_PER_DUFF`): what `PlatformAddressBalance.duffs` and
  * the shielded pool's figures use. */
@@ -58,6 +59,6 @@ export async function orAbsent<T>(call: Promise<T>): Promise<T | null> {
  * funds: the call means nothing without it). */
 export async function orUnavailable<T>(call: Promise<T>): Promise<T> {
   const got = await orAbsent(call);
-  if (got === null) throw new Error("This is not available in this build.");
+  if (got === null) throw new Error(t("app.unavailableInBuild"));
   return got;
 }

@@ -48,7 +48,7 @@ import { focusPage, useShellBridge } from "./shellBridge";
 import { openFailure, type OpenFailure } from "./openFailure";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
-import { useLanguageAttributes, useT } from "../i18n";
+import { t, useLanguageAttributes, useT } from "../i18n";
 import { savePrefs } from "../settings/prefs";
 import { updatesModel, useAutomaticUpdateCheck } from "../settings/updates";
 import { UpdateRestartNotice } from "../screens/settings/Updates";
@@ -106,7 +106,7 @@ function useAutoLock(backend: Backend, client: QueryClient, status: LockStatus |
           closeWalletGate(client, since);
           showShellToast(SecurityText.lockedAutomatically);
         },
-        (e) => showShellToast(`Could not lock: ${errorMessage(e)}`),
+        (e) => showShellToast(t("app.lockFailed", { error: errorMessage(e) })),
       );
     });
     const onActivity = () => timer.activity();
@@ -296,7 +296,7 @@ function Shell() {
     const since = lockGeneration();
     backend.lock().then(
       () => closeWalletGate(client, since),
-      (e) => showShellToast(`Could not lock: ${errorMessage(e)}`),
+      (e) => showShellToast(t("app.lockFailed", { error: errorMessage(e) })),
     );
   };
   useShellBridge(backend, network.dirName, launch.selftestLinkTrace, lockNow);
