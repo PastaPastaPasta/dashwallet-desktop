@@ -2691,7 +2691,12 @@ mod tests {
                     let mut q = query(limit);
                     q.sort = sort;
                     let mut walked = Vec::new();
-                    loop {
+                    let pages = full.len().div_ceil(limit as usize);
+                    for step in 0.. {
+                        assert!(
+                            step < pages,
+                            "more than {pages} pages: {sort:?}, limit {limit}, {shape}"
+                        );
                         let p = page(input.clone(), &q).unwrap();
                         assert_eq!(p.total_matching, Some(40));
                         assert!(p.records.len() <= limit as usize);

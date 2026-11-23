@@ -19,7 +19,7 @@ const AREAS: Record<string, string[]> = {
 
   components: ["components/basics.tsx", "components/coins.tsx", "components/copy.tsx", "components/detail.tsx", "components/emptyArt.tsx", "components/history.tsx", "components/passphrase.tsx", "components/phrase.tsx", "components/qr.tsx", "components/sheet.tsx", "components/toast.tsx"],
 
-  app: ["app/App.tsx", "screens/ShellDialogs.tsx", "screens/Routes.tsx", "screens/SavedLinks.tsx", "fiat/entry.tsx"],
+  app: ["app/App.tsx", "screens/ShellDialogs.tsx", "screens/Routes.tsx", "screens/SavedLinks.tsx", "fiat/entry.tsx", "fiat/rates.tsx"],
 
   onboarding: ["screens/Onboarding.tsx", "screens/ForgotPassphrase.tsx", "screens/RecoveryPhrase.tsx", "screens/PreReleaseNotice.tsx", "fiat/consent.tsx"],
 
@@ -39,7 +39,7 @@ const AREAS: Record<string, string[]> = {
 
   notifications: ["screens/notifications"],
 
-  masternodes: [],
+  masternodes: ["screens/masternodes/CreateProposalSheet.tsx", "screens/masternodes/MasternodesPage.tsx", "screens/masternodes/Mine.tsx", "screens/masternodes/MyMasternodes.tsx", "screens/masternodes/NameVoteSheet.tsx", "screens/masternodes/NamesTab.tsx", "screens/masternodes/NumbersSheet.tsx", "screens/masternodes/ProposalPane.tsx", "screens/masternodes/StatusItem.tsx", "screens/masternodes/VoteSheet.tsx", "screens/masternodes/common.tsx", "screens/masternodes/credential.tsx"],
 
   tools: ["screens/tools"],
 
@@ -56,6 +56,8 @@ const ALLOWED: Record<string, string[]> = {
   "components/basics.tsx": ["Dash"],
   // The Open URI field's placeholder: the dash: scheme, typed as is in every language.
   "screens/ShellDialogs.tsx": ["dash:"],
+  // The proposal link's placeholder: the https:// scheme, typed as is in every language.
+  "screens/masternodes/CreateProposalSheet.tsx": ["https://"],
 };
 
 /** Attributes whose value a user reads or hears. Props of our components that carry copy too. */

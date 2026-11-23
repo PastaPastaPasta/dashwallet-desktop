@@ -9,24 +9,26 @@ import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
 import { numbersRows } from "../../governance/model";
 import { useGovernanceSyncState, useProposals } from "../../governance/queries";
+import { useT } from "../../i18n";
 
 export function NumbersSheet({ info, network, onClose }: { info: GovernanceInfo; network: NetworkInfo; onClose: () => void }) {
+  const t = useT();
   const shown = useDisplay(network);
   const sync = useGovernanceSyncState();
   const rows = useProposals("current", "", sync.data?.phase === "synced").data;
   const { cycle, votes } = numbersRows(info, sync.data, rows, (d) => `${shown.compact(d)} ${shown.name}`);
   return (
-    <Sheet title="Governance numbers" width="medium" testId="numbers-sheet" onClose={onClose}>
+    <Sheet title={t("masternodes.governance.numbersSheet.title")} width="medium" testId="numbers-sheet" onClose={onClose}>
       <div className="mg-sheet-body">
-        <h3 className="mg-section-title mg-flush">This cycle</h3>
+        <h3 className="mg-section-title mg-flush">{t("masternodes.governance.numbersSheet.cycle")}</h3>
         <NumbersList rows={cycle} testId="numbers-cycle" />
-        <h3 className="mg-section-title mg-flush">Votes and budget</h3>
+        <h3 className="mg-section-title mg-flush">{t("masternodes.governance.numbersSheet.votes")}</h3>
         <NumbersList rows={votes} testId="numbers-votes" />
         <footer className="mg-sheet-footer">
           <span />
           <span className="mg-actions">
             <DashButton variant="filledBlue" size="medium" data-testid="numbers-done" data-autofocus onClick={onClose}>
-              Done
+              {t("masternodes.governance.numbersSheet.done")}
             </DashButton>
           </span>
         </footer>

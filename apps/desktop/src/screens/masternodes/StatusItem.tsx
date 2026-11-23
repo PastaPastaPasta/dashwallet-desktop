@@ -6,8 +6,10 @@ import { navigate } from "../../app/ui";
 import { clockView } from "../../governance/model";
 import { useGovernanceInfo, useGovernanceSyncState, useProposals, useVotingByProposal } from "../../governance/queries";
 import { useNowSecs } from "./common";
+import { useT } from "../../i18n";
 
 export function GovernanceStatusItem({ walletId }: { walletId: string }) {
+  useT();
   const now = useNowSecs();
   const synced = useGovernanceSyncState().data?.phase === "synced";
   const info = useGovernanceInfo();

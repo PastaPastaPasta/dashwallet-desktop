@@ -1,6 +1,10 @@
 // My masternodes' view model (model.ts, MG-10 §1.2, §1.7, §1.9, §3.8).
 
+import { createElement, Fragment } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_PREFS, ui } from "../app/ui";
+import { LANGUAGES, t, type Language } from "../i18n";
 import type { MasternodeDetail } from "../api/generated/MasternodeDetail";
 import type { MasternodeOverview } from "../api/generated/MasternodeOverview";
 import type { MasternodePayout } from "../api/generated/MasternodePayout";
@@ -208,5 +212,42 @@ describe("governance vote rows (MG-09 F3)", () => {
     expect(nodeName(home)).toBe(`Masternode ${HOME.slice(0, 8)}`);
     const rows = voteRows([{ proTxHash: HOME, kind: "regular", weight: 1, valid: true, keyIndex: 0, currentVote: null, voteTime: null, keyHolders: 1, keyLastVote: null, keyLastVoteTime: null }], 0, "en-US", names);
     expect(rows[0].name).toBe("Home node · 203.0.113.7:19999");
+  });
+});
+
+describe("the masternode list's height", () => {
+  it("reads as before in English, and is grouped for the display language", () => {
+    expect(MnText.listHeight(2_358_432)).toBe("Masternode list at block 2,358,432");
+    expect(MnText.listHeight(999)).toBe("Masternode list at block 999");
+    const de: Language = { tag: "de-x-dwtest", name: "Deutsch", dir: "ltr", messages: new Map() };
+    LANGUAGES.push(de);
+    try {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: "de-x-dwtest" } });
+      expect(MnText.listHeight(2_358_432)).toBe("Masternode list at block 2.358.432");
+    } finally {
+      LANGUAGES.pop();
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
+    }
+  });
+});
+
+describe("a payout group's line", () => {
+  it("reads as before: its total, then 1 payment or the count", () => {
+    expect([1, 2, 4, 1234].map((count) => t("masternodes.myMasternodes.payoutsIn", { amount: "1.25 DASH", count }))).toEqual([
+      "1.25 DASH in 1 payment",
+      "1.25 DASH in 2 payments",
+      "1.25 DASH in 4 payments",
+      "1.25 DASH in 1,234 payments",
+    ]);
+  });
+});
+
+describe("the summary's and groups' counts", () => {
+  it("group a count of 1,234 in English", () => {
+    const yours = t.rich("masternodes.myMasternodes.summary.yours", { count: 1234, muted: (c) => createElement("span", null, c) });
+    expect(renderToStaticMarkup(createElement(Fragment, null, yours))).toBe("1,234 <span>yours</span>");
+    expect(t("masternodes.myMasternodes.summary.active", { count: 1234 })).toBe("1,234 active");
+    expect(t("masternodes.myMasternodes.summary.activeTracked", { active: 1234, tracked: 1234 })).toBe("1,234 active · 1,234 tracked");
+    expect(t("masternodes.myMasternodes.retiredCount", { count: 1234 })).toBe("Retired (1,234)");
   });
 });

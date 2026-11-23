@@ -30,22 +30,15 @@ import {
   pickedVoters,
   sameChoice,
   voteButtonText,
-  votesText,
 } from "../../governance/names";
 import { timeOfDay } from "../../format/tx";
 import { failureText } from "../pay/model";
+import { t as tr, useT } from "../../i18n";
 import { StatusChip, useNowSecs } from "./common";
 import { CredentialField, useCredential } from "./credential";
 
 /** What each choice does, under its title. */
-const CHOICE_NOTE: Record<NameChoice["kind"], string> = {
-  towardsIdentity: "Gets the name",
-  abstain: "Counted, for no one",
-  lock: "Nobody gets the name",
-};
-
-const CHECK_FAILED = "Couldn't check again.";
-const stillText = (at: Date) => `Checked at ${timeOfDay(at)} · still not confirmed.`;
+const stillText = (at: Date) => tr("masternodes.names.result.still", { time: timeOfDay(at) });
 
 /** What the result shows once the votes went out. */
 interface NameVoteDone {
@@ -69,10 +62,11 @@ export function NameVoteSheet({
   /** Re-reads the contests (the tab's query): after a vote, and for Check again. */
   reread: () => Promise<ContestedNames | undefined>;
 }) {
+  const t = useT();
   const [result, setResult] = useState<NameVoteDone | null>(null);
   const [busy, setBusy] = useState(false);
   return (
-    <Sheet title={`Vote on ${contest.label}`} width="medium" testId="name-vote-sheet" closable={!busy} onClose={onClose} focusKey={result ? "result" : "form"}>
+    <Sheet title={t("masternodes.names.sheet.title", { label: contest.label })} width="medium" testId="name-vote-sheet" closable={!busy} onClose={onClose} focusKey={result ? "result" : "form"}>
       {result ? (
         <NameVoteResult {...result} contest={contest} names={names} reread={reread} onDone={onClose} />
       ) : (
@@ -117,6 +111,7 @@ function NameVoteForm({
   onResult: (r: NameVoteDone) => void;
   onRefused: () => void;
 }) {
+  const t = useT();
   const b = useBackend();
   const shown = useDisplay(network);
   const now = useNowSecs();
@@ -125,7 +120,7 @@ function NameVoteForm({
   // No choice is preset: the present one would only be refused as `already_voted` (D10).
   const [choice, setChoice] = useState<NameChoice | null>(null);
   const [checked, setChecked] = useState<ReadonlySet<string>>(() => defaultVoters(names.voters, label, allowed));
-  const rows = useMemo(() => nameVoterRows(names.voters, label, choice, allowed), [names.voters, label, choice, allowed]);
+  const rows = useMemo(() => nameVoterRows(names.voters, label, choice, allowed), [names.voters, label, choice, allowed, t.language]);
   const picked = pickedVoters(rows, checked);
   const last = lastVoteNotice(picked);
   // The sheet keeps its read, but not past the end: Vote goes off when the contest ends under it,
@@ -138,7 +133,7 @@ function NameVoteForm({
     return () => clearTimeout(t);
   }, [contest.endsAt, woke]);
   const closed = isClosed(contest, Math.max(now, Math.floor(Date.now() / 1000)));
-  const credential = useCredential(wallet.walletId, "Enter your passphrase to vote.", null);
+  const credential = useCredential(wallet.walletId, t("masternodes.names.sheet.passphrase"), null);
   const toggle = (hash: string) =>
     setChecked((s) => {
       const next = new Set(s);
@@ -188,7 +183,7 @@ function NameVoteForm({
     >
       <p className="mg-muted mg-small mg-flush">{endsText(contest, now)}</p>
       <fieldset className="mg-choices" disabled={busy} data-testid="name-vote-choices">
-        <legend className="mg-section-title">Your vote</legend>
+        <legend className="mg-section-title">{t("masternodes.names.sheet.yourVote")}</legend>
         {choiceOptions(contest).map((o) => {
           const key = choiceKey(o.choice);
           return (
@@ -198,21 +193,19 @@ function NameVoteForm({
                 <span className={o.identity ? "mono" : undefined} title={o.identity ?? undefined}>
                   {o.title}
                 </span>
-                <span className="mg-muted mg-small">
-                  {CHOICE_NOTE[o.choice.kind]} · {votesText(o.votes)}
-                </span>
+                <span className="mg-muted mg-small">{t("masternodes.names.sheet.choiceLine", { note: t(`masternodes.names.sheet.choiceNote.${o.choice.kind}`), count: o.votes })}</span>
               </span>
             </label>
           );
         })}
       </fieldset>
       {!contest.contendersComplete && <p className="mg-muted mg-small mg-flush">{NameText.partial}</p>}
-      <ul className="mg-nodes card-l1" aria-label="Vote with" data-testid="name-vote-nodes">
+      <ul className="mg-nodes card-l1" aria-label={t("masternodes.names.sheet.voteWith")} data-testid="name-vote-nodes">
         <li className="mg-node mg-node-head" aria-hidden="true">
           <span />
-          <span>Vote with</span>
-          <span className="mg-node-weight">Weight</span>
-          <span className="mg-node-result">Its vote now</span>
+          <span>{t("masternodes.names.sheet.voteWith")}</span>
+          <span className="mg-node-weight">{t("masternodes.names.sheet.weight")}</span>
+          <span className="mg-node-result">{t("masternodes.names.sheet.itsVoteNow")}</span>
         </li>
         {rows.map((r) => (
           <li key={r.proTxHash} className="mg-node" aria-disabled={r.eligible ? undefined : true} data-testid={`name-vote-node-${shortHash(r.proTxHash)}`}>
@@ -242,12 +235,12 @@ function NameVoteForm({
       )}
       {closed && (
         <p className="mg-notice mg-notice-warning" data-testid="name-vote-closed">
-          {NameText.ended}.
+          {NameText.endedSentence}
         </p>
       )}
       {/* Live regions stay mounted, so a screen reader hears the text that arrives in them. */}
       <span className="sr-only" role="status">
-        {closed ? `${NameText.ended}.` : ""}
+        {closed ? NameText.endedSentence : ""}
       </span>
       {last && (
         <p className="mg-notice mg-notice-warning" data-testid="name-vote-last">
@@ -264,10 +257,10 @@ function NameVoteForm({
         </span>
         <span className="mg-actions">
           <DashButton variant="tintedGray" size="medium" data-testid="name-vote-cancel" disabled={busy} onClick={onCancel}>
-            Cancel
+            {t("masternodes.names.sheet.cancel")}
           </DashButton>
           <DashButton type="submit" variant="filledBlue" size="medium" data-testid="name-vote-send" disabled={busy || closed || choice === null || picked.length === 0 || !credential.ready}>
-            {busy ? "Voting…" : voteButtonText(choice)}
+            {busy ? t("masternodes.names.sheet.voting") : voteButtonText(choice)}
           </DashButton>
         </span>
       </footer>
@@ -288,6 +281,7 @@ function NameVoteResult({
   reread: () => Promise<ContestedNames | undefined>;
   onDone: () => void;
 }) {
+  const t = useT();
   // Only an explicit re-read can turn an `unconfirmed` vote into a counted one (D14).
   const [after, setAfter] = useState<ContestedNames | undefined>(undefined);
   const [checking, setChecking] = useState(false);
@@ -335,7 +329,7 @@ function NameVoteResult({
       <p className="mg-muted mg-small mg-flush">{NameText.counts}</p>
       {checkError && (
         <p className="mg-notice mg-notice-warning" data-testid="name-vote-check-error">
-          {CHECK_FAILED} {checkError}
+          {t("masternodes.names.result.checkFailed", { reason: checkError })}
         </p>
       )}
       {stillAt && (
@@ -344,18 +338,18 @@ function NameVoteResult({
         </p>
       )}
       <span className="sr-only" role="status">
-        {checkError ? `${CHECK_FAILED} ${checkError}` : stillAt ? stillText(stillAt) : ""}
+        {checkError ? t("masternodes.names.result.checkFailed", { reason: checkError }) : stillAt ? stillText(stillAt) : ""}
       </span>
       <footer className="mg-sheet-footer">
         <span />
         <span className="mg-actions">
           {view.unconfirmed && (
             <DashButton variant="tintedGray" size="medium" data-testid="name-vote-check" aria-disabled={checking || undefined} onClick={() => void check()}>
-              {checking ? "Checking…" : "Check again"}
+              {checking ? t("masternodes.names.result.checking") : t("masternodes.names.result.checkAgain")}
             </DashButton>
           )}
           <DashButton ref={done} variant="filledBlue" size="medium" data-testid="name-vote-done" data-autofocus onClick={onDone}>
-            Done
+            {t("masternodes.names.result.done")}
           </DashButton>
         </span>
       </footer>

@@ -62,6 +62,23 @@ fn payment_tx(n: u32, k: u32) -> u32 {
     1_000_000 + n * PAYMENTS + k
 }
 
+/// The block time of contact `n`'s `k`-th payment, after its request.
+fn payment_time(n: u32, k: u32) -> u32 {
+    1_700_000_000 + n * 60 + 1 + k
+}
+
+/// Established contacts of `total`, each with `PAYMENTS` payments.
+fn established(total: u32) -> usize {
+    (0..total).filter(|n| kind(*n) == Kind::Established).count()
+}
+
+/// The payments the library loaded for us.
+fn loaded_payments(f: &Fixture) -> usize {
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.with_me(move |m, _| tx.send(m.dashpay_payments_mut().len()).unwrap());
+    rx.recv().unwrap()
+}
+
 /// `total` contacts as the library stores them, with their payments.
 fn overlay(total: u32) -> PlatformWalletChangeSet {
     let me = id(ME);
@@ -142,7 +159,7 @@ fn warm(f: &Fixture, total: u32) {
     f.s.hub.history.with_wallet(f.wallet, |h| {
         for n in (0..total).filter(|n| kind(*n) == Kind::Established) {
             for k in 0..PAYMENTS {
-                let record = tx_record(payment_tx(n, k), Some(1_700_000_000 + n * 60 + k));
+                let record = tx_record(payment_tx(n, k), Some(payment_time(n, k)));
                 h.upsert(&record, None);
             }
         }
@@ -162,10 +179,19 @@ fn rows(page: &ContactsPage) -> usize {
 }
 
 fn reopen(f: &mut Fixture) {
+    close(f);
+    open(f);
+}
+
+fn close(f: &Fixture) {
     let engine = &f.engine;
     engine
         .block_on(engine.close_network(DashNetwork::Regtest))
         .unwrap();
+}
+
+fn open(f: &mut Fixture) {
+    let engine = &f.engine;
     f.s = engine
         .block_on(engine.open_network(
             DashNetwork::Regtest,
@@ -207,9 +233,12 @@ fn probe(f: &Fixture, total: u32) -> Vec<(&'static str, Stats)> {
     let contacts = (all.sections.iter())
         .find(|s| s.section == ContactSection::Contacts)
         .unwrap();
-    assert!(
-        contacts.contacts[0].display_name.is_some()
-            && contacts.contacts[0].last_activity_at.is_some()
+    let first = &contacts.contacts[0];
+    assert_eq!(first.display_name.as_deref(), Some("Contact 0002"));
+    assert_eq!(
+        first.last_activity_at,
+        Some(u64::from(payment_time(2, PAYMENTS - 1))),
+        "the latest payment's time, not the request's"
     );
     shapes
         .into_iter()
@@ -240,9 +269,10 @@ fn h06_contacts_query_at_500_and_1000() {
     }
 }
 
-/// The cold half of a restore with DashPay: the session reopened over a
-/// store whose overlay holds 500 contacts and 1,350 payments, then the first
-/// contacts read, which builds the read model.
+/// The cold half of a restore with DashPay: the session opened over a
+/// store whose overlay holds 500 contacts and 1,200 payments (the previous
+/// session is closed outside the sample), then the first contacts read,
+/// which builds the read model.
 #[test]
 #[ignore = "H-06 probe: run in release"]
 fn h06_cold_load_of_500_contacts() {
@@ -252,15 +282,17 @@ fn h06_cold_load_of_500_contacts() {
     f.store(overlay(total));
     let runs = iters(5).min(10);
     for run in 0..runs {
-        let ((), open) = sample(|| reopen(&mut f));
+        close(&f);
+        let ((), opened) = sample(|| open(&mut f));
+        assert_eq!(loaded_payments(&f), established(total) * PAYMENTS as usize);
         let dp = f.dp();
         let (page, first) = sample(|| dp.contacts(b58(ME), query(ContactSort::DisplayName, None)));
         assert_eq!(rows(&page.unwrap()) as u32, total);
         println!(
             "H06 cold load {total} contacts run {run}: session open wall {:.1} ms cpu {:.1} ms; \
              first contacts read wall {:.2} ms cpu {:.2} ms",
-            ms(open.wall),
-            ms(open.cpu),
+            ms(opened.wall),
+            ms(opened.cpu),
             ms(first.wall),
             ms(first.cpu),
         );
