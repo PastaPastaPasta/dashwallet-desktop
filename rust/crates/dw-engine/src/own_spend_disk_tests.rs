@@ -2945,14 +2945,26 @@ fn abandoning_one_of_two_spends_of_a_coin_keeps_it_until_the_other_goes() {
     coin_state(&engine, session, id, &paid, u, false, "both abandoned");
 }
 
-/// As above, both abandoned in one session: U is released at once, and
-/// counted and offered after a restart.
+/// As above, both abandoned in one session, the other spend first: that
+/// abandon releases nothing and asks for no scan; the wallet's own payment's
+/// then releases U and asks for the scan of U's funding block. U is stored
+/// unspent at once, and counted and offered after a restart.
 #[test]
 fn abandoning_both_spends_of_a_coin_in_one_session_releases_it() {
     let (_dir, engine, session, id, paid, u, first, second) = two_spends_of_a_coin();
     start_spv(&engine, &session);
-    abandon(&engine, &session, id, first.txid());
+    let replay = Arc::clone(&session.live().unwrap().replay);
+    let record = || engine.block_on(replay.get(id)).unwrap();
     abandon(&engine, &session, id, second.txid());
+    assert!(
+        record().is_none(),
+        "the abandon that released nothing asked for a scan"
+    );
+    abandon(&engine, &session, id, first.txid());
+    assert!(
+        record().is_some(),
+        "the abandon that released U asked for no scan"
+    );
     coin_state(&engine, session, id, &paid, u, false, "both abandoned");
 }
 
@@ -3003,10 +3015,12 @@ fn abandoning_one_of_two_spends_of_a_coin_after_a_restart_keeps_it_until_the_oth
 
 /// The wallet's pending payment of U, and another spend of U key-wallet
 /// credited and neither the history nor the store got (a lost flush). The
-/// abandon of the payment keeps U stored spent. After a restart nothing
-/// spends it: U is held once and offered, its row still spent; a rescan
-/// from the wallet's birth stores it unspent, and it stays so after
-/// another restart.
+/// abandon of the payment keeps U stored spent and asks for no rescan (the
+/// other spend still spends U). The lost flush ends at the restart after
+/// the abandon: nothing spends U then, but it stays stored spent, not
+/// counted and not offered, until Repair ▸ Rescan from the wallet's birth;
+/// then it is stored unspent, held once and offered, and after another
+/// restart too.
 #[test]
 fn a_coin_kept_for_a_spend_the_store_never_got_comes_back_with_a_rescan() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
@@ -3033,34 +3047,39 @@ fn a_coin_kept_for_a_spend_the_store_never_got_comes_back_with_a_rescan() {
     let mut session = reopen(&engine, session);
     for state in ["a restart", "a rescan from the birth", "a restart after"] {
         match state {
-            "a rescan from the birth" => engine
-                .block_on(session.rescan(crate::RescanFrom::WalletBirth))
-                .unwrap(),
+            "a rescan from the birth" => {
+                engine
+                    .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+                    .unwrap();
+                mined(&engine, &session, id, TIP, vec![paid.clone()]);
+            }
             _ => {
                 if state == "a restart after" {
                     session = reopen(&engine, session);
                 }
                 start_spv(&engine, &session);
+                scan_if_pending(&engine, &session, id, &paid);
             }
         }
-        mined(&engine, &session, id, TIP, vec![paid.clone()]);
+        store_settled(&engine, &session, id);
+        let back = state != "a restart";
+        let row = stored_row(&session, id, u);
+        assert_eq!(
+            row.map(|(spent, _)| spent),
+            Some(!back),
+            "{state}: U stored spent: {row:?}"
+        );
         let coins_held = coins(&engine, &session, id);
         assert_eq!(
             coins_held.iter().filter(|(o, _)| *o == u).count(),
-            1,
-            "{state}: U is not held once: {coins_held:?}"
+            usize::from(back),
+            "{state}: U held: {coins_held:?}"
         );
-        assert!(
+        assert_eq!(
             spendable(&engine, &session, id, u),
-            "{state}: U is not offered"
+            back,
+            "{state}: U offered"
         );
-        if state != "a restart" {
-            let row = stored_row(&session, id, u);
-            assert!(
-                row.is_some_and(|(spent, _)| !spent),
-                "{state}: U is stored spent: {row:?}"
-            );
-        }
     }
 }
 
@@ -3186,6 +3205,8 @@ fn a_coin_a_pending_payment_from_elsewhere_spends_is_never_offered_after_a_resca
                 start_spv(&engine, &session);
                 store_settled(&engine, &session, id);
             }
+            // #378: the balance counts U while that payment is pending;
+            // once it no longer does, flip this to "not counted".
             let row = stored_row(&session, id, u);
             assert_eq!(
                 row.map(|(spent, _)| spent),
