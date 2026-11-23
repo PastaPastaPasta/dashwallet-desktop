@@ -45,7 +45,7 @@ import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { masternodesHandlers } from "./masternodes";
-import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers, shieldedOff } from "./registration";
+import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers, shieldedQuote } from "./registration";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
@@ -1094,7 +1094,7 @@ export const HANDLERS: Handlers = {
       };
     }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
-    if (funding.kind === "shielded") throw shieldedOff();
+    if (funding.kind === "shielded") return shieldedQuote(label, world.pending.shielded);
     const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label);
     if (funding.kind === "platformAddresses") {
       const platform = platformRegistration(world, credits);

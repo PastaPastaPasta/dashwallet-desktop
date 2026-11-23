@@ -4412,6 +4412,8 @@ fn another_lock_awaiting_its_resend_holds_the_funding_without_failing_the_row() 
 }
 
 mod invitation;
+#[cfg(unix)]
+mod kill9;
 mod ledger;
 mod platform;
 mod rules;

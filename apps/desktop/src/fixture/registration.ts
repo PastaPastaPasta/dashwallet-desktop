@@ -24,13 +24,17 @@ import type { RegistrationFailure } from "../api/generated/RegistrationFailure";
 import type { RegistrationPhaseName } from "../api/generated/RegistrationPhaseName";
 import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
+import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationWaitName } from "../api/generated/RegistrationWaitName";
+import type { ShieldedCheckName } from "../api/generated/ShieldedCheckName";
+import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
 import type { UsernameCheck } from "../api/generated/UsernameCheck";
 import type { UsernameRuleName } from "../api/generated/UsernameRuleName";
 import { IDENTITY, type DashPayWorld } from "./dashpay";
 import type { Ctx, Handlers } from "./handlers";
 import { finishRestored, reportOf } from "./recovery";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
+import type { ShieldedWorld } from "./shielded";
 import { FIXTURE_NOW, secs } from "./wallet";
 
 /** names.rs `MIN_LENGTH` and `MAX_LENGTH` (DP1-03's cap below DPNS's 63). */
@@ -119,7 +123,7 @@ export function checkUsername(label: string): UsernameCheck {
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
-/** The engine refuses a Shielded-funded start until its flow step lands (m4 item 94); C4c adds the readiness quote. */
+/** The engine refuses a Shielded-funded start until its flow step lands (m4 item 94). */
 export const shieldedOff = (): AppError =>
   fail("platform.feature_off", "shielded_registration", { kind: "feature", feature: "shielded_registration" });
 const invalid = (detail: string) => fail("invalid_argument", detail);
@@ -211,6 +215,47 @@ export interface RegistrationDeps {
 export function fundable(w: FixtureWallet): number {
   const b = w.summary.balances;
   return b ? Math.max(0, b.confirmed - b.coinjoin) : 0;
+}
+
+/** PV13's smallest member, 0.03 Dash in credits: a plain name's Shielded registration (C-funding F14). */
+export const SHIELDED_DENOMINATION = 3_000_000_000n;
+/** registration_flow.rs `IDENTITY_CREATE_CREDITS`: the create's fee bound the quote takes from it. */
+const CREATE_CREDITS = 300_000_000n;
+
+/** registration.rs `shielded_readiness` over the fixture's Shielded world (C-funding F16, F17). */
+export function shieldedReadiness(s: ShieldedWorld | null | undefined): ShieldedReadiness {
+  const active = s?.active === true;
+  const synced = active && s.ready && s.scanning !== true;
+  const resting = s?.restingUntil !== undefined && s.restingUntil > secs(FIXTURE_NOW) ? s.restingUntil : null;
+  const checks: [ShieldedCheckName, boolean][] = [
+    ["poolActive", active],
+    ["featureOn", true],
+    ["denomination", active],
+    ["balance", active && BigInt(s.balance) >= SHIELDED_DENOMINATION],
+    ["noUnsettledSpend", active && s.unresolved.length === 0 && s.unrecorded.length === 0],
+    ["synced", synced],
+    ["rested", synced && resting === null],
+  ];
+  return { denomination: active ? String(SHIELDED_DENOMINATION) : null, checks: checks.map(([check, ready]) => ({ check, ready })), readyAt: resting };
+}
+
+/** A Shielded-funded quote (registration.rs `shielded_plan`): nothing in duffs; the grant covers
+ * the denomination and the names. */
+export function shieldedQuote(label: string, s: ShieldedWorld | null | undefined): RegistrationQuote {
+  const { contested, credits } = costs(label);
+  const readiness = shieldedReadiness(s);
+  const denomination = readiness.denomination === null ? 0n : BigInt(readiness.denomination);
+  const held = denomination > CREATE_CREDITS ? denomination - CREATE_CREDITS : 0n;
+  return {
+    contested,
+    lockDuffs: 0,
+    feeDuffs: 0,
+    totalDuffs: 0,
+    remainingCredits: String(held > credits ? held - credits : 0n),
+    availableDuffs: 0,
+    grant: { maxDuffs: 0, maxCredits: String(credits + denomination) },
+    readiness,
+  };
 }
 
 /** The fixture quote's costs for `label` (handlers.ts `registration_quote`). */

@@ -3031,6 +3031,9 @@ fn t2_testnet_the_money_gate_verifies_a_contact() {
 #[path = "contact_pay_tests.rs"]
 mod pay;
 
+#[cfg(unix)]
+mod kill9;
+
 /// Where [`contact_payment_killed_child`] keeps its data and its report.
 const KILL_ROOT: &str = "DWD_CASE1_CONTACT_KILL_ROOT";
 /// Where the child dies: `handed` (the library holds the payment, its
