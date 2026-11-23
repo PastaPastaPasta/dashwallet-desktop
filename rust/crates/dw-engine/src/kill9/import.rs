@@ -121,12 +121,24 @@ fn locks(engine: &Engine, session: &NetworkSession, id: WalletId) -> Vec<(String
         .collect()
 }
 
-/// Kills `row`'s child at `point`, relaunches, and checks that the wallet
-/// opens: listed with its seed if `registered`, else not listed, the
-/// operation run again then storing it. Either way a second relaunch lists
-/// that one wallet with its seed and `lock`, and running it again is
-/// refused.
-fn killed_at(child: &str, row: &str, point: &str, registered: bool) {
+/// The phrase's wallet id, from an import in a data folder of its own.
+fn expected_id() -> WalletId {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session) = kill9::engine_at(dir.path(), PASS, true);
+    let id = import(&engine, &session).unwrap();
+    kill9::close(engine);
+    id
+}
+
+/// Kills `row`'s child at `point`, relaunches, and checks what that step
+/// left before anything runs again: after the rows, the restore's coin lock
+/// and no seed; after the seed, the seed stored under the phrase's wallet id
+/// too; neither listed. After registering, that wallet is listed with its
+/// seed and rows. An unlisted wallet is then imported or restored again.
+/// Either way a second relaunch lists that one wallet with its seed and
+/// lock, and running it again is refused.
+fn killed_at(child: &str, row: &str, point: &str) {
+    let id = expected_id();
     let (dir, report) = kill9::killed_at(child, row, point);
     assert_eq!(report, point);
     let root = dir.path();
@@ -138,19 +150,22 @@ fn killed_at(child: &str, row: &str, point: &str, registered: bool) {
         IMPORT_ROW => vec![],
         _ => vec![(TXID.to_string(), 3)],
     };
-    let id = {
-        let (engine, session) = kill9::engine_at(root, PASS, true);
-        let shown = listed(&session);
-        if registered {
-            assert_eq!(shown.len(), 1, "registered before the kill");
-            shown[0]
-        } else {
-            assert_eq!(shown, vec![], "not registered before the kill");
-            let id = run(&engine, &session).unwrap();
-            assert_eq!(listed(&session), vec![id]);
-            id
-        }
-    };
+    let (engine, session) = kill9::engine_at(root, PASS, true);
+    assert_eq!(locks(&engine, &session, id), lock, "stored before the seed");
+    if point == IMPORT_REGISTER {
+        assert_eq!(listed(&session), vec![id], "registered before the kill");
+    } else {
+        assert_eq!(listed(&session), vec![], "not registered before the kill");
+        assert_eq!(
+            session.vault().has_wallet_secret(&id.0),
+            point == IMPORT_SECRET,
+            "the seed is stored by then"
+        );
+        assert_eq!(run(&engine, &session).unwrap(), id);
+        assert_eq!(listed(&session), vec![id]);
+    }
+    kill9::close(engine);
+
     let (engine, session) = kill9::engine_at(root, PASS, true);
     assert_eq!(listed(&session), vec![id]);
     assert_eq!(locks(&engine, &session, id), lock);
@@ -170,31 +185,31 @@ fn killed_at(child: &str, row: &str, point: &str, registered: bool) {
 #[test]
 #[ignore = "H-03 kill -9 matrix (nightly)"]
 fn kill9_r9_restore_killed_after_its_rows_restores_again() {
-    killed_at(RESTORE_CHILD, RESTORE_ROW, IMPORT_ROWS, false);
+    killed_at(RESTORE_CHILD, RESTORE_ROW, IMPORT_ROWS);
 }
 
 #[test]
 #[ignore = "H-03 kill -9 matrix (nightly)"]
 fn kill9_r9_restore_killed_after_its_seed_restores_again() {
-    killed_at(RESTORE_CHILD, RESTORE_ROW, IMPORT_SECRET, false);
+    killed_at(RESTORE_CHILD, RESTORE_ROW, IMPORT_SECRET);
 }
 
 #[test]
 #[ignore = "H-03 kill -9 matrix (nightly)"]
 fn kill9_r9_restore_killed_after_registering_keeps_the_wallet() {
-    killed_at(RESTORE_CHILD, RESTORE_ROW, IMPORT_REGISTER, true);
+    killed_at(RESTORE_CHILD, RESTORE_ROW, IMPORT_REGISTER);
 }
 
 #[test]
 #[ignore = "H-03 kill -9 matrix (nightly)"]
 fn kill9_r9b_import_killed_after_its_rows_imports_again() {
-    killed_at(IMPORT_CHILD, IMPORT_ROW, IMPORT_ROWS, false);
+    killed_at(IMPORT_CHILD, IMPORT_ROW, IMPORT_ROWS);
 }
 
 #[test]
 #[ignore = "H-03 kill -9 matrix (nightly)"]
 fn kill9_r9b_import_killed_after_its_seed_imports_again() {
-    killed_at(IMPORT_CHILD, IMPORT_ROW, IMPORT_SECRET, false);
+    killed_at(IMPORT_CHILD, IMPORT_ROW, IMPORT_SECRET);
 }
 
 /// Its name, creation time and created-here marker are written after the
@@ -203,5 +218,20 @@ fn kill9_r9b_import_killed_after_its_seed_imports_again() {
 #[test]
 #[ignore = "H-03 kill -9 matrix (nightly)"]
 fn kill9_r9b_import_killed_after_registering_keeps_the_wallet() {
-    killed_at(IMPORT_CHILD, IMPORT_ROW, IMPORT_REGISTER, true);
+    killed_at(IMPORT_CHILD, IMPORT_ROW, IMPORT_REGISTER);
+}
+
+/// The rows open a data folder twice in one process: one [`kill9::close`]d
+/// opens again at once, its wallet's database released.
+#[test]
+fn a_closed_folder_opens_again_at_once() {
+    let dir = dw_testutil::private_tempdir();
+    for round in 0..5 {
+        let (engine, session) = kill9::engine_at(dir.path(), PASS, true);
+        if round == 0 {
+            import(&engine, &session).unwrap();
+        }
+        assert_eq!(listed(&session).len(), 1);
+        kill9::close(engine);
+    }
 }

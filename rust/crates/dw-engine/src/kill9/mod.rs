@@ -80,15 +80,22 @@ pub(crate) fn engine_at(
             },
         ))
         .unwrap();
-    if engine
-        .block_on(session.vault_op(move |v| v.create(Some(pass))))
-        .is_err()
-    {
-        engine
-            .block_on(session.vault_op(move |v| v.unlock(pass, UnlockScope::Full)))
-            .unwrap();
+    match engine.block_on(session.vault_op(move |v| v.create(Some(pass)))) {
+        Ok(_) => {}
+        Err(crate::EngineError::Vault(dw_vault::VaultError::AlreadyExists)) => {
+            engine
+                .block_on(session.vault_op(move |v| v.unlock(pass, UnlockScope::Full)))
+                .unwrap();
+        }
+        Err(e) => panic!("the test vault could not be made: {e:?}"),
     }
     (engine, session)
+}
+
+/// Closes `engine` and waits for its sessions to release the data folder,
+/// so the next [`engine_at`] on it in this process can open it.
+pub(crate) fn close(engine: Engine) {
+    engine.block_on(engine.shutdown()).unwrap();
 }
 
 struct NullSink;
