@@ -39,7 +39,7 @@ async function resetSheet(page: Page, theme: Theme, lang: string) {
 
 async function governanceAsk(page: Page, theme: Theme, lang: string) {
   await settings(page, theme, lang);
-  await page.getByTestId("settings-show-masternodes").check();
+  await page.getByTestId("settings-show-masternodes-on").click();
   await expect(page.getByTestId("settings-governance-ask")).toBeVisible();
   await fontsReady(page);
 }
@@ -63,7 +63,7 @@ test("Settings ▸ General's sheets name Close and Cancel from the catalog", asy
   await resetSheet(page, "light", "en-XA");
   await expect(page.getByTestId("settings-reset-sheet").getByRole("button", { name: long("components.sheet.close"), exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.getByTestId("settings-show-masternodes").check();
+  await page.getByTestId("settings-show-masternodes-on").click();
   const ask = page.getByTestId("settings-governance-ask");
   await expect(ask.getByRole("button", { name: long("components.sheet.close"), exact: true })).toBeVisible();
   await expect(ask.getByRole("button", { name: long("common.cancel"), exact: true })).toBeFocused();
