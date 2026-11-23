@@ -245,6 +245,7 @@ export const transfer = {
       back: "Go back",
       refused: "A shielded payment from before the restart may still go through. Confirm to send anyway.",
     },
+    fundingUnknown: "The payment may have been sent. Open Tools ▸ Repair to settle it; you can move Dash into Shielded again once it has.",
     close: "Close",
     show: "Show",
     unseen: "Your Shielded move has an update.",

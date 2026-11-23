@@ -7,6 +7,7 @@ import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as cmd from "../api/generated/commands";
 import { IpcBackend } from "../api/tauri";
+import { DEFAULT_PREFS, ui } from "../app/ui";
 import { installFixture } from "../fixture/index";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "../fixture/scenarios";
 import { appError } from "../onboarding/testWorld";
@@ -324,6 +325,17 @@ describe("Move mixed coins to Shielded", () => {
     const unknown = appError("platform.broadcast_unknown", { kind: "artifact", artifact: "shield/0/funding" });
     expect([moveErrorText(unknown), canRetry(unknown)]).toEqual([SHIELDED_COPY.fundingUnknown, false]);
     expect(SHIELDED_COPY.fundingUnknown).toBe("The payment may have been sent. Open Tools ▸ Repair to settle it; you can move Dash into Shielded again once it has.");
+  });
+
+  it("reads that refusal in the language in use when it is shown, not the one the app started in", () => {
+    const unknown = appError("platform.broadcast_unknown", { kind: "artifact", artifact: "shield/0/funding" });
+    try {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: "en-XA" } });
+      expect(moveErrorText(unknown)).toMatch(/^⟦.+⟧$/);
+    } finally {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language: null } });
+    }
+    expect(moveErrorText(unknown)).toBe("The payment may have been sent. Open Tools ▸ Repair to settle it; you can move Dash into Shielded again once it has.");
   });
 });
 
