@@ -31,6 +31,8 @@ export const dashpayKeys = {
   invitation: (linkId: string) => ["dashpay", "invitation", linkId] as const,
   claimQuote: (walletId: string, label: string, linkId: string, requestInviter: boolean) =>
     ["dashpay", "quote", walletId, label, "invitation", linkId, requestInviter] as const,
+  /** C-funding F16: the Shielded balance's readiness to pay a registration, under `quote`. */
+  shieldedQuote: (walletId: string) => ["dashpay", "quote", walletId, "shielded"] as const,
 };
 
 /** DP1-09 D15: a running registration's `waiting` changes without a Platform signal, so its
@@ -122,6 +124,19 @@ export function useStatusRegistration(walletId: string | undefined, status: Dash
 /** D6: the quote of a non-contested username for this wallet: its total is what one costs, its
  * `availableDuffs` what the funding can spend now (DP1-09 D5); `undefined` while unread or when
  * the quote fails (J7). */
+/** The "Pay with" step's Shielded row (C-funding F16): the quote's readiness, for the label the
+ * Join page quotes (the denomination covers a plain name; the engine ignores the request's). */
+export function useShieldedReadiness(walletId: string, enabled: boolean) {
+  const b = useBackend();
+  const quote = useQuery({
+    queryKey: dashpayKeys.shieldedQuote(walletId),
+    queryFn: () => b.registrationQuote(walletId, { ...QUOTE_REQUEST, funding: { kind: "shielded", denomination: "0" } }),
+    enabled,
+    retry: false,
+  });
+  return quote.data?.readiness ?? null;
+}
+
 export function useUsernameQuote(walletId: string, enabled: boolean) {
   const b = useBackend();
   const quote = useQuery({

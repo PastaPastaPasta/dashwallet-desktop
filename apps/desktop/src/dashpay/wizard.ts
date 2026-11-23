@@ -16,6 +16,7 @@ import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { Model } from "../onboarding/model";
 import { GrantModel } from "../tools/grant";
 import { CLAIM_KEPT, claimFoundIdentity } from "./claim";
+import { LIVE_SOURCES, type PaySource } from "./payWith";
 import { QUOTE_REQUEST } from "./status";
 
 export type WizardApi = Pick<
@@ -46,7 +47,8 @@ export type WizardMode =
   | { kind: "credits"; identity: string; instant?: boolean }
   | { kind: "invitation"; linkId: string; contestedAllowed: boolean; inviter: InvitationInviter | null };
 
-export type WizardStep = "name" | "confirm";
+/** `source`: the "Pay with" step before the name (C-funding F19). */
+export type WizardStep = "source" | "name" | "confirm";
 
 export type RunningCall = "start" | "resume" | "discard" | "finish" | "name";
 
@@ -80,6 +82,11 @@ export class RegistrationWizard extends Model {
   /** `null` while the wizard is not open: the Join page shows its intro or a row's screen. */
   step: WizardStep | null = null;
   mode: WizardMode = { kind: "core" };
+  /** Where a new identity is paid from: Dash wallet each time the wizard opens, never the last
+   * choice (C-funding F18). Only a source this build can start is ever chosen (`LIVE_SOURCES`). */
+  source: PaySource = "core";
+  /** The wizard was opened on the "Pay with" step: Back from the name returns there. */
+  picked = false;
   label = "";
   /** The claim's "Send a contact request" check (DP5-03 D7). */
   requestInviter = true;
@@ -110,12 +117,35 @@ export class RegistrationWizard extends Model {
   begin(mode: WizardMode) {
     this.mode = mode;
     this.step = "name";
+    this.source = "core";
+    this.picked = false;
     this.label = "";
     this.requestInviter = true;
     this.draft = null;
     this.named = null;
     this.error = null;
     this.wedge = null;
+    this.changed();
+  }
+
+  /** "Pay another way": the "Pay with" step, on Dash wallet (F18, F19). */
+  chooseSource() {
+    this.begin({ kind: "core" });
+    this.step = "source";
+    this.picked = true;
+    this.changed();
+  }
+
+  setSource(source: PaySource) {
+    this.source = source;
+    this.changed();
+  }
+
+  /** "Pay with" → the name, for a source this build can start. */
+  pickSource() {
+    if (!LIVE_SOURCES.has(this.source)) return;
+    this.step = "name";
+    this.error = null;
     this.changed();
   }
 
@@ -144,7 +174,7 @@ export class RegistrationWizard extends Model {
   }
 
   back() {
-    this.step = this.step === "confirm" ? "name" : null;
+    this.step = this.step === "confirm" ? "name" : this.step === "name" && this.picked ? "source" : null;
     this.error = null;
     this.wedge = null;
     this.grants.cancel();

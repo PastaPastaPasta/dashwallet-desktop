@@ -1,6 +1,7 @@
 // Join DashPay (DASHPAY §4 `JoinDashPayViewModel`, F1; DP1-08): the intro (iOS
 // `JoinDashPayScreen`), the readiness under it by status (J1–J7), the voting info and the FAQ.
-// Create username opens the registration wizard (DP1-09, Registration.tsx); while a registration
+// Create username opens the registration wizard (DP1-09, Registration.tsx), and "Pay another way"
+// its "Pay with" step first (C-funding F19); while a registration
 // goes on, one stopped with its funds committed, or this session's has a result to show, the page
 // is its screen instead (D1, D12, D22). An invitation opened (`ui.invitation`, DP5-03) shows the
 // claim screen (Claim.tsx) in place of the intro; its claim is the wizard's invitation mode.
@@ -13,6 +14,7 @@ import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CLAIM_COPY, claimHasIdentity, claimRow } from "../../dashpay/claim";
 import { useRegistrations, useStatusInputs, useUsernameQuote } from "../../dashpay/queries";
+import { PAY_WITH_COPY } from "../../dashpay/payWith";
 import { namedModel, pendingModel, screenModel, type ScreenActionKind } from "../../dashpay/registration";
 import { JOIN_COPY, joinModel, type CardActionKind } from "../../dashpay/status";
 import { findFriends, openEditProfile } from "../../dashpay/welcome";
@@ -192,6 +194,10 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
                   {JOIN_COPY.waiting}
                 </span>
               )}
+              {/* C-funding F19: the other sources sit behind a link; the main button stays Core's. */}
+              <DashButton variant="plainBlue" data-testid="join-pay-another" disabled={model.waiting} onClick={() => wiz.chooseSource()}>
+                {PAY_WITH_COPY.link}
+              </DashButton>
               <DashButton variant="plainBlue" data-testid="join-invitation" onClick={() => setSheet("invitation")}>
                 {CLAIM_COPY.paste.open}
               </DashButton>
