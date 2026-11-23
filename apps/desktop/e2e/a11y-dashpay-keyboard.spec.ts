@@ -447,6 +447,173 @@ test("#286: after Confirm & pay's passphrase, focus moves to the registration pr
   await expect(page.getByTestId("registration-announced")).toHaveText("Welcome to DashPay, @alice-77. Your username is ready. Friends can now find you and pay you by name.");
 });
 
+// Each passphrase-gated action of a registration's screen, pressed with Enter, its call held after
+// the passphrase as a slow network would: the button is disabled while it runs and the grant sheet
+// closes onto it, so the screen's title keeps the focus, not <body>.
+const SCREEN_ACTIONS = [
+  { action: "continue", label: "Continue", scenario: "dashpay-registration-paused", kind: "paused", call: "resume_registration" },
+  { action: "finish", label: "Finish", scenario: "dashpay-registration-needs-finish", kind: "repair", call: "finish_asset_locks" },
+] as const;
+
+for (const a of SCREEN_ACTIONS)
+  test(`keyboard only: while the registration's ${a.label} runs after its passphrase, focus stays on the screen's title (#316)`, async ({ page }) => {
+    const errors = await open(page, a.scenario);
+    await goTo(page, "joinDashPay");
+    const screen = page.getByTestId("registration-screen");
+    await expect(screen).toHaveAttribute("data-kind", a.kind);
+    const button = page.getByTestId(`registration-${a.action}`);
+    await tabTo(page, button);
+    const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), a.call);
+    await page.keyboard.press("Enter");
+    await authorizeFrom(page, button);
+    await expect.poll(() => page.evaluate((c) => window.__dwFixture!.calls.includes(c), a.call)).toBe(true);
+    await expect(screen.locator(".registration-actions button").first()).toBeDisabled();
+    await rendered(page);
+    const title = screen.getByRole("heading", { level: 2 });
+    await expect.poll(async () => ((await title.evaluate((el) => el === document.activeElement)) ? "the screen's title" : await focusName(page))).toBe("the screen's title");
+    await release.evaluate((r) => r());
+    await expect(screen).toHaveAttribute("data-kind", "progress");
+    await expect(title).toBeFocused();
+    expect(errors).toEqual([]);
+  });
+
+test("keyboard only: while the registration's Continue runs with no passphrase to ask, focus goes to the screen's title (#316)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registration-paused");
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.lock = { ...f.world.lock, state: "unencrypted", encrypted: false };
+  });
+  await goTo(page, "joinDashPay");
+  const screen = page.getByTestId("registration-screen");
+  await expect(screen).toHaveAttribute("data-kind", "paused");
+  const button = page.getByTestId("registration-continue");
+  await tabTo(page, button);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("resume_registration"));
+  await page.keyboard.press("Enter");
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("resume_registration"))).toBe(true);
+  await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
+  // Continue is gone with the press (the row shows its progress at once), and focus with it.
+  await expect(screen).toHaveAttribute("data-kind", "progress");
+  await expect(button).toHaveCount(0);
+  await rendered(page);
+  const title = screen.getByRole("heading", { level: 2 });
+  await expect.poll(async () => ((await title.evaluate((el) => el === document.activeElement)) ? "the screen's title" : await focusName(page))).toBe("the screen's title");
+  await release.evaluate((r) => r());
+  // The call's end re-renders the screen with its actions enabled; focus stays on the title.
+  await expect(screen.getByTestId("registration-home")).toBeEnabled();
+  await rendered(page);
+  await expect(title).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("keyboard only: Escape from the passphrase of a slow Continue gives focus back to Continue (#316)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registration-paused");
+  await goTo(page, "joinDashPay");
+  const screen = page.getByTestId("registration-screen");
+  await expect(screen).toHaveAttribute("data-kind", "paused");
+  const button = page.getByTestId("registration-continue");
+  await tabTo(page, button);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("registration_quote"));
+  await page.keyboard.press("Enter");
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("registration_quote"))).toBe(true);
+  await expect(button).toBeDisabled();
+  await rendered(page);
+  await release.evaluate((r) => r());
+  const sheet = page.getByTestId("grant-sheet");
+  await expect(sheet.locator("input[type=password]")).toBeFocused();
+  await escapeReturnsTo(page, sheet, button);
+  await expect(button).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test("keyboard only: a Continue that went through moves focus to the title when its row replaces Continue (#316)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registration-paused");
+  await goTo(page, "joinDashPay");
+  const screen = page.getByTestId("registration-screen");
+  await expect(screen).toHaveAttribute("data-kind", "paused");
+  const button = page.getByTestId("registration-continue");
+  await tabTo(page, button);
+  // Every read of the rows answers late, as a slow network would: the call ends first and Continue
+  // is enabled again before the progress screen replaces it.
+  await page.evaluate(() => {
+    const ipc = (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, ...rest: unknown[]) => Promise<unknown> } }).__TAURI_INTERNALS__;
+    const invoke = ipc.invoke.bind(ipc);
+    const gate = new Promise<void>((r) => ((window as unknown as { openRows: () => void }).openRows = r));
+    ipc.invoke = (cmd, ...rest) => (cmd === "registrations" ? gate.then(() => invoke(cmd, ...rest)) : invoke(cmd, ...rest));
+  });
+  await page.keyboard.press("Enter");
+  await authorizeFrom(page, button);
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("resume_registration"))).toBe(true);
+  // The call ended before the sheet's close returned focus, so the sheet gave it back to Continue.
+  await expect(button).toBeEnabled();
+  await rendered(page);
+  await expect(button).toBeFocused();
+  const title = screen.getByRole("heading", { level: 2 });
+  await page.evaluate(() => (window as unknown as { openRows: () => void }).openRows());
+  await expect(screen).toHaveAttribute("data-kind", "progress");
+  await rendered(page);
+  await expect.poll(async () => ((await title.evaluate((el) => el === document.activeElement)) ? "the screen's title" : await focusName(page))).toBe("the screen's title");
+  // Focus the user then puts on <body> stays there as the run moves on.
+  await screen.getByTestId("registration-lines").locator("p").first().click();
+  await expect.poll(() => focusName(page)).toBe("<body>");
+  const phase = await screen.getAttribute("data-phase");
+  await page.evaluate(() => window.__dwFixture!.advanceRegistration(window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft));
+  await expect(screen).not.toHaveAttribute("data-phase", phase ?? "");
+  await rendered(page);
+  await rendered(page);
+  expect(await focusName(page)).toBe("<body>");
+  expect(errors).toEqual([]);
+});
+
+test("a registration step landing while nothing runs leaves focus where the user put it (#316)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registering");
+  await goTo(page, "joinDashPay");
+  const screen = page.getByTestId("registration-screen");
+  await expect(screen).toHaveAttribute("data-kind", "progress");
+  await page.getByRole("button", { name: "Lock wallet" }).focus();
+  // A click on the screen's text: focus leaves Lock wallet for <body>, as the user chose.
+  await screen.getByTestId("registration-lines").locator("p").first().click();
+  await expect.poll(() => focusName(page)).toBe("<body>");
+  const phase = await screen.getAttribute("data-phase");
+  await page.evaluate(() => window.__dwFixture!.advanceRegistration(window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft));
+  await expect(screen).not.toHaveAttribute("data-phase", phase ?? "");
+  await rendered(page);
+  await rendered(page);
+  expect(await focusName(page)).toBe("<body>");
+  expect(errors).toEqual([]);
+});
+
+test("keyboard only: while the wedge's OK runs after its passphrase, focus stays in the wedge sheet (#316)", async ({ page }) => {
+  const errors = await open(page, "tools-stuck-funding");
+  // The stuck funding is no longer the status's registration: Join DashPay offers a new one, which
+  // the engine refuses behind it, so the wedge asks.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.dashpay.status = { kind: "noIdentity", reason: null };
+    const draft = f.world.dashpay.registrations[0].draft;
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "registration", draft } });
+  });
+  const pay = await toConfirmAndPay(page, "alice-77");
+  await page.keyboard.press("Enter");
+  await authorizeFrom(page, pay);
+  const wedge = page.getByTestId("registration-wedge");
+  await expect(wedge).toBeVisible();
+  const ok = page.getByTestId("registration-wedge-ok");
+  await tabTo(page, ok);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("start_registration_past_unknown_funding"));
+  await page.keyboard.press("Enter");
+  await authorizeFrom(page, ok);
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("start_registration_past_unknown_funding"))).toBe(true);
+  await expect(ok).toBeDisabled();
+  await rendered(page);
+  await expect.poll(async () => ((await wedge.evaluate((el) => el === document.activeElement)) ? "the wedge sheet" : await focusName(page))).toBe("the wedge sheet");
+  await release.evaluate((r) => r());
+  const screen = page.getByTestId("registration-screen");
+  await expect(screen).toHaveAttribute("data-kind", "progress");
+  await expect(screen.getByRole("heading", { level: 2 })).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
 /** The bell popover now, read in one go: "closed" (absent or not rendered), "focus kept" (it
  * holds focus), else where focus went while it stays open. */
 const bellState = (page: Page) =>
