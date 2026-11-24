@@ -933,7 +933,9 @@ export function historyGap(): Promise<WalletHistoryGap | null> {
 /**
  * "Rebuild index": deletes the SPV chain data and keeps wallets, vault
  * and app data. SPV must be stopped; the next `startSpv` syncs headers
- * again and rescans each wallet from its birth height.
+ * again and rescans each wallet from its birth height. Refused with
+ * `app.network_busy` while mixing, as a network switch is, and with
+ * `coinjoin.inputs_held` while a signed round's inputs are held.
  */
 export function resetChainData(): Promise<null> {
   return invoke<null>("reset_chain_data");
@@ -4677,6 +4679,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "coinjoin.broadcast_rejected",
   "coinjoin.mixing_active",
   "coinjoin.move_running",
+  "coinjoin.inputs_held",
   "coinjoin.plan_changed",
   "masternode.watch_only",
   "masternode.vault_locked",
