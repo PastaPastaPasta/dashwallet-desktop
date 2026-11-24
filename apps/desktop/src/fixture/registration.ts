@@ -33,6 +33,7 @@ import type { UsernameRuleName } from "../api/generated/UsernameRuleName";
 import { IDENTITY, type DashPayWorld } from "./dashpay";
 import type { Ctx, Handlers } from "./handlers";
 import { finishRestored, reportOf } from "./recovery";
+import { isHeldOp } from "../platform/move";
 import type { PlatformWorld } from "./pending";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import type { ShieldedWorld } from "./shielded";
@@ -271,6 +272,8 @@ const MIN_IDENTITY_FUNDING = 200_000n;
 export function platformQuote(label: string, p: PlatformWorld | null, mainnet: boolean): RegistrationQuote {
   if (mainnet) throw fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
   if (p === null) throw fail("platform.feature_off", "platform", { kind: "feature", feature: "platform" });
+  const held = p.activity.find(isHeldOp);
+  if (held) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: held.id });
   const { contested, credits } = costs(label);
   const funding = credits > MIN_IDENTITY_FUNDING ? credits : MIN_IDENTITY_FUNDING;
   const reserve = 3n * REGISTER_FEE_CREDITS;

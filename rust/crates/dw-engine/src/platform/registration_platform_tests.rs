@@ -176,3 +176,34 @@ fn the_flag_is_off_on_mainnet_only() {
         assert_eq!(refuse_on_mainnet(&on), Ok(()), "{on:?}");
     }
 }
+
+/// The reserve is three fees for exactly the inputs taken: an address above
+/// the one-input reserve but below the two-input one is left out rather
+/// than kept at a two-input reserve.
+#[test]
+fn the_reserve_is_three_fees_for_the_inputs_taken() {
+    let funding = 400_000_000;
+    let p = plan(&[(1, reserve(1) + 500_000), (2, 600_000_000)], funding).unwrap();
+    assert_eq!(p.inputs, [(address(2), (3, funding))].into());
+    assert_eq!(p.fee_reserve_credits, reserve(1));
+    assert_eq!(p.fee_reserve_credits, REGISTER_FEE_BAND * p.fee_credits);
+}
+
+/// Input 0 above the reserve by less than the input minimum: the refusal
+/// names input 0's balance against the reserve and that minimum.
+#[test]
+fn a_claim_below_the_input_minimum_reports_input_0() {
+    let min_input = version()
+        .dpp
+        .state_transitions
+        .address_funds
+        .min_input_amount;
+    let e = plan(&[(1, reserve(1) + 1), (2, 1_000_000_000)], 25_000_000).unwrap_err();
+    assert_eq!(
+        e,
+        PlatformError::InsufficientCredits {
+            needed: reserve(1) + min_input,
+            available: reserve(1) + 1,
+        }
+    );
+}

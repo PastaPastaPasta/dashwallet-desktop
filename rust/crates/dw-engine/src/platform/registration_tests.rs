@@ -449,6 +449,8 @@ struct World {
     platform_held: Option<String>,
     /// The session's network reads as mainnet.
     mainnet: bool,
+    /// Name lookups fail as DAPI unreachable would.
+    names_offline: bool,
     locks: Vec<LockInfo>,
     identities: Vec<(u32, String)>,
     names: Vec<(String, String)>,
@@ -1047,6 +1049,9 @@ impl RegistrationLib for Fake {
     }
 
     async fn name_credits(&self, _: &str) -> Result<u64, NameError> {
+        if self.w().names_offline {
+            return Err(NameError::Platform(PlatformError::Unavailable));
+        }
         Ok(NAME_CREDITS)
     }
 

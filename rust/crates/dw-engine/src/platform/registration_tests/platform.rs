@@ -127,15 +127,17 @@ fn a_start_checks_the_quoted_numbers_and_writes_nothing() {
         let e = start(&f, &lib, changed);
         assert_eq!(e, RegistrationError::QuoteChanged);
     }
-    // Another Platform balance since the quote plans another reserve.
+    // Another Platform balance since the quote plans two inputs, and so
+    // another reserve.
+    let version = PlatformVersion::get(PROTOCOL_VERSION_13).unwrap();
+    let keys = crate::platform::keys_policy::registration_specs().len();
+    let two = REGISTER_FEE_BAND * register_fee(version, 2, keys);
     lib.w().platform = [
-        (
-            PlatformAddress::P2pkh([2; 20]),
-            p.fee_reserve_credits + 1_000_000,
-        ),
+        (PlatformAddress::P2pkh([2; 20]), two + 1_000_000),
         (PlatformAddress::P2pkh([3; 20]), HELD),
     ]
     .into();
+    assert_ne!(two, p.fee_reserve_credits);
     assert_eq!(start(&f, &lib, quoted(&p)), RegistrationError::QuoteChanged);
     assert!(f.rows().is_empty());
 }
@@ -165,9 +167,9 @@ fn a_platform_row_is_never_run_by_this_build() {
 }
 
 /// Mainnet: off (flag `platform_registration`). On mainnet the quote and
-/// the start are refused before the addresses are read (the held move is
-/// never reached), the grant redeemed or a row written; a Core-funded
-/// registration is unchanged there.
+/// the start are refused before any name is looked up (DAPI is down) or the
+/// addresses are read (the held move is never reached), the grant redeemed
+/// or a row written; a Core-funded registration is unchanged there.
 #[test]
 fn mainnet_refuses_a_platform_registration_before_anything_is_written() {
     let f = fixture(false);
@@ -176,6 +178,7 @@ fn mainnet_refuses_a_platform_registration_before_anything_is_written() {
     let p = quote(&f, &lib).unwrap().platform.unwrap();
     lib.w().mainnet = true;
     lib.w().platform_held = Some("move-7-0".into());
+    lib.w().names_offline = true;
     let off = |e: &RegistrationError| {
         matches!(e, RegistrationError::Platform(PlatformError::FeatureOff { feature })
             if feature == FEATURE)
@@ -185,6 +188,7 @@ fn mainnet_refuses_a_platform_registration_before_anything_is_written() {
     let e = start(&f, &lib, quoted(&p));
     assert!(off(&e), "{e:?}");
     assert!(f.rows().is_empty());
+    lib.w().names_offline = false;
     let core = f
         .engine
         .block_on(registration::quote(&*lib, &request(PLAIN)));

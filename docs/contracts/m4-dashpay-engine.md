@@ -4588,12 +4588,16 @@ renames or reshapes them takes the next version bump:
     (when a later input's last claim is raised to `min_input_amount`, `funding_credits` is the claims' sum).
     `fee_credits` is dpp's `calculate_min_required_fee` of an identity create from those inputs with the six
     registration keys and no output, shown as "about": Platform meters the fee from input 0.
-    `fee_reserve_credits` is three times that fee (the top-up's band) for the inputs the reserve was sized for, never
-    fewer than the plan takes: a larger reserve that leaves an address out, and so an input, is kept.
-    `debit_credits = funding_credits + fee_reserve_credits`, the most the addresses may lose; the quote's `grant` is
+    `fee_reserve_credits` is three times that fee (the top-up's band) for exactly the inputs the plan takes: a reserve
+    sized for another count plans again, and a selection that never settles on its own count is refused
+    (`platform.insufficient_credits`). Input 0's claim below `min_input_amount` reports input 0's balance against the
+    reserve and that minimum.
+    `debit_credits = funding_credits + fee_reserve_credits`, the planned debit, which sizes the grant (not a bound on
+    the loss: Platform meters the fee from input 0, which C-funding F5 leaves without a ceiling); the quote's `grant` is
     `max_duffs` 0 and `max_credits` the debit plus the names and the profile; `remaining_credits` is
     `funding_credits` less the names and the profile. No address above the reserve, or too little in all, is
-    `platform.insufficient_credits`; on mainnet, before the addresses are read, `platform.feature_off{feature:
+    `platform.insufficient_credits`; on mainnet, after the request's own checks and before any name is looked up or
+    the addresses are read, `platform.feature_off{feature:
     "platform_registration"}` (the flag is off there until its funds ruling, on for every test network); Platform off,
     `platform.feature_off{feature: "platform"}`; a protocol version
     without address funds, `platform.feature_off{feature: "platform_addresses"}`. `start_registration` with
