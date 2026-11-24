@@ -68,12 +68,22 @@ pub(crate) fn registration_refused(_: &std::path::Path) -> bool {
 pub(crate) const IMPORT_ROWS: &str = "import.rows";
 pub(crate) const IMPORT_SECRET: &str = "import.secret";
 pub(crate) const IMPORT_REGISTER: &str = "import.register";
+/// Tests: runs at each import fault point with its name, before the point.
+#[cfg(test)]
+pub(crate) static AT_IMPORT_POINT: std::sync::Mutex<Option<ImportPointHook>> =
+    std::sync::Mutex::new(None);
+#[cfg(test)]
+pub(crate) type ImportPointHook = Box<dyn Fn(&str) + Send>;
 
 impl NetworkSession {
     /// The import fault point `point` on this session's app database: armed,
     /// the step fails; `DW_FAULT` naming it aborts the process.
     #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
     fn import_fault(&self, point: &str) -> Result<(), EngineError> {
+        #[cfg(test)]
+        if let Some(at) = &*AT_IMPORT_POINT.lock().unwrap_or_else(|e| e.into_inner()) {
+            at(point);
+        }
         (self.live()?.appdb)
             .fault_point(point, dw_appdb::fault::Stage::After)
             .map_err(|e| EngineError::Storage(e.to_string()))
@@ -409,7 +419,7 @@ pub(crate) async fn apply_lookahead(
         wider.fold(gap, u32::max)
     };
     let accounts: Vec<(AccountTypePreference, u32, u32)> = {
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(wallet).await?;
         let accounts = &state.core_wallet.accounts;
         (accounts.standard_bip44_accounts.iter())
             .map(|(i, a)| (AccountTypePreference::BIP44, *i, widest(a)))
@@ -1970,7 +1980,7 @@ impl NetworkSession {
             // Not a DashPay contact's address: the wallet does not own it
             // (MG-05 D19).
             let path = {
-                let state = wallet.state().await;
+                let state = crate::wallet_read::info_of(&wallet).await?;
                 crate::coins::own_address_info(&state.core_wallet, &parsed).map(|info| info.path)
             }
             .ok_or_else(|| EngineError::AddressNotMine(address.clone()))?;

@@ -17,6 +17,8 @@ import { networkName } from "../../network/choice";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { QuestionSheet, Sheet } from "../../components/sheet";
 import { byTag, LANGUAGES, systemLanguage, systemLanguages, useT } from "../../i18n";
+import { unitDecimals } from "../../format/amount";
+import { DECIMAL_PLACES, decimalPlaces, UNIT_OF } from "../../format/display";
 import { failureText } from "../../onboarding/model";
 import { DEFAULT_DUST, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
 import { savePrefs, settledPending } from "../../settings/prefs";
@@ -63,6 +65,9 @@ export function GeneralTab() {
   const t = useT();
   const launch = useLaunch();
   const { prefs, save, problem } = useSavePrefs();
+  // Decimal places count in the chosen unit, at most its own decimals; a unit with one choice or
+  // none (μDASH, duffs) has no row.
+  const places = DECIMAL_PLACES.filter((n) => n <= unitDecimals(UNIT_OF[prefs.unit]));
   const [resetting, setResetting] = useState(false);
   const [resetDone, setResetDone] = useState(false);
   const id = useId();
@@ -111,6 +116,30 @@ export function GeneralTab() {
             ))}
           </div>
         </div>
+        {places.length > 1 && (
+          <>
+            <div className="settings-row">
+              <span className="settings-row-title" id={`${id}-decimals`}>
+                {t("settings.general.decimals")}
+              </span>
+              <div className="segmented" role="group" aria-labelledby={`${id}-decimals`} aria-describedby={`${id}-decimals-hint`}>
+                {places.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className="segment"
+                    data-testid={`settings-decimals-${n}`}
+                    aria-pressed={Math.min(decimalPlaces(prefs.decimalDigits), places[places.length - 1]) === n}
+                    onClick={() => void save({ decimalDigits: n })}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <Hint id={`${id}-decimals-hint`}>{t("settings.general.decimalsHint")}</Hint>
+          </>
+        )}
         <label className="checkbox-row">
           <input
             type="checkbox"

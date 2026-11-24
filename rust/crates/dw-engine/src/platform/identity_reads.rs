@@ -274,7 +274,7 @@ impl NetworkSession {
     async fn refresh_one(&self, wallet: WalletId, id: Identifier) -> Result<(), PlatformError> {
         let manager = self.manager()?;
         let w = (manager.get_wallet(&wallet.0).await).ok_or(PlatformError::WalletNotFound)?;
-        if (w.state().await.identity_manager)
+        if (crate::wallet_read::info_of(&w).await?.identity_manager)
             .wallet_identity(&wallet.0, &id)
             .is_none()
         {
@@ -286,7 +286,7 @@ impl NetworkSession {
             let locks = identity_locks(wallet, id);
             let _write = locks.write.lock().await;
             let fetched = (net.identity(id).await?).ok_or(IdentityError::NotFound)?;
-            let mut state = w.state_mut().await;
+            let mut state = crate::wallet_read::info_mut_of(&w).await?;
             let m = (state.identity_manager)
                 .wallet_identity_mut(&wallet.0, &id)
                 .ok_or(IdentityError::NotFound)?;

@@ -34,6 +34,7 @@ import { unreadReceived, useReceived } from "../payments/received";
 import { ToolsPage } from "../screens/tools/ToolsPage";
 import { SettingsPage } from "../screens/settings/SettingsPage";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
+import { SyncSheet } from "../screens/SyncSheet";
 import { SavedLinksSheet } from "../screens/SavedLinks";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
@@ -234,6 +235,7 @@ function WalletChrome({
             unitName={unitName}
             hd={wallet?.hd ?? false}
             onUnlock={() => ui.set({ dialog: "unlock" })}
+            onSync={() => ui.set({ dialog: "sync" })}
             governance={wallet && masternodesItem.shown ? <GovernanceStatusItem key={wallet.walletId} walletId={wallet.walletId} /> : null}
           />
         </SheetLayer.Provider>
@@ -384,6 +386,7 @@ function Shell() {
       {shown === "about" && <AboutSheet launch={launch} />}
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
+      {shown === "sync" && <SyncSheet onClose={closeDialog} />}
       {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}
       {onboarding && <Onboarding network={network} inert={notice} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
       {/* In place of the wallet's views, not over them: a locked window holds nothing of the wallet. */}

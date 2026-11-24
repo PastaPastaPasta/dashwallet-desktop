@@ -229,8 +229,8 @@ const FACADE: &[&str] = &[
 /// with its tests (0.1 E1), the unfinished transfers' kinds and runner
 /// with their tests (0.2 recovery), the input-0 planner with its tests
 /// (1.0 C1a-1), the credit transfer to an own Platform address with its
-/// tests (1.0 C6a-1), and the parsers dw-fuzz drives (H-02, `fuzzing`
-/// feature).
+/// tests (1.0 C6a-1), the parsers dw-fuzz drives (H-02, `fuzzing`
+/// feature), and the kill -9 rows' test folders (H-03).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -238,6 +238,7 @@ const NOT_FACADE: &[&str] = &[
     "avatar_dhash.rs",
     "avatar_fetch.rs",
     "avatar_image.rs",
+    "avatar_tests",
     "avatar_tests.rs",
     "balances.rs",
     "banner.rs",
@@ -246,6 +247,7 @@ const NOT_FACADE: &[&str] = &[
     "contact_names.rs",
     "contacts_model.rs",
     "contacts_perf_tests.rs",
+    "contacts_tests",
     "contacts_tests.rs",
     "contest_watch.rs",
     "contest_watch_tests.rs",
@@ -294,6 +296,7 @@ const NOT_FACADE: &[&str] = &[
     "recovery_tests.rs",
     "requests.rs",
     "requests_net.rs",
+    "requests_tests",
     "requests_tests.rs",
     "reverify.rs",
     "names_tests.rs",
@@ -317,6 +320,7 @@ const NOT_FACADE: &[&str] = &[
     "startup_status.rs",
     "status.rs",
     "topup.rs",
+    "topup_tests",
     "topup_tests.rs",
     "trust.rs",
     "trust_tests.rs",

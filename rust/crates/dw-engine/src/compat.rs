@@ -73,6 +73,14 @@ pub enum CompatFailure {
     WatchOnly,
     /// The export file exists or cannot be written.
     DestinationUnwritable(String),
+    /// A legacy `wallet.dat` read and refused on purpose: more keys on one
+    /// chain than the import restores. Its funds move by sending them from
+    /// Dash Core.
+    WalletTooLarge,
+    /// A legacy `wallet.dat` with keys on an HD account other than 0.
+    ExtraHdAccount {
+        account: u32,
+    },
 }
 
 impl std::fmt::Display for CompatFailure {
@@ -98,6 +106,10 @@ impl std::fmt::Display for CompatFailure {
             Self::InvalidKeyMaterial(d) => write!(f, "invalid key material: {d}"),
             Self::WatchOnly => f.write_str("watch-only wallet"),
             Self::DestinationUnwritable(d) => write!(f, "cannot write: {d}"),
+            Self::WalletTooLarge => f.write_str("wallet too large to restore"),
+            Self::ExtraHdAccount { account } => {
+                write!(f, "HD account {account} cannot be restored")
+            }
         }
     }
 }
@@ -276,6 +288,11 @@ pub fn inspect_wallet_file(path: &Path) -> Result<WalletFileKind, EngineError> {
                     encrypted: w.encrypted(),
                     has_mnemonic: w.has_mnemonic(),
                 },
+                // Legacy records in a SQLite file (`createfromdump
+                // -format=sqlite`) are refused as the import refuses them.
+                Err(e @ (WalletDatError::RangeTooLarge | WalletDatError::ExtraHdAccount(_))) => {
+                    return Err(walletdat_failure(e));
+                }
                 _ => WalletFileKind::Unknown,
             });
         }
@@ -606,16 +623,10 @@ impl NetworkSession {
                     let mut issued = None;
                     for (account, external, internal) in wallet.hd_accounts() {
                         if account != 0 {
-                            return Err(CompatFailure::UnsupportedFormat(format!(
-                                "HD account {account} cannot be restored; only account 0 is"
-                            ))
-                            .into());
+                            return Err(CompatFailure::ExtraHdAccount { account }.into());
                         }
                         if external > MAX_ISSUED || internal > MAX_ISSUED {
-                            return Err(CompatFailure::UnsupportedFormat(
-                                "the wallet's address range is too large to restore".into(),
-                            )
-                            .into());
+                            return Err(CompatFailure::WalletTooLarge.into());
                         }
                         issued = Some((external, internal));
                     }
@@ -1125,6 +1136,8 @@ fn walletdat_failure(e: WalletDatError) -> EngineError {
         WalletDatError::PassphraseRequired => CompatFailure::PassphraseRequired,
         WalletDatError::WrongPassphrase => CompatFailure::WrongPassphrase,
         WalletDatError::NoHdChain => CompatFailure::NoHdChain,
+        WalletDatError::RangeTooLarge => CompatFailure::WalletTooLarge,
+        WalletDatError::ExtraHdAccount(account) => CompatFailure::ExtraHdAccount { account },
         WalletDatError::SeedLength(n) => {
             return EngineError::NotImplemented(format!("import_wallet_dat.seed_length.{n}"));
         }

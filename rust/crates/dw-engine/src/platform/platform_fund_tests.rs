@@ -951,7 +951,7 @@ fn the_recovery_finishes_a_lock_no_fund_step_signed() {
             kind: LockKindId::PlatformAddress,
             duffs: 1_000_000,
             origin: LockOrigin::Restored,
-            state: UnfinishedState::Ready,
+            state: UnfinishedState::Checking,
         }]
     );
     assert!(pending_of(&fx, &lib).is_empty());
@@ -983,7 +983,7 @@ fn already_consumed_counts_only_for_the_applied_outpoint() {
     let lib = Arc::new(FakeFund::new(&fx));
     let other = OutPoint::new(Txid::from_byte_array([0x99; 32]), 0);
     for n in 1..=3 {
-        lib.track(lib.lock(n, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+        lib.track(lib.lock(n, 1_000_000, AssetLockStatus::ChainLocked, true));
     }
     let (own, signed, unsigned) = (lib.outpoint(0), lib.outpoint(1), lib.outpoint(2));
 
@@ -1019,7 +1019,7 @@ fn already_consumed_counts_only_for_the_applied_outpoint() {
 fn the_apply_signs_with_the_locks_credit_key_only() {
     let fx = Fixture::new(0);
     let lib = Arc::new(FakeFund::new(&fx));
-    lib.track(lib.lock(1, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+    lib.track(lib.lock(1, 1_000_000, AssetLockStatus::ChainLocked, true));
     let at = lib.outpoint(0);
     for other in ["m/9'/1'/5'/5'/0", "m/9'/1'/5'/2'/0", "m/9'/1'/5'/4'/1"] {
         *lib.key.lock().unwrap() = DerivationPath::from_str(other).unwrap();
@@ -1305,15 +1305,28 @@ fn a_fund_lock_without_this_installs_step_is_listed_and_finished_by_the_recovery
     assert!(states_of(&fx, &lib).is_empty());
     quote_of(&fx, &lib, 1_000_000).unwrap();
     let restored = listed(&fx, &lib).unwrap();
-    assert_eq!(
+    assert_eq!(restored.len(), 2);
+    let state_at = |at: OutPoint| {
         (restored.iter())
+            .find(|l| l.txid == at.txid.to_string())
             .map(|l| (l.kind, l.origin, l.state))
-            .collect::<Vec<_>>(),
-        [(
+    };
+    assert_eq!(
+        state_at(first),
+        Some((
             LockKindId::PlatformAddress,
             LockOrigin::Restored,
             UnfinishedState::Ready
-        ); 2]
+        ))
+    );
+    assert_eq!(
+        state_at(second),
+        Some((
+            LockKindId::PlatformAddress,
+            LockOrigin::Restored,
+            UnfinishedState::Checking
+        )),
+        "read back from the chain"
     );
 
     lib.answer(Answer::Done(Some(900_000_000)));
@@ -2754,7 +2767,7 @@ fn a_persistence_failure_leaves_a_restored_fund_lock_unfinished() {
     let fx = Fixture::new(0);
     let lib = Arc::new(FakeFund::new(&fx));
     for n in 1..=2 {
-        lib.track(lib.lock(n, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+        lib.track(lib.lock(n, 1_000_000, AssetLockStatus::ChainLocked, true));
     }
     let (failed, untried) = (lib.outpoint(0), lib.outpoint(1));
     lib.answer(Answer::PersistFailed);

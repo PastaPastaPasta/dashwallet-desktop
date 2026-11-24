@@ -51,3 +51,12 @@ fn a_panic_while_holding_the_lock_leaves_later_opens_working() {
         assert!(!HOLDING.get());
     });
 }
+
+#[test]
+fn the_linked_sqlite_has_the_wal_close_deadlock_fix() {
+    assert!(
+        rusqlite::version_number() >= 3_051_002,
+        "SQLite {} can deadlock closing a WAL database (#105); 3.51.2 fixes it",
+        rusqlite::version()
+    );
+}
