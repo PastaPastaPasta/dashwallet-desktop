@@ -41,6 +41,7 @@ import {
   OP_SENT_OVERDUE,
   OP_SIGNED,
   OP_UPDATE,
+  OP_UPDATE_SAVED,
   PENDING_DUP_OPERATOR_KEY,
   REG_COIN,
   REG_COIN_EVO,
@@ -82,6 +83,9 @@ const SCENARIOS: ScenarioName[] = [
   "mn-ops",
   "mn-released",
   "mn-update-not-sent",
+  "mn-update-saved",
+  "mn-update-sent",
+  "mn-update-saved-behind-sent",
 ];
 
 const install = (scenario: ScenarioName) => installFixture({ scenario });
@@ -730,7 +734,27 @@ describe("Change keys or payout (MG-10 S3, ProUpRegTx)", () => {
     expect(op).toMatchObject({ kind: "update_registrar", proTxHash: HOME, state: { kind: "sent" }, fee: p.fee });
     expect(seen.some((e) => e.kind === "masternodes")).toBe(true);
     await expect(cmd.mnUpdateRegistrar(W, req(HOME), grant)).rejects.toMatchObject({ code: "masternodes.update_pending" });
-    await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME))).rejects.toMatchObject({ code: "masternodes.update_pending" });
+    await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME))).rejects.toMatchObject({ code: "masternodes.update_pending", data: { kind: "operation", operation: op.id } });
+  });
+
+  it("seeds Home's change saved or sent; either refuses a new one, naming it (#438)", async () => {
+    for (const [scenario, state] of [["mn-update-saved", "not_sent"], ["mn-update-sent", "sent"]] as const) {
+      install(scenario);
+      const [op] = await cmd.mnOperations(W);
+      expect(op).toMatchObject({ id: OP_UPDATE, kind: "update_registrar", proTxHash: HOME, state: { kind: state } });
+      await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME))).rejects.toMatchObject({ code: "masternodes.update_pending", data: { kind: "operation", operation: OP_UPDATE } });
+      clearMocks();
+    }
+  });
+
+  it("refuses Send again of a change saved behind a sent one, naming it, and keeps the grant (resend_conflict)", async () => {
+    const f = install("mn-update-saved-behind-sent");
+    const grant = (await cmd.authorize({ kind: "masternodeOp", maxDuffs: 100_000_000 }, W, PASS)).id;
+    await expect(cmd.mnResendOperation(W, OP_UPDATE_SAVED, grant)).rejects.toMatchObject({ code: "masternodes.update_pending", data: { kind: "operation", operation: OP_UPDATE } });
+    expect(f.world.grants.find((g) => g.grant.id === grant)!.used).toBe(false);
+    expect(f.world.masternodes.operations.find((o) => o.id === OP_UPDATE_SAVED)!.state).toEqual({ kind: "not_sent" });
+    const again = (await cmd.authorize({ kind: "masternodeOp", maxDuffs: 100_000_000 }, W, PASS)).id;
+    await expect(cmd.mnResendOperation(W, OP_UPDATE, again)).rejects.toMatchObject({ code: "masternodes.update_superseded", data: { kind: "operation", operation: OP_UPDATE_SAVED } });
   });
 
   it("refuses a payout to the owner or voting key's address (bad-protx-payee-reuse)", async () => {

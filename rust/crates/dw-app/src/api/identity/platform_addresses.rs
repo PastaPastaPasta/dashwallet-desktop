@@ -91,7 +91,10 @@ impl From<PlatformAddressRow> for engine::PlatformAddressRow {
 /// until Platform proves it applied; `toIdentity`: a top-up of one of this
 /// wallet's identities (`to`, base58) from its Platform addresses;
 /// `contactPayment`: a payment to a DashPay contact (`contact`) from the
-/// Platform balance, to its Core address (`to`).
+/// Platform balance, to its Core address (`to`);
+/// `fromShielded`: an unshield of this wallet to its Platform address
+/// (`address`), pending until Platform executed it (`done`) or did not
+/// (`failed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityKind {
@@ -102,10 +105,11 @@ pub enum PlatformActivityKind {
     FromCore,
     ToIdentity,
     ContactPayment,
+    FromShielded,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, ContactPayment
+    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, ContactPayment, FromShielded
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);
