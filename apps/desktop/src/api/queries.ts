@@ -141,9 +141,9 @@ export function useOpenNetwork() {
   });
 }
 
-export function useLockStatus() {
+export function useLockStatus(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(() => b.lockStatus()) });
+  return useQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(() => b.lockStatus()), enabled });
 }
 
 export function useWallets(enabled = true) {
@@ -513,9 +513,9 @@ export function useFeePolicy() {
 }
 
 /** "Ask for my passphrase for every payment"; read again each time the confirm sheet opens. */
-export function usePaymentAuthentication() {
+export function usePaymentAuthentication(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), staleTime: 0, gcTime: 0, retry: false });
+  return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), enabled, staleTime: 0, gcTime: 0, retry: false });
 }
 
 /** The spend limit and the post-unlock signing window. Read again with the confirm sheet. */

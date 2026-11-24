@@ -18,6 +18,7 @@ import { messageTable, t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { REG_COPY } from "../dashpay/registration";
 import { forgetTopUp } from "../dashpay/topup";
+import { recordUnreadableText, unreadableWallet } from "../history/recordUnreadable";
 import { finishGrant } from "../dashpay/wizard";
 import type { GrantModel } from "./grant";
 
@@ -250,6 +251,7 @@ type Api = Pick<
   | "creditsStuckTopUpFundings"
   | "identities"
   | "stuckShieldFundings"
+  | "listWallets"
 >;
 
 export class RepairModel extends Model {
@@ -441,7 +443,9 @@ export class RepairModel extends Model {
     try {
       this.#set(await f());
     } catch (e) {
-      this.#set({ kind: "failed", text: repairErrorText(e) });
+      const unreadable = unreadableWallet(e);
+      const text = unreadable === undefined ? repairErrorText(e) : recordUnreadableText(unreadable, await this.api.listWallets().catch(() => []));
+      this.#set({ kind: "failed", text });
     }
     await this.refresh();
   }

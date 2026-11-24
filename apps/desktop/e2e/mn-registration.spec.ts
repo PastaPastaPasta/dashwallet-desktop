@@ -181,6 +181,13 @@ test("self-run evonode: the wallet's operator key and Platform node, to Review",
   await expect(review).toContainText(`${keyInfo("platform_node", 0).platformNodeId!.slice(0, 8)} · 36656 / 22001`);
   await expect(page.getByTestId("reg-review-fee")).toContainText("0.00000567");
   await expectRegister(page);
+  // Sent names both secrets, and Open Masternode keys opens on the operator role.
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-register").click();
+  await expect(page.getByTestId("reg-done-body")).toContainText("Copy the operator secret and the Platform node secret from Masternode keys");
+  await page.getByTestId("reg-open-keys").click();
+  await expect(page.getByTestId("mn-keys")).toBeVisible();
+  await expect(page.getByTestId("mn-keys-role-operator")).toHaveAttribute("aria-pressed", "true");
   expect(errors).toEqual([]);
 });
 
@@ -276,14 +283,65 @@ test("D5: Review shows the first figures, then Register's re-read, then sends", 
   await expect(page.getByTestId("reg-review-total")).toContainText("0.00000453");
   await expect(page.getByTestId("reg-changed")).toHaveCount(0);
   await expectRegister(page);
+  // On a window too short for the whole Review, the passphrase and Register are in view without
+  // scrolling the step (#650).
+  await page.setViewportSize({ width: 1280, height: 640 });
+  await expect(page.getByTestId("reg-passphrase")).toBeInViewport();
+  await expect(page.getByTestId("reg-register")).toBeInViewport();
+  await page.getByTestId("reg-sheet").locator(".sheet-body").evaluate((el) => (el.scrollTop = 0));
   await page.getByTestId("reg-passphrase").fill("demo");
   await expect(page.getByTestId("reg-register")).toBeEnabled();
   await page.getByTestId("reg-register").click();
   await expect(page.getByTestId("reg-changed")).toHaveText("The figures changed. Check them again.");
+  // So is the notice that the figures changed: a second Register would send at them.
+  await expect(page.getByTestId("reg-changed")).toBeInViewport();
   await expect(page.getByTestId("reg-review-fee")).toContainText("0.00000573");
   await page.getByTestId("reg-passphrase").fill("demo");
   await page.getByTestId("reg-register").click();
   await expect(page.getByTestId("reg-done-body")).toBeVisible();
+  // A hosted masternode's secret is the operator's: no link to this wallet's keys.
+  await expect(page.getByTestId("reg-open-keys")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("self-run, Sent: Masternode keys… opens the keys on the operator role to copy the secret", async ({ page }) => {
+  const errors = await open(page, "reg");
+  await setUp(page);
+  await page.getByTestId("reg-runner-self").click();
+  await next(page);
+  await expect(step(page, "collateral")).toBeVisible();
+  await next(page);
+  await expect(step(page, "operator")).toBeVisible();
+  await page.getByTestId("reg-service").fill(SERVICE);
+  await next(page);
+  await expect(page.getByTestId("reg-owner")).toBeVisible();
+  await toReview(page);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-register").click();
+  await expect(page.getByTestId("reg-done-body")).toContainText("Copy the operator secret from Masternode keys");
+  await page.getByTestId("reg-open-keys").click();
+  await expect(sheet(page)).toHaveCount(0);
+  await expect(page.getByTestId("mn-keys")).toBeVisible();
+  await expect(page.getByTestId("mn-keys-role-operator")).toHaveAttribute("aria-pressed", "true");
+  expect(errors).toEqual([]);
+});
+
+test("self-run with an operator key entered by hand: Sent offers no Masternode keys button", async ({ page }) => {
+  const errors = await open(page, "reg");
+  await setUp(page);
+  await page.getByTestId("reg-runner-self").click();
+  await next(page);
+  await next(page);
+  await page.getByTestId("reg-operator-enter").click();
+  await page.getByTestId("reg-operator-key").fill(OPERATOR_KEY);
+  await page.getByTestId("reg-service").fill(SERVICE);
+  await next(page);
+  await expect(page.getByTestId("reg-owner")).toBeVisible();
+  await toReview(page);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-register").click();
+  await expect(page.getByTestId("reg-done-body")).toBeVisible();
+  await expect(page.getByTestId("reg-open-keys")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -365,8 +423,17 @@ test("closing after Type asks to discard; Keep editing stays", async ({ page }) 
   await next(page);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("reg-discard")).toContainText("Discard this registration? Nothing was sent.");
+  await expect(page.getByTestId("reg-keep")).toBeFocused();
+  await expect(page.getByTestId("reg-keep")).toHaveAccessibleDescription("Discard this registration? Nothing was sent.");
   await page.getByTestId("reg-keep").click();
   await expect(step(page, "collateral")).toBeVisible();
+  // On a step with an autofocused field, the prompt still takes the focus, and Keep editing gives it back.
+  await next(page);
+  await expect(step(page, "operator")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("reg-keep")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("reg-operator-key")).toBeFocused();
   await page.keyboard.press("Escape");
   await page.getByTestId("reg-discard-confirm").click();
   await expect(sheet(page)).toHaveCount(0);
@@ -461,11 +528,14 @@ for (const theme of ["light", "dark"] as const)
     // The engine sends no sign request for a spent row: Prove offers the new message, not an empty step.
     await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
     await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+    // No message yet, so no "sign this message": the notice carries the step (issue 641).
+    await expect(sheet(page)).not.toContainText("sign this message");
     await expect(page.getByTestId("reg-submit")).toBeDisabled();
     await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000453");
     await page.getByTestId("reg-new-message").click();
     await expect(page.getByTestId("reg-sign-request")).toBeVisible();
     await expect(page.getByTestId("reg-inputs-spent")).toHaveCount(0);
+    await expect(page.getByTestId("reg-prove-text")).toContainText("sign this message");
     // The new message comes with new fee inputs: Prove shows the replanned fee, and the grant is capped at it.
     await expect(page.getByTestId("reg-prove-fee")).toContainText("0.00000573");
     await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000573");
@@ -480,6 +550,7 @@ for (const theme of ["light", "dark"] as const)
 for (const theme of ["light", "dark"] as const)
   test(`${theme}: Prove names the fee and what leaves this wallet (issue 460)`, async ({ page }, info) => {
     const errors = await open(page, "reg-prepared", theme);
+    await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
     await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
     await expect(step(page, "prove")).toBeVisible();
     await page.waitForTimeout(300);
@@ -514,6 +585,7 @@ for (const theme of ["light", "dark"] as const)
 
 test("a mistyped signature is refused before any signing, and its grant is revoked (issue 460)", async ({ page }) => {
   const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
   await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
   await expect(step(page, "prove")).toBeVisible();
   const before = await revokes(page);
@@ -549,6 +621,7 @@ for (const theme of ["light", "dark"] as const)
 
 test("fee coins spent while Prove is open: the refusal hides the old message and offers a new one (issue 460)", async ({ page }) => {
   const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
   await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
   await expect(page.getByTestId("reg-sign-request")).toBeVisible();
   await page.evaluate(() => {
@@ -562,6 +635,7 @@ test("fee coins spent while Prove is open: the refusal hides the old message and
   await page.getByTestId("reg-submit").click();
   await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
   await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+  await expect(sheet(page)).not.toContainText("sign this message");
   await expect.poll(() => revokes(page)).toBe(before + 1);
   expect(await liveGrants(page)).toEqual([]);
   // Closed and resumed with no further read: the saved row reads spent too, and Prove asks for a new message.
@@ -687,6 +761,47 @@ test("a released collateral offers Lock it again on testnet", async ({ page }) =
   await page.getByTestId("mn-lock-again").click();
   await expect(page.getByTestId("mn-released")).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+/** All a held wizard reads, from opening to Review. The list comes from the page's own read; the
+ * page's governance polls run on their own timers, which the sheet doesn't own. */
+const HELD_READS = ["mn_preview_registration", "mn_registration_keys"];
+const PAGE_POLLS = ["governance_contested_names", "governance_info", "governance_my_proposals", "governance_upcoming_superblocks"];
+
+for (const theme of ["light", "dark"] as const)
+  test(`mainnet ${theme}: the held wizard reads only keys and the preview (issue 635)`, async ({ page }, info) => {
+    const errors = await open(page, "reg", theme, "mainnet");
+    await expect(page.getByTestId("mn-set-up")).toBeVisible();
+    // The page's own polls have started, so a late first one isn't taken for the sheet's.
+    await expect
+      .poll(() => page.evaluate(() => ["governance_info", "governance_my_proposals"].every((c) => window.__dwFixture!.calls.includes(c))))
+      .toBe(true);
+    const opened = await page.evaluate(() => [...window.__dwFixture!.calls]);
+    const from = opened.length;
+    // A poll counts as the page's only if the page made it before the sheet opened.
+    const pagePoll = (c: string) => PAGE_POLLS.includes(c) && opened.includes(c);
+    await setUp(page);
+    await hostedToKeys(page, "203.0.113.20:9999");
+    await toReview(page);
+    await expectSendOff(page);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-held-review-${theme}.png`) });
+    const made = await page.evaluate((n) => window.__dwFixture!.calls.slice(n), from);
+    expect([...new Set(made.filter((c) => !pagePoll(c)))].sort()).toEqual(HELD_READS);
+    await expect(page.getByTestId("reg-passphrase")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+test("mainnet: opening Set up after a failed list read doesn't read the list again (issue 635)", async ({ page }) => {
+  const errors = await open(page, "reg", "light", "mainnet", "&fail=mn_list:rpc");
+  await expect(page.getByTestId("mn-list-failed")).toBeVisible();
+  const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_list").length);
+  const before = await reads();
+  await page.getByTestId("mn-set-up").click();
+  await expect(sheet(page)).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(await reads()).toBe(before);
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
 });
 
 test("mainnet: Review ends with the send-off line and sends nothing", async ({ page }) => {
