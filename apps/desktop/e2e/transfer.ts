@@ -170,7 +170,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await expect(page.getByTestId("shielded-quote-total")).toContainText("0.00101");
     },
   },
-  { id: "coreToShielded-progress", scenario: "funded", go: (page) => inProgress(page, "coreToShielded", "shield_from_core", (p) => expect(p.getByTestId("shielded-progress")).toBeVisible()) },
+  { id: "coreToShielded-progress", scenario: "funded", go: (page) => inProgress(page, "coreToShielded", "shield_from_core", (p) => expect(p.getByTestId("shielded-progress")).toBeVisible().then(() => expect(p.getByTestId("transfer-preparing")).toBeVisible())) },
   {
     id: "coreToShielded-done",
     scenario: "funded",
@@ -257,7 +257,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
     },
   },
-  { id: "coreToPlatform-progress", scenario: "funded", go: (page) => inProgress(page, "coreToPlatform", "platform_fund", (p) => expect(p.getByTestId("platform-fund-progress")).toBeVisible()) },
+  { id: "coreToPlatform-progress", scenario: "funded", go: (page) => inProgress(page, "coreToPlatform", "platform_fund", (p) => expect(p.getByTestId("platform-fund-progress")).toBeVisible().then(() => expect(p.getByTestId("transfer-preparing")).toBeVisible())) },
   {
     id: "coreToPlatform-done",
     scenario: "funded",

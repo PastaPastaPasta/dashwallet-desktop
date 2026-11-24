@@ -137,7 +137,10 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
     }
 
     fn caught_up(&self) -> bool {
-        self.lib.funding_hold().is_none()
+        let hold = self.lib.funding_hold();
+        (self.session.platform)
+            .ask_on_startup_hold(self.wallet, hold)
+            .is_none()
     }
 
     fn wallet_lock(&self) -> Arc<tokio::sync::Mutex<()>> {

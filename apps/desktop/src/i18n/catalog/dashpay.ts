@@ -80,6 +80,14 @@ export const dashpay = {
     grantExceeded: "The cost went above what you approved.",
     insufficientCredits: "The identity's credits do not cover the username.",
     unavailable: "The Dash network did not answer.",
+    /** A paid failure of a registration from the Platform balance (C-funding F10): the engine
+     * reports no amount, so the line names none. */
+    refundedPlatform:
+      "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
+    /** A run that stopped when its Platform plan changed (`registration.quote_changed` on the
+     * row), whether or not its credits moved first; Confirm's start refusal has its own line. */
+    quoteChanged:
+      "No identity was paid for. If you chose Move to Dash wallet for this registration, those credits are in your Dash wallet now, less that move's fee. Review the cost and confirm to try again.",
     stoppedWith: "It stopped with {code}.",
   },
   /** An invitation claim's refusals. */
@@ -204,6 +212,7 @@ export const dashpay = {
       /** `amount` is the least the source must hold, with its unit. */
       short: "Not enough here. You need at least {amount}.",
       notOffered: "Not available on this network yet.",
+      movePending: "Another Platform transfer is still being confirmed. Try again when it is done.",
       /** `time` is a clock time, HH:MM. */
       resting: "Your shielded funds arrived less than 3 hours ago. For your privacy, you can use them from {time}.",
       unsettled: "An earlier shielded payment is still being checked. Try again when it is settled.",
@@ -240,6 +249,9 @@ export const dashpay = {
       shortfall: "You need at least {amount} to create this username.",
       /** `credits` is a number of credits. */
       fromCredits: "Paid from your identity's credits: up to {credits} credits",
+      /** Paid from the Platform balance (C-funding F9). `total`, `funding` and `fee` are amounts:
+       * `funding` what the identity receives, exactly; `fee` the Platform fee, about; `total` both. */
+      fromPlatform: "About {total} leaves your Platform balance: {funding} for your identity and a Platform fee of about {fee}. Your identity starts with a balance of {funding}.",
       accept: "I accept",
       pay: "Confirm & pay",
       register: "Confirm",
@@ -257,7 +269,7 @@ export const dashpay = {
     },
     recovery:
       "Your funds are safe. The payment is locked for this registration, and Dash Wallet finishes it once the network confirms it. If it does not finish, Tools ▸ Repair can finish the transfer.",
-    failed: { title: "Registration failed", another: "Choose another username" },
+    failed: { title: "Registration failed", another: "Choose another username", startNew: "Start a new registration", reviewCost: "Review the cost" },
     stopped: { title: "Registration stopped" },
     done: {
       title: "Welcome to DashPay, {username}",
@@ -315,6 +327,7 @@ export const dashpay = {
       contestOpen: "The network is already voting on this username, and it can no longer be joined.",
       unreachable: "Could not reach the Dash network. Try again.",
       unlock: "Unlock the wallet and try again.",
+      quoteChanged: "The cost changed. Review it and confirm again. Nothing was paid.",
     },
   },
   /** Finish transfers' report. Each value but `kind` and `kinds` is a count. */

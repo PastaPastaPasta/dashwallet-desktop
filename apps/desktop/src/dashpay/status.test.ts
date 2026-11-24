@@ -8,6 +8,7 @@ import type { RegistrationFailure } from "../api/generated/RegistrationFailure";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { StartupStatus } from "../api/generated/StartupStatus";
 import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, heldWithBoth, joinModel, namesState, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, WAITS, type StatusInputs } from "./status";
+import { t } from "../i18n";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -281,6 +282,18 @@ describe("D4 steps and D5 failure copy", () => {
     expect(failureText(failure("platform.insufficient_credits", { needed: "5", available: "1" }), amount)).toBe("The identity's credits do not cover the username.");
     expect(failureText(failure("platform.grant_exceeded"), amount)).toBe("The cost went above what you approved.");
     expect(failureText(failure("name.taken"), amount)).toBe("It stopped with name.taken.");
+    // C-funding F10: a paid failure from the Platform balance; another source's has no copy yet.
+    expect(failureText(failure("registration.refunded", { retryable: false }), amount, false, true)).toBe(
+      "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
+    );
+    expect(failureText(failure("registration.refunded", { retryable: false }), amount)).toBe("It stopped with registration.refunded.");
+    // A run stopped by a changed Platform plan has its own line, not the code or Confirm's.
+    const changed = failureText(failure("registration.quote_changed", { retryable: false }), amount, false, true);
+    expect(changed).toBe(
+      "No identity was paid for. If you chose Move to Dash wallet for this registration, those credits are in your Dash wallet now, less that move's fee. Review the cost and confirm to try again.",
+    );
+    expect(changed).not.toBe(t("dashpay.registration.startError.quoteChanged"));
+    expect(changed).not.toContain("registration.quote_changed");
     // DP5-03 (Opus r1 L1): a claim's refusals, on the Join page's failed row too.
     expect(failureText(failure("invitation.already_has_identity"), amount)).toBe(CLAIM_REFUSAL.hasIdentity);
     expect(failureText(failure("invitation.claimed"), amount)).toBe(`${CLAIM_REFUSAL.claimed.title}. ${CLAIM_REFUSAL.claimed.text}`);

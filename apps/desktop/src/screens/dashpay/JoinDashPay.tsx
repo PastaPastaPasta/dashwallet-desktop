@@ -109,6 +109,8 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
         return void wiz.finish();
       case "another":
         return void wiz.another(row ?? null);
+      case "reconfirm":
+        return void (row && wiz.reconfirm(row));
       case "done":
         return leave();
       case "wallet":
@@ -157,7 +159,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     const screen = screenModel(row, { contestPending: contest !== null, contestEndsAt: contest?.endsAt ?? null, date: inputs.date, amount: inputs.amount, discreet: inputs.discreet });
     return (
       <Page route="joinDashPay">
-        <RegistrationScreen wiz={wiz} model={screen} phase={row.phase} waiting={row.waiting} claim={row.invitation !== null} onAction={onScreenAction} inputs={inputs} share={share} />
+        <RegistrationScreen wiz={wiz} model={screen} phase={row.phase} waiting={row.waiting} claim={row.invitation !== null} fromPlatform={row.fromPlatform} onAction={onScreenAction} inputs={inputs} share={share} />
       </Page>
     );
   }

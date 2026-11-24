@@ -475,6 +475,13 @@ pub(crate) trait LockKind: Send + Sync {
     /// (when the kind keeps 0.1's records) by txid only when
     /// [`KindLock::alone`].
     fn mark_unknown(&self, lock: &KindLock) -> impl Future<Output = ()> + Send;
+    /// Waits, bounded, while the kind's apply is held only by the wallet's
+    /// bring-up and a rerun of it is asked for or runs; before the kind's
+    /// lock is taken, so [`Self::readiness`] reads the answer. Nothing by
+    /// default.
+    fn await_start_up(&self) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
     /// Whether an apply may run now: the protocol-version gate, the
     /// destination account bound, the kind's sync.
     fn readiness(&self) -> impl Future<Output = Readiness> + Send;
@@ -761,8 +768,10 @@ impl ApplyAuthority for FundedLease {
 /// credit key ([`LockKeySigner`]), and one call permit sign the kind's
 /// `FromExistingAssetLock` of the same outpoint. It funds and builds
 /// nothing and waits for no missing proof (the library's bounded
-/// InstantSend → ChainLock fallback still runs). Read again under the
-/// kind's wallet lock: a lock finished meanwhile is not applied again.
+/// InstantSend → ChainLock fallback still runs). A tracked lock first
+/// waits on the kind's start-up hold ([`LockKind::await_start_up`]). Read
+/// again under the kind's wallet lock: a lock finished meanwhile is not
+/// applied again.
 ///
 /// `lease_of` is called only once every refusal the runner and the kind
 /// can read beforehand has passed: no proof ([`LockFinish::ProofWaiting`]),
@@ -789,6 +798,9 @@ where
     Fut: Future<Output = Result<A, PlatformError>>,
     A: ApplyAuthority,
 {
+    if (kind.locks().await.iter()).any(|l| l.info.outpoint == outpoint) {
+        kind.await_start_up().await;
+    }
     Ok(run(kind, outpoint, lease_of)
         .await?
         .unwrap_or(LockFinish::Applied))
@@ -935,6 +947,7 @@ pub(crate) async fn finish_kind(
         completed: 0,
         still_pending: 0,
     };
+    let mut waited = false;
     for lock in &listed {
         let restored_checking =
             lock.state == UnfinishedState::Checking && lock.origin == LockOrigin::Restored;
@@ -953,6 +966,9 @@ pub(crate) async fn finish_kind(
                     txid,
                     vout: lock.vout,
                 };
+                if !std::mem::replace(&mut waited, true) {
+                    kind.await_start_up().await;
+                }
                 match run(kind, outpoint, || async { Ok(lease.clone()) }).await {
                     // Finished meanwhile (another finish): not this run's.
                     Ok(None) => continue,
