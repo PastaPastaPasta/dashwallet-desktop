@@ -398,6 +398,36 @@ fn a_payout_takes_only_its_own_flows_lease() {
         f.shielded(&lib, BOB, &lease).unwrap().state,
         PayoutState::Sent
     );
+    let fvk = f.session.vault().shielded_viewing_key(&f.wallet.0).unwrap();
+    assert_eq!(lib.spent_fvks(), [fvk], "the wallet's shielded spend key");
+}
+
+/// A Platform payout's flow lease holds no shielded spend key: a Shielded
+/// payout under it fails closed before anything is signed, the row
+/// settles not sent and the address goes back with the pair.
+#[test]
+fn a_platform_flow_lease_fails_closed_at_the_shielded_spend_key() {
+    let f = fixture(false);
+    let lib = f.hooked();
+    let s = Arc::clone(&f.session);
+    let grants = vec![f.credits_grant()];
+    let lease = (f.engine)
+        .block_on(async move {
+            let flow = FlowKind::ContactPayFromBalance;
+            (s.begin_flow(f.wallet, flow, grants, Some(PaymentSource::Platform))).await
+        })
+        .unwrap();
+    let refused = f.shielded(&lib, BOB, &lease).unwrap_err();
+    assert_eq!(code(&refused), "platform.needs_grant", "{refused:?}");
+    assert!(lib.spent_fvks().is_empty(), "nothing signed");
+    let rows = f.payout_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1, "not_sent");
+    assert!(f.lock(BOB).is_none());
+    assert_eq!(
+        f.reserved(BOB).map(|a| a.to_string()),
+        Some(rows[0].3.clone())
+    );
 }
 
 /// The kill matrix (C5a): the call killed at each step relaunches into

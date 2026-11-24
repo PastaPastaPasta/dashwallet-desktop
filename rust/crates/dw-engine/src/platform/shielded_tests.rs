@@ -664,6 +664,11 @@ impl FakeShielded {
             .collect()
     }
 
+    /// The full viewing keys of the key sets the spends were released.
+    pub(crate) fn spent_fvks(&self) -> Vec<[u8; 96]> {
+        self.spent().into_iter().map(|s| s.fvk).collect()
+    }
+
     fn at(version: u32, refreshed: u32) -> Self {
         Self {
             version,
@@ -680,15 +685,16 @@ impl FakeShielded {
         *self.fails.lock().unwrap() = Some(e);
     }
 
+    /// A spend under `keys`, which the adapter releases before the library
+    /// runs (and so before its dispatch hook).
     fn spend(
         &self,
-        permit: &CallPermit,
+        keys: OrchardKeySet,
         operation: &'static str,
         to: String,
         credits: u64,
         memo: &[u8],
     ) -> Result<(), SpendError> {
-        let keys = permit.shielded_keys()?;
         if let Some(probe) = &*self.probe.lock().unwrap() {
             self.probed.lock().unwrap().push(probe());
         }
@@ -830,7 +836,7 @@ impl ShieldedLib for FakeShielded {
         memo: [u8; 36],
     ) -> Result<(), SpendError> {
         let to = to.to_bech32m_string(Network::Regtest);
-        self.spend(permit, "transfer", to, credits, &memo)
+        self.spend(permit.shielded_keys()?, "transfer", to, credits, &memo)
     }
 
     async fn withdraw(
@@ -839,10 +845,11 @@ impl ShieldedLib for FakeShielded {
         to: &Address,
         credits: u64,
     ) -> Result<(), SpendError> {
+        let keys = permit.shielded_keys()?;
         if self.hooks.load(Ordering::SeqCst) {
             self.dispatch_withdrawal().await?;
         }
-        self.spend(permit, "withdraw", to.to_string(), credits, &[])
+        self.spend(keys, "withdraw", to.to_string(), credits, &[])
     }
 
     async fn receive_address(&self) -> Result<String, PlatformError> {
@@ -856,7 +863,13 @@ impl ShieldedLib for FakeShielded {
         to: &PlatformAddress,
         credits: u64,
     ) -> Result<(), SpendError> {
-        self.spend(permit, "unshield", platform_text(*to), credits, &[])
+        self.spend(
+            permit.shielded_keys()?,
+            "unshield",
+            platform_text(*to),
+            credits,
+            &[],
+        )
     }
 
     async fn platform_pool(&self) -> Result<pool::PlatformPool, PlatformError> {
