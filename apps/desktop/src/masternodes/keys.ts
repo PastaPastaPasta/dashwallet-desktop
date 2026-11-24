@@ -69,7 +69,7 @@ export type MatchState = "checking" | "failed" | "done";
  * whose old data stays cached, is "failed". */
 export function knownMatches<L, D>(list: ReadState<L>, details: readonly ReadState<D>[]): { details: D[]; state: MatchState } {
   const reads = [list, ...details];
-  // A retry after a failure keeps its error until it settles: it reads as checking meanwhile.
+  // A retry after a failure reads as checking until it settles (with cached data it keeps its error).
   if (reads.some((r) => r.isPending || r.isFetching || r.isPaused)) return { details: [], state: "checking" };
   if (reads.some((r) => r.isError)) return { details: [], state: "failed" };
   return { details: details.map((d) => d.data!), state: "done" };

@@ -140,7 +140,12 @@ test("a key page that fails to load offers Try again and keeps the rows already 
   await expect(sheet.getByTestId("mn-keys-failed")).toBeVisible();
   await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
   await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = false));
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_keys"));
   await sheet.getByTestId("mn-keys-retry").click();
+  // While the page is read again, the error and a disabled Try again stay.
+  await expect(sheet.getByTestId("mn-keys-retry")).toBeDisabled();
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
+  await release.evaluate((r) => r());
   await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(25);
   await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
 });

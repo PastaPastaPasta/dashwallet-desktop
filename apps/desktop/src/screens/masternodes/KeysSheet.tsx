@@ -169,17 +169,23 @@ function useKeyPages(walletId: string, role: MasternodeKeyRoleName, pages: numbe
   const watchOnly = failed !== null && hasCode(failed, "masternode.watch_only");
   const keys = results.flatMap((r) => r.data ?? []);
   const last = results[results.length - 1];
+  const error = failed !== null && !watchOnly ? keysErrorText(failed) : null;
+  // A page that never loaded drops its error while it is read again: the error and a disabled
+  // Try again stay on screen until that read settles, so the button never vanishes under focus.
+  const [retried, setRetried] = useState<string | null>(null);
+  const reading = results.some((r) => r.isFetching);
   return {
     keys,
     watchOnly,
-    error: failed !== null && !watchOnly ? keysErrorText(failed) : null,
+    error: error ?? (reading ? retried : null),
     loading: results.some((r) => r.isPending),
     more: last?.data?.length === KEYS_PAGE,
     /** Reads the failed pages again; the pages already in stay on screen. */
     retry: () => {
+      setRetried(error);
       for (const r of results) if (r.isError) void r.refetch();
     },
-    retrying: results.some((r) => r.isError && r.isFetching),
+    retrying: reading && (error !== null ? results.some((r) => r.isError && r.isFetching) : retried !== null),
   };
 }
 
