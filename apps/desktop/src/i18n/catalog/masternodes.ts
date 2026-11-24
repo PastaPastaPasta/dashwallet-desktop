@@ -504,7 +504,9 @@ export const masternodes = {
     },
     watched: "{role} (watched)",
     registrar: {
-      registration_unavailable:
+      registration_unavailable: "Changing keys needs this masternode's registration, which this wallet doesn't hold.",
+      /** An evonode with an owner or payout key a dwcli import left (the app adds voting keys only). */
+      registrationUnavailableWithdraw:
         "Changing keys needs this masternode's registration, which this wallet doesn't hold. You can still withdraw evonode credits with an added owner or payout key.",
       no_owner_key: "This wallet doesn't hold this masternode's owner key.",
       vault_locked: "Unlock to check the keys you added.",

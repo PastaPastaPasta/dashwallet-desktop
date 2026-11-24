@@ -162,7 +162,18 @@ describe("pane", () => {
     expect(registrarLine(detail({ kind: "shared" }))).toBeNull();
     expect(registrarLine(detail({ kind: "no_owner_key" }))).toEqual({ text: "This wallet doesn't hold this masternode's owner key.", unlock: false });
     expect(registrarLine(detail({ kind: "vault_locked" }))).toEqual({ text: "Unlock to check the keys you added.", unlock: true });
-    expect(registrarLine(detail({ kind: "registration_unavailable" }))?.text).toMatch(/^Changing keys needs this masternode's registration/);
+    const unavailable = (row: MasternodeRow) => registrarLine({ registrar: { kind: "registration_unavailable" }, row } as MasternodeDetail)?.text;
+    const short = "Changing keys needs this masternode's registration, which this wallet doesn't hold.";
+    const club = rowOf(CLUB);
+    const added = (role: "owner" | "payout" | "voting") => ({ ...club, roles: { ...club.roles, attached: [{ role, keyId: null, check: "unchecked" as const }] } });
+    // A regular masternode has no credits, and the app adds no owner or payout key: one sentence.
+    expect(unavailable({ ...added("owner"), kind: "regular" })).toBe(short);
+    expect(unavailable({ ...club, roles: { ...club.roles, attached: [] } })).toBe(short);
+    expect(unavailable({ ...club, roles: { ...club.roles, attached: null } })).toBe(short);
+    expect(unavailable(added("voting"))).toBe(short);
+    // An evonode with an owner or payout key a dwcli import left can still withdraw its credits.
+    expect(unavailable(added("owner"))).toBe(`${short} You can still withdraw evonode credits with an added owner or payout key.`);
+    expect(unavailable(added("payout"))).toBe(`${short} You can still withdraw evonode credits with an added owner or payout key.`);
   });
 
   it("splits 30 days of payouts into attributed and flagged, each with its txids", () => {

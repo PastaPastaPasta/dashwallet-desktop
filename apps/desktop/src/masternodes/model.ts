@@ -277,7 +277,10 @@ export function trackErrorText(e: unknown, name: string | null): string {
 /** §1.7's line in place of Change keys or payout, which shows only while the registrar is `available`. */
 export function registrarLine(d: MasternodeDetail): { text: string; unlock: boolean } | null {
   switch (d.registrar.kind) {
-    case "registration_unavailable":
+    case "registration_unavailable": {
+      const withdraw = d.row.kind === "evonode" && (d.row.roles.attached ?? []).some((k) => k.role === "owner" || k.role === "payout");
+      return { text: t(`${P}.registrar.${withdraw ? "registrationUnavailableWithdraw" : "registration_unavailable"}`), unlock: false };
+    }
     case "no_owner_key":
       return { text: t(`${P}.registrar.${d.registrar.kind}`), unlock: false };
     case "vault_locked":
