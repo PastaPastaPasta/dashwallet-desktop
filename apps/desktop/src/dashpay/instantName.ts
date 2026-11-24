@@ -111,5 +111,7 @@ export class AvailabilityChecker extends Model {
   dispose() {
     this.#seq++;
     clearTimeout(this.#timer);
+    this.#label = null;
+    this.#answer = null;
   }
 }

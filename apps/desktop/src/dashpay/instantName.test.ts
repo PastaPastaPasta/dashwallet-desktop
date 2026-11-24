@@ -99,6 +99,17 @@ describe("AvailabilityChecker: debounced 400 ms, stale answers dropped", () => {
     expect(c.availability).toEqual({ kind: "taken", owner: null });
   });
 
+  it("set again after dispose (StrictMode's effect replay) asks again instead of staying pending", async () => {
+    const lookup = vi.fn(async (_: string): Promise<NameAvailability> => ({ kind: "available", contested: false }));
+    const c = new AvailabilityChecker(lookup);
+    c.set("alice2");
+    c.dispose();
+    c.set("alice2");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(c.pending).toBe(false);
+  });
+
   it("a label cleared (it failed an earlier check) asks nothing; a failed lookup reads unknown", async () => {
     const lookup = vi.fn(async (): Promise<NameAvailability> => Promise.reject(new Error("offline")));
     const c = new AvailabilityChecker(lookup);

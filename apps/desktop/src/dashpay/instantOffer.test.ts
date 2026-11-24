@@ -114,8 +114,10 @@ describe("temporaryOutcome: only a names read started after the row reached Cont
   });
 
   it("contestRow: the identity's last registration of the label that asked for a temporary name", () => {
-    const rows = [row({ draft: "a" }), row({ draft: "b", temporaryLabel: null }), row({ draft: "c", identity: "B" })];
+    const rows = [row({ draft: "a" }), row({ draft: "b", temporaryLabel: null }), row({ draft: "c", identity: "B" }), row({ draft: "d", phase: "failed" })];
     expect(contestRow(rows, "A", "ALICE")?.draft).toBe("a");
+    // A failed request of the same label never hides the offer: only a row that reached its contest counts.
+    expect(contestRow([row({ phase: "failed" }), row({ phase: "nameRequested" })], "A", "alice")).toBeUndefined();
     expect(contestRow(rows, "A", "bob")).toBeUndefined();
   });
 });

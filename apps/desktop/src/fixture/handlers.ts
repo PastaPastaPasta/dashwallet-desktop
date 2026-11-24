@@ -1130,8 +1130,8 @@ export const HANDLERS: Handlers = {
     }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     if (funding.kind === "shielded") return shieldedQuote(label, world.pending.shielded);
-    if (funding.kind === "platformAddresses") return platformQuote(label, world.pending.platform, world.launch.network.kind === "mainnet", dashpay(world, walletId));
     checkTemporary(request);
+    if (funding.kind === "platformAddresses") return platformQuote(label, world.pending.platform, world.launch.network.kind === "mainnet", dashpay(world, walletId));
     const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label, request.temporaryLabel);
     return {
       contested,

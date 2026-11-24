@@ -80,7 +80,9 @@ export function temporaryOutcome(row: RegistrationStatus | undefined, read: Name
 
 /** The registration of the contest `label` by `identity` that asked for a temporary name. */
 export function contestRow(rows: RegistrationStatus[] | undefined, identity: string, label: string): RegistrationStatus | undefined {
-  return rows?.findLast((r) => r.identity === identity && homographSafe(r.label) === homographSafe(label) && r.temporaryLabel !== null);
+  return rows?.findLast(
+    (r) => r.identity === identity && homographSafe(r.label) === homographSafe(label) && r.temporaryLabel !== null && (r.phase === "contested" || r.phase === "done"),
+  );
 }
 
 export interface AskedTemporary {

@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
+import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { useDebounced } from "../app/useDebounced";
 import { keys, mainIdentityOf, mainSummaryOf, useBackend, useLockStatus, useSyncStatus, useWallets } from "../api/queries";
 import { useUi } from "../app/ui";
@@ -195,7 +196,7 @@ export function useUsernameQuote(walletId: string, enabled: boolean) {
 }
 
 /** The identities as one read answered, with when it started: a failed read says nothing. */
-export function useNamesRead(walletId: string, enabled: boolean): NamesRead | undefined {
+export function useNamesRead(walletId: string, row: RegistrationStatus | undefined): NamesRead | undefined {
   const b = useBackend();
   const read = useQuery({
     queryKey: dashpayKeys.namesRead(walletId),
@@ -203,9 +204,19 @@ export function useNamesRead(walletId: string, enabled: boolean): NamesRead | un
       const startedAt = Date.now();
       return { startedAt, identities: await b.identities(walletId) };
     },
-    enabled,
+    enabled: row?.temporaryLabel != null,
     retry: false,
   });
+  // A read in the row's own second says nothing (`temporaryOutcome`), and nothing else may read
+  // again once the row stops running: read once more when that second is over.
+  const after = row?.temporaryLabel != null && (row.phase === "contested" || row.phase === "done") ? row.updatedAt : null;
+  const startedAt = read.data?.startedAt;
+  const { refetch } = read;
+  useEffect(() => {
+    if (after === null || startedAt === undefined || Math.floor(startedAt / 1000) > after) return;
+    const timer = setTimeout(() => void refetch(), Math.max(0, (after + 1) * 1000 - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [after, startedAt, refetch]);
   return read.isError ? undefined : read.data;
 }
 
@@ -216,11 +227,13 @@ export function useInstantInputs(walletId: string, status: DashPayStatus | undef
   const contest = status?.kind === "contestPending" ? status : null;
   const wallets = useWallets();
   const rows = useRegistrations(walletId, contest !== null);
-  const read = useNamesRead(walletId, contest !== null);
-  const credits = useNameCredits(walletId, contest?.identity ?? null, contest ? suggest(contest.label) : "");
+  const row = contest ? contestRow(rows.data, contest.identity, contest.label) : undefined;
+  const read = useNamesRead(walletId, row);
+  // The credits matter only while the card may offer a new instant username.
+  const mayOffer = contest !== null && rows.data !== undefined && row === undefined;
+  const credits = useNameCredits(walletId, mayOffer ? contest.identity : null, contest ? suggest(contest.label) : "");
   if (!contest) return undefined;
   const wallet = wallets.data?.find((w) => w.walletId === walletId);
-  const row = contestRow(rows.data, contest.identity, contest.label);
   return {
     offered: registrationOffered(wallet),
     nameCredits: credits.data?.maxCredits ?? null,

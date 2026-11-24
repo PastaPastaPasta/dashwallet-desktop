@@ -69,7 +69,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     wiz.draft ?? claim?.draft ?? (status?.kind === "registering" ? status.draft : status?.kind === "noIdentity" ? (stopped?.draft ?? null) : null);
   const row = draft === null ? undefined : rows.data?.find((r) => r.draft === draft);
   // What became of the row's temporary name, from a names read since it reached its contest.
-  const namesRead = useNamesRead(walletId, row?.temporaryLabel != null);
+  const namesRead = useNamesRead(walletId, row);
   // An instant username registered this session from credits (D13) while the own vote runs.
   const instantFor =
     wiz.named?.result.kind === "registered" && wiz.mode.kind === "credits" && wiz.mode.instant === true && status?.kind === "contestPending" ? status.label : null;
