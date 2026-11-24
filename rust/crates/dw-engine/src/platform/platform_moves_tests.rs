@@ -429,6 +429,9 @@ enum Act {
     EarlierExecutes(usize),
     /// Signed and broadcast; a node answers with a signature error.
     SignatureRefused,
+    /// Signed and broadcast; Platform answers that an input's balance is
+    /// short (a state error: nothing proves it never executes).
+    NotEnoughFunds,
     /// The signer refuses every input: the transition, short of its
     /// witnesses, is refused as Platform's checks refuse a malformed one
     /// (an error `never_valid` reads as definitive), with nothing signed.
@@ -685,6 +688,15 @@ impl FakeMoves {
                 Err(PlatformWalletError::Sdk(
                     ConsensusError::from(InvalidStateTransitionSignatureError::new("node".into()))
                         .into(),
+                ))
+            }
+            Act::NotEnoughFunds => {
+                use dpp::consensus::state::address_funds::AddressNotEnoughFundsError;
+                use dpp::consensus::state::state_error::StateError;
+                let (address, (_, credits)) = inputs.first_key_value().unwrap();
+                let short = AddressNotEnoughFundsError::new(*address, 0, *credits);
+                Err(PlatformWalletError::Sdk(
+                    ConsensusError::from(StateError::AddressNotEnoughFundsError(short)).into(),
                 ))
             }
             Act::StopsBeforeSigning | Act::StopsAfterSigning => panic!("the process stops"),

@@ -8,6 +8,7 @@ import * as cmd from "../api/generated/commands";
 import { IDENTITY } from "./dashpay";
 import { installFixture } from "./index";
 import { FIXTURE_WALLET_ID, type ScenarioName } from "./scenarios";
+import { plannedWithdrawalCredits } from "../platform/move";
 import { TOP_UP_FEE_DUFFS, topUpStep, WITHDRAW_RULES, withdrawalId } from "./topup";
 
 const W = FIXTURE_WALLET_ID;
@@ -210,19 +211,25 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     expect(p.activity.some((a) => a.kind === "moveToCore")).toBe(false);
   });
 
-  it("an exit answers what it moved at submit, not what its quote showed", async () => {
+  it("an exit moves its quoted amount, or nothing once its inputs no longer carry it", async () => {
     const fx = install("dashpay-registered");
     const p = fx.world.pending.platform!;
     p.nextTopUp = "held";
     const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("40000000000"));
     const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
-    const g = (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;
+    const exact = credits(plannedWithdrawalCredits(move));
+    const grant = async () => (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;
     const inputs = p.heldInputs![out.id];
+    const before = p.addresses;
     p.addresses = p.addresses.map((a) => (inputs.includes(a.address) ? { ...a, credits: String(BigInt(a.credits) / 2n) } : a));
-    const moved = await cmd.platformMoveToCore(W, { kind: "all" }, move.to, move.exitOf, g);
+    const g = await grant();
+    await expect(cmd.platformMoveToCore(W, exact, move.to, move.exitOf, g)).rejects.toMatchObject({ code: "credits.quote_changed" });
+    expect(fx.world.grants.find((x) => x.grant.id === g)?.used).toBe(false);
+    expect(p.activity.some((a) => a.kind === "moveToCore")).toBe(false);
+    p.addresses = before;
+    const moved = await cmd.platformMoveToCore(W, exact, move.to, move.exitOf, g);
     expect(moved.state).toBe("done");
-    expect(BigInt(moved.credits)).toBeLessThan(BigInt(move.credits));
-    expect(moved.expectedDuffs!).toBeLessThan(move.expectedDuffs);
+    expect([moved.credits, moved.expectedDuffs]).toEqual([move.credits, move.expectedDuffs]);
   });
 
   it("a pending exit leaves the held top-up able to land", async () => {

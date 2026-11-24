@@ -273,7 +273,8 @@ function platformOf(world: Ctx["world"], call: string): PlatformWorld {
 /** The credits a move of `amount` takes: all of them, or that many (the quote's refusals). */
 function moveCredits(p: PlatformWorld, amount: WithdrawAmount): bigint {
   const available = sum(moveSources(p));
-  const credits = amount.kind === "all" ? available : BigInt(amount.credits);
+  // An amount is the withdrawal, as the engine's: the move also keeps its fee.
+  const credits = amount.kind === "all" ? available : BigInt(amount.credits) + MOVE_FEE_CREDITS;
   if (available === 0n || credits <= MOVE_FEE_CREDITS) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(MOVE_FEE_CREDITS + 1n), available: String(available) });
   if (credits > available) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(credits), available: String(available) });
   return credits;
@@ -643,7 +644,15 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const { world } = ctx;
     // As the engine, first: the exit of a top-up that no longer holds is not the move Confirm showed.
     if (exitOf != null && heldTopUp(platformOf(world, "platform_move_to_core"))?.id !== exitOf) throw fail("credits.quote_changed", "the held top-up settled since this move was quoted");
-    const q = quote(ctx, walletId, amount);
+    // An exit moves its quoted amount: inputs that no longer carry it are not the move Confirm showed.
+    const q = (() => {
+      try {
+        return quote(ctx, walletId, amount);
+      } catch (e) {
+        if (exitOf != null && (e as AppError).code === "platform.insufficient_credits") throw fail("credits.quote_changed", "the held inputs no longer carry the quoted amount");
+        throw e;
+      }
+    })();
     // Only to one of the wallet's own receiving addresses (the quote's).
     if (to !== q.to) throw fail("invalid_argument", "not an address of this wallet", { kind: "reason", reason: "not an address of this wallet" });
     const p = platformOf(world, "platform_move_to_core");

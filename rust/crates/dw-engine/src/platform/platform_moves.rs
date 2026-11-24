@@ -3044,7 +3044,17 @@ async fn run(
                 // no other record's terms (C-routes C3-9).
                 return Err(CreditsError::MovePending { id: h.id.clone() });
             }
-            let planned = plan_beside(&target, balances.clone(), amount, &limits, held, network)?;
+            let planned = plan_beside(&target, balances.clone(), amount, &limits, held, network)
+                .map_err(|e| match e {
+                    // The exit sends its quoted amount: inputs that no
+                    // longer carry it are not the move Confirm showed.
+                    CreditsError::Platform(PlatformError::InsufficientCredits { .. })
+                        if exited.is_some() =>
+                    {
+                        CreditsError::QuoteChanged
+                    }
+                    e => e,
+                })?;
             // A new send signs the fee its Confirm showed or nothing: the
             // read since the quote may pick another fee source.
             if quoted.is_some_and(|q| !q.takes_fee_as(&planned)) {

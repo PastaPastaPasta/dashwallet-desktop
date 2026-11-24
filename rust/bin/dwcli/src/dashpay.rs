@@ -1729,6 +1729,13 @@ fn platform_addr_cmd(ctx: &Ctx, cmd: PlatformAddrCmd) -> Result<Value, CliError>
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
+            // An exit moves exactly its quoted withdrawal, or nothing.
+            let amount = match quote.exit_of {
+                Some(_) => WithdrawAmount::Credits {
+                    credits: quote.credits - quote.fee_credits,
+                },
+                None => amount,
+            };
             let ask = (quote.to.clone(), quote.exit_of.clone());
             let outcome = ctx.block_on(dp.move_to_core(amount, ask.0, ask.1, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))

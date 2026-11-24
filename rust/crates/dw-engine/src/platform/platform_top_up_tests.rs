@@ -57,11 +57,15 @@ impl World {
     }
 
     /// The quote's move, as the host confirms it: to its `to`, the exit of
-    /// its `exit_of`.
+    /// its `exit_of` at its planned withdrawal, a move of no record `All`.
     fn exit(&self, q: &MoveToCoreQuote, grant: &str) -> Result<MoveToCoreOutcome, CreditsError> {
         let (to, exit_of, grant) = (q.to.clone(), q.exit_of.clone(), grant.to_owned());
+        let amount = match exit_of {
+            Some(_) => credits(q.credits - q.fee_credits),
+            None => WithdrawAmount::All,
+        };
         self.call(move |net, s, w, id| async move {
-            let ask = (WithdrawAmount::All, to.as_str(), exit_of.as_deref());
+            let ask = (amount, to.as_str(), exit_of.as_deref());
             move_to_core(&*net, &s, &w, id, ask, &grant).await
         })
     }
@@ -665,24 +669,157 @@ fn an_exit_after_its_top_up_landed_is_refused_and_keeps_the_grant() {
     assert_eq!(w.sent(), 3);
 }
 
-/// An exit reports what it moved, not what its quote showed: on a read at
-/// submit that shows the held input lower than the quote's read did (that
-/// read included a deposit), the smaller amount.
+/// An exit with nothing changed since its quote moves exactly the quoted
+/// withdrawal: the quote and the move plan the same inputs, fee and
+/// amount, so it neither loops on `credits.quote_changed` nor moves more.
+/// Its debit is the grant the quote asked for, not one credit more, and it
+/// pays only the wallet's own Core address.
 #[test]
 fn an_exit_reports_the_amount_it_moved() {
     let (w, a) = shortfall();
     w.net.fee.store(1, Ordering::SeqCst);
     w.net.fund(a, DASH);
     let q = w.quote(WithdrawAmount::All).unwrap();
-    assert_eq!(q.credits, 6 * DASH);
+    assert!(q.exit_of.is_some());
+    let short = w.f.grant(q.credits - 1);
+    assert_eq!(
+        w.exit(&q, &short).unwrap_err().code(),
+        "platform.grant_exceeded"
+    );
+    assert!(w.f.unused(&short));
+    use dpp::dashcore::hashes::Hash;
+    let theirs = dpp::dashcore::Address::new(
+        w.f.s.vault.network(),
+        dpp::dashcore::address::Payload::PubkeyHash(dpp::dashcore::PubkeyHash::from_byte_array(
+            [7; 20],
+        )),
+    );
+    let elsewhere = MoveToCoreQuote {
+        to: theirs.to_string(),
+        ..q.clone()
+    };
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&elsewhere, &grant).unwrap_err().code(),
+        "invalid_argument"
+    );
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.sent(), 1, "nothing signed");
+
+    let out = w.exit(&q, &grant).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_eq!(out.expected_duffs, Some(q.expected_duffs));
+    let sent = w.net.sent.lock().unwrap()[1].clone();
+    assert_eq!(sent.keys().collect::<Vec<_>>(), vec![&a]);
+    assert_eq!(sent[&a].1, q.credits - q.fee_credits, "the quoted amount");
+}
+
+/// A named exit moves its quoted amount or nothing: when the held input
+/// carries less at submit than the quote read, the plan is short, which
+/// is `credits.quote_changed` before the grant is redeemed or anything
+/// signed; the top-up still holds.
+#[test]
+fn an_exit_whose_input_fell_since_its_quote_is_refused() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    w.net.fund(a, DASH);
+    let q = w.quote(WithdrawAmount::All).unwrap();
     w.net.state.lock().unwrap().get_mut(&a).unwrap().1 -= DASH;
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&q, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.sent(), 1, "nothing signed");
+    let moves = w.moves();
+    assert_eq!(moves.len(), 1, "nothing recorded");
+    assert!(moves[0].holds());
+}
+
+/// A two-input held top-up: a deposit since the exit's quote never makes
+/// the exit narrower. One that lets one input carry the amount is
+/// `credits.quote_changed` with the grant kept; a smaller one leaves the
+/// exit exactly the held inputs at the held nonces, at the quoted amount,
+/// and the deposit stays on its address.
+#[test]
+fn a_deposit_on_one_input_of_a_two_input_exit_never_narrows_it() {
+    let held_world = || {
+        let w = World::new();
+        let order = w.in_order();
+        w.net.fund(order[0], 2 * DASH);
+        w.net.fund(order[1], 5 * DASH);
+        w.net.fee.store(5 * DASH, Ordering::SeqCst);
+        let out = w.top_up(credits(3 * DASH)).unwrap();
+        assert_eq!(out.state, PlatformActivityState::Pending);
+        w.activity();
+        w.net.tick();
+        w.activity();
+        let held = w.moves()[0].clone();
+        assert!(held.holds());
+        assert_eq!(held.inputs.len(), 2);
+        w.net.fee.store(1, Ordering::SeqCst);
+        let q = w.quote(WithdrawAmount::All).unwrap();
+        assert_eq!(q.exit_of, Some(held.id.clone()));
+        (w, order, held, q)
+    };
+
+    let (w, order, _, q) = held_world();
+    w.net.fund(order[1], 3 * DASH);
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&q, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.sent(), 1, "nothing signed");
+    assert_eq!(w.moves().len(), 1, "nothing recorded");
+
+    let (w, order, held, q) = held_world();
+    w.net.fund(order[0], DASH / 10);
     let out = w.exit(&q, &w.f.grant(q.credits)).unwrap();
     assert_eq!(out.state, PlatformActivityState::Done);
-    assert!(
-        out.credits <= 5 * DASH,
-        "at most what the input held at submit"
+    let sent = w.net.sent.lock().unwrap()[1].clone();
+    let at: Vec<_> = (sent.iter())
+        .map(|(a, (nonce, _))| (bech32m(a, w.network()), *nonce))
+        .collect();
+    let mut key: Vec<_> = (held.inputs.iter())
+        .map(|i| (i.address.clone(), i.nonce))
+        .collect();
+    key.sort();
+    let mut at = at;
+    at.sort();
+    assert_eq!(at, key, "the held inputs at the held nonces");
+    let moved: u64 = sent.values().map(|(_, c)| *c).sum();
+    assert_eq!(moved, q.credits - q.fee_credits, "the quoted amount");
+    assert_eq!(
+        w.net.state.lock().unwrap()[&order[0]].1,
+        DASH / 10,
+        "the deposit stays"
     );
-    assert!(out.expected_duffs.unwrap() < q.expected_duffs);
+}
+
+/// Platform answers an exit it was sent with an input short of funds: a
+/// state error, after the grant was redeemed and the inputs signed. The
+/// exit is recorded and may still execute; it is not
+/// `credits.quote_changed`, which only a plan refuses.
+#[test]
+fn an_exit_platform_refuses_after_signing_is_recorded() {
+    let (w, _) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    let grant = w.f.grant(q.credits);
+    w.net.then(Act::NotEnoughFunds);
+    let out = w.exit(&q, &grant);
+    assert!(!matches!(out, Err(CreditsError::QuoteChanged)), "{out:?}");
+    let out = out.unwrap();
+    assert_ne!(out.state, PlatformActivityState::Done);
+    assert!(!w.f.unused(&grant), "redeemed");
+    assert_eq!(w.sent(), 2, "signed and sent");
+    let moves = w.moves();
+    assert_eq!(moves.len(), 2, "recorded");
+    let exit = moves.iter().find(|m| m.id == out.id).unwrap();
+    assert!(exit.signed && exit.can_land);
 }
 
 /// The same race with no `exit_of`: as before it, the move is planned on the

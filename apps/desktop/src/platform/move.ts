@@ -8,9 +8,10 @@
 import type { Backend } from "../api/backend";
 import { hasCode, isAppError } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
-import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
+import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
+import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
@@ -305,9 +306,11 @@ export class PlatformMoveFlow extends Model {
     this.changed();
   }
 
-  /** Confirm & move: the quote's grant, then `platformMoveToCore` for everything to the quote's `to`, one
-   * of the wallet's own receiving addresses, as the exit of the quote's `exitOf` (one call at a time). */
-  async move(grant: GrantRequest, to: string, exitOf: string | null): Promise<void> {
+  /** Confirm & move: the quote's grant, then `platformMoveToCore` to the quote's `to`, one of the
+   * wallet's own receiving addresses (one call at a time). Everything, or as the exit of the quote's
+   * `exitOf` exactly its planned withdrawal, so the engine moves what Confirm showed or refuses. */
+  async move({ grant, to, exitOf, credits, feeCredits }: Pick<MoveToCoreQuote, "grant" | "to" | "exitOf" | "credits" | "feeCredits">): Promise<void> {
+    const amount: WithdrawAmount = exitOf === null ? { kind: "all" } : { kind: "credits", credits: plannedWithdrawalCredits({ credits, feeCredits }) };
     if (this.running) return;
     let ran = false;
     this.running = true;
@@ -318,7 +321,7 @@ export class PlatformMoveFlow extends Model {
         ran = true;
         this.step = "running";
         this.changed();
-        return this.api.platformMoveToCore(this.walletId, { kind: "all" }, to, exitOf, g.id);
+        return this.api.platformMoveToCore(this.walletId, amount, to, exitOf, g.id);
       });
       if (got) {
         this.outcome = got.value;
