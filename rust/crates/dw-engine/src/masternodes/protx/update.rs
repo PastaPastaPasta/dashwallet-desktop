@@ -105,7 +105,7 @@ impl NetworkSession {
     /// order), newest first, with their states: an attached owner key
     /// updates a masternode from any loaded wallet (D24, D43). One whose
     /// transaction its wallet abandoned reads `abandoned`
-    /// ([`Self::abandoned_update`], MG-10 §1.10, D49).
+    /// ([`Self::update_hold`], MG-10 §1.10, D49).
     async fn ops_on(
         &self,
         shown: &str,
@@ -137,44 +137,51 @@ impl NetworkSession {
             }));
         }
         out.sort_by_key(|a| std::cmp::Reverse(a.0.created_at));
+        #[cfg(test)]
+        let pause = self.hub.pause_ops_read.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause.mark_reached();
+            pause.release.notified().await;
+        }
         Ok(out)
     }
 
-    /// The id of an operation on masternode `hash` (wire order) that the
-    /// synced list at `list_height` may not show yet: signed, not sent
-    /// (resendable) or sent, or confirmed above the list's height (D43,
-    /// D49). A conflicted one never will be, and holds nothing.
-    async fn unlisted_operation(
+    /// What holds an update of masternode `hash` (wire order), judged from
+    /// one read of its operations: one the synced list at `list_height` may
+    /// not show yet (signed, not sent or sent, or confirmed above the list's
+    /// height; D43, D49) is `UpdatePending`; for a `commit`, an update whose
+    /// transaction its wallet abandoned, neither `confirmed` nor
+    /// `conflicted`, is `UpdateAbandonedPending`: Core may still mine it
+    /// after the new one, and it would undo that one (MG-10 §1.10, D49). It
+    /// holds no preview. A conflicted operation never will be listed, and
+    /// holds nothing. One read: an abandoned update mined above the list
+    /// between two would pass both, and a kept key would restore the list's.
+    async fn update_hold(
         &self,
         hash: [u8; 32],
         list_height: Option<u32>,
-    ) -> Result<Option<String>, MasternodesError> {
-        Ok(self
-            .ops_on(&display_hex(&hash))
-            .await?
+        commit: bool,
+    ) -> Result<Option<MasternodesError>, MasternodesError> {
+        let ops = self.ops_on(&display_hex(&hash)).await?;
+        let unlisted = ops.iter().find(|(_, state)| match state {
+            ProTxOperationState::Signed
+            | ProTxOperationState::NotSent
+            | ProTxOperationState::Sent => true,
+            ProTxOperationState::Confirmed { height } => list_height.is_none_or(|l| l < *height),
+            _ => false,
+        });
+        if let Some((r, _)) = unlisted {
+            return Ok(Some(MasternodesError::UpdatePending {
+                operation: r.id.clone(),
+            }));
+        }
+        Ok(ops
             .into_iter()
-            .find(|(_, state)| match state {
-                ProTxOperationState::Signed
-                | ProTxOperationState::NotSent
-                | ProTxOperationState::Sent => true,
-                ProTxOperationState::Confirmed { height } => {
-                    list_height.is_none_or(|l| l < *height)
-                }
-                _ => false,
-            })
-            .map(|(r, _)| r.id))
-    }
-
-    /// An update of masternode `hash` (wire order) whose transaction its
-    /// wallet abandoned, neither `confirmed` nor `conflicted`: Core may still
-    /// mine it after a new update, and it would undo that one (MG-10 §1.10,
-    /// D49). It holds no preview, only the signing and resending of another.
-    async fn abandoned_update(&self, hash: [u8; 32]) -> Result<Option<String>, MasternodesError> {
-        Ok((self.ops_on(&display_hex(&hash)).await?.into_iter())
             .find(|(r, state)| {
-                r.kind == "update_registrar" && *state == ProTxOperationState::Abandoned
+                commit && r.kind == "update_registrar" && *state == ProTxOperationState::Abandoned
             })
-            .map(|(r, _)| r.id))
+            .map(|(r, _)| MasternodesError::UpdateAbandonedPending { operation: r.id }))
     }
 
     /// What a resend of the update `row` would race (D43, D49): an update
@@ -278,11 +285,8 @@ impl NetworkSession {
         // Refused while an operation on this masternode may not be in the
         // list yet: a kept key is the list's (D43), and two updates out at
         // once may be mined in either order (D49).
-        if let Some(operation) = self.unlisted_operation(hash, ctx.list_height).await? {
-            return Err(MasternodesError::UpdatePending { operation });
-        }
-        if commit && let Some(operation) = self.abandoned_update(hash).await? {
-            return Err(MasternodesError::UpdateAbandonedPending { operation });
+        if let Some(e) = self.update_hold(hash, ctx.list_height, commit).await? {
+            return Err(e);
         }
 
         let listed_voting = key_address(entry.voting_key_id, network);

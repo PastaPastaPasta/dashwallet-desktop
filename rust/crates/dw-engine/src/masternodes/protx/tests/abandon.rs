@@ -341,6 +341,47 @@ fn mg10_an_abandoned_key_change_mined_anyway_lifts_its_hold() {
     assert_eq!(next.state, ProTxOperationState::Sent);
 }
 
+/// The abandoned key change is mined above the synced list while an edit
+/// that keeps the voting key is being checked: the list still shows the old
+/// key, so the edit would restore it. One read of the masternode's
+/// operations judges both holds, and the edit is refused; the next one
+/// waits for the list to reach the block.
+#[test]
+fn mg10_an_abandoned_key_change_mined_during_an_edits_checks_still_holds_it() {
+    let f = fx(Library::Accept);
+    let (_, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (op, tx, fee_coin) = f.sent_key_change(&hash);
+    f.abandon(tx.txid());
+    f.credit(3, COIN);
+    let (handed, rows) = (f.lib.sent().len(), f.rows().len());
+    let read = Arc::new(crate::coins::TestPause::default());
+    let _read = crate::held_writes::ReleaseOnDrop(Arc::clone(&read));
+    *f.session.hub.pause_ops_read.lock().unwrap() = Some(Arc::clone(&read));
+    let edit = {
+        let (mn, id, req, grant) = (f.mn(), f.wallet, keep(&hash), f.grant(COIN));
+        (f.session.rt).spawn(async move { mn.update_registrar(id, req, grant).await })
+    };
+    assert!(
+        read.wait_reached(std::time::Duration::from_secs(60)),
+        "the edit never read the operations"
+    );
+    f.spend(fee_coin);
+    f.confirm(tx.clone(), 150);
+    read.release.notify_one();
+    let e = f.engine.block_on(edit).unwrap().unwrap_err();
+    f.assert_abandoned_pending(&e, &op);
+    assert_eq!(f.lib.sent().len(), handed, "handed off");
+    assert_eq!(f.rows().len(), rows, "signed and saved");
+
+    assert_eq!(f.state(&op), ProTxOperationState::Confirmed { height: 150 });
+    let e = f.update(keep(&hash), f.grant(COIN)).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::UpdatePending { operation } if *operation == op.id),
+        "{e:?}"
+    );
+}
+
 /// A replacement signed and not sent before the change it replaces was
 /// abandoned (an earlier version signed one): its resend is refused while
 /// the abandoned change may still be mined, and nothing reaches the
