@@ -738,7 +738,8 @@ impl MoveRecord {
             None => (
                 self.debit(),
                 Some(self.to.clone()),
-                (self.kind != MoveKind::Transfer).then_some(self.expected_duffs),
+                matches!(self.kind, MoveKind::ToCore | MoveKind::ToContact)
+                    .then_some(self.expected_duffs),
             ),
         };
         PlatformActivity {
@@ -767,12 +768,12 @@ impl MoveRecord {
         self.inputs.iter().map(|i| i.credits).sum()
     }
 
-    /// What it shows as taken: a move what it may take; a send or a
-    /// top-up its amount until it is done, then what it took: its inputs
+    /// What it shows as taken: a move or a contact payout what it may take;
+    /// a send or a top-up its amount until it is done, then what it took: its inputs
     /// and, unless the output paid it, the fee the balances show or else
     /// the estimate.
     fn debit(&self) -> u64 {
-        if self.kind == MoveKind::ToCore {
+        if matches!(self.kind, MoveKind::ToCore | MoveKind::ToContact) {
             return self.credits;
         }
         if self.state != PlatformActivityState::Done || self.fee_from_output {
@@ -785,7 +786,7 @@ impl MoveRecord {
     /// A done send or top-up whose fee the balances did not show: its debit
     /// counts the estimate.
     fn estimated(&self) -> bool {
-        self.kind != MoveKind::ToCore
+        matches!(self.kind, MoveKind::Transfer | MoveKind::ToIdentity)
             && self.state == PlatformActivityState::Done
             && self.group.is_none()
             && !self.fee_from_output
@@ -2498,7 +2499,13 @@ pub(crate) async fn activity(
         Ok(seen) => {
             let exits = exits(session, net, &moves, &seen).await;
             let docs = documents(session, net, &moves, &seen).await;
-            observe(&store, (&mut moves, &mut funds), held, (&seen, &exits, &docs)).await?
+            observe(
+                &store,
+                (&mut moves, &mut funds),
+                held,
+                (&seen, &exits, &docs),
+            )
+            .await?
         }
         Err(e) => {
             // Nothing is known: what is stored stands.
@@ -3195,7 +3202,14 @@ pub(crate) async fn run(
     let held = fund_holds(session, wallet_id);
     let evidence = exits(session, net, &moves, &seen).await;
     let docs = documents(session, net, &moves, &seen).await;
-    if observe(&store, (&mut moves, &mut funds), held, (&seen, &evidence, &docs)).await? {
+    if observe(
+        &store,
+        (&mut moves, &mut funds),
+        held,
+        (&seen, &evidence, &docs),
+    )
+    .await?
+    {
         session
             .hub
             .pump
@@ -3415,7 +3429,9 @@ pub(crate) async fn run(
         (Target::Core(_) | Target::Contact, Some(script)) => {
             leased(&lease, net.withdraw(inputs, script, strategy, &signer)).await
         }
-        (Target::Core(_) | Target::Contact, None) => unreachable!("a withdrawal has its destination"),
+        (Target::Core(_) | Target::Contact, None) => {
+            unreachable!("a withdrawal has its destination")
+        }
         (Target::Identity(identity), _) => {
             // dpp fixes the fee on input 0, the plan's fee source.
             let answered = leased(&lease, net.top_up(identity, inputs, &signer)).await;
