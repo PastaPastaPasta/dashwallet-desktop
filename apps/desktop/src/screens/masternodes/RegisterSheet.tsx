@@ -82,8 +82,7 @@ export function RegisterSheet({
   const shown = useDisplay(network);
   const id = useId();
   const refresh = useMasternodesRefresh();
-  // Held, the wizard reads only keys and the preview: the collateral coins come from the page's list.
-  const overview = useMasternodes(wallet.walletId, sends);
+  const overview = useMasternodes(wallet.walletId);
   const [step, setStep] = useState<Step>(resume ? "prove" : "type");
   const [d, setD] = useState<RegDraft>(newDraft);
   const [errors, setErrors] = useState<FieldErrors>({});

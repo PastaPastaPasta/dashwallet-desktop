@@ -593,8 +593,8 @@ test("a released collateral offers Lock it again on testnet", async ({ page }) =
   expect(errors).toEqual([]);
 });
 
-/** Reads the held wizard makes beyond keys and the preview: none locks a coin, and none is its own. */
-const HELD_EXTRA = ["lock_status", "payment_authentication", "quick_unlock_policy", "mn_list"];
+/** All a held wizard reads, from opening to Review. The list comes from the page's own read. */
+const HELD_READS = ["mn_preview_registration", "mn_registration_keys"];
 
 for (const theme of ["light", "dark"] as const)
   test(`mainnet ${theme}: the held wizard reads only keys and the preview (issue 635)`, async ({ page }, info) => {
@@ -609,9 +609,7 @@ for (const theme of ["light", "dark"] as const)
     await fontsReady(page);
     await page.screenshot({ path: info.outputPath(`reg-held-review-${theme}.png`) });
     const made = await page.evaluate((n) => window.__dwFixture!.calls.slice(n), from);
-    expect(made.filter((c) => HELD_EXTRA.includes(c))).toEqual([]);
-    expect(made).toContain("mn_registration_keys");
-    expect(made).toContain("mn_preview_registration");
+    expect([...new Set(made)].sort()).toEqual(HELD_READS);
     await expect(page.getByTestId("reg-passphrase")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
