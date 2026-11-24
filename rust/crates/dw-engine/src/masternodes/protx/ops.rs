@@ -184,10 +184,10 @@ pub(crate) fn state_of(
 /// `state` once Activity's abandon is applied (MG-10 §1.10, D49): a `sent`
 /// registration or key change whose txid the wallet's abandoned marks name
 /// (an Abandon's durable commit point), and that isn't InstantSend-locked,
-/// is `abandoned`. Terminal: its fee inputs and payout-change barrier are
-/// released, it is never resent and it holds no later update of its
-/// masternode. Core may still mine it, so
-/// the key checks (D51) read [`state_of`], where it is `sent`.
+/// is `abandoned`. Terminal: its fee inputs are released and it is never
+/// resent. Core may still mine it, so its payout-change barrier stays
+/// (MG-13 P16), it holds the signing of a later update of its masternode,
+/// and the key checks (D51) read [`state_of`], where it is `sent`.
 pub(crate) fn abandon_settled(
     row: &MasternodeOpRow,
     state: ProTxOperationState,
@@ -519,10 +519,11 @@ impl NetworkSession {
     }
 
     /// `Ok` when a resend of `row` may hand its bytes off: it reads
-    /// `signed`, `not_sent` or `sent`, and its txid carries no abandoned mark,
-    /// whatever its state reads (an InstantSend lock seen since the abandon,
-    /// or a hand-off recovered unsent and abandoned in Activity).
-    /// `OperationState` otherwise, `abandoned` for a marked one.
+    /// `signed`, `not_sent` or `sent`, and a registration's or key change's
+    /// txid carries no abandoned mark, whatever its state reads (an
+    /// InstantSend lock seen since the abandon, or a hand-off recovered
+    /// unsent and abandoned in Activity). `OperationState` otherwise,
+    /// `abandoned` for a marked one. The shared kinds keep their own rules.
     pub(crate) async fn require_resendable(
         &self,
         wallet: WalletId,
@@ -530,9 +531,14 @@ impl NetworkSession {
     ) -> Result<(), MasternodesError> {
         let state = self.op_state(wallet, row).await?;
         let abandoned = self.abandoned_txids(wallet).await?;
-        let marked = (row.txid.as_deref())
-            .and_then(|t| Txid::from_str(t).ok())
-            .is_some_and(|t| abandoned.contains(&t));
+        let covered = matches!(
+            kind_of(&row.kind),
+            ProTxOperationKind::Registration | ProTxOperationKind::UpdateRegistrar
+        );
+        let marked = covered
+            && (row.txid.as_deref())
+                .and_then(|t| Txid::from_str(t).ok())
+                .is_some_and(|t| abandoned.contains(&t));
         let state = match state {
             ProTxOperationState::Signed
             | ProTxOperationState::NotSent
@@ -727,8 +733,8 @@ impl NetworkSession {
             let now = now_secs();
             for (id, inputs, abandoned) in &settled {
                 if *abandoned {
-                    // Its payout-change barrier goes with its inputs, in one
-                    // transaction (MG-13 P16).
+                    // Its inputs and their locks in one transaction; its
+                    // payout-change barrier stays (MG-13 P16).
                     let inputs: Vec<(String, u32)> = inputs
                         .iter()
                         .map(|o| (o.txid.to_string(), o.vout))

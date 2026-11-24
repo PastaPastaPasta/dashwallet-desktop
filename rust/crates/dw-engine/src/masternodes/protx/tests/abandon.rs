@@ -326,7 +326,7 @@ fn mg10_a_signed_replacements_resend_waits_for_the_abandoned_change() {
     let f = fx(Library::Accept);
     let (_, reg) = f.registered();
     let hash = reg.pro_tx_hash.clone().unwrap();
-    let (op, tx, fee_coin) = f.sent_key_change(&hash);
+    let (op, tx, _) = f.sent_key_change(&hash);
     f.abandon(tx.txid());
     let mut replacement = f.rows().into_iter().find(|r| r.id == op.id).unwrap();
     replacement.id = "e".repeat(32);
@@ -346,13 +346,6 @@ fn mg10_a_signed_replacements_resend_waits_for_the_abandoned_change() {
     let e = f.resend(&replacement).unwrap_err();
     f.assert_abandoned_pending(&e, &op);
     assert_eq!(f.lib.sent().len(), handed, "handed off");
-
-    f.spent_in_a_block(fee_coin, 60);
-    let e = f.resend(&replacement).unwrap_err();
-    assert!(
-        !matches!(e, MasternodesError::UpdateAbandonedPending { .. }),
-        "{e:?}"
-    );
 }
 
 /// The release is one transaction: when it fails before its commit, the

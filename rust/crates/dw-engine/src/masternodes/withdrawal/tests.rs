@@ -3323,6 +3323,23 @@ async fn an_abandoned_payout_change_holds_withdrawals_until_it_is_conflicted() {
     assert_eq!(f.signatures(), 0);
 }
 
+/// An abandoned change may still be mined after a newer one, so it is
+/// pending like any other: Drive's window paying the newer change's script
+/// is no evidence for it while the abandoned one stands, and the quote reads
+/// `payout_change_pending`, not `payout_change_abandoned`.
+#[tokio::test]
+async fn an_older_abandoned_change_holds_a_newer_ones_platform_evidence() {
+    let f = fx();
+    let s2 = CoreScript::new_p2pkh([0x22; 20]);
+    f.barrier(&PRO_TX, "abandoned", s2.as_bytes(), 1_000);
+    f.barrier(&PRO_TX, "newer", payout_script().as_bytes(), 1_001);
+    (f.scene.ops.lock().unwrap()).insert("abandoned".into(), ProTxOperationState::Abandoned);
+    let reason = look(&f.scene, &*f.plat, &PRO_TX).await.unwrap().reason;
+    assert_eq!(reason, Some(CheckingReason::PayoutChangePending));
+    assert_eq!(f.barriers(), 2);
+    assert_eq!(f.signatures(), 0);
+}
+
 /// Fix round 2 m4 (r1 Opus m1): an A→B→A payout change. B1 moves the
 /// payout from S1 to S2, B2 back to S1, neither operation readable. While
 /// B1 is pending, Drive's window still paying S1 is no evidence for B2 (its

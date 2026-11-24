@@ -751,7 +751,7 @@ impl Masternodes {
                 // Read again, held against an abandon through the hand-off:
                 // one since the check released its coins, and its bytes stay
                 // unsent (D49).
-                let _gate = s.abandon_gate.read().await;
+                let _gate = s.abandon_gate(wallet).read_owned().await;
                 s.require_resendable(wallet, &row).await?;
                 s.deliver(
                     wallet,
