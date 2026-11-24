@@ -225,8 +225,9 @@ pub(crate) struct Alarm {
 /// in one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PayoutChange {
-    /// Its payout script; `None` for several payees or a payload this
-    /// version does not decode.
+    /// Its payout script; `None` for several payees of which none is P2SH,
+    /// or a payload this version does not decode. Several payees of which
+    /// one is P2SH name that P2SH script.
     pub(crate) script: Option<Vec<u8>>,
     /// Its block's height; `None` while out of a block.
     pub(crate) height: Option<u32>,

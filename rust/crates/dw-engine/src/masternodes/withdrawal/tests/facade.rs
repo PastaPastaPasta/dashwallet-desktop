@@ -1539,6 +1539,27 @@ fn a_p2sh_payout_refuses_the_owner_key_only_while_drives_window_pays_p2pkh() {
     fa.released(Key::Owner);
 }
 
+/// Several DIP-0026 shares of which one is P2SH, in another loaded
+/// wallet's history: the owner key is refused, and the payout key
+/// withdraws. In this wallet's own history, version 3 is
+/// `withdrawal_shared` first.
+#[test]
+fn a_v3_payout_with_a_p2sh_share_refuses_the_owner_key() {
+    let other = CoreScript::new_p2pkh([0x22; 20]);
+    let fa = Fa::new(true);
+    fa.registered_in(OTHER_WALLET, registration_v3(&[&other, &p2sh_payout()]));
+    fa.owner_held_by_p2sh();
+
+    let fa = Fa::new(true);
+    fa.registered(&payout_script());
+    fa.seen_in(
+        OTHER_WALLET,
+        &payout_change_v3(&PRO_TX, &[&other, &p2sh_payout()], coin(1)),
+        in_block(TIP - 10),
+    );
+    fa.owner_held_by_p2sh();
+}
+
 /// A version-3 payload with one P2SH payee, in another loaded wallet's
 /// history (in this wallet's own, version 3 is `withdrawal_shared` first).
 #[test]

@@ -41,8 +41,9 @@ use crate::platform::{PlatformError, WithdrawAmount};
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// The payout `pro_tx_hash`'s ProRegTx (`true`) or a ProUpRegTx of it
-/// (`false`) sets: `None` for one it does not name a single script for
-/// (several DIP-0026 shares, or a payload this version does not decode).
+/// (`false`) sets. `None` for a payload this version does not decode, or
+/// for several DIP-0026 shares of which none is P2SH. Any P2SH share is
+/// named: an owner-key withdrawal would pay the P2PKH of its 20 bytes.
 fn payout_set(
     txid: &Txid,
     tx: &Transaction,
@@ -52,7 +53,12 @@ fn payout_set(
         |script: &dashcore::ScriptBuf, payouts: Option<&[MasternodePayoutShare]>| match payouts {
             None => Some(script.to_bytes()),
             Some([one]) => Some(one.script_payout.to_bytes()),
-            Some(_) => None,
+            Some(shares) => shares
+                .iter()
+                .find(|share| {
+                    dashcore::Script::from_bytes(share.script_payout.as_bytes()).is_p2sh()
+                })
+                .map(|share| share.script_payout.to_bytes()),
         };
     match &tx.special_transaction_payload {
         Some(TransactionPayload::ProviderUpdateRegistrarPayloadType(p))
