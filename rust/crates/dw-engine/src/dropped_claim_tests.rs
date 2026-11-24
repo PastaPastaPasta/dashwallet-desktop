@@ -827,3 +827,110 @@ fn a_dropped_claim_mined_since_loses_its_record_at_the_next_start() {
         "its record is gone"
     );
 }
+
+/// The claim pays two change outputs. S1 from one pays a second loaded
+/// wallet B, whose spend of it is InstantSend-locked; S2 from the other is
+/// pending. Only B's records show anything of the claim's tree settled:
+/// neither the engine's own drop nor the load after the store's drops S2.
+#[test]
+fn a_settled_spend_in_another_wallet_keeps_a_payment_on_a_dropped_claim() {
+    use super::own_spend_disk_tests::{second_wallet, send_to, wait_stored};
+    let (_dir, engine, session, id) = engine_wallet();
+    let other = second_wallet(&engine, &session);
+    engine
+        .block_on(session.set_load_on_startup(other, true))
+        .unwrap();
+    let second = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    let (_, funding, mut claim) = funding_and_spend(&engine, &session, id);
+    claim.output.push(TxOut {
+        value: CHANGE,
+        script_pubkey: second.script_pubkey(),
+    });
+    claim.output[0].value -= CHANGE;
+    mempool(&engine, &session, id, &claim);
+    let to = super::own_spend_disk_tests::fresh_address(&engine, &session, other);
+    let s1 = send_to(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(claim.txid(), 1)]),
+        &to.to_string(),
+        CHANGE / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &s1);
+    wait_stored(&session, other, &[s1.txid()]);
+    let received = (s1.output.iter())
+        .position(|o| o.script_pubkey == to.script_pubkey())
+        .unwrap() as u32;
+    let child = spend_of(
+        OutPoint::new(s1.txid(), received),
+        vec![
+            (elsewhere(), CHANGE / 8),
+            (
+                super::own_spend_disk_tests::fresh_address(&engine, &session, other)
+                    .script_pubkey(),
+                CHANGE / 8,
+            ),
+        ],
+    );
+    // Delivered with its lock: key-wallet drops an unlocked spend of a held
+    // coin whose input isn't signed for it.
+    instant_lock(&engine, &session, other, &child);
+    wait_stored(&session, other, &[child.txid()]);
+    wait_stored_locked(&session, other, child.txid());
+    let s2 = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(claim.txid(), 2)]),
+        CHANGE / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &s2);
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    let (s, manager) = (Arc::clone(&session), session.manager().unwrap());
+    let funded = std::collections::BTreeSet::from([funding.txid()]);
+    let claims = engine
+        .block_on(session.on_runtime(async move {
+            let claims = s.unsigned_claims(&manager, id, &funded).await;
+            (s.abandon_unsigned_claims(&manager, id, claims.clone(), &funded)).await;
+            Ok(claims)
+        }))
+        .unwrap();
+    assert_eq!(claims, [claim.txid()], "the claim is found unsigned");
+    assert!(
+        !dropped(&engine, &session, id, claim.txid()),
+        "the claim is kept"
+    );
+    assert!(!dropped(&engine, &session, id, s2.txid()), "S2 is kept");
+
+    let session = reopen(&engine, session);
+    assert!(
+        dropped(&engine, &session, id, claim.txid()),
+        "the store dropped the claim"
+    );
+    assert!(
+        !dropped(&engine, &session, id, s2.txid()),
+        "S2 is kept after the store's drop"
+    );
+}
+
+/// A history load whose read of the dropped records fails is incomplete,
+/// so it drops nothing; the next load that reads them is complete again.
+#[test]
+fn a_failed_read_of_the_dropped_records_leaves_the_load_incomplete() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let load = |session: &Arc<NetworkSession>| {
+        let s = Arc::clone(session);
+        engine
+            .block_on(session.on_runtime(async move { s.load_history_for(vec![id]).await }))
+            .unwrap();
+        (session.hub.history).read_wallet(&id, |h| h.load_incomplete)
+    };
+    (session.hub.fail_dropped_read).store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(load(&session), "incomplete while the records don't read");
+    assert!(!load(&session), "complete once they read");
+}

@@ -448,6 +448,11 @@ impl NetworkSession {
         #[cfg(not(test))]
         let fail = false;
         #[cfg(test)]
+        let fail_dropped =
+            (self.hub.fail_dropped_read).swap(false, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let fail_dropped = false;
+        #[cfg(test)]
         let fault = self.hub.record_read_fault.lock().unwrap().take();
         #[cfg(test)]
         let unreadable = self.hub.unreadable_record.lock().unwrap().0.take();
@@ -495,7 +500,10 @@ impl NetworkSession {
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
                     let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
-                    let (dropped_here, dropped_read) = crate::tx_actions::load_dropped(&appdb, wallet);
+                    let (dropped_here, dropped_read) = match fail_dropped {
+                        true => (BTreeSet::new(), false),
+                        false => crate::tx_actions::load_dropped(&appdb, wallet),
+                    };
                     sent.retain(|t, _| {
                         persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains(t)
                     });
