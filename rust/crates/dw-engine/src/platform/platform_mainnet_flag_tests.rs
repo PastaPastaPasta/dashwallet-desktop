@@ -579,4 +579,17 @@ fn a_named_top_up_exit_that_no_longer_stands_is_off_on_mainnet() {
     );
     w.seed(&other);
     refused(&w, &q, 2);
+
+    let (w, mut top_up, q) = setup();
+    (top_up.state, top_up.can_land) = (PlatformActivityState::Done, false);
+    w.seed(&top_up);
+    let b = w.address(1);
+    w.net.fund(b, DASH);
+    w.seed(&held(
+        "move-2-0",
+        MoveKind::ToCore,
+        (&bech32m(&b, Network::Mainnet), 1, DASH, DASH),
+        &w.to.clone(),
+    ));
+    refused(&w, &q, 2);
 }
