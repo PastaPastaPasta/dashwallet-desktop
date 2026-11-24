@@ -20182,8 +20182,8 @@ public enum TxActionRefusal: Equatable, Hashable {
     case settledDescendant
     /**
      * A saved transaction of a loaded wallet didn't read at its load, so
-     * what descends from this one is unknown: closing that wallet, or
-     * removing and restoring it, clears it.
+     * what descends from this one is unknown: removing and restoring that
+     * wallet clears it.
      */
     case recordUnreadable
 
