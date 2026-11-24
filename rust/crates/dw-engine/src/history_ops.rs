@@ -295,9 +295,14 @@ impl ViewParts {
     }
 }
 
-/// A wallet's stored history and the payments this app sent, read before
-/// the wallet is loaded.
-pub(crate) type StoredSpends = (crate::history::WalletHistory, crate::tx_actions::Sent);
+/// A wallet's stored history, the payments this app sent and every
+/// transaction the store holds (none when a record or mark did not read),
+/// read before the wallet is loaded.
+pub(crate) type StoredSpends = (
+    crate::history::WalletHistory,
+    crate::tx_actions::Sent,
+    HashSet<Txid>,
+);
 
 /// Persisted records, first-seen times and abandoned transactions of one
 /// wallet.
@@ -321,6 +326,51 @@ struct LoadedHistory {
     /// height-only row with a height.
     settled: HashSet<Txid>,
 }
+
+/// [`crate::history::unscanned_claims`] of `txs` that key-wallet does not
+/// hold yet, against what `core` holds: a coin is unknown unless the store
+/// holds its transaction (`stored`), key-wallet holds the coin or a record
+/// of its transaction, or the history does.
+fn unscanned_claims_of(
+    core: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    txs: &HashMap<Txid, TxEntry>,
+    swept: &HashSet<Txid>,
+    sent: &crate::tx_actions::Sent,
+    stored: &HashSet<Txid>,
+) -> Vec<dashcore::Transaction> {
+    if stored.is_empty() {
+        return Vec::new();
+    }
+    let accounts = core.accounts.all_accounts();
+    let recorded = |t: &Txid| {
+        (accounts.iter()).any(|a| a.transactions().contains_key(t) || a.transaction_is_finalized(t))
+    };
+    let coins: HashSet<Txid> = (core.accounts.all_funding_accounts().into_iter())
+        .flat_map(|a| a.utxos.keys().map(|o| o.txid))
+        .collect();
+    let skip: HashSet<Txid> = (swept.iter())
+        .chain(core.instant_send_locks())
+        .copied()
+        .collect();
+    let observed = core.observed_spent_outpoints();
+    let chosen = crate::history::unscanned_claims(
+        txs,
+        sent,
+        &skip,
+        |o| observed.contains_key(o),
+        |o| !stored.contains(&o.txid) && !coins.contains(&o.txid) && !recorded(&o.txid),
+    );
+    (chosen.iter())
+        .filter(|t| !recorded(t))
+        .filter_map(|t| Some(txs.get(t)?.tx.clone()))
+        .collect()
+}
+
+/// Tests: the next history load of a session on one of these data
+/// directories hands key-wallet no stored claim.
+#[cfg(test)]
+pub(crate) static SKIP_REFEED_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
 
 impl NetworkSession {
     /// Fills the history store at open: persisted records first (they
@@ -498,12 +548,27 @@ impl NetworkSession {
                     }
                 }
             });
-            sends.push((wallet, sent, complete, claims, settled));
+            sends.push((wallet, sent, complete, claims, settled, stored));
         }
         drop(wm);
-        for (wallet, sent, complete, claims, stored) in sends {
-            self.restore_unmined_spends(&live.manager, wallet, &sent, (complete, claims), &stored)
+        #[cfg(test)]
+        let refeed = !crate::keys::take_test_failure(&SKIP_REFEED_IN, self.data_dir());
+        #[cfg(not(test))]
+        let refeed = true;
+        for (wallet, sent, complete, claims, settled, stored) in sends {
+            self.restore_unmined_spends(&live.manager, wallet, &sent, (complete, claims), &settled)
                 .await;
+            if !(claims && refeed) {
+                continue;
+            }
+            // At open, before SPV can start. A wallet opened later was
+            // handed its claims at `apply_stored_spends`: none is new here.
+            self.refeed_unscanned_claims(&live.manager, wallet, |core| {
+                self.hub.history.read_wallet(&wallet, |h| {
+                    unscanned_claims_of(core, &h.txs, &h.swept, &sent, &stored)
+                })
+            })
+            .await;
         }
         Ok(())
     }
@@ -745,7 +810,7 @@ impl NetworkSession {
                 Ok(mut all) => all.remove(&wallet.0).unwrap_or_default(),
                 Err(e) => {
                     tracing::warn!(%wallet, error = %e, "could not list stored transactions for spend claims");
-                    return (history, crate::tx_actions::Sent::new());
+                    return (history, crate::tx_actions::Sent::new(), HashSet::new());
                 }
             };
             // Read and marked abandoned as the history load does.
@@ -767,27 +832,31 @@ impl NetworkSession {
             sent.retain(|t, _| persisted.keeps_mark(t, &abandoned.unread));
             if !(read && marks_read && sent_read != crate::tx_actions::SentRead::Failed) {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
-                return (history, crate::tx_actions::Sent::new());
+                return (history, crate::tx_actions::Sent::new(), HashSet::new());
             }
-            let stored: HashSet<Txid> = (persisted.records.iter())
+            let all: HashSet<Txid> = (persisted.records.iter())
                 .chain(&persisted.recordless)
+                .copied()
+                .collect();
+            let stored: HashSet<Txid> = (all.iter())
                 .filter(|t| !persisted.unconfirmed.contains(*t))
                 .copied()
                 .collect();
             history.add_unrecorded_sends(&sent, &stored, network);
-            (history, sent)
+            (history, sent, all)
         })
         .await?;
         Ok(stored)
     }
 
     /// Restores the spend claims of `stored` once `wallet` is registered,
-    /// with the InstantSend locks its store holds apart from the records.
+    /// with the InstantSend locks its store holds apart from the records,
+    /// then hands key-wallet its claims on coins not scanned yet.
     pub(crate) async fn apply_stored_spends(
         &self,
         manager: &Manager,
         wallet: WalletId,
-        (mut history, sent): StoredSpends,
+        (mut history, sent, stored): StoredSpends,
     ) {
         self.apply_spend_claims(manager, wallet, |core, chainlock| {
             for t in core.instant_send_locks() {
@@ -798,6 +867,62 @@ impl NetworkSession {
             (claims, locked)
         })
         .await;
+        self.refeed_unscanned_claims(manager, wallet, |core| {
+            unscanned_claims_of(core, &history.txs, &HashSet::new(), &sent, &stored)
+        })
+        .await;
+    }
+
+    /// Hands key-wallet again, through its mempool check, the stored
+    /// pending transactions `select` picks (#73): key-wallet keeps no record
+    /// across a restart, so when the funding of a coin one claims arrives,
+    /// it has no claimant to check and an unsigned claim stays, with its
+    /// row and its change. Held again, each is checked as a claim seen this
+    /// session is, and the existing sweep removes one its coin's owner did
+    /// not sign, with everything built on it. Silent: the check emits no
+    /// event and stores nothing, and the coins it would credit or spend are
+    /// put back as the store gave them, so the balance is the stored one.
+    pub(crate) async fn refeed_unscanned_claims(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        select: impl FnOnce(
+            &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+        ) -> Vec<dashcore::Transaction>,
+    ) {
+        use key_wallet::transaction_checking::{TransactionContext, WalletTransactionChecker};
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let Some((keys, info)) = wm.get_wallet_mut_and_info_mut(&wallet.0) else {
+            return;
+        };
+        let core = &mut info.core_wallet;
+        let txs = select(core);
+        if txs.is_empty() {
+            return;
+        }
+        let mut coins: std::collections::BTreeMap<key_wallet::account::AccountType, _> =
+            (core.accounts.all_funding_accounts().into_iter())
+                .map(|a| (a.managed_account_type().to_account_type(), a.utxos.clone()))
+                .collect();
+        let mut held = 0usize;
+        for tx in &txs {
+            let checked = core
+                .check_core_transaction(tx, TransactionContext::Mempool, keys, true, false)
+                .await;
+            held += usize::from(checked.is_relevant);
+            if !checked.swept_transactions.is_empty() {
+                tracing::warn!(%wallet, txid = %tx.txid(), swept = ?checked.swept_transactions,
+                    "a stored claim handed back dropped transactions no event announces");
+            }
+        }
+        for account in core.accounts.all_funding_accounts_mut() {
+            if let Some(utxos) = coins.remove(&account.managed_account_type().to_account_type()) {
+                account.utxos = utxos;
+            }
+        }
+        core.update_balance();
+        tracing::info!(%wallet, offered = txs.len(), held, "handed key-wallet the stored claims on coins not scanned yet");
     }
 
     /// Transaction and address labels of a wallet (dw-appdb).

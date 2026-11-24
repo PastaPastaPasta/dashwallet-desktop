@@ -547,6 +547,63 @@ pub(crate) fn proven_final(
     }) && headers.get(&height) == Some(&hash)
 }
 
+/// The stored pending transactions a load hands key-wallet again, parents
+/// first (#73): each whose every input is a coin `unknown` says the wallet
+/// has not scanned yet or an output of another of them. One that also
+/// spends a coin the wallet knows is left as before. key-wallet keeps no record
+/// across a restart, so without them it has no claimant to check when the
+/// coin's funding arrives. Only live ones: none mined, InstantSend-locked,
+/// abandoned, in `skip` (swept), sent by this app (`sent`, which spends the
+/// wallet's own coins), a coinbase, or spending a coin a mined or locked
+/// transaction of the history or a block (`spent_by_block`) spends.
+pub(crate) fn unscanned_claims(
+    txs: &HashMap<Txid, TxEntry>,
+    sent: &crate::tx_actions::Sent,
+    skip: &HashSet<Txid>,
+    spent_by_block: impl Fn(&OutPoint) -> bool,
+    unknown: impl Fn(&OutPoint) -> bool,
+) -> Vec<Txid> {
+    let settled = |e: &TxEntry| e.context.block_info().is_some() || instant_locked(e);
+    let settled_spends: HashSet<OutPoint> = (txs.values())
+        .filter(|e| settled(e))
+        .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .collect();
+    let live = |t: &Txid, e: &TxEntry| {
+        !settled(e)
+            && !e.abandoned
+            && !skip.contains(t)
+            && !sent.contains_key(t)
+            && !e.tx.is_coin_base()
+            && (e.tx.input.iter()).all(|i| {
+                !settled_spends.contains(&i.previous_output) && !spent_by_block(&i.previous_output)
+            })
+    };
+    let live: BTreeMap<Txid, &TxEntry> = (txs.iter())
+        .filter(|(t, e)| live(t, e))
+        .map(|(t, e)| (*t, e))
+        .collect();
+    // In rounds, so each comes after the parents it spends.
+    let (mut chosen, mut ordered) = (HashSet::new(), Vec::new());
+    loop {
+        let round: Vec<Txid> = (live.iter())
+            .filter(|(t, e)| {
+                !chosen.contains(*t)
+                    && (e.tx.input.iter()).all(|i| {
+                        let parent = &i.previous_output.txid;
+                        chosen.contains(parent)
+                            || (!txs.contains_key(parent) && unknown(&i.previous_output))
+                    })
+            })
+            .map(|(t, _)| *t)
+            .collect();
+        if round.is_empty() {
+            return ordered;
+        }
+        chosen.extend(round.iter().copied());
+        ordered.extend(round);
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct WalletHistory {
     pub txs: HashMap<Txid, TxEntry>,
@@ -3245,5 +3302,121 @@ mod tests {
         let mut both = vec![damaged, old];
         both.sort();
         assert_eq!(gone(&HashSet::from([damaged])), both);
+    }
+
+    /// #73: only live pending transactions that spend a coin not scanned
+    /// yet, and the live ones built on them, are handed back, parents first.
+    #[test]
+    fn unscanned_claims_are_live_claims_on_unknown_coins_and_their_children() {
+        let me = hash_addr(9);
+        let pending = || TransactionContext::Mempool;
+        let mut txs = HashMap::new();
+        let mut add = |e: TxEntry| {
+            let t = e.tx.txid();
+            txs.insert(t, e);
+            t
+        };
+        let funded = add(entry(
+            tx(vec![foreign_input(1)], vec![out(50, &me), out(50, &me)]),
+            in_block(10, 0),
+        ));
+        let claim = add(entry(
+            tx(vec![foreign_input(2)], vec![out(40, &me)]),
+            pending(),
+        ));
+        let other = add(entry(
+            tx(vec![foreign_input(3)], vec![out(30, &me)]),
+            pending(),
+        ));
+        let child = add(entry(
+            tx(vec![input(other, 0), input(claim, 0)], vec![out(60, &me)]),
+            pending(),
+        ));
+        let of_known = add(entry(
+            tx(vec![input(funded, 0)], vec![out(45, &me)]),
+            pending(),
+        ));
+        let mixed = add(entry(
+            tx(
+                vec![foreign_input(12), input(funded, 1)],
+                vec![out(44, &me)],
+            ),
+            pending(),
+        ));
+        let sent = add(entry(
+            tx(vec![foreign_input(4)], vec![out(1, &me)]),
+            pending(),
+        ));
+        let swept = add(entry(
+            tx(vec![foreign_input(5)], vec![out(2, &me)]),
+            pending(),
+        ));
+        add(entry(
+            tx(vec![foreign_input(6)], vec![out(3, &me)]),
+            in_block(11, 0),
+        ));
+        let mut locked = entry(tx(vec![foreign_input(7)], vec![out(4, &me)]), pending());
+        locked.instant_locked = true;
+        add(locked);
+        let mut removed = entry(tx(vec![foreign_input(8)], vec![out(5, &me)]), pending());
+        removed.abandoned = true;
+        let removed = add(removed);
+        add(entry(
+            tx(vec![input(removed, 0)], vec![out(4, &me)]),
+            pending(),
+        ));
+        add(entry(
+            tx(vec![foreign_input(10)], vec![out(6, &me)]),
+            pending(),
+        ));
+        add(entry(
+            tx(vec![foreign_input(10)], vec![out(7, &me)]),
+            in_block(12, 0),
+        ));
+        add(entry(
+            tx(vec![foreign_input(11)], vec![out(8, &me)]),
+            pending(),
+        ));
+        add(entry(
+            tx(vec![input(Txid::all_zeros(), u32::MAX)], vec![out(9, &me)]),
+            pending(),
+        ));
+
+        let marks = BTreeMap::from([(
+            sent,
+            crate::tx_actions::SentMark {
+                coins: BTreeSet::new(),
+                tx: None,
+                kept: true,
+                inputs: BTreeMap::new(),
+            },
+        )]);
+        let observed = OutPoint::new(Txid::from_byte_array([11; 32]), 0);
+        let chosen = unscanned_claims(
+            &txs,
+            &marks,
+            &HashSet::from([swept]),
+            |o| *o == observed,
+            |_| true,
+        );
+        assert_eq!(chosen.len(), 3, "{chosen:?}");
+        assert_eq!(chosen[2], child, "after both its parents");
+        assert_eq!(
+            BTreeSet::from([chosen[0], chosen[1]]),
+            BTreeSet::from([claim, other])
+        );
+        assert!(!chosen.contains(&of_known));
+        assert!(
+            !chosen.contains(&mixed),
+            "it spends a coin the wallet knows"
+        );
+
+        let unknown = |o: &OutPoint| o.txid == Txid::from_byte_array([2; 32]);
+        let chosen = unscanned_claims(&txs, &marks, &HashSet::new(), |_| false, unknown);
+        assert_eq!(
+            chosen,
+            [claim],
+            "a child that also spends a coin the wallet knows is left"
+        );
     }
 }

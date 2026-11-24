@@ -213,11 +213,16 @@ fn receive_address(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId)
 
 /// A payment of [`PAID`] to `to` from a coin the wallet does not own.
 fn payment(to: &Address) -> Transaction {
+    payment_from(to, 9)
+}
+
+/// [`payment`] from the coin of a transaction named by `seed`.
+fn payment_from(to: &Address, seed: u8) -> Transaction {
     Transaction {
         version: 2,
         lock_time: 0,
         input: vec![TxIn {
-            previous_output: OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+            previous_output: OutPoint::new(Txid::from_byte_array([seed; 32]), 0),
             ..Default::default()
         }],
         output: vec![TxOut {
@@ -304,18 +309,8 @@ fn rows(
     session: &Arc<NetworkSession>,
     id: WalletId,
 ) -> Vec<(String, TxStatusKind, bool, i64)> {
-    let page = engine
-        .block_on(session.history_page(
-            id,
-            HistoryQuery {
-                filter: HistoryFilter::default(),
-                sort: HistorySort::NewestFirst,
-                cursor: None,
-                limit: 100,
-            },
-        ))
-        .unwrap();
-    page.records
+    page(engine, session, id)
+        .records
         .into_iter()
         .map(|r| (r.txid, r.status.kind, r.status.instant_locked, r.amount))
         .collect()
@@ -582,8 +577,18 @@ fn funding_and_spend(
     session: &Arc<NetworkSession>,
     id: WalletId,
 ) -> (Address, Transaction, Transaction) {
+    funding_and_spend_from(engine, session, id, 9)
+}
+
+/// [`funding_and_spend`] with the funding of [`payment_from`] `seed`.
+fn funding_and_spend_from(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    seed: u8,
+) -> (Address, Transaction, Transaction) {
     let to = receive_address(engine, session, id);
-    let funding = payment(&to);
+    let funding = payment_from(&to, seed);
     let coin = OutPoint::new(funding.txid(), 0);
     let change_address = engine
         .block_on(session.next_receive_address(id, None))
@@ -651,6 +656,260 @@ fn an_unsigned_spend_of_a_coin_not_scanned_yet_does_not_hide_it() {
     let session = reopen(&engine, session);
     assert_eq!(balances(&session, id).total, PAID);
     assert_eq!(rows(&engine, &session, id).len(), 1);
+}
+
+/// #73: as above, but Dash Wallet restarts after the claim is stored and
+/// before the scan finds the coin. The wallet library no longer holds the
+/// claim, only the history does; when the coin arrives the claim is still
+/// dropped with its row and its change, and the coin counts, after another
+/// restart too.
+#[test]
+fn an_unsigned_spend_stored_before_a_restart_is_dropped_when_its_coin_arrives() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (_, funding, spend) = funding_and_spend(&engine, &session, id);
+
+    mempool(&engine, &session, id, &spend);
+    assert_eq!(balances(&session, id).total, CHANGE);
+    let session = reopen(&engine, session);
+    assert_eq!(rows(&engine, &session, id).len(), 1, "the claim is stored");
+
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    let ids = |session: &Arc<NetworkSession>| -> Vec<String> {
+        rows(&engine, session, id)
+            .into_iter()
+            .map(|r| r.0)
+            .collect()
+    };
+    assert_eq!(
+        ids(&session),
+        [funding.txid().to_string()],
+        "the claim's row is gone"
+    );
+    assert_eq!(
+        balances(&session, id).total,
+        PAID,
+        "the coin counts, the change doesn't"
+    );
+
+    let session = reopen(&engine, session);
+    assert_eq!(ids(&session), [funding.txid().to_string()]);
+    assert_eq!(balances(&session, id).total, PAID);
+}
+
+/// Whether key-wallet holds a record of `txid` for the wallet.
+fn held_by_library(engine: &Engine, session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm.get_wallet_info(&id.0).unwrap();
+        (info.core_wallet.transaction_history().iter()).any(|r| r.txid == txid)
+    })
+}
+
+fn page(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+) -> crate::history::HistoryPage {
+    engine
+        .block_on(session.history_page(
+            id,
+            HistoryQuery {
+                filter: HistoryFilter::default(),
+                sort: HistorySort::NewestFirst,
+                cursor: None,
+                limit: 100,
+            },
+        ))
+        .unwrap()
+}
+
+/// The `NewTransactions` and `Notice` events recorded after the first
+/// `from`, a second after the call.
+fn notices_since(recorder: &Recorder, from: usize) -> Vec<String> {
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    (recorder.0.lock().unwrap().iter().skip(from))
+        .filter(|e| {
+            matches!(
+                e,
+                crate::EngineEvent::NewTransactions { .. } | crate::EngineEvent::Notice { .. }
+            )
+        })
+        .map(|e| format!("{e:?}"))
+        .collect()
+}
+
+/// #73: a load hands key-wallet back a stored claim on a coin not scanned
+/// yet, and a payment from someone else still pending, without a trace: the
+/// rows, the balance and the notices are those of a load that does not.
+#[test]
+fn a_claim_handed_back_at_a_load_changes_no_row_balance_or_notice() {
+    let (_dir, engine, session, id, recorder) = engine_wallet_recorded();
+    let (to, _, spend) = funding_and_spend(&engine, &session, id);
+    let incoming = payment_from(&to, 7);
+    mempool(&engine, &session, id, &spend);
+    mempool(&engine, &session, id, &incoming);
+
+    crate::history_ops::SKIP_REFEED_IN
+        .lock()
+        .unwrap()
+        .push(session.data_dir().to_path_buf());
+    let from = recorder.len();
+    let session = reopen(&engine, session);
+    assert!(!held_by_library(&engine, &session, id, spend.txid()));
+    let before = (page(&engine, &session, id), balances(&session, id));
+    let notices_before = notices_since(&recorder, from);
+
+    let from = recorder.len();
+    let session = reopen(&engine, session);
+    for tx in [&spend, &incoming] {
+        assert!(
+            held_by_library(&engine, &session, id, tx.txid()),
+            "handed back"
+        );
+    }
+    let after = (page(&engine, &session, id), balances(&session, id));
+    assert_eq!(after, before);
+    assert_eq!(after.1.total, CHANGE + PAID);
+    assert_eq!(after.0.records.len(), 2);
+    let notices_after = notices_since(&recorder, from);
+    assert_eq!(notices_after, notices_before);
+    assert!(
+        !notices_after
+            .iter()
+            .any(|e| e.starts_with("NewTransactions")),
+        "{notices_after:?}"
+    );
+}
+
+/// #73: a claim the user removed before the restart is not handed back,
+/// beside one that is, and its row stays as it was when its coin arrives.
+#[test]
+fn a_claim_removed_before_a_restart_is_not_handed_back() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (_, funding, removed) = funding_and_spend(&engine, &session, id);
+    let (_, _, live) = funding_and_spend_from(&engine, &session, id, 8);
+    mempool(&engine, &session, id, &removed);
+    mempool(&engine, &session, id, &live);
+    own_spend_disk_tests::abandon(&engine, &session, id, removed.txid());
+    let row = |session: &Arc<NetworkSession>| {
+        (rows(&engine, session, id).into_iter()).find(|r| r.0 == removed.txid().to_string())
+    };
+    let before = row(&session);
+    assert_eq!(before.as_ref().map(|r| r.1), Some(TxStatusKind::Abandoned));
+    assert_eq!(balances(&session, id).total, CHANGE);
+
+    let session = reopen(&engine, session);
+    assert!(
+        !held_by_library(&engine, &session, id, removed.txid()),
+        "not handed back"
+    );
+    assert!(
+        held_by_library(&engine, &session, id, live.txid()),
+        "handed back"
+    );
+    assert_eq!(row(&session), before);
+    assert_eq!(balances(&session, id).total, CHANGE);
+
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    // Its amount now counts the coin it spends as the wallet's; it stays
+    // abandoned, out of key-wallet and out of the balance.
+    let abandoned = |session: &Arc<NetworkSession>| row(session).map(|r| r.1);
+    assert!(!held_by_library(&engine, &session, id, removed.txid()));
+    assert_eq!(
+        abandoned(&session),
+        Some(TxStatusKind::Abandoned),
+        "the removed claim does not come back"
+    );
+    assert_eq!(balances(&session, id).total, PAID + CHANGE);
+    let session = reopen(&engine, session);
+    assert!(!held_by_library(&engine, &session, id, removed.txid()));
+    assert_eq!(abandoned(&session), Some(TxStatusKind::Abandoned));
+    assert_eq!(balances(&session, id).total, PAID + CHANGE);
+}
+
+/// #73: the coin an unsigned claim spends was stored before a restart but
+/// its drop was not (a crash between the two), after the claim's own
+/// restart too. The store's open drops the claim with its change
+/// (`drop_unauthorized_pending_spends`), so the load has nothing to hand
+/// back and the coin counts.
+#[test]
+fn an_unsigned_claim_whose_coin_was_stored_first_goes_at_the_open() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (to, funding, spend) = funding_and_spend(&engine, &session, id);
+    mempool(&engine, &session, id, &spend);
+    let session = reopen(&engine, session);
+    assert!(held_by_library(&engine, &session, id, spend.txid()));
+
+    let coin = OutPoint::new(funding.txid(), 0);
+    let mut utxo = key_wallet::Utxo::new(coin, funding.output[0].clone(), to, BIRTH - 20, false);
+    utxo.is_confirmed = true;
+    own_spend_disk_tests::store_raw(
+        &session,
+        id,
+        platform_wallet::changeset::CoreChangeSet {
+            new_utxos: vec![utxo],
+            ..Default::default()
+        },
+    );
+    let session = reopen(&engine, session);
+    assert!(!held_by_library(&engine, &session, id, spend.txid()));
+    assert!(
+        rows(&engine, &session, id).is_empty(),
+        "the claim's row is gone"
+    );
+    assert_eq!(
+        balances(&session, id).total,
+        PAID,
+        "the coin counts, the change doesn't"
+    );
+}
+
+/// #73: a spend of a coin not scanned yet that its owner did sign (another
+/// device of the wallet), stored before a restart, still holds the coin
+/// when its funding arrives: only the change counts.
+#[test]
+fn a_signed_spend_stored_before_a_restart_still_spends_its_coin() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (to, funding, spend) = funding_and_spend(&engine, &session, id);
+    let spend = signed_by_wallet(&engine, &session, id, &to, spend);
+    mempool(&engine, &session, id, &spend);
+    let session = reopen(&engine, session);
+    assert_eq!(balances(&session, id).total, CHANGE);
+
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    assert_eq!(rows(&engine, &session, id).len(), 2);
+    assert_eq!(
+        balances(&session, id).total,
+        CHANGE,
+        "the spent coin is not credited"
+    );
+    let session = reopen(&engine, session);
+    assert_eq!(balances(&session, id).total, CHANGE);
+}
+
+/// #73: a wallet opened later in the session (dash-qt "Open Wallet") is
+/// handed its stored claim before SPV can process anything for it: the
+/// claim is still dropped when its coin arrives.
+#[test]
+fn an_unsigned_claim_of_a_wallet_opened_later_is_dropped_when_its_coin_arrives() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (_, funding, spend) = funding_and_spend(&engine, &session, id);
+    mempool(&engine, &session, id, &spend);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert!(held_by_library(&engine, &session, id, spend.txid()));
+    assert_eq!(rows(&engine, &session, id).len(), 1);
+    assert_eq!(balances(&session, id).total, CHANGE);
+
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    let ids: Vec<String> = (rows(&engine, &session, id).into_iter())
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(ids, [funding.txid().to_string()], "the claim's row is gone");
+    assert_eq!(balances(&session, id).total, PAID);
 }
 
 /// A rescan from the birth height takes the wallet back to catching up at
