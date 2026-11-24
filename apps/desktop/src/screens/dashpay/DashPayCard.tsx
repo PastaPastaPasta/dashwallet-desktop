@@ -53,7 +53,7 @@ export function defaultCardAction(kind: CardActionKind, retry: () => void, moveT
     case "join":
     case "continue":
     case "chooseName":
-    // Each page with the card opens the wizard itself (MyProfile.tsx `instantCardAction`).
+    // Each page with the card opens the wizard itself (MyProfile.tsx `identityCardAction`).
     case "instantName":
     case "instantRetry":
       return navigate("joinDashPay");
@@ -79,6 +79,7 @@ export function DashPayCard({ card, onAction }: { card: CardModel; onAction: (ki
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
   const { action, secondary, step } = card;
+  const press = (kind: CardActionKind) => (kind === "votingInfo" ? setVotingInfo(true) : onAction(kind));
   return (
     <section
       className={`dashpay-card card-l1 is-${card.tone}`}
@@ -124,7 +125,7 @@ export function DashPayCard({ card, onAction }: { card: CardModel; onAction: (ki
             data-testid="dashpay-card-action"
             data-kind={action.kind}
             disabled={action.disabled}
-            onClick={() => (action.kind === "votingInfo" ? setVotingInfo(true) : onAction(action.kind))}
+            onClick={() => press(action.kind)}
           >
             {action.label}
           </DashButton>
@@ -135,7 +136,7 @@ export function DashPayCard({ card, onAction }: { card: CardModel; onAction: (ki
               className="dashpay-card-action"
               data-testid="dashpay-card-secondary"
               disabled={secondary.disabled}
-              onClick={() => (secondary.kind === "votingInfo" ? setVotingInfo(true) : onAction(secondary.kind))}
+              onClick={() => press(secondary.kind)}
             >
               {secondary.label}
             </DashButton>

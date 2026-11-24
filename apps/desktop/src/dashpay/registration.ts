@@ -372,7 +372,7 @@ const instantOf = (row: RegistrationStatus, i: ScreenInputs) =>
 
 /** R11: the vote on `label` began. With a temporary name beside it, iOS's success line, or its
  * failure line with Try again. */
-function votingScreen(label: string, endsAt: number | null, date: (secs: number) => string, instant: { label: string; outcome: "owned" | "failed" } | null = null): ScreenModel {
+function votingScreen(label: string, endsAt: number | null, date: (secs: number) => string, instant: { label: string; outcome: NonNullable<TemporaryOutcome> } | null = null): ScreenModel {
   const lines = [REG_COPY.voting.message(label), endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(date(endsAt))];
   const actions = [act("done", REG_COPY.voting.action), act("votingInfo", REG_COPY.voting.info)];
   if (instant?.outcome === "owned") lines.push(INSTANT_COPY.success(instant.label, label));

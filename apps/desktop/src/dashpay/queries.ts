@@ -11,12 +11,12 @@ import { useDebounced } from "../app/useDebounced";
 import { keys, mainIdentityOf, mainSummaryOf, useBackend, useLockStatus, useSyncStatus, useWallets } from "../api/queries";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
+import { useModel } from "../onboarding/model";
 import { isSyncing, syncPercent } from "../format/sync";
 import type { PayWithInputs } from "./payWith";
 import { AVAILABILITY_DEBOUNCE_MS, isRunning } from "./registration";
-import { AvailabilityChecker, suggest } from "./instantName";
-import { useModel } from "../onboarding/model";
-import { contestRow, homographSafe, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
+import { AvailabilityChecker, needsAvailability, suggest } from "./instantName";
+import { contestRow, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
 import { QUOTE_REQUEST, type StatusInputs } from "./status";
 import { coreRequest, invitationRequest, platformRequest } from "./wizard";
 
@@ -93,7 +93,7 @@ export function useInstantChecks(walletId: string, requested: string, candidate:
   const checker = useMemo(() => new AvailabilityChecker((label) => b.nameAvailability(walletId, label)), [b, walletId]);
   useModel(checker);
   useEffect(() => () => checker.dispose(), [checker]);
-  const eligible = check?.valid && !check.contested && check.normalized !== homographSafe(requested) ? candidate : null;
+  const eligible = needsAvailability(requested, check) ? candidate : null;
   useEffect(() => checker.set(eligible), [checker, eligible]);
   const current = eligible !== null && checker.label === eligible;
   return { check, availability: current ? checker.availability : undefined, pending: eligible !== null && (!current || checker.pending) };
@@ -230,7 +230,9 @@ export function useInstantInputs(walletId: string, status: DashPayStatus | undef
 
 /** The Join page's gate on registering at all: a wallet that holds its keys (the status's
  * `watchOnly` reason). Never the network: registration from the Dash wallet is live on mainnet. */
-export const registrationOffered = (wallet: { watchOnly: boolean } | undefined): boolean => wallet !== undefined && !wallet.watchOnly;
+export function registrationOffered(wallet: { watchOnly: boolean } | undefined): boolean {
+  return wallet !== undefined && !wallet.watchOnly;
+}
 
 /** Everything the Home card and the Join page derive from (`homeCard`, `joinModel`), under the
  * shell's keys, so these reads share its cache. `retry` reads the status again (S2). */

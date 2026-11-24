@@ -17,7 +17,7 @@ import type { StartupStatus } from "../api/generated/StartupStatus";
 import { RESCAN_TEXT } from "../app/rescan";
 import { oneDecimal } from "../format/sync";
 import { messageTable, t } from "../i18n";
-import { INSTANT_COPY, instantOffer, VOTE_COPY, type InstantInputs } from "./instantOffer";
+import { INSTANT_COPY, instantOffer, VOTE_COPY, type AskedTemporary, type InstantInputs } from "./instantOffer";
 
 
 /** Each rendered state of the Home card (the design's state inventory, S2–S17; DP1-10's S19, S20). */
@@ -364,6 +364,12 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
   return card("creating", "pending", title, wait ? [wait] : [], { step, busy: true });
 }
 
+/** The temporary name's line while the vote runs: iOS's success line when it is the one the
+ * registration asked for and a names read says it is owned, else "Until then you are". */
+export function temporaryLine(temporary: string, requested: string, asked: AskedTemporary | null | undefined): string {
+  return asked?.outcome === "owned" && asked.label === temporary ? INSTANT_COPY.success(temporary, requested) : COPY.voting.temporary(temporary);
+}
+
 /** What the main identity's names say (D23): it has a name; they are not known yet (unread, a
  * sync pass holds them, or the engine's names pass has not ended); they could not be fetched; or
  * it owns none. Only the last asks for a username. */
@@ -403,27 +409,23 @@ export function homeCard(i: StatusInputs): CardModel | null {
       const lines: string[] = [COPY.voting.deciding, s.endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(i.date(s.endsAt))];
       // The temporary name shows on a live read only (DASHPAY F5).
       const temporary = i.main && !i.main.namesUpdating && i.main.mainName !== s.label ? i.main.mainName : null;
-      const asked = i.instant?.asked;
-      if (temporary && asked?.outcome === "owned" && asked.label === temporary) lines.push(INSTANT_COPY.success(temporary, s.label));
-      else if (temporary) lines.push(COPY.voting.temporary(temporary));
+      if (temporary) lines.push(temporaryLine(temporary, s.label, i.instant?.asked));
+      const title = COPY.voting.title(s.label);
       const info = action("votingInfo", COPY.voting.action);
       const offer = instantOffer(i.main, temporary, i.instant);
       switch (offer?.kind) {
         case "create":
-          return card("voting", "pending", COPY.voting.title(s.label), [...lines, VOTE_COPY.instantHint(s.label)], {
-            action: action("instantName", VOTE_COPY.instantAction),
-            secondary: info,
-          });
+          return card("voting", "pending", title, [...lines, VOTE_COPY.instantHint(s.label)], { action: action("instantName", VOTE_COPY.instantAction), secondary: info });
         case "short":
-          return card("voting", "pending", COPY.voting.title(s.label), [...lines, VOTE_COPY.instantShort], { action: action("buyCredits", VOTE_COPY.topUp), secondary: info });
+          return card("voting", "pending", title, [...lines, VOTE_COPY.instantShort], { action: action("buyCredits", VOTE_COPY.topUp), secondary: info });
         case "failed":
-          return card("voting", "problem", COPY.voting.title(s.label), [...lines, INSTANT_COPY.failure(offer.label)], {
+          return card("voting", "problem", title, [...lines, INSTANT_COPY.failure(offer.label)], {
             action: action("instantRetry", INSTANT_COPY.retry),
             secondary: info,
             retryLabel: offer.label,
           });
         default:
-          return card("voting", "pending", COPY.voting.title(s.label), lines, { action: info });
+          return card("voting", "pending", title, lines, { action: info });
       }
     }
     case "ready": {

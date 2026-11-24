@@ -198,8 +198,7 @@ export class RegistrationWizard extends Model {
     const m = this.mode;
     if (m.kind === "invitation") return invitationRequest(this.label, m.linkId, this.requestInviter && m.inviter !== null);
     const temp = this.temporaryLabel;
-    if (this.fromPlatform && quote?.platform) return platformRequest(this.label, quote.platform, temp);
-    if (this.fromPlatform) return platformRequest(this.label, undefined, temp);
+    if (this.fromPlatform) return platformRequest(this.label, quote?.platform ?? undefined, temp);
     return coreRequest(this.label, temp);
   }
 

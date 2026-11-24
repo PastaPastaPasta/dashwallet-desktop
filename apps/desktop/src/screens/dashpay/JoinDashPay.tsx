@@ -26,7 +26,7 @@ import { Page } from "../Routes";
 import { DashPayFaqSheet, VotingInfoSheet } from "./AboutDashPay";
 import { ClaimConfirmStep, ClaimScreen, InvitationPasteSheet } from "./Claim";
 import { DashPayCard, defaultCardAction, moveToDashWallet } from "./DashPayCard";
-import { buyCredits, chooseName, instantCardAction } from "./MyProfile";
+import { chooseName, identityCardAction } from "./MyProfile";
 import { RegistrationScreen, WizardSteps } from "./Registration";
 
 function Intro() {
@@ -95,8 +95,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   const moveToCore = () => moveToDashWallet(b, walletId);
   const onAction = (kind: CardActionKind) => {
     if (kind === "chooseName" && inputs.main) return wiz.begin({ kind: "credits", identity: inputs.main.identity });
-    if (kind === "buyCredits" && inputs.main) return buyCredits(b, walletId, inputs.main);
-    if (instantCardAction(b, walletId, inputs.main, kind, model.kind === "card" ? model.card : null)) return;
+    if (identityCardAction(b, walletId, inputs.main, kind, model.kind === "card" ? model.card : null)) return;
     return defaultCardAction(kind, retry, moveToCore);
   };
   // A claim seen through leaves the claim screen too.

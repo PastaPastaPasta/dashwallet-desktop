@@ -54,6 +54,11 @@ export function instantCheck(
   return { kind: "availability", line, ok };
 }
 
+/** The checks before availability pass: the network is asked only then. */
+export function needsAvailability(requested: string, check: UsernameCheck | undefined): boolean {
+  return check !== undefined && check.valid && !check.contested && check.normalized !== homographSafe(requested);
+}
+
 /** The availability lookup behind the checks: asked once the label has stayed the same for
  * `delay`, and only for a label `set` still holds when its answer comes (a stale one is dropped).
  * A failed lookup is "could not check", as on step 1. */

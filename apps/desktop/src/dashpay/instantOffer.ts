@@ -83,6 +83,11 @@ export function contestRow(rows: RegistrationStatus[] | undefined, identity: str
   return rows?.findLast((r) => r.identity === identity && homographSafe(r.label) === homographSafe(label) && r.temporaryLabel !== null);
 }
 
+export interface AskedTemporary {
+  label: string;
+  outcome: TemporaryOutcome;
+}
+
 /** What the voting card and the request's details offer while the own contest is open. */
 export interface InstantInputs {
   /** DashPay registration is offered for this wallet: it holds its keys (the Join page's gate). */
@@ -90,7 +95,7 @@ export interface InstantInputs {
   /** Credits a plain name costs (`grant_request(registerName)`), `null` while unknown. */
   nameCredits: string | null;
   /** The temporary name the contest's registration asked for, and what became of it. */
-  asked: { label: string; outcome: TemporaryOutcome } | null;
+  asked: AskedTemporary | null;
 }
 
 /** The card's instant offer for an open contest whose identity holds no other name. */
@@ -106,10 +111,7 @@ export type InstantOffer =
 
 export function instantOffer(main: IdentitySummary | undefined, temporary: string | null, i: InstantInputs | undefined): InstantOffer {
   if (!i?.offered || !main || main.namesUpdating || main.namesCheck !== null || temporary) return null;
-  if (i.asked) {
-    if (i.asked.outcome === "failed") return { kind: "failed", label: i.asked.label };
-    return null;
-  }
+  if (i.asked) return i.asked.outcome === "failed" ? { kind: "failed", label: i.asked.label } : null;
   if (i.nameCredits !== null && main.balance !== null && BigInt(main.balance) < BigInt(i.nameCredits)) return { kind: "short" };
   return { kind: "create" };
 }

@@ -16,7 +16,7 @@ import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { formatLocale, messageTable, t } from "../i18n";
 import { INSTANT_COPY, instantOffer, VOTE_COPY, type InstantInputs } from "./instantOffer";
 import { REG_COPY } from "./registration";
-import { COPY, homeCard, namesState, withTable, type CardModel, type NamesState, type StatusInputs } from "./status";
+import { COPY, homeCard, namesState, temporaryLine, withTable, type CardModel, type NamesState, type StatusInputs } from "./status";
 
 const pr = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(prefix ? `dashpay.profile.${prefix}` : "dashpay.profile", keys);
 const cr = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(prefix ? `dashpay.credits.${prefix}` : "dashpay.credits", keys);
@@ -333,9 +333,7 @@ export function requestModel(
       const fromMain = !main.namesUpdating && main.mainName && main.mainName !== label ? main.mainName : null;
       const temporary = read?.temporaryName ?? fromMain;
       const lines: string[] = [C.deciding, end === null ? C.notify : C.endsOn(date(end))];
-      const asked = instant?.asked;
-      if (temporary && asked?.outcome === "owned" && asked.label === temporary) lines.push(INSTANT_COPY.success(temporary, label));
-      else if (temporary) lines.push(C.temporary(temporary));
+      if (temporary) lines.push(temporaryLine(temporary, label, instant?.asked));
       const offer = instantOffer(main, temporary, instant);
       if (offer?.kind === "short") lines.push(VOTE_COPY.instantShort);
       if (offer?.kind === "failed") lines.push(INSTANT_COPY.failure(offer.label));
