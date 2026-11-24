@@ -38,7 +38,7 @@ use super::registration::RegistrationWait;
 use super::registration_flow::{FundError, Spendable, fund_error};
 use super::registration_tests::PartialBringUp;
 use super::requests::tests::Fixture;
-use super::runtime::guard;
+use super::runtime::{TestPause, guard};
 use super::shielded_pool::MAX_LOCK_INPUTS;
 use super::unfinished;
 use super::unfinished_conformance::{self as conformance, End, Rig};
@@ -3202,7 +3202,7 @@ fn finish_all_with_only_a_shielded_lock_does_not_wait_on_the_bring_up() {
     let at = restored_lock(&engine, &s, wallet, shielded, grant(1));
     let platform = Arc::new(PartialBringUp::default());
     *guard(&s.platform.recovery.mock) = Some(Arc::clone(&platform) as _);
-    *guard(&s.platform.bring_up_waits) = Some((Duration::from_secs(5), Duration::from_secs(5)));
+    *guard(&s.platform.bring_up_waits) = Some((Duration::from_secs(120), Duration::from_secs(120)));
     engine.block_on(s.start_spv()).unwrap();
     let startup = || s.dashpay_startup(&wallet).map(|s| s.startup).ok();
     wait_for("the partial bring-up, then SPV", || {
@@ -3218,20 +3218,44 @@ fn finish_all_with_only_a_shielded_lock_does_not_wait_on_the_bring_up() {
     };
     assert_eq!(hold(), Some(RegistrationWait::Startup), "a fund would wait");
 
+    let waited = Arc::new(TestPause::default());
+    *guard(&s.platform.pause_bring_up_wait) = Some(Arc::clone(&waited));
+    let finished = Arc::new(AtomicBool::new(false));
+    let watchdog = {
+        let (waited, finished, platform) = (
+            Arc::clone(&waited),
+            Arc::clone(&finished),
+            Arc::clone(&platform),
+        );
+        std::thread::spawn(move || {
+            while !finished.load(Ordering::SeqCst) {
+                if waited.reached.load(Ordering::SeqCst) {
+                    platform.rerun.notify_one();
+                    waited.release.notify_one();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+    };
     let started = std::time::Instant::now();
     let report = engine
         .block_on(s.dashpay(wallet).finish_asset_locks(grant(1)))
         .unwrap();
+    let elapsed = started.elapsed();
+    finished.store(true, Ordering::SeqCst);
+    watchdog.join().unwrap();
+    assert!(
+        !waited.reached.load(Ordering::SeqCst),
+        "Finish all waited on the bring-up"
+    );
+    guard(&s.platform.pause_bring_up_wait).take();
     assert_eq!(
         (report.by_kind.iter()).map(|k| k.kind).collect::<Vec<_>>(),
         [LockKindId::Shielded],
         "{report:?}"
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(elapsed < Duration::from_secs(60), "{elapsed:?}");
     assert!(report.unread.is_empty(), "{report:?}");
     assert_eq!(platform.calls.load(Ordering::SeqCst), 1, "no rerun asked");
     assert_eq!(startup(), Some(StartupStatus::PartialNoIdentity));
