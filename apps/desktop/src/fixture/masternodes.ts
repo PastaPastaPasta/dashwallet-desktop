@@ -440,6 +440,7 @@ export const OP_DISSOLVE_FOREIGN = opId(9);
 export const OP_UPDATE = opId(10);
 export const OP_CONFLICTED = opId(11);
 export const OP_CONFIRMED = opId(12);
+export const OP_UPDATE_SAVED = opId(13);
 /** A dissolve row's penalty: its `debit` is this plus the fee. */
 export const DISSOLVE_PENALTY = 25 * COIN;
 
@@ -810,6 +811,9 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
       const o = opOf(world, walletId, operation);
       const state = readState(m, o).kind;
       if (state !== "signed" && state !== "not_sent" && state !== "sent") throw stateError(state);
+      // `resend_conflict` (D49): an earlier update of the masternode out and not in a block could be mined after it.
+      const earlier = m.operations.find((x) => x !== o && x.kind === o.kind && o.kind === "update_registrar" && x.proTxHash === o.proTxHash && x.createdAt < o.createdAt && readState(m, x).kind === "sent");
+      if (earlier) throw fail("masternodes.update_pending", `operation ${earlier.id} on this masternode is not in the list yet`, { kind: "operation", operation: earlier.id });
       charge(lease(world, walletId, grant, useGrant), o.debit);
       sendOp(m, o, false);
       changed(ctx);
@@ -1201,12 +1205,12 @@ const external = (n: number) => scenarioTerms(n, { collateral: "external", colla
 const signRequest = (n: number) => ({ address: addr(`xE${n}`), message: `${addr(`pO${n}`)}|0|${keyInfo("owner", 5 + n).address}|${keyInfo("voting", 5 + n).address}|${h(`5${n.toString(16)}`)}` });
 
 /** Home's registrar update in `state`, saved before the scenario opens (issue 438). */
-const homeUpdate = (state: ProTxOperation["state"]) =>
-  scenarioOp(OP_UPDATE, 9, state, {
+const homeUpdate = (state: ProTxOperation["state"], id = OP_UPDATE, n = 9) =>
+  scenarioOp(id, n, state, {
     kind: "update_registrar",
     proTxHash: HOME,
     lastError: state.kind === "not_sent" ? "send.no_peers" : null,
-    terms: scenarioTerms(9, { service: "198.51.100.7:19999", ownerAddress: keyInfo("owner", 0).address!, ownerIndex: 0, collateral: null, collateralOutpoint: null, collateralAddress: null }),
+    terms: scenarioTerms(n, { service: "198.51.100.7:19999", ownerAddress: keyInfo("owner", 0).address!, ownerIndex: 0, collateral: null, collateralOutpoint: null, collateralAddress: null }),
   });
 
 /** `mn-ops`: one operation in each state and of each kind, newest first (MG-10 §5.1). */
@@ -1286,6 +1290,8 @@ export function masternodesScenarios(base: Base) {
     "mn-update-saved": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" })])),
     /** `mn-list` with a change to Home sent and not in the list yet: a new change is refused `update_pending`. */
     "mn-update-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "sent" })])),
+    /** `mn-update-sent` with a later change to Home saved and not sent: its Send again is refused `update_pending`. */
+    "mn-update-saved-behind-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" }, OP_UPDATE_SAVED, 2), homeUpdate({ kind: "sent" })])),
     /** The keychain: Home's operator key matched in the basic form, Office's in the legacy form, Lab evonode's platform node id. */
     "mn-keys": (t: ThemeName | null) =>
       mnBase(base, t, (m) => {

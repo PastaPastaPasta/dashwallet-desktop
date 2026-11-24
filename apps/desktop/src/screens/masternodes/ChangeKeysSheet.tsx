@@ -33,7 +33,7 @@ import {
   type ChangeKeysForm,
 } from "../../masternodes/changeKeys";
 import { registrarLine } from "../../masternodes/model";
-import { mnKeys, useMasternodeOperations, useMasternodesRefresh } from "../../masternodes/queries";
+import { mnKeys, useMasternodeOperations, useMasternodesRefresh, usePendingAwareText } from "../../masternodes/queries";
 import { CredentialField, useCredential } from "./credential";
 
 const P = "masternodes.myMasternodes.changeKeys";
@@ -69,6 +69,7 @@ export function ChangeKeysSheet({
   const shown = useDisplay(network);
   const refresh = useMasternodesRefresh();
   const ops = useMasternodeOperations(wallet.walletId);
+  const refusal = usePendingAwareText(wallet.walletId, changeKeysErrorText);
   const recorded = recordedPayout(detail);
   const [form, setForm] = useState<ChangeKeysForm>(() => initialForm(detail));
   // Q4: the recorded payout is a probe until a preview reads it as no change; a choice the user makes ends it.
@@ -121,7 +122,7 @@ export function ChangeKeysSheet({
       if (!grant) return;
       finish(await b.mnUpdateRegistrar(wallet.walletId, pinToPreview(request, current), grant.id), current.payoutChanges);
     } catch (e) {
-      credential.setError(changeKeysErrorText(e, ops.data));
+      credential.setError(await refusal(e));
       if (feeWentUp(e)) void preview.refetch();
     } finally {
       sending.current = false;
@@ -303,7 +304,7 @@ function UnsentUpdate({
   onClose: () => void;
 }) {
   const t = useT();
-  const ops = useMasternodeOperations(wallet.walletId);
+  const refusal = usePendingAwareText(wallet.walletId, changeKeysErrorText);
   const b = useBackend();
   const credential = useCredential(wallet.walletId, t(`${P}.notSent.ask`), null);
   const acting = useRef(false);
@@ -325,7 +326,7 @@ function UnsentUpdate({
     } catch (e) {
       // A refusal before the lease leaves the grant unused.
       if (granted) void b.revokeGrant(granted).catch(() => null);
-      credential.setError(changeKeysErrorText(e, ops.data));
+      credential.setError(await refusal(e));
     } finally {
       acting.current = false;
       setBusy(false);

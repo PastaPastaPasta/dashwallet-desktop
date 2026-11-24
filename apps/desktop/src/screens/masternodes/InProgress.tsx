@@ -16,7 +16,7 @@ import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { mnErrorText } from "../../masternodes/model";
 import { actsOn, conflicted, inProgress, opRow, opTitle, proTxSends, resendCap, resendConfirmText, type OpAction } from "../../masternodes/operations";
-import { useMasternodeOperations, useMasternodesRefresh } from "../../masternodes/queries";
+import { useMasternodesRefresh, usePendingAwareText } from "../../masternodes/queries";
 import { MoreMenu, StatusChip } from "./common";
 import { CredentialField, useCredential } from "./credential";
 
@@ -213,7 +213,7 @@ function ResendSheet({
   const b = useBackend();
   const shown = useDisplay(network);
   const refresh = useMasternodesRefresh();
-  const ops = useMasternodeOperations(wallet.walletId);
+  const refusal = usePendingAwareText(wallet.walletId, mnErrorText);
   const credential = useCredential(wallet.walletId, t(`${I}.ask`), resendCap(op));
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
@@ -242,7 +242,8 @@ function ResendSheet({
     } catch (e) {
       if (granted) void b.revokeGrant(granted).catch(() => null);
       if (refusedWhileLocked(e) || !mounted.current) return;
-      credential.setError(mnErrorText(e, ops.data));
+      const text = await refusal(e);
+      if (mounted.current) credential.setError(text);
       void refresh();
     } finally {
       if (mounted.current) setBusy(false);

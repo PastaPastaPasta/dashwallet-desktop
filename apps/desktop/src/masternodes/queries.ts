@@ -7,6 +7,8 @@ import { useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
 import type { MasternodeTypeName } from "../api/generated/MasternodeTypeName";
+import type { ProTxOperation } from "../api/generated/ProTxOperation";
+import { hasCode } from "../api/backend";
 import { keys, useBackend } from "../api/queries";
 import { useUi } from "../app/ui";
 import type { NodeNames } from "../governance/model";
@@ -84,6 +86,18 @@ export function useMasternodeKeys(walletId: string, role: MasternodeKeyRoleName,
 export function useMasternodeOperations(walletId: string, enabled = true) {
   const b = useBackend();
   return useQuery({ queryKey: mnKeys.operations(walletId), queryFn: () => b.mnOperations(walletId), enabled });
+}
+
+/** A send's refusal as a sentence. `update_pending` names an operation whose state picks the line, and that state may
+ * have changed while the send was out, so the operations are read again first; a failed read keeps the general line. */
+export function usePendingAwareText(walletId: string, text: (e: unknown, ops?: readonly ProTxOperation[]) => string) {
+  const b = useBackend();
+  const queryClient = useQueryClient();
+  return async (e: unknown) => {
+    if (!hasCode(e, "masternodes.update_pending")) return text(e);
+    const ops = await queryClient.fetchQuery({ queryKey: mnKeys.operations(walletId), queryFn: () => b.mnOperations(walletId), staleTime: 0 }).catch(() => undefined);
+    return text(e, ops);
+  };
 }
 
 /** What the wallet can do with shared masternodes (MG-10 §2.9). */

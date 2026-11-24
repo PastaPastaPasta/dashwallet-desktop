@@ -85,13 +85,15 @@ describe("Change keys or payout", () => {
 
   it("tells a sent pending change, which only an abandon in Activity frees, from one never sent (#438)", () => {
     const pending = { code: "masternodes.update_pending", message: "x", data: { kind: "operation", operation: "u1" } };
-    const op = (kind: ProTxOperation["state"]["kind"]) => [{ id: "u1", state: { kind } } as ProTxOperation];
+    const op = (kind: ProTxOperation["state"]["kind"], opKind: ProTxOperation["kind"] = "update_registrar") => [{ id: "u1", kind: opKind, state: { kind } } as ProTxOperation];
     const SENT =
       "An earlier change to this masternode was sent but hasn't reached the masternode list yet. Wait for it to confirm. If it never will, because it was replaced or dropped from the network, abandon it in Activity. That frees its coins, and you can make a new change. Don't abandon a change that may still be on the network.";
     const NEVER_SENT = "An earlier change to this masternode hasn't reached the masternode list yet. Wait for it, or discard it in In progress if it was never sent.";
     expect(changeKeysErrorText(pending, op("sent"))).toBe(SENT);
     expect(changeKeysErrorText(pending, op("not_sent"))).toBe(NEVER_SENT);
     expect(changeKeysErrorText(pending, op("signed"))).toBe(NEVER_SENT);
+    // A sent blocker that isn't a registrar update (a shared update, a registration) has no abandon advice here.
+    for (const kind of ["update_share", "registration", "dissolve"] as const) expect(changeKeysErrorText(pending, op("sent", kind))).toBe(NEVER_SENT);
     // Not read yet, or another operation: the line that claims nothing about a send.
     expect(changeKeysErrorText(pending, undefined)).toBe(NEVER_SENT);
     expect(changeKeysErrorText({ ...pending, data: { kind: "operation", operation: "other" } }, op("sent"))).toBe(NEVER_SENT);

@@ -238,11 +238,13 @@ const ERROR_KEYS = [
 ] as const;
 const ERRORS = messageTable(`${P}.errors`, ERROR_KEYS);
 
-/** `update_pending` names the update that blocks: once it was sent, the way out is to abandon it in Activity (issue 438). */
+/** `update_pending` names the operation that blocks: a registrar update of this wallet that was sent is freed by
+ * abandoning it in Activity (issue 438). Any other blocker, or one not in `ops`, keeps the general line. */
 export function pendingWasSent(e: unknown, ops: readonly ProTxOperation[] | undefined): boolean {
   if (!isAppError(e) || e.code !== "masternodes.update_pending" || e.data?.kind !== "operation") return false;
   const id = e.data.operation;
-  return ops?.find((o) => o.id === id)?.state.kind === "sent";
+  const blocker = ops?.find((o) => o.id === id);
+  return blocker?.kind === "update_registrar" && blocker.state.kind === "sent";
 }
 
 /** A masternodes call's error as a sentence (§3.8); unknown codes keep the engine's message. `ops`: the wallet's

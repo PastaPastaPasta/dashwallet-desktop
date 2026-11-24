@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
-import { CLUB, HOME, OFFICE } from "../src/fixture/masternodes";
+import { CLUB, HOME, OFFICE, OP_UPDATE_SAVED } from "../src/fixture/masternodes";
 import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { seriousAxeViolations } from "./axe";
@@ -195,6 +195,24 @@ for (const theme of THEMES)
     await shot(page, "change-keys-pending-sent", theme);
     expect(errors).toEqual([]);
   });
+
+test("Send again of a change saved behind a sent one: the sent line, in the sheet and in In progress (#438)", async ({ page }) => {
+  const errors = await open(page, "mn-update-saved-behind-sent");
+  const SENT = "was sent but hasn't reached the masternode list yet";
+  await page.getByTestId(`mn-row-${HOME}`).click();
+  await page.getByTestId("mn-change-keys").click();
+  await page.getByTestId("mn-change-unsent-passphrase").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("mn-change-unsent-resend").click();
+  await expect(page.getByTestId("mn-change-unsent-error")).toContainText(SENT);
+  expect(await page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).length)).toBe(0);
+  const more = await open(page, "mn-update-saved-behind-sent");
+  await page.getByTestId(`mn-op-resend-${OP_UPDATE_SAVED}`).click();
+  await page.getByTestId("mn-op-resend-passphrase").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("mn-op-resend-confirm").click();
+  await expect(page.getByTestId("mn-op-resend-error")).toContainText(SENT);
+  expect(await page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).length)).toBe(0);
+  expect([...errors, ...more].filter((e) => !e.includes("not in the list yet"))).toEqual([]);
+});
 
 test("mainnet: Change keys can be reviewed, and nothing is sent", async ({ page }) => {
   const errors = await open(page, "mn-list", "light", "mainnet");
