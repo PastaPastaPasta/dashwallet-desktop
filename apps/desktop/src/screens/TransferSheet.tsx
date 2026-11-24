@@ -82,7 +82,7 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
             dustText: MOVE_COPY.card.dust(fmt(creditsToDuffs(pools.platformDust))),
             block: hold.block,
             waitingText: hold.waitingText,
-            mainnet: addresses && addressSendsOff(network, addresses) ? mainnetOff(addresses.credits, heldExitOps(hold.activity.data).length, fmt) : undefined,
+            mainnet: addressSendsOff(network, addresses) ? mainnetOff(addresses?.credits ?? "0", heldExitOps(hold.activity.data).length, fmt) : undefined,
           },
     coreSyncing: sync !== undefined && isSyncing(sync),
   };
@@ -180,6 +180,20 @@ function Picker({ t, end, pools, fmt, id }: { t: TransferModel; end: "from" | "t
   );
 }
 
+/** Adds locked earlier that this version can't finish: said where Add to Platform is offered, or off. */
+function StuckAdds({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const fmt = useAmount(network);
+  const pending = usePendingPlatformFunds(walletId).data;
+  return (pending ?? [])
+    .map((p) => ({ p, row: fundRowView(p, fmt) }))
+    .filter(({ row }) => row.kind === "stuck")
+    .map(({ p, row }) => (
+      <p key={p.txid} className="field-hint" data-testid="platform-fund-stuck" data-state={p.state}>
+        {row.text}
+      </p>
+    ));
+}
+
 /** The amount as typed, read in the display unit: `undefined` while it is being read. */
 function useParsed(walletText: string, network: NetworkInfo): number | null | undefined {
   const b = useBackend();
@@ -259,8 +273,6 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount;
   const ready = !blocked && amount != null && amountProblem === null && !refusedHere;
   const continueWhy = why ?? amountProblem ?? refusal ?? (amount == null ? T.why.amount : null);
-  // Adds locked earlier that this version can't finish: said here, where Add to Platform is offered.
-  const stuck = route === "coreToPlatform" ? (pending ?? []).map((p) => ({ p, row: fundRowView(p, fmt) })).filter(({ row }) => row.kind === "stuck") : [];
   return (
     <form
       className="topup-form"
@@ -280,11 +292,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           {why}
         </p>
       )}
-      {stuck.map(({ p, row }) => (
-        <p key={p.txid} className="field-hint" data-testid="platform-fund-stuck" data-state={p.state}>
-          {row.text}
-        </p>
-      ))}
+      {route === "coreToPlatform" && <StuckAdds walletId={walletId} network={network} />}
       <div className="transfer-amount-row">
         <label className="form-field">
           {tr("transfer.amountIn", { unit: shown.name })}
@@ -490,9 +498,12 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
       </div>
       {t.picking && <Picker t={t} end={t.picking} pools={pools} fmt={fmt} id={pickerId} />}
       {route === "unsupported" ? (
-        <p className="field-hint" role="status" data-testid="transfer-unavailable">
-          {unsupportedText(t.from, t.to)}
-        </p>
+        <>
+          <p className="field-hint" role="status" data-testid="transfer-unavailable">
+            {unsupportedText(t.from, t.to)}
+          </p>
+          {t.from === "core" && t.to === "platform" && <StuckAdds walletId={walletId} network={network} />}
+        </>
       ) : off ? (
         <p className="field-hint" role="status" data-testid="transfer-mainnet-off">
           {off}

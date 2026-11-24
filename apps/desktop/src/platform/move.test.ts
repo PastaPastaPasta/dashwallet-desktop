@@ -96,7 +96,7 @@ describe("Move to Dash wallet", () => {
     expect(hasPendingMove(null)).toBe(false);
   });
 
-  it("names the held move whose exit Move offers: the newest move, contact payment or top-up that may still land, never a send", () => {
+  it("names the held move whose exit Move offers: the newest move, contact payment or top-up that may still land, never a send or a pending one", () => {
     const base = { credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1, estimated: false } as const;
     const older = { ...base, id: "pm-1", kind: "moveToCore", state: "failed", mayLand: true } as const;
     const newer = { ...base, id: "pm-2", kind: "toIdentity", state: "failed", mayLand: true } as const;
@@ -104,7 +104,9 @@ describe("Move to Dash wallet", () => {
     // A hold of two records is one exit, counted.
     expect(heldExitOps([newer, older, { ...base, id: "ps-1", kind: "send", state: "failed", mayLand: true }]).map((a) => a.id)).toEqual(["pm-2", "pm-1"]);
     expect(heldExitOp([{ ...base, id: "ps-1", kind: "send", state: "failed", mayLand: true }])).toBeNull();
-    expect(heldExitOp([{ ...older, state: "done", mayLand: false }, { ...base, id: "pm-3", kind: "contactPayment", state: "pending", mayLand: false }])?.id).toBe("pm-3");
+    expect(heldExitOp([{ ...older, state: "done", mayLand: false }, { ...base, id: "pm-3", kind: "contactPayment", state: "failed", mayLand: true }])?.id).toBe("pm-3");
+    // A pending one is no exit: Platform has not answered it yet.
+    expect(heldExitOp([{ ...base, id: "pm-4", kind: "contactPayment", state: "pending", mayLand: false }])).toBeNull();
     // Once it settles there is none, and the screen falls back to the balance's line.
     expect(heldExitOp([{ ...older, state: "failed", mayLand: false }])).toBeNull();
     expect(heldExitOp(undefined)).toBeNull();

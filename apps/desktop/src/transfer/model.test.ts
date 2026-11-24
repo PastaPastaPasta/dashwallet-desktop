@@ -111,6 +111,19 @@ describe("routes", () => {
     expect(canSwap("platform", "core", true)).toBe(false);
   });
 
+  it("keeps an add to Platform that runs or has an unseen result reachable on mainnet", () => {
+    const { t, fund } = model();
+    t.setMainnet(true);
+    t.pick("from", "core", POOLS);
+    t.pick("to", "platform", POOLS);
+    expect(t.route).toBe("unsupported");
+    fund.step = "done";
+    expect(fund.unseen).toBe(true);
+    expect(t.route).toBe("coreToPlatform");
+    t.setMainnet(false);
+    expect(t.route).toBe("coreToPlatform");
+  });
+
   it("Platform → Dash wallet on mainnet: the line in place of Move, the held line while the addresses hold Dash, the exit while earlier payments or moves hold them", () => {
     const fmt = (d: number) => `${d / 1e8} DASH`;
     const on = (mainnet: MainnetOff | undefined): Pools => ({ ...POOLS, platform: { ...POOLS.platform!, mainnet } });

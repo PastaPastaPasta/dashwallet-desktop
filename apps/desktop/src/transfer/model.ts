@@ -596,9 +596,12 @@ export class TransferModel extends Model {
     return this.begun;
   }
 
-  /** The route the ends make: a route, `"unsupported"` (no command, or off on this network) or `null`. */
+  /** The route the ends make: a route, `"unsupported"` (no command, or off on this network) or `null`.
+   * An add to Platform that runs or holds a result not seen yet stays reachable where adding is off. */
   get route(): RouteId | "unsupported" | null {
-    return routeOf(this.from, this.to, this.mainnet);
+    const route = routeOf(this.from, this.to, this.mainnet);
+    const fund = this.flows.fund;
+    return route === "unsupported" && this.from === "core" && this.to === "platform" && (fund.running || fund.unseen) ? "coreToPlatform" : route;
   }
 
   /** The wallet's network: on mainnet a route that is off there is unsupported, and its flow closes. */

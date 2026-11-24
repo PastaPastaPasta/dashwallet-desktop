@@ -204,9 +204,10 @@ export const hasPendingMove = (activity: readonly PlatformActivity[] | null | un
 export const hasUnansweredOp = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
   !!activity?.some((a) => holdingKind(a) && a.state === "pending");
 
-/** The moves, contact payments and top-ups from Platform that hold the addresses, the newest first: on
- * mainnet, where new moves are off, Move stays offered as their exit. A held send's exit is its retry, on Pay. */
-export const heldExitOps = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity[] => activity?.filter((a) => a.kind !== "send" && isHeldOp(a)) ?? [];
+/** The moves, contact payments and top-ups from Platform that hold the addresses and Platform has
+ * answered, the newest first: on mainnet, where new moves are off, Move stays offered as their exit (an
+ * unanswered one holds every move until it settles). A held send's exit is its retry, on Pay. */
+export const heldExitOps = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity[] => activity?.filter((a) => a.kind !== "send" && a.state !== "pending" && isHeldOp(a)) ?? [];
 
 /** The newest of `heldExitOps`, or `null`. */
 export const heldExitOp = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity | null => heldExitOps(activity)[0] ?? null;
