@@ -1068,6 +1068,27 @@ export const HANDLERS: Handlers = {
         label: r.label,
         coinjoinInternal: r.txType === "coinJoinMixing" || r.txType === "coinJoinCollateralPayment" || r.txType === "coinJoinMakeCollaterals" || r.txType === "coinJoinCreateDenominations",
       })),
+  // The engine's notices of payments dropped because what they spent was never valid: those whose
+  // coins are back, not dismissed, one per payee, without the fee.
+  dropped_notices: ({ walletId }, { world }) => {
+    const w = wallet(world, walletId);
+    return w.rows
+      .filter((r) => r.status.dropped?.cause === "invalidSource" && r.status.dropped.state.kind === "released" && r.category === "sent" && !w.droppedSeen?.includes(r.txid))
+      .map((r) => ({
+        txid: r.txid,
+        recordIndex: r.recordIndex,
+        amount: Math.abs(r.amount) - (r.recordIndex === 0 ? (r.fee ?? 0) : 0),
+        timestamp: r.timestamp,
+        address: r.address,
+        label: r.label,
+        counterparty: r.counterparty ?? null,
+      }));
+  },
+  dismiss_dropped_notices: ({ walletId, txids }, { world }) => {
+    const w = wallet(world, walletId);
+    w.droppedSeen = [...new Set([...(w.droppedSeen ?? []), ...txids])];
+    return null;
+  },
   tx_detail: ({ walletId, txid }, { world }) => {
     const row = wallet(world, walletId).rows.find((r) => r.txid === txid);
     if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);

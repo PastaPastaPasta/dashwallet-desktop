@@ -94,6 +94,7 @@ describe("chips and icons", () => {
     expect(txChip(status({ kind: "unconfirmed", instantLocked: true, chainLocked: false }))).toBe("InstantSend");
     expect(txChip(status({ kind: "confirming", instantLocked: true, chainLocked: false }))).toBe("InstantSend");
     expect(txChip(status({ kind: "abandoned" }))).toBe("Abandoned");
+    expect(txChip(status({ kind: "abandoned", dropped: { cause: "invalidSource", state: { kind: "releasing" } } }))).toBe("Dropped");
   });
 
   it("marks failures with the error icon", () => {

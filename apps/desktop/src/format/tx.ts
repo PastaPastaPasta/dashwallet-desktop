@@ -216,6 +216,7 @@ export function txIcon(type: TxTypeName, status: TxStatusInfo, amount: number): 
 
 /** One status chip, or null when the transaction is settled ("quiet when fine"). */
 export function txChip(status: TxStatusInfo): string | null {
+  if (status.dropped) return t("activity.status.droppedLabel");
   switch (status.kind) {
     case "conflicted":
       return TxTitle.chipConflicted;
