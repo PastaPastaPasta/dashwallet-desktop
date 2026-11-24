@@ -443,6 +443,12 @@ enum FundScript {
 struct World {
     /// What a Shielded-funded registration reads.
     shielded: super::registration::ShieldedFacts,
+    /// The proved balances of the Platform addresses (stored nonce: the
+    /// address's first byte), and a move that holds them.
+    platform: BTreeMap<dpp::address_funds::PlatformAddress, u64>,
+    platform_held: Option<String>,
+    /// The session's network reads as mainnet.
+    mainnet: bool,
     locks: Vec<LockInfo>,
     identities: Vec<(u32, String)>,
     names: Vec<(String, String)>,
@@ -1053,6 +1059,14 @@ impl RegistrationLib for Fake {
         Ok(Some(0))
     }
 
+    fn network(&self) -> DashNetwork {
+        if self.w().mainnet {
+            DashNetwork::Mainnet
+        } else {
+            DashNetwork::Regtest
+        }
+    }
+
     fn claim_hold(&self) -> Option<RegistrationWait> {
         if self.startup_hold.load(Ordering::SeqCst) {
             let session = self.session.upgrade().expect("the fixture's session");
@@ -1157,6 +1171,33 @@ impl RegistrationLib for Fake {
 
     async fn shielded_facts(&self) -> Result<super::registration::ShieldedFacts, PlatformError> {
         Ok(self.w().shielded.clone())
+    }
+
+    async fn platform_plan(
+        &self,
+        funding: u64,
+    ) -> Result<super::registration_platform::RegisterPlan, super::errors::CreditsError> {
+        use dpp::address_funds::PlatformAddress;
+        let version = self.platform_version().await;
+        let (balances, held) = {
+            let w = self.w();
+            (w.platform.clone(), w.platform_held.clone())
+        };
+        if let Some(id) = held {
+            return Err(super::errors::CreditsError::MovePending { id });
+        }
+        let nonces = (balances.keys())
+            .map(|a| match a {
+                PlatformAddress::P2pkh(h) | PlatformAddress::P2sh(h) => (*a, h[0] as u32),
+            })
+            .collect();
+        let keys = super::keys_policy::registration_specs().len();
+        Ok(super::registration_platform::register_plan(
+            (&balances, &nonces),
+            funding,
+            keys,
+            version,
+        )?)
     }
 
     async fn request_inviter(
@@ -4384,6 +4425,7 @@ mod invitation;
 #[cfg(unix)]
 mod kill9;
 mod ledger;
+mod platform;
 mod rules;
 mod shielded;
 mod step2;

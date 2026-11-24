@@ -2889,3 +2889,6 @@ mod shield;
 
 #[path = "platform_top_up_tests.rs"]
 mod top_up;
+
+#[path = "platform_register_tests.rs"]
+mod register;

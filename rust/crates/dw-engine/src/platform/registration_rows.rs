@@ -130,6 +130,25 @@ pub(crate) enum Funding {
         fallback: String,
         identity: Option<String>,
     },
+    /// Paid from the wallet's Platform addresses (C-funding F3): what the
+    /// identity receives and what input 0 keeps for the fee, both from the
+    /// accepted quote. `plan`: the inputs at their nonces and the identity
+    /// they give, written by the funding step before anything is signed.
+    PlatformAddresses {
+        funding_credits: u64,
+        fee_reserve_credits: u64,
+        plan: Option<PlatformPlan>,
+    },
+}
+
+/// What a Platform-funded row may have signed (C-funding F3, F8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlatformPlan {
+    /// bech32m address, the nonce it signs at and its claim, in address
+    /// order.
+    pub(crate) inputs: Vec<(String, u32, u64)>,
+    /// The id those inputs and nonces create.
+    pub(crate) identity: String,
 }
 
 /// A stored value read back.
@@ -182,6 +201,24 @@ impl Funding {
                 }
                 value
             }
+            Funding::PlatformAddresses {
+                funding_credits,
+                fee_reserve_credits,
+                plan,
+            } => {
+                let mut value = json!({
+                    "v": v, "kind": "platform_addresses", "funding_credits": funding_credits,
+                    "fee_reserve_credits": fee_reserve_credits,
+                });
+                if let Some(plan) = plan {
+                    let inputs: Vec<Value> = (plan.inputs.iter())
+                        .map(|(a, n, c)| json!({"address": a, "nonce": n, "credits": c}))
+                        .collect();
+                    value["inputs"] = json!(inputs);
+                    value["identity"] = json!(plan.identity);
+                }
+                value
+            }
         }
         .to_string()
     }
@@ -220,11 +257,35 @@ impl Funding {
                     fallback: field("fallback")?,
                     identity: optional("identity")?,
                 },
+                "platform_addresses" => Funding::PlatformAddresses {
+                    funding_credits: value.get("funding_credits")?.as_u64()?,
+                    fee_reserve_credits: value.get("fee_reserve_credits")?.as_u64()?,
+                    plan: match (value.get("inputs"), optional("identity")?) {
+                        (None, None) => None,
+                        (Some(inputs), Some(identity)) => Some(PlatformPlan {
+                            inputs: decode_inputs(inputs)?,
+                            identity,
+                        }),
+                        _ => return None,
+                    },
+                },
                 _ => return None,
             })
         })();
         decoded.map_or(Decoded::Unsupported, Decoded::Known)
     }
+}
+
+/// A plan's inputs: at least one, each address with a 32-bit nonce.
+fn decode_inputs(value: &Value) -> Option<Vec<(String, u32, u64)>> {
+    let inputs = (value.as_array()?.iter())
+        .map(|i| {
+            let address = i.get("address")?.as_str()?.to_owned();
+            let nonce = u32::try_from(i.get("nonce")?.as_u64()?).ok()?;
+            Some((address, nonce, i.get("credits")?.as_u64()?))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!inputs.is_empty()).then_some(inputs)
 }
 
 /// The profile entered at Draft, as `initial_profile` stores it: the avatar
@@ -325,6 +386,22 @@ mod tests {
                 fallback: "tdash1qown".into(),
                 identity: Some("Carol1dentity".into()),
             },
+            Funding::PlatformAddresses {
+                funding_credits: 25_000_000,
+                fee_reserve_credits: 64_500_000,
+                plan: None,
+            },
+            Funding::PlatformAddresses {
+                funding_credits: 25_000_000,
+                fee_reserve_credits: 64_500_000,
+                plan: Some(PlatformPlan {
+                    inputs: vec![
+                        ("tdash1qa".into(), 4, 20_000_000),
+                        ("tdash1qb".into(), 1, 5_000_000),
+                    ],
+                    identity: "Carol1dentity".into(),
+                }),
+            },
         ];
         for f in all {
             let text = f.encode();
@@ -342,7 +419,16 @@ mod tests {
     fn a_newer_or_malformed_funding_is_refused_cleanly() {
         for text in [
             r#"{"v":2,"kind":"core_balance","lock_duffs":1}"#,
+            r#"{"v":1,"kind":"platform_credit_line"}"#,
+            // A Platform row always names its funding and reserve, and a
+            // plan its inputs and identity together.
             r#"{"v":1,"kind":"platform_addresses"}"#,
+            r#"{"v":1,"kind":"platform_addresses","funding_credits":1}"#,
+            r#"{"v":1,"kind":"platform_addresses","funding_credits":1,"fee_reserve_credits":1,"identity":"C"}"#,
+            r#"{"v":1,"kind":"platform_addresses","funding_credits":1,"fee_reserve_credits":1,"inputs":[]}"#,
+            r#"{"v":1,"kind":"platform_addresses","funding_credits":1,"fee_reserve_credits":1,"inputs":[],"identity":"C"}"#,
+            r#"{"v":1,"kind":"platform_addresses","funding_credits":1,"fee_reserve_credits":1,"inputs":[{"address":"a","nonce":4294967296,"credits":1}],"identity":"C"}"#,
+            r#"{"v":1,"kind":"platform_addresses","funding_credits":1,"fee_reserve_credits":1,"inputs":[{"address":"a","credits":1}],"identity":"C"}"#,
             r#"{"v":1,"kind":"core_balance"}"#,
             r#"{"v":1,"kind":"core_balance","lock_duffs":-1}"#,
             r#"{"v":1,"kind":"core_balance","lock_duffs":"1"}"#,

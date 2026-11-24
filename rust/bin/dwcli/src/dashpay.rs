@@ -925,6 +925,7 @@ fn registration_params(e: &RegistrationError) -> Value {
         R::Recoverable { draft } => json!({"draft": draft}),
         R::Name(n) => name_params(n),
         R::Invitation(i) => invitation_params(i),
+        R::Credits(c) => credits_params(c),
         R::Platform(p) => platform_params(p),
     }
 }
