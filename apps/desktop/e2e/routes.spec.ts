@@ -198,7 +198,7 @@ test("menu commands: navigate, tools tabs, discreet, about, lock; the menus mirr
   await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.shellSync)).toEqual({ discreet: true, canLock: true, secretShown: false });
 
   await command(page, { kind: "about" });
-  await expect(page.getByTestId("about-version")).toHaveText("0.1.0");
+  await expect(page.getByTestId("about-version")).toHaveText("0.1.0-dev.57.g1a2b3c4");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("about")).toHaveCount(0);
 

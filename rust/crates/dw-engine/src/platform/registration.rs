@@ -945,6 +945,9 @@ pub(super) async fn funding_cap(
     wallet: WalletId,
     grant: &str,
 ) -> Result<u64, PlatformError> {
+    if let Some(lease) = funding_lease(session, wallet, grant) {
+        return Ok(lease?.available(BudgetPurpose::Funding)?);
+    }
     grant_cap(session, wallet, grant, BudgetPurpose::Funding).await
 }
 
@@ -985,7 +988,7 @@ async fn grant_funds(
     wallet: WalletId,
     grant: &str,
 ) -> Result<bool, PlatformError> {
-    if let Some(lease) = named_lease(session, wallet, grant) {
+    if let Some(lease) = funding_lease(session, wallet, grant) {
         return match lease?.call_funding_signer() {
             Ok(_) => Ok(true),
             Err(LeaseError::NeedsGrant(BudgetPurpose::Funding)) => Ok(false),
@@ -1010,6 +1013,22 @@ fn named_lease(
     })
 }
 
+/// [`named_lease`] for a funding or a registration: a contact payout's
+/// lease pays its payout alone, `grant_invalid` (its credits are still
+/// read through [`grant_cap`]).
+fn funding_lease(
+    session: &NetworkSession,
+    wallet: WalletId,
+    grant: &str,
+) -> Option<Result<Lease, PlatformError>> {
+    Some(match named_lease(session, wallet, grant)? {
+        Ok(lease) if lease.flow() == FlowKind::ContactPayFromBalance => {
+            Err(PlatformError::GrantInvalid)
+        }
+        lease => lease,
+    })
+}
+
 /// A facade call's `grant`: a lease of this wallet, or a vault grant
 /// redeemed into a new registration lease.
 async fn authority(
@@ -1017,7 +1036,7 @@ async fn authority(
     wallet: WalletId,
     grant: &str,
 ) -> Result<Lease, RegistrationError> {
-    let lease = match named_lease(session, wallet, grant) {
+    let lease = match funding_lease(session, wallet, grant) {
         Some(lease) => lease?,
         None => session
             .begin_lease(wallet, FlowKind::Registration, &[grant.to_owned()])
