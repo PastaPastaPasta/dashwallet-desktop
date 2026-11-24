@@ -283,10 +283,18 @@ test("D5: Review shows the first figures, then Register's re-read, then sends", 
   await expect(page.getByTestId("reg-review-total")).toContainText("0.00000453");
   await expect(page.getByTestId("reg-changed")).toHaveCount(0);
   await expectRegister(page);
+  // On a window too short for the whole Review, the passphrase and Register are in view without
+  // scrolling the step (#650).
+  await page.setViewportSize({ width: 1280, height: 640 });
+  await expect(page.getByTestId("reg-passphrase")).toBeInViewport();
+  await expect(page.getByTestId("reg-register")).toBeInViewport();
+  await page.getByTestId("reg-sheet").locator(".sheet-body").evaluate((el) => (el.scrollTop = 0));
   await page.getByTestId("reg-passphrase").fill("demo");
   await expect(page.getByTestId("reg-register")).toBeEnabled();
   await page.getByTestId("reg-register").click();
   await expect(page.getByTestId("reg-changed")).toHaveText("The figures changed. Check them again.");
+  // So is the notice that the figures changed: a second Register would send at them.
+  await expect(page.getByTestId("reg-changed")).toBeInViewport();
   await expect(page.getByTestId("reg-review-fee")).toContainText("0.00000573");
   await page.getByTestId("reg-passphrase").fill("demo");
   await page.getByTestId("reg-register").click();
@@ -415,8 +423,17 @@ test("closing after Type asks to discard; Keep editing stays", async ({ page }) 
   await next(page);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("reg-discard")).toContainText("Discard this registration? Nothing was sent.");
+  await expect(page.getByTestId("reg-keep")).toBeFocused();
+  await expect(page.getByTestId("reg-keep")).toHaveAccessibleDescription("Discard this registration? Nothing was sent.");
   await page.getByTestId("reg-keep").click();
   await expect(step(page, "collateral")).toBeVisible();
+  // On a step with an autofocused field, the prompt still takes the focus, and Keep editing gives it back.
+  await next(page);
+  await expect(step(page, "operator")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("reg-keep")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("reg-operator-key")).toBeFocused();
   await page.keyboard.press("Escape");
   await page.getByTestId("reg-discard-confirm").click();
   await expect(sheet(page)).toHaveCount(0);
