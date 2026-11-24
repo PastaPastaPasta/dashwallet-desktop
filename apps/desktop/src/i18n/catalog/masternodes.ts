@@ -950,6 +950,8 @@ export const masternodes = {
       lock: "Most lock votes",
     },
     noMatch: "No username matches “{search}”",
+    /** A contender by its own spelling of the name and its identity, shortened (F1). */
+    contender: "{name} ({identity})",
     voterLine: "{present} · {left}",
     votesChoice: "Votes {choice}",
     noVoteYet: "No vote yet",
@@ -1328,6 +1330,63 @@ export const masternodes = {
       grantExceeded: "The amount changed. Check the figures again.",
       notFound: "This session isn't in this wallet any more.",
     },
+  },
+  /** Masternode keys (IOS-083, MG-10 §1.5, MG-00 D7): the keychain's keys and the one reveal of a secret. */
+  keys: {
+    title: "Masternode keys",
+    /** The Masternodes tab's More menu item that opens the sheet. */
+    open: "Masternode keys…",
+    intro: "Keys this wallet derives for masternodes it registers.",
+    matchedCount: { one: "{count} matched to a known masternode.", other: "{count} matched to known masternodes." },
+    roles: { owner: "Owner", voting: "Voting", operator: "Operator", platform_node: "Platform node" },
+    rolesLabel: "Key role",
+    loading: "Loading keys…",
+    /** `n` is the keypair's number, from 1. */
+    keypair: "Keypair {n}",
+    /** `name` is the masternode's name, `service` its IP and port. */
+    matchedTo: "Matched to {name}",
+    matchedToService: "Matched to {name} · {service}",
+    notMatched: "Not matched to a known masternode",
+    show: "Show",
+    hide: "Hide",
+    showMore: "Show more",
+    path: "Derivation path",
+    address: "Address",
+    publicKey: "Public key",
+    legacyPublicKey: "Public key, legacy BLS scheme",
+    nodeId: "Node ID",
+    privateKey: "Private key",
+    hidden: "Hidden",
+    reveal: "Reveal…",
+    revealShow: "Show private key",
+    revealing: "Checking…",
+    /** Under the private key before a reveal, per role. */
+    revealNote: {
+      owner: "Anyone with this key controls the masternode's registration: who runs it and where its rewards go.",
+      voting: "Anyone with this key can vote with the masternode.",
+      operator: "Anyone with this key can run the masternode's server. Copy it only to the server that runs this masternode.",
+      platform_node: "Anyone with this key can run the evonode's Platform node. Copy it only to the server that runs this evonode's Platform node.",
+    },
+    needsPassphrase: "Needs your passphrase.",
+    wif: "Private key (WIF)",
+    hex: "Private key (hex)",
+    tenderdash: "Tenderdash key",
+    hideSecret: "Hide private key",
+    /** Under the copy button of a revealed operator or platform node secret. */
+    copyWarning: "Paste this only into your masternode's configuration. Copied text can stay in your clipboard history, and anyone with this key can run the masternode as you.",
+    /** Under a revealed owner or voting secret, where a copy button would be (it has none). */
+    noCopy: "This key can't be copied, so it doesn't end up in your clipboard. Keep it in this wallet unless you're moving the masternode to another wallet.",
+    watchOnly: "This wallet is watch-only, so it can't show masternode keys.",
+    /** A wallet without its secret (Forgot Passphrase left it watch-only) still lists its public keys.
+     * Restoring a backup, which carries the seed, or the phrase with its recovery passphrase brings
+     * Reveal back (dw-engine tests/m3_keychain_offline.rs, test_ios_083_*). */
+    noSeed: "This wallet's private keys are no longer in Dash Wallet, so it shows only the public part of these keys. To reveal a private key, restore the wallet from a backup, or from its recovery phrase with its recovery passphrase if it has one.",
+    /** A key's match line while the known masternodes are still being read, and after a read failed. */
+    checking: "Checking…",
+    checkFailed: "Couldn't check",
+    checkFailedLine: "Couldn't check which known masternodes these keys belong to.",
+    /** Above Reveal: the app can't keep every desktop's screen sharing out (Linux). */
+    screenWarning: "Before you reveal it, stop any screen sharing or recording and make sure no one can see your screen.",
   },
   withdraw: {
     /** An evonode credit withdrawal whose identity data the wallet could not verify (H-09). */

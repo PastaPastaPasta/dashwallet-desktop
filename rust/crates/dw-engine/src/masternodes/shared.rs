@@ -455,6 +455,7 @@ impl Masternodes {
                     stage: "replied".into(),
                 });
             }
+            let revision = build::next_revision(&l.session)?;
             let target = rec.amount.saturating_add(fee);
             let reuse = rec.change.as_ref().map(|c| c.address.clone());
             let fence = s.coin_fence(wallet).await?;
@@ -471,7 +472,7 @@ impl Masternodes {
             );
             let mut next = l.session.clone();
             put_own_side(&mut next, &new)?;
-            next.revision += 1;
+            next.revision = revision;
             s.replace_contribution(wallet, &l, &next, &new).await?;
             drop(fence);
             outcome(&s, wallet, &session).await
@@ -589,6 +590,7 @@ impl Masternodes {
             if !participant_services_ok(&l.session.terms.core_p2p_addrs) {
                 return Err(unsupported(Some("service")));
             }
+            let revision = build::next_revision(&l.session)?;
             // `inferMyShare`: the requested row, else the single empty one.
             let empty: Vec<usize> = (l.session.shares.iter().enumerate())
                 .filter(|(_, r)| r.owner_address.is_empty())
@@ -615,7 +617,7 @@ impl Masternodes {
                 .await?;
             let rec = recorded_of(index, &own, &row, &selected, change, None);
             put_own_side(&mut next, &rec)?;
-            next.revision += 1;
+            next.revision = revision;
             next.check_labels().map_err(envelope_refusal)?;
             #[cfg(test)]
             crate::coins::pause_at(&s.coin_fences.pause_row_write).await;
@@ -724,7 +726,7 @@ impl Masternodes {
                 )
                 .await?;
             let mut next = l.session.clone();
-            build::unfreeze(&mut next);
+            build::unfreeze(&mut next)?;
             s.save_shared(wallet, &l, &next, None).await?;
             outcome(&s, wallet, &session).await
         })
