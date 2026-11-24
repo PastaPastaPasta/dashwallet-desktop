@@ -26,6 +26,8 @@ type RawWalletId = [u8; 32];
 
 pub(crate) struct WalletStore {
     inner: Arc<SqlitePersister>,
+    /// `inner`'s file.
+    db_path: std::path::PathBuf,
     /// Wallets `load` leaves out.
     unloaded: RwLock<HashSet<RawWalletId>>,
     tap: Arc<ChangesetTap>,
@@ -62,11 +64,13 @@ pub(crate) type RegisterHook = Box<dyn FnOnce(RawWalletId) + Send>;
 impl WalletStore {
     pub(crate) fn new(
         inner: Arc<SqlitePersister>,
+        db_path: std::path::PathBuf,
         unloaded: HashSet<RawWalletId>,
         tap: Arc<ChangesetTap>,
     ) -> Self {
         Self {
             inner,
+            db_path,
             unloaded: RwLock::new(unloaded),
             tap,
             leases: std::sync::OnceLock::new(),
@@ -283,6 +287,8 @@ impl PlatformWalletPersistence for WalletStore {
         state
             .platform_addresses
             .retain(|id, _| !unloaded.contains(id));
+        // Before the manager holds any of it.
+        crate::finality_recheck::recheck_start_state(&self.inner, &self.db_path, &mut state);
         let mut loaded_at = self.loaded_at.lock().unwrap_or_else(|p| p.into_inner());
         loaded_at.retain(|id, _| state.wallets.contains_key(id));
         for (id, wallet) in &state.wallets {

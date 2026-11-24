@@ -552,6 +552,7 @@ impl NetworkSession {
         };
         let store = Arc::new(crate::store::WalletStore::new(
             Arc::clone(&persister),
+            data_dir.join(WALLET_DB_FILE),
             unloaded,
             Arc::clone(&tap),
         ));

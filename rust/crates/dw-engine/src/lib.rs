@@ -25,6 +25,7 @@ mod engine;
 mod error;
 mod events;
 mod fees;
+mod finality_recheck;
 mod fsutil;
 mod gate;
 pub mod governance;
