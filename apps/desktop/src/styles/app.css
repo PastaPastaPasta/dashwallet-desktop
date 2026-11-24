@@ -3740,7 +3740,6 @@ input[type="radio"]:disabled {
 
 .coin-table-detail td.coin-status {
   white-space: normal;
-  min-width: 12em;
 }
 
 .coin-group td {
