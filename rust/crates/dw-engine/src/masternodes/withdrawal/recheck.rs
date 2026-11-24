@@ -42,11 +42,11 @@ use dpp::identity::core_script::CoreScript;
 use dpp::identity::identity_nonce::IDENTITY_NONCE_VALUE_FILTER;
 use dpp::prelude::Identifier;
 use dw_appdb::{
-    NotExecutedEvidence, WithdrawalMark, WithdrawalNote, WithdrawalProof, WithdrawalRow,
-    WithdrawalState,
+    NotExecutedEvidence, WithdrawalKeyKind, WithdrawalMark, WithdrawalNote, WithdrawalProof,
+    WithdrawalRow, WithdrawalState,
 };
 
-use super::check::{Gated, at_least};
+use super::check::{Gated, any_is_p2sh, at_least, gated, identity_of, owner_key_resend_held};
 use super::drive::{candidates, document_status, matches, needs_identity};
 use super::net::{MnWithdrawNet, Proved};
 use super::sign::{floor_of, hand_off, shown};
@@ -54,6 +54,7 @@ use super::{
     Alarm, Env, WithdrawalError, fault_after, fault_before, identity_lock, load, on_db, parse_id,
     points,
 };
+use crate::masternodes::parse_pro_tx_hash;
 use crate::platform::PlatformError;
 use crate::platform::withdrawal::{READ_BACK_TRIES, document_id, takes};
 
@@ -411,7 +412,11 @@ async fn step_nonce(
     let tip = state & IDENTITY_NONCE_VALUE_FILTER;
     if takes(state, nonce, *id) {
         if let Some(open) = group.iter().find(|r| r.state.is_open()) {
-            hand_off(env, net, open, points::REBROADCAST).await?;
+            if owner_payout_p2sh_now(env, net, open).await {
+                tracing::info!(nonce, "an owner-key withdrawal held: the payout is P2SH");
+            } else {
+                hand_off(env, net, open, points::REBROADCAST).await?;
+            }
         }
         return Ok(Ok(None));
     }
@@ -420,6 +425,35 @@ async fn step_nonce(
     }
     // (i) holds: n ≤ tip at H, and Drive no longer takes it.
     Ok(Ok(Some((h, tip, floor))))
+}
+
+/// Whether an owner-key record sent again now would pay a script nobody
+/// can spend. Any P2SH payout in the history holds it: Drive takes the
+/// destination at execution, and a newer P2PKH change is not what it pays
+/// until the window shows that script and nothing in the history is still
+/// unconfirmed or above the proof's core height. A window that pays P2SH
+/// lifts the hold. An identity read that fails, or that rule 5 doesn't
+/// pass, holds it too. A record signed with another key is sent again.
+async fn owner_payout_p2sh_now(
+    env: &impl Env,
+    net: &impl MnWithdrawNet,
+    row: &WithdrawalRow,
+) -> bool {
+    if row.signed.key_kind != WithdrawalKeyKind::Owner {
+        return false;
+    }
+    let Ok(pro_tx_hash) = parse_pro_tx_hash(&row.signed.pro_tx_hash) else {
+        return true;
+    };
+    let changes = env.payout_changes(&pro_tx_hash);
+    if !any_is_p2sh(&changes) {
+        return false;
+    }
+    let id = identity_of(&pro_tx_hash);
+    match gated(env.rule_5(), env.waits().probe, || net.identity(id)).await {
+        Ok(g) if g.passed => owner_key_resend_held(&changes, &g.read),
+        _ => true,
+    }
 }
 
 /// Step 2's proof that nothing at `nonce` paid, (ii)–(iv) at or above H

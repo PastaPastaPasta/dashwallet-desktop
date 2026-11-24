@@ -49,11 +49,16 @@ use dash_sdk::drive::query::vote_poll_vote_state_query::{
 };
 use dash_sdk::platform::FetchMany;
 use dash_sdk::query_types::{Contenders, VotePollsGroupedByTimestamp};
+use dpp::data_contract::DataContract;
+use dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
+use dpp::document::{Document, DocumentV0Getters};
 use dpp::platform_value::Value;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
-use dpp::system_data_contracts::SystemDataContract;
+use dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dpp::util::strings::convert_to_homograph_safe_chars;
+use dpp::version::PlatformVersion;
 use dpp::voting::contender_structs::ContenderWithSerializedDocument;
 use dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
 use dpp::voting::vote_polls::VotePoll;
@@ -112,6 +117,8 @@ pub(crate) struct Poll {
     pub(crate) contenders: Vec<(Identifier, Option<u32>)>,
     pub(crate) lock_votes: Option<u32>,
     pub(crate) abstain_votes: Option<u32>,
+    /// Each contender's own spelling of the name, by [`contender_labels`].
+    pub(crate) labels: BTreeMap<Identifier, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,7 +130,7 @@ pub(crate) enum PollWinner {
 }
 
 impl Poll {
-    pub(crate) fn of(state: Contenders) -> Self {
+    fn of(state: Contenders) -> Self {
         let winner = state.winner.map(|(winner, block)| {
             let winner = match winner {
                 ContestedDocumentVotePollWinnerInfo::WonByIdentity(id) => PollWinner::Identity(id),
@@ -139,6 +146,28 @@ impl Poll {
                 .collect(),
             lock_votes: state.lock_vote_tally,
             abstain_votes: state.abstain_vote_tally,
+            labels: BTreeMap::new(),
+        }
+    }
+
+    /// `state` with each contender's own spelling, but only when every
+    /// quorum key its proof used was SPV-verified (H-09): read through the
+    /// trusted-service fallback, the ids, tallies and winner stay and no
+    /// contender is named.
+    pub(crate) fn read(
+        state: Contenders,
+        normalized: &str,
+        version: &PlatformVersion,
+        verified: bool,
+    ) -> Self {
+        let labels = if verified {
+            contender_labels(&state, normalized, version)
+        } else {
+            BTreeMap::new()
+        };
+        Self {
+            labels,
+            ..Self::of(state)
         }
     }
 
@@ -295,6 +324,41 @@ pub(crate) async fn ends_page(
 
 pub(crate) struct SdkContests(pub(crate) Arc<dash_sdk::Sdk>);
 
+/// The DPNS system contract, parsed once, at the version platform-wallet
+/// loads it (`PlatformVersion::latest()`); `None` if it does not parse.
+fn dpns_contract() -> Option<&'static DataContract> {
+    static CONTRACT: std::sync::OnceLock<Option<DataContract>> = std::sync::OnceLock::new();
+    CONTRACT
+        .get_or_init(|| {
+            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+                .inspect_err(|e| tracing::warn!(error = %e, "could not parse the DPNS contract"))
+                .ok()
+        })
+        .as_ref()
+}
+
+/// Each contender's own spelling of the name (`Alice` for `a11ce`, MG-11
+/// F1): the `label` of the `domain` document the vote-state page carries,
+/// so no request more. A contender whose document is missing, does not
+/// decode, or whose label does not fold to `normalized` has none.
+pub(crate) fn contender_labels(
+    state: &Contenders,
+    normalized: &str,
+    version: &PlatformVersion,
+) -> BTreeMap<Identifier, String> {
+    let Some(domain) = dpns_contract().and_then(|c| c.document_type_for_name("domain").ok()) else {
+        return BTreeMap::new();
+    };
+    (state.contenders.iter())
+        .filter_map(|(id, c)| {
+            let bytes = c.serialized_document().as_deref()?;
+            let doc = Document::from_bytes(bytes, domain, version).ok()?;
+            let label = doc.properties().get("label")?.as_text()?;
+            (convert_to_homograph_safe_chars(label) == normalized).then(|| (*id, label.to_owned()))
+        })
+        .collect()
+}
+
 /// DPNS's `domain` poll for `normalized`, as the SDK's own DPNS queries
 /// name it.
 fn dpns_poll(normalized: &str) -> ContestedDocumentResourceVotePoll {
@@ -317,8 +381,14 @@ impl ContestNet for SdkContests {
             limit: Some(limit),
             offset: None,
         };
-        let state = ContenderWithSerializedDocument::fetch_many(&self.0, query).await?;
-        Ok(Poll::of(state))
+        let (state, tally) =
+            super::trust::scoped(ContenderWithSerializedDocument::fetch_many(&self.0, query)).await;
+        Ok(Poll::read(
+            state?,
+            normalized,
+            self.0.version(),
+            tally.verified(),
+        ))
     }
 
     async fn end_page(
