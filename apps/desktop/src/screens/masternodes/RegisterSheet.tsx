@@ -624,7 +624,7 @@ export function RegisterSheet({
             </span>
           </footer>
         ) : (
-          <footer className="mg-sheet-footer">
+          <footer className="mg-sheet-footer mg-sheet-footer-sticky">
             <span className="mg-sheet-footer-note">
               {step !== "done" && t(`${R}.stepOf`, { step: String(proving ? count : index + 1), count: String(count) })}
               {reviewing && figures && <span className="mg-small mg-muted"> {d.collateral === "fund_new" ? t(`${R}.review.withCollateral`) : external ? t(`${R}.review.external`) : t(`${R}.review.onlyFee`)}</span>}
@@ -771,8 +771,10 @@ function Done({ op, self }: { op: ProTxOperation; self: boolean }) {
       {op.proTxHash && (
         <dl className="detail-list card-l1">
           <DetailRow label={t(`${R}.doneScreen.hash`)}>
-            <span className="mono mg-break" data-testid="reg-hash">
-              {op.proTxHash}
+            <span className="mono mg-hash" data-testid="reg-hash">
+              {op.proTxHash.slice(0, 32)}
+              <wbr />
+              {op.proTxHash.slice(32)}
             </span>
           </DetailRow>
         </dl>

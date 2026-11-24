@@ -761,7 +761,7 @@ export const masternodes = {
       total: "Leaves this wallet",
       then: "Then",
       thenHosted: "Send your operator the ProTx hash. The masternode earns once the server runs and the network accepts it.",
-      thenSelf: "Start your server with the operator secret from Masternode keys. If its setup asks for the ProTx hash, it's shown here. The masternode earns rewards once it's registered and your server is running.",
+      thenSelf: "Start your server with the operator secret from Masternode keys. If its setup asks for the ProTx hash, you'll see it after you register. The masternode earns rewards once it's registered and your server is running.",
       onlyFee: "Only the fee leaves this wallet.",
       withCollateral: "The collateral moves to a new address in this wallet; only the network fee leaves it.",
       external: "Next, you sign a message with the wallet that holds the collateral.",
