@@ -128,6 +128,15 @@ export const settings = {
   },
   backups: {
     backUp: "Back up wallet…",
+    /** Shows the automatic-backup folder in the system file manager. */
+    showFolder: "Show Folder",
+    /** Show Folder before any automatic backup made the folder. */
+    noFolderYet: "There's no backup folder yet. Dash Wallet creates it with the first automatic backup.",
+    /** The folder exists but no file manager opened it; its path is on the same card with a copy button. */
+    showFolderFailed: "The backup folder couldn't be opened. Copy its path and open it in your file manager.",
+    /** Import a wallet file: the system's open dialog fills the path. */
+    browse: "Choose File…",
+    pathHint: "Choose the file, or paste its full path.",
     automaticFailed: {
       title: "The latest automatic backup failed",
       body: "Dash Wallet could not write an automatic backup of {wallet} on {date}. Your funds are not affected, and your recovery phrase still restores them. Make a backup now with Back up wallet…, and check that the backup folder has free space and that Dash Wallet can write to it.",

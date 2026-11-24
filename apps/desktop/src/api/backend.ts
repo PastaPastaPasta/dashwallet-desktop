@@ -410,6 +410,8 @@ export interface Backend {
   /** Wallets whose latest automatic backup failed, and when. */
   automaticBackupFailures(): Promise<AutomaticBackupFailure[]>;
   backupDirectory(): Promise<string>;
+  /** Shows the automatic-backup folder in the system file manager. */
+  openBackupDirectory(): Promise<null>;
   backupPolicy(): Promise<BackupPolicyInfo>;
   setBackupPolicy(keep: number): Promise<BackupPolicyInfo>;
   readBackupHeader(path: string): Promise<BackupFileHeader>;

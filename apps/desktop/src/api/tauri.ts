@@ -188,6 +188,7 @@ export class IpcBackend implements Backend {
   automaticBackups = cmd.automaticBackups;
   automaticBackupFailures = () => cmd.automaticBackupFailures();
   backupDirectory = () => cmd.backupDirectory();
+  openBackupDirectory = () => cmd.openBackupDirectory();
   backupPolicy = () => cmd.backupPolicy();
   setBackupPolicy = cmd.setBackupPolicy;
   readBackupHeader = cmd.readBackupHeader;

@@ -487,6 +487,46 @@ test.describe("Backups", () => {
     await expect(page.getByTestId("settings-export-path")).toContainText("-descriptors.json");
   });
 
+  test("Show Folder opens the backup folder in the file manager, and says why when it can't", async ({ page }) => {
+    await settings(page, "backups");
+    await page.getByTestId("settings-show-folder").click();
+    await expect.poll(() => world(page, (w) => w.settings.foldersOpened ?? 0)).toBe(1);
+    await expect(page.getByTestId("settings-show-folder-error")).toHaveCount(0);
+    await page.evaluate(() => (window.__dwFixture!.world.settings.folderOpenFails = true));
+    await page.getByTestId("settings-show-folder").click();
+    await expect(page.getByTestId("settings-show-folder-error")).toContainText("The backup folder couldn't be opened.");
+    await page.evaluate(() => (window.__dwFixture!.world.settings.backupFolderMissing = true));
+    await page.getByTestId("settings-show-folder").click();
+    await expect(page.getByTestId("settings-show-folder-error")).toContainText("There's no backup folder yet.");
+    // Once it opens again, the message goes.
+    await page.evaluate(() => {
+      const s = window.__dwFixture!.world.settings;
+      s.backupFolderMissing = false;
+      s.folderOpenFails = false;
+    });
+    await page.getByTestId("settings-show-folder").click();
+    await expect.poll(() => world(page, (w) => w.settings.foldersOpened ?? 0)).toBe(2);
+    await expect(page.getByTestId("settings-show-folder-error")).toHaveCount(0);
+  });
+
+  test("Choose File… fills the import path from the system's open dialog; a cancel keeps it", async ({ page }) => {
+    await settings(page, "backups");
+    await page.getByTestId("settings-import-file").click();
+    await page.getByTestId("settings-import-path").fill("/home/user/typed.dat");
+    await page.getByTestId("settings-import-browse").click();
+    await expect(page.getByTestId("settings-import-path")).toHaveValue("/home/user/typed.dat");
+    // A dialog that fails says so; the next pick clears it.
+    await page.evaluate(() => (window.__dwFixture!.world.tools.files.dialogFails = true));
+    await page.getByTestId("settings-import-browse").click();
+    await expect(page.getByTestId("settings-import-error")).toBeVisible();
+    await page.evaluate(() => (window.__dwFixture!.world.tools.files.open = { name: "dash-core-dumpwallet.txt", data: "" }));
+    await page.getByTestId("settings-import-browse").click();
+    await expect(page.getByTestId("settings-import-path")).toHaveValue("/home/user/Documents/dash-core-dumpwallet.txt");
+    await expect(page.getByTestId("settings-import-error")).toHaveCount(0);
+    const dialogs = await page.evaluate(() => window.__dwFixture!.world.tools.files.dialogs.map((d) => [d.purpose, d.save]));
+    expect(dialogs).toEqual([["walletFile", false], ["walletFile", false], ["walletFile", false]]);
+  });
+
   test("a legacy wallet.dat refused on purpose says why and what to do instead", async ({ page }) => {
     await settings(page, "backups");
     await page.getByTestId("settings-import-file").click();
