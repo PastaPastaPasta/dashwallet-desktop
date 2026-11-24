@@ -927,7 +927,7 @@ fn watch_only_registration(
         let account_type = managed.managed_account_type().to_account_type();
         for pool in managed.managed_account_type().address_pools() {
             let addresses: Vec<key_wallet::AddressInfo> =
-                pool.addresses.values().cloned().collect();
+                pool.addresses().values().cloned().collect();
             if addresses.is_empty() {
                 continue;
             }
@@ -935,7 +935,7 @@ fn watch_only_registration(
                 .account_address_pools
                 .push(AccountAddressPoolEntry {
                     account_type,
-                    pool_type: pool.pool_type,
+                    pool_type: pool.pool_type(),
                     addresses,
                 });
         }

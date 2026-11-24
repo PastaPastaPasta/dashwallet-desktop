@@ -15,7 +15,6 @@ use std::sync::Arc;
 use dashcore::address::Payload;
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::provider_registration::ProviderRegistrationPayload;
-use dashcore::hashes::Hash;
 use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
 use dashcore::{Address, Network, OutPoint, PubkeyHash, ScriptBuf, Transaction, TxIn, TxOut};
 use dw_protx::params::{MAX_OPERATOR_REWARD, collateral_amount, default_ports};

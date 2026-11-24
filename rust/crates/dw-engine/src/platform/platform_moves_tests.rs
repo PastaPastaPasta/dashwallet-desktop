@@ -1149,7 +1149,6 @@ fn refusals_keep_the_grant() {
     let other = w.f.flow(FlowKind::ProfileEdit, vec![w.f.grant(3 * DASH)]);
     assert_eq!(code(w.move_all(&other)), "platform.grant_invalid");
     // Not one of the wallet's receiving addresses.
-    use dpp::dashcore::hashes::Hash;
     let theirs = dpp::dashcore::Address::new(
         w.f.s.vault.network(),
         dpp::dashcore::address::Payload::PubkeyHash(dpp::dashcore::PubkeyHash::from_byte_array(
@@ -1712,8 +1711,7 @@ fn reason(r: Result<impl std::fmt::Debug, CreditsError>) -> RecipientProblem {
 /// A bech32m string of `hrp` over `payload` (dw-uri's shielded form when
 /// `payload` is the shielded type byte and 43 bytes).
 fn bech32m_of(hrp: &str, payload: &[u8]) -> String {
-    use dpp::dashcore::bech32::{self, ToBase32, Variant};
-    bech32::encode(hrp, payload.to_base32(), Variant::Bech32m).unwrap()
+    bech32::encode::<bech32::Bech32m>(bech32::Hrp::parse(hrp).unwrap(), payload).unwrap()
 }
 
 /// R1: the receive address is the payment account's lowest unused one, in

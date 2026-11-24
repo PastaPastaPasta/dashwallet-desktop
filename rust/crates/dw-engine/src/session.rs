@@ -1427,6 +1427,7 @@ fn build_sdk(
             timeout: Some(timeout),
             retries: None,
             ban_failed_address: None,
+            ban_busy_address: None,
             max_decoding_message_size: None,
         });
     }

@@ -15,7 +15,6 @@ use std::time::Duration;
 
 use dashcore::address::Payload;
 use dashcore::ephemerealdata::instant_lock::InstantLock;
-use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint, PubkeyHash, Txid};
 use dpp::address_funds::{OrchardAddress, PlatformAddress};
 use dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -748,8 +747,8 @@ impl FakeShielded {
 /// anchor, its activity row.
 fn reserved(n: u8) -> [StalePendingSpend; 2] {
     [
-        ([n.wrapping_add(100); 32], [7; 32], Some([n; 32])),
-        ([n.wrapping_add(200); 32], [7; 32], Some([n; 32])),
+        ([n.wrapping_add(100); 32], [7; 32], Some([n; 32]), None),
+        ([n.wrapping_add(200); 32], [7; 32], Some([n; 32]), None),
     ]
 }
 
@@ -1096,6 +1095,8 @@ impl ShieldedLib for FakeShielded {
                 )
             };
             let row = TrackedAssetLock {
+                operation_id: None,
+                shielded_recipient: None,
                 out_point: outpoint,
                 proof,
                 transaction,
@@ -2695,8 +2696,8 @@ fn a_shield_result_is_unknown_once_its_transition_was_signed() {
 /// Signs with a fixed key when `.0`, else refuses.
 struct TestSigner(bool);
 
-fn test_key() -> dashcore::secp256k1::SecretKey {
-    dashcore::secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap()
+fn test_key() -> dpp::secp256k1::SecretKey {
+    dpp::secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap()
 }
 
 #[async_trait::async_trait]
@@ -2713,8 +2714,8 @@ impl key_wallet::Signer for TestSigner {
         sighash: [u8; 32],
     ) -> Result<
         (
-            dashcore::secp256k1::ecdsa::Signature,
-            dashcore::secp256k1::PublicKey,
+            dashcore::ecdsa::EcdsaSignature,
+            dashcore::ecdsa::EcdsaPublicKey,
         ),
         Self::Error,
     > {
@@ -2722,18 +2723,18 @@ impl key_wallet::Signer for TestSigner {
             return Err(dw_vault::SignerError::PathNotAllowed("refused".into()));
         }
         let key = test_key();
-        let message = dashcore::secp256k1::Message::from_digest(sighash);
+        let message = dpp::secp256k1::Message::from_digest(sighash);
         Ok((
-            dashcore::secp256k1::ecdsa::sign(message, &key),
-            key.public_key(),
+            dpp::secp256k1::ecdsa::sign(message, &key).into(),
+            key.public_key().into(),
         ))
     }
 
     async fn public_key(
         &self,
         _: &key_wallet::bip32::DerivationPath,
-    ) -> Result<dashcore::secp256k1::PublicKey, Self::Error> {
-        Ok(test_key().public_key())
+    ) -> Result<dashcore::ecdsa::EcdsaPublicKey, Self::Error> {
+        Ok(test_key().public_key().into())
     }
 }
 

@@ -40,7 +40,6 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use dashcore::blockdata::transaction::outpoint::OutPoint;
-use dashcore::hashes::Hash;
 use dashcore::sighash::SighashCache;
 use dashcore::{Address, BlockHash, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE};
@@ -1058,13 +1057,13 @@ fn path_of(info: &ManagedWalletInfo, address: &Address) -> Option<DerivationPath
 
 /// `scriptSig` of a P2PKH input: `<DER signature ‖ sighash type> <pubkey>`.
 pub(crate) fn p2pkh_script_sig(
-    sig: &dashcore::secp256k1::ecdsa::Signature,
+    sig: &dashcore::ecdsa::EcdsaSignature,
     sighash_type: u32,
-    pubkey: &dashcore::secp256k1::PublicKey,
+    pubkey: &dashcore::ecdsa::EcdsaPublicKey,
 ) -> ScriptBuf {
-    let mut der = sig.serialize_der().to_vec();
+    let mut der = sig.with_der(<[u8]>::to_vec);
     der.push(sighash_type as u8);
-    let pk = pubkey.serialize();
+    let pk = pubkey.to_compressed();
     let mut out = Vec::with_capacity(der.len() + pk.len() + 2);
     out.push(der.len() as u8);
     out.extend_from_slice(&der);

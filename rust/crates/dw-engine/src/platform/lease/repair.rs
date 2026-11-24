@@ -345,7 +345,6 @@ fn funding_repair_coins<'a>(
 
 #[cfg(test)]
 mod tests {
-    use dashcore::hashes::Hash;
     use dashcore::{Address, OutPoint, TxOut, Txid};
 
     use super::funding_repair_coins;

@@ -109,13 +109,12 @@ use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use dashcore::blockdata::script::Instruction;
-use dashcore::hashes::Hash;
-use dashcore::secp256k1::{Message, ecdsa};
 use dashcore::sighash::SighashCache;
 use dashcore::{OutPoint, PublicKey, ScriptBuf, Transaction, Txid};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::prelude::Identifier;
+use dpp::secp256k1::{Message, ecdsa};
 use platform_wallet::{AssetLockFundingType, AssetLockStatus, TrackedAssetLock};
 
 use super::call::{CallPermit, CallStep, FundingKey, FundingQuote};
@@ -272,7 +271,7 @@ fn signed_sighashes(tx: &Transaction) -> Option<Vec<[u8; 32]>> {
                 .legacy_signature_hash(n, &script, u32::from(SIGHASH_ALL))
                 .ok()?
                 .to_byte_array();
-            ecdsa::verify(&signature, Message::from_digest(sighash), &key.inner).ok()?;
+            ecdsa::verify(&signature, Message::from_digest(sighash), &key.inner.into()).ok()?;
             Some(sighash)
         })
         .collect()
@@ -1932,7 +1931,6 @@ impl TrackedLocks for SessionTracked {
     }
 
     async fn chain_locked(&self, wallet: WalletId, txid: &[u8; 32]) -> bool {
-        use dashcore::hashes::Hash;
         let Some(session) = self.session.upgrade() else {
             return false;
         };

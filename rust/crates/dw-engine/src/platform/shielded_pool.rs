@@ -320,7 +320,7 @@ pub(crate) trait ShieldedLib: Send + Sync {
     ) -> impl Future<Output = Result<Vec<UnresolvedSpend>, PlatformError>> + Send;
     /// The account's notes reserved by a spend built on a recorded anchor,
     /// as the library holds them in memory: `(nullifier, anchor,
-    /// activity_id)` (`stale_pending_spends`, store.rs:286-293). A spend
+    /// activity_id, anchor_height)` (`stale_pending_spends`, store.rs:286-293). A spend
     /// reserves them before its broadcast (operations.rs:1840, :2009,
     /// :1661 → :2890-2910) and keeps them on an unknown result.
     fn reservations(
@@ -1327,7 +1327,7 @@ async fn mark_unrecorded(
     // Activity → (anchor, nullifiers).
     type Reserved = ([u8; 32], Vec<[u8; 32]>);
     let mut spends: BTreeMap<[u8; 32], Reserved> = BTreeMap::new();
-    for (nullifier, anchor, activity) in reserved {
+    for (nullifier, anchor, activity, _) in reserved {
         let Some(activity) = activity.filter(|a| !reserved_before.contains(a)) else {
             continue;
         };
@@ -1461,7 +1461,7 @@ pub(super) async fn send_armed(
         .map(|u| u.activity_id)
         .collect();
     let reserved_before: HashSet<[u8; 32]> = (lib.reservations().await?.into_iter())
-        .filter_map(|(_, _, activity)| activity)
+        .filter_map(|(_, _, activity, _)| activity)
         .collect();
     let held_before = lib.held_spends().await?;
     let intent = match to {
@@ -3262,6 +3262,7 @@ impl ShieldedLib for PwShielded {
                 0,
                 None,
                 Some(APPLY_CHAIN_LOCK_WAIT),
+                None,
             )
             .await;
         applied_from(applied, outpoint, signer.signed())
@@ -3413,8 +3414,8 @@ impl<S: key_wallet::Signer<Error = dw_vault::SignerError>> key_wallet::Signer fo
         sighash: [u8; 32],
     ) -> Result<
         (
-            dashcore::secp256k1::ecdsa::Signature,
-            dashcore::secp256k1::PublicKey,
+            dashcore::ecdsa::EcdsaSignature,
+            dashcore::ecdsa::EcdsaPublicKey,
         ),
         Self::Error,
     > {
@@ -3426,7 +3427,7 @@ impl<S: key_wallet::Signer<Error = dw_vault::SignerError>> key_wallet::Signer fo
     async fn public_key(
         &self,
         path: &key_wallet::bip32::DerivationPath,
-    ) -> Result<dashcore::secp256k1::PublicKey, Self::Error> {
+    ) -> Result<dashcore::ecdsa::EcdsaPublicKey, Self::Error> {
         self.inner.public_key(path).await
     }
 }

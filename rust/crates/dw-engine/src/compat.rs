@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dw_appdb::BookPurpose;
 use dw_compat::descriptor::{ImportRequest, PkhDescriptor, import_descriptors_json};
 use dw_compat::dump::{self, DumpFile, DumpHeader, HdAccount, KeyEntry, KeyRole};
@@ -28,7 +27,7 @@ use dw_uri::keyio;
 use dw_vault::{GrantKind, SeedDerivation, WalletSecret, mnemonic};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::events::{EngineEvent, NoticeCode, unix_now};
 use crate::history::AddressChain;
@@ -357,7 +356,7 @@ impl MasterKey {
     }
 
     fn erase(&mut self) {
-        self.0.private_key.non_secure_erase();
+        self.0.private_key.zeroize();
     }
 }
 
@@ -376,7 +375,7 @@ impl Drop for MasterKey {
 
 fn master_pubkey(seed: &[u8; 64]) -> Option<[u8; 33]> {
     let master = MasterKey::new(dashcore::Network::Mainnet, seed).ok()?;
-    Some(master.private_key.public_key().serialize())
+    Some(master.private_key.public_key().to_compressed())
 }
 
 /// The lookahead of a Core import: Core's 1000 (QT-105) or more when the
@@ -534,7 +533,7 @@ impl NetworkSession {
             .map_err(|e| CompatFailure::Corrupt(format!("extended private masterkey: {e}")))?
             .private_key
             .public_key()
-            .serialize();
+            .to_compressed();
         if let (Some(seed), Some(_)) = (&seed, &phrase)
             && master_pubkey(seed) != Some(expected)
         {
@@ -769,7 +768,7 @@ impl NetworkSession {
                         Zeroizing::new(pass.as_bytes().to_vec()),
                     )),
                     seed: None,
-                    master_pubkey: Some(master.private_key.public_key().serialize()),
+                    master_pubkey: Some(master.private_key.public_key().to_compressed()),
                     used_per_chain: listed.next_index,
                     labels: Vec::new(),
                 }
@@ -954,7 +953,7 @@ impl NetworkSession {
         id: WalletId,
         (external, internal): (u32, u32),
     ) -> Result<(), EngineError> {
-        use key_wallet::managed_account::address_pool::{AddressPoolType, AddressState};
+        use key_wallet::managed_account::address_pool::AddressPoolType;
         let unsupported = || {
             EngineError::from(CompatFailure::UnsupportedFormat(
                 "HD account 0 cannot be restored".into(),
@@ -976,7 +975,7 @@ impl NetworkSession {
             .funds_account_mut(&account)
             .ok_or_else(unsupported)?;
         for pool in managed.managed_account_type_mut().address_pools_mut() {
-            let next = match pool.pool_type {
+            let next = match pool.pool_type() {
                 AddressPoolType::External => external,
                 AddressPoolType::Internal => internal,
                 _ => continue,
@@ -984,11 +983,12 @@ impl NetworkSession {
             let Some(last) = next.checked_sub(1) else {
                 continue;
             };
-            pool.generate_up_to(last, &key)
+            let from = pool.highest_generated().map_or(0, |h| h + 1);
+            pool.generate_addresses(last.saturating_add(1).saturating_sub(from), &key)
                 .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
-            for info in pool.addresses.range_mut(..=last).map(|(_, info)| info) {
-                if info.is_available() {
-                    info.state = AddressState::Reserved { at: 0 };
+            for index in 0..=last {
+                if let Some(address) = pool.address_at_index(index) {
+                    pool.reserve(&address, 0);
                 }
             }
             pool.highest_used = pool.highest_used.max(Some(last));
@@ -1541,12 +1541,12 @@ fn dump_of(
             .map_err(|e| EngineError::Internal(format!("derive {path}: {e}")))?;
         let wif = keyio::encode_secret(
             &keyio::Secret {
-                key: Zeroizing::new(child.private_key.to_secret_bytes()),
+                key: child.private_key.to_bytes(),
                 compressed: true,
             },
             network,
         );
-        child.private_key.non_secure_erase();
+        child.private_key.zeroize();
         let role = match (a.chain, labels.get(&a.address)) {
             (_, Some(l)) => KeyRole::Label(l.clone()),
             (AddressChain::Change, None) => KeyRole::Change,
@@ -1961,9 +1961,9 @@ mod tests {
     #[test]
     fn master_key_guard_erases_the_private_key() {
         let mut m = MasterKey::new(dashcore::Network::Testnet, &[7; 64]).unwrap();
-        let before = m.private_key.to_secret_bytes();
+        let before = *m.private_key.to_bytes();
         m.erase();
-        assert_ne!(m.private_key.to_secret_bytes(), before);
+        assert_ne!(*m.private_key.to_bytes(), before);
     }
 
     #[test]

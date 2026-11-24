@@ -8,7 +8,6 @@
 
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, BlockHash, OutPoint, Transaction, TxIn, TxOut, Txid};
 use key_wallet::Utxo;
 use key_wallet::Wallet;
@@ -131,9 +130,9 @@ fn coinjoin_pool_address(
         .managed_account_type()
         .address_pools()[pool_index]
         .clone();
-    let have = pool.highest_generated.unwrap_or(0);
+    let have = pool.highest_generated().unwrap_or(0);
     if index > have {
-        pool.generate_addresses(index - have, &wallet.key_source_for_account(cj()), true)
+        pool.generate_addresses(index - have, &wallet.key_source_for_account(cj()))
             .unwrap();
     }
     pool.address_at_index(index).unwrap()
@@ -492,7 +491,8 @@ fn narrow_coinjoin(engine: &Engine, session: &NetworkSession, id: WalletId) {
         let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
         let mut fresh = key_wallet::managed_account::ManagedCoreFundsAccount::from_account(
             wallet.accounts.account_of_type(cj()).unwrap(),
-        );
+        )
+        .unwrap();
         let accounts = &mut info.core_wallet.accounts.coinjoin_accounts;
         for _ in 0..=accounts[&0].monitor_revision() {
             fresh.bump_monitor_revision();
@@ -957,7 +957,8 @@ fn insert_unraisable_account(engine: &Engine, session: &NetworkSession, id: Wall
             network: dashcore::Network::Regtest,
             account_xpub: ExtendedPubKey::from_priv(&master),
             is_watch_only: true,
-        });
+        })
+        .unwrap();
     engine.block_on(async {
         let manager = session.manager().unwrap();
         let wm = manager.wallet_manager_arc();
@@ -1004,7 +1005,7 @@ fn gap(engine: &Engine, session: &NetworkSession, id: WalletId, account: Account
         let wm = wm.read().await;
         let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
         let funds = info.accounts.funds_account(&account).unwrap();
-        funds.managed_account_type().address_pools()[0].gap_limit
+        funds.managed_account_type().address_pools()[0].gap_limit()
     })
 }
 
@@ -1250,8 +1251,8 @@ fn a_real_load_restores_a_sparse_bip44_coin_spendable() {
             .managed_account_type()
             .address_pools()[0]
             .clone();
-        let index = pool.highest_generated.unwrap() + 50;
-        pool.generate_addresses(50, &wallet.key_source_for_account(bip44()), true)
+        let index = pool.highest_generated().unwrap() + 50;
+        pool.generate_addresses(50, &wallet.key_source_for_account(bip44()))
             .unwrap();
         (pool.address_at_index(index).unwrap(), index)
     });
@@ -1274,9 +1275,9 @@ fn a_real_load_restores_a_sparse_bip44_coin_spendable() {
             .managed_account_type()
             .address_pools()[0];
         let at = pool.address_info(&to).expect("the load derives it");
-        assert!(at.is_used(), "highest_used={:?}", pool.highest_used);
+        assert!(at.is_used(), "highest_used={:?}", pool.highest_used());
         assert!(
-            pool.highest_generated.unwrap() >= index + pool.gap_limit,
+            pool.highest_generated().unwrap() >= index + pool.gap_limit(),
             "the gap is kept past it"
         );
     });
@@ -1347,7 +1348,7 @@ fn a_watch_only_lookahead_is_stored_and_raised_on_its_account_at_load() {
             .unwrap()
             .managed_account_type();
         assert_eq!(
-            pools.address_pools()[0].gap_limit,
+            pools.address_pools()[0].gap_limit(),
             200,
             "the stored lookahead"
         );
@@ -1377,6 +1378,7 @@ fn deliver(
     let handler = platform_wallet::wallet::core::BalanceUpdateHandler::new(Arc::clone(&mirrors));
     mirrors.store(Arc::new(BTreeMap::from([(id.0, Arc::clone(pw))])));
     let event = platform_wallet::events::WalletEvent::BlockProcessed {
+        locked_outpoints: Vec::new(),
         wallet_id: id.0,
         height: HEIGHT,
         chain_lock: None,
@@ -1854,9 +1856,9 @@ fn a_wallet_dat_attached_to_a_synced_watch_only_wallet_recovers_a_payment_past_i
             .managed_account_type()
             .address_pools()[0]
             .clone();
-        assert!(pool.highest_generated.unwrap_or(0) < 500);
-        let have = pool.highest_generated.unwrap_or(0);
-        pool.generate_addresses(500 - have, &wallet.key_source_for_account(bip44()), true)
+        assert!(pool.highest_generated().unwrap_or(0) < 500);
+        let have = pool.highest_generated().unwrap_or(0);
+        pool.generate_addresses(500 - have, &wallet.key_source_for_account(bip44()))
             .unwrap();
         pool.address_at_index(500).unwrap()
     });
@@ -2566,7 +2568,7 @@ fn keys_attached_with_a_smaller_lookahead_keep_the_wallets_larger_one() {
         let wm = wm.read().await;
         let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
         let funds = info.accounts.funds_account(&bip44()).unwrap();
-        funds.managed_account_type().address_pools()[0].highest_generated
+        funds.managed_account_type().address_pools()[0].highest_generated()
     });
     assert!(highest.is_some_and(|h| h >= 500), "{highest:?}");
 }
@@ -3312,9 +3314,9 @@ fn bip44_address(engine: &Engine, session: &NetworkSession, id: WalletId, index:
             .managed_account_type()
             .address_pools()[0]
             .clone();
-        let have = pool.highest_generated.unwrap_or(0);
+        let have = pool.highest_generated().unwrap_or(0);
         if index > have {
-            pool.generate_addresses(index - have, &wallet.key_source_for_account(bip44()), true)
+            pool.generate_addresses(index - have, &wallet.key_source_for_account(bip44()))
                 .unwrap();
         }
         pool.address_at_index(index).unwrap()
@@ -4169,7 +4171,7 @@ fn keys_attached_with_a_lookahead_apply_a_stored_range_start_up_left() {
         let wm = wm.read().await;
         let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
         let funds = info.accounts.funds_account(&bip44()).unwrap();
-        funds.managed_account_type().address_pools()[0].highest_generated
+        funds.managed_account_type().address_pools()[0].highest_generated()
     });
     assert!(highest.is_some_and(|h| h >= 1001), "{highest:?}");
 }

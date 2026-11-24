@@ -2,10 +2,10 @@
 //! with the `fuzzing` feature.
 
 use dashcore::hashes::Hash;
-use dashcore::secp256k1::SecretKey;
 use dashcore::{Network, OutPoint, Txid};
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::prelude::AssetLockProof;
+use dpp::secp256k1::SecretKey;
 use platform_wallet::wallet::identity::crypto::invitation::{InviterInfo, encode_invitation_uri};
 
 use super::avatar_image::{self, Crop};

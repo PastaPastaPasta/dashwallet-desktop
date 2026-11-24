@@ -2771,7 +2771,7 @@ pub(crate) async fn pool(
         .ok_or_else(|| PlatformError::Internal {
             detail: "the wallet has no Platform payment account".into(),
         })?;
-    Ok((account.addresses.addresses.values())
+    Ok((account.addresses.addresses().values())
         .filter_map(|a| {
             let p2pkh = PlatformP2PKHAddress::from_address(&a.address).ok()?;
             Some((PlatformAddress::P2pkh(p2pkh.to_bytes()), a.path.clone()))
@@ -4392,6 +4392,7 @@ impl NetworkSession {
                         Vec::new(),
                         &signer,
                         &lock_signer,
+                        None,
                         None,
                     )
                     .await;

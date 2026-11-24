@@ -11,9 +11,8 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use dashcore::hashes::Hash;
-use dashcore::secp256k1::{Message as SecpMessage, PublicKey, ecdsa::Signature};
 use dashcore::{OutPoint, Transaction, TxOut, Txid};
+use dpp::secp256k1::{Message as SecpMessage, PublicKey, ecdsa::Signature};
 use dw_appdb::GLOBAL_SCOPE;
 use dw_protx::shared::envelope::{encode_base64, fingerprint};
 use dw_protx::shared::json::Json;
@@ -968,10 +967,10 @@ fn test_QT_126_a_dash_qt_participant_signing_with_its_owner_key() {
     .unwrap();
     let party = &vectors["cases"][0]["parties"][1];
     let wif = party["owner_wif"].as_str().unwrap();
-    let secret = dashcore::PrivateKey::from_wif(wif)
+    let secret = *dashcore::PrivateKey::from_wif(wif)
         .unwrap()
         .inner
-        .to_secret_bytes();
+        .to_bytes();
     let f = fx(1, true);
     f.credit(0, 1, 701 * COIN);
     let inv = start(&f, 0, request(&[("A", 700), ("Q", 300)], FEE)).unwrap();
@@ -3032,8 +3031,8 @@ fn test_QT_126_a_reserved_coin_is_no_mg04_collateral() {
     assert_eq!(reserved, vec![format!("{}:{}", x.txid, x.vout)]);
     assert!(f.locked(0).contains(&x));
     f.credit(0, 2, COIN);
-    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes([0x5e; 32]).unwrap();
-    let key = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let secret = dpp::secp256k1::SecretKey::from_secret_bytes([0x5e; 32]).unwrap();
+    let key = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&secret));
     let outpoint = format!("{}-{}", x.txid, x.vout);
     for collateral in [
         crate::masternodes::CollateralChoice::ExistingUtxo {

@@ -6,7 +6,6 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, ScriptBuf, Txid};
 use dw_appdb::{AppDb, LabelKind};
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
@@ -56,9 +55,9 @@ pub(crate) fn owned_scripts(info: &PlatformWalletInfo) -> HashMap<ScriptBuf, Own
                 .collect(),
         };
         for (pool, chain) in pools {
-            for info in pool.addresses.values() {
+            for info in pool.addresses().values() {
                 map.insert(
-                    info.script_pubkey.clone(),
+                    info.address.script_pubkey(),
                     Owned::new(info.address.clone(), chain, coinjoin),
                 );
             }

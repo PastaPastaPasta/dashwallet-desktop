@@ -7,7 +7,6 @@
 
 use std::net::SocketAddr;
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, PubkeyHash, ScriptBuf, TxOut, Txid};
 use dw_protx::params::MASTERNODE_COLLATERAL;
 use dw_protx::shared::envelope::decode_base64;

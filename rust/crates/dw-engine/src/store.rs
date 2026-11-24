@@ -363,7 +363,6 @@ pub(crate) fn registered_wallet_ids(
 
 #[cfg(test)]
 mod tests {
-    use dashcore::hashes::Hash;
     use dashcore::{OutPoint, TxOut, Txid};
     use platform_wallet::changeset::changeset::UtxoCreditVerdict;
     use platform_wallet::changeset::{CoreChangeSet, PlatformWalletChangeSet};

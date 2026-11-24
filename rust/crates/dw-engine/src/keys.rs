@@ -107,12 +107,13 @@ pub const CORE_COMPAT_LOOKAHEAD: u32 = 1000;
 /// account alone.
 pub(crate) const COINJOIN_SCAN_GAP: u32 = MAX_LOOKAHEAD;
 /// Largest lookahead key-wallet supports (`MAX_GAP_LIMIT`).
-pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
+pub const MAX_LOOKAHEAD: u32 = key_wallet::managed_account::address_pool::MAX_GAP_LIMIT;
 /// dw-appdb setting (wallet scope) holding a raised lookahead, applied again
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
 pub(crate) const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 /// The lookahead key-wallet gives a wallet none is stored for.
-pub(crate) const DEFAULT_LOOKAHEAD: u32 = key_wallet::gap_limit::DEFAULT_EXTERNAL_GAP_LIMIT;
+pub(crate) const DEFAULT_LOOKAHEAD: u32 =
+    key_wallet::managed_account::address_pool::DEFAULT_EXTERNAL_GAP_LIMIT;
 /// dw-appdb setting (local wallet scope) saying whether the wallet's history
 /// is known to have been scanned with [`COINJOIN_SCAN_GAP`] and its raised
 /// lookahead ([`WideScan`]). Absent on a wallet an older build scanned.
@@ -457,7 +458,7 @@ pub(crate) async fn apply_lookahead(
     // Every one the wallet has: a watch-only wallet's is BIP44 account N.
     let widest = |a: &key_wallet::managed_account::ManagedCoreFundsAccount| {
         let pools = a.managed_account_type().address_pools();
-        let wider = pools.iter().map(|p| p.gap_limit).filter(|_| keep_wider);
+        let wider = pools.iter().map(|p| p.gap_limit()).filter(|_| keep_wider);
         wider.fold(gap, u32::max)
     };
     let accounts: Vec<(AccountTypePreference, u32, u32)> = {
@@ -501,7 +502,7 @@ pub(crate) async fn ensure_coinjoin_scan_gap(
         (info.core_wallet.accounts.coinjoin_accounts.iter())
             .filter(|(_, account)| {
                 (account.managed_account_type().address_pools().iter())
-                    .any(|pool| pool.gap_limit < COINJOIN_SCAN_GAP)
+                    .any(|pool| pool.gap_limit() < COINJOIN_SCAN_GAP)
             })
             .map(|(index, _)| *index)
             .collect()

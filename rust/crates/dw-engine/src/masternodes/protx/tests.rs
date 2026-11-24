@@ -10,7 +10,6 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Transaction, TxOut, Txid};
 use dw_protx::params::{EVONODE_COLLATERAL, MASTERNODE_COLLATERAL};
 use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
@@ -1662,8 +1661,8 @@ fn mg04_external_prepare_survives_a_restart_and_refreshes_when_spent() {
     let mut f = fx(Library::Accept);
     let fee_coin = f.credit(1, COIN);
     let other = f.credit(2, COIN);
-    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
-    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let secret = dpp::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&secret));
     let address = dashcore::Address::p2pkh(&public, dashcore::Network::Regtest);
     let outpoint = OutPoint::new(Txid::from_byte_array([0x77; 32]), 1);
     let req = request(CollateralChoice::External {
@@ -2132,8 +2131,8 @@ fn mg04_evonode_existing_collateral_carries_the_fields_given() {
 fn mg04_evonode_external_signs_over_its_platform_fields() {
     let f = fx(Library::Accept);
     f.credit(1, COIN);
-    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
-    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let secret = dpp::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&secret));
     let address = dashcore::Address::p2pkh(&public, dashcore::Network::Regtest);
     let outpoint = OutPoint::new(Txid::from_byte_array([0x78; 32]), 0);
     let req = evonode(
@@ -2285,8 +2284,8 @@ fn address_of(key_id: [u8; 20]) -> String {
 }
 
 fn key_id_of(secret: [u8; 32]) -> [u8; 20] {
-    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(secret).unwrap();
-    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let secret = dpp::secp256k1::SecretKey::from_secret_bytes(secret).unwrap();
+    let public = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&secret));
     public.pubkey_hash().to_byte_array()
 }
 
@@ -3136,8 +3135,8 @@ fn mg04_an_updates_operator_key_is_refused_while_another_registration_holds_it()
 fn mg04_an_external_submit_is_refused_while_another_operation_holds_its_service() {
     let f = fx(Library::Accept);
     f.credit(1, COIN);
-    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
-    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let secret = dpp::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&secret));
     let address = dashcore::Address::p2pkh(&public, dashcore::Network::Regtest);
     let outpoint = OutPoint::new(Txid::from_byte_array([0x79; 32]), 0);
     let req = request(CollateralChoice::External {
@@ -3361,8 +3360,8 @@ fn mg04_an_external_prepare_waits_for_a_registrations_keys() {
     let f = fx(Library::Accept);
     f.credit(1, MASTERNODE_COLLATERAL + COIN);
     f.credit(2, COIN);
-    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
-    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let secret = dpp::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&secret));
     let address = dashcore::Address::p2pkh(&public, dashcore::Network::Regtest);
     let req = request(CollateralChoice::External {
         outpoint: format!("{}-1", Txid::from_byte_array([0x77; 32])),
@@ -3406,8 +3405,8 @@ fn mg04_an_update_waits_for_a_registrations_keys() {
 fn mg04_a_refresh_reuses_its_own_unspent_input() {
     let f = fx(Library::Accept);
     let only = f.credit(1, COIN);
-    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
-    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let secret = dpp::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&secret));
     let address = dashcore::Address::p2pkh(&public, dashcore::Network::Regtest);
     let outpoint = OutPoint::new(Txid::from_byte_array([0x77; 32]), 1);
     let req = request(CollateralChoice::External {
@@ -3473,8 +3472,8 @@ fn mg04_a_replay_holds_protx_fee_inputs() {
     };
     f.fee_of(&fund_new);
     assert!(replaying(f.register(fund_new, f.grant(COIN))));
-    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
-    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let secret = dpp::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&secret));
     let external = RegistrationRequest {
         service: "1.2.3.6".into(),
         ..request(CollateralChoice::External {
@@ -4156,6 +4155,7 @@ fn r71_b_the_follower_locks_through_the_wake_with_no_list() {
 
     let (inserted, a) = f.foreign_registration(false, 2);
     (f.session.hub).apply_wallet_event(&WalletEvent::TransactionDetected {
+        locked_outpoints: Vec::new(),
         wallet_id: f.wallet.0,
         record: Box::new(tx_record(inserted, TransactionContext::Mempool)),
         balance: Default::default(),
@@ -4356,6 +4356,7 @@ impl Fx {
         (self.engine)
             .block_on(async { crate::events::process_to(&mut w.state_mut().await.core_wallet, 8) });
         (self.session.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
+            locked_outpoints: Vec::new(),
             wallet_id: self.wallet.0,
             height: 8,
             chain_lock: None,
@@ -4675,6 +4676,7 @@ fn a_registration_the_fork_replaced_is_kept_out_of_sight_again_when_mined_again(
     let in_block =
         TransactionContext::InBlock(BlockInfo::new(902, dashcore::BlockHash::all_zeros(), 0));
     (f.session.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
+        locked_outpoints: Vec::new(),
         wallet_id: f.wallet.0,
         height: 902,
         chain_lock: None,
@@ -4687,6 +4689,7 @@ fn a_registration_the_fork_replaced_is_kept_out_of_sight_again_when_mined_again(
     });
     let after_block = f.hidden_registrations();
     (f.session.hub).apply_wallet_event(&WalletEvent::TransactionDetected {
+        locked_outpoints: Vec::new(),
         wallet_id: f.wallet.0,
         record: Box::new(tx_record_on(
             seen.clone(),
@@ -5035,7 +5038,7 @@ fn ep_t6_registrar_capability_matches_the_preview_owner_guard() {
 
 #[test]
 fn ep_t2_overdue_read_recomputes_after_restart_reorg_and_confirmation() {
-    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
     let f = fx(Library::Accept);
     f.credit(1, MASTERNODE_COLLATERAL + COIN);
     let op = f
@@ -5142,7 +5145,7 @@ fn ep_t2_overdue_read_recomputes_after_restart_reorg_and_confirmation() {
 
 #[test]
 fn ep_r4_overdue_uses_resend_time_instead_of_signing_time() {
-    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
     let f = fx(Library::NoPeers);
     f.credit(1, MASTERNODE_COLLATERAL + COIN);
     let op = f

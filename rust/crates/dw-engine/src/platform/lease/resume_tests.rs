@@ -309,21 +309,20 @@ async fn peers_zero_to_some_reruns_the_pass() {
 
     let a: SocketAddr = "127.0.0.1:19999".parse().unwrap();
     let b: SocketAddr = "127.0.0.2:19999".parse().unwrap();
-    hub.on_network_event(&NetworkEvent::PeerConnected { address: a });
+    hub.on_network_event(&NetworkEvent::PeerConnected(a));
     until(|| f.calls_of(W, 1) == 2).await;
     idle(&t, &[W]).await;
     // 1 → 2 peers is no transition.
-    hub.on_network_event(&NetworkEvent::PeerConnected { address: b });
+    hub.on_network_event(&NetworkEvent::PeerConnected(b));
     settle().await;
     assert_eq!(f.calls_of(W, 1), 2);
-    hub.on_network_event(&NetworkEvent::PeerDisconnected { address: a });
-    hub.on_network_event(&NetworkEvent::PeerDisconnected { address: b });
+    hub.on_network_event(&NetworkEvent::PeerDisconnected(a));
+    hub.on_network_event(&NetworkEvent::PeerDisconnected(b));
     settle().await;
     assert_eq!(f.calls_of(W, 1), 2, "losing peers runs nothing");
     hub.on_network_event(&NetworkEvent::PeersUpdated {
-        connected_count: 1,
         addresses: vec![b],
-        best_height: None,
+        best_height: 0,
     });
     until(|| f.calls_of(W, 1) == 3).await;
 }

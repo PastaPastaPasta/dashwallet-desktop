@@ -837,6 +837,8 @@ fn funding_types_map_to_stable_codes() {
     }
     assert_eq!(FundingKey::type_of_code(6), None, "unknown");
     let lock = platform_wallet::TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: dashcore::OutPoint::null(),
         transaction: dashcore::Transaction {
             version: 3,

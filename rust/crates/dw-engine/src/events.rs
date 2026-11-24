@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_spv::EventHandler;
+use dash_spv::SyncProgress;
 use dash_spv::network::NetworkEvent;
-use dash_spv::sync::SyncProgress;
 use dashcore::{Transaction, Txid};
 use key_wallet::account::AccountType;
 use key_wallet::transaction_checking::TransactionContext;
@@ -2138,7 +2138,6 @@ impl PumpTarget for SessionPump {
 
 #[cfg(test)]
 mod tests {
-    use dashcore::hashes::Hash;
     use dashcore::{BlockHash, OutPoint, Transaction, TxIn};
     use key_wallet::account::StandardAccountType;
     use key_wallet::managed_account::transaction_record::{
@@ -2233,6 +2232,7 @@ mod tests {
         let seen = Arc::clone(&started);
         hub.attach_reconcile(Box::new(move |id| seen.lock().unwrap().push(id)));
         let block = |height| WalletEvent::BlockProcessed {
+            locked_outpoints: Vec::new(),
             wallet_id: W.0,
             height,
             chain_lock: None,
@@ -2290,6 +2290,7 @@ mod tests {
             )
         };
         hub.apply_wallet_event(&WalletEvent::BlockProcessed {
+            locked_outpoints: Vec::new(),
             wallet_id: W.0,
             height: 100,
             chain_lock: None,
@@ -2308,6 +2309,7 @@ mod tests {
         });
         let block_marks = (hub.pump.take_wallet_marks().1, hub.pump.take_new_txs());
         hub.apply_wallet_event(&WalletEvent::TransactionDetected {
+            locked_outpoints: Vec::new(),
             wallet_id: W.0,
             record: Box::new(contact(&seen, TransactionContext::Mempool)),
             balance: WalletCoreBalance::new(1_000, 0, 0, 0),
@@ -2341,6 +2343,7 @@ mod tests {
 
     fn detected(record: TransactionRecord) -> WalletEvent {
         WalletEvent::TransactionDetected {
+            locked_outpoints: Vec::new(),
             wallet_id: W.0,
             record: Box::new(record),
             balance: WalletCoreBalance::new(1_000, 0, 0, 0),
@@ -2355,6 +2358,7 @@ mod tests {
         updated: Vec<TransactionRecord>,
     ) -> WalletEvent {
         WalletEvent::BlockProcessed {
+            locked_outpoints: Vec::new(),
             wallet_id: W.0,
             height,
             chain_lock: None,
@@ -2477,6 +2481,7 @@ mod tests {
             height: 100,
         });
         hub.apply_wallet_event(&WalletEvent::BlockProcessed {
+            locked_outpoints: Vec::new(),
             wallet_id: W.0,
             height: 100,
             chain_lock: None,
@@ -2525,6 +2530,7 @@ mod tests {
         let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
         let (kept, removed, locked) = (tx(1), tx(2), tx(3));
         hub.apply_wallet_event(&WalletEvent::BlockProcessed {
+            locked_outpoints: Vec::new(),
             wallet_id: W.0,
             height: 110,
             chain_lock: None,

@@ -13,8 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dashcore::Network;
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::hashes::hash160;
 use dpp::ProtocolError;
 use dpp::consensus::ConsensusError;
 use dpp::consensus::basic::BasicError;
@@ -35,6 +34,7 @@ use dpp::identity::v0::IdentityV0;
 use dpp::identity::{Identity, IdentityPublicKey, KeyType, Purpose, SecurityLevel};
 use dpp::platform_value::Value;
 use dpp::prelude::Identifier;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dpp::serialization::Signable;
 use dpp::state_transition::StateTransition;
 use dpp::state_transition::identity_credit_withdrawal_transition::v1::IdentityCreditWithdrawalTransitionV1;

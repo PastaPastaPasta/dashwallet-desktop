@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, TxOut, Txid};
 use dpp::identity::Identity;
 use dpp::identity::v0::IdentityV0;
@@ -349,7 +348,8 @@ impl Fixture {
             network: dashcore::Network::Regtest,
             account_xpub: xpub,
             is_watch_only: true,
-        });
+        })
+        .unwrap();
         (account_type, managed)
     }
 
@@ -2578,11 +2578,11 @@ impl Fixture {
                 account_xpub: xpub,
             }],
             account_address_pools: (pools.into_iter())
-                .filter(|pool| !pool.addresses.is_empty())
+                .filter(|pool| !pool.addresses().is_empty())
                 .map(|pool| AccountAddressPoolEntry {
                     account_type,
-                    pool_type: pool.pool_type,
-                    addresses: pool.addresses.values().cloned().collect(),
+                    pool_type: pool.pool_type(),
+                    addresses: pool.addresses().values().cloned().collect(),
                 })
                 .collect(),
             ..Default::default()

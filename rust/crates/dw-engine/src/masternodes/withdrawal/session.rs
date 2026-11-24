@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::provider_registration::MasternodePayoutShare;
-use dashcore::hashes::Hash;
 use dashcore::{Network, OutPoint, Transaction, Txid};
 use dpp::identity::IdentityPublicKey;
 use dpp::identity::core_script::CoreScript;

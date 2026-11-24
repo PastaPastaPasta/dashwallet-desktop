@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dpp::version::PlatformVersion;
 use dpp::version::v13::PROTOCOL_VERSION_13;
@@ -3289,6 +3288,8 @@ async fn build_and_track(
     let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
     let lock = OutPoint::new(tx.txid(), 0);
     let tracked = platform_wallet::TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: lock,
         transaction: tx,
         account_index: 0,
@@ -3452,6 +3453,8 @@ fn built_lock(lock: OutPoint, coin: OutPoint) -> platform_wallet::TrackedAssetLo
         special_transaction_payload: None,
     };
     platform_wallet::TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: lock,
         transaction,
         account_index: 0,
@@ -4451,6 +4454,8 @@ fn another_lock_awaiting_its_resend_holds_the_funding_without_failing_the_row() 
         wallet.state_mut().await.tracked_asset_locks.insert(
             lock,
             platform_wallet::TrackedAssetLock {
+                operation_id: None,
+                shielded_recipient: None,
                 out_point: lock,
                 transaction,
                 account_index: 0,

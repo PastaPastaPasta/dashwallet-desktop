@@ -8,8 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dash_sdk::error::StateTransitionBroadcastError;
-use dashcore::hashes::{Hash, hash160, sha256};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::hashes::{hash160, sha256};
 use dpp::consensus::ConsensusError;
 use dpp::consensus::codes::ErrorWithCode;
 use dpp::consensus::signature::{
@@ -28,6 +27,7 @@ use dpp::identifier::MasternodeIdentifiers;
 use dpp::platform_value::Bytes20;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dpp::state_transition::StateTransition;
 use dpp::state_transition::masternode_vote_transition::MasternodeVoteTransition;
 use dpp::version::PlatformVersion;
@@ -511,8 +511,12 @@ fn vote_name_casts_one_transition_per_masternode() {
             Identifier::create_voter_identifier(&platform, &key)
         );
         assert_eq!(v.nonce, 1);
-        let Vote::ResourceVote(vote) = &v.vote;
-        let VotePoll::ContestedDocumentResourceVotePoll(poll) = vote.vote_poll();
+        let Vote::ResourceVote(vote) = &v.vote else {
+            panic!("{:?}", v.vote)
+        };
+        let VotePoll::ContestedDocumentResourceVotePoll(poll) = vote.vote_poll() else {
+            panic!("{:?}", vote.vote_poll())
+        };
         assert_eq!(
             poll.index_values,
             vec![

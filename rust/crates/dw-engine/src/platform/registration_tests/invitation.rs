@@ -3,7 +3,6 @@
 //! scripted ([`Fake`]): every persisted state, kills, the request to the
 //! inviter, the link's wipe, and no duff of the wallet's, ever.
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dpp::identity::v0::IdentityV0;

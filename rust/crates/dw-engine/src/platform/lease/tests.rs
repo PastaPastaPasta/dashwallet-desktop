@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dw_appdb::dispatch::{
     CallRows, DiskState, DispatchRow, FundingRow, Registered, ReleaseRow, Resolution,

@@ -5,7 +5,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, TxOut, Txid};
 use dw_vault::{
     Credential, GrantPurpose, KdfParams, KdfPolicy, LockState, MemoryOsStore, UnlockScope,
@@ -297,6 +296,8 @@ impl Fixture {
                 wallet.state_mut().await.tracked_asset_locks.insert(
                     out_point,
                     platform_wallet::TrackedAssetLock {
+                        operation_id: None,
+                        shielded_recipient: None,
                         out_point,
                         transaction: tx,
                         account_index: 0,
@@ -2827,8 +2828,8 @@ fn lock_changeset(
 fn signed_lock_tx(
     input: OutPoint,
     value: u64,
-    key: &dashcore::secp256k1::PublicKey,
-    sign: impl FnOnce([u8; 32]) -> dashcore::secp256k1::ecdsa::Signature,
+    key: &dpp::secp256k1::PublicKey,
+    sign: impl FnOnce([u8; 32]) -> dpp::secp256k1::ecdsa::Signature,
 ) -> dashcore::Transaction {
     use dashcore::blockdata::script::{Builder, PushBytesBuf};
     let mut tx = dashcore::Transaction {
@@ -2871,6 +2872,8 @@ fn lock_changeset_of(
     locks.asset_locks.insert(
         out_point,
         AssetLockEntry {
+            operation_id: None,
+            shielded_recipient: None,
             out_point,
             transaction: tx,
             account_index: 0,
@@ -3096,13 +3099,10 @@ fn mode_b_a_funding_permit_holds_the_coin_fence_until_its_lock_is_built() {
     // step's: another signer's, or the call's signature copied onto other
     // outputs (it no longer verifies; read not `Built`, which would stop
     // the process: §2a.7).
-    let other_key = dashcore::secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap();
-    let other = dashcore::secp256k1::PublicKey::from_secret_key(&other_key);
+    let other_key = dpp::secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap();
+    let other = dpp::secp256k1::PublicKey::from_secret_key(&other_key);
     let foreign = signed_lock_tx(b, COIN, &other, |sighash| {
-        dashcore::secp256k1::ecdsa::sign(
-            dashcore::secp256k1::Message::from_digest(sighash),
-            &other_key,
-        )
+        dpp::secp256k1::ecdsa::sign(dpp::secp256k1::Message::from_digest(sighash), &other_key)
     });
     let mut copied = own.clone();
     copied.output[0].value = COIN / 2;
@@ -3332,8 +3332,8 @@ impl Fixture {
 fn real_lock(
     prev: &dashcore::Transaction,
     value: u64,
-    pk: dashcore::secp256k1::PublicKey,
-    sign: impl FnOnce([u8; 32]) -> dashcore::secp256k1::ecdsa::Signature,
+    pk: dashcore::ecdsa::EcdsaPublicKey,
+    sign: impl FnOnce([u8; 32]) -> dashcore::ecdsa::EcdsaSignature,
 ) -> dashcore::Transaction {
     use dashcore::blockdata::script::{Builder, PushBytesBuf};
     use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -3374,11 +3374,11 @@ fn real_lock(
         .legacy_signature_hash(0, &paid, 1)
         .unwrap()
         .to_byte_array();
-    let mut der = sign(digest).serialize_der().to_vec();
+    let mut der = sign(digest).with_der(<[u8]>::to_vec);
     der.push(1);
     tx.input[0].script_sig = Builder::new()
         .push_slice(PushBytesBuf::try_from(der).unwrap())
-        .push_slice(pk.serialize())
+        .push_slice(pk.to_compressed())
         .into_script();
     tx
 }
@@ -3412,8 +3412,8 @@ impl key_wallet::Signer for RemovingSigner {
         sighash: [u8; 32],
     ) -> Result<
         (
-            dashcore::secp256k1::ecdsa::Signature,
-            dashcore::secp256k1::PublicKey,
+            dashcore::ecdsa::EcdsaSignature,
+            dashcore::ecdsa::EcdsaPublicKey,
         ),
         Self::Error,
     > {
@@ -3445,7 +3445,7 @@ impl key_wallet::Signer for RemovingSigner {
     async fn public_key(
         &self,
         path: &key_wallet::DerivationPath,
-    ) -> Result<dashcore::secp256k1::PublicKey, Self::Error> {
+    ) -> Result<dashcore::ecdsa::EcdsaPublicKey, Self::Error> {
         self.inner.public_key(path).await
     }
 }

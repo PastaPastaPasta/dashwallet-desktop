@@ -96,7 +96,6 @@ pub struct ArtifactId(pub [u8; 32]);
 
 impl ArtifactId {
     pub fn from_txid(txid: &dashcore::Txid) -> Self {
-        use dashcore::hashes::Hash;
         let mut bytes = txid.to_byte_array();
         bytes.reverse();
         Self(bytes)
@@ -113,7 +112,7 @@ impl ArtifactId {
     /// the step. SHA-256 over a domain tag, the wallet and the step id; the
     /// wallet keeps two wallets' identical step ids apart (review O-1).
     pub fn of_step(wallet: &crate::WalletId, step: &str) -> Self {
-        use dashcore::hashes::{Hash, HashEngine, sha256};
+        use dashcore::hashes::{HashEngine, sha256};
         let mut engine = sha256::Hash::engine();
         engine.input(b"dw-e0-04/call-step/v1");
         engine.input(&wallet.0);

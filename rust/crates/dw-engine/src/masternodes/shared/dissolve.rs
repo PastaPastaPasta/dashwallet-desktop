@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, ScriptBuf, TxOut, Txid};
 use dw_appdb::MasternodeOpRow;
 use dw_protx::shared::dissolve::{

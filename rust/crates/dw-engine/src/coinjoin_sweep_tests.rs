@@ -7,7 +7,6 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use dashcore::bls_sig_utils::BLSSignature;
-use dashcore::hashes::Hash;
 use dashcore::{ChainLock, OutPoint, Transaction, Txid};
 use dw_vault::{Credential, GrantPurpose, is_bip44_path, is_coinjoin_path};
 use key_wallet::account::{AccountType, StandardAccountType};
@@ -1027,7 +1026,7 @@ fn a_chunk_is_sent_again_with_its_recorded_bytes_until_the_wallet_sees_it() {
     let peer: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
     dash_spv::EventHandler::on_network_event(
         &*f.session.hub,
-        &dash_spv::network::NetworkEvent::PeerConnected { address: peer },
+        &dash_spv::network::NetworkEvent::PeerConnected(peer),
     );
     // Sent under the background resend's claim: the claim ends with that
     // resend, and an explicit resend before then is refused.

@@ -413,8 +413,8 @@ impl key_wallet::Signer for ArmingSigner<'_, '_> {
         sighash: [u8; 32],
     ) -> Result<
         (
-            dashcore::secp256k1::ecdsa::Signature,
-            dashcore::secp256k1::PublicKey,
+            dashcore::ecdsa::EcdsaSignature,
+            dashcore::ecdsa::EcdsaPublicKey,
         ),
         SignerError,
     > {
@@ -441,7 +441,7 @@ impl key_wallet::Signer for ArmingSigner<'_, '_> {
     async fn public_key(
         &self,
         path: &DerivationPath,
-    ) -> Result<dashcore::secp256k1::PublicKey, SignerError> {
+    ) -> Result<dashcore::ecdsa::EcdsaPublicKey, SignerError> {
         key_wallet::Signer::public_key(self.inner, path).await
     }
 }

@@ -10,7 +10,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, Block, BlockHash, InstantLock, OutPoint, Transaction, TxIn, TxOut, Txid};
 use platform_wallet::PlatformWalletInfo;
 use platform_wallet::key_wallet_manager::{WalletEvent, WalletInterface};

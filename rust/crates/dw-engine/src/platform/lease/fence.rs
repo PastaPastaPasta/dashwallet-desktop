@@ -21,7 +21,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use tokio::time::Instant;
 

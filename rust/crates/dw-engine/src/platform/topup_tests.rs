@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
@@ -792,6 +791,8 @@ impl TopUpLib for Fake {
             // unsigned `Built` lock while a funding call signs (fail
             // closed). It is stored from its next status on.
             let lock = TrackedAssetLock {
+                operation_id: None,
+                shielded_recipient: None,
                 out_point: outpoint,
                 transaction,
                 account_index: 0,
@@ -2086,7 +2087,7 @@ fn the_degraded_mode_tops_up_an_unverified_identity() {
 /// caught up; masternode sync releases it.
 #[test]
 fn the_funding_hold_waits_for_platform_writes() {
-    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, SyncProgress, SyncState};
 
     let f = fixture(false);
     let session = Arc::clone(&f.session);
@@ -2118,7 +2119,7 @@ fn the_funding_hold_waits_for_platform_writes() {
 /// it with the replay's first batch. Both release at the target.
 #[test]
 fn a_replay_holds_asset_lock_funding_until_it_reaches_its_target() {
-    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, SyncProgress, SyncState};
     use platform_wallet::events::WalletEvent;
 
     let f = fixture(false);

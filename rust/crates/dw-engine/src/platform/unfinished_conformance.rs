@@ -13,7 +13,6 @@
 //! for no lease, and every record is the lock's own outpoint's, so no txid
 //! record of another output of its transaction hides it.
 
-use dashcore::hashes::Hash;
 use dashcore::transaction::special_transaction::TransactionPayload;
 use dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
@@ -132,6 +131,8 @@ pub(crate) fn tracked(
         _ => 0,
     };
     TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point,
         proof: proof
             .then(|| AssetLockProof::Chain(ChainAssetLockProof::new(100, out_point.into()))),

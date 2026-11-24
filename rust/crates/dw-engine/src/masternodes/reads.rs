@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use dash_sdk::platform::Fetch;
 use dash_sdk::query_types::IdentityBalance;
-use dashcore::hashes::{Hash, hash160};
+use dashcore::hashes::hash160;
 use dashcore::{Address, Network, OutPoint, PubkeyHash, ScriptBuf};
 use dpp::prelude::Identifier;
 use platform_wallet::masternode::{

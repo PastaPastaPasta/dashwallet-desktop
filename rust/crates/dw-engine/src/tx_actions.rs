@@ -2646,7 +2646,6 @@ mod tests {
     /// the read of the others whole.
     #[test]
     fn a_sent_mark_reads_back_its_transaction() {
-        use dashcore::hashes::Hash;
         let db = AppDb::open_in_memory().unwrap();
         let wallet = WalletId([7; 32]);
         let scope = wallet.to_string();
@@ -2693,7 +2692,6 @@ mod tests {
     /// earlier build's mark, which has neither, is not.
     #[test]
     fn a_failed_read_of_the_copies_keeps_only_marks_written_with_them() {
-        use dashcore::hashes::Hash;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(dw_appdb::APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
@@ -2735,7 +2733,6 @@ mod tests {
     /// that read incomplete, a malformed sent mark does not.
     #[test]
     fn a_malformed_mark_is_skipped() {
-        use dashcore::hashes::Hash;
         let db = AppDb::open_in_memory().unwrap();
         let wallet = WalletId([7; 32]);
         let scope = wallet.to_string();
@@ -2922,7 +2919,6 @@ mod tests {
     /// the settled C that A's lock added, so P stays under it.
     #[test]
     fn a_lock_only_child_stays_settled_under_another_wallets_unlocked_record() {
-        use dashcore::hashes::Hash;
         let p = Txid::from_byte_array([1; 32]);
         let c = Transaction {
             version: 2,

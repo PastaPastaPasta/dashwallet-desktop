@@ -7,7 +7,6 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, InstantLock, OutPoint, Transaction, TxIn, TxOut, Txid};
 use dw_vault::{Credential, GrantPurpose};
 
@@ -3551,7 +3550,8 @@ fn add_contact_account(engine: &Engine, session: &NetworkSession, id: WalletId) 
             network: dashcore::Network::Regtest,
             account_xpub: xpub,
             is_watch_only: true,
-        });
+        })
+        .unwrap();
         (info.core_wallet.accounts)
             .insert_funds_bearing_account(managed)
             .unwrap();
@@ -3568,16 +3568,20 @@ fn signed_by_contact(mut tx: Transaction, input: usize, index: u32) -> Transacti
             dashcore::sighash::EcdsaSighashType::All.to_u32(),
         )
         .unwrap();
-    let key = (contact_key().derive_priv(&[key_wallet::bip32::ChildNumber::Normal { index }]))
-        .unwrap()
-        .private_key;
-    let sig = key.sign_ecdsa(dashcore::secp256k1::Message::from_digest(
+    let key = dpp::secp256k1::SecretKey::from_secret_bytes(
+        *(contact_key().derive_priv(&[key_wallet::bip32::ChildNumber::Normal { index }]))
+            .unwrap()
+            .private_key
+            .to_bytes(),
+    )
+    .unwrap();
+    let sig = key.sign_ecdsa(dpp::secp256k1::Message::from_digest(
         *sighash.as_byte_array(),
     ));
     tx.input[input].script_sig = dashcore::blockdata::script::Builder::new()
         .push_slice(dashcore::ecdsa::Signature::sighash_all(sig).serialize())
         .push_key(&dashcore::PublicKey::new(
-            dashcore::secp256k1::PublicKey::from_secret_key(&key),
+            dpp::secp256k1::PublicKey::from_secret_key(&key),
         ))
         .into_script();
     tx
@@ -3787,6 +3791,7 @@ fn mined_in_history_only(
         TransactionContext::InBlock(BlockInfo::new(height, dashcore::BlockHash::all_zeros(), 0));
     (session.hub).apply_wallet_event(
         &platform_wallet::key_wallet_manager::WalletEvent::TransactionDetected {
+            locked_outpoints: Vec::new(),
             wallet_id: id.0,
             record: Box::new(record),
             balance,

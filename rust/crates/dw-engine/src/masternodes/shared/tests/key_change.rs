@@ -1,7 +1,7 @@
 //! Change keys together (MG-04b §3.3, D25, D99–D105, slice 2d).
 
 use dashcore::hashes::sha256;
-use dashcore::secp256k1::{Message as Digest, ecdsa};
+use dpp::secp256k1::{Message as Digest, ecdsa};
 use dw_protx::shared::envelope::{SigsEnvelope, SigsKind, decode_message};
 use dw_protx::shared::key_change;
 use dw_protx::shared::rules::{SharedMn, check_update_shared_registrar};
@@ -167,7 +167,7 @@ fn inputs_spend(tx: &SpecialTx) -> bool {
         let hash = tx.signature_hash_all(index, &code).unwrap();
         let der = &sig.as_bytes()[..sig.len().saturating_sub(1)];
         ecdsa::Signature::from_der(der)
-            .and_then(|s| ecdsa::verify(&s, Digest::from_digest(hash), &pk.inner))
+            .and_then(|s| ecdsa::verify(&s, Digest::from_digest(hash), &pk.inner.into()))
             .is_ok()
     })
 }
@@ -980,7 +980,6 @@ fn keyed_reward(f: &Fx, reward: RewardChoice) -> (String, Txid) {
 }
 
 fn p2pkh(id: [u8; 20]) -> dashcore::ScriptBuf {
-    use dashcore::hashes::Hash;
     dashcore::ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array(id))
 }
 

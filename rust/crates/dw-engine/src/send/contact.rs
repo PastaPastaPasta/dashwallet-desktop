@@ -12,7 +12,6 @@
 use std::sync::Arc;
 
 use dashcore::address::Payload;
-use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, PubkeyHash};
 use dw_vault::{GrantKind, VaultError};
 use platform_wallet::wallet::platform_wallet::PlatformWallet;

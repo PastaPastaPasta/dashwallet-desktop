@@ -54,7 +54,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
-use dashcore::secp256k1::{PublicKey, ecdsa};
+use dashcore::ecdsa::{EcdsaPublicKey, EcdsaSignature};
 use dashcore::{OutPoint, ScriptBuf, Txid};
 use dw_appdb::{AppDb, AppDbError};
 use dw_vault::{SignerError, VaultSigner};
@@ -548,7 +548,7 @@ impl<'a> LockKeySigner<'a> {
     }
 
     /// Whether `key` is the one the lock's credit output pays.
-    pub(crate) fn is_the_lock_key(&self, key: &PublicKey) -> bool {
+    pub(crate) fn is_the_lock_key(&self, key: &EcdsaPublicKey) -> bool {
         let hash = dashcore::PublicKey::new(*key).pubkey_hash();
         ScriptBuf::new_p2pkh(&hash) == self.credit_script
     }
@@ -566,7 +566,7 @@ impl key_wallet::Signer for LockKeySigner<'_> {
         &self,
         path: &DerivationPath,
         sighash: [u8; 32],
-    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+    ) -> Result<(EcdsaSignature, EcdsaPublicKey), SignerError> {
         if !self.is_the_lock_key(&self.inner.public_key(path).await?) {
             tracing::warn!(%path, "a finish refused to sign with a key other than the lock's");
             return Err(SignerError::KeyMismatch(path.to_string()));
@@ -587,7 +587,7 @@ impl key_wallet::Signer for LockKeySigner<'_> {
         }
     }
 
-    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
+    async fn public_key(&self, path: &DerivationPath) -> Result<EcdsaPublicKey, SignerError> {
         self.inner.public_key(path).await
     }
 }

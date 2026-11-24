@@ -325,6 +325,8 @@ fn a_restored_library_row_lists_with_its_credit_script() {
     let transaction = lock_transaction(5);
     let outpoint = OutPoint::new(transaction.txid(), 0);
     let row = TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: outpoint,
         proof: Some(AssetLockProof::Chain(ChainAssetLockProof::new(
             100,
@@ -575,6 +577,8 @@ fn two_output_transaction(n: u8) -> dashcore::Transaction {
 fn restored_row(transaction: &dashcore::Transaction, vout: u32) -> TrackedAssetLock {
     let outpoint = OutPoint::new(transaction.txid(), vout);
     TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: outpoint,
         proof: Some(AssetLockProof::Chain(ChainAssetLockProof::new(
             100,

@@ -1858,7 +1858,6 @@ impl HistoryStore {
     /// outputs or payload, as a fixture coin's event would have left it
     /// (an entry already there stays).
     pub(crate) fn hold_funding(&self, wallet: WalletId, txid: Txid) {
-        use dashcore::hashes::Hash;
         use key_wallet::transaction_checking::BlockInfo;
         self.with_wallet(wallet, |h| {
             h.txs.entry(txid).or_insert_with(|| TxEntry {
@@ -1885,7 +1884,6 @@ impl HistoryStore {
 
 #[cfg(test)]
 mod tests {
-    use dashcore::hashes::Hash;
     use dashcore::{BlockHash, OutPoint, PubkeyHash, ScriptBuf, TxIn, TxOut, Witness};
     use key_wallet::account::{AccountType, StandardAccountType};
     use key_wallet::managed_account::transaction_record::{InputDetail, TransactionDirection};

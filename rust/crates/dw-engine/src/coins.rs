@@ -160,7 +160,8 @@ pub(crate) fn insert_contact_account(info: &mut ManagedWalletInfo, id: [u8; 32])
         network,
         account_xpub: xpub,
         is_watch_only: true,
-    });
+    })
+    .unwrap();
     info.accounts.insert_funds_bearing_account(managed).unwrap();
     let listed = info
         .all_managed_accounts()
@@ -1625,7 +1626,6 @@ mod tests {
     }
 
     fn coin(seed: u8, send_account: bool) -> WalletCoin {
-        use dashcore::hashes::Hash;
         let address = Address::new(
             dashcore::Network::Regtest,
             dashcore::address::Payload::PubkeyHash(dashcore::PubkeyHash::from_byte_array(

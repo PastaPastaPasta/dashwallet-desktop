@@ -1154,7 +1154,6 @@ mod tests {
 
     #[test]
     fn ep_conflict_of_preserves_height_state_and_exceptions() {
-        use dashcore::hashes::Hash;
         use dashcore::{ScriptBuf, TxIn, TxOut};
         use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
         let input = OutPoint::new(Txid::from_byte_array([7; 32]), 0);

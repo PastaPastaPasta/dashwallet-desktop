@@ -3240,8 +3240,6 @@ fn the_tap_writing_during_a_removal_neither_blocks_nor_deadlocks() {
 /// waits for, held past a removal.
 #[test]
 fn a_first_seen_write_held_past_a_removal_leaves_nothing() {
-    use dashcore::hashes::Hash;
-
     let (_dir, engine, s, id, wipe) = removable();
     let pause = Arc::new(JobPause::default());
     *guard(&s.hub.pause_seen) = Some(Arc::clone(&pause));

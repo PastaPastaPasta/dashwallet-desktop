@@ -6,7 +6,6 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use key_wallet::bip32::DerivationPath;
 use platform_wallet::{AssetLockFundingType, PlatformWalletError};

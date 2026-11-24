@@ -1031,7 +1031,6 @@ fn stored_spent(session: &NetworkSession, id: WalletId, outpoint: OutPoint) -> O
 
 /// [`stored_spent`] read from the wallet store at `db`, with no session.
 fn stored_spent_at(db: &std::path::Path, id: WalletId, outpoint: OutPoint) -> Option<bool> {
-    use dashcore::hashes::Hash;
     use rusqlite::OptionalExtension;
     assert!(outpoint.vout < 251);
     let key: Vec<u8> = (std::iter::once(32))
@@ -1724,7 +1723,7 @@ pub(super) fn record_stored(session: &NetworkSession, id: WalletId, txid: Txid) 
 fn the_load_sweep_keeps_a_coin_a_stored_mined_payment_spends() {
     use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
     let mined =
-        TransactionContext::InBlock(BlockInfo::new(TIP, dashcore::hashes::Hash::all_zeros(), 0));
+        TransactionContext::InBlock(BlockInfo::new(TIP, dashcore::BlockHash::all_zeros(), 0));
     let (_dir, _engine, session, id, d, _e, a, b) = half_done_beside_a_spender_of_b(mined);
     finish_now(&session, id).unwrap();
     assert!(!record_stored(&session, id, d.txid()), "D is not swept");
@@ -1950,7 +1949,6 @@ fn a_failed_read_of_the_sent_marks_fails_the_start_until_it_reads() {
 /// from the intact mark.
 #[test]
 fn a_bad_sent_row_does_not_fail_the_start() {
-    use dashcore::hashes::Hash;
     let (_dir, engine, session, id, a) = half_done_named_by_its_sent_mark();
     let conn = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
     conn.busy_timeout(std::time::Duration::from_secs(5))
@@ -2276,9 +2274,7 @@ fn an_abandon_during_an_activity_resend_stops_its_hand_off() {
     start_offline_spv(&engine, &session);
     dash_spv::EventHandler::on_network_event(
         &*session.hub,
-        &dash_spv::network::NetworkEvent::PeerConnected {
-            address: "127.0.0.1:9".parse().unwrap(),
-        },
+        &dash_spv::network::NetworkEvent::PeerConnected("127.0.0.1:9".parse().unwrap()),
     );
     let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
     *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));

@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use dashcore::hashes::Hash;
 use dashcore::{Network, OutPoint, ScriptBuf, Txid};
 use dpp::address_funds::PlatformAddress;
 use dpp::state_transition::address_funding_from_asset_lock_transition::calculate_address_funding_from_asset_lock_min_required_fee;
@@ -1876,7 +1875,7 @@ fn a_resume_refuses_a_grant_with_no_funding_budget_unredeemed() {
 
 /// SPV's reading caught up, as the hub records it.
 fn caught_up(fx: &Fixture) {
-    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, SyncProgress, SyncState};
     let mut headers = BlockHeadersProgress::default();
     headers.update_target_height(1000);
     headers.update_tip_height(1000);

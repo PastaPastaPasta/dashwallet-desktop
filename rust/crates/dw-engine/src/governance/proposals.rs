@@ -18,7 +18,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use dw_appdb::ProposalRow;
 use dw_governance::object::{GovernanceObject, display_hex, parse_display_hex};

@@ -843,7 +843,6 @@ fn an_exit_reports_the_amount_it_moved() {
         "platform.grant_exceeded"
     );
     assert!(w.f.unused(&short));
-    use dpp::dashcore::hashes::Hash;
     let theirs = dpp::dashcore::Address::new(
         w.f.s.vault.network(),
         dpp::dashcore::address::Payload::PubkeyHash(dpp::dashcore::PubkeyHash::from_byte_array(

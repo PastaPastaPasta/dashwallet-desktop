@@ -35,7 +35,6 @@ use std::sync::{Arc, Mutex};
 
 use dashcore::address::Payload;
 use dashcore::consensus::encode::serialize_hex;
-use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, PubkeyHash, ScriptBuf, ScriptHash, Transaction, TxOut};
 use dw_uri::keyio::{AddressKind, Destination, classify_address};
 use dw_vault::{GrantKind, VaultError};

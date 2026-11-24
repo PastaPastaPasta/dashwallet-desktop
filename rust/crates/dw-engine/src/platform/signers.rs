@@ -39,7 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dashcore::secp256k1::{PublicKey, SecretKey, ecdsa};
+use dashcore::ecdsa::{EcdsaPublicKey, EcdsaSignature};
 use dashcore::{OutPoint, ScriptBuf, Transaction};
 use dpp::ProtocolError;
 use dpp::address_funds::{AddressWitness, PlatformAddress};
@@ -47,6 +47,7 @@ use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV
 use dpp::identity::signer::Signer;
 use dpp::identity::{IdentityPublicKey, KeyID, KeyType};
 use dpp::platform_value::BinaryData;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dw_vault::{ScanKey, SignerError, SignerScope, VaultSigner};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
@@ -674,7 +675,7 @@ impl key_wallet::Signer for CountingFundingSigner {
         &self,
         path: &DerivationPath,
         sighash: [u8; 32],
-    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+    ) -> Result<(EcdsaSignature, EcdsaPublicKey), SignerError> {
         if self.count.abandoned() {
             return Err(SignerError::PathNotAllowed(format!(
                 "{path}: the call's build was refused for its inputs"
@@ -724,7 +725,7 @@ impl key_wallet::Signer for CountingFundingSigner {
         Ok(signed)
     }
 
-    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
+    async fn public_key(&self, path: &DerivationPath) -> Result<EcdsaPublicKey, SignerError> {
         self.note(self.signer.public_key(path).await)
     }
 
@@ -1116,8 +1117,6 @@ mod tests {
 #[cfg(test)]
 mod drain_cap_tests {
     use std::str::FromStr;
-
-    use dashcore::hashes::Hash;
 
     use super::*;
 
