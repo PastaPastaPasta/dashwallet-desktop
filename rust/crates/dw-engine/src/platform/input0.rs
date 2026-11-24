@@ -12,7 +12,9 @@
 //! most `max_inputs` are taken. Max takes the usable balance less the
 //! reserve. An amount is claimed from input 0 first, then in address order;
 //! a later input's last claim below the input minimum claims the minimum
-//! (Drive leaves the excess on the address).
+//! (Drive leaves the excess on the address), or, for a route whose claims
+//! are what it pays ([`Input0Rules::exact`], the top-up), borrows the
+//! shortfall from the input before.
 
 use std::collections::BTreeMap;
 
@@ -33,6 +35,9 @@ pub(crate) struct Input0Rules {
     pub(crate) min_claim_0: u64,
     /// The least the claims may total.
     pub(crate) min_total: u64,
+    /// The claims total exactly the amount: a later input's short last
+    /// claim borrows from the one before rather than claiming more.
+    pub(crate) exact: bool,
 }
 
 /// The inputs: each address's claim, input 0 first in map order.
@@ -122,12 +127,15 @@ pub(crate) fn plan(
         };
         let claim = room.min(left);
         left -= claim;
-        let claim = if i == 0 {
+        let claim = if i == 0 || rules.exact {
             claim
         } else {
             claim.max(rules.min_input)
         };
         inputs.insert(address, claim);
+    }
+    if rules.exact {
+        borrow(&mut inputs, rules)?;
     }
     let plan = Input0Plan { inputs, credits };
     if plan.input_0().1 < rules.min_claim_0 {
@@ -141,6 +149,35 @@ pub(crate) fn plan(
         });
     }
     Ok(plan)
+}
+
+/// An exact plan's last claim below the input minimum takes the shortfall
+/// from the claim before, which keeps its own minimum.
+fn borrow(
+    inputs: &mut BTreeMap<PlatformAddress, u64>,
+    rules: &Input0Rules,
+) -> Result<(), Input0Refused> {
+    let claims: Vec<PlatformAddress> = inputs.keys().copied().collect();
+    let [.., before, last] = claims.as_slice() else {
+        return Ok(());
+    };
+    let short = rules.min_input.saturating_sub(inputs[last]);
+    if short == 0 {
+        return Ok(());
+    }
+    let floor = if Some(before) == claims.first() {
+        rules.min_claim_0
+    } else {
+        rules.min_input
+    };
+    if inputs[before] < floor.saturating_add(short) {
+        return Err(Input0Refused::ClaimBelow {
+            min: rules.min_input,
+        });
+    }
+    *inputs.get_mut(before).expect("planned") -= short;
+    inputs.insert(*last, rules.min_input);
+    Ok(())
 }
 
 fn total(credits: impl Iterator<Item = u64>) -> u64 {
