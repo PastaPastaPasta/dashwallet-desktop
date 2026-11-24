@@ -21,7 +21,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
     for (const id of POOL_CARDS) await expect(page.getByTestId(id)).toHaveCount(0);
     await expect(page.getByTestId("page-home")).not.toContainText("cannot be moved");
-    expect(await platformMoveWhy(page)).toBe("0.004005 tDASH on your Platform addresses cannot be moved to your Dash wallet right now.");
+    expect(await platformMoveWhy(page)).toBe("0.00400500 tDASH on your Platform addresses cannot be moved to your Dash wallet right now.");
   });
 
   test(`Unfinished transfers keeps both Finish paths, with no pool card (${theme})`, async ({ page }) => {

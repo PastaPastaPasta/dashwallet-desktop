@@ -40,3 +40,12 @@ describe("the Checking lines", () => {
     expect(row).toEqual({ kind: "checking", text: FUND_COPY.done.checking.row, action: "checkAgain" });
   });
 });
+
+describe("the close-this lines", () => {
+  it("say one thing in one way: every running step that lets the user close it reads the same sentence", () => {
+    const texts = [...flatten(en).values()].flatMap((m) => (typeof m === "string" ? [m] : Object.values(m)));
+    const lines = texts.filter((m) => /close this\W+Activity/i.test(m));
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.filter((m) => !m.endsWith("You can close this: Activity shows it."))).toEqual([]);
+  });
+});

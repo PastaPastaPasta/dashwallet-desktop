@@ -1898,6 +1898,12 @@ input[type="radio"]:disabled {
   user-select: text;
 }
 
+/* Amounts in a confirm list: at the end of the row in tabular digits, so the decimals line up. */
+.detail-amount {
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
 .detail-note {
   color: var(--dw-role-text-secondary);
 }
