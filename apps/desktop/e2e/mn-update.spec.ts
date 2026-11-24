@@ -44,6 +44,8 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("mn-change-payout-recorded").locator("input")).toBeChecked();
     await expect(sheet(page)).toContainText("If the payout was changed elsewhere, this sets it back.");
     await expect(page.getByTestId("mn-change-nothing")).toBeVisible();
+    await expect(sheet(page).locator("fieldset, legend")).toHaveCount(0);
+    for (const name of ["Operator key", "Voting key", "Payouts go to"]) await expect(sheet(page).getByRole("radiogroup", { name })).toBeVisible();
     if (REGISTRAR_UPDATE_SENDS) await expect(page.getByTestId("mn-change-send")).toBeDisabled();
     else await expect(page.getByTestId("mn-change-send")).toHaveCount(0);
     await shot(page, "change-keys-open", theme);

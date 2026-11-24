@@ -312,23 +312,23 @@ export function RegisterSheet({
   if (step === "type")
     body = (
       <>
-        <fieldset className="mg-choices" data-testid="reg-kind">
-          <legend className="mg-section-title">{t(`${R}.type.what`)}</legend>
+        <div className="mg-choices" role="radiogroup" aria-labelledby={`${id}-reg-kind`} data-testid="reg-kind">
+          <span id={`${id}-reg-kind`} className="mg-section-title">{t(`${R}.type.what`)}</span>
           {choice("kind", "regular", d.kind === "regular", () => set({ kind: "regular", outpoint: "" }), t(`${R}.type.regular`), t(`${R}.type.regularText`, { amount: 1000 }), "reg-kind-regular")}
           {choice("kind", "evonode", d.kind === "evonode", () => set({ kind: "evonode", outpoint: "" }), t(`${R}.type.evonode`), t(`${R}.type.evonodeText`, { amount: 4000 }), "reg-kind-evonode")}
-        </fieldset>
-        <fieldset className="mg-choices" data-testid="reg-runner">
-          <legend className="mg-section-title">{t(`${R}.type.who`)}</legend>
+        </div>
+        <div className="mg-choices" role="radiogroup" aria-labelledby={`${id}-reg-runner`} data-testid="reg-runner">
+          <span id={`${id}-reg-runner`} className="mg-section-title">{t(`${R}.type.who`)}</span>
           {choice("runner", "hosted", d.runner === "hosted", () => set({ runner: "hosted" }), t(`${R}.type.hosted`), t(`${R}.type.hostedText`), "reg-runner-hosted")}
           {choice("runner", "self", d.runner === "self", () => set({ runner: "self", operatorFromWallet: true, nodeFromWallet: true }), t(`${R}.type.self`), t(`${R}.type.selfText`), "reg-runner-self")}
-        </fieldset>
+        </div>
       </>
     );
   else if (step === "collateral")
     body = (
       <>
-        <p className="mg-small">{t(`${R}.collateral.intro`)}</p>
-        <fieldset className="mg-choices" data-testid="reg-collateral">
+        <p id={`${id}-reg-collateral`} className="mg-small">{t(`${R}.collateral.intro`)}</p>
+        <div className="mg-choices" role="radiogroup" aria-labelledby={`${id}-reg-collateral`} data-testid="reg-collateral">
           {choice(
             "collateral",
             "fund_new",
@@ -365,7 +365,7 @@ export function RegisterSheet({
             </div>
           )}
           {choice("collateral", "external", external, () => set({ collateral: "external" }), t(`${R}.collateral.external`), t(`${R}.collateral.externalText`), "reg-collateral-external")}
-        </fieldset>
+        </div>
         {external && (
           <div className="mg-form">
             <label className={`mg-field mg-span ${errors.externalOutpoint ? "has-error" : ""}`}>
@@ -484,11 +484,11 @@ export function RegisterSheet({
           <strong data-testid="reg-owner">{t(`${R}.keys.ownerValue`, { index: String(k.owner.index + 1) })}</strong>
           <span className="mg-field-help">{t(`${R}.keys.ownerHelp`)}</span>
         </div>
-        <fieldset className="mg-choices" data-testid="reg-voting">
-          <legend className="mg-section-title">{t(`${R}.keys.voting`)}</legend>
+        <div className="mg-choices" role="radiogroup" aria-labelledby={`${id}-reg-voting`} data-testid="reg-voting">
+          <span id={`${id}-reg-voting`} className="mg-section-title">{t(`${R}.keys.voting`)}</span>
           {choice("voting", "wallet", d.voting === "wallet", () => set({ voting: "wallet" }), t(`${R}.keys.votingWallet`), t(`${R}.keys.votingWalletText`, { index: String(k.voting.index + 1) }), "reg-voting-wallet")}
           {choice("voting", "address", d.voting === "address", () => set({ voting: "address" }), t(`${R}.keys.votingOther`), t(`${R}.keys.votingOtherText`), "reg-voting-other")}
-        </fieldset>
+        </div>
         {d.voting === "address" && (
           <label className={`mg-field mg-span ${errors.votingAddress ? "has-error" : ""}`}>
             {t(`${R}.keys.votingAddress`)}
@@ -496,11 +496,11 @@ export function RegisterSheet({
             {fieldError("votingAddress")}
           </label>
         )}
-        <fieldset className="mg-choices" data-testid="reg-payout">
-          <legend className="mg-section-title">{t(`${R}.keys.payout`)}</legend>
+        <div className="mg-choices" role="radiogroup" aria-labelledby={`${id}-reg-payout`} data-testid="reg-payout">
+          <span id={`${id}-reg-payout`} className="mg-section-title">{t(`${R}.keys.payout`)}</span>
           {choice("payout", "new", d.payout === "new", () => set({ payout: "new" }), t(`${R}.keys.payoutNew`), t(`${R}.keys.payoutNewText`), "reg-payout-new")}
           {choice("payout", "address", d.payout === "address", () => set({ payout: "address" }), t(`${R}.keys.payoutOther`), t(`${R}.keys.payoutOtherText`), "reg-payout-other")}
-        </fieldset>
+        </div>
         {d.payout === "address" && (
           <label className={`mg-field mg-span ${errors.payoutAddress ? "has-error" : ""}`}>
             {t(`${R}.keys.payoutAddress`)}
