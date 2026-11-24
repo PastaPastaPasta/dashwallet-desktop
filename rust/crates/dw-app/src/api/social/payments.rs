@@ -1,12 +1,13 @@
 //! Contact payments: the per-contact lock and contact activity.
 
 use dw_engine::platform::{
-    ActivityDirection, ActivityFilter, ActivityItem, ActivityPage, LockResolution, PaymentLock,
-    PaymentSource,
+    ActivityDirection, ActivityFilter, ActivityItem, ActivityPage, ContactPayOutcome,
+    ContactPayQuote, LockResolution, PaymentLock, PaymentSource, PayoutState,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::api::identity::flows::GrantRequest;
 use crate::dto::mirror_enum;
 
 /// The balance a contact payment comes from.
@@ -138,6 +139,92 @@ impl From<ActivityPage> for ContactActivityPage {
         ContactActivityPage {
             items: items.into_iter().map(Into::into).collect(),
             next_cursor,
+        }
+    }
+}
+
+/// What a payment to a contact from the Shielded or Platform balance takes
+/// and pays (C-funding P13): the typed amount leaves the balance, the
+/// contact receives about `expectedDuffs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactPayQuoteInfo {
+    pub source: PaymentSourceName,
+    /// What leaves the balance: the amount typed.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    /// What the contact receives on Core, about.
+    pub expected_duffs: u64,
+    /// The network fee estimate.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_credits: u64,
+    /// What to authorize: the amount and the fee the payment may take.
+    pub grant: GrantRequest,
+}
+
+impl From<ContactPayQuote> for ContactPayQuoteInfo {
+    fn from(q: ContactPayQuote) -> Self {
+        let ContactPayQuote {
+            source,
+            credits,
+            expected_duffs,
+            fee_credits,
+            grant,
+        } = q;
+        ContactPayQuoteInfo {
+            source: source.into(),
+            credits,
+            expected_duffs,
+            fee_credits,
+            grant: grant.into(),
+        }
+    }
+}
+
+/// The terms of `contactPay`: what leaves which balance, and the note kept
+/// in this wallet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactPayArgs {
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    pub source: PaymentSourceName,
+    pub note: Option<String>,
+    /// Spend from a shielded account whose last scan is not on record.
+    pub confirm_unrecorded: bool,
+}
+
+/// Where a payment from the Shielded or Platform balance stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum PayoutStateName {
+    /// It may have been sent: the contact stays locked.
+    Pending,
+    Sent,
+    /// Proved never to execute.
+    NotSent,
+}
+
+mirror_enum!(PayoutState => PayoutStateName { Pending, Sent, NotSent });
+
+/// `contactPay`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactPayOutcomeInfo {
+    /// The payment's reference: the lock's and the activity row's.
+    pub reference: String,
+    pub state: PayoutStateName,
+}
+
+impl From<ContactPayOutcome> for ContactPayOutcomeInfo {
+    fn from(o: ContactPayOutcome) -> Self {
+        let ContactPayOutcome { reference, state } = o;
+        ContactPayOutcomeInfo {
+            reference,
+            state: state.into(),
         }
     }
 }

@@ -696,7 +696,7 @@ fn engine(e: EngineError) -> NameError {
     PlatformError::from(e).into()
 }
 
-async fn platform_wallet(
+pub(super) async fn platform_wallet(
     manager: &Manager,
     wallet_id: WalletId,
 ) -> Result<Arc<PlatformWallet>, PlatformError> {

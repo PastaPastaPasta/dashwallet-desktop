@@ -36,6 +36,9 @@ import type { ConsoleOutput } from "./ConsoleOutput";
 import type { ContactActivityPage } from "./ContactActivityPage";
 import type { ContactDetailInfo } from "./ContactDetailInfo";
 import type { ContactList } from "./ContactList";
+import type { ContactPayArgs } from "./ContactPayArgs";
+import type { ContactPayOutcomeInfo } from "./ContactPayOutcomeInfo";
+import type { ContactPayQuoteInfo } from "./ContactPayQuoteInfo";
 import type { ContactQueryArgs } from "./ContactQueryArgs";
 import type { ContactRecipient } from "./ContactRecipient";
 import type { ContactRequestOutcome } from "./ContactRequestOutcome";
@@ -152,6 +155,7 @@ import type { PrivateContactDetails } from "./PrivateContactDetails";
 import type { ProTxKeys } from "./ProTxKeys";
 import type { ProTxOperation } from "./ProTxOperation";
 import type { ProfileEditArgs } from "./ProfileEditArgs";
+import type { ProjectLinkName } from "./ProjectLinkName";
 import type { ProposalDetail } from "./ProposalDetail";
 import type { ProposalDraft } from "./ProposalDraft";
 import type { ProposalPreview } from "./ProposalPreview";
@@ -296,6 +300,14 @@ export function setUiSettings(settings: UiSettings): Promise<UiSettings> {
  */
 export function openReleasesPage(): Promise<null> {
   return invoke<null>("open_releases_page");
+}
+
+/**
+ * Opens one of the project pages About links to, in the system browser.
+ * The renderer names the page; its URL is fixed in Rust.
+ */
+export function openProjectLink(link: ProjectLinkName): Promise<null> {
+  return invoke<null>("open_project_link", { link });
 }
 
 /**
@@ -1018,7 +1030,10 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
  * and a rescan give that evidence.
  * Any transaction is refused (`instantLocked`, or `confirmed`) when
  * abandoning it would also take one the history holds as InstantSend-
- * locked (or in a block).
+ * locked (or in a block). One that is not InstantSend-locked itself is
+ * refused (`settledDescendant`) when a later transaction spending from
+ * it is InstantSend-locked, in a block or finalized, unless a ChainLocked
+ * spend of one of its inputs beat it and those are only locked (#446).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1038,8 +1053,9 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
  * wallet (every wallet when `walletId` is `null`) that Abandon would,
  * InstantSend-locked ones only under its ChainLock exception, then
  * rescans once, from the lowest funding height of them all. One the
- * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says)
- * is skipped.
+ * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
+ * or that a settled later transaction holds (`settledDescendant`), is
+ * skipped.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
@@ -2370,6 +2386,23 @@ export function resolveContactPaymentLock(walletId: string, identity: string, co
 }
 
 /**
+ * What paying `credits` to `contact` from the Shielded or Platform
+ * balance takes and pays; `core` is a send draft's.
+ */
+export function contactPayQuote(walletId: string, identity: string, contact: string, credits: string, source: PaymentSourceName): Promise<ContactPayQuoteInfo> {
+  return invoke<ContactPayQuoteInfo>("contact_pay_quote", { walletId, identity, contact, credits, source });
+}
+
+/**
+ * Pays `credits` to `contact` from the Shielded or Platform balance
+ * under `grant`, a `platformOp` grant or a `contactPayFromBalance`
+ * lease; `note` stays in this wallet.
+ */
+export function contactPay(walletId: string, identity: string, contact: string, payment: ContactPayArgs, grant: string): Promise<ContactPayOutcomeInfo> {
+  return invoke<ContactPayOutcomeInfo>("contact_pay", { walletId, identity, contact, payment, grant });
+}
+
+/**
  * The payments with `contact`, newest first; `cursor` is the previous
  * page's `nextCursor`.
  */
@@ -3172,6 +3205,7 @@ export type CommandArgs = {
   ui_settings: {  };
   set_ui_settings: { settings: UiSettings };
   open_releases_page: {  };
+  open_project_link: { link: ProjectLinkName };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   switch_network: { network: ChosenNetwork };
@@ -3425,6 +3459,8 @@ export type CommandArgs = {
   dashpay_verify_scanned: { walletId: string; text: string };
   contact_payment_lock: { walletId: string; identity: string; contact: string };
   resolve_contact_payment_lock: { walletId: string; identity: string; contact: string };
+  contact_pay_quote: { walletId: string; identity: string; contact: string; credits: string; source: PaymentSourceName };
+  contact_pay: { walletId: string; identity: string; contact: string; payment: ContactPayArgs; grant: string };
   contact_activity: { walletId: string; identity: string; contact: string; cursor: string | null; filter: ActivityFilterName };
   frequent_contacts: { walletId: string; identity: string; limit: number };
   dashpay_events: { walletId: string; identity: string; cursor: number | null; limit: number };
@@ -3528,6 +3564,7 @@ export type CommandResults = {
   ui_settings: UiSettings;
   set_ui_settings: UiSettings;
   open_releases_page: null;
+  open_project_link: null;
   probe_unlisted: string;
   open_network: OpenedNetwork;
   switch_network: NetworkSwitch;
@@ -3781,6 +3818,8 @@ export type CommandResults = {
   dashpay_verify_scanned: ScannedContactInfo;
   contact_payment_lock: PaymentLockInfo | null;
   resolve_contact_payment_lock: LockResolutionName;
+  contact_pay_quote: ContactPayQuoteInfo;
+  contact_pay: ContactPayOutcomeInfo;
   contact_activity: ContactActivityPage;
   frequent_contacts: Array<ContactSummaryInfo>;
   dashpay_events: DashPayEventPage;
@@ -3886,6 +3925,7 @@ export const COMMANDS: Record<CommandName, string> = {
   ui_settings: "app",
   set_ui_settings: "app",
   open_releases_page: "app",
+  open_project_link: "app",
   probe_unlisted: "app",
   open_network: "network",
   switch_network: "network",
@@ -4139,6 +4179,8 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_verify_scanned: "social",
   contact_payment_lock: "social",
   resolve_contact_payment_lock: "social",
+  contact_pay_quote: "social",
+  contact_pay: "social",
   contact_activity: "social",
   frequent_contacts: "social",
   dashpay_events: "social",

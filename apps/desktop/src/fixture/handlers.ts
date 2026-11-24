@@ -44,7 +44,7 @@ import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { masternodesHandlers } from "./masternodes";
-import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers, shieldedQuote } from "./registration";
+import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedQuote } from "./registration";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
@@ -64,6 +64,13 @@ export interface Ctx {
 }
 
 export type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
+
+/** dw-app's `ProjectLinkName::url` table, for the fixture's failed opens. */
+const PROJECT_LINKS = {
+  sourceCode: "https://github.com/PastaPastaPasta/dashwallet-desktop",
+  issues: "https://github.com/PastaPastaPasta/dashwallet-desktop/issues",
+  website: "https://www.dash.org",
+} as const;
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
@@ -735,6 +742,11 @@ export const HANDLERS: Handlers = {
     world.releasesOpened = (world.releasesOpened ?? 0) + 1;
     return null;
   },
+  open_project_link: ({ link }, { world }) => {
+    world.linksOpened = [...(world.linksOpened ?? []), link];
+    if (world.linkOpenFails) throw fail("app.browser_open", "no browser", { kind: "link", url: PROJECT_LINKS[link] });
+    return null;
+  },
   protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
   open_network: (_, { world }) => {
     // Row 74: the network a failed switch left did not reopen; the splash's Retry opens it.
@@ -1080,10 +1092,12 @@ export const HANDLERS: Handlers = {
         availableDuffs: 0,
         grant: { maxDuffs: 0, maxCredits: String(plan.credits) },
         readiness: null,
+        platform: null,
       };
     }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     if (funding.kind === "shielded") return shieldedQuote(label, world.pending.shielded);
+    if (funding.kind === "platformAddresses") return platformQuote(label, world.pending.platform, world.launch.network.kind === "mainnet");
     const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label);
     return {
       contested,
@@ -1095,6 +1109,7 @@ export const HANDLERS: Handlers = {
       // D30: one duff past the total for a lock, the identity step's proof authority (registration.rs).
       grant: { maxDuffs: funding.kind === "coreBalance" ? totalDuffs + 1 : totalDuffs, maxCredits: String(credits) },
       readiness: null,
+      platform: null,
     };
   },
   search_users: ({ walletId, prefix, limit }, { world }) => {

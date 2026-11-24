@@ -4,7 +4,7 @@
 
 use crate::bridge::RecentNotice;
 use crate::dto::LaunchInfo;
-use crate::error::{AppCode, AppError};
+use crate::error::{AppCode, AppError, ErrorData};
 use crate::ipc::commands;
 use crate::settings::{self, UiSettings};
 
@@ -13,6 +13,29 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 /// The repository's GitHub releases page, built in Rust so the renderer has
 /// no opener or shell grant (`open_releases_page`).
 pub(crate) const RELEASES_URL: &str = "https://github.com/PastaPastaPasta/dashwallet-desktop/releases";
+
+/// The project pages Settings ▸ About links to. The renderer names one; the
+/// URL is fixed here, so it cannot open anything else (`open_project_link`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectLinkName {
+    /// The source code.
+    SourceCode,
+    /// Where problems are reported (support).
+    Issues,
+    /// Dash's website.
+    Website,
+}
+
+impl ProjectLinkName {
+    pub(crate) fn url(self) -> &'static str {
+        match self {
+            Self::SourceCode => "https://github.com/PastaPastaPasta/dashwallet-desktop",
+            Self::Issues => "https://github.com/PastaPastaPasta/dashwallet-desktop/issues",
+            Self::Website => "https://www.dash.org",
+        }
+    }
+}
 
 /// Opens `url`, a page under [`RELEASES_URL`], in the system browser.
 pub(crate) async fn open_official(url: String) -> Result<(), AppError> {
@@ -90,10 +113,42 @@ commands! {
         open_official(RELEASES_URL.into()).await
     }
 
+    /// Opens one of the project pages About links to, in the system browser.
+    /// The renderer names the page; its URL is fixed in Rust.
+    #[facade()]
+    fn open_project_link(state, link: ProjectLinkName) -> () {
+        let _ = state;
+        let url = link.url();
+        let failed = |e: String| AppError::app(AppCode::BrowserOpen, e).with(ErrorData::Link { url: url.into() });
+        tauri::async_runtime::spawn_blocking(move || open::that_detached(url))
+            .await
+            .map_err(|e| failed(e.to_string()))?
+            .map_err(|e| failed(e.to_string()))
+    }
+
     /// Registered but granted by no capability: the U6 probe that the ACL
     /// refuses an unlisted command (`api::UNGRANTED`).
     #[facade()]
     fn probe_unlisted(state) -> String {
         Ok("reached".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProjectLinkName;
+
+    /// The renderer's fixture answers a failed open with these URLs; they must stay this table's.
+    #[test]
+    fn the_fixture_names_the_same_project_urls() {
+        let fixture = include_str!("../../../../../apps/desktop/src/fixture/handlers.ts");
+        for (name, link) in [
+            ("sourceCode", ProjectLinkName::SourceCode),
+            ("issues", ProjectLinkName::Issues),
+            ("website", ProjectLinkName::Website),
+        ] {
+            let line = format!("{name}: \"{}\",", link.url());
+            assert!(fixture.contains(&line), "fixture PROJECT_LINKS is missing `{line}`");
+        }
     }
 }

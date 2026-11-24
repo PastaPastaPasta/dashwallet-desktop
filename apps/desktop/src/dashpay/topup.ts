@@ -10,7 +10,10 @@ import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { CostTable } from "../api/generated/CostTable";
 import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
+import type { TopUpFromPlatformOutcome } from "../api/generated/TopUpFromPlatformOutcome";
 import type { TopUpOutcome } from "../api/generated/TopUpOutcome";
+import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
+import { CREDITS_PER_DUFF } from "../api/pending";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { messageTable, t } from "../i18n";
@@ -19,7 +22,7 @@ import { COPY, withTable } from "./status";
 
 export type TopUpApi = Pick<
   Backend,
-  "creditsTopUp" | "creditsResumeTopUp" | "creditsResolveTopUp" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
+  "creditsTopUp" | "creditsTopUpFromPlatform" | "creditsResumeTopUp" | "creditsResolveTopUp" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
 >;
 
 /** D5: the presets (duffs) and the custom amount's floor. */
@@ -61,8 +64,14 @@ export const TOPUP_COPY = withTable(messageTable("dashpay.topUp", ["title", "don
 
 export type TopUpStep = "amount" | "confirm" | "running" | "done" | "refused";
 
-/** Which amount T1 has chosen. */
-export type AmountChoice = { kind: "preset"; duffs: number } | { kind: "other"; text: string };
+/** Which amount T1 has chosen; `max` only when paying from Platform. */
+export type AmountChoice = { kind: "preset"; duffs: number } | { kind: "other"; text: string } | { kind: "max" };
+
+/** Where the top-up is paid from (C-routes D-C3): the Dash wallet, or the Platform addresses. */
+export type TopUpSource = "core" | "platform" | "shielded";
+
+/** What a top-up from Platform asks for: `duffs` in credits, or everything (`null`). */
+export const platformAmount = (duffs: number | null): WithdrawAmount => (duffs === null ? { kind: "all" } : { kind: "credits", credits: String(BigInt(duffs) * CREDITS_PER_DUFF) });
 
 /** The outcome screens (T4–T7), and the result line of a pending row's Finish. */
 export function outcomeText(o: TopUpOutcome, balance: (credits: string) => string): { title: string; text: string } {
@@ -162,9 +171,13 @@ export class TopUpFlow extends Model {
   /** The identity the flow tops up. */
   identity: string | null = null;
   choice: AmountChoice = { kind: "preset", duffs: PRESETS[0] };
-  /** The amount the confirm step quotes. */
+  /** "Pay with": the Dash wallet every time the sheet opens, never kept (C3-8). */
+  source: TopUpSource = "core";
+  /** The amount the confirm step quotes; `null` with `source` Platform is Max. */
   duffs: number | null = null;
   outcome: TopUpOutcome | null = null;
+  /** A top-up from Platform's result. */
+  platformOutcome: TopUpFromPlatformOutcome | null = null;
   error: unknown = null;
   /** `top_up` runs (D14); the grant is asked for under it too. */
   running = false;
@@ -202,8 +215,10 @@ export class TopUpFlow extends Model {
     this.identity = identity;
     this.step = "amount";
     this.choice = { kind: "preset", duffs: PRESETS[0] };
+    this.source = "core";
     this.duffs = null;
     this.outcome = null;
+    this.platformOutcome = null;
     this.error = null;
     this.changed();
   }
@@ -213,8 +228,16 @@ export class TopUpFlow extends Model {
     this.changed();
   }
 
-  /** T1 → T2 for an amount the screen has checked against the floor. */
-  next(duffs: number) {
+  /** "Pay with". Max is Platform's alone: leaving Platform goes back to the first preset. */
+  chooseSource(source: TopUpSource) {
+    if (this.running) return;
+    this.source = source;
+    if (source !== "platform" && this.choice.kind === "max") this.choice = { kind: "preset", duffs: PRESETS[0] };
+    this.changed();
+  }
+
+  /** T1 → T2 for an amount the screen has checked against the floor; `null`: Max from Platform. */
+  next(duffs: number | null) {
     this.duffs = duffs;
     this.step = "confirm";
     this.error = null;
@@ -259,10 +282,11 @@ export class TopUpFlow extends Model {
   /** Confirm & pay: the quote's grant, then `top_up` (one call at a time, D14). */
   async pay(grant: GrantRequest): Promise<void> {
     const { identity, duffs } = this;
-    if (this.running || this.rowRunning !== null || identity === null || duffs === null) return;
+    if (this.running || this.rowRunning !== null || identity === null || duffs === null || this.source !== "core") return;
     let ran = false;
     this.running = true;
     this.error = null;
+    this.platformOutcome = null;
     this.changed();
     try {
       const got = await this.grants.withGrant(platformOp(grant), this.walletId, (g: AuthGrant) => {
@@ -282,6 +306,37 @@ export class TopUpFlow extends Model {
       this.running = false;
       // A cancelled passphrase ran nothing: nothing to read again.
       if (ran) this.#settled(this.step === "done" ? this.outcome : null);
+      this.changed();
+    }
+  }
+
+  /** Confirm & pay from Platform: the quote's grant, then `top_up_from_platform` of the quoted
+   * credits, Max included, so the engine credits what Confirm showed or refuses. */
+  async payFromPlatform({ credits, grant }: { credits: string; grant: GrantRequest }): Promise<void> {
+    const { identity } = this;
+    if (this.running || this.rowRunning !== null || identity === null || this.source !== "platform") return;
+    let ran = false;
+    this.running = true;
+    this.error = null;
+    this.platformOutcome = null;
+    this.changed();
+    try {
+      const got = await this.grants.withGrant(platformOp(grant), this.walletId, (g: AuthGrant) => {
+        ran = true;
+        this.step = "running";
+        this.changed();
+        return this.api.creditsTopUpFromPlatform(this.walletId, identity, { kind: "credits", credits }, g.id);
+      });
+      if (got) {
+        this.platformOutcome = got.value;
+        this.step = "done";
+      } else this.step = "confirm";
+    } catch (e) {
+      this.error = e;
+      this.step = "refused";
+    } finally {
+      this.running = false;
+      if (ran) this.#settled(null);
       this.changed();
     }
   }

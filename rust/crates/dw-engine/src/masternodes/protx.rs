@@ -46,6 +46,23 @@ use crate::{EngineError, NetworkSession, WalletId};
 /// Change pays a P2PKH script (a fresh BIP44 internal address, D2).
 pub(crate) const CHANGE_LEN: usize = 25;
 
+/// ProRegTx and ProUpRegTx sends, the shared masternode's among them, stay
+/// off on mainnet until #438's conditions are met: every call that locks a
+/// coin, takes a grant or hands such a transaction off refuses there
+/// first, with
+/// `masternodes.unsupported{feature: "protx_sending", field: "mainnet"}`.
+/// Previews, discards and the exits (abandon, dissolution, standby) are not
+/// affected.
+pub(super) fn require_protx_sending(s: &NetworkSession) -> Result<(), MasternodesError> {
+    if s.network.core_network() == dashcore::Network::Mainnet {
+        return Err(MasternodesError::Unsupported {
+            feature: "protx_sending".into(),
+            field: Some("mainnet".into()),
+        });
+    }
+    Ok(())
+}
+
 impl Masternodes {
     /// [`Self::op`], with a `wallet_not_found` that doesn't repeat the
     /// caller's 64 hex (MG-03 D23).
@@ -124,6 +141,7 @@ impl Masternodes {
         request: RegistrationRequest,
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         if matches!(request.collateral, CollateralChoice::External { .. }) {
             return Err(EngineError::InvalidArgument(
                 "an external collateral is registered with prepare_external_registration".into(),
@@ -283,6 +301,7 @@ impl Masternodes {
         wallet: WalletId,
         request: RegistrationRequest,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         if !matches!(request.collateral, CollateralChoice::External { .. }) {
             return Err(EngineError::InvalidArgument(
                 "only an external collateral is prepared; register the others".into(),
@@ -319,6 +338,7 @@ impl Masternodes {
         signature: String,
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_operation(wallet, &operation)?;
@@ -426,6 +446,7 @@ impl Masternodes {
         wallet: WalletId,
         operation: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_operation(wallet, &operation)?;
@@ -563,6 +584,7 @@ impl Masternodes {
         request: UpdateRegistrarRequest,
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             update::check_update_request(&request, s.network.core_network())?;
@@ -703,6 +725,9 @@ impl Masternodes {
             );
             if shared {
                 sending?;
+            }
+            if kind_of(&row.kind) != ProTxOperationKind::Dissolve {
+                require_protx_sending(&s)?;
             }
             // An update resends only while no other update of its
             // masternode would race it, held against a new update (D43, D49;

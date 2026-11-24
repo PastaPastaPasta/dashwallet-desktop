@@ -123,6 +123,9 @@ const PRO_TX: [u8; 32] = [
 ];
 const OWNER_SECRET: [u8; 32] = [0x07; 32];
 const PAYOUT_SECRET: [u8; 32] = [0x09; 32];
+/// Not the payout key. A P2SH over the payout key's hash160 is the same 20
+/// bytes Drive pays as P2PKH, so a test cannot tell the two scripts apart.
+const P2SH_SECRET: [u8; 32] = [0x5a; 32];
 const WALLET: [u8; 32] = [0x31; 32];
 const DASH: u64 = 100_000_000_000;
 const AMOUNT: u64 = DASH;
@@ -192,6 +195,16 @@ fn disabled(mut k: IdentityPublicKey) -> IdentityPublicKey {
 
 fn payout_script() -> CoreScript {
     CoreScript::new_p2pkh(hash_of(&PAYOUT_SECRET))
+}
+
+/// The 20 bytes of a P2SH payout, distinct from the payout key's hash160.
+fn p2sh_hash() -> [u8; 20] {
+    hash_of(&P2SH_SECRET)
+}
+
+/// A P2SH payout over [`p2sh_hash`].
+fn p2sh_payout() -> CoreScript {
+    CoreScript::new_p2sh(p2sh_hash())
 }
 
 fn masternode_identity(pro_tx: &[u8; 32], keys: Vec<IdentityPublicKey>) -> Identity {
@@ -620,6 +633,8 @@ struct Scene {
     work: Arc<Background>,
     /// Runs in the next app database call, on its blocking thread.
     pause: Arc<Mutex<Option<Hook>>>,
+    /// The masternode's payouts in the wallets' history.
+    changes: Mutex<Vec<PayoutChange>>,
 }
 
 impl Scene {
@@ -635,6 +650,7 @@ impl Scene {
             alarms: Mutex::default(),
             work: Arc::default(),
             pause: Arc::default(),
+            changes: Mutex::default(),
         }
     }
 
@@ -679,7 +695,7 @@ impl Env for Scene {
     }
 
     fn payout_changes(&self, _: &[u8; 32]) -> Vec<PayoutChange> {
-        Vec::new()
+        self.changes.lock().unwrap().clone()
     }
 
     fn waits(&self) -> Waits {
@@ -1125,6 +1141,7 @@ fn with_no_window_every_payout_change_counts() {
         vec![PayoutChange {
             script: paid.clone(),
             height,
+            registration: false,
         }]
     };
     let paying = proved(Some(masternode_identity(&PRO_TX, vec![payout_key(0)])));
@@ -1571,6 +1588,139 @@ async fn a_recheck_resends_only_the_open_siblings_stored_bytes_identical() {
             .count(),
         1
     );
+}
+
+/// The payout in the wallets' history moved to P2SH after an owner-key
+/// record was signed: Drive takes the destination at execution, so sending
+/// it again would pay the P2PKH of the P2SH's 20 bytes. It is held while
+/// Drive's window pays P2PKH, and sent again once the window pays the P2SH
+/// script or the payout is P2PKH again.
+#[tokio::test]
+async fn an_owner_key_record_is_not_sent_again_while_the_payout_is_p2sh() {
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    let row = f.withdraw(Owner, AMOUNT).await.unwrap();
+    let payout = |script: CoreScript| PayoutChange {
+        script: Some(script.as_bytes().to_vec()),
+        height: Some(TIP - 1),
+        registration: false,
+    };
+    *f.scene.changes.lock().unwrap() = vec![payout(p2sh_payout())];
+    let sent = f.plat.sent().len();
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent, "held");
+    assert!(f.row(&row.signed.id).state.is_open());
+    // Step 1's identity read passes; the hold's own read, after the nonce
+    // read, fails rule 5: held too.
+    let plat = Arc::clone(&f.plat);
+    *f.plat.hook.lock().unwrap() = Some((
+        Read::Nonce,
+        Box::new(move || plat.deviate(Read::Identity, Dev::Unverified, ALWAYS)),
+    ));
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent, "held on an unverified read");
+    f.plat.calm();
+    // Drive's window pays the P2SH script: sent again.
+    f.plat.identity_mut(|i| {
+        let sh = key(
+            0,
+            Purpose::TRANSFER,
+            KeyType::BIP13_SCRIPT_HASH,
+            &p2sh_hash(),
+        );
+        i.public_keys_mut().insert(0, sh);
+    });
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent + 1);
+    assert_eq!(f.plat.sent().last().unwrap(), &row.signed.signed_bytes);
+
+    // The payout P2PKH again, Drive's window P2PKH: sent again.
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    f.withdraw(Owner, AMOUNT).await.unwrap();
+    *f.scene.changes.lock().unwrap() = vec![
+        payout(p2sh_payout()),
+        PayoutChange {
+            height: Some(TIP),
+            ..payout(payout_script())
+        },
+    ];
+    let sent = f.plat.sent().len();
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent + 1);
+}
+
+/// The payout was changed back to P2PKH, but Drive still pays the P2PKH of
+/// the P2SH's 20 bytes until Platform picks the new payout up. An
+/// unconfirmed change, and one mined above the proof's core height, both
+/// leave the open owner-key record unsent. Once the window pays that
+/// P2PKH, the stored bytes go again at the same nonce.
+#[tokio::test]
+async fn an_owner_key_record_is_not_sent_again_until_platform_pays_the_changed_payout() {
+    let f = fx();
+    assert_ne!(p2sh_hash(), hash_of(&PAYOUT_SECRET));
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    let row = f.withdraw(Owner, AMOUNT).await.unwrap();
+    let stored = row.signed.signed_bytes.clone();
+    // Drive's window pays the P2PKH of the mined P2SH's 20 bytes.
+    f.plat.identity_mut(|i| {
+        let unspendable = key(0, Purpose::TRANSFER, KeyType::ECDSA_HASH160, &p2sh_hash());
+        i.public_keys_mut().insert(0, unspendable);
+    });
+    let change = |script: CoreScript, height: Option<u32>| PayoutChange {
+        script: Some(script.as_bytes().to_vec()),
+        height,
+        registration: false,
+    };
+    *f.scene.changes.lock().unwrap() = vec![
+        change(p2sh_payout(), Some(TIP - 1)),
+        change(payout_script(), None),
+    ];
+    let sent = f.plat.sent().len();
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(
+        f.plat.sent().len(),
+        sent,
+        "held while the change is unconfirmed"
+    );
+    assert!(f.row(&row.signed.id).state.is_open());
+
+    // Mined, still above the proof's core height: Platform has not picked it up.
+    f.scene.changes.lock().unwrap().last_mut().unwrap().height = Some(TIP + 1);
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(
+        f.plat.sent().len(),
+        sent,
+        "held while the change is above the proof"
+    );
+
+    // The window pays the new P2PKH: sent again, the same bytes and nonce.
+    f.plat.identity_mut(|i| {
+        i.public_keys_mut().insert(0, payout_key(0));
+    });
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent + 1);
+    assert_eq!(f.plat.sent().last().unwrap(), &stored);
+    let again = f.row(&row.signed.id);
+    assert_eq!(again.signed.nonce, row.signed.nonce);
+    assert_eq!(again.signed.signed_bytes, stored);
+}
+
+/// A payout-key record names its own script: a P2SH payout doesn't hold
+/// it.
+#[tokio::test]
+async fn a_payout_key_record_is_sent_again_whatever_the_payout() {
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    f.withdraw(Payout, AMOUNT).await.unwrap();
+    *f.scene.changes.lock().unwrap() = vec![PayoutChange {
+        script: Some(p2sh_payout().as_bytes().to_vec()),
+        height: Some(TIP - 1),
+        registration: false,
+    }];
+    let sent = f.plat.sent().len();
+    assert_eq!(f.recheck(3).await, Outcome::Pending);
+    assert_eq!(f.plat.sent().len(), sent + 1);
 }
 
 #[tokio::test]
