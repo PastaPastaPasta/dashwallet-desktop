@@ -30,9 +30,9 @@ async function typed(page: Page, route: TransferRoute, amount: string) {
   await expect(page.getByTestId("transfer-fee")).toContainText(/\p{Nd}/u);
 }
 
-const AMOUNT = { coreToShielded: "0.001", shieldedToCore: "0.5", coreToPlatform: "0.5", platformToCore: "" } as const;
-const GO = { coreToShielded: "shielded-go", shieldedToCore: "shielded-go", coreToPlatform: "platform-fund-go", platformToCore: "platform-move-go" } as const;
-const BODY = { coreToShielded: "shielded-body", shieldedToCore: "shielded-body", coreToPlatform: "platform-fund-body", platformToCore: "platform-move-body" } as const;
+const AMOUNT = { coreToShielded: "0.001", shieldedToCore: "0.5", shieldedToPlatform: "0.5", coreToPlatform: "0.5", platformToCore: "" } as const;
+const GO = { coreToShielded: "shielded-go", shieldedToCore: "shielded-go", shieldedToPlatform: "shielded-go", coreToPlatform: "platform-fund-go", platformToCore: "platform-move-go" } as const;
+const BODY = { coreToShielded: "shielded-body", shieldedToCore: "shielded-body", shieldedToPlatform: "shielded-body", coreToPlatform: "platform-fund-body", platformToCore: "platform-move-body" } as const;
 
 /** Through Continue to the route's own confirmation, its quote read. */
 async function confirm(page: Page, route: TransferRoute) {
@@ -114,12 +114,22 @@ const STATES: Record<string, State> = {
   unsupported: {
     scenario: "funded",
     go: async (page) => {
+      await openTransfer(page, "platformToCore");
+      await page.getByTestId("transfer-to").click();
+      await page.getByTestId("transfer-picker-shielded").click();
+      await expect(page.getByTestId("transfer-unavailable")).toBeVisible();
+    },
+  },
+  "unsupported-mainnet": {
+    scenario: "transfer-mainnet",
+    go: async (page) => {
       await openTransfer(page, "shieldedToCore");
       await page.getByTestId("transfer-to").click();
       await page.getByTestId("transfer-picker-platform").click();
       await expect(page.getByTestId("transfer-unavailable")).toBeVisible();
     },
   },
+  "form-shieldedToPlatform": { scenario: "funded", go: (page) => typed(page, "shieldedToPlatform", "0.5") },
   "none-absent": {
     scenario: "pools-absent",
     go: async (page) => {
@@ -148,6 +158,9 @@ const STATES: Record<string, State> = {
   "shielded-waiting": { scenario: "transfer-shield-waiting", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "out-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "shieldedToCore") },
   "out-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "shieldedToCore") },
+  "toPlatform-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "shieldedToPlatform") },
+  "toPlatform-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "shieldedToPlatform") },
+  "toPlatform-may-be-out": { scenario: "funded", extra: "&fail=unshield_to_platform:artifact", routeHeader: true, go: (page) => run(page, "shieldedToPlatform") },
   "fund-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "coreToPlatform") },
   "fund-progress": {
     scenario: "funded",
