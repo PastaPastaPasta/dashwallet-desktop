@@ -1136,12 +1136,15 @@ impl NetworkSession {
         // start if it is below.
         // A refused attach puts back the lookahead row, the birth and the
         // marker it replaced, in that order: an exit in between leaves a
-        // replay owed. A failed seed write puts back none of them: the vault
+        // replay owed. A seed write the vault refuses before writing (no
+        // vault, locked, unlocked for mixing only) is refused the same way;
+        // any other failed seed write puts back none of them, as the vault
         // may hold the seed all the same. Keys attached alone with a birth
         // below the wallet's, or to a wallet that still owes a replay, replay
         // from the earlier start the same way, except for a backup restore
-        // (`restore_one`), which lowers and rewinds a wallet that was there
-        // before only when its bundle carries Dash Core's counters.
+        // (`restore_one`), which can still roll back: it lowers the birth of
+        // a wallet that was there before, and rewinds one synced past its
+        // start, only when its bundle carries Dash Core's counters.
         let birth = birth_checkpoint(&manager, wallet_id).await;
         let owed = if registered && state.rows.is_none() {
             let marker = self.wide_scan(wallet_id).await;
@@ -1257,8 +1260,19 @@ impl NetworkSession {
                 Ok(existed) => existed,
                 Err(e) => {
                     if registered {
-                        if let Some(prior) = prior {
-                            self.restore_imported_state(prior).await;
+                        // Core's rows left stored keep the replay owed.
+                        let restored = match prior {
+                            Some(prior) => self.restore_imported_state(prior).await,
+                            None => true,
+                        };
+                        let refused = matches!(
+                            e,
+                            EngineError::Vault(
+                                VaultError::NoVault | VaultError::Locked | VaultError::MixingOnly
+                            )
+                        );
+                        if refused && restored {
+                            self.undo_attach(wallet_id, undo.0, undo.1, undo.2).await;
                         }
                     } else {
                         self.record_removed_again(held, wallet_id).await;

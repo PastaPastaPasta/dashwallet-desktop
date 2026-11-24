@@ -4360,10 +4360,12 @@ fn keys_attached_with_an_earlier_birth_that_are_refused_put_the_birth_back() {
     assert_eq!(replay_record(&engine, &session, id), None);
 }
 
-/// An attach whose seed write fails keeps the lower birth and the replay it
-/// marked: the vault may hold the seed all the same (a failed directory
-/// sync or read-back after the write), and the next open replays from the
-/// lower start, with the keys or without them.
+/// An attach whose seed write fails other than by the vault refusing it
+/// before writing keeps the lower birth and the replay it marked: the
+/// vault may hold the seed all the same (a failed directory sync or
+/// read-back after the write), and the next open replays from the lower
+/// start, with the keys or without them. A refusal before any write puts
+/// them back (`an_attach_the_vault_refuses_leaves_nothing_behind`).
 #[test]
 fn keys_attached_whose_seed_write_fails_keep_the_lower_birth_and_the_replay() {
     use dw_vault::fault::Fault;
