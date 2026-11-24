@@ -11,7 +11,7 @@ import type { RescanStatus } from "../api/generated/RescanStatus";
 import type { StuckShieldFunding } from "../api/generated/StuckShieldFunding";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { DEFAULT_PREFS, ui } from "../app/ui";
-import { appError, WALLET_A } from "../onboarding/testWorld";
+import { appError, summary, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "./testApi";
 import { GrantModel } from "./grant";
 import { RepairModel, RepairText, shieldBlockedText, stuckFundingText } from "./repair";
@@ -71,6 +71,7 @@ function setup(lock = {}) {
       return null;
     }),
     dropUnconfirmed: vi.fn(async () => 2),
+    listWallets: vi.fn(async () => [summary(WALLET_A, "Savings"), summary("b2".repeat(32), "Spending")]),
     registrations: vi.fn(async () => [reg("r1", "fundingUnknown"), reg("r2", "instantSend")]),
     resolveStuckFunding: vi.fn(async (walletId: string, step: string, grant: string) => {
       calls.push(`resolve ${walletId.slice(0, 2)} ${step} ${grant}`);
@@ -164,6 +165,17 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(model.state).toEqual({ kind: "done", text: "2 transactions were removed; a rescan was scheduled." });
     expect(api.dropUnconfirmed).toHaveBeenCalledExactlyOnceWith(WALLET_A);
     expect(RepairText.dropped(1)).toBe("1 transaction was removed; a rescan was scheduled.");
+  });
+
+  it("a Remove Unconfirmed refused while a saved transaction doesn't read says what to do (#611)", async () => {
+    const { model, api } = setup();
+    api.dropUnconfirmed.mockRejectedValueOnce(appError("tx_action_refused", { kind: "txAction", refusal: "recordUnreadable", walletId: WALLET_A }, "engine text"));
+    model.ask("dropUnconfirmed");
+    await model.confirm();
+    expect(model.state).toEqual({
+      kind: "failed",
+      text: "Dash Wallet can't read one of the transaction records in Savings. While Savings is open, Abandon and Remove Unconfirmed are unavailable in every wallet. Closing it in Settings ▸ Wallet makes them available in the others. To fix it, remove Savings there and restore it from its recovery phrase. Its coins come back once the restored wallet syncs. Before you remove it, make sure you have its recovery phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them.",
+    });
   });
 
   it("IOS113_birthHeightAboveTipIsRefused", async () => {

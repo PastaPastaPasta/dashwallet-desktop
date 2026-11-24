@@ -318,6 +318,15 @@ describe("fixture send engine", () => {
       message: "transaction action refused: SettledDescendant",
       data: { kind: "txAction", refusal: "settledDescendant" },
     });
+    clearMocks();
+    installFixture({ scenario: "abandon-record-unreadable-two-wallets" });
+    const unread = "5f".repeat(32);
+    expect(await cmd.txDetailExtras(W, unread)).toMatchObject({ canAbandon: true, abandoned: false });
+    await expect(cmd.abandonTransaction(W, unread)).rejects.toMatchObject({
+      code: "tx_action_refused",
+      data: { kind: "txAction", refusal: "recordUnreadable" },
+    });
+    await expect(cmd.dropUnconfirmed(null)).rejects.toMatchObject({ data: { kind: "txAction", refusal: "recordUnreadable" } });
   });
 
   it("abandons an unconfirmed incoming payment but never resends it", async () => {

@@ -179,6 +179,16 @@ test.describe("Repair", () => {
     await expect(page.getByTestId("repair-confirm")).toHaveCount(0);
   });
 
+  test("Remove Unconfirmed refused while a saved transaction doesn't read says what to do (#611)", async ({ page }) => {
+    await open(page, "abandon-record-unreadable-two-wallets");
+    await tools(page, "repair");
+    await page.getByTestId("repair-drop-unconfirmed").click();
+    await page.getByTestId("repair-confirm-ok").click();
+    await expect(page.getByTestId("repair-outcome")).toHaveText(
+      "Dash Wallet can't read one of the transaction records in Main. While Main is open, Abandon and Remove Unconfirmed are unavailable in every wallet. Closing it in Settings ▸ Wallet makes them available in the others. To fix it, remove Main there and restore it from its recovery phrase. Its coins come back once the restored wallet syncs. Before you remove it, make sure you have its recovery phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them.",
+    );
+  });
+
   test("IOS034: the birth height saves and shows", async ({ page }) => {
     await open(page);
     await tools(page, "repair");

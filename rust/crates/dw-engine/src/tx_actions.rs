@@ -47,26 +47,34 @@ pub enum TxActionRefusal {
     Coinbase,
     InMempool,
     NotSentByWallet,
-    /// The evidence is incomplete: the ChainLock exception (#170 case 14)
-    /// lacks a coin the payment's own spend claim, restored at the wallet's
-    /// load, keeps out of the wallet; or a stored record of any loaded
-    /// wallet didn't read at its load, so what descends from the payment is
-    /// unknown (#611). A restart and a rescan give the evidence.
+    /// The ChainLock exception (#170 case 14) lacks a coin the payment's
+    /// own spend claim, restored at the wallet's load, keeps out of the
+    /// wallet: a restart (which no longer restores it) and a rescan give
+    /// the evidence.
     RescanFirst,
     /// A later transaction that spends from it is InstantSend-locked, in a
     /// block or finalized: the network holds this one too (#446).
     SettledDescendant,
+    /// A stored transaction record of the loaded wallet named didn't read
+    /// at its load, so what descends from the payment is unknown (#611). A
+    /// restart clears it once the record reads; a record that never does
+    /// stays until that wallet is closed, or removed and restored.
+    RecordUnreadable(WalletId),
 }
 
 impl TxActionRefusal {
-    /// The refusal's message: what to do for [`Self::RescanFirst`], the
-    /// refusal's name otherwise.
+    /// The refusal's message: what to do for [`Self::RescanFirst`] and
+    /// [`Self::RecordUnreadable`], the refusal's name otherwise.
     pub fn message(&self) -> String {
         match self {
             Self::RescanFirst => {
                 "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
                     .into()
             }
+            Self::RecordUnreadable(wallet) => format!(
+                "A saved transaction of wallet {wallet} can't be read. Close that wallet, or \
+                 remove it and restore it from its recovery phrase."
+            ),
             other => format!("transaction action refused: {other:?}"),
         }
     }
@@ -735,13 +743,13 @@ fn settled_descendant(
 /// What something settled descends from, walked over every loaded
 /// wallet's transactions at once: what one wallet settled can descend from
 /// another's payment, through transfers between them either way (#611).
-/// `incomplete` when a stored record of any of them didn't read at its
+/// `incomplete`: the first of them a stored record of didn't read at its
 /// load.
 #[derive(Default)]
 struct Settled {
     under: HashSet<Txid>,
     mined: HashSet<Txid>,
-    incomplete: bool,
+    incomplete: Option<WalletId>,
 }
 
 impl NetworkSession {
@@ -749,10 +757,12 @@ impl NetworkSession {
         &self,
         infos: impl IntoIterator<Item = (&'a [u8; 32], &'a ManagedWalletInfo)>,
     ) -> Settled {
-        let (mut known, mut incomplete) = (HashMap::new(), false);
+        let (mut known, mut incomplete) = (HashMap::new(), None);
         for (id, core) in infos {
             (self.hub.history).read(&WalletId(*id), |txs| add_known(&mut known, txs, core));
-            incomplete |= (self.hub.history).read_wallet(&WalletId(*id), |h| h.load_incomplete);
+            if (self.hub.history).read_wallet(&WalletId(*id), |h| h.load_incomplete) {
+                incomplete.get_or_insert(WalletId(*id));
+            }
         }
         let (under, mined) = walk_known(&known);
         Settled {
@@ -1394,8 +1404,10 @@ impl NetworkSession {
         // descends from the root is not known: one settled could be behind
         // it (#611). Only a root the ChainLock exception proved dead, which
         // this wallet's own incomplete load already refuses, goes ahead.
-        if overridden.is_none() && settled.incomplete {
-            return Err(EngineError::TxActionRefused(TxActionRefusal::RescanFirst));
+        if let (None, Some(at)) = (&overridden, settled.incomplete) {
+            return Err(EngineError::TxActionRefused(
+                TxActionRefusal::RecordUnreadable(at),
+            ));
         }
         // A descendant settled anywhere, in this wallet or another loaded
         // one, which the walk passes over: the network holds the root too
@@ -1813,7 +1825,7 @@ impl NetworkSession {
                 }
                 marked.push((id, sent));
             }
-            let mut dropped = 0u32;
+            let (mut dropped, mut unreadable) = (0u32, None);
             for (id, sent) in marked {
                 let proof = this.chain_proof(&manager, id).await;
                 let candidates: Vec<Txid> = this
@@ -1840,6 +1852,13 @@ impl NetworkSession {
                         .await
                     {
                         Ok(set) => done.extend(set),
+                        // Unknown while a record doesn't read: kept, and
+                        // said so once the rest is done (#611).
+                        Err(EngineError::TxActionRefused(
+                            refusal @ TxActionRefusal::RecordUnreadable(_),
+                        )) => {
+                            unreadable = Some(refusal);
+                        }
                         // Settled meanwhile: nothing to drop.
                         Err(EngineError::TxActionRefused(_)) => {}
                         Err(e) => {
@@ -1881,6 +1900,11 @@ impl NetworkSession {
                             this.hub.history.drop_claims(&id, [txid]);
                             done.extend(set);
                         }
+                        Err(EngineError::TxActionRefused(
+                            refusal @ TxActionRefusal::RecordUnreadable(_),
+                        )) => {
+                            unreadable = Some(refusal);
+                        }
                         Err(EngineError::TxActionRefused(_)) => {}
                         Err(e) => {
                             failed = Some(e);
@@ -1895,6 +1919,9 @@ impl NetworkSession {
                 if let Some(e) = failed {
                     return Err(e);
                 }
+            }
+            if let Some(refusal) = unreadable {
+                return Err(EngineError::TxActionRefused(refusal));
             }
             Ok(dropped)
         })

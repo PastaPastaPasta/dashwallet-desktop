@@ -33,7 +33,8 @@ pub struct TxDetailExtras {
     /// ChainLock exception `abandon_transaction` describes holds and its
     /// plan would not refuse as `InstantLocked`, and no settled later
     /// transaction spends from it (`SettledDescendant`). One whose plan
-    /// refuses with `RescanFirst` stays enabled: that refusal says what to do.
+    /// refuses with `RescanFirst` or `RecordUnreadable` stays enabled: that
+    /// refusal says what to do.
     pub can_abandon: bool,
     /// dash-qt "Resend transaction" enablement (§4.5 item 9): unconfirmed,
     /// not abandoned, not coinbase, no InstantSend lock, sent by this wallet.
@@ -62,6 +63,10 @@ pub enum TxActionRefusal {
     /// A later transaction that spends from it is already locked or
     /// confirmed, so this one will confirm too.
     SettledDescendant,
+    /// A saved transaction of a loaded wallet didn't read at its load, so
+    /// what descends from this one is unknown: closing that wallet, or
+    /// removing and restoring it, clears it.
+    RecordUnreadable,
 }
 
 /// One row of a transaction notification (QT-031): one per dash-qt record,
@@ -151,6 +156,7 @@ impl From<dw_engine::TxActionRefusal> for TxActionRefusal {
             R::NotSentByWallet => Self::NotSentByWallet,
             R::RescanFirst => Self::RescanFirst,
             R::SettledDescendant => Self::SettledDescendant,
+            R::RecordUnreadable(_) => Self::RecordUnreadable,
         }
     }
 }
@@ -228,6 +234,9 @@ impl NetworkSession {
     /// refused (`SettledDescendant`) when a later transaction spending from
     /// it is InstantSend-locked, in a block or finalized, unless a ChainLocked
     /// spend of one of its inputs beat it and those are only locked (#446).
+    /// One not under the ChainLock exception is refused (`RecordUnreadable`)
+    /// while a saved transaction of any loaded wallet didn't read at its
+    /// load (#611).
     /// Emits `HistoryChanged` and `Balances`.
     pub async fn abandon_transaction(
         &self,
@@ -260,7 +269,9 @@ impl NetworkSession {
     /// the lowest funding height of the coins they all spent. One the
     /// exception refuses (`InstantLocked` or `RescanFirst`, as
     /// `abandon_transaction` says), or that a settled later transaction
-    /// holds (`SettledDescendant`), is skipped. Needs a running SPV client.
+    /// holds (`SettledDescendant`), is skipped. One refused as
+    /// `RecordUnreadable` is kept too, and the call then fails with that
+    /// refusal. Needs a running SPV client.
     /// Returns how many transactions were dropped.
     pub async fn drop_unconfirmed(&self, wallet_id: Option<String>) -> Result<u32, TxActionError> {
         let id = wallet_id.as_deref().map(parse_wallet_id).transpose()?;

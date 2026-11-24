@@ -875,6 +875,19 @@ test.describe("Activity", () => {
     expect(errors).toEqual([]);
   });
 
+  test("a recordUnreadable refusal says a saved transaction doesn't read, and what to do", async ({ page }) => {
+    const errors = await open(page, "abandon-record-unreadable-two-wallets");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5f".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText(
+      "Dash Wallet can't read one of the transaction records in Main. While Main is open, Abandon and Remove Unconfirmed are unavailable in every wallet. Closing it in Settings ▸ Wallet makes them available in the others. To fix it, remove Main there and restore it from its recovery phrase. Its coins come back once the restored wallet syncs. Before you remove it, make sure you have its recovery phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them.",
+    );
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
   test("abandons an unconfirmed incoming payment with its own warning and no Resend", async ({ page }) => {
     const errors = await open(page);
     await page.getByTestId("sidebar-activity").click();

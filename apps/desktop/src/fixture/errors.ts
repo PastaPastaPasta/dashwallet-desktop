@@ -81,7 +81,7 @@ const SAMPLES: Samples = {
   masternodeKey: { code: "masternodes.key_mismatch", data: { kind: "masternodeKey", role: "owner" } },
   unsupported: { code: "masternodes.unsupported", data: { kind: "unsupported", feature: "shared_masternodes", field: null } },
   reason: { code: "send.broadcast_rejected", data: { kind: "reason", reason: "bad-txns-inputs-missingorspent" } },
-  txAction: { code: "tx_action_refused", data: { kind: "txAction", refusal: "instantLocked" } },
+  txAction: { code: "tx_action_refused", data: { kind: "txAction", refusal: "instantLocked", walletId: null } },
   number: { code: "height_out_of_range", data: { kind: "number", value: 9_999_999 } },
   size: { code: "contact.details_too_long", data: { kind: "size", bytes: 4096, max: 2048 } },
   outpoint: { code: "outpoint_not_found", data: { kind: "outpoint", txid: TXID, vout: 1 } },

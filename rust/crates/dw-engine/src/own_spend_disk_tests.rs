@@ -2306,9 +2306,10 @@ fn abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_
 }
 
 /// As above, but the child's record doesn't read at the wallet's load, so
-/// nothing links the grandchild to the payment: Abandon refuses until a
-/// restart and a rescan, Remove Unconfirmed keeps it, and its coin stays
-/// spent, in the session and after a restart that reads the child (#611).
+/// nothing links the grandchild to the payment: Abandon and Remove
+/// Unconfirmed both refuse as `RecordUnreadable`, and the payment's coin
+/// stays spent, in the session and after a restart that reads the child
+/// (#611).
 #[test]
 fn abandoning_a_payment_after_a_load_missing_its_child_is_refused() {
     let (_dir, engine, session, id, payment, child) = payment_under_a_locked_grandchild();
@@ -2322,13 +2323,21 @@ fn abandoning_a_payment_after_a_load_missing_its_child_is_refused() {
         matches!(
             result,
             Err(crate::EngineError::TxActionRefused(
-                crate::tx_actions::TxActionRefusal::RescanFirst
-            ))
+                crate::tx_actions::TxActionRefusal::RecordUnreadable(w)
+            )) if w == id
         ),
         "{result:?}"
     );
-    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
-    assert_eq!(dropped, 0, "the payment or its funding was dropped");
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id)));
+    assert!(
+        matches!(
+            dropped,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::RecordUnreadable(w)
+            )) if w == id
+        ),
+        "{dropped:?}"
+    );
     let a = payment.input[0].previous_output;
     assert!(!abandoned(&engine, &session, id, payment.txid()));
     assert!(
@@ -2527,7 +2536,9 @@ fn abandoning_the_root_of_a_chain_a_second_wallet_spent_locked_two_hops_on_is_re
 
 /// A second loaded wallet whose stored record didn't read at its load: what
 /// it settled could descend from this wallet's payment, so Abandon of an
-/// unlocked payment here refuses until a restart and a rescan (#611).
+/// unlocked payment here and Remove Unconfirmed for all wallets refuse as
+/// `RecordUnreadable`. Removing that wallet and restoring it from its
+/// recovery phrase clears it, and the Abandon goes through (#611).
 #[test]
 fn abandoning_while_a_second_wallet_loaded_incomplete_is_refused() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
@@ -2559,16 +2570,43 @@ fn abandoning_while_a_second_wallet_loaded_incomplete_is_refused() {
         matches!(
             result,
             Err(crate::EngineError::TxActionRefused(
-                crate::tx_actions::TxActionRefusal::RescanFirst
-            ))
+                crate::tx_actions::TxActionRefusal::RecordUnreadable(w)
+            )) if w == other
         ),
         "{result:?}"
+    );
+    let dropped = engine.block_on(session.drop_unconfirmed(None));
+    assert!(
+        matches!(
+            dropped,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::RecordUnreadable(w)
+            )) if w == other
+        ),
+        "{dropped:?}"
     );
     assert!(!abandoned(&engine, &session, id, payment.txid()));
     assert!(
         !spendable(&engine, &session, id, a),
         "the payment's coin is offered"
     );
+
+    let wipe = session
+        .vault()
+        .authorize(GrantPurpose::Wipe, Some(&other.0), Credential::None)
+        .unwrap()
+        .id;
+    engine.block_on(session.remove_wallet(other, wipe)).unwrap();
+    let restored = second_wallet(&engine, &session);
+    // The record that didn't read is gone with the old store: a load of the
+    // restored one, failing that record, reads complete.
+    engine.block_on(session.unload_wallet(restored)).unwrap();
+    session.hub.unreadable_record.lock().unwrap().0 = Some(gift.txid());
+    engine.block_on(session.load_wallet(restored)).unwrap();
+    engine
+        .block_on(session.abandon_transaction(id, payment.txid()))
+        .unwrap();
+    assert!(abandoned(&engine, &session, id, payment.txid()));
 }
 
 /// As above, through Remove Unconfirmed: the payment is kept and its coin

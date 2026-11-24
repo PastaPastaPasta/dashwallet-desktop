@@ -98,6 +98,10 @@ export interface SendWorld {
   /** Payments a later payment spends from that is already locked or confirmed: the detail doesn't
    * offer Abandon (the engine's `settledDescendant`), and an Abandon is refused. */
   settledChildHidden: string[];
+  /** Payments whose Abandon is refused because a saved transaction of an open wallet doesn't read
+   * (the engine's `recordUnreadable`): offered, then refused. Remove Unconfirmed is refused too while
+   * any is listed. */
+  recordUnreadable: string[];
   /** Payments of this wallet seen by their change before the coins they spent are known: the
    * engine reports their debit as unknown (`totalDebit: null`). */
   debitUnknown: string[];
@@ -115,6 +119,7 @@ export const newSendWorld = (): SendWorld => ({
   rescanFirst: [],
   settledChild: [],
   settledChildHidden: [],
+  recordUnreadable: [],
   debitUnknown: [],
 });
 
@@ -437,13 +442,17 @@ function rowOf(wallet: FixtureWallet, txid: string): TxRow {
   return row;
 }
 
-/** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`); the rescanFirst steps
- * are marked as the fixture's, so only the renderer's catalog text can show them unmarked. */
+/** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`); the rescanFirst and
+ * recordUnreadable steps are marked as the fixture's, so only the renderer's catalog text can show
+ * them unmarked. */
 const refusalMessage = (refusal: TxActionRefusalName) =>
   refusal === "rescanFirst"
     ? "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
-    : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
-const refused = (refusal: TxActionRefusalName) => fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal });
+    : refusal === "recordUnreadable"
+      ? "[fixture engine] A saved transaction of an open wallet can't be read."
+      : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
+export const refused = (refusal: TxActionRefusalName, walletId: string | null = null) =>
+  fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal, walletId });
 
 // ---------------------------------------------------------------- the handlers
 
@@ -859,6 +868,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
       if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
+      if (ctx.world.send.recordUnreadable.includes(txid)) throw refused("recordUnreadable", walletId);
       if (ctx.world.send.settledChild.includes(txid) || ctx.world.send.settledChildHidden.includes(txid)) throw refused("settledDescendant");
       const refusal = abandonRefusal(row);
       if (refusal) throw refused(refusal);
