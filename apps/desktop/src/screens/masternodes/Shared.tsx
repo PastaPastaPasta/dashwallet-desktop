@@ -45,6 +45,7 @@ import {
   signedOutText,
   sliceFor,
   spendBackAction,
+  spendBackWayOut,
   spendBackLine,
   stageStep,
   termsDiff,
@@ -807,7 +808,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
             </DashButton>
             {wayOutOpen && (
               <p className="mg-muted mg-small" data-testid="sh-way-out-text">
-                {t(v.row === "abandoning" ? `${P}.spendBack.wayOut` : `${P}.abandon.ownFirst`)}{" "}
+                {v.row === "abandoning" ? spendBackWayOut(s) : t(`${P}.abandon.ownFirst`)}{" "}
                 <DashButton
                   variant="plainBlue"
                   size="small"

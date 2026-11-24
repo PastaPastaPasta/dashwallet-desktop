@@ -241,7 +241,7 @@ for (const theme of THEMES) {
     // The recorded spend back's own exit is Activity's: the way out opens the spend back there.
     await expect(page.getByTestId("sh-way-out-toggle")).toHaveAttribute("aria-expanded", "false");
     await page.getByTestId("sh-way-out-toggle").click();
-    await expect(page.getByTestId("sh-way-out-text")).toContainText("Activity can send this spend back again or abandon it.");
+    await expect(page.getByTestId("sh-way-out-text")).toContainText("You can abandon this spend back in Activity. Once it's abandoned there, Abandon again here makes a new spend of the same coins.");
     await expect(page.getByTestId("sh-way-out-abandon")).toHaveCount(0);
     if (info.project.name === "chromium") await shot(page, "sh-spend-back-way-out", theme);
     await page.getByTestId("sh-way-out-activity").click();

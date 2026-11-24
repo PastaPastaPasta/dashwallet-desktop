@@ -76,8 +76,12 @@ abandonSpend: AbandonSpendView | null,
  */
 resendAbandonCharge: number | null,
 /**
- * The recorded transactions whose Abandon or Send again Activity offers
- * now: the spend back, or this wallet's own transaction spending a
- * reserved coin. The sheet's way out opens Activity on these.
+ * The recorded transactions Activity can abandon now: the spend back,
+ * or this wallet's own transaction spending a reserved coin.
  */
-activityTxids: Array<string>, };
+activityAbandonTxids: Array<string>,
+/**
+ * The recorded transactions Activity can send again now: the spend
+ * back, when the session holds no bytes of its own to replay.
+ */
+activityResendTxids: Array<string>, };

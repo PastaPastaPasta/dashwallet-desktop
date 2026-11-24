@@ -300,23 +300,41 @@ export function canAbandon(s: SharedSession): boolean {
 /** MG's way-out line: wherever this wallet holds the registration (`txid`), at `sent`, and
  * wherever `row.signedOut` or `unvalued_inputs_out` is hidden because Abandon isn't offered.
  * Collapsed until the session is `overdue` (D49), then expanded. Under the spend back's own row
- * (`abandoning`) only while Activity offers the spend back's Abandon or Send again
+ * (`abandoning`) only while Activity offers an Abandon or Send again there
  * (`activityTxids`), expanded once the spend back is overdue. `null` where it isn't shown. */
 export function wayOutShown(s: SharedSession, row: RowKey): "collapsed" | "expanded" | null {
   const settled = s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
   if (!isRegistration(s) || settled) return null;
-  if (row === "abandoning") return s.activityTxids.length === 0 ? null : s.abandonSpend?.overdue ? "expanded" : "collapsed";
+  if (row === "abandoning") return activityTxids(s).length === 0 ? null : s.abandonSpend?.overdue ? "expanded" : "collapsed";
   if (!s.txid) return null;
   const shown = s.stage.kind === "sent" || (!canAbandon(s) && (row === "signedOut" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs"))));
   if (!shown) return null;
   return s.overdue ? "expanded" : "collapsed";
 }
 
-/** The transactions the way out opens in Activity: the spend back's under its own row, otherwise
- * the registration. */
+/** The recorded transactions Activity can abandon or send again now, each once. */
+export const activityTxids = (s: SharedSession): string[] => [...new Set([...s.activityAbandonTxids, ...s.activityResendTxids])];
+
+/** The transactions the way out opens in Activity: Activity's own under the spend back's row,
+ * otherwise the registration. */
 export function wayOutTxids(s: SharedSession, row: RowKey): string[] {
-  if (row === "abandoning") return s.activityTxids;
+  if (row === "abandoning") return activityTxids(s);
   return s.txid ? [s.txid] : [];
+}
+
+/** The way out's sentence under the spend back's row, by what Activity holds and offers: the spend
+ * back itself (abandon, send again, or finish abandoning it), or this wallet's own transaction
+ * spending the coins first. `{action}` is the sheet's next button: Try again after a refusal,
+ * otherwise Abandon again. */
+export function spendBackWayOut(s: SharedSession): string {
+  const spend = s.abandonSpend;
+  const action = t(spend?.state === "refused" ? "masternodes.shared.spendBack.tryAgain" : "masternodes.shared.spendBack.abandonAgain");
+  const abandon = !!spend && s.activityAbandonTxids.includes(spend.txid);
+  const resend = !!spend && s.activityResendTxids.includes(spend.txid);
+  if (!abandon && !resend) return t("masternodes.shared.spendBack.wayOutOwn", { action });
+  if (spend?.state === "abandoned_in_activity") return t("masternodes.shared.spendBack.wayOutFinish");
+  if (abandon && resend) return t("masternodes.shared.spendBack.wayOutBoth", { action });
+  return abandon ? t("masternodes.shared.spendBack.wayOutAbandon", { action }) : t("masternodes.shared.spendBack.wayOutResend");
 }
 
 /** The session sheet's Network fee row value, under its own "Network fee" label: the fee for the
