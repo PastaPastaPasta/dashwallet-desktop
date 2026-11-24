@@ -2647,6 +2647,31 @@ fn a_send_takes_a_fresh_grant_and_no_lease() {
     w.move_to(one, &w.to, &lease).unwrap();
 }
 
+/// A `ContactPayFromBalance` lease pays a contact only (C-funding P15): a
+/// move to the wallet's Core address and a send refuse it as any other
+/// flow's lease, and nothing is signed.
+#[test]
+fn a_contact_payment_lease_neither_moves_nor_sends() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (_, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let lease = || {
+        let grants = vec![w.f.grant(20 * DASH)];
+        let flow = FlowKind::ContactPayFromBalance;
+        let source = Some(crate::platform::PaymentSource::Platform);
+        (w.f.engine)
+            .block_on(w.f.s.begin_flow(w.f.wallet, flow, grants, source))
+            .unwrap()
+    };
+    let moved = w.move_to(one, &w.to, &lease());
+    assert_eq!(moved.unwrap_err().code(), "platform.grant_invalid");
+    let quote = w.send_quote(one, &to).unwrap();
+    let sent = w.confirm(&quote.operation, &lease());
+    assert_eq!(sent.unwrap_err().code(), "platform.grant_invalid");
+    assert!(w.net.sent.lock().unwrap().is_empty());
+}
+
 /// The own-address refusal covers the derived pool only: an address of
 /// this wallet's payment account beyond it is accepted as a recipient.
 #[test]
