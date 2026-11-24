@@ -536,10 +536,14 @@ pub enum TxActionRefusalName {
     /// Abandon can go through after a restart and a rescan from the
     /// wallet's birth (the message says so).
     RescanFirst,
+    /// A later transaction that spends from it is already locked or
+    /// confirmed, so this one will confirm too.
+    SettledDescendant,
 }
 
 crate::dto::mirror_enum!(dw_engine::TxActionRefusal => TxActionRefusalName {
-    Confirmed, InstantLocked, AlreadyAbandoned, Coinbase, InMempool, NotSentByWallet, RescanFirst
+    Confirmed, InstantLocked, AlreadyAbandoned, Coinbase, InMempool, NotSentByWallet, RescanFirst,
+    SettledDescendant
 });
 
 impl AppError {

@@ -306,6 +306,18 @@ describe("fixture send engine", () => {
       message: "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.",
       data: { kind: "txAction", refusal: "rescanFirst" },
     });
+    clearMocks();
+    installFixture({ scenario: "abandon-settled-child-hidden" });
+    expect(await cmd.txDetailExtras(W, "5d".repeat(32))).toMatchObject({ canAbandon: false, abandoned: false });
+    clearMocks();
+    installFixture({ scenario: "abandon-settled-child" });
+    const held = "5c".repeat(32);
+    expect(await cmd.txDetailExtras(W, held)).toMatchObject({ canAbandon: true, abandoned: false });
+    await expect(cmd.abandonTransaction(W, held)).rejects.toMatchObject({
+      code: "tx_action_refused",
+      message: "transaction action refused: SettledDescendant",
+      data: { kind: "txAction", refusal: "settledDescendant" },
+    });
   });
 
   it("abandons an unconfirmed incoming payment but never resends it", async () => {
