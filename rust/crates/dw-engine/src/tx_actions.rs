@@ -950,7 +950,8 @@ struct DropPlan {
 
 /// Plans dropping `roots` and what descends from them in the history `txs`
 /// and key-wallet's records of `core`: a root locked, mined, abandoned, or
-/// with something settled under it is left. A coin they spent is freed
+/// with something settled under it in any loaded wallet (`under`, from
+/// `settled_all`) is left. A coin they spent is freed
 /// only when the history is loaded and `complete`, `winner`'s inputs are
 /// known (the history holds it, or it is mined and key-wallet observed its
 /// block's spends), and none of them, of
@@ -964,11 +965,8 @@ fn plan_drop(
     roots: &[Txid],
     winner: Winner,
     links: &BTreeSet<Txid>,
-    (complete, chainlock): (bool, Option<u32>),
+    (complete, chainlock, under): (bool, Option<u32>, &HashSet<Txid>),
 ) -> Option<DropPlan> {
-    let mut known = HashMap::new();
-    add_known(&mut known, txs, core);
-    let (under, _) = walk_known(&known);
     let (mut dead, mut links) = (BTreeSet::new(), links.clone());
     for root in roots {
         let open = (txs.get(root))
@@ -1671,13 +1669,26 @@ impl NetworkSession {
     ) -> Result<BTreeSet<Txid>, EngineError> {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
+        // What any loaded wallet settled can descend from this one's
+        // payment (#611): nothing goes while another loaded incomplete; this
+        // one's own incomplete load frees nothing (`plan_drop`).
+        let settled = {
+            let infos = wm.get_all_wallet_infos().iter();
+            self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)))
+        };
+        let other_unread = (wm.get_all_wallet_infos().keys())
+            .filter(|id| **id != wallet.0)
+            .any(|id| (self.hub.history).read_wallet(&WalletId(*id), |h| h.load_incomplete));
+        if other_unread {
+            return Ok(BTreeSet::new());
+        }
         let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
             return Ok(BTreeSet::new());
         };
         let plan = (self.hub.history).read_wallet(&wallet, |h| {
             let complete = h.loaded && !h.load_incomplete;
             let chainlock = self.chainlock_height(&info.core_wallet);
-            let facts = (complete, chainlock);
+            let facts = (complete, chainlock, &settled.under);
             // A beaten root is beaten still under this lock: a truncation
             // since its detection may have undone its winner.
             let rechecked: Vec<Txid>;

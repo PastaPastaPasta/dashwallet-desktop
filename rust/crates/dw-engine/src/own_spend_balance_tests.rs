@@ -2889,3 +2889,38 @@ fn a_payment_two_rivals_beat_keeps_the_coin_a_locked_rival_spends_out() {
     assert!(!held_now.contains(&d), "rescanned: D: {held_now:?}");
     assert!(!spendable(&engine, &session, id, d), "D is not offered");
 }
+
+/// #611: what another loaded wallet settled can descend from a payment of
+/// this one, so nothing is dropped while another wallet's history loaded
+/// incomplete: the beaten payment stays, with its change, until that
+/// wallet's history is whole again.
+#[test]
+fn nothing_is_dropped_while_another_wallet_loaded_incomplete() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let a = OutPoint::new(paid.txid(), 0);
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+    wait_stored(&session, id, &[p.txid()]);
+    let other = super::own_spend_disk_tests::second_wallet(&engine, &session);
+
+    let session = reopen(&engine, session);
+    (session.hub.history).with_wallet(other, |h| h.load_incomplete = true);
+    let winner = rival(&engine, &session, id, &paid, 0);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    reconciled(&engine, &session, id);
+    assert!(live_in_history(&session, id, p.txid()), "the payment stays");
+    assert!(held(&engine, &session, id).contains(&change));
+
+    (session.hub.history).with_wallet(other, |h| h.load_incomplete = false);
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, p.txid()), "the payment goes");
+    assert!(!held(&engine, &session, id).contains(&change));
+}
