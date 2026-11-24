@@ -966,7 +966,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 0ef5d5690d0f4ff2cffffeb1dbf836bfcc71de16d3f42df414c8f91c1f4d9a94 version: 76 -->
+<!-- surface-sha256: 4bd47d28959724cf2e01391e3f652370e1cf409910448c92c23d9d3b3aa57a64 version: 77 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1351,6 +1351,7 @@ pub enum RegistrationError {
     FundingUnknownRecent { draft: String, wait_secs: Option<u64> },
     ShieldedNotReady { reason: ShieldedCheck, ready_at: Option<u64> },
     QuoteChanged,
+    Refunded,
     Name(NameError),
     Invitation(InvitationError),
     Credits(CreditsError),
@@ -2327,6 +2328,8 @@ pub enum RegistrationWait {
     FundingUnknown,
     NeedsFinish,
     Startup,
+    PaymentUnknown,
+    PaymentHeld,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrationFailure {
