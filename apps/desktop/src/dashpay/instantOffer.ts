@@ -36,7 +36,7 @@ export const homographSafe = (label: string) => label.toLowerCase().replace(/o/g
  * `dpp_versions/dpp_voting_versions/v2.rs` lines 4-5 at PastaPastaPasta/platform c5917e6bd5, the
  * engine's pin): two weeks on mainnet, 90 minutes on every other network (rs-drive
  * `insert_contested/add_contested_document_for_contract_operations/v0/mod.rs` 55-68). */
-export const VOTE_POLL_MS: Readonly<Record<NetworkKind, number>> = {
+export const VOTE_POLL_MS: Readonly<Partial<Record<NetworkKind, number>>> = {
   mainnet: 1_209_600_000,
   testnet: 5_400_000,
   devnet: 5_400_000,
@@ -45,9 +45,12 @@ export const VOTE_POLL_MS: Readonly<Record<NetworkKind, number>> = {
 
 const WEEK_SECS = 7 * 86_400;
 
-/** The vote's length on `network`, in words: whole weeks as weeks, else days, hours, minutes. */
-export function voteDuration(network: NetworkKind): string {
-  const secs = VOTE_POLL_MS[network] / 1000;
+/** The vote's length on `network`, in words: whole weeks as weeks, else days, hours, minutes;
+ * "about two weeks" for a network the table does not know. */
+export function voteDuration(network: NetworkKind, polls: Readonly<Partial<Record<NetworkKind, number>>> = VOTE_POLL_MS): string {
+  const ms = polls[network];
+  if (ms === undefined) return t("dashpay.instant.aboutTwoWeeks");
+  const secs = ms / 1000;
   if (secs % WEEK_SECS === 0) return t("dashpay.instant.weeks", { count: secs / WEEK_SECS });
   return spanLong(secs);
 }

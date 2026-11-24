@@ -54,16 +54,29 @@ const summary = (s: Partial<IdentitySummary> = {}): IdentitySummary => ({
 const read = (afterSecs: number, s: Partial<IdentitySummary> = {}): NamesRead => ({ startedAt: (ROW_AT + afterSecs) * 1000, identities: [summary(s)] });
 
 describe("voteDuration: Platform's vote poll per network (dpp_voting_versions v2)", () => {
-  it("two weeks on mainnet", () => {
+  it("mainnet: two weeks", () => {
     expect(VOTE_POLL_MS.mainnet).toBe(1_209_600_000);
     expect(voteDuration("mainnet")).toBe("2 weeks");
   });
 
-  it("90 minutes on testnet, devnets and regtest", () => {
-    for (const n of ["testnet", "devnet", "regtest"] as const) {
-      expect(VOTE_POLL_MS[n]).toBe(5_400_000);
-      expect(voteDuration(n)).toBe("1 hour 30 minutes");
-    }
+  it("testnet: 90 minutes", () => {
+    expect(VOTE_POLL_MS.testnet).toBe(5_400_000);
+    expect(voteDuration("testnet")).toBe("1 hour 30 minutes");
+  });
+
+  it("devnet: 90 minutes", () => {
+    expect(VOTE_POLL_MS.devnet).toBe(5_400_000);
+    expect(voteDuration("devnet")).toBe("1 hour 30 minutes");
+  });
+
+  it("regtest: 90 minutes", () => {
+    expect(VOTE_POLL_MS.regtest).toBe(5_400_000);
+    expect(voteDuration("regtest")).toBe("1 hour 30 minutes");
+  });
+
+  it("a network without a value: the existing copy's \"about two weeks\", never a blank", () => {
+    expect(voteDuration("testnet", { mainnet: 1_209_600_000 })).toBe("about two weeks");
+    expect(INSTANT_COPY.offer(voteDuration("devnet", {}))[0]).toContain("voted on for about two weeks.");
   });
 
   it("goes into the offer's body, the MG copy verbatim", () => {

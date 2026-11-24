@@ -65,6 +65,8 @@ export const dashpay = {
     failure: "The instant username “{username}” could not be registered, so you have no username to use while the vote runs.",
     retry: "Try again",
     weeks: { one: "{count} week", other: "{count} weeks" },
+    /** A network without a known vote length: the existing voting copy's wording. */
+    aboutTwoWeeks: "about two weeks",
   },
   /** The own vote's card and details. Quoted names are bare labels. */
   vote: {
