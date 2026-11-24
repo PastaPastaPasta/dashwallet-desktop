@@ -1723,9 +1723,6 @@ impl MoveNet for SdkMoves {
         signer: &VaultPlatformAddressSigner,
     ) -> Result<u64, PlatformWalletError> {
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
-        let inputs = (inputs.into_iter())
-            .map(|(a, (nonce, credits))| (a, (nonce.into(), credits)))
-            .collect();
         let (_, balance, _) = identity
             .top_up_from_addresses_with_nonce(&self.sdk, inputs, signer, None)
             .await
