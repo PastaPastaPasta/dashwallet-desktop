@@ -2137,10 +2137,15 @@ async fn observe(
     let mut rows = 0;
     // A proof older than the baseline's (a node behind) decides nothing.
     if baseline.as_ref().is_none_or(|b| seen.height >= b.height) {
-        // A pending move's inputs, and those of a group whose nonces are
-        // taken while no evidence names its member yet (C3-9).
+        // A pending move's inputs, and those of a top-up's group whose
+        // nonces are taken while no evidence names its member yet (C3-9).
+        let top_ups: BTreeSet<_> = (moves.iter())
+            .filter(|m| m.kind == MoveKind::ToIdentity)
+            .map(MoveRecord::key)
+            .collect();
+        let deciding = |m: &MoveRecord| m.holds() && m.reached(seen) && top_ups.contains(&m.key());
         let held: BTreeSet<String> = (moves.iter())
-            .filter(|m| m.state == PlatformActivityState::Pending || (m.holds() && m.reached(seen)))
+            .filter(|m| m.state == PlatformActivityState::Pending || deciding(m))
             .flat_map(|m| m.inputs.iter().map(|i| i.address.clone()))
             .chain(held_funds)
             .collect();
@@ -2679,6 +2684,20 @@ pub(crate) async fn shield_quote(
 /// `DashPay::top_up_from_platform_quote` (C-routes C3-2, C3-3): the
 /// identity one of the wallet's own, address funds active, one proved read
 /// with rule 5, the hold, and the input-0 plan with the top-up's band.
+/// The mainnet flag of the top-up from the Platform balance: off on
+/// mainnet until its funds ruling, on every other network.
+pub(crate) const TOP_UP_FROM_PLATFORM: &str = "top_up_from_platform";
+
+/// Refused on mainnet before anything is read, written or redeemed.
+fn top_up_open(network: Network) -> Result<(), PlatformError> {
+    if network == Network::Mainnet {
+        return Err(PlatformError::FeatureOff {
+            feature: TOP_UP_FROM_PLATFORM.into(),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) async fn top_up_quote(
     net: &impl MoveNet,
     session: &NetworkSession,
@@ -2686,6 +2705,7 @@ pub(crate) async fn top_up_quote(
     wallet_id: WalletId,
     (identity, amount): (&str, WithdrawAmount),
 ) -> Result<TopUpFromPlatformQuote, CreditsError> {
+    top_up_open(session.vault.network())?;
     let id = parse_identity(identity)?;
     withdrawal::own(wallet, id).await?;
     let version = net.sends_version().await;
@@ -2736,6 +2756,7 @@ pub(crate) async fn top_up(
     (identity, amount): (&str, WithdrawAmount),
     grant: &str,
 ) -> Result<TopUpFromPlatformOutcome, CreditsError> {
+    top_up_open(session.vault.network())?;
     let id = parse_identity(identity)?;
     withdrawal::own(wallet, id).await?;
     (session.money_gate(Subject::Identity(wallet_id, id)).await)
@@ -2900,7 +2921,9 @@ async fn run(
     let version = net.version();
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
-    behind(&moves, &seen)?;
+    if let Target::Identity(_) = target {
+        behind(&moves, &seen)?;
+    }
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
     // only its exact retry, and a retry of one that landed pays nothing.

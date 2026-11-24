@@ -546,6 +546,100 @@ fn an_undecided_group_holds_the_quote() {
     w.top_up_quote(&me(), credits(DASH / 1_000)).unwrap();
 }
 
+/// A top-up whose process stopped anywhere after its record (before
+/// signing, after signing, after the broadcast, before its outcome was
+/// stored) is settled after the restart by proofs alone. Executed, it is
+/// done and credited once, and the next top-up runs. Not executed, it
+/// holds (a new top-up is `credits.move_pending`, its grant unused) and,
+/// failed by height, "Move to Dash wallet" of its inputs releases it with
+/// nothing credited; then a top-up runs again.
+#[test]
+fn a_top_up_stopped_anywhere_is_settled_after_a_restart() {
+    for (stop, executed) in [
+        (Act::StopsBeforeSigning, false),
+        (Act::StopsAfterSigning, false),
+        (Act::StopsAfterBroadcast, true),
+        (Act::StopsBeforeOutcome, true),
+    ] {
+        let w = World::new();
+        let (a, b) = (w.address(0), w.address(1));
+        w.net.fund(a, 3 * DASH);
+        w.net.then(stop);
+        assert!(w.top_up(credits(DASH)).is_err(), "{stop:?}");
+        let state = |w: &World| w.moves()[0].state;
+        assert_eq!(state(&w), PlatformActivityState::Pending, "{stop:?}");
+        // The restart: the first read.
+        w.activity();
+        let topped = |w: &World| w.net.topped_up.load(Ordering::SeqCst);
+        if executed {
+            assert_eq!(state(&w), PlatformActivityState::Done, "{stop:?}");
+            assert_eq!(topped(&w), DASH, "{stop:?}");
+            let next = w.top_up(credits(DASH / 10)).unwrap();
+            assert_eq!(next.state, PlatformActivityState::Done, "{stop:?}");
+            assert_eq!(topped(&w), DASH + DASH / 10, "credited once each");
+            continue;
+        }
+        assert_eq!(state(&w), PlatformActivityState::Pending, "{stop:?}");
+        let grant = w.f.grant(10 * DASH);
+        assert_eq!(
+            w.top_up_as(&me(), credits(DASH), &grant)
+                .unwrap_err()
+                .code(),
+            "credits.move_pending",
+            "{stop:?}"
+        );
+        assert!(w.f.unused(&grant));
+        w.net.fund(b, 9 * DASH);
+        w.activity();
+        assert_eq!(state(&w), PlatformActivityState::Failed, "{stop:?}");
+        assert_eq!(
+            w.top_up_as(&me(), credits(DASH), &grant)
+                .unwrap_err()
+                .code(),
+            "credits.move_pending",
+            "no retry of a top-up: {stop:?}"
+        );
+        let exit = w.move_all(&grant).unwrap();
+        assert_eq!(exit.state, PlatformActivityState::Done, "{stop:?}");
+        let moves = w.moves();
+        assert_eq!(
+            (moves[0].state, moves[0].can_land),
+            (PlatformActivityState::Failed, false),
+            "{stop:?}"
+        );
+        let sent = w.net.sent.lock().unwrap().clone();
+        let last = sent.last().unwrap();
+        assert_eq!(last.keys().collect::<Vec<_>>(), vec![&a], "{stop:?}");
+        assert_eq!(last[&a].0, 1, "the nonce the stopped top-up recorded");
+        assert_eq!(topped(&w), 0, "{stop:?}");
+        let next = w.top_up(credits(DASH)).unwrap();
+        assert_eq!(next.state, PlatformActivityState::Done, "{stop:?}");
+        assert_eq!(topped(&w), DASH, "{stop:?}");
+    }
+}
+
+/// Off on mainnet, on everywhere else: both entry points check the
+/// network first, before the identity, the read, the grant or a write.
+#[test]
+fn top_up_from_platform_is_off_on_mainnet() {
+    assert_eq!(
+        top_up_open(Network::Mainnet),
+        Err(PlatformError::FeatureOff {
+            feature: TOP_UP_FROM_PLATFORM.into()
+        })
+    );
+    for on in [Network::Testnet, Network::Devnet, Network::Regtest] {
+        assert_eq!(top_up_open(on), Ok(()), "{on:?}");
+    }
+    let w = World::new();
+    assert_eq!(w.network(), Network::Testnet);
+    w.net.fund(w.address(0), 5 * DASH);
+    assert_eq!(
+        w.top_up(credits(DASH)).unwrap().state,
+        PlatformActivityState::Done
+    );
+}
+
 /// The identity's write lock is taken before the move lock, and no path
 /// takes them the other way round: a top-up waiting for the identity (a
 /// withdrawal holding it) holds no move lock, so a move runs meanwhile;
