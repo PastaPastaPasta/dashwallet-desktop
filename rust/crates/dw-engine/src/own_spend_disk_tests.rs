@@ -5688,3 +5688,18 @@ pub(super) fn chain_lock(
         })
     });
 }
+
+/// #172: Reset chain data with a wallet closed. Its next open rescans it
+/// from its birth height, as the reset does for an open wallet, so what the
+/// old block data's start hid from it comes in; its stored checkpoint alone
+/// would resume above that start.
+#[test]
+fn a_wallet_closed_through_a_reset_of_chain_data_rescans_from_its_birth_when_opened() {
+    let (_dir, engine, session, id) = engine_wallet();
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    assert_eq!(synced(&engine, &session, id), TIP);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    engine.block_on(session.reset_chain_data()).unwrap();
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert_eq!(synced(&engine, &session, id), BIRTH - 1);
+}

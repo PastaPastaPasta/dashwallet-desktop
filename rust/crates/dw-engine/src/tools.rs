@@ -1023,6 +1023,8 @@ impl NetworkSession {
             if this.platform_spv_state(&manager) != crate::SpvState::Stopped {
                 return Err(EngineError::SpvRunning);
             }
+            // No wallet opens or closes between the two lists below.
+            let _wallets = this.wallet_lifecycle.hold().await;
             let wallets: Vec<(WalletId, u32)> = (manager.list_wallet_ids_blocking().into_iter())
                 .map(|id| {
                     let wallet = WalletId(id);
@@ -1033,6 +1035,7 @@ impl NetworkSession {
             for (wallet, checkpoint) in &wallets {
                 this.record_rewind(&manager, *wallet, *checkpoint).await?;
             }
+            this.record_closed_rewinds().await?;
             let dir = this.data_dir().join(SPV_DIR);
             tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
                 Ok(()) => Ok(()),
@@ -1054,6 +1057,27 @@ impl NetworkSession {
             Ok(())
         })
         .await
+    }
+
+    /// A reset's replay record for each closed wallet: its next open rescans
+    /// it from its birth height, below the stored checkpoint the old block
+    /// data held it at, as the reset does for an open one.
+    async fn record_closed_rewinds(&self) -> Result<(), EngineError> {
+        let live = self.live()?;
+        for id in live.store.unloaded() {
+            let db_path = self.data_dir().join(crate::session::WALLET_DB_FILE);
+            let (synced, birth) =
+                tokio::task::spawn_blocking(move || crate::store::stored_heights(&db_path, &id))
+                    .await?
+                    .map_err(|e| EngineError::Storage(format!("the stored checkpoint: {e}")))?;
+            let floor = birth.map_or(0, |b| b.saturating_sub(1));
+            if let Some(synced) = synced.filter(|s| *s > floor) {
+                (live.replay)
+                    .note_rewind(WalletId(id), floor, synced, floor)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     /// IOS-113 "edit birth height": stores `height` as the wallet's birth
