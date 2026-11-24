@@ -6,7 +6,7 @@ import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { hasPendingMove, hasUnansweredOp, heldExitOp, heldExitOps, sendHolds, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveFor, MOVE_COPY, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
+import { hasPendingMove, hasUnansweredOp, heldExitOp, heldExitOps, sendHolds, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveFor, moveOutcomeCopy, MOVE_COPY, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
 
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done", feeCredits: "2000000" };
@@ -196,6 +196,24 @@ describe("Move to Dash wallet", () => {
     const { api } = setup();
     expect(moveFor(api, WALLET_A)).toBe(moveFor(api, WALLET_A));
     expect(moveFor(api, "other")).not.toBe(moveFor(api, WALLET_A));
+  });
+});
+
+describe("the move's result sheet", () => {
+  const credits = (c: string) => `${c} credits`;
+  const amount = (d: number) => `${d} duffs`;
+  it("says a group's debit left for this move or another when nothing names the winner", () => {
+    expect(moveOutcomeCopy({ ...OUTCOME, expectedDuffs: null, feeCredits: null, winnerKnown: false }, credits, amount)).toEqual({
+      title: "Settled with another payment or move",
+      text: "40000000000 credits left your Platform addresses, for this move or another payment or move from the same addresses. Dash Wallet can't tell which. If it was this move, it arrives in your Dash wallet and shows in Activity.",
+    });
+    expect(moveOutcomeCopy({ ...OUTCOME, state: "replaced", winnerKnown: false }, credits, amount)).toEqual({ title: "Settled with another payment or move", text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again." });
+  });
+
+  it("keeps the debit-only and replaced lines when the group names its winner", () => {
+    expect(moveOutcomeCopy({ ...OUTCOME, expectedDuffs: null }, credits, amount)).toEqual({ title: "Moved", text: "40000000000 credits left your Platform addresses. Activity shows what arrives in your Dash wallet." });
+    expect(moveOutcomeCopy({ ...OUTCOME, state: "replaced" }, credits, amount)).toEqual({ title: MOVE_COPY.replaced.title, text: MOVE_COPY.replaced.text });
+    expect(moveOutcomeCopy(OUTCOME, credits, amount).title).toBe("Moved");
   });
 });
 

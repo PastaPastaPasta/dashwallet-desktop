@@ -542,6 +542,13 @@ export const dashpay = {
       nothing: "Your Platform addresses don't hold enough for a top-up and its fee.",
       max: "Max",
     },
+    /** As `transfer.status`, for a top-up from the Platform addresses. */
+    status: {
+      settledUnknown: {
+        title: "Settled with another payment or move",
+        text: "This top-up and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your identity's balance before topping up again.",
+      },
+    },
     /** A top-up from the Platform addresses. `identity` is the username or "your identity"; `amount`,
      * `total` and `fee` are amounts; `address` is the address the fee is taken from. */
     fromPlatform: {

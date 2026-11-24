@@ -9,7 +9,7 @@ import { DashButton } from "../components/basics";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
-import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, plannedWithdrawalCredits, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
+import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveOutcomeCopy, plannedWithdrawalCredits, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
   const quote = usePlatformMoveQuote(walletId, true);
@@ -117,18 +117,10 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
       {step === "done" && outcome && (
         <div role="status">
           <p className="topup-title" data-testid="platform-move-outcome-title">
-            {outcome.state === "done" ? C.done.title : outcome.state === "replaced" ? C.replaced.title : C.pending.title}
+            {moveOutcomeCopy(outcome, credits, amount).title}
           </p>
           <p className="sheet-text" data-testid="platform-move-outcome-text">
-            {outcome.state === "replaced"
-              ? C.replaced.text
-              : outcome.state === "done"
-              ? outcome.expectedDuffs === null
-                ? C.done.debitOnly(credits(outcome.credits))
-                : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits))
-              : outcome.expectedDuffs === null
-                ? C.pending.debitOnly(credits(outcome.credits))
-                : C.pending.text(amount(outcome.expectedDuffs))}
+            {moveOutcomeCopy(outcome, credits, amount).text}
           </p>
           <div className="sheet-actions">
             <DashButton variant="filledBlue" size="large" data-testid="platform-move-done" onClick={() => flow.close()}>

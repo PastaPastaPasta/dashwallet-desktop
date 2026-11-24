@@ -971,6 +971,22 @@ const SCENARIOS = {
     ];
     return w;
   },
+  /** Groups that settled with no evidence of which member went through: a move and a payment of
+   * different terms, and a top-up with a later exit. Only each group's newest row carries its debit. */
+  "platform-settled-unknown": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const row = { address: null, to: null, expectedDuffs: null, feeCredits: null, mayLand: false, estimated: false, winnerKnown: false } as const;
+    p.activity = [
+      { ...row, id: "pm-exit", kind: "moveToCore", state: "done", credits: "20000000000", at: at - 1800 },
+      { ...row, id: "pt-topup", kind: "toIdentity", state: "failed", credits: "20000000000", at: at - 2400 },
+      { ...row, id: "pm-move", kind: "moveToCore", state: "done", credits: "30000000000", at: at - 3600 },
+      { ...row, id: "ps-send", kind: "send", state: "replaced", credits: "25000000000", to: "dash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h", at: at - 7200 },
+      ...p.activity,
+    ];
+    return w;
+  },
   /** A wallet that starts one block short of the tip and has never been caught up. */
   "sync-one-behind": (t) => {
     const w = base(t);

@@ -100,6 +100,7 @@ describe("chips and icons", () => {
     expect(txIcon("sendToAddress", status({ kind: "conflicted" }), -5)).toBe("error");
     expect(txIcon("sendToSelf", status(), 0)).toBe("internalTransfer");
     expect(txIcon("recvWithAddress", status(), 5)).toBe("received");
+    expect(txIcon("sendToAddress", status(), 0)).toBe("sent");
   });
 
   it("shows a self-send fee as money that left", () => {

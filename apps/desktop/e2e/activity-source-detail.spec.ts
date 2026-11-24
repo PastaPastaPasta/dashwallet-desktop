@@ -76,6 +76,49 @@ test.describe("Activity: details of a Shielded or Platform-address row", () => {
     await expect(page.getByTestId("source-detail-amount")).toHaveCount(0);
   });
 
+  for (const theme of THEMES) {
+    test(`a group that names no winner says so on every row, its debit on the newest only (${theme})`, async ({ page }) => {
+      const errors = await activity(page, "platform-settled-unknown", theme);
+      const settled = "Settled with another payment or move";
+      const rows = page.locator('button[data-txid$=":unknown"]');
+      await expect(rows).toHaveCount(4);
+      for (const id of ["moveToCore:pm-exit", "toIdentity:pt-topup", "moveToCore:pm-move", "send:ps-send"]) {
+        const row = page.locator(`button[data-txid="platform:${id}:unknown"]`);
+        await expect(row).toContainText(settled);
+        await expect(row).not.toContainText("Replaced by a retry");
+        await expect(row).not.toContainText("Not accepted");
+      }
+      await expect(page.locator('button[data-txid="platform:moveToCore:pm-move:unknown"] .tx-row-amount')).toHaveCount(1);
+      await expect(page.locator('button[data-txid="platform:send:ps-send:unknown"] .tx-row-amount')).toHaveCount(0);
+      await expect(page.locator('button[data-txid="platform:toIdentity:pt-topup:unknown"] .tx-row-amount')).toHaveCount(0);
+      await page.screenshot({ path: test.info().outputPath(`${theme}-activity-settled-unknown.png`), animations: "disabled", caret: "hide" });
+
+      await page.locator('button[data-txid="platform:send:ps-send:unknown"]').click();
+      await expect(page.getByTestId("source-detail-title")).toHaveText(settled);
+      await expect(page.getByTestId("source-detail-status")).toHaveText(
+        "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid.",
+      );
+      await expect(page.getByTestId("source-detail-status")).not.toHaveClass(/is-problem/);
+      await expect(page.getByTestId("source-detail-amount")).toHaveCount(0);
+      await page.screenshot({ path: test.info().outputPath(`${theme}-activity-settled-unknown-send.png`), animations: "disabled", caret: "hide" });
+      await page.keyboard.press("Escape");
+
+      await page.locator('button[data-txid="platform:toIdentity:pt-topup:unknown"]').click();
+      await expect(page.getByTestId("source-detail-status")).toHaveText(
+        "This top-up and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your identity's balance before topping up again.",
+      );
+      await page.keyboard.press("Escape");
+
+      await page.locator('button[data-txid="platform:moveToCore:pm-move:unknown"]').click();
+      await expect(page.getByTestId("source-detail-status")).toHaveText(
+        "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.",
+      );
+      await expect(page.getByTestId("source-detail-amount")).toContainText("0.3");
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("a failed Shielded payment reads the same word in its details as on its row", async ({ page }) => {
     await activity(page);
     await page.evaluate(() => {

@@ -28,6 +28,13 @@ export const transfer = {
   unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
   /** Shielded → Platform on a network where it is off (mainnet). */
   offOnNetwork: "Moving from Shielded to Platform isn't available on this network yet. Move the funds to your Dash wallet first, then to Platform.",
+  /** An Activity row whose group settled with no evidence of which payment or move went through. */
+  status: {
+    settledUnknown: {
+      title: "Settled with another payment or move",
+      text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.",
+    },
+  },
   /** What this version keeps off on mainnet, each in place of its controls; `mainnetOffChip` beside the pool it can't reach. */
   platform: {
     mainnetOff: "This version can move and send from Platform addresses on test networks only.",
@@ -77,6 +84,8 @@ export const transfer = {
       text: "About {amount} is on its way to your Dash wallet. It shows in Activity once it arrives.",
       textWithFee: "About {amount} is on its way to your Dash wallet. The network fee was {fee}. It shows in Activity once it arrives.",
       debitOnly: "{taken} left your Platform addresses. Activity shows what arrives in your Dash wallet.",
+      /** `debitOnly` when nothing says which member of its group went through. */
+      debitUnknown: "{taken} left your Platform addresses, for this move or another payment or move from the same addresses. Dash Wallet can't tell which. If it was this move, it arrives in your Dash wallet and shows in Activity.",
     },
     pending: {
       title: "Not confirmed yet",

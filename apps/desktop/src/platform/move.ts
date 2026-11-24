@@ -71,6 +71,17 @@ export const MOVE_COPY = {
     text: (amount: string, fee: string | null) => (fee === null ? t("transfer.move.done.text", { amount }) : t("transfer.move.done.textWithFee", { amount, fee })),
     /** The engine proved the debit but not what arrives. */
     debitOnly: (taken: string) => t("transfer.move.done.debitOnly", { taken }),
+    /** `debitOnly` when nothing says which member of the move's group went through. */
+    debitUnknown: (taken: string) => t("transfer.move.done.debitUnknown", { taken }),
+  },
+  /** The move's group settled with no evidence of which member went through. */
+  settledUnknown: {
+    get title() {
+      return t("transfer.status.settledUnknown.title");
+    },
+    get text() {
+      return t("transfer.status.settledUnknown.text");
+    },
   },
   pending: {
     get title() {
@@ -129,6 +140,20 @@ export const MOVE_COPY = {
     return t("transfer.move.close");
   },
 };
+
+/** What the result sheet says of a move's outcome. `credits` and `amount` format credits and duffs. */
+export function moveOutcomeCopy(outcome: MoveToCoreOutcome, credits: (c: string) => string, amount: (duffs: number) => string): { title: string; text: string } {
+  const C = MOVE_COPY;
+  if (outcome.winnerKnown === false) return outcome.state === "done" ? { title: C.settledUnknown.title, text: C.done.debitUnknown(credits(outcome.credits)) } : C.settledUnknown;
+  switch (outcome.state) {
+    case "replaced":
+      return C.replaced;
+    case "done":
+      return { title: C.done.title, text: outcome.expectedDuffs === null ? C.done.debitOnly(credits(outcome.credits)) : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits)) };
+    default:
+      return { title: C.pending.title, text: outcome.expectedDuffs === null ? C.pending.debitOnly(credits(outcome.credits)) : C.pending.text(amount(outcome.expectedDuffs)) };
+  }
+}
 
 /** What holds Move back: the Activity read has not answered (`checking`) or failed (`failed`), or it names
  * a move Platform has not confirmed (`pending`). `null`: Move may be offered. */
