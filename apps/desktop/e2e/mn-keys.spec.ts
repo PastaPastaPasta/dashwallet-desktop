@@ -141,11 +141,41 @@ test("a key page that fails to load offers Try again and keeps the rows already 
   await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
   await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = false));
   const release = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_keys"));
-  await sheet.getByTestId("mn-keys-retry").click();
-  // While the page is read again, the error and a disabled Try again stay.
-  await expect(sheet.getByTestId("mn-keys-retry")).toBeDisabled();
+  // By keyboard: while the page is read again, the error and an inert Try again stay, and keep focus.
+  const retry = sheet.getByTestId("mn-keys-retry");
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(retry).toHaveAttribute("aria-disabled", "true");
+  await expect(retry).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
   await release.evaluate((r) => r());
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(25);
+  await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
+  // Focus moves into the list, not to the page.
+  await expect(sheet.getByTestId("mn-keys-list")).toBeFocused();
+  // Another role read for the first time shows no error left from the retry.
+  const held = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_keys"));
+  await sheet.getByTestId("mn-keys-role-platform_node").click();
+  await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
+  await held.evaluate((r) => r());
+  await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
+});
+
+test("a key page retried offline waits with its error and an inert Try again, and loads on reconnect", async ({ page, context }) => {
+  await open(page, "light");
+  const sheet = page.getByTestId("mn-keys");
+  await sheet.getByTestId("mn-keys-role-operator").click();
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = true));
+  await sheet.getByTestId("mn-keys-more").click();
+  await expect(sheet.getByTestId("mn-keys-failed")).toBeVisible();
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = false));
+  await context.setOffline(true);
+  await sheet.getByTestId("mn-keys-retry").click();
+  await expect(sheet.getByTestId("mn-keys-failed")).toBeVisible();
+  await expect(sheet.getByTestId("mn-keys-retry")).toHaveAttribute("aria-disabled", "true");
+  await context.setOffline(false);
   await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(25);
   await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
 });
