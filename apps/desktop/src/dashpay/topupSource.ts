@@ -18,6 +18,9 @@ import { topUpErrorText } from "./topup";
 
 export type { PaySource };
 
+/** The engine's feature name for a top-up from Platform (`platform.feature_off{feature}` on mainnet). */
+export const TOP_UP_FROM_PLATFORM = "top_up_from_platform";
+
 export const SOURCE_COPY = withTable(messageTable("dashpay.topUp.payWith", ["title", "core", "platform", "shielded", "nothing", "max"]), {
   get notOffered() {
     return PAY_WITH_COPY.notOffered;

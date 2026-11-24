@@ -26,6 +26,7 @@ import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import type { PlatformAddressRow } from "../api/generated/PlatformAddressRow";
 import type { TopUpFromPlatformOutcome } from "../api/generated/TopUpFromPlatformOutcome";
 import { isHeldOp } from "../platform/move";
+import { TOP_UP_FROM_PLATFORM } from "../dashpay/topupSource";
 
 /** A wallet's credits state: its top-up locks Platform has not taken, its fundings whose outcome
  * is unknown, the own contest as `contest_status` reads it (`null`: derived from the status), and
@@ -173,7 +174,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
 
   /** A top-up from Platform's refusals before the grant, in the engine's order. */
   function fromPlatformChecks(world: World, amount: WithdrawAmount) {
-    if (world.launch.network.dirName === "mainnet") throw fail("platform.feature_off", "top_up_from_platform", { kind: "feature", feature: "top_up_from_platform" });
+    if (world.launch.network.dirName === "mainnet") throw fail("platform.feature_off", TOP_UP_FROM_PLATFORM, { kind: "feature", feature: TOP_UP_FROM_PLATFORM });
     const p = world.pending.platform;
     if (p === null) throw fail("platform.feature_off", "platform_addresses", { kind: "feature", feature: "platform_addresses" });
     const held = p.activity.find(isHeldOp);
