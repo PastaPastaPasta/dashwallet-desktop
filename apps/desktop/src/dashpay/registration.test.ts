@@ -24,6 +24,7 @@ import {
 } from "./registration";
 import { PAY_WITH_COPY } from "./payWith";
 import { COPY, WAITS } from "./status";
+import { t } from "../i18n";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -213,6 +214,14 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     // Another failure keeps its label.
     const failed = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromPlatform: true, failure: failure("platform.timeout", { retryable: false }) }), I);
     expect(failed.actions.map((a) => `${a.kind}:${a.label}`)).toEqual(["another:Choose another username"]);
+  });
+
+  it("F22: a Platform run stopped by a changed plan says so in its own words and goes back to Confirm", () => {
+    const changed = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromPlatform: true, failure: failure("registration.quote_changed", { retryable: false }) }), I);
+    expect([changed.kind, changed.title, ...changed.actions.map((a) => `${a.kind}:${a.label}`)]).toEqual(["failed", "Registration failed", "reconfirm:Review the cost"]);
+    expect(changed.lines).toEqual(["No identity was paid for. If you chose Move to Dash wallet for this registration, those credits are in your Dash wallet now, less that move's fee. Review the cost and confirm to try again."]);
+    expect(changed.lines).not.toContain(t("dashpay.registration.startError.quoteChanged"));
+    expect(changed.lines.join(" ")).not.toContain("registration.quote_changed");
   });
 
   it("R9, R10, R11: done greets the name; a refused name keeps the identity; a contested one shows the vote", () => {

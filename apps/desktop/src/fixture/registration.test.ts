@@ -211,6 +211,19 @@ describe("a registration from the Platform balance (C-funding F4, F9, F10, F22)"
     // Nothing holds the addresses: the next Platform quote plans.
     expect((await cmd.registrationQuote(W, platformRequest(LABEL))).platform).not.toBeNull();
   });
+
+  it("a re-plan that no longer gives the quoted numbers fails with registration.quote_changed and takes nothing", async () => {
+    const f = install();
+    f.world.dashpay.platformCreates = ["replanRefused"];
+    const before = credits(f);
+    const draft = await start();
+    f.advanceRegistration(draft);
+    f.advanceRegistration(draft);
+    expect(await rowOf(draft)).toMatchObject({ phase: "failed", fundsCommitted: false, running: false, failure: { code: "registration.quote_changed", retryable: false } });
+    expect(credits(f)).toEqual(before);
+    await cmd.discardRegistration(W, draft);
+    expect((await cmd.registrationQuote(W, platformRequest(LABEL))).platform).not.toBeNull();
+  });
 });
 
 describe("a run, step by step", () => {

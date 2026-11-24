@@ -48,10 +48,10 @@ export const CHIP_TEXT: Record<string, string> = {
   namesUnknown: "Username not loaded",
 };
 
-/** From the Join page: a registration paid from the Platform balance whose create fails in a
- * block (C-funding F10), up to its failed screen. */
-export async function refundedFromPlatform(page: Page, label: string) {
-  await page.evaluate(() => (window.__dwFixture!.world.dashpay.platformCreates = ["paidFailure"]));
+/** From the Join page: a registration paid from the Platform balance whose run fails, up to its
+ * failed screen: its create fails in a block (C-funding F10), or its plan changed (F22). */
+export async function platformRunFails(page: Page, label: string, outcome: "paidFailure" | "replanRefused") {
+  await page.evaluate((o) => (window.__dwFixture!.world.dashpay.platformCreates = [o]), outcome);
   await page.getByTestId("join-pay-another").click();
   await page.getByTestId("pay-with-platform").getByRole("radio").check();
   await page.getByTestId("registration-next").click();

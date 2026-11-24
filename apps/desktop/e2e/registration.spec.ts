@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
-import { refundedFromPlatform } from "./dashpay";
+import { platformRunFails } from "./dashpay";
 import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // DP1-09: the username registration wizard on the fixture backend, by parity ID: IOS-066 (choose
@@ -452,7 +452,7 @@ test("C-funding F10: a create from the Platform balance that fails in a block sa
   const credits = () => page.evaluate(() => window.__dwFixture!.world.pending.platform!.addresses.map((a) => a.credits));
   const before = await credits();
   await toJoin(page);
-  await refundedFromPlatform(page, LABEL);
+  await platformRunFails(page, LABEL, "paidFailure");
   await expect(screen(page)).toContainText("Registration failed");
   await expect(page.getByTestId("registration-lines")).toHaveText(
     "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
@@ -467,6 +467,49 @@ test("C-funding F10: a create from the Platform balance that fails in a block sa
   expect(await calls(page, "start_registration")).toBe(1);
   await page.getByTestId("registration-another").click();
   await expect(page.getByTestId("registration-name")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("C-funding F22: a Platform run whose plan changed says so, and Continue goes back to Confirm with a new quote", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  const credits = () => page.evaluate(() => window.__dwFixture!.world.pending.platform!.addresses.map((a) => a.credits));
+  const before = await credits();
+  await toJoin(page);
+  await platformRunFails(page, LABEL, "replanRefused");
+  await expect(screen(page)).toContainText("Registration failed");
+  await expect(page.getByTestId("registration-lines")).toHaveText(
+    "No identity was paid for. If you chose Move to Dash wallet for this registration, those credits are in your Dash wallet now, less that move's fee. Review the cost and confirm to try again.",
+  );
+  await expect(page.getByTestId("registration-lines")).not.toContainText("Nothing was paid");
+  await expect(page.getByTestId("registration-lines")).not.toContainText("registration.quote_changed");
+  await expect(page.getByTestId("registration-repair")).toHaveCount(0);
+  await expect(page.getByTestId("registration-another")).toHaveCount(0);
+  expect(await credits()).toEqual(before);
+  // The balances change before Continue: no address alone pays now, so the plan takes two inputs.
+  await page.evaluate(() => {
+    const p = window.__dwFixture!.world.pending.platform!;
+    const [a, b] = p.addresses;
+    p.addresses = [
+      { ...a, credits: "1200000000" },
+      { ...b, credits: "1200000000" },
+    ];
+  });
+  const quotes = await calls(page, "registration_quote");
+  await expect(page.getByTestId("registration-reconfirm")).toHaveText("Review the cost");
+  await page.getByTestId("registration-reconfirm").click();
+  // Confirm for the same name from the Platform balance, with the new quote; nothing starts by itself.
+  await expect(page.getByTestId("registration-cost")).toContainText(
+    "About 0.02042 tDASH leaves your Platform balance: 0.02 tDASH for your identity and a Platform fee of about 0.00042 tDASH.",
+  );
+  await expect(page.getByTestId("registration-pay")).toBeEnabled();
+  expect(await calls(page, "registration_quote")).toBeGreaterThan(quotes);
+  expect(await calls(page, "start_registration")).toBe(1);
+  expect(await page.evaluate(() => window.__dwFixture!.world.dashpay.registrations.length)).toBe(0);
+  await page.getByTestId("registration-pay").click();
+  await authorize(page);
+  // A start with the old quote's numbers would be refused (registration.quote_changed).
+  await expect(screen(page)).toHaveAttribute("data-kind", "progress");
+  expect(await calls(page, "start_registration")).toBe(2);
   expect(errors).toEqual([]);
 });
 
@@ -496,7 +539,8 @@ const SCREENS: { name: string; scenario: string; reach: (page: Page) => Promise<
   { name: "repair", scenario: "dashpay-registration-needs-finish", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "repair")) },
   { name: "repair-unknown", scenario: "dashpay-registration-failed-unknown", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "repair")) },
   { name: "stopped", scenario: "dashpay-registration-stopped", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "stopped")) },
-  { name: "refunded", scenario: "dashpay-no-identity", reach: (page) => refundedFromPlatform(page, LABEL) },
+  { name: "refunded", scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, LABEL, "paidFailure") },
+  { name: "quote-changed", scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, LABEL, "replanRefused") },
 ];
 
 for (const theme of THEMES)

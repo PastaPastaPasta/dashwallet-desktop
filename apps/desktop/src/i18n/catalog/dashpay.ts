@@ -82,6 +82,10 @@ export const dashpay = {
      * reports no amount, so the line names none. */
     refundedPlatform:
       "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
+    /** A run that stopped when its Platform plan changed (`registration.quote_changed` on the
+     * row), whether or not its credits moved first; Confirm's start refusal has its own line. */
+    quoteChanged:
+      "No identity was paid for. If you chose Move to Dash wallet for this registration, those credits are in your Dash wallet now, less that move's fee. Review the cost and confirm to try again.",
     stoppedWith: "It stopped with {code}.",
   },
   /** An invitation claim's refusals. */
@@ -263,7 +267,7 @@ export const dashpay = {
     },
     recovery:
       "Your funds are safe. The payment is locked for this registration, and Dash Wallet finishes it once the network confirms it. If it does not finish, Tools ▸ Repair can finish the transfer.",
-    failed: { title: "Registration failed", another: "Choose another username", startNew: "Start a new registration" },
+    failed: { title: "Registration failed", another: "Choose another username", startNew: "Start a new registration", reviewCost: "Review the cost" },
     stopped: { title: "Registration stopped" },
     done: {
       title: "Welcome to DashPay, {username}",

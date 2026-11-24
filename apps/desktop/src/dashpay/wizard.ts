@@ -118,6 +118,8 @@ export class RegistrationWizard extends Model {
   wedge: string[] | null = null;
   /** Finish transfers' report, once it ran. */
   finished: FinishReport | null = null;
+  /** When the last plan was refused at run time (F22): Confirm pays only a quote read since. */
+  requoteAt: number | null = null;
   readonly grants: GrantModel;
 
   constructor(
@@ -141,6 +143,7 @@ export class RegistrationWizard extends Model {
     this.named = null;
     this.error = null;
     this.wedge = null;
+    this.requoteAt = null;
     this.changed();
   }
 
@@ -290,6 +293,25 @@ export class RegistrationWizard extends Model {
       const identity = row?.phase === "done" ? row.identity : null;
       this.begin(identity ? { kind: "credits", identity } : { kind: "core" });
     });
+  }
+
+  /** Back to Confirm for `row`'s name and source with a new quote (F22), its row discarded
+   * while nothing is committed. Nothing plans until the user confirms again. */
+  async reconfirm(row: RegistrationStatus): Promise<void> {
+    if (row.fundsCommitted) return;
+    await this.#call("discard", async () => {
+      await this.api.discardRegistration(this.walletId, row.draft);
+      this.begin({ kind: "core" }, "source");
+      if (row.fromPlatform) this.source = "platform";
+      this.label = row.label;
+      this.step = "confirm";
+      this.requoteAt = Date.now();
+    });
+  }
+
+  /** Whether a quote read at `readAt` may be paid: after a run-time refusal, only one read since. */
+  quoteStands(readAt: number): boolean {
+    return this.requoteAt === null || readAt > this.requoteAt;
   }
 
   /** Finish transfers (R5, D10). */

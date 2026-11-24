@@ -109,6 +109,8 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
         return void wiz.finish();
       case "another":
         return void wiz.another(row ?? null);
+      case "reconfirm":
+        return void (row && wiz.reconfirm(row));
       case "done":
         return leave();
       case "wallet":

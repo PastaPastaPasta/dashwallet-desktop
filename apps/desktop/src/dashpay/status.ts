@@ -233,6 +233,9 @@ export function failureText(failure: RegistrationFailure, amount: (duffs: number
     // C-funding F10: a create that executed as a paid failure, from the Platform balance.
     case "registration.refunded":
       return fromPlatform ? t("dashpay.failure.refundedPlatform") : t("dashpay.failure.stoppedWith", { code: failure.code });
+    // A run that stopped when its Platform plan changed: a re-plan refused, or an exit to the Dash wallet.
+    case "registration.quote_changed":
+      return t("dashpay.failure.quoteChanged");
     case "registration.funding_insufficient":
       if (failure.needed === null) return t("dashpay.failure.fundingShort");
       // What the wallet holds stays hidden in discreet mode.

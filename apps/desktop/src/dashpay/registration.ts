@@ -85,7 +85,7 @@ export const REG_COPY = {
   get recovery() {
     return t("dashpay.registration.recovery");
   },
-  failed: reg("failed", ["title", "another", "startNew"]),
+  failed: reg("failed", ["title", "another", "startNew", "reviewCost"]),
   stopped: reg("stopped", ["title"]),
   done: withTable(reg("done", ["message", "next", "action", "requestSent", "requestRefused"]), {
     title: (label: string) => t("dashpay.registration.done.title", username(label)),
@@ -198,7 +198,7 @@ export type ScreenKind =
   /** A Platform payment that may still go through: Continue or Move to Dash wallet. */
   | "held";
 
-export type ScreenActionKind = "home" | "continue" | "moveToCore" | "unlock" | "finish" | "repair" | "another" | "done" | "wallet" | "votingInfo" | Exclude<WelcomeStepKind, "share">;
+export type ScreenActionKind = "home" | "continue" | "moveToCore" | "unlock" | "finish" | "repair" | "another" | "reconfirm" | "done" | "wallet" | "votingInfo" | Exclude<WelcomeStepKind, "share">;
 
 /** R9's next steps (PRODUCT #4). */
 export type WelcomeStepKind = "editProfile" | "findFriends" | "share";
@@ -308,6 +308,9 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
     // a refusal shows this row again (`registration.in_progress`).
     if (row.fundsCommitted)
       return base("stopped", REG_COPY.stopped.title, [why, REG_COPY.recovery], [act("repair", REG_COPY.progress.repair), act("another", REG_COPY.failed.another)]);
+    // F22: a run whose plan changed goes back to Confirm with a new quote.
+    if (row.fromPlatform && f.code === "registration.quote_changed")
+      return base("failed", REG_COPY.failed.title, [why], [act("reconfirm", REG_COPY.failed.reviewCost)], { step: null });
     // The attempt's keys failed, not the name: the same name may be chosen again.
     const another = row.fromPlatform && f.code === "registration.refunded" ? REG_COPY.failed.startNew : REG_COPY.failed.another;
     return base("failed", REG_COPY.failed.title, [why], [act("another", another)], { step: null });

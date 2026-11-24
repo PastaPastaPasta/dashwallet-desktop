@@ -224,6 +224,33 @@ describe("IOS-068 the row's actions", () => {
     expect(wiz).toMatchObject({ step: "name", mode: { kind: "core" }, label: "" });
   });
 
+  it("F22: a Platform run whose plan changed goes back to Confirm for its name and source, and Pay waits for a new quote", async () => {
+    const { wiz, calls, api } = setup();
+    const changed = row({ phase: "failed", fundsCommitted: false, fromPlatform: true, failure: { code: "registration.quote_changed", phase: "keysPrepared", retryable: false, needed: null, available: null } });
+    const before = Date.now();
+    await wiz.reconfirm(changed);
+    expect(calls).toEqual(["discard reg-1"]);
+    expect(wiz).toMatchObject({ step: "confirm", source: "platform", label: "alice-77", draft: null, error: null });
+    expect(wiz.fromPlatform).toBe(true);
+    expect(api.startRegistration).not.toHaveBeenCalled();
+    // Only a quote read after the refusal may be paid.
+    expect(wiz.quoteStands(before - 1)).toBe(false);
+    expect(wiz.quoteStands(wiz.requoteAt!)).toBe(false);
+    expect(wiz.quoteStands(wiz.requoteAt! + 1)).toBe(true);
+    // Back goes to the name, then "Pay with".
+    wiz.back();
+    expect(wiz.step).toBe("name");
+    wiz.back();
+    expect(wiz.step).toBe("source");
+    expect(wiz.quoteStands(before - 1)).toBe(false);
+    // A new wizard pays any quote; a row with its funds committed is never reopened from here.
+    wiz.begin({ kind: "core" });
+    expect(wiz.quoteStands(0)).toBe(true);
+    await wiz.reconfirm({ ...changed, fundsCommitted: true });
+    expect(calls).toEqual(["discard reg-1"]);
+    expect(wiz.step).toBe("name");
+  });
+
   it("D27: from a row stopped for good with its funds committed, step 1 opens and nothing is discarded", async () => {
     const { wiz, calls } = setup();
     await wiz.another(row({ phase: "failed", fundsCommitted: true, failure: { code: "registration.islock_timeout", phase: "fundingSent", retryable: false, needed: null, available: null } }));

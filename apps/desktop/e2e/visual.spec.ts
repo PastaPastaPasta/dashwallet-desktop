@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
-import { CARDS, CHIP_TEXT, CHIPS, refundedFromPlatform } from "./dashpay";
+import { CARDS, CHIP_TEXT, CHIPS, platformRunFails } from "./dashpay";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
 import { authorize, fixtureUrl, fontsReady, openTransfer, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { openIdentities } from "./identities";
@@ -479,7 +479,8 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
   held: { scenario: "dashpay-registering-held", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=held]").waitFor() },
   repair: { scenario: "dashpay-registration-needs-finish", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=repair]").waitFor() },
   stopped: { scenario: "dashpay-registration-stopped", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=stopped]").waitFor() },
-  refunded: { scenario: "dashpay-no-identity", reach: (page) => refundedFromPlatform(page, "alice-77") },
+  refunded: { scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, "alice-77", "paidFailure") },
+  "quote-changed": { scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, "alice-77", "replanRefused") },
   // PRODUCT #4: the welcome, after a new username's run to its end.
   welcome: {
     scenario: "dashpay-no-identity",

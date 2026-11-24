@@ -265,7 +265,7 @@ function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizar
   }
   if (identity !== null)
     return <p className="registration-line">{credits.data ? REG_COPY.confirm.fromCredits(credits.data.maxCredits) : REG_COPY.confirm.quoting}</p>;
-  if (!quote.data) return <p className="registration-line">{REG_COPY.confirm.quoting}</p>;
+  if (!quote.data || !wiz.quoteStands(quote.dataUpdatedAt)) return <p className="registration-line">{REG_COPY.confirm.quoting}</p>;
   const model = confirmModel(quote.data, inputs.amount);
   return (
     <>
@@ -297,17 +297,19 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   const identity = wiz.mode.kind === "credits" ? wiz.mode.identity : null;
   // The same reads as CostLines (shared through the query cache).
   const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.fromPlatform);
-  // F4: a start refused for a changed cost shows the new one.
+  // F4: a start refused for a changed cost shows the new one; F22: so does a run's.
   const changedCost = hasCode(wiz.error, "registration.quote_changed");
+  const stands = wiz.quoteStands(quote.dataUpdatedAt);
   const { refetch } = quote;
   useEffect(() => {
-    if (changedCost) void refetch();
-  }, [changedCost, refetch]);
+    if (changedCost || !stands) void refetch();
+  }, [changedCost, stands, refetch]);
   const credits = useNameCredits(walletId, identity, wiz.label);
   const check = useUsernameCheck(wiz.label);
   const contested = identity !== null ? (check.data?.contested ?? false) : (quote.data?.contested ?? false);
   // A refetch that fails keeps the last quote: Pay waits for one that stands.
-  const ready = identity !== null ? credits.data !== undefined : quote.data !== undefined && !quote.isError && confirmModel(quote.data, inputs.amount).shortfall === null;
+  const ready =
+    identity !== null ? credits.data !== undefined : quote.data !== undefined && !quote.isError && stands && confirmModel(quote.data, inputs.amount).shortfall === null;
   const disabled = !ready || wiz.running !== null || (contested && !accepted);
   const pay = () => {
     if (identity !== null) void wiz.registerName(identity);

@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { MAIN_PHRASE } from "../src/fixture/vault";
-import { CARDS, refundedFromPlatform } from "./dashpay";
+import { CARDS, platformRunFails } from "./dashpay";
 import { authorize, fixtureUrl, THEMES, trackPageErrors } from "./helpers";
 import { checkArea, overflow, PANES, PSEUDO, untranslated } from "./pseudo";
 
@@ -209,7 +209,15 @@ export const STATES: Record<string, State> = {
     roots: ["page-joinDashPay"],
     go: async (page) => {
       await toJoin(page);
-      await refundedFromPlatform(page, LABEL);
+      await platformRunFails(page, LABEL, "paidFailure");
+    },
+  },
+  "quote-changed": {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await platformRunFails(page, LABEL, "replanRefused");
     },
   },
   finished: {

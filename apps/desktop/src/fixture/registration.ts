@@ -291,8 +291,9 @@ export interface PlatformRegisterPlan {
 
 /** `registered`: the create's proved result; `unknown`: no answer (F7); `held`: failed by height
  * and able to land still (F22); `paidFailure`: executed and failed in a block, and nothing
- * retries (F10, F12). */
-export type PlatformCreateOutcome = "registered" | "unknown" | "held" | "paidFailure";
+ * retries (F10, F12); `replanRefused`: a new plan no longer gives the quoted numbers, refused
+ * before anything is signed (platform_register.rs `new_plan`). */
+export type PlatformCreateOutcome = "registered" | "unknown" | "held" | "paidFailure" | "replanRefused";
 
 const short = (needed: bigint, available: bigint) =>
   fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(needed), available: String(available) });
@@ -747,6 +748,13 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
           ctx.emit({ kind: "platform", network, walletId, change: { domain: "platformAddresses" } });
         }
         const failure: RegistrationFailure = { phase: row.phase, code: "registration.refunded", retryable: false, needed: null, available: null };
+        Object.assign(row, { phase: "failed", fundsCommitted: false, failure });
+        end(ctx, walletId, dp, row, d);
+        settleStatus(dp);
+        break;
+      }
+      if (outcome === "replanRefused") {
+        const failure: RegistrationFailure = { phase: row.phase, code: "registration.quote_changed", retryable: false, needed: null, available: null };
         Object.assign(row, { phase: "failed", fundsCommitted: false, failure });
         end(ctx, walletId, dp, row, d);
         settleStatus(dp);
