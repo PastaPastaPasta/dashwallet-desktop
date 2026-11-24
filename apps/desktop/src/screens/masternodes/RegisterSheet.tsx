@@ -18,6 +18,7 @@ import type { ProTxKeys } from "../../api/generated/ProTxKeys";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useBackend } from "../../api/queries";
+import { ui } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
 import { CopyIconButton } from "../../components/copy";
 import { DetailRow } from "../../components/detail";
@@ -578,7 +579,18 @@ export function RegisterSheet({
         </p>
       </>
     );
-  else if (step === "done" && op) body = <Done op={op} self={d.runner === "self"} />;
+  else if (step === "done" && op)
+    body = (
+      <Done
+        op={op}
+        self={d.runner === "self"}
+        onOpenKeys={() => {
+          // Sent is done, so the sheet closes; Masternode keys opens on the operator key to copy.
+          onClose();
+          ui.set({ dialog: "mnKeys", mnKeysRole: "operator" });
+        }}
+      />
+    );
 
   const reviewing = step === "review";
   const proving = step === "prove";
@@ -768,7 +780,7 @@ function Review({ d, p, amount, changed }: { d: RegDraft; p: MnRegistrationPrevi
   );
 }
 
-function Done({ op, self }: { op: ProTxOperation; self: boolean }) {
+function Done({ op, self, onOpenKeys }: { op: ProTxOperation; self: boolean; onOpenKeys: () => void }) {
   const t = useT();
   if (op.state.kind === "not_sent")
     return (
@@ -793,7 +805,17 @@ function Done({ op, self }: { op: ProTxOperation; self: boolean }) {
         </dl>
       )}
       <ol className="mg-small">
-        <li>{t(self ? `${R}.doneScreen.stepSelf` : `${R}.doneScreen.stepHosted`)}</li>
+        <li>
+          {t(self ? `${R}.doneScreen.stepSelf` : `${R}.doneScreen.stepHosted`)}
+          {self && (
+            <>
+              {" "}
+              <DashButton variant="plainBlue" size="small" data-testid="reg-open-keys" onClick={onOpenKeys}>
+                {t("masternodes.keys.open")}
+              </DashButton>
+            </>
+          )}
+        </li>
         <li>{t(`${R}.doneScreen.stepActive`)}</li>
         <li>{t(`${R}.doneScreen.stepPayouts`)}</li>
       </ol>

@@ -283,6 +283,30 @@ test("D5: Review shows the first figures, then Register's re-read, then sends", 
   await page.getByTestId("reg-passphrase").fill("demo");
   await page.getByTestId("reg-register").click();
   await expect(page.getByTestId("reg-done-body")).toBeVisible();
+  // A hosted masternode's secret is the operator's: no link to this wallet's keys.
+  await expect(page.getByTestId("reg-open-keys")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("self-run, Sent: Masternode keys… opens the keys on the operator role to copy the secret", async ({ page }) => {
+  const errors = await open(page, "reg");
+  await setUp(page);
+  await page.getByTestId("reg-runner-self").click();
+  await next(page);
+  await expect(step(page, "collateral")).toBeVisible();
+  await next(page);
+  await expect(step(page, "operator")).toBeVisible();
+  await page.getByTestId("reg-service").fill(SERVICE);
+  await next(page);
+  await expect(page.getByTestId("reg-owner")).toBeVisible();
+  await toReview(page);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-register").click();
+  await expect(page.getByTestId("reg-done-body")).toContainText("Copy the operator secret from Masternode keys");
+  await page.getByTestId("reg-open-keys").click();
+  await expect(sheet(page)).toHaveCount(0);
+  await expect(page.getByTestId("mn-keys")).toBeVisible();
+  await expect(page.getByTestId("mn-keys-role-operator")).toHaveAttribute("aria-pressed", "true");
   expect(errors).toEqual([]);
 });
 
