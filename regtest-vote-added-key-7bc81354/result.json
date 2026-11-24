@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "steps": [
+    "unlocked the real vault; SPV syncs from the suite's controller node",
+    "governance was off: Turn on; dwd_ak_p0 is listed",
+    "Track found 188f5f67\u2026: \"Masternode \u00b7 127.0.0.1:11565voting address yMcT\u202635Rv\"",
+    "Add keys (Voting keyLets this wallet vote on proposals and usernames with this masternode.): \"Matches this masternode's voting key.\"",
+    "tracked row \"Masternode 188f5f67Masternode \u00b7 127.0.0.1:11565ActiveTracked\"; Voting key \u00b7 matchesRemove voting key",
+    "Vote\u2026 Yes with \"Masternode 188f5f67 \u00b7 127.0.0.1:11565key you added1None\": \"1 of 1 vote sent\" (Masternode 188f5f67 \u00b7 127.0.0.1:11565weight 1 \u00b7 to 3 peersSent)"
+  ],
+  "evidence": {
+    "trackResult": "Masternode \u00b7 127.0.0.1:11565voting address yMcT\u202635Rv",
+    "addKeyRole": "Voting keyLets this wallet vote on proposals and usernames with this masternode.",
+    "addKeyResult": "Matches this masternode's voting key.",
+    "keyAdded": "Voting key \u00b7 matchesRemove voting key",
+    "trackedRow": "Masternode 188f5f67Masternode \u00b7 127.0.0.1:11565ActiveTracked",
+    "voteRow": "Masternode 188f5f67 \u00b7 127.0.0.1:11565key you added1None",
+    "voteResult": "1 of 1 vote sent",
+    "voteResultRow": "Masternode 188f5f67 \u00b7 127.0.0.1:11565weight 1 \u00b7 to 3 peersSent",
+    "core": {
+      "vote": "aafddac77a47adef727aea04c96baba50a298a89011fc726e1e41b5b0f09e084-1:1795525908:yes:funding:1",
+      "votingAddress": "yMcT1kCx3qBT7FowkotrVsxV3Mmxi835Rv"
+    }
+  },
+  "source": {
+    "head": "7bc813540a08bac5fafa9695ad4130cf3b2f7dca",
+    "dirty": false
+  }
+}
