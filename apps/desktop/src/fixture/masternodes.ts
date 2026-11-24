@@ -781,7 +781,8 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
       const o = opOf(world, walletId, operation);
       const state = readState(m, o).kind;
       if (state !== "needs_signature" && state !== "inputs_spent") throw stateError(state);
-      if (state === "inputs_spent") m.spendInputs = false;
+      // New fee inputs: the engine replans, so the fee and what leaves the wallet move (REG_FEE_DRIFT).
+      if (state === "inputs_spent") Object.assign(m, { spendInputs: false }), Object.assign(o, { fee: o.fee + REG_FEE_DRIFT, debit: o.debit + REG_FEE_DRIFT });
       Object.assign(o, { state: { kind: "needs_signature" }, signRequest: { address: o.terms.collateralAddress!, message: signMessage(m, o.terms) } });
       changed(ctx);
       return readOp(m, o);
