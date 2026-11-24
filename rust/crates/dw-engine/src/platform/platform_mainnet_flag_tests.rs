@@ -410,3 +410,30 @@ fn a_hold_that_settles_during_the_read_is_off_on_mainnet() {
     assert!(w.net.sent().is_empty());
     assert!(w.f.unused(&grant));
 }
+
+#[test]
+fn an_exit_whose_inputs_differ_from_the_held_record_is_off_on_mainnet() {
+    let w = World::mainnet();
+    let (a, b) = (w.address(0), w.address(1));
+    w.net.fund(a, 3 * DASH);
+    let mut top_up = held(
+        "move-1-0",
+        MoveKind::ToIdentity,
+        (&bech32m(&a, Network::Mainnet), 1, 2 * DASH, 3 * DASH),
+        &identity_b58(),
+    );
+    top_up.inputs.push(MoveInput {
+        address: bech32m(&b, Network::Mainnet),
+        nonce: 1,
+        credits: DASH,
+        before: DASH,
+        fee_source: false,
+        unseen: 0,
+    });
+    top_up.expected_duffs = 0;
+    w.seed(&top_up);
+    let grant = w.f.grant(3 * DASH);
+    off(w.move_all(&grant));
+    assert!(w.net.sent().is_empty());
+    assert!(w.f.unused(&grant));
+}
