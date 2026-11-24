@@ -152,21 +152,13 @@ function HeroFiat({ fiat, duffs, hidden }: { fiat: Fiat; duffs: number; hidden: 
   );
 }
 
-/** Pay ▸ To an address, a fresh form (as a link would open it). */
-function openPay(focusAddress: boolean) {
-  openPayForm();
-  if (focusAddress) requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="pay-address"]')?.focus());
-}
-
-// U-03 D16: the mobile shortcut bar. The desktop has no camera, so Scan QR opens the address
-// field to paste into, as U-01 routes a scanQr link; Back up comes with the recovery phrase (U-02).
+// U-03 D16: the Home shortcut bar; Back up comes with the recovery phrase (U-02).
 // Transfer opens the sheet at Dash wallet → Shielded, or → Platform when Shielded is not active.
 // Titles are read at render, so a language change shows at once.
 const SHORTCUTS: { id: string; icon: UsedIcon; title: () => string; run: ((transfer: () => void) => void) | null; why?: () => string }[] = [
   { id: "receive", icon: "shortcutReceive", title: () => t("home.shortcuts.receive"), run: () => navigate("receive") },
-  { id: "send", icon: "shortcutSend", title: () => t("home.shortcuts.send"), run: () => openPay(false) },
+  { id: "send", icon: "shortcutSend", title: () => t("home.shortcuts.send"), run: () => openPayForm() },
   { id: "transfer", icon: "transfer", title: () => t("transfer.shortcut"), run: (transfer) => transfer() },
-  { id: "scan", icon: "shortcutScanQR", title: () => t("home.shortcuts.scan"), run: () => openPay(true) },
   { id: "backup", icon: "shortcutBackup", title: () => t("home.shortcuts.backup"), run: null, why: () => t("home.shortcuts.backupWhy") },
 ];
 
