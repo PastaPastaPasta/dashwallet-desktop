@@ -111,7 +111,8 @@ for (const theme of THEMES) {
     await shot(page, theme, "platform-confirm-max-discreet");
     const amountRow = page.getByTestId("topup-quote").locator(".detail-row").first().locator(".detail-value");
     expect((await amountRow.textContent())!.replace(/\D/g, "")).toBe("");
-    await expect(page.getByTestId("topup-platform-message")).not.toContainText(/\d/);
+    // Masked amounts; only the fee address keeps its digits.
+    await expect(page.getByTestId("topup-platform-message")).toContainText("with #.## from your Platform addresses? About #.## leaves them");
     expect(errors).toEqual([]);
   });
 
