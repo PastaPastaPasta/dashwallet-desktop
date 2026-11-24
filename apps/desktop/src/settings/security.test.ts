@@ -94,6 +94,26 @@ describe("the spending limit", () => {
     expect(model.pending).toBeNull();
     expect((await b.quickUnlockPolicy()).spendLimitDuffs).toBe(10_000_000);
   });
+
+  it("#173 item 10: a limit the engine can't read shows as such, and the same value can be set again", async () => {
+    fixture.world.spendLimitUnreadable = true;
+    const model = new SpendLimitModel(b);
+    await model.load();
+    // Not the old 0.5 DASH as current: the limit in force is 0, and the engine says why.
+    expect(model.unreadable).toBe(true);
+    expect(model.limit).toBe(0);
+    // The value shown before can be set again (a readable limit ignores asking for itself).
+    model.ask(50_000_000);
+    expect(model.pending).toBe(50_000_000);
+    await model.confirm(PASS);
+    expect(model.unreadable).toBe(false);
+    expect(model.limit).toBe(50_000_000);
+    const policy = await b.quickUnlockPolicy();
+    expect([policy.spendLimitDuffs, policy.spendLimitUnreadable]).toEqual([50_000_000, false]);
+    // Readable again: asking for the current value is no change.
+    model.ask(50_000_000);
+    expect(model.pending).toBeNull();
+  });
 });
 
 describe("payment authentication", () => {

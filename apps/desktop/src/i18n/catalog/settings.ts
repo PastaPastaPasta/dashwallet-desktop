@@ -351,6 +351,10 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
     /** A spending limit: `amount` is a number of DASH. */
     dash: "{amount} DASH",
     duffs: "{amount} duffs",
+    /** The engine reports the sealed spending limit as unreadable (issue 173, item 10). MG's words. */
+    spendLimitUnreadable:
+      "Dash Wallet couldn't read your saved spending limit, so it asks for your passphrase for every payment, and quick unlock is off. Set the limit again to turn quick unlock back on. Setting up quick unlock again won't fix this.",
+    spendLimitSetAgain: "Set limit again…",
     spendLimitChange:
       "Change the limit from {from} to {to}. Payments during the 5 minutes after you unlock can add up to {to}. A total over that still asks for the passphrase.",
     encryptFirst: "Encrypt the wallet first.",

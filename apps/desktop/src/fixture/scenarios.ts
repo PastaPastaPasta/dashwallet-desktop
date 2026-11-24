@@ -126,6 +126,9 @@ export interface World {
   paymentAuth: boolean;
   /** Quick-unlock and signing-window spend limit, in duffs. Default 0.5 DASH. */
   spendLimitDuffs: number;
+  /** The sealed limit no longer authenticates (issue 173, item 10): while unlocked the engine reports
+   * it, the limit in force is 0, and setting the limit again clears it. */
+  spendLimitUnreadable?: boolean;
   /** When the post-unlock signing window ends (ms). `null` when it is closed. The funded
    * scenario starts unlocked, so the window is open. */
   signingUntil: number | null;

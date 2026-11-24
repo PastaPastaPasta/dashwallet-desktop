@@ -237,7 +237,7 @@ function windowSum(purposes: GrantPurposeSpec[]): bigint {
 
 /** `admit_window`: an open window, a limit above 0, and the total within it. */
 function windowCovers(w: World, purposes: GrantPurposeSpec[]): boolean {
-  return windowOpen(w) && w.spendLimitDuffs > 0 && BigInt(w.windowCharged ?? 0) + windowSum(purposes) <= BigInt(w.spendLimitDuffs);
+  return windowOpen(w) && !w.spendLimitUnreadable && w.spendLimitDuffs > 0 && BigInt(w.windowCharged ?? 0) + windowSum(purposes) <= BigInt(w.spendLimitDuffs);
 }
 
 function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
@@ -846,15 +846,20 @@ export const HANDLERS: Handlers = {
     world.paymentAuth = on;
     return null;
   },
-  quick_unlock_policy: (_, { world }) => ({
-    enrolled: world.lock.quickUnlockEnrolled,
-    spendLimitDuffs: world.spendLimitDuffs,
-    passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
-    lastPassphraseAt: null,
-    signingWindowOpen: windowOpen(world),
-    signingWindowRemainingDuffs: windowOpen(world) ? Math.max(0, world.spendLimitDuffs - (world.windowCharged ?? 0)) : null,
-    signingWindowSecs: SIGNING_WINDOW_MS / 1000,
-  }),
+  quick_unlock_policy: (_, { world }) => {
+    // Known only with the data key, as the vault reads it.
+    const unreadable = world.spendLimitUnreadable === true && world.lock.state === "unlocked";
+    return {
+      enrolled: world.lock.quickUnlockEnrolled,
+      spendLimitDuffs: unreadable ? 0 : world.spendLimitDuffs,
+      passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
+      lastPassphraseAt: null,
+      signingWindowOpen: windowOpen(world),
+      signingWindowRemainingDuffs: windowOpen(world) && !world.spendLimitUnreadable ? Math.max(0, world.spendLimitDuffs - (world.windowCharged ?? 0)) : null,
+      signingWindowSecs: SIGNING_WINDOW_MS / 1000,
+      spendLimitUnreadable: unreadable,
+    };
+  },
   set_quick_unlock_spend_limit: ({ grantId, spendLimitDuffs }, { world }) => {
     if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
     if (!world.lock.encrypted) throw fail("vault.not_encrypted", "vault not encrypted");
@@ -862,6 +867,7 @@ export const HANDLERS: Handlers = {
     if (!credentialGrant(world, grantId)) throw fail("vault.grant_invalid", "grant invalid");
     useGrant(world, grantId);
     world.spendLimitDuffs = spendLimitDuffs;
+    world.spendLimitUnreadable = false;
     return {
       enrolled: world.lock.quickUnlockEnrolled,
       spendLimitDuffs,
@@ -870,6 +876,7 @@ export const HANDLERS: Handlers = {
       signingWindowOpen: windowOpen(world),
       signingWindowRemainingDuffs: windowOpen(world) ? Math.max(0, spendLimitDuffs - (world.windowCharged ?? 0)) : null,
       signingWindowSecs: SIGNING_WINDOW_MS / 1000,
+      spendLimitUnreadable: false,
     };
   },
   destroy_vault: ({ credential }, ctx) => {
