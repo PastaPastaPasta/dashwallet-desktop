@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { SyncStatus } from "../api/generated/SyncStatus";
+import { NOT_SETTLED, settleSync } from "../format/sync";
 import { t } from "../i18n";
 import { phaseText, processingBlock, stalledMinutes } from "./SyncSheet";
 
@@ -22,6 +23,14 @@ describe("the new-block hold", () => {
   it("drops the line once that phase reads done, and while not caught up", () => {
     expect(processingBlock(held(true))).toBe(false);
     expect(processingBlock({ ...held(false), caughtUp: false })).toBe(false);
+    expect(processingBlock({ ...held(false), running: false })).toBe(false);
+    expect(processingBlock({ ...held(true), phases: [phase({ targetHeight: null, currentHeight: null })] } as unknown as SyncStatus)).toBe(false);
+  });
+  it("shows only on the status the bar holds after a caught-up reading, never on a first sync", () => {
+    const raw = { ...held(false), caughtUp: false };
+    expect(processingBlock(raw)).toBe(false);
+    expect(processingBlock(settleSync({ synced: true, heldSince: null }, raw, 0).status)).toBe(true);
+    expect(processingBlock(settleSync(NOT_SETTLED, raw, 0).status)).toBe(false);
   });
 });
 
