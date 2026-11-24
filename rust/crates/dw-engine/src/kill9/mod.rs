@@ -5,14 +5,13 @@
 //!
 //! The rows are opt-in, run by the nightly job:
 //! `cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding`;
-//! R5b's (`send/contact_tests/kill9.rs`) run in every Unix suite, as they
-//! did before they moved onto this harness. The parent unlocks the vault of
-//! the folder it opens again ([`engine_at`]).
+//! R5b's (`send/contact_tests/kill9.rs`) run in every suite, Windows
+//! included, as they did before they moved onto this harness. The parent
+//! unlocks the vault of the folder it opens again ([`engine_at`]).
 //! A `kill9_finding_<issue>` row reproduces an open issue and stays out of
 //! it until the fix. A child test does nothing unless this harness started
 //! it.
 
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -155,10 +154,16 @@ pub(crate) fn killed_at(test: &str, row: &str, point: &str) -> (tempfile::TempDi
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    // `Child::kill` is SIGKILL: no destructor, close or flush runs.
+    // `Child::kill` is SIGKILL on Unix and TerminateProcess on Windows: no
+    // destructor, close or flush runs.
     child.kill().unwrap();
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let status = child.wait().unwrap();
-    assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+    }
     let report = std::fs::read_to_string(&reached).unwrap();
     (dir, report)
 }
