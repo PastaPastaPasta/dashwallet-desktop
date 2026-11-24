@@ -317,7 +317,7 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
     const what = r.waiting === "fundingUnknown" ? COPY.repair.unknown : COPY.repair.finish;
     return card("creatingRepair", "problem", title, [what, COPY.repair.message], { step, action: action("repair", COPY.repair.action) });
   }
-  // F22 (#685): a Platform payment that may still go through: Continue retries it, Move to Dash
+  // F22: a Platform payment that may still go through: Continue retries it, Move to Dash
   // wallet frees the balance instead.
   if (r.waiting === "paymentHeld" && !r.failure)
     return card("creatingHeld", "problem", title, [WAITS.paymentHeld], {

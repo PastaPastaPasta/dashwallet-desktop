@@ -480,7 +480,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       changed(ctx, walletId, draft);
       return null;
     },
-    // registration.rs `resume_grant` (DP5-03 D20, #685): a claim row's or a Platform-funded row's
+    // registration.rs `resume_grant` (DP5-03 D20): a claim row's or a Platform-funded row's
     // grant from the row alone, no duffs and the credits of the steps it has left.
     registration_resume_grant: ({ walletId, draft }, { world }) => {
       const row = d.dashpay(world, walletId).registrations.find((r) => r.draft === draft);

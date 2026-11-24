@@ -39,7 +39,7 @@ function CardIcon({ tone }: { tone: CardModel["tone"] }) {
   );
 }
 
-/** "Move to Dash wallet" from a held Platform payment (#685): Home's transfer, which plans beside
+/** "Move to Dash wallet" from a held Platform payment: Home's transfer, which plans beside
  * the held payment from its inputs only, so it is that payment's way out. */
 export function moveToDashWallet(b: Backend, walletId: string) {
   navigate("home");
