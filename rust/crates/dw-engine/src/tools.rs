@@ -203,7 +203,7 @@ impl RescanState {
 /// The version this build was released as. The release workflow passes its run's version as
 /// `DW_BUILD_VERSION` (`0.1.0`, `0.1.0-rc.1`, `0.1.0-dev.57.g1a2b3c4`); a build without it (local,
 /// tests, Nightly) is a dev build.
-pub(crate) const BUILD_VERSION: &str = match option_env!("DW_BUILD_VERSION") {
+pub const BUILD_VERSION: &str = match option_env!("DW_BUILD_VERSION") {
     Some(v) if !v.is_empty() => v,
     _ => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
 };
