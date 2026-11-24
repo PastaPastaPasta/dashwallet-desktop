@@ -101,9 +101,13 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
   const activity = usePlatformActivity(walletId);
   const amount = (duffs: number) => (discreet ? shown.masked() : `${shown.full(duffs)} ${shown.name}`);
   const credits = (c: string) => amount(creditsToDuffs(c));
-  const { step, outcome } = flow;
+  const row = activity.data?.find((a) => a.id === flow.outcome?.id);
+  // Activity's final answer replaces what the move returned: done, replaced, or failed and unable to land.
+  const final = row && (row.state === "done" || row.state === "replaced" || (row.state === "failed" && !row.mayLand));
+  const { step } = flow;
+  const outcome = final && flow.outcome ? { ...flow.outcome, state: row.state, credits: row.credits, expectedDuffs: row.expectedDuffs, feeCredits: row.feeCredits } : flow.outcome;
   // A failed move that may still execute is shown as not confirmed; one that cannot found its credits used.
-  const failed = outcome?.state === "failed" && !activity.data?.find((a) => a.id === outcome.id)?.mayLand;
+  const failed = outcome?.state === "failed" && !row?.mayLand;
   return (
     <div data-testid="platform-move-body" data-step={step}>
       {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} credits={credits} amount={amount} block={block} />}

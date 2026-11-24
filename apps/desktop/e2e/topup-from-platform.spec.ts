@@ -258,6 +258,29 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
+  test(`an open outcome sheet takes Activity's answer once the exit can no longer land (${theme})`, async ({ page }) => {
+    const errors = await heldTopUp(page, theme);
+    await page.evaluate(() => void (window.__dwFixture!.world.pending.platform!.nextMove = "pending"));
+    await page.getByTestId("topup-move-to-core").click();
+    await moveConfirm(page);
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    // Activity proves the top-up executed in the exit's place.
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      const p = f.world.pending.platform!;
+      p.activity = p.activity.map((a) =>
+        a.kind === "moveToCore" && a.state === "pending" ? { ...a, state: "failed" as const, mayLand: false } : a.kind === "toIdentity" && a.mayLand ? { ...a, state: "done" as const, mayLand: false } : a,
+      );
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } } as never);
+    });
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("The move did not go through");
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("These credits were already used by another payment or move from your Platform balance. Activity shows which.");
+    await moveShot(page, theme, "exit-settled-failed");
+    expect(errors).toEqual([]);
+  });
+
   test(`the exit of a held top-up that executed in its place finds its credits used (${theme})`, async ({ page }) => {
     const errors = await heldTopUp(page, theme);
     await page.evaluate(() => void (window.__dwFixture!.world.pending.platform!.nextMove = "lost"));
