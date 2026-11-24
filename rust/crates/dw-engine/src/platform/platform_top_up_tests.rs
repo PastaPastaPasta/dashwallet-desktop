@@ -1124,6 +1124,41 @@ fn an_exit_beside_a_held_contact_payout_is_refused_for_the_payout() {
     assert_eq!(w.moves().len(), 2, "nothing recorded");
 }
 
+/// A top-up confirmed with its quote's fee input after another top-up came
+/// to hold the addresses is `credits.move_pending` for that hold: the
+/// fee-input re-plan never runs beside a hold, nothing is signed or
+/// recorded, and the grant is kept.
+#[test]
+fn a_confirmed_top_up_beside_a_held_top_up_is_refused() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let q = w.top_up_quote(&me(), credits(DASH / 10)).unwrap();
+    // Another top-up: Platform meters more than input 0 keeps.
+    w.net.fee.store(5 * DASH, Ordering::SeqCst);
+    let out = w.top_up(credits(DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Pending);
+    w.activity();
+    w.net.tick();
+    w.activity();
+    let held = w.moves()[0].clone();
+    assert_eq!(
+        (held.state, held.holds()),
+        (PlatformActivityState::Failed, true)
+    );
+    let sent = w.sent();
+    let grant = w.f.grant(q.debit_credits);
+    let refused = w
+        .confirm_top_up(&q, credits(DASH / 10), &grant)
+        .unwrap_err();
+    assert!(
+        matches!(&refused, CreditsError::MovePending { id } if *id == held.id),
+        "{refused:?}"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.sent(), sent, "nothing signed");
+    assert_eq!(w.moves().len(), 1, "nothing recorded");
+}
+
 /// The top-up executed beside its exit, and the exit's document cannot be
 /// read: both hold. The quote decides the hold as the submit does and
 /// refuses; the inputs' fall is no `outgoing` row. Once the document is

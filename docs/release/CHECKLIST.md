@@ -111,56 +111,111 @@ The workflow screenshots only Linux: on the hosted macOS and Windows runners the
       v0.0.0-rel<N>`. A tag that is not `vX.Y.Z[-rc.N]` builds and never starts the publish job. Delete it after.
 - [ ] Release candidate: `git tag -a vX.Y.Z-rc.N <sha> -m "Dash Wallet Desktop X.Y.Z-rc.N"`, push it. It becomes a
       prerelease, never Latest.
-- [ ] Final: `git tag -a vX.Y.Z <sha> -m "Dash Wallet Desktop X.Y.Z"` on the same commit as the last candidate, unless
-      a fix landed since (then a new candidate first).
-- [ ] **When available:** sign the tag with the release key (`git tag -s`, and check it with `git tag -v vX.Y.Z`).
-      RELEASE-PLAN §2 (0.9) has the real release key, PGP or a Sigstore identity, decided before 1.0. Until it
-      exists the tag is annotated and unsigned, and the attestations are the only signature.
+- [ ] Final: create a PGP-signed tag with the release key on the same commit as the last candidate (unless a fix landed
+      since, in which case cut a new candidate first):
+
+      ```sh
+      git tag -s -u <RELEASE_PGP_FINGERPRINT> vX.Y.Z <sha> -m "Dash Wallet Desktop X.Y.Z"
+      git tag -v vX.Y.Z
+      ```
+
+      Check that `git tag -v vX.Y.Z` reports `Good signature` and that `Primary key fingerprint` matches the
+      `RELEASE_PGP_FINGERPRINT` published in the release notes (and that the tagged commit matches `<sha>`). Until the
+      release PGP key exists for pre-1.0 releases, fall back to an unsigned annotated tag (`git tag -a vX.Y.Z <sha> -m
+      "Dash Wallet Desktop X.Y.Z"`), where GitHub build attestations are the only signature.
 - [ ] `git push origin vX.Y.Z`. Never move or re-push a tag that has published: fix forward with a new version.
 
 ## 6. What the workflow publishes
 
 The Release run on the tag (`.github/workflows/release.yml`):
 
-1. `decide` checks the commit is on `main`; `macos`, `windows`, `linux` and `flatpak` build and launch-check the bundles; `sbom`
-   writes the two SBOMs (`ci/github/release-sbom.sh`); `checksums` writes `SHA256SUMS` over all seven files.
-2. `publish` (the only job with write permissions) attests every file and `SHA256SUMS` with
-   `actions/attest-build-provenance`, then creates the release: a full release for `vX.Y.Z` (GitHub picks Latest by
-   version), a prerelease for `-rc.N`. Seven assets:
-   - `dash-wallet-X.Y.Z-macos-universal.dmg`, ad-hoc signed, not notarized;
-   - `dash-wallet-X.Y.Z-windows-x64-setup.exe`, unsigned NSIS installer;
-   - `dash-wallet-X.Y.Z-linux-x86_64.AppImage` and `dash-wallet-X.Y.Z-linux-amd64.deb`;
+1. `decide` checks the commit is on `main` and outputs `signing=true` for a pushed final tag `vX.Y.Z` on `main` (and
+   for a pushed `-rc.N` tag on `main` only when `DW_SIGN_CANDIDATES=1`). `macos`, `windows`, `linux` and `flatpak` build
+   and launch-check the bundles; `sbom` writes the two SBOMs (`ci/github/release-sbom.sh`); `checksums` writes
+   `SHA256SUMS` over all seven files (plus the update feed files on a final tag with the updater key) and, when PGP
+   credentials are configured, signs it into `SHA256SUMS.asc`.
+2. `publish` (the only job with write permissions) attests every published file, `SHA256SUMS`, and `SHA256SUMS.asc`
+   (when present) with `actions/attest-build-provenance`, then creates the release: a full release for `vX.Y.Z` (GitHub
+   picks Latest by version), a prerelease for `-rc.N`. Eight base assets (five bundles, two SBOMs, `SHA256SUMS`), plus
+   a conditional ninth asset (`SHA256SUMS.asc`) once PGP signing is on:
+   - `dash-wallet-X.Y.Z-macos-universal.dmg` (Developer ID signed and notarized when Apple credentials are set; ad-hoc
+     `"-"` signed, not notarized otherwise);
+   - `dash-wallet-X.Y.Z-windows-x64-setup.exe` (Authenticode signed via Azure Artifact Signing when Azure credentials
+     are set; unsigned otherwise);
+   - `dash-wallet-X.Y.Z-linux-x86_64.AppImage`, `dash-wallet-X.Y.Z-linux-amd64.deb`, and
+     `dash-wallet-X.Y.Z-linux-x86_64.flatpak`;
    - `dash-wallet-X.Y.Z-sbom-rust.cdx.json`, `dash-wallet-X.Y.Z-sbom-npm.cdx.json` (CycloneDX JSON);
-   - `SHA256SUMS`.
+   - `SHA256SUMS`;
+   - `SHA256SUMS.asc` (conditional ninth asset: detached armored PGP signature over `SHA256SUMS`, published when PGP
+     signing is enabled).
 3. A tag does not touch `continuous` or the per-build releases of `main`.
 4. **The updater key ([`updater.md`](updater.md)):** with the `TAURI_SIGNING_PRIVATE_KEY` secret set in the
    `release` environment, a final `vX.Y.Z` tag on main builds with the update feed and Tauri signs its updater
-   artifacts; a candidate or a dry run never gets the key. For a final `vX.Y.Z` only, `checksums` writes `latest.json`
-   (`ci/github/release-feed.sh`) and the release gains two more assets, both attested and listed in `SHA256SUMS`:
-   `latest.json` and `dash-wallet-X.Y.Z-macos-universal.app.tar.gz`.
-   A candidate never gets a feed. Without the secret the build jobs warn on a final tag and nothing else changes: the
-   app says it does not update itself. Once `DW_UPDATER_REQUIRED=1` is set, a final tag without the key fails its
-   builds, and `release-publish.sh` refuses a final release without `latest.json`.
+   artifacts; a candidate or a dry run never gets the updater key (even when `DW_SIGN_CANDIDATES=1`). For a final
+   `vX.Y.Z` only, `checksums` writes `latest.json` (`ci/github/release-feed.sh`) and the release gains two more assets,
+   both attested and listed in `SHA256SUMS`: `latest.json` and `dash-wallet-X.Y.Z-macos-universal.app.tar.gz`.
+   Without the secret the build jobs warn on a final tag and nothing else changes: the app says it does not update
+   itself. Once `DW_UPDATER_REQUIRED=1` is set, a final tag without the key fails its builds, and `release-publish.sh`
+   refuses a final release without `latest.json`.
 
-Signing that the workflow does not do yet:
+### Signing credentials and switches
 
-- [ ] **When available (B2):** macOS Developer ID signing and notarization (PK-02). Today `tauri.conf.json` has
-      `"signingIdentity": "-"` (ad-hoc); wiring the certificate and notarization credentials into the `macos` job
-      is its own pull request.
-- [ ] **When available (B2):** Windows code signing of the installer (W-03).
-- [ ] Until both exist, the notes' Known limitations and Install sections say the builds are not notarized and not
-      signed, and what the first launch shows.
+All signing secrets live only in the `release` GitHub environment (never at repository level); non-secret identifiers
+and switches are repository variables. A run with `needs.decide.outputs.signing != 'true'` (PRs, `main`, schedule,
+`workflow_dispatch`, dry-run tags, and `-rc.N` tags without `DW_SIGN_CANDIDATES=1`) never enters `release` and receives
+none of these secrets.
+
+| Name | Kind | Job(s) | Purpose | Without it |
+|---|---|---|---|---|
+| `APPLE_CERTIFICATE` | `release` secret | `macos` | Base64-encoded `.p12` of the Developer ID Application certificate (imported by Tauri into a temporary keychain) | Warns once on a final tag (or fails if `DW_SIGNING_REQUIRED=1` or partial set) and builds an ad-hoc (`"-"`) unnotarized `.dmg` |
+| `APPLE_CERTIFICATE_PASSWORD` | `release` secret | `macos` | Export password for `APPLE_CERTIFICATE` | Same as above |
+| `APPLE_SIGNING_IDENTITY` | `release` secret | `macos` | Developer ID Application signing identity string (overrides `signingIdentity: "-"` in `tauri.conf.json`) | Same as above |
+| `APPLE_API_ISSUER` | `release` secret | `macos` | App Store Connect API Issuer ID for notarization | Same as above |
+| `APPLE_API_KEY` | `release` secret | `macos` | App Store Connect API Key ID for notarization | Same as above |
+| `APPLE_API_KEY_P8` | `release` secret | `macos` | Raw PEM contents of the App Store Connect API `.p8` key (written `0600` under `$RUNNER_TEMP`, passed to Tauri as `APPLE_API_KEY_PATH`, removed in `always()`) | Same as above |
+| `APPLE_TEAM_ID` | repo variable | `macos` | Apple Developer Team ID (verified against `codesign -dv` `TeamIdentifier`) | Same as above |
+| `AZURE_TENANT_ID` | `release` secret | `windows` | Entra ID tenant ID for Azure Artifact Signing | Warns once on a final tag (or fails if `DW_SIGNING_REQUIRED=1` or partial set) and builds an unsigned NSIS installer |
+| `AZURE_CLIENT_ID` | `release` secret | `windows` | Service principal application (client) ID for Azure Artifact Signing | Same as above |
+| `AZURE_CLIENT_SECRET` | `release` secret | `windows` | Service principal client secret for Azure Artifact Signing | Same as above |
+| `AZURE_SIGNING_ENDPOINT` | repo variable | `windows` | Regional Artifact Signing endpoint (`https://<region>.codesigning.azure.net`) | Same as above |
+| `AZURE_SIGNING_ACCOUNT` | repo variable | `windows` | Azure Artifact Signing account name | Same as above |
+| `AZURE_SIGNING_PROFILE` | repo variable | `windows` | Azure Artifact Signing certificate profile name | Same as above |
+| `RELEASE_PGP_PRIVATE_KEY` | `release` secret | `checksums` | ASCII-armored exported *signing subkey* (primary key stays offline); imported into a throwaway `0700` `GNUPGHOME` under `$RUNNER_TEMP` and deleted in `always()` | Warns once on a final tag (or fails if `DW_SIGNING_REQUIRED=1` or partial set) and publishes without `SHA256SUMS.asc` |
+| `RELEASE_PGP_PASSPHRASE` | `release` secret | `checksums` | Passphrase for `RELEASE_PGP_PRIVATE_KEY` (passed via file descriptor, never argv) | Same as above |
+| `RELEASE_PGP_FINGERPRINT` | repo variable | `checksums` | 40-hex primary key fingerprint pinned against the imported key and `VALIDSIG` | Same as above (mismatched key fails the job) |
+| `TAURI_SIGNING_PRIVATE_KEY` | `release` secret | `macos`, `windows`, `linux` | Minisign updater key (ID `ED322B963B527B21`); stable `vX.Y.Z` tags only, never candidates | Warns on a final tag (or fails if `DW_UPDATER_REQUIRED=1`); no `latest.json` or updater plugin |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | `release` secret | `macos`, `windows`, `linux` | Passphrase for `TAURI_SIGNING_PRIVATE_KEY` | Same as above |
+| `DW_SIGN_CANDIDATES` | repo variable | `decide` | Set to `1` temporarily for a one-time signed-candidate dry run (`-rc.N` gets OS and PGP signing, still no updater feed) | Candidates stay keyless (`signing=false`), matching default RC behaviour |
+| `DW_SIGNING_REQUIRED` | repo variable | `macos`, `windows`, `checksums`, `publish` | Set to `1` to fail early on any final `vX.Y.Z` tag missing any of the three signing sets (or missing `SHA256SUMS.asc` in `publish`); candidates (`-rc.N`) never require signing | Final tags without signing secrets warn once per job and publish unsigned |
+| `DW_UPDATER_REQUIRED` | repo variable | `macos`, `windows`, `linux`, `publish` | Set to `1` after the first signed updater release so a final tag cannot publish without `latest.json` | Final tags without the updater key warn and publish without a feed |
+
+Rollout steps before 1.0:
+
+- [ ] **Populate secrets and variables** in the `release` environment (tag rule `v*`) and repository variables for
+      macOS, Windows, and PGP. Keep the PGP primary key offline and export only the signing subkey into
+      `RELEASE_PGP_PRIVATE_KEY`.
+- [ ] **One-time signed candidate dry run (`DW_SIGN_CANDIDATES=1`):** before tagging `v1.0.0`, test all three signing
+      sets on a prerelease without touching Latest or the update feed:
+      1. `gh variable set DW_SIGN_CANDIDATES --body 1 --repo PastaPastaPasta/dashwallet-desktop`
+      2. Tag and push a candidate on `main` (`v1.0.0-rc.N`). `decide` sets `signing=true`, so `macos`, `windows`, and
+         `checksums` sign and verify the candidate (no `latest.json` is built).
+      3. Verify the published candidate with `gpg --verify SHA256SUMS.asc SHA256SUMS`, macOS `codesign`/`spctl`, and
+         Windows `Get-AuthenticodeSignature` ([`verifying.md`](verifying.md)), and install-test on real macOS and
+         Windows.
+      4. Remove the temporary flag immediately after:
+         `gh variable delete DW_SIGN_CANDIDATES --repo PastaPastaPasta/dashwallet-desktop`
+- [ ] **Enforce signing before the 1.0 tag:** once the signed candidate has passed verification, set
+      `DW_SIGNING_REQUIRED=1` (`gh variable set DW_SIGNING_REQUIRED --body 1 --repo PastaPastaPasta/dashwallet-desktop`).
+      From then on, every final `vX.Y.Z` tag fails early if any of the macOS, Windows, or PGP credentials are missing;
+      candidates (`-rc.N`) still never require signing.
 - [ ] **The updater key (made 2026-11-20, key ID `ED322B963B527B21`):** its public key is in `tauri.conf.json` and the
       secrets are in the `release` environment (tag rule `v*`) only. Still open: a `v*` tag ruleset or required
       reviewers on `release` (pasta's choice), and one `workflow_dispatch` to check the no-environment build jobs
-      ([`updater.md`](updater.md), "Still open"). There is no offline backup: losing the secret means re-keying. The
-      first signed release cannot reach copies installed before it; its notes say to install it by hand.
-- [ ] **After the first signed release:** set the repository variable `DW_UPDATER_REQUIRED=1`, so a final release can
-      no longer go out without `latest.json`. As Latest, such a release breaks the feed for every installed copy.
-- [ ] **When available (the real release key, required for 1.0):** sign `SHA256SUMS` once the release is published
-      and add the signature to it (`gh release upload vX.Y.Z <signature file>`). This is the RELEASE-PLAN fallback
-      when the certificates don't exist: unsigned binaries, signed checksums. The notes' Verify section then says
-      how to check the signature with the published key.
+      ([`updater.md`](updater.md), "Still open"). There is no offline backup: losing the secret means re-keying. Once
+      the first signed updater release is out, set `DW_UPDATER_REQUIRED=1`.
+- [ ] **Keyless release candidates:** until 1.0 (and for any ordinary `-rc.N` without `DW_SIGN_CANDIDATES=1`), candidate
+      notes keep the keyless Known limitations and Install sections (ad-hoc macOS Gatekeeper right-click ▸ Open,
+      unsigned Windows SmartScreen More info ▸ Run anyway).
 
 ## 7. Verify what was published
 
@@ -169,7 +224,7 @@ On a machine with `gh` logged in, in an empty directory:
 ```sh
 sha=$(gh api repos/PastaPastaPasta/dashwallet-desktop/commits/vX.Y.Z --jq .sha)   # the tag's commit
 gh release download vX.Y.Z --repo PastaPastaPasta/dashwallet-desktop
-ls | wc -l                                  # 7
+ls | wc -l                                  # 8 (+1 SHA256SUMS.asc with PGP, +2 with updater)
 sha256sum -c SHA256SUMS                     # every file OK
 for f in *; do
   gh attestation verify "$f" --repo PastaPastaPasta/dashwallet-desktop \
@@ -179,7 +234,12 @@ done
 jq -r '.metadata.component.name, (.components | length)' dash-wallet-X.Y.Z-sbom-*.cdx.json
 ```
 
-- [ ] Seven assets, `SHA256SUMS` checks, every file verifies against the tag and its commit.
+- [ ] Base assets (8: 5 bundles, 2 SBOMs, `SHA256SUMS`; plus `SHA256SUMS.asc` when PGP-signed and `latest.json` +
+      `.app.tar.gz` when updater-signed), `SHA256SUMS` checks, every file verifies against the tag and its commit.
+- [ ] On a signed release: `gpg --verify SHA256SUMS.asc SHA256SUMS` reports `Good signature` for the published primary
+      key fingerprint; macOS passes `codesign --verify --deep --strict` and `spctl -a -vv`; Windows passes
+      `Get-AuthenticodeSignature` (`Status: Valid`) on both the installer and installed `dash-wallet.exe`
+      ([`verifying.md`](verifying.md)).
 - [ ] Both SBOMs parse, name `dw-app` and `dashwallet-desktop` at `X.Y.Z`, and hold no machine path
       (`grep -c 'file:///' dash-wallet-X.Y.Z-sbom-*.cdx.json` prints 0 for each).
 - [ ] The release is marked as the notes intend (full release, or prerelease for a candidate), the body is

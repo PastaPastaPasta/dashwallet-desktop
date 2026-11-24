@@ -227,7 +227,7 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     const fx = install("dashpay-registered");
     const p = fx.world.pending.platform!;
     p.nextTopUp = "held";
-    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("40000000000"));
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), null, await fromPlatformGrant("40000000000"));
     const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
     const g = (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;
     p.activity = p.activity.map((a) => (a.id === out.id ? { ...a, state: "done" as const, mayLand: false } : a));
@@ -241,7 +241,7 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     const fx = install("dashpay-registered");
     const p = fx.world.pending.platform!;
     p.nextTopUp = "held";
-    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("40000000000"));
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), null, await fromPlatformGrant("40000000000"));
     const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
     const exact = credits(plannedWithdrawalCredits(move));
     const grant = async () => (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;
@@ -263,7 +263,7 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     const p = fx.world.pending.platform!;
     p.nextTopUp = "held";
     const before = BigInt((await cmd.identities(W))[0].balance!);
-    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("40000000000"));
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), null, await fromPlatformGrant("40000000000"));
     const [input0] = p.heldTopUps![out.id].inputs;
     const kept = BigInt(p.addresses.find((a) => a.address === input0.address)!.credits) - 1_000_000_000n - FROM_PLATFORM_RULES.fee;
     const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
@@ -281,7 +281,7 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     p.nextTopUp = "held";
     const [first] = [...p.addresses].sort((a, b) => (a.address < b.address ? -1 : 1));
     const amount = BigInt(first.credits) - FROM_PLATFORM_RULES.band + 1_000_000_000n;
-    const out = await cmd.creditsTopUpFromPlatform(W, A, credits(String(amount)), await fromPlatformGrant("40000000000"));
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits(String(amount)), null, await fromPlatformGrant("40000000000"));
     expect(p.heldInputs![out.id]).toHaveLength(2);
     expect(await code(cmd.platformMoveToCoreQuote(W, credits("100000000")))).toBe("credits.move_pending");
     expect((await cmd.platformMoveToCoreQuote(W, { kind: "all" })).exitOf).toBe(out.id);

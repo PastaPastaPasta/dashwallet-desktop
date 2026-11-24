@@ -1973,16 +1973,8 @@ pub(crate) enum HandoffOutcome {
 }
 
 /// Refusal codes newer than the migration that rewrote the inherited ones.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the shared recovery read (MG-10 EP 4)")
-)]
 pub(crate) const REFUSED_SINCE_INHERITED: &[&str] = &["send.held_until_restart"];
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the shared recovery read (MG-10 EP 4)")
-)]
 pub(crate) fn outcome_of_code(code: &str) -> HandoffOutcome {
     if dw_appdb::INHERITED_REFUSED_CODES.contains(&code) || REFUSED_SINCE_INHERITED.contains(&code)
     {
