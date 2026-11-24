@@ -2514,7 +2514,9 @@ fn a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change() {
 
 /// #170 case 3 against a resend: a drop of a beaten payment waits for the
 /// wallet's abandon gate, which a resend holds for reading through its
-/// hand-off, and writes no mark until it is released (MG-10 §1.10).
+/// hand-off, and writes no mark until it is released (MG-10 §1.10). The
+/// hand-off starts before the block, so the reconcile its event starts
+/// waits too.
 #[test]
 fn a_drop_of_a_beaten_payment_waits_for_a_resend_hand_off() {
     let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
@@ -2531,10 +2533,10 @@ fn a_drop_of_a_beaten_payment_waits_for_a_resend_hand_off() {
     wait_stored(&session, id, &[p.txid()]);
     let session = reopen(&engine, session);
     let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
-    mined(&engine, &session, id, TIP + 1, vec![winner]);
-
     let gate = session.abandon_gate(id);
     let resend = engine.block_on(Arc::clone(&gate).read_owned());
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+
     let s = Arc::clone(&session);
     let task = engine.block_on(async move {
         tokio::spawn(async move { s.reconcile_duplicate_coins(id).await })
