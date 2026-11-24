@@ -33,6 +33,10 @@ export const SOURCE_COPY = withTable(messageTable("dashpay.topUp.payWith", ["tit
   get loading() {
     return t("transfer.loading");
   },
+  /** The Platform addresses or Activity could not be read. */
+  get unread() {
+    return t("transfer.move.error.unavailable");
+  },
 });
 
 const from = <K extends string>(prefix: string, keys: readonly K[]) => messageTable(`dashpay.topUp.fromPlatform.${prefix}`, keys);
@@ -66,6 +70,9 @@ export function platformHold(activity: readonly PlatformActivity[] | null | unde
  * still, and nothing else holds the addresses. */
 export const offersMove = (hold: PlatformHold) => hold?.state === "held" && hold.topUp;
 
+/** In discreet mode a Max top-up's amount is wallet-derived: masked on Confirm and the outcome. */
+export const maxMasked = (discreet: boolean, max: boolean, masked: string): string | null => (discreet && max ? masked : null);
+
 /** The live state of a top-up this sheet ran: its Activity row once Activity has it. */
 export function liveOutcome(o: TopUpFromPlatformOutcome, activity: readonly PlatformActivity[] | null | undefined): TopUpFromPlatformOutcome {
   const row = activity?.find((a) => a.id === o.id && a.kind === "toIdentity");
@@ -77,8 +84,8 @@ export interface SourceInputs {
   /** The Dash wallet's spendable balance. */
   coreDuffs: number | undefined;
   /** The Platform addresses; `null` when this network has none (below protocol version 11, or
-   * the commands are absent). */
-  platform: PlatformAddressBalance | null | undefined;
+   * the commands are absent); `"unread"` when they or Activity could not be read. */
+  platform: PlatformAddressBalance | null | undefined | "unread";
   hold: PlatformHold;
   /** Mainnet: a top-up from Platform is off there until its funds ruling. */
   mainnet: boolean;
@@ -104,7 +111,9 @@ export function topUpSources(i: SourceInputs): SourceRow[] {
   const platformReason =
     p === undefined
       ? SOURCE_COPY.loading
-      : p === null || i.mainnet
+      : p === "unread"
+        ? SOURCE_COPY.unread
+        : p === null || i.mainnet
         ? SOURCE_COPY.notOffered
         : i.hold !== null && !i.hold.topUp
           ? SOURCE_COPY.heldByOther
@@ -117,7 +126,7 @@ export function topUpSources(i: SourceInputs): SourceRow[] {
               : null;
   return [
     { source: "core", label: SOURCE_COPY.core, balance: shown(i.coreDuffs), reason: null },
-    { source: "platform", label: SOURCE_COPY.platform, balance: shown(p?.duffs), reason: platformReason },
+    { source: "platform", label: SOURCE_COPY.platform, balance: shown(typeof p === "object" ? p?.duffs : undefined), reason: platformReason },
     { source: "shielded", label: SOURCE_COPY.shielded, balance: shown(i.shieldedDuffs), reason: SOURCE_COPY.notOffered },
   ];
 }
@@ -128,9 +137,9 @@ export const canPay = (rows: readonly SourceRow[], source: PaySource) => rows.fi
 /** What a top-up from Platform came to. "Nothing left" only when the engine says it can never
  * execute (`failed`, not `mayLand`): nothing was spent. Anything else not done or pending may
  * still go through, and offers "Move to Dash wallet". */
-export function platformOutcomeText(o: TopUpFromPlatformOutcome, balance: (credits: string) => string): { title: string; text: string; move: boolean } {
+export function platformOutcomeText(o: TopUpFromPlatformOutcome, balance: (credits: string) => string, masked: string | null = null): { title: string; text: string; move: boolean } {
   if (o.state === "done") {
-    const added = creditCount(o.credits);
+    const added = masked ?? creditCount(o.credits);
     const text = o.balance === null ? t("dashpay.topUp.outcome.plus", { credits: added }) : t("dashpay.topUp.outcome.plusBalance", { credits: added, balance: balance(o.balance) });
     return { title: t("dashpay.topUp.outcome.added"), text, move: false };
   }

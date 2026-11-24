@@ -46,8 +46,8 @@ use self::flow::{
     OwnRow, check_placeholder, check_reward, put_own_side, recorded_of, signer_refusal,
 };
 use self::store::{
-    Approved, Loaded, bad_signature, envelope_refusal, message_name, message_refusal,
-    stage_refusal, terms_view, view,
+    Approved, Loaded, bad_signature, envelope_refusal, may_discard, message_name, message_refusal,
+    stage_refusal, terms_view, unreadable_view, view,
 };
 use super::protx::build::{Context, invalid, shared_voting};
 use super::protx::ops::InFlight;
@@ -57,7 +57,7 @@ use super::shared_records::{
     Activation, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyChangeRequest,
     MaintenanceSent, RewardChoice, SharedCapability, SharedImport, SharedMessage, SharedOutcome,
     SharedRole, SharedSession, SharedStage, SharedWarning, Standby, StandbyFile, StandbyVariant,
-    StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
+    StartSharedRequest, UnreadableSession, UpdateSharePreview, UpdateShareRequest,
 };
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::platform::lease::Lease;
@@ -264,6 +264,37 @@ impl Masternodes {
             }
             sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
             Ok(sessions)
+        })
+        .await
+    }
+
+    /// The wallet's sessions whose envelope no longer parses (D57), newest
+    /// first. `shared_sessions` skips them and `shared_session` refuses
+    /// them, yet each may hold reserved coins: read from its row, it is
+    /// `discardable` exactly when `discard_shared_session` accepts it.
+    pub async fn unreadable_shared_sessions(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<UnreadableSession>, MasternodesError> {
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            let network = s.network.core_network();
+            let w = wallet.to_string();
+            let rows = s.appdb_op(move |db| db.shared_sessions(&w)).await?;
+            let mut out: Vec<UnreadableSession> = rows
+                .iter()
+                .filter(|r| {
+                    let row = (*r).clone();
+                    match r.kind.as_str() {
+                        together::KIND => together::Together::of(row, network).is_err(),
+                        key_change::KIND => key_change::KeyChange::of(row, network).is_err(),
+                        _ => Loaded::of(row, network).is_err(),
+                    }
+                })
+                .map(unreadable_view)
+                .collect();
+            out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
+            Ok(out)
         })
         .await
     }
@@ -919,7 +950,7 @@ impl Masternodes {
             }
             let out = match row.kind == together::KIND {
                 true => s.together_discard(wallet, row).await?,
-                false if row.out_at.is_some() => {
+                false if !may_discard(&row) => {
                     return Err(stage_refusal(s.stored_stage(wallet, &row).await?));
                 }
                 false => None,
