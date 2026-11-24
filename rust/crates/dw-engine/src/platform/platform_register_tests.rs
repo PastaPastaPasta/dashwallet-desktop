@@ -488,6 +488,44 @@ fn the_way_out_and_a_paid_failure_settle_by_their_documents() {
     assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Unknown);
 }
 
+/// F22: beside a held create and another funded address, "Move to Dash
+/// wallet" quotes only the create's inputs, and a typed amount moves from
+/// them at the create's nonces, as the move plans it.
+#[test]
+fn the_way_out_quotes_only_the_held_creates_inputs() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    w.net.fund(w.address(1), 3 * DASH);
+    w.net.fee.store(1, Ordering::SeqCst);
+    let mut row = w.row(1);
+    w.net.then(Act::Lost);
+    assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Unknown);
+    w.net.tick();
+    assert_eq!(w.pass(&mut row, false).unwrap(), RegisterOutcome::Held);
+    let create = w.net.sent.lock().unwrap()[0].clone();
+    let held: u64 = {
+        let state = w.net.state.lock().unwrap();
+        create.keys().map(|a| state[a].1).sum()
+    };
+    assert!(held < 8 * DASH);
+
+    assert_eq!(w.quote(WithdrawAmount::All).unwrap().credits, held);
+    let amount = WithdrawAmount::Credits { credits: DASH / 2 };
+    let q = w.quote(amount).unwrap();
+    let out = w
+        .move_to(amount, &w.to.clone(), &w.f.grant(q.grant.max_credits))
+        .unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    let exit = w.net.sent.lock().unwrap().last().unwrap().clone();
+    assert_eq!(
+        exit.keys().collect::<Vec<_>>(),
+        create.keys().collect::<Vec<_>>()
+    );
+    for (a, (nonce, _)) in &exit {
+        assert_eq!(*nonce, create[a].0);
+    }
+}
+
 /// F10: in the process that made the call, a create that released no
 /// signature can never execute: its record fails unable to land, the plan
 /// is cleared with the refusal, and the next plan signs at the same nonces.

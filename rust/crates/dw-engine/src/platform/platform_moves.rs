@@ -2658,10 +2658,11 @@ pub(crate) async fn quote(
     {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    // A top-up from Platform not settled: its exit takes exactly its inputs
-    // (C-routes C3-9), so Confirm shows that move; one Platform has not
-    // answered holds the next move, as the move refuses it.
-    let top_up = (moves.iter()).find(|m| m.kind == MoveKind::ToIdentity && m.holds());
+    // A top-up from Platform or a registration's create not settled: its
+    // exit takes exactly its inputs (C-routes C3-9), so Confirm shows that
+    // move; one Platform has not answered holds the next move, as the move
+    // refuses it.
+    let top_up = (moves.iter()).find(|m| m.kind.credits_identity() && m.holds());
     if let Some(h) = top_up.filter(|h| h.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
