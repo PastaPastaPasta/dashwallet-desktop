@@ -382,8 +382,8 @@ function checkAddress(address: string, what: string) {
 }
 
 /** `preview_update_registrar`'s checks and plan, in the engine's order: the request, the list, the masternode, the
- * owner key, an update still pending (D49), then what changes. */
-function planUpdate(world: World, walletId: string, request: UpdateRegistrarRequest): UpdateRegistrarPreview {
+ * owner key, an update still pending (D49), for a `commit` an update abandoned in Activity, then what changes. */
+function planUpdate(world: World, walletId: string, request: UpdateRegistrarRequest, commit = false): UpdateRegistrarPreview {
   const hash = checkHash(request.proTxHash);
   if (request.operator.kind === "given" && !BLS_HEX.test(request.operator.publicKey)) throw fail("invalid_argument", "the operator key is not 96 hex digits");
   if (request.voting.kind === "address") checkAddress(request.voting.address, "the voting address");
@@ -399,6 +399,8 @@ function planUpdate(world: World, walletId: string, request: UpdateRegistrarRequ
   if (cap.kind !== "available") throw fail("masternodes.no_owner_key", "this wallet holds no owner key of this masternode");
   const pending = m.operations.find((u) => u.proTxHash === hash && (u.state.kind === "sent" || u.state.kind === "signed" || u.state.kind === "not_sent"));
   if (pending) throw fail("masternodes.update_pending", `operation ${pending.id} on this masternode is not in the list yet`, { kind: "operation", operation: pending.id });
+  const abandoned = commit && m.operations.find((u) => u.kind === "update_registrar" && u.proTxHash === hash && u.state.kind === "abandoned");
+  if (abandoned) throw fail("masternodes.update_abandoned_pending", `operation ${abandoned.id} on this masternode was abandoned and may still confirm`, { kind: "operation", operation: abandoned.id });
   const listedOperator = basicKey(listed.facts.operatorPublicKey);
   const operatorKey = request.operator.kind === "keep" ? listedOperator : request.operator.kind === "given" ? request.operator.publicKey.toLowerCase() : keyInfo("operator", request.operator.kind === "keychain" ? request.operator.index : NEXT_UNUSED).publicKeyHex;
   const operatorIndex = request.operator.kind === "keychain" ? request.operator.index : request.operator.kind === "next_unused" ? NEXT_UNUSED : null;
@@ -1062,10 +1064,7 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
     mn_update_registrar: ({ walletId, request, grant: grantId }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
-      const plan = planUpdate(world, walletId, request);
-      const hash = request.proTxHash.toLowerCase();
-      const abandoned = world.masternodes.operations.find((u) => u.kind === "update_registrar" && u.proTxHash === hash && u.state.kind === "abandoned");
-      if (abandoned) throw fail("masternodes.update_abandoned_pending", `operation ${abandoned.id} on this masternode was abandoned and may still confirm`, { kind: "operation", operation: abandoned.id });
+      const plan = planUpdate(world, walletId, request, true);
       masternodeGrant(world, walletId, grantId, plan.totalDebit);
       const m = world.masternodes;
       const n = m.operations.filter((o) => o.kind === "update_registrar").length + 1;
