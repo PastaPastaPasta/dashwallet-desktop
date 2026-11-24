@@ -1219,7 +1219,7 @@ fn a_poll_read_through_the_trusted_fallback_names_no_one() {
         (fallback.lock_votes, fallback.abstain_votes),
         (Some(3), Some(2))
     );
-    assert_eq!(fallback, Poll::of(state.clone()));
+    assert_eq!(fallback.winner, None);
     let verified = Poll::read(state, "a11ce", pv, true);
     assert_eq!(
         verified.labels,

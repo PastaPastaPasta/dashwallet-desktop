@@ -130,7 +130,7 @@ pub(crate) enum PollWinner {
 }
 
 impl Poll {
-    pub(crate) fn of(state: Contenders) -> Self {
+    fn of(state: Contenders) -> Self {
         let winner = state.winner.map(|(winner, block)| {
             let winner = match winner {
                 ContestedDocumentVotePollWinnerInfo::WonByIdentity(id) => PollWinner::Identity(id),
