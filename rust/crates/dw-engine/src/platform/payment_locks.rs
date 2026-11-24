@@ -60,6 +60,9 @@ pub(crate) struct PaymentLocks {
     /// Tests: holds the next contact settlement before it changes a lock.
     #[cfg(test)]
     pause_settle: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next payout stops after its row is written.
+    #[cfg(test)]
+    pub(crate) stop_after_row: std::sync::atomic::AtomicBool,
 }
 
 impl PaymentLocks {
@@ -125,6 +128,64 @@ impl PaymentLocks {
         let taken = guard(&self.taken).remove(&(id, pair));
         let checked = taken.is_some_and(|(a, checked)| a == address && checked);
         self.keep(id, pair, address, checked);
+    }
+
+    /// Orders a payout's lock change with every other (memory and row
+    /// together, D23).
+    pub(crate) async fn rows(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.rows.lock().await
+    }
+
+    /// `payout` as contact activity shows it, replacing the one with its
+    /// reference.
+    pub(crate) fn put_payout(&self, id: WalletId, payout: Payout) {
+        let mut payouts = guard(&self.payouts);
+        let rows = payouts.entry(id).or_default();
+        match rows.iter_mut().find(|p| p.reference == payout.reference) {
+            Some(held) => *held = payout,
+            None => rows.push(payout),
+        }
+    }
+
+    /// The state of payout `reference` as last loaded or written.
+    pub(crate) fn payout_state(&self, id: &WalletId, reference: &str) -> Option<PayoutState> {
+        (guard(&self.payouts).get(id)?.iter())
+            .find(|p| p.reference == reference)
+            .map(|p| p.state)
+    }
+
+    /// Payout `reference` settled as `state`; its lock goes. The pair it
+    /// held, if memory had it.
+    pub(crate) fn settle_payout(
+        &self,
+        id: WalletId,
+        reference: &str,
+        state: PayoutState,
+    ) -> Option<Pair> {
+        let mut pair = None;
+        if let Some(p) = (guard(&self.payouts).get_mut(&id))
+            .and_then(|rows| rows.iter_mut().find(|p| p.reference == reference))
+        {
+            p.state = state;
+            pair = Some(p.pair);
+        }
+        if let Some(locks) = guard(&self.locks).get_mut(&id) {
+            locks.retain(|held, lock| {
+                let mine = lock.reference == reference && lock.source != PaymentSource::Core;
+                if mine {
+                    pair = Some(*held);
+                }
+                !mine
+            });
+        }
+        pair
+    }
+
+    /// Locks `pair` behind payout `lock`, unless another lock holds it.
+    pub(crate) fn lock_payout(&self, id: WalletId, pair: Pair, lock: PaymentLock) {
+        (guard(&self.locks).entry(id).or_default())
+            .entry(pair)
+            .or_insert(lock);
     }
 
     /// Drops `address` as the pair's reserved one (DP3-04: it was taken
@@ -211,7 +272,6 @@ pub(crate) struct PayCall {
     pub(crate) contact: String,
     pub(crate) credits: u64,
     pub(crate) source: PaymentSource,
-    #[expect(dead_code, reason = "stored in the payout row by C5a and C5b")]
     pub(crate) note: Option<String>,
     pub(crate) grant: String,
     #[expect(dead_code, reason = "the shielded source's gate (C5a)")]
@@ -311,6 +371,8 @@ impl NetworkSession {
             }
         }
         self.load_payouts(id).await;
+        drop(_rows);
+        super::contact_payout::settle_recorded(self, id).await;
     }
 
     /// [`Self::load_payment_locks`]' payouts (P6), under its `rows` guard:
@@ -648,7 +710,7 @@ impl NetworkSession {
         }
     }
 
-    fn signal_payments(&self, id: WalletId, owner: &Identifier) {
+    pub(crate) fn signal_payments(&self, id: WalletId, owner: &Identifier) {
         let identity = b58(owner);
         self.hub.pump.mark_platform(
             id,
@@ -691,7 +753,10 @@ impl NetworkSession {
             }
             .into());
         };
-        // A payout settles on its source's evidence (C5a, C5b); none yet.
+        // A payout settles on its source's evidence (C5a, C5b).
+        if lock.source == PaymentSource::Platform {
+            return super::contact_payout::resolve(self, id, pair, &lock.reference).await;
+        }
         if lock.source != PaymentSource::Core {
             return Ok(LockResolution::Unknown);
         }
@@ -742,6 +807,11 @@ impl NetworkSession {
         let pair = self.payout_terms(id, &identity, &contact, credits, source)?;
         check_payee(self.payee_state(id, &pair)?, true)?;
         self.check_payment_lock(id, &pair, None)?;
+        if source == PaymentSource::Platform
+            && super::contact_payout::refuse_on_mainnet(self).is_ok()
+        {
+            return super::contact_payout::quote_live(self, id, credits).await;
+        }
         Err(payout_source(source).into())
     }
 
@@ -749,11 +819,28 @@ impl NetworkSession {
     /// live payee, the pair's lock and rule 5 on the payee, before the grant
     /// is redeemed or an address taken.
     pub(crate) async fn contact_pay_of(
-        &self,
+        self: &Arc<Self>,
         id: WalletId,
         call: PayCall,
     ) -> Result<ContactPayOutcome, ContactError> {
         let _op = self.enter().await.map_err(PlatformError::from)?;
+        if call.source == PaymentSource::Platform
+            && super::contact_payout::refuse_on_mainnet(self).is_ok()
+        {
+            return super::contact_payout::pay_live(self, id, call).await;
+        }
+        self.pay_gates(id, &call).await?;
+        Err(payout_source(call.source).into())
+    }
+
+    /// [`Self::contact_pay_of`]'s gates before any source's (C-funding P2):
+    /// the arguments, the live payee, the pair's lock and rule 5 on the
+    /// payee. Nothing is taken: a refusal keeps the grant and every address.
+    pub(crate) async fn pay_gates(
+        &self,
+        id: WalletId,
+        call: &PayCall,
+    ) -> Result<Pair, ContactError> {
         let pair =
             self.payout_terms(id, &call.identity, &call.contact, call.credits, call.source)?;
         if call.grant.trim().is_empty() {
@@ -766,7 +853,7 @@ impl NetworkSession {
         self.check_payment_lock(id, &pair, None)?;
         (self.money_gate(Subject::Payee(id, pair)).await)
             .map_err(|refusal| ContactError::Platform(refusal.platform()))?;
-        Err(payout_source(call.source).into())
+        Ok(pair)
     }
 
     /// E0-04 §16.6's evidence for the locked payment `txid`.

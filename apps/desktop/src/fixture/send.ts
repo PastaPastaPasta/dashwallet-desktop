@@ -458,7 +458,7 @@ export interface SendDeps {
   /** DP3-01's contact checks of `r` (D2 for a draft, D4 for `prepare`), in the engine's order;
    * throws its refusal. `amount`: a draft's amount checks, which the engine makes after the ids
    * and before the payee (`validate_recipients`). */
-  checkContact(w: World, walletId: string, r: ContactRecipient, stage: "draft" | "prepare", amount?: () => void): void;
+  checkContact(w: World, walletId: string, r: Pair, stage: "draft" | "prepare", amount?: () => void): void;
   /** For a `begin_flow` lease id: charges `outflow` to the lease's Spend budget, or throws the
    * engine's refusal; `false` when `id` is not a lease id (a vault grant). */
   chargeLease(ctx: Ctx, walletId: string, id: string, outflow: number): boolean;
@@ -875,6 +875,8 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         w.coins = w.coins.filter((u) => u.outpoint.txid !== txid);
         moveBalance(w, -row.amount, row.status.instantLocked || row.status.confirmations > 0 ? "confirmed" : "unconfirmed");
       }
+      // The wallet's own registration abandoned: the shared session's reserved coins are spendable again.
+      for (const sh of ctx.world.shared.sessions) if (sh.txid === txid && sh.stage.kind === "sent" && sh.reserved.length > 0) sh.abandonable = true;
       changed(ctx, w, [txid]);
       return null;
     },

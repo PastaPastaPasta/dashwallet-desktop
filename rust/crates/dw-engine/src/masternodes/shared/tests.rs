@@ -2545,8 +2545,10 @@ fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
     let f = fx(3, true);
     let id = three_approved(&f);
     f.imported(1, &f.message(0, &id));
+    assert!(!f.session_of(1, &id).abandonable, "not out");
     assert_stage(f.abandon(1, &id).unwrap_err(), "combined");
     f.sign(1, &id, 301 * COIN).unwrap();
+    assert!(f.session_of(1, &id).abandonable, "out, its coins held");
     let reserved = f.locked(1);
     let s = f.abandon(1, &id).unwrap();
     assert_eq!(s.stage, SharedStage::FundingSigned);
@@ -2566,6 +2568,7 @@ fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
     // test network records nothing): no coin left, refused at the
     // participant's out stage (review r1 of 1b, n-2).
     f.spend(1, spend.input[0].previous_output);
+    assert!(!f.session_of(1, &id).abandonable, "no coin left to spend");
     assert_stage(f.abandon(1, &id).unwrap_err(), "funding_signed");
     assert_eq!(f.net.sent().len(), 1);
 
@@ -2629,6 +2632,7 @@ fn test_an_abandon_spend_is_stored_with_its_outcome() {
         super::super::protx::build::tx_size(1, &[spend.output[0].script_pubkey.len()], 0),
     );
     assert_eq!(log[0]["fee"].as_u64(), fee);
+    assert_eq!(fee, Some(crate::masternodes::shared_abandon_fee()));
     assert_eq!(log[0]["legacy"], serde_json::json!(false));
     assert!(!row.legacy_bound && !row.resend_marked);
     assert_eq!(row.last_error, None);
@@ -3644,6 +3648,68 @@ fn test_a_discard_after_a_fee_change_frees_every_fee_coin() {
     let inv = start(&f, 0, again).unwrap();
     assert_eq!(inv.session.reserved.len(), 2);
     assert_eq!(f.locked(0), HashSet::from([share, extra]));
+}
+
+/// F2: an unreadable registration whose funding signature went out.
+/// `abandon_shared_session` refuses it before spending (it used to spend,
+/// then fail to read the record back); `abandon_unreadable_shared_session`
+/// spends a reserved coin back to the wallet and returns its listing, and
+/// the follower releases the locks once that spend is six deep. A session
+/// that reads, and an unreadable one not out, are refused.
+#[test]
+fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let reserved = f.locked(1);
+    f.rewrite(1, &id, |u| u.envelope = "{\"not\": \"an envelope\"".into());
+    assert!(f.abandon(1, &id).is_err());
+    assert!(f.net.sent().is_empty(), "refused before any spend");
+    let fee = crate::masternodes::shared_abandon_fee();
+    let abandon = |w: usize, id: &str| {
+        f.run(f.mn().abandon_unreadable_shared_session(
+            f.wallets[w],
+            id.to_string(),
+            f.grant(w, fee),
+        ))
+    };
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[1]))
+        .unwrap();
+    assert!(listed[0].abandonable && !listed[0].discardable);
+    let after = abandon(1, &id).unwrap();
+    assert_eq!(after.id, id);
+    let sent = f.net.sent();
+    assert_eq!(sent.len(), 1);
+    let spend = sent[0].clone();
+    assert!(reserved.contains(&spend.input[0].previous_output));
+    // The wallet's record of the spend (the test network records none).
+    f.spend(1, spend.input[0].previous_output);
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[1]))
+        .unwrap();
+    assert!(!listed[0].abandonable, "no coin left to spend");
+    assert_eq!(f.locked(1), reserved, "kept until a block settles it");
+    f.mine(spend, 60);
+    f.tip(60);
+    f.follow();
+    assert_eq!(f.locked(1), reserved, "one deep: kept");
+    assert_stage(abandon(1, &id).unwrap_err(), "conflicted");
+    f.tip(64);
+    f.follow();
+    assert_eq!(f.locked(1), reserved, "five deep: kept");
+    f.tip(65);
+    f.follow();
+    assert!(f.locked(1).is_empty());
+
+    // The coordinator's own row of the session reads, and isn't out.
+    assert_eq!(code(abandon(0, &id).unwrap_err()), "invalid_argument");
+    f.rewrite(0, &id, |u| u.envelope = "{".into());
+    assert_stage(abandon(0, &id).unwrap_err(), "sent");
+    assert!(
+        !f.run(f.mn().unreadable_shared_sessions(f.wallets[0]))
+            .unwrap()[0]
+            .abandonable
+    );
 }
 
 /// A stored key-change session of wallet `w`, its message never read.

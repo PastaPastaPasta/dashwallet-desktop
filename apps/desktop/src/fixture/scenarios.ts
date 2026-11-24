@@ -44,6 +44,7 @@ import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld }
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { newSharedWorld, sharedScenarios, type SharedWorld } from "./shared";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -158,6 +159,8 @@ export interface World {
   governance: GovernanceWorld;
   /** My masternodes: the SPV list, own and tracked masternodes, attached keys (masternodes.ts, MG-10). */
   masternodes: MasternodesWorld;
+  /** Shared masternodes: the capability and the main wallet's sessions (shared.ts, MG-10b). */
+  shared: SharedWorld;
   /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
   rates: RatesWorld;
   /** Updates: what this copy can do, the feed and the install (updates.ts, PK-03). */
@@ -263,6 +266,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
     masternodes: noMasternodesWorld(),
+    shared: newSharedWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
     pending: newPendingWorld(),
@@ -1637,6 +1641,8 @@ const SCENARIOS = {
   ...governanceScenarios(base),
   // My masternodes (MG-10): masternodes.ts.
   ...masternodesScenarios(base),
+  // Shared masternodes (MG-10b): shared.ts.
+  ...sharedScenarios(base),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesScenarios(base),
   // Transfer (POLISH 25): transfer.ts.
