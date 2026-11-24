@@ -961,6 +961,46 @@ fn an_exit_of_no_held_top_up_is_refused() {
     assert_eq!(w.sent(), 1);
 }
 
+/// A contact payout holds beside the held top-up an exit names, on one of
+/// its addresses at another nonce and on one more (no call order here makes
+/// this; a record from elsewhere can). The quote names the top-up, and the
+/// exit is refused `credits.move_pending` for the payout: nothing signed or
+/// recorded, the grant kept.
+#[test]
+fn an_exit_beside_a_held_contact_payout_is_refused_for_the_payout() {
+    let (w, _) = shortfall();
+    w.net.fund(w.address(1), 3 * DASH);
+    w.net.fee.store(1, Ordering::SeqCst);
+    let top_up = w.moves()[0].clone();
+    let mut payout = top_up.clone();
+    payout.id = "move-payout".into();
+    payout.kind = MoveKind::ToContact;
+    payout.inputs[0].nonce += 1;
+    let mut other = payout.inputs[0].clone();
+    other.address = bech32m(&w.address(1), w.network());
+    other.nonce = 1;
+    other.fee_source = false;
+    payout.inputs.push(other);
+    let write = move_write(&payout).unwrap();
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    (w.f.engine)
+        .block_on(async move { Store::of(&s, id).unwrap().commit(vec![write]).await })
+        .unwrap();
+    assert!(w.moves().iter().all(MoveRecord::holds));
+
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.exit_of, Some(top_up.id.clone()));
+    let grant = w.f.grant(q.credits);
+    let refused = w.exit(&q, &grant).unwrap_err();
+    assert!(
+        matches!(&refused, CreditsError::MovePending { id } if id == "move-payout"),
+        "{refused:?}"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.sent(), 1, "nothing signed");
+    assert_eq!(w.moves().len(), 2, "nothing recorded");
+}
+
 /// The top-up executed beside its exit, and the exit's document cannot be
 /// read: both hold. The quote decides the hold as the submit does and
 /// refuses; the inputs' fall is no `outgoing` row. Once the document is
