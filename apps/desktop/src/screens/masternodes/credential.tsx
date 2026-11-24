@@ -48,7 +48,15 @@ export function useCredential(walletId: string, ask: string, windowAmount: numbe
   }, [retryAt]);
   // A wait left by earlier attempts holds the button from the start (Pay's rule).
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      // Held again: what was typed, refused or waited on goes, and the wait is read afresh on return.
+      setWaitKnown(false);
+      setPassphrase("");
+      setError(null);
+      setRetryAt(null);
+      setAskAnyway(false);
+      return;
+    }
     let live = true;
     b.lockStatus().then(
       ({ retryAfterSecs: secs }) => {

@@ -682,16 +682,19 @@ test("a released collateral offers Lock it again on testnet", async ({ page }) =
 });
 
 /** All a held wizard reads, from opening to Review. The list comes from the page's own read; the
- * page's governance clock polls on its own timer, which the sheet doesn't own. */
+ * page's governance polls run on their own timers, which the sheet doesn't own. */
 const HELD_READS = ["mn_preview_registration", "mn_registration_keys"];
-const pagePoll = (c: string) => c.startsWith("governance_");
+const PAGE_POLLS = ["governance_contested_names", "governance_info", "governance_my_proposals", "governance_upcoming_superblocks"];
 
 for (const theme of ["light", "dark"] as const)
   test(`mainnet ${theme}: the held wizard reads only keys and the preview (issue 635)`, async ({ page }, info) => {
     const errors = await open(page, "reg", theme, "mainnet");
     await expect(page.getByTestId("mn-set-up")).toBeVisible();
     await page.waitForTimeout(500);
-    const from = await page.evaluate(() => window.__dwFixture!.calls.length);
+    const opened = await page.evaluate(() => [...window.__dwFixture!.calls]);
+    const from = opened.length;
+    // A poll counts as the page's only if the page made it before the sheet opened.
+    const pagePoll = (c: string) => PAGE_POLLS.includes(c) && opened.includes(c);
     await setUp(page);
     await hostedToKeys(page, "203.0.113.20:9999");
     await toReview(page);
