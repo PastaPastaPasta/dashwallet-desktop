@@ -753,6 +753,8 @@ describe("Change keys or payout (MG-10 S3, ProUpRegTx)", () => {
     await expect(cmd.mnResendOperation(W, OP_UPDATE_SAVED, grant)).rejects.toMatchObject({ code: "masternodes.update_pending", data: { kind: "operation", operation: OP_UPDATE } });
     expect(f.world.grants.find((g) => g.grant.id === grant)!.used).toBe(false);
     expect(f.world.masternodes.operations.find((o) => o.id === OP_UPDATE_SAVED)!.state).toEqual({ kind: "not_sent" });
+    const again = (await cmd.authorize({ kind: "masternodeOp", maxDuffs: 100_000_000 }, W, PASS)).id;
+    await expect(cmd.mnResendOperation(W, OP_UPDATE, again)).rejects.toMatchObject({ code: "masternodes.update_superseded", data: { kind: "operation", operation: OP_UPDATE_SAVED } });
   });
 
   it("refuses a payout to the owner or voting key's address (bad-protx-payee-reuse)", async () => {

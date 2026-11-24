@@ -214,6 +214,23 @@ test("Send again of a change saved behind a sent one: the sent line, in the shee
   expect([...errors, ...more].filter((e) => !e.includes("not in the list yet"))).toEqual([]);
 });
 
+test("Send again words the refusal from the operations read after it, not the cached list (#438)", async ({ page }) => {
+  const errors = await open(page, "mn-update-saved");
+  await page.getByTestId(`mn-row-${HOME}`).click();
+  await page.getByTestId("mn-change-keys").click();
+  await expect(page.getByTestId("mn-change-unsent")).toBeVisible();
+  // An earlier change goes out while the sheet is open; no event, so the cached list doesn't hold it.
+  await page.evaluate(() => {
+    const m = window.__dwFixture!.world.masternodes;
+    const saved = m.operations[0];
+    m.operations.push({ ...saved, id: "e".repeat(32), state: { kind: "sent" }, sentAt: saved.createdAt - 60, createdAt: saved.createdAt - 120, lastError: null });
+  });
+  await page.getByTestId("mn-change-unsent-passphrase").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("mn-change-unsent-resend").click();
+  await expect(page.getByTestId("mn-change-unsent-error")).toContainText("was sent but hasn't reached the masternode list yet");
+  expect(errors.filter((e) => !e.includes("not in the list yet"))).toEqual([]);
+});
+
 test("mainnet: Change keys can be reviewed, and nothing is sent", async ({ page }) => {
   const errors = await open(page, "mn-list", "light", "mainnet");
   await page.getByTestId(`mn-row-${HOME}`).click();

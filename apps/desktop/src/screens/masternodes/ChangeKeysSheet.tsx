@@ -230,7 +230,7 @@ export function ChangeKeysSheet({
           <h3 className="mg-section-title">{t(`${P}.review.title`)}</h3>
           {preview.isError && request !== null && debounced === live ? (
             <p className="mg-field-error" role="alert" data-testid="mn-change-preview-error">
-              {changeKeysErrorText(preview.error, ops.data)}
+              {changeKeysErrorText(preview.error, ops.isSuccess ? ops.data : undefined)}
             </p>
           ) : current ? (
             <>

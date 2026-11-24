@@ -89,13 +89,13 @@ export function useMasternodeOperations(walletId: string, enabled = true) {
 }
 
 /** A send's refusal as a sentence. `update_pending` names an operation whose state picks the line, and that state may
- * have changed while the send was out, so the operations are read again first; a failed read keeps the general line. */
+ * have changed while the send was out, so the operations are read again, from the backend itself: a query read could
+ * join one started before the refusal, or pause offline. A failed read keeps the general line. */
 export function usePendingAwareText(walletId: string, text: (e: unknown, ops?: readonly ProTxOperation[]) => string) {
   const b = useBackend();
-  const queryClient = useQueryClient();
   return async (e: unknown) => {
     if (!hasCode(e, "masternodes.update_pending")) return text(e);
-    const ops = await queryClient.fetchQuery({ queryKey: mnKeys.operations(walletId), queryFn: () => b.mnOperations(walletId), staleTime: 0 }).catch(() => undefined);
+    const ops = await b.mnOperations(walletId).catch(() => undefined);
     return text(e, ops);
   };
 }

@@ -811,8 +811,12 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
       const o = opOf(world, walletId, operation);
       const state = readState(m, o).kind;
       if (state !== "signed" && state !== "not_sent" && state !== "sent") throw stateError(state);
-      // `resend_conflict` (D49): an earlier update of the masternode out and not in a block could be mined after it.
-      const earlier = m.operations.find((x) => x !== o && x.kind === o.kind && o.kind === "update_registrar" && x.proTxHash === o.proTxHash && x.createdAt < o.createdAt && readState(m, x).kind === "sent");
+      // `resend_conflict` (D43, D49): a later update of the masternode that is or may go out would be undone by this
+      // one; an earlier one out and not in a block could be mined after it.
+      const others = o.kind === "update_registrar" ? m.operations.filter((x) => x !== o && x.kind === o.kind && x.proTxHash === o.proTxHash) : [];
+      const later = others.find((x) => x.createdAt >= o.createdAt && ["signed", "not_sent", "sent", "confirmed"].includes(readState(m, x).kind));
+      if (later) throw fail("masternodes.update_superseded", `operation ${later.id} replaces this one`, { kind: "operation", operation: later.id });
+      const earlier = others.find((x) => x.createdAt < o.createdAt && readState(m, x).kind === "sent");
       if (earlier) throw fail("masternodes.update_pending", `operation ${earlier.id} on this masternode is not in the list yet`, { kind: "operation", operation: earlier.id });
       charge(lease(world, walletId, grant, useGrant), o.debit);
       sendOp(m, o, false);
