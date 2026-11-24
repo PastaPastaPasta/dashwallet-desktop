@@ -224,7 +224,7 @@ export const tools = {
     walletTitle: "Repair the wallet",
     dropUnconfirmed: "Remove unconfirmed transactions",
     dropUnconfirmedButton: "Remove unconfirmed transactions…",
-    dropUnconfirmedQuestion: "Abandon every unconfirmed transaction that isn't locked yet, and rescan? Locked transactions are kept, because they will confirm. This also ends any unconfirmed masternode registration or key change that isn't locked yet: its coins are released, and Dash Wallet never sends it again. Any abandoned transaction that reached the network may still confirm.",
+    dropUnconfirmedQuestion: "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. This also ends any masternode registration or key change it abandons: its coins are released, and Dash Wallet never sends it again. Any abandoned transaction that reached the network may still confirm.",
     dropAction: "Remove",
     resetChainData: "Reset chain data and resync",
     resetChainDataButton: "Reset chain data and resync…",
