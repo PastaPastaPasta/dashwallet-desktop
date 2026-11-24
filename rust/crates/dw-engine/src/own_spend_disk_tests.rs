@@ -5208,3 +5208,119 @@ pub(super) fn chain_lock(
         })
     });
 }
+
+/// #268's way out. A payment of A and B, InstantSend-locked; after a
+/// restart a side payment of A alone; after the next, another device's
+/// spend of B is mined and ChainLocked beside a spend of A that pays only
+/// someone else. After a restart that doesn't replay that block, the user
+/// removes the side payment (Abandon, or Remove unconfirmed), and A can come
+/// back, held and offered (#268). The way out: after the next restart the
+/// removal's own rescan replays the ChainLocked block once SPV catches up,
+/// and A is spent again, neither held nor offered. Repair ▸ Rescan from the
+/// wallet's birth replays it too, and A stays spent after a restart.
+#[test]
+fn a_replay_of_the_chainlocked_block_spends_again_a_coin_a_removed_side_payment_brought_back() {
+    for remove in ["abandon", "remove unconfirmed"] {
+        way_out_268(remove);
+    }
+}
+
+fn way_out_268(remove: &str) {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    let owner =
+        Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let back = fresh_address(&engine, &session, id);
+    let side = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(a, vec![(back.script_pubkey(), COIN - 2_000)]),
+    );
+    mempool(&engine, &session, id, &side);
+    wait_stored(&session, id, &[side.txid()]);
+
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, 1);
+    let elsewhere_spend = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(a, vec![(elsewhere(), COIN - 1_000)]),
+    );
+    let block = [winner.clone(), elsewhere_spend];
+    mined(&engine, &session, id, TIP + 1, block.to_vec());
+    wait_stored(&session, id, &[winner.txid()]);
+    chain_lock(&engine, &session, id, TIP + 1, block_hash(&block));
+
+    let session = reopen(&engine, session);
+    header_chain(&session, &[(TIP + 1, block_hash(&block))]);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    start_spv(&engine, &session);
+    match remove {
+        "abandon" => engine
+            .block_on(session.abandon_transaction(id, side.txid()))
+            .unwrap(),
+        _ => {
+            engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+        }
+    }
+    let session = reopen(&engine, session);
+    header_chain(&session, &[(TIP + 1, block_hash(&block))]);
+    start_spv(&engine, &session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, block.to_vec());
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "{remove}: A held after the removal's replay"
+    );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "{remove}: A offered after the removal's replay"
+    );
+
+    let mut rescan = None;
+    eventually("the removal's rescan ends", || {
+        let r = engine.block_on(session.rescan(crate::RescanFrom::WalletBirth));
+        let busy = matches!(r, Err(crate::EngineError::RescanInProgress));
+        if !busy {
+            rescan = Some(r);
+        }
+        !busy
+    });
+    rescan.unwrap().unwrap();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, block.to_vec());
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "{remove}: A held after the rescan"
+    );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "{remove}: A offered after the rescan"
+    );
+    let session = reopen(&engine, session);
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "{remove}: A held after the rescan and a restart"
+    );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "{remove}: A offered after the rescan and a restart"
+    );
+}
