@@ -3,9 +3,10 @@
 // Help ▸ About keeps U-01's small sheet. Command-line options (D22) are not shown yet; support is a
 // link to where problems are reported.
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { ProjectLinkName } from "../../api/generated/ProjectLinkName";
-import { isAppError } from "../../api/backend";
+import { isAppError, type Backend } from "../../api/backend";
+import { Model, useModel } from "../../onboarding/model";
 import { useBackend, useBackupDirectory, useNodeInfo } from "../../api/queries";
 import { DashButton } from "../../components/basics";
 import { useLaunch } from "../../app/App";
@@ -19,14 +20,7 @@ const LINKS: ProjectLinkName[] = ["issues", "sourceCode", "website"];
 /** The sentence with its `{url}` as selectable text and a copy button, wherever a translation puts it. */
 export function FailedLink({ url }: { url: string }) {
   const t = useT();
-  const [before, after = ""] = t("settings.about.links.failed", { url: "\u0000" }).split("\u0000");
-  return (
-    <>
-      {before}
-      <CopyValue value={url} action={t("receive.dash.copyLink")} />
-      {after}
-    </>
-  );
+  return <>{t.rich("settings.about.links.failed", { url: <CopyValue value={url} action={t("receive.dash.copyLink")} /> })}</>;
 }
 
 /** The URL a failed `open_project_link` names; null for a failure without one. */
@@ -35,15 +29,21 @@ export const failedLinkUrl = (e: unknown) => (isAppError(e) && e.data?.kind === 
 /** The links, the warning under Report a problem, and a failed open's link to copy. */
 export function ProjectLinksView({ failed, onOpen }: { failed: { url: string | null } | null; onOpen: (link: ProjectLinkName) => void }) {
   const t = useT();
+  const hintId = useId();
   return (
     <SettingsCard title={t("settings.about.links.title")} testId="settings-about-links">
       {LINKS.map((link) => (
         <div key={link} className="settings-row">
-          <DashButton variant="plainBlue" data-testid={`settings-link-${link}`} onClick={() => onOpen(link)}>
+          <DashButton
+            variant="plainBlue"
+            data-testid={`settings-link-${link}`}
+            aria-describedby={link === "issues" ? `${hintId}-issues` : undefined}
+            onClick={() => onOpen(link)}
+          >
             {t(`settings.about.links.${link}`)}
           </DashButton>
           {link === "issues" && (
-            <p className="field-hint settings-hint" data-testid="settings-link-issues-hint">
+            <p id={`${hintId}-issues`} className="field-hint settings-hint" data-testid="settings-link-issues-hint">
               {t("settings.about.links.issuesHint")}
             </p>
           )}
@@ -58,15 +58,36 @@ export function ProjectLinksView({ failed, onOpen }: { failed: { url: string | n
   );
 }
 
+/** Opens a project page; only the latest click's failure shows, so an earlier click that fails
+ * late can't bring back its alert after a later one worked. */
+export class LinkOpener extends Model {
+  failed: { url: string | null } | null = null;
+  #latest = 0;
+
+  constructor(private readonly api: Pick<Backend, "openProjectLink">) {
+    super();
+  }
+
+  async open(link: ProjectLinkName) {
+    const request = ++this.#latest;
+    this.failed = null;
+    this.changed();
+    try {
+      await this.api.openProjectLink(link);
+    } catch (e) {
+      if (request !== this.#latest) return;
+      this.failed = { url: failedLinkUrl(e) };
+      this.changed();
+    }
+  }
+}
+
 /** Support and the project's pages, opened in the browser by Rust (the renderer has no opener). */
 function ProjectLinksCard() {
   const backend = useBackend();
-  const [failed, setFailed] = useState<{ url: string | null } | null>(null);
-  const open = (link: ProjectLinkName) => {
-    setFailed(null);
-    backend.openProjectLink(link).catch((e: unknown) => setFailed({ url: failedLinkUrl(e) }));
-  };
-  return <ProjectLinksView failed={failed} onOpen={open} />;
+  const [opener] = useState(() => new LinkOpener(backend));
+  useModel(opener);
+  return <ProjectLinksView failed={opener.failed} onOpen={(link) => void opener.open(link)} />;
 }
 
 export function AboutTab() {

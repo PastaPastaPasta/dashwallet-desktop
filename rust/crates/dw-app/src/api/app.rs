@@ -133,3 +133,22 @@ commands! {
         Ok("reached".into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ProjectLinkName;
+
+    /// The renderer's fixture answers a failed open with these URLs; they must stay this table's.
+    #[test]
+    fn the_fixture_names_the_same_project_urls() {
+        let fixture = include_str!("../../../../../apps/desktop/src/fixture/handlers.ts");
+        for (name, link) in [
+            ("sourceCode", ProjectLinkName::SourceCode),
+            ("issues", ProjectLinkName::Issues),
+            ("website", ProjectLinkName::Website),
+        ] {
+            let line = format!("{name}: \"{}\",", link.url());
+            assert!(fixture.contains(&line), "fixture PROJECT_LINKS is missing `{line}`");
+        }
+    }
+}
