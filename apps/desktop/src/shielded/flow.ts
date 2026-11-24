@@ -197,6 +197,9 @@ export const SHIELDED_COPY = {
       get text() {
         return t("transfer.shielded.done.checking.text");
       },
+      get row() {
+        return t("transfer.shielded.done.checking.row");
+      },
     },
     notApplied: {
       get title() {
@@ -395,6 +398,15 @@ export class ShieldedFlow extends Model {
       this.result = null;
       this.error = null;
     }
+    this.changed();
+  }
+
+  /** Opens a fresh send to `to` for `text` (Pay's Shielded address); a running or unseen call shows instead. */
+  sendTo(to: string, text: string) {
+    this.begin("send");
+    if (this.running || this.step !== "form") return;
+    this.to = to;
+    this.text = text;
     this.changed();
   }
 

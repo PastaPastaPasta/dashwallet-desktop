@@ -22,6 +22,7 @@ import {
   NAME_SORTS,
   nameErrorText,
   NameText,
+  shortIdentity,
   tallyView,
   voteBlocked,
   voterLine,
@@ -208,7 +209,7 @@ function ContestRowButton({ contest, names, now, current, onSelect }: { contest:
 
 /** The selected contest (D5–D9): when voting ends, the tally with who leads, the wallet's voters
  * with their present choice and votes left, and Vote. */
-function NamePane({
+export function NamePane({
   contest,
   names,
   nodeNames,
@@ -258,10 +259,10 @@ function NamePane({
                 <span className="mg-tally-title">
                   {r.identity ? (
                     <span className="copy-value">
-                      <span className="mono" title={r.identity}>
+                      <span className={r.named ? undefined : "mono"} title={r.identity}>
                         {r.title}
                       </span>
-                      <CopyIconButton text={r.identity!} label={t("masternodes.names.pane.copyIdentity", { identity: r.title })} title={t("masternodes.names.pane.copyIdentityTitle")} size={16} />
+                      <CopyIconButton text={r.identity!} label={t("masternodes.names.pane.copyIdentity", { identity: shortIdentity(r.identity!) })} title={t("masternodes.names.pane.copyIdentityTitle")} size={16} />
                     </span>
                   ) : (
                     r.title
@@ -292,7 +293,7 @@ function NamePane({
                     {nodeName(v, nodeNames)}
                     {v.weight > 1 && <span className="mg-muted"> {t("masternodes.names.pane.weight", { weight: v.weight })}</span>}
                   </span>
-                  <span className="mg-muted">{voterLine(v, contest.label, names.votesAllowed)}</span>
+                  <span className="mg-muted">{voterLine(v, contest, names.votesAllowed)}</span>
                 </li>
               ))}
             </ul>

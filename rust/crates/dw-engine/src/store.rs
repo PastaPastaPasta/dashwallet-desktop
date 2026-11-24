@@ -44,7 +44,14 @@ pub(crate) struct WalletStore {
     /// Tests: runs once, after the store of a wallet's registration.
     #[cfg(test)]
     pub(crate) on_register: std::sync::Mutex<Option<RegisterHook>>,
+    /// Tests: the next store the predicate matches waits at the first
+    /// barrier, then at the second, before it reaches the persister.
+    #[cfg(test)]
+    pub(crate) hold_store: std::sync::Mutex<Option<StoreHold>>,
 }
+
+#[cfg(test)]
+pub(crate) type StoreHold = (StoreFailure, Arc<(std::sync::Barrier, std::sync::Barrier)>);
 
 #[cfg(test)]
 pub(crate) type StoreFailure = Box<dyn Fn(&PlatformWalletChangeSet) -> bool + Send>;
@@ -69,6 +76,8 @@ impl WalletStore {
             fail_store: Default::default(),
             #[cfg(test)]
             on_register: Default::default(),
+            #[cfg(test)]
+            hold_store: Default::default(),
         }
     }
 
@@ -163,6 +172,16 @@ impl PlatformWalletPersistence for WalletStore {
         changeset: PlatformWalletChangeSet,
     ) -> Result<(), PersistenceError> {
         let replay = || self.replay.get().and_then(std::sync::Weak::upgrade);
+        #[cfg(test)]
+        {
+            let mut held = self.hold_store.lock().unwrap();
+            if (held.as_ref()).is_some_and(|(matches, _)| matches(&changeset)) {
+                let (_, barriers) = held.take().unwrap();
+                drop(held);
+                barriers.0.wait();
+                barriers.1.wait();
+            }
+        }
         #[cfg(test)]
         if (self.fail_store.lock().unwrap().as_ref()).is_some_and(|fails| fails(&changeset)) {
             if changeset.core.is_some()

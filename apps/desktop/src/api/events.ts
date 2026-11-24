@@ -56,8 +56,9 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
-      // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).
-      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId)];
+      // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7). The
+      // masternode overview lists collateral-shaped coins, which Show Masternodes' Auto counts.
+      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId), mnKeys.list(event.walletId)];
     case "historyChanged":
       return [
         keys.historyAll(event.walletId),

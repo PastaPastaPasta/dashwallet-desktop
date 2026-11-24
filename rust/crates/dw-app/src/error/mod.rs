@@ -169,6 +169,12 @@ codes! {
         ExplorerOpen = "app.explorer_open",
         /// The system browser could not be opened (`open_releases_page`).
         BrowserOpen = "app.browser_open",
+        /// No automatic backup has made the backup folder yet
+        /// (`open_backup_directory`).
+        BackupFolderMissing = "app.backup_folder_missing",
+        /// The backup folder exists but no file manager opened it
+        /// (`open_backup_directory`).
+        FolderOpen = "app.folder_open",
         /// This copy cannot update itself (`UpdateAvailability`: a build
         /// without the updater key, a Flatpak, a package-manager install).
         UpdatesUnavailable = "app.updates_unavailable",
@@ -524,10 +530,13 @@ pub enum TxActionRefusalName {
     Coinbase,
     InMempool,
     NotSentByWallet,
+    /// Abandon can go through after a restart and a rescan from the
+    /// wallet's birth (the message says so).
+    RescanFirst,
 }
 
 crate::dto::mirror_enum!(dw_engine::TxActionRefusal => TxActionRefusalName {
-    Confirmed, InstantLocked, AlreadyAbandoned, Coinbase, InMempool, NotSentByWallet
+    Confirmed, InstantLocked, AlreadyAbandoned, Coinbase, InMempool, NotSentByWallet, RescanFirst
 });
 
 impl AppError {

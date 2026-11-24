@@ -1002,10 +1002,23 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
 }
 
 /**
- * dash-qt "Abandon transaction": marks it abandoned, releases its
- * inputs and excludes it from balances. SPV cannot prove it is in no
- * mempool, so it may still confirm; the history then shows it
- * confirmed again.
+ * dash-qt "Abandon transaction": marks it abandoned, releases the
+ * inputs no processed block spent and excludes it from balances. SPV
+ * cannot prove it is in no mempool, so it may still confirm; the
+ * history then shows it confirmed again. An InstantSend-locked
+ * transaction is refused (`instantLocked`) unless a transaction in a
+ * ChainLocked block of the SPV header chain spends one of its inputs,
+ * nothing descending from it is in a block, locked or finalized, the
+ * wallet holds no record of it in a block or locked (in the session it
+ * was locked in, until a restart; #329), the history load was complete
+ * and the scan has passed the ChainLock with no replay pending; then
+ * only inputs proven unspent are released.
+ * `rescanFirst` instead when all of that holds and the only inputs
+ * missing are held by its own spend claim restored at load: a restart
+ * and a rescan give that evidence.
+ * Any transaction is refused (`instantLocked`, or `confirmed`) when
+ * abandoning it would also take one the history holds as InstantSend-
+ * locked (or in a block).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1021,9 +1034,12 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
 }
 
 /**
- * "Remove unconfirmed": abandons every unconfirmed, not
- * InstantSend-locked transaction of the wallet (every wallet when
- * `walletId` is `null`) and rescans from the lowest funding height.
+ * "Remove unconfirmed": abandons every unconfirmed transaction of the
+ * wallet (every wallet when `walletId` is `null`) that Abandon would,
+ * InstantSend-locked ones only under its ChainLock exception, then
+ * rescans once, from the lowest funding height of them all. One the
+ * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says)
+ * is skipped.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
@@ -1112,6 +1128,15 @@ export function automaticBackupFailures(): Promise<Array<AutomaticBackupFailure>
  */
 export function backupDirectory(): Promise<string> {
   return invoke<string>("backup_directory");
+}
+
+/**
+ * Shows the network's automatic-backup folder in the system file
+ * manager (Settings ▸ Backups ▸ Show folder). The folder is the
+ * session's own, never an argument; one not written yet is refused.
+ */
+export function openBackupDirectory(): Promise<null> {
+  return invoke<null>("open_backup_directory");
 }
 
 /**
@@ -3228,6 +3253,7 @@ export type CommandArgs = {
   automatic_backups: { walletId: string | null };
   automatic_backup_failures: {  };
   backup_directory: {  };
+  open_backup_directory: {  };
   backup_policy: {  };
   set_backup_policy: { keep: number };
   read_backup_header: { path: string };
@@ -3581,6 +3607,7 @@ export type CommandResults = {
   automatic_backups: Array<BackupSummary>;
   automatic_backup_failures: Array<AutomaticBackupFailure>;
   backup_directory: string;
+  open_backup_directory: null;
   backup_policy: BackupPolicyInfo;
   set_backup_policy: BackupPolicyInfo;
   read_backup_header: BackupFileHeader;
@@ -3936,6 +3963,7 @@ export const COMMANDS: Record<CommandName, string> = {
   automatic_backups: "backup",
   automatic_backup_failures: "backup",
   backup_directory: "backup",
+  open_backup_directory: "backup",
   backup_policy: "backup",
   set_backup_policy: "backup",
   read_backup_header: "backup",
@@ -4207,6 +4235,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.network_switch_failed",
   "app.explorer_open",
   "app.browser_open",
+  "app.backup_folder_missing",
+  "app.folder_open",
   "app.updates_unavailable",
   "app.update_check",
   "app.update_not_published",

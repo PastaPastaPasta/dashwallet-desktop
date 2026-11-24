@@ -136,6 +136,9 @@ export const FUND_COPY = {
       get text() {
         return t("transfer.fund.done.checking.text");
       },
+      get row() {
+        return t("transfer.fund.done.checking.row");
+      },
     },
     notApplied: {
       get title() {
@@ -194,7 +197,7 @@ export interface FundRowView {
  * can't be finished. */
 export function fundRowView(p: Pick<PendingPlatformFund, "duffs" | "state" | "consumptionUnknown">, amount: (duffs: number) => string): FundRowView {
   if (p.state === "tooSmall" || p.state === "unsupported") return { kind: "stuck", text: FUND_COPY.card.stuck[p.state](amount(p.duffs)), action: null };
-  if (p.consumptionUnknown) return { kind: "checking", text: FUND_COPY.done.checking.text, action: "checkAgain" };
+  if (p.consumptionUnknown) return { kind: "checking", text: FUND_COPY.done.checking.row, action: "checkAgain" };
   return { kind: "unfinished", text: FUND_COPY.card.unfinished(amount(p.duffs)), action: "finish" };
 }
 
