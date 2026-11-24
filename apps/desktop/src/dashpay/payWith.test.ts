@@ -6,10 +6,12 @@ import type { ShieldedCheckName } from "../api/generated/ShieldedCheckName";
 import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
 import type { UnrecordedSpend } from "../api/generated/UnrecordedSpend";
 import { appError } from "../onboarding/testWorld";
-import { costs, SHIELDED_DENOMINATION, shieldedQuote, shieldedReadiness } from "../fixture/registration";
+import { costs, platformQuote, SHIELDED_DENOMINATION, shieldedQuote, shieldedReadiness } from "../fixture/registration";
+import { noIdentity } from "../fixture/dashpay";
+import { newPlatformWorld } from "../fixture/pending";
 import { newShieldedWorld, type ShieldedWorld } from "../fixture/shielded";
 import { FIXTURE_NOW, secs } from "../fixture/wallet";
-import { dashpayKeys } from "./queries";
+import { dashpayKeys, platformSourceOf } from "./queries";
 import { LIVE_SOURCES, PAY_WITH_COPY, payWithRows, platformReason, shieldedReason, type PayWithInputs, type PaySource } from "./payWith";
 
 const amount = (duffs: number) => `${duffs / 1e8} Dash`;
@@ -26,7 +28,7 @@ const readiness = (failed: ShieldedCheckName | null, readyAt: number | null = nu
 const inputs = (i: Partial<PayWithInputs> = {}): PayWithInputs => ({
   core: { availableDuffs: 10e8, totalDuffs: 3_002_260 },
   platformDuffs: 5e8,
-  platform: { quote: shieldedQuote("alice-77", undefined) },
+  platform: { quote: platformQuote("alice-77", newPlatformWorld(), false, noIdentity()) },
   shieldedDuffs: 2e8,
   readiness: readiness(null),
   amount,
@@ -69,6 +71,15 @@ describe("Pay with rows (F19)", () => {
     expect(refused("platform.feature_off", { kind: "feature", feature: "platform_registration" })).toBe(PAY_WITH_COPY.notOffered);
     expect(refused("platform.unavailable")).toBe("Dash Platform did not answer. Try again.");
     expect(platformReason(undefined, amount)).toBe("Reading your balances…");
+  });
+
+  it("a refused read of the Platform quote is the row's reason even with an earlier quote kept", () => {
+    const quote = platformQuote("alice-77", newPlatformWorld(), false, noIdentity());
+    const error = appError("credits.move_pending", { kind: "artifact", artifact: "m1" });
+    expect(platformSourceOf({ data: quote, isError: false, error: null })).toEqual({ quote });
+    expect(platformSourceOf({ data: quote, isError: true, error })).toEqual({ error });
+    expect(platformSourceOf({ data: undefined, isError: false, error: null })).toBeUndefined();
+    expect(reasons(inputs({ platform: platformSourceOf({ data: quote, isError: true, error }) })).platform).toBe(PAY_WITH_COPY.movePending);
   });
 
   it("Dash wallet short of the quote names the least it needs", () => {

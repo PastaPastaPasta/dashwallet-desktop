@@ -7,7 +7,7 @@ import { hasCode } from "../api/backend";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { ShieldedCheckName } from "../api/generated/ShieldedCheckName";
 import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
-import { CREDITS_PER_DUFF, creditsToDuffs } from "../api/pending";
+import { creditsToDuffs, creditsToDuffsUp } from "../api/pending";
 import { messageTable, t } from "../i18n";
 import { withTable } from "./status";
 
@@ -83,10 +83,7 @@ export function platformReason(platform: PayWithInputs["platform"], amount: (duf
   const e = platform.error;
   if (hasCode(e, "platform.feature_off")) return PAY_WITH_COPY.notOffered;
   if (hasCode(e, "credits.move_pending")) return PAY_WITH_COPY.movePending;
-  if (hasCode(e, "platform.insufficient_credits") && e.data?.kind === "credits") {
-    const duffs = (BigInt(e.data.needed) + CREDITS_PER_DUFF - 1n) / CREDITS_PER_DUFF;
-    return PAY_WITH_COPY.short(amount(Number(duffs)));
-  }
+  if (hasCode(e, "platform.insufficient_credits") && e.data?.kind === "credits") return PAY_WITH_COPY.short(amount(creditsToDuffsUp(e.data.needed)));
   return t("transfer.move.error.unavailable");
 }
 

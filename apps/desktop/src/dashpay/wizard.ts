@@ -6,6 +6,7 @@
 
 import type { Backend } from "../api/backend";
 import { hasCode } from "../api/backend";
+import type { AppError } from "../api/generated/commands";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { FinishReport } from "../api/generated/FinishReport";
 import type { GrantRequest } from "../api/generated/GrantRequest";
@@ -176,7 +177,8 @@ export class RegistrationWizard extends Model {
   request(quote: ConfirmQuote | null = null): RegistrationRequest {
     const m = this.mode;
     if (m.kind === "invitation") return invitationRequest(this.label, m.linkId, this.requestInviter && m.inviter !== null);
-    if (this.fromPlatform) return platformRequest(this.label, quote?.platform ?? undefined);
+    if (this.fromPlatform && quote?.platform) return platformRequest(this.label, quote.platform);
+    if (this.fromPlatform) return platformRequest(this.label);
     return coreRequest(this.label);
   }
 
@@ -221,6 +223,13 @@ export class RegistrationWizard extends Model {
   /** Confirm & pay (D8: one start per Confirm). The quote's grant, then `start_registration`. A
    * refusal naming another registration shows that one; one past a wedged funding asks first. */
   async confirm(quote: ConfirmQuote, past: string[] = []): Promise<void> {
+    // A Platform start takes its numbers from a Platform quote; a quote without them authorizes
+    // nothing (F4).
+    if (this.fromPlatform && quote.platform === null) {
+      this.error = { code: "registration.quote_changed", message: "not a Platform quote", data: null } satisfies AppError;
+      this.changed();
+      return;
+    }
     const request = this.request(quote);
     await this.#call("start", async () => {
       const draft = await this.#withGrant(quote.grant, (g) =>

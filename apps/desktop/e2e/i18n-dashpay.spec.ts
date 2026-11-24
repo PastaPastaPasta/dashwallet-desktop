@@ -145,6 +145,15 @@ export const STATES: Record<string, State> = {
       await page.getByTestId("pay-with-core-balance").waitFor();
     },
   },
+  "pay-with-move-pending": {
+    scenario: "platform-send-held",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await page.getByTestId("join-pay-another").click();
+      await page.getByTestId("pay-with-platform-reason").waitFor();
+    },
+  },
   "name-rules": {
     scenario: "dashpay-no-identity",
     roots: ["page-joinDashPay"],

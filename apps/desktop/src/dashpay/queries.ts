@@ -5,11 +5,13 @@
 import { useQuery } from "@tanstack/react-query";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import { useDebounced } from "../app/useDebounced";
 import { keys, mainIdentityOf, mainSummaryOf, useBackend, useLockStatus, useSyncStatus } from "../api/queries";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
+import type { PayWithInputs } from "./payWith";
 import { AVAILABILITY_DEBOUNCE_MS, isRunning } from "./registration";
 import { QUOTE_REQUEST, type StatusInputs } from "./status";
 import { coreRequest, invitationRequest, platformRequest } from "./wizard";
@@ -20,7 +22,7 @@ export const dashpayKeys = {
   quote: (walletId: string) => ["dashpay", "quote", walletId] as const,
   /** DP1-09: the quote of one label, under `quote`, so a balance change re-reads it too. */
   labelQuote: (walletId: string, label: string, fromPlatform = false) =>
-    (fromPlatform ? ["dashpay", "quote", walletId, label, "platform"] : ["dashpay", "quote", walletId, label]) as readonly unknown[],
+    fromPlatform ? (["dashpay", "quote", walletId, label, "platform"] as const) : (["dashpay", "quote", walletId, label] as const),
   availability: (walletId: string, label: string) => ["dashpay", "availability", walletId, label] as const,
   nameCredits: (walletId: string, identity: string, label: string) => ["dashpay", "nameCredits", walletId, identity, label] as const,
   /** Pure and offline (`check_username`): no signal changes it, so it is not under `dashpay`. */
@@ -146,9 +148,12 @@ export function usePlatformSource(walletId: string) {
     queryFn: () => b.registrationQuote(walletId, platformRequest(QUOTE_REQUEST.label)),
     retry: false,
   });
-  if (quote.data) return { quote: quote.data };
-  return quote.isError ? { error: quote.error } : undefined;
+  return platformSourceOf(quote);
 }
+
+/** The row's read: a refetch that fails keeps the last data, so its refusal comes first. */
+export const platformSourceOf = (q: { data: RegistrationQuote | undefined; isError: boolean; error: unknown }): PayWithInputs["platform"] =>
+  q.isError ? { error: q.error } : q.data ? { quote: q.data } : undefined;
 
 /** D6: the quote of a non-contested username for this wallet: its total is what one costs, its
  * `availableDuffs` what the funding can spend now (DP1-09 D5); `undefined` while unread or when

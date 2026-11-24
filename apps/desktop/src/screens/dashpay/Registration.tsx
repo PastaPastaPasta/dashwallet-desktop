@@ -52,13 +52,14 @@ export function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; tit
   );
 }
 
-/** The last call's refusal; a claim's (`claim`, DP5-03 C12) in its own words. */
-export function ErrorLine({ wiz, inputs, claim = false }: { wiz: RegistrationWizard; inputs: StatusInputs; claim?: boolean }) {
+/** The last call's refusal; a claim's (`claim`, DP5-03 C12) in its own words, and one paid from
+ * the Platform balance (`fromPlatform`: the wizard's source, or the row's) in that balance's. */
+export function ErrorLine({ wiz, inputs, claim = false, fromPlatform = wiz.fromPlatform }: { wiz: RegistrationWizard; inputs: StatusInputs; claim?: boolean; fromPlatform?: boolean }) {
   useT();
   if (wiz.error === null) return null;
   return (
     <p className="registration-error" role="alert" data-testid="registration-error">
-      {claim || wiz.mode.kind === "invitation" ? claimErrorText(wiz.error, inputs.amount) : startErrorText(wiz.error, inputs.amount, inputs.discreet, wiz.fromPlatform)}
+      {claim || wiz.mode.kind === "invitation" ? claimErrorText(wiz.error, inputs.amount) : startErrorText(wiz.error, inputs.amount, inputs.discreet, fromPlatform)}
     </p>
   );
 }
@@ -305,7 +306,8 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   const credits = useNameCredits(walletId, identity, wiz.label);
   const check = useUsernameCheck(wiz.label);
   const contested = identity !== null ? (check.data?.contested ?? false) : (quote.data?.contested ?? false);
-  const ready = identity !== null ? credits.data !== undefined : quote.data !== undefined && confirmModel(quote.data, inputs.amount).shortfall === null;
+  // A refetch that fails keeps the last quote: Pay waits for one that stands.
+  const ready = identity !== null ? credits.data !== undefined : quote.data !== undefined && !quote.isError && confirmModel(quote.data, inputs.amount).shortfall === null;
   const disabled = !ready || wiz.running !== null || (contested && !accepted);
   const pay = () => {
     if (identity !== null) void wiz.registerName(identity);
@@ -440,6 +442,7 @@ export function RegistrationScreen({
   phase,
   waiting,
   claim = false,
+  fromPlatform = false,
   onAction,
   inputs,
   share = null,
@@ -450,6 +453,8 @@ export function RegistrationScreen({
   waiting?: string | null;
   /** The row is an invitation's claim (DP5-03): its refusals in the claim's words. */
   claim?: boolean;
+  /** The row is paid from the Platform balance: its refusals in that balance's words. */
+  fromPlatform?: boolean;
   onAction: (kind: ScreenActionKind) => void;
   inputs: StatusInputs;
   /** Whose username the welcome's Share my username shows, once known. */
@@ -561,7 +566,7 @@ export function RegistrationScreen({
           {REG_COPY.finished(wiz.finished)}
         </p>
       )}
-      <ErrorLine wiz={wiz} inputs={inputs} claim={claim} />
+      <ErrorLine wiz={wiz} inputs={inputs} claim={claim} fromPlatform={fromPlatform} />
       {welcome && (
         <WelcomeSteps
           disabled={wiz.running !== null}

@@ -425,6 +425,14 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
       await expect(page.getByTestId("pay-with-core-balance")).toBeVisible();
     },
   },
+  // A Platform move that may still execute holds the balance: the Platform row's reason.
+  "pay-with-move-pending": {
+    scenario: "platform-send-held",
+    reach: async (page) => {
+      await page.getByTestId("join-pay-another").click();
+      await expect(page.getByTestId("pay-with-platform-reason")).toHaveText("Another Platform transfer is still being confirmed. Try again when it is done.");
+    },
+  },
   // Dash wallet short of the cost: its reason; Continue off.
   "pay-with-short": {
     scenario: "empty",

@@ -277,13 +277,16 @@ const MAX_INPUTS = 16;
 /** registration_platform.rs `REGISTER_FEE_BAND`: input 0 keeps three fees. */
 const FEE_BAND = 3n;
 
+/** One input of a plan: the address and the credits it claims. */
+type PlanInput = { address: string; claim: bigint };
+
 /** A Platform-funded row's stored funding (C-funding F3): what the identity receives, what input 0
  * keeps for the fee, and each input's claim in address order, input 0 first. */
 export interface PlatformRegisterPlan {
   funding: bigint;
   fee: bigint;
   reserve: bigint;
-  inputs: { address: string; claim: bigint }[];
+  inputs: PlanInput[];
 }
 
 /** `registered`: the create's proved result; `unknown`: no answer (F7); `held`: failed by height
@@ -295,7 +298,7 @@ const short = (needed: bigint, available: bigint) =>
 
 /** input0.rs `plan` for `funding` with input 0 keeping `reserve`: the first funded address above
  * the reserve, then the later ones that hold at least an input's minimum. */
-function input0Plan(addresses: [string, bigint][], funding: bigint, reserve: bigint): { address: string; claim: bigint }[] {
+function input0Plan(addresses: [string, bigint][], funding: bigint, reserve: bigint): PlanInput[] {
   const funded = addresses.filter(([, c]) => c > 0n);
   const first = funded.findIndex(([, c]) => c > reserve);
   const usable = first < 0 ? [] : [funded[first], ...funded.slice(first + 1).filter(([, c]) => c >= MIN_INPUT)].slice(0, MAX_INPUTS);
@@ -303,7 +306,7 @@ function input0Plan(addresses: [string, bigint][], funding: bigint, reserve: big
   if (usable.length === 0 || funding > held - reserve) {
     throw short(funding + reserve, usable.length === 0 ? funded.reduce((n, [, c]) => (c > n ? c : n), 0n) : held);
   }
-  const inputs: { address: string; claim: bigint }[] = [];
+  const inputs: PlanInput[] = [];
   let left = funding;
   for (const [i, [address, balance]] of usable.entries()) {
     if (left === 0n) break;
@@ -314,14 +317,15 @@ function input0Plan(addresses: [string, bigint][], funding: bigint, reserve: big
   }
   if (inputs[0].claim < MIN_INPUT) throw short(MIN_INPUT + reserve, usable[0][1]);
   const total = inputs.reduce((n, x) => n + x.claim, 0n);
-  if (total < MIN_IDENTITY_FUNDING) throw short(MIN_IDENTITY_FUNDING + reserve, held);
+  if (total < MIN_IDENTITY_FUNDING) throw short(MIN_IDENTITY_FUNDING + reserve, funded.reduce((n, [, c]) => n + c, 0n));
   return inputs;
 }
 
-/** registration_platform.rs `register_plan` over the addresses in address order: the identity
+/** registration_platform.rs `register_plan` over the addresses in address order (the fixture's
+ * addresses have no bytes: their strings' order stands in for `PlatformAddress`'s): the identity
  * receives at least `funding`; input 0 keeps three fees for exactly the inputs the plan takes. The
  * engine's walk, then any count and input 0 that pays with that count's reserve, fewest first. */
-export function registerPlan(addresses: PlatformWorld["addresses"], funding: bigint): PlatformRegisterPlan {
+function registerPlan(addresses: PlatformWorld["addresses"], funding: bigint): PlatformRegisterPlan {
   const ordered: [string, bigint][] = [...addresses].sort((a, b) => (a.address < b.address ? -1 : 1)).map((a) => [a.address, BigInt(a.credits)]);
   const wanted = funding > MIN_IDENTITY_FUNDING ? funding : MIN_IDENTITY_FUNDING;
   const planned = (from: [string, bigint][], inputs: number) => {
@@ -329,7 +333,7 @@ export function registerPlan(addresses: PlatformWorld["addresses"], funding: big
     const taken = input0Plan(from, wanted, reserve);
     return { taken, reserve };
   };
-  const done = ({ taken, reserve }: { taken: { address: string; claim: bigint }[]; reserve: bigint }): PlatformRegisterPlan => ({
+  const done = ({ taken, reserve }: { taken: PlanInput[]; reserve: bigint }): PlatformRegisterPlan => ({
     funding: taken.reduce((n, x) => n + x.claim, 0n),
     fee: registerFee(taken.length),
     reserve,
@@ -372,22 +376,26 @@ export function registerPlan(addresses: PlatformWorld["addresses"], funding: big
   throw refusal;
 }
 
+/** A Platform-funded row whose create may still execute: its `Register` move holds the addresses
+ * until the create settles (C-funding F9, F10). */
+const creating = (r: RegistrationStatus) => r.fromPlatform && r.phase === "keysPrepared" && r.fundsCommitted;
+
 /** registration_platform.rs `register_quote`: the plan of a Platform-funded registration of
  * `label`, whose identity receives the name's credits, at least dpp's minimum, from one or more
- * addresses. Refused while a move holds the addresses, and off on mainnet
- * (registration_platform.rs `FEATURE`). */
-function platformPlan(label: string, p: PlatformWorld | null, mainnet: boolean): PlatformRegisterPlan {
+ * addresses. Refused while a move, or a registration's create, holds the addresses, and off on
+ * mainnet (registration_platform.rs `FEATURE`). */
+function platformPlan(label: string, p: PlatformWorld | null, mainnet: boolean, dp: DashPayWorld): PlatformRegisterPlan {
   validLabel(label);
   if (mainnet) throw platformOff();
   if (p === null) throw fail("platform.feature_off", "platform", { kind: "feature", feature: "platform" });
-  const held = p.activity.find(isHeldOp);
-  if (held) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: held.id });
+  const held = p.activity.find(isHeldOp)?.id ?? dp.registrations.find(creating)?.draft;
+  if (held !== undefined) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: held });
   return registerPlan(p.addresses, costs(label).credits);
 }
 
 /** A Platform-funded quote: nothing in duffs; the grant covers the planned debit and the names. */
-export function platformQuote(label: string, p: PlatformWorld | null, mainnet: boolean): RegistrationQuote {
-  const plan = platformPlan(label, p, mainnet);
+export function platformQuote(label: string, p: PlatformWorld | null, mainnet: boolean, dp: DashPayWorld): RegistrationQuote {
+  const plan = platformPlan(label, p, mainnet, dp);
   const { contested, credits } = costs(label);
   const debit = plan.funding + plan.reserve;
   return {
@@ -452,8 +460,9 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     if (request.funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     if (request.funding.kind === "shielded") throw shieldedOff();
     validLabel(request.label);
-    const plan = request.funding.kind === "platformAddresses" ? platformPlan(request.label, world.pending.platform, world.launch.network.kind === "mainnet") : null;
-    if (plan && request.funding.kind === "platformAddresses") {
+    let plan: PlatformRegisterPlan | null = null;
+    if (request.funding.kind === "platformAddresses") {
+      plan = platformPlan(request.label, world.pending.platform, world.launch.network.kind === "mainnet", dp);
       // F4: the numbers the quote showed, or nothing is written.
       if (String(plan.funding) !== request.funding.fundingCredits || String(plan.reserve) !== request.funding.feeReserveCredits)
         throw fail("registration.quote_changed", "the quote changed");

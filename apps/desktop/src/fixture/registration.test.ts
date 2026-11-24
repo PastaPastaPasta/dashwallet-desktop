@@ -155,6 +155,17 @@ describe("a registration from the Platform balance (C-funding F4, F9, F10, F22)"
       { ...b, credits: "1000000000" },
     ];
     await expect(cmd.registrationQuote(W, platformRequest(LABEL))).rejects.toMatchObject({ code: "platform.insufficient_credits", data: { kind: "credits" } });
+    // Input 0 above one input's reserve but not two's: planned again from the next address, alone.
+    g.world.pending.platform!.addresses = [
+      { ...a, credits: "125000000" },
+      { ...b, credits: "5000000000" },
+    ];
+    expect((await cmd.registrationQuote(W, platformRequest(LABEL))).platform).toEqual({
+      fundingCredits: "2000000000",
+      feeCredits: "41500000",
+      feeReserveCredits: "124500000",
+      debitCredits: "2124500000",
+    });
   });
 
   it("an unknown answer waits and reads again; a held one parks, and Continue signs the stored plan once", async () => {
@@ -166,6 +177,8 @@ describe("a registration from the Platform balance (C-funding F4, F9, F10, F22)"
     f.advanceRegistration(draft);
     expect(await rowOf(draft)).toMatchObject({ phase: "keysPrepared", waiting: "paymentUnknown", running: true, fundsCommitted: true });
     await expect(cmd.discardRegistration(W, draft)).rejects.toMatchObject({ code: "invalid_argument" });
+    // F9: the create holds the addresses; the next Platform quote names it.
+    await expect(cmd.registrationQuote(W, platformRequest(LABEL))).rejects.toMatchObject({ code: "credits.move_pending", data: { kind: "artifact", artifact: draft } });
     f.advanceRegistration(draft);
     expect(await rowOf(draft)).toMatchObject({ phase: "keysPrepared", waiting: "paymentHeld", running: false });
     expect(f.advanceRegistration(draft)).toBe(false);

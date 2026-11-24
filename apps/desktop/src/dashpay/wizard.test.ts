@@ -10,6 +10,7 @@ import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { CLAIM_COPY, CLAIM_KEPT, claimErrorText } from "./claim";
+import type { PaySource } from "./payWith";
 import { QUOTE_LABEL } from "./status";
 import { coreRequest, invitationRequest, platformRequest, RegistrationWizard, resetWizards, wizardFor } from "./wizard";
 
@@ -83,6 +84,15 @@ function setup(lock = { encrypted: false }) {
   };
   const wiz = new RegistrationWizard(api, WALLET_A);
   return { wiz, api, calls, vault, setRows: (r: RegistrationStatus[]) => (rows = r) };
+}
+
+/** The wizard on step 2 for `label`, through "Pay with" from `source`. */
+function viaSource(wiz: RegistrationWizard, source: PaySource, label = "alice-77") {
+  wiz.begin({ kind: "core" }, "source");
+  wiz.setSource(source);
+  wiz.pickSource();
+  wiz.setLabel(label);
+  wiz.next();
 }
 
 /** The wizard on step 2 for `label`. */
@@ -402,11 +412,7 @@ describe("the Pay with step (C-funding F18, F19)", () => {
 
   it("F4, F5: from the Platform balance, the start carries the quote's numbers under its grant with no duffs", async () => {
     const { wiz, api, vault } = setup();
-    wiz.begin({ kind: "core" }, "source");
-    wiz.setSource("platform");
-    wiz.pickSource();
-    wiz.setLabel("alice-77");
-    wiz.next();
+    viaSource(wiz, "platform");
     expect(wiz.fromPlatform).toBe(true);
     await wiz.confirm(platformQuote);
     expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "4126000000" } });
@@ -414,15 +420,14 @@ describe("the Pay with step (C-funding F18, F19)", () => {
     expect(api.startRegistration.mock.calls[0][1].funding).toEqual({ kind: "platformAddresses", fundingCredits: "2000000000", feeReserveCredits: "126000000" });
   });
 
-  it("a Platform start under a quote without Platform numbers sends zeros, which the engine refuses as changed", async () => {
-    const { wiz, api } = setup();
-    wiz.begin({ kind: "core" }, "source");
-    wiz.setSource("platform");
-    wiz.pickSource();
-    wiz.setLabel("alice-77");
-    wiz.next();
+  it("a Platform start under a quote without Platform numbers authorizes and starts nothing, as a changed cost", async () => {
+    const { wiz, api, vault } = setup();
+    viaSource(wiz, "platform");
     await wiz.confirm(quote("alice-77"));
-    expect(api.startRegistration.mock.calls[0][1].funding).toEqual({ kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" });
+    expect(vault.calls.authorize).toEqual([]);
+    expect(api.startRegistration).not.toHaveBeenCalled();
+    expect(wiz.error).toMatchObject({ code: "registration.quote_changed" });
+    expect(wiz.step).toBe("confirm");
   });
 
   it("only a new identity pays from the Platform balance: a claim and a name from credits ignore the source", () => {

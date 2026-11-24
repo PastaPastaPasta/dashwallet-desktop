@@ -7,7 +7,7 @@
 
 import { hasCode, isAppError } from "../api/backend";
 import { FLOW_NAME } from "../api/lockReport";
-import { CREDITS_PER_DUFF } from "../api/pending";
+import { creditsToDuffsUp } from "../api/pending";
 import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { FinishReport } from "../api/generated/FinishReport";
 import type { LockKind } from "../api/generated/LockKind";
@@ -155,21 +155,16 @@ export interface ConfirmModel {
   shortfall: string | null;
 }
 
-/** Credits as duffs, rounded up: an "about" amount never undersells what leaves. */
-const creditsUp = (credits: bigint) => Number((credits + CREDITS_PER_DUFF - 1n) / CREDITS_PER_DUFF);
-
 /** The quote's cost: from the Dash wallet, its total and what the funding can spend; from the
  * Platform balance (C-funding F9), what leaves it, the identity's funding and the fee. A Platform
  * quote has no shortfall: one the balance cannot pay is refused. */
 export function confirmModel(quote: RegistrationQuote, amount: (duffs: number) => string): ConfirmModel {
   const p = quote.platform;
-  const total = p ? BigInt(p.fundingCredits) + BigInt(p.feeCredits) : 0n;
-  const lines: string[] = [
-    p ? REG_COPY.confirm.fromPlatform(amount(creditsUp(total)), amount(creditsUp(BigInt(p.fundingCredits))), amount(creditsUp(BigInt(p.feeCredits)))) : REG_COPY.confirm.credits,
-  ];
+  const cost = amount(p ? creditsToDuffsUp(BigInt(p.fundingCredits) + BigInt(p.feeCredits)) : quote.totalDuffs);
+  const lines = [p ? REG_COPY.confirm.fromPlatform(cost, amount(creditsToDuffsUp(p.fundingCredits)), amount(creditsToDuffsUp(p.feeCredits))) : REG_COPY.confirm.credits];
   if (quote.contested) lines.push(REG_COPY.confirm.contested);
   return {
-    cost: p ? amount(creditsUp(total)) : amount(quote.totalDuffs),
+    cost,
     lines,
     shortfall: !p && quote.availableDuffs < quote.totalDuffs ? REG_COPY.confirm.shortfall(amount(quote.totalDuffs)) : null,
   };
@@ -381,18 +376,18 @@ export function isRunning(row: RegistrationStatus | undefined): boolean {
 // ---------------------------------------------------------------------------------------------
 // Refusals of a start, a resume and a name
 
-/** Why a start, resume or name registration was refused, as the wizard says it. */
 /** A refusal of a quote or start from the Platform balance (C-funding F4, F9), as Confirm says it;
  * `null` for one not about that balance. */
 export function platformRefusalText(e: unknown, amount: (duffs: number) => string): string | null {
-  if (hasCode(e, "platform.insufficient_credits") && e.data?.kind === "credits") return REG_COPY.confirm.shortfall(amount(creditsUp(BigInt(e.data.needed))));
+  if (hasCode(e, "platform.insufficient_credits") && e.data?.kind === "credits") return REG_COPY.confirm.shortfall(amount(creditsToDuffsUp(e.data.needed)));
   if (hasCode(e, "credits.move_pending")) return PAY_WITH_COPY.movePending;
   if (hasCode(e, "platform.feature_off")) return PAY_WITH_COPY.notOffered;
   if (hasCode(e, "registration.quote_changed")) return t("dashpay.registration.startError.quoteChanged");
   return null;
 }
 
-/** `fromPlatform`: the start was paid from the Platform balance, whose refusals say so first. */
+/** Why a start, resume or name registration was refused, as the wizard says it; `fromPlatform`: it
+ * was paid from the Platform balance, whose refusals say so first. */
 export function startErrorText(e: unknown, amount: (duffs: number) => string, discreet = false, fromPlatform = false): string {
   const platform = fromPlatform ? platformRefusalText(e, amount) : null;
   if (platform !== null) return platform;
