@@ -1039,6 +1039,15 @@ impl NetworkSession {
                 this.record_rewind(&manager, *wallet, *checkpoint).await?;
             }
             this.record_closed_rewinds().await?;
+            // After the rewinds are recorded: the block-spend rows came from
+            // the chain data the reset deletes, and the replay captures
+            // again every spend still on the chain.
+            let ids = (wallets.iter().map(|(w, _)| *w))
+                .chain(this.live()?.store.unloaded().into_iter().map(WalletId));
+            for wallet in ids {
+                this.note_block_spends_cleared(wallet).await?;
+                this.clear_block_spends(wallet).await?;
+            }
             let dir = this.data_dir().join(SPV_DIR);
             tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
                 Ok(()) => Ok(()),
@@ -1231,6 +1240,22 @@ pub(crate) async fn store_test_headers(spv_dir: &std::path::Path, height: u32, c
 #[cfg(test)]
 pub(crate) static FAIL_BIRTH_STORE: std::sync::Mutex<Vec<[u8; 32]>> =
     std::sync::Mutex::new(Vec::new());
+
+impl NetworkSession {
+    /// Deletes every block-spend row of `wallet`, in the store and the
+    /// session (Reset chain data), and lifts the hold of their coins.
+    pub(crate) async fn clear_block_spends(&self, wallet: WalletId) -> Result<(), EngineError> {
+        let persister = Arc::clone(&self.live()?.persister);
+        tokio::task::spawn_blocking(move || persister.clear_block_spends(&wallet.0))
+            .await?
+            .map_err(|e| EngineError::Storage(format!("clearing the block spends: {e}")))?;
+        self.hub.block_spends.clear(&wallet);
+        if let Ok(manager) = self.manager() {
+            self.hold_block_spends(&manager, wallet).await;
+        }
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {

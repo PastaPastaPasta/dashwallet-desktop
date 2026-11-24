@@ -1260,6 +1260,12 @@ impl NetworkSession {
             });
             debug_assert_eq!(abandoned, planned);
             released.retain(|o| !still_spent.contains(o));
+            if !released.is_empty() && self.block_spends_cleared(wallet).await? {
+                let birth = info.core_wallet.birth_height();
+                self.hold_released_during_reset(wallet, &released, birth)
+                    .await?;
+                self.hold_block_spends_locked(wallet, info);
+            }
             (abandoned, released, overridden.is_some(), txs, links)
         };
         #[cfg(test)]

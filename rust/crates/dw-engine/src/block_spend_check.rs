@@ -41,6 +41,10 @@ const CHECK_KEY: &str = "block_spend_check";
 /// Wallet-scope setting: the fallback rescan from this checkpoint was
 /// recorded; the hold lifts once the wallet's replay is done.
 const CHECK_RESCAN_KEY: &str = "block_spend_check_rescan";
+/// Wallet-scope setting: Reset chain data cleared the wallet's block-spend
+/// rows and the replay it owes has not finished: a coin an abandon releases
+/// meanwhile is held until it does.
+const CLEARED_KEY: &str = "block_spends_cleared";
 /// Filters read per store call.
 const FILTER_CHUNK: u32 = 2_000;
 #[cfg(not(test))]
@@ -353,6 +357,71 @@ impl NetworkSession {
         Ok(())
     }
 
+    /// Notes, before Reset chain data clears `wallet`'s rows, that they are
+    /// gone until its replay finishes.
+    pub(crate) async fn note_block_spends_cleared(&self, wallet: WalletId) -> Result<(), EngineError> {
+        let scope = wallet.to_string();
+        self.appdb_op(move |db| db.set_setting_durable(&scope, CLEARED_KEY, Some("1")))
+            .await
+    }
+
+    /// Whether `wallet`'s rows were cleared by a reset whose replay is still
+    /// owed; a flag whose replay finished goes.
+    pub(crate) async fn block_spends_cleared(&self, wallet: WalletId) -> Result<bool, EngineError> {
+        let scope = wallet.to_string();
+        let flagged = self
+            .appdb_op(move |db| db.setting(&scope, CLEARED_KEY))
+            .await?
+            .is_some();
+        if !flagged {
+            return Ok(false);
+        }
+        if self.replay_running(wallet) || self.live()?.replay.get(wallet).await?.is_some() {
+            return Ok(true);
+        }
+        let scope = wallet.to_string();
+        self.appdb_op(move |db| db.set_setting_durable(&scope, CLEARED_KEY, None))
+            .await?;
+        Ok(false)
+    }
+
+    /// The coins an abandon releases while a reset's replay is owed: no row
+    /// can say a block spent one until the replay passes it again, so each
+    /// is held, durably before the release is stored, and the hold lifts
+    /// once the replay is done.
+    pub(crate) async fn hold_released_during_reset(
+        &self,
+        wallet: WalletId,
+        released: &[OutPoint],
+        birth: u32,
+    ) -> Result<(), EngineError> {
+        let mut suspects = self.held_suspects(wallet).await?;
+        self.hub.history.read(&wallet, |txs| {
+            for o in released {
+                suspects.insert(*o, funded_height(txs, o, birth));
+            }
+        });
+        let scope = wallet.to_string();
+        let value = encode(&suspects);
+        self.appdb_op(move |db| {
+            db.set_settings_durable(
+                &scope,
+                &[(CHECK_KEY, Some(&value)), (CHECK_RESCAN_KEY, Some("reset"))],
+            )
+        })
+        .await?;
+        self.hub
+            .block_spends
+            .set_checking(wallet, suspects.keys().copied().collect());
+        Ok(())
+    }
+
+    /// Whether `wallet`'s replay still refuses sends, as the send guard
+    /// reads it (`replay_guard`).
+    fn replay_running(&self, wallet: WalletId) -> bool {
+        (self.hub.wallet_state(&wallet)).is_some_and(|s| s.replaying_at(s.synced_height))
+    }
+
     /// One pass of the check for `wallet` (module doc).
     pub(crate) async fn block_spend_check_pass(
         &self,
@@ -370,7 +439,7 @@ impl NetworkSession {
             .appdb_op(move |db| db.setting(&scope, CHECK_RESCAN_KEY))
             .await?;
         if rescan.is_some() {
-            if live.replay.get(wallet).await?.is_some() {
+            if self.replay_running(wallet) {
                 return Ok(CheckPass::Rescanning);
             }
             return self.settle_suspects(manager, wallet, BTreeMap::new()).await;

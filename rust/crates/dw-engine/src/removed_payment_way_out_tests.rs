@@ -353,10 +353,8 @@ impl Fx {
 /// from A, unconfirmed, and Dash Wallet restarts. W, a foreign spend paying
 /// only someone else, of A when `w_spends_a` and of a coin no wallet holds
 /// otherwise, is mined and ChainLocked; with `restart_after_lock` Dash
-/// Wallet restarts again. The user then removes P `how`, and Dash Wallet
-/// restarts before the remove's rescan passes W's block again. Returns that
-/// session.
-fn removed(restart_after_lock: bool, how: Removal, w_spends_a: bool) -> Fx {
+/// Wallet restarts again. Returns that session, P still pending.
+fn locked(restart_after_lock: bool, w_spends_a: bool) -> Fx {
     let (dir, engine, session, id) = engine_wallet();
     let to: Vec<Address> = (0..COINS)
         .map(|_| fresh_address(&engine, &session, id))
@@ -429,7 +427,14 @@ fn removed(restart_after_lock: bool, how: Removal, w_spends_a: bool) -> Fx {
         None,
         "the ChainLock prunes the note"
     );
-    let fx = if restart_after_lock { fx.reopen() } else { fx };
+    if restart_after_lock { fx.reopen() } else { fx }
+}
+
+/// [`locked`], then the user removes P `how`, and Dash Wallet restarts
+/// before the remove's rescan passes W's block again. Returns that session.
+fn removed(restart_after_lock: bool, how: Removal, w_spends_a: bool) -> Fx {
+    let fx = locked(restart_after_lock, w_spends_a);
+    let id = fx.id;
     start_spv(&fx);
     match how {
         Removal::Remove => assert_eq!(
@@ -550,21 +555,90 @@ fn rescan_from_birth_after_a_removal_keeps_the_coin_spent() {
     );
 }
 
-/// Reset chain data after the removal: once the scan it owes fetches W's
-/// block again, A is spent, after another restart too.
+/// Reset chain data after the removal clears the rows; once the scan it
+/// owes fetches W's block again, W's row is captured again and A is spent,
+/// after another restart too.
 #[test]
 fn reset_chain_data_after_a_removal_keeps_the_coin_spent() {
     let fx = removed(false, Removal::Remove, true);
     fx.engine.block_on(fx.session.reset_chain_data()).unwrap();
     assert_eq!(fx.synced(), BIRTH - 1, "Reset rewinds below the birth");
+    assert!(stored_rows(&fx.session, fx.id).is_empty(), "Reset clears the rows");
     assert!(
         matches!(fx.prepare_from_a(), Err(EngineError::RescanInProgress)),
         "the reset's scan is owed"
     );
     assert_eq!(fx.replay(), FUNDING_AND_W);
+    eventually("W's row is captured again", || {
+        stored_rows(&fx.session, fx.id).contains_key(&fx.a)
+    });
+    eventually("A is stored spent again", || {
+        !stored_coins(&fx.session, fx.id).contains(&fx.a)
+    });
     fx.assert_still_spent("reset");
     let fx = fx.reopen();
     fx.assert_still_spent("reset, a restart");
+}
+
+/// Runs one pass of the block-spend check for the wallet.
+fn check_pass(fx: &Fx) -> crate::block_spend_check::CheckPass {
+    let s = Arc::clone(&fx.session);
+    let id = fx.id;
+    (fx.engine)
+        .block_on(fx.session.on_runtime(async move {
+            let manager = s.manager()?;
+            s.block_spend_check_pass(&manager, id).await
+        }))
+        .unwrap()
+}
+
+/// C3: Reset chain data, its rewinds recorded first, clears the rows;
+/// the user then abandons P, whose input A only W's row showed spent. A
+/// is not given back: the abandon holds it while the reset's replay is
+/// owed, and once the replay passes W's block A is spent again, its row
+/// back, after a restart too.
+#[test]
+fn an_abandon_after_reset_chain_data_holds_the_coin_until_the_replay_spends_it() {
+    let fx = locked(false, true);
+    assert!(stored_rows(&fx.session, fx.id).contains_key(&fx.a));
+    fx.engine.block_on(fx.session.reset_chain_data()).unwrap();
+    assert!(
+        stored_rows(&fx.session, fx.id).is_empty(),
+        "Reset clears the rows"
+    );
+    assert!(!fx.session.hub.block_spends.has_row(&fx.id, &fx.a));
+    start_spv(&fx);
+    (fx.engine)
+        .block_on(fx.session.abandon_transaction(fx.id, fx.p.txid()))
+        .unwrap();
+    assert!(
+        fx.session.hub.block_spends.checking(&fx.id).contains(&fx.a),
+        "the abandon holds A while the reset's replay is owed"
+    );
+    assert!(!spendable(&fx.engine, &fx.session, fx.id, fx.a), "A is offered");
+    assert!(fx.prepare_from_a().is_err());
+    let fx = fx.reopen();
+    assert!(
+        fx.session.hub.block_spends.checking(&fx.id).contains(&fx.a),
+        "still held after a restart"
+    );
+    assert!(!spendable(&fx.engine, &fx.session, fx.id, fx.a));
+    start_spv(&fx);
+    assert_eq!(fx.replay(), FUNDING_AND_W);
+    assert!(
+        fx.session.hub.block_spends.checking(&fx.id).contains(&fx.a),
+        "held until the replay is done"
+    );
+    eventually("the reset's replay is done", || {
+        (fx.session.hub.wallet_state(&fx.id)).is_some_and(|s| !s.replaying_at(s.synced_height))
+    });
+    assert_eq!(check_pass(&fx), crate::block_spend_check::CheckPass::Done);
+    eventually("W's row is captured again", || {
+        stored_rows(&fx.session, fx.id).contains_key(&fx.a)
+    });
+    fx.assert_gone("the replay done");
+    let fx = fx.reopen();
+    fx.assert_gone("the replay done, a restart");
 }
 
 /// Removing the wallet and restoring it from its recovery phrase: the
