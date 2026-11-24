@@ -940,6 +940,21 @@ const SCENARIOS = {
     w.pending.recovery.checksBeforeApply = 1;
     return w;
   },
+  /** A restore read back a Core → Shielded lock Platform already took: it may already be finished, and Check again hears the network say it was added. */
+  "recovery-restored-finished": (t) => {
+    const w = base(t);
+    const lock = restoredLock(1, 50_000_000, "checking");
+    w.pending.recovery.locks = [lock];
+    w.pending.recovery.consumed = [lock.txid];
+    return w;
+  },
+  /** A restore read back a Core → Shielded lock Platform has not taken: it reads checking, and the first Check again or Finish transfers applies it. */
+  "recovery-restored-unapplied": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 0;
+    return w;
+  },
   /** A restored lock still waiting for its confirmations: Home has no card. */
   "recovery-confirming": (t) => {
     const w = base(t);
@@ -964,6 +979,14 @@ const SCENARIOS = {
   "paddr-recovery-restored": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [restoredFundLock(1, 50_000_000)];
+    return w;
+  },
+  /** A restore read back an "Add from Dash wallet" lock Platform already took: Check again hears the network say it was added. */
+  "paddr-recovery-restored-finished": (t) => {
+    const w = base(t);
+    const lock = restoredFundLock(1, 50_000_000, "checking");
+    w.pending.recovery.locks = [lock];
+    w.pending.recovery.consumed = [lock.txid];
     return w;
   },
   /** A restored "Add from Dash wallet" lock, ready, while the shielded side can't be read. */

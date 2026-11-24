@@ -33,6 +33,8 @@ mod held_writes;
 pub mod history;
 mod history_ops;
 mod keys;
+#[cfg(all(test, unix))]
+mod kill9;
 mod labels;
 pub mod masternode_keys;
 pub mod masternodes;

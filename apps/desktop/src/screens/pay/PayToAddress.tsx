@@ -3,11 +3,14 @@
 // the unsigned transaction (P15); Review opens the confirm sheet, which authenticates, signs and
 // sends; the result follows. A watch-only wallet's Review makes the PSBT.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend, useLockStatus, useWallets } from "../../api/queries";
 import { ui, type PayPrefill } from "../../app/ui";
+import { useScreenScanMode } from "../../contacts/queries";
+import { useModel } from "../../onboarding/model";
+import { PayScanModel, type Scanned } from "./scan";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton } from "../../components/basics";
 import { AddressBookPicker } from "../tools/AddressBook";
@@ -80,6 +83,35 @@ export function PayToAddress({
     addressField.current?.focus();
   }, []);
 
+  // Scan QR (IOS-043): a code that pays opens Pay prefilled, as its `dash:` link would.
+  // The form stays as it is (coins, fee, subtract fee); a link's amount, label and message replace
+  // the typed ones only when it carries them, and every field stays editable before Review.
+  const onScanned = useRef<(s: Scanned) => void>(() => undefined);
+  onScanned.current = (s) => {
+    setAddress(s.address);
+    if (s.amount !== null) amount.setText(shown.full(s.amount));
+    if (s.label) setLabel(s.label);
+    if (s.message) setMessage(s.message);
+    addressField.current?.focus();
+  };
+  const scanner = useModel(useMemo(() => new PayScanModel(b, network.dirName, (s) => onScanned.current(s)), [b, network.dirName]));
+  useEffect(() => () => scanner.dispose(), [scanner]);
+  const scanMode = useScreenScanMode();
+  const imageOf = (data: DataTransfer | null) => [...(data?.files ?? [])].find((f) => f.type.startsWith("image/")) ?? null;
+  const pasteImage = (e: ClipboardEvent<HTMLInputElement>) => {
+    const file = imageOf(e.clipboardData);
+    if (!file) return;
+    e.preventDefault();
+    void scanner.imageFile(file);
+  };
+  const dropImage = (e: DragEvent<HTMLElement>) => {
+    const file = imageOf(e.dataTransfer);
+    if (!file) return;
+    e.preventDefault();
+    void scanner.imageFile(file);
+  };
+  const scan = scanner.state;
+
   const addr = address.trim();
   const checkedAddr = useDebounced(addr, SETTLE_MS);
   const settled = checkedAddr === addr && amount.settled;
@@ -144,14 +176,48 @@ export function PayToAddress({
                   autoComplete="off"
                   spellCheck={false}
                   placeholder={t("pay.toAddress.placeholder")}
-                  onChange={(e) => setAddress(e.target.value)}
+                  onChange={(e) => {
+                    setAddress(e.target.value);
+                    scanner.dismiss();
+                  }}
+                  onPaste={pasteImage}
+                  onDragOver={(e) => {
+                    if ([...e.dataTransfer.items].some((i) => i.kind === "file" && i.type.startsWith("image/"))) e.preventDefault();
+                  }}
+                  onDrop={dropImage}
                 />
                 <DashButton variant="tintedBlue" size="small" data-testid="pay-address-book" onClick={() => setPicking(true)}>
                   {t("pay.toAddress.addressBook")}
                 </DashButton>
+                <DashButton variant="tintedBlue" size="small" data-testid="pay-scan-image" disabled={scanner.busy} onClick={() => void scanner.openImage()}>
+                  {t("pay.scan.openImage")}
+                </DashButton>
               </span>
             )}
           </FormField>
+          <div className="pay-scan-row" data-testid="pay-scan">
+            {scan.kind === "reading" || scan.kind === "capturing" ? (
+              <span className="field-hint" role="status" data-testid="pay-scan-status">
+                {t(scan.kind === "reading" ? "pay.scan.reading" : "pay.scan.capturing")}
+              </span>
+            ) : scan.kind === "failed" ? (
+              <span className="field-error" role="alert" data-testid="pay-scan-error">
+                {scan.text}
+              </span>
+            ) : (
+              <span className="field-hint">{t("pay.scan.hint")}</span>
+            )}
+            {scanMode.data === "picker" &&
+              (scan.kind === "capturing" ? (
+                <DashButton key="cancel" variant="plainBlue" size="small" data-testid="pay-scan-screen-cancel" onClick={() => scanner.cancelScreen()}>
+                  {t("pay.scan.cancel")}
+                </DashButton>
+              ) : (
+                <DashButton key="screen" variant="plainBlue" size="small" data-testid="pay-scan-screen" disabled={scanner.busy} onClick={() => void scanner.screen()}>
+                  {t("pay.scan.screen")}
+                </DashButton>
+              ))}
+          </div>
           {platform ? (
             <PayFromPlatform walletId={walletId} network={network} to={checkedAddr} amount={amount} onSent={() => setAddress("")} />
           ) : (
