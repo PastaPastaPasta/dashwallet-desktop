@@ -1700,26 +1700,50 @@ impl SessionHub {
                 );
                 // Read before the history forgets them: what is built on
                 // them is checked against their bytes (#739).
-                let swept: Vec<Transaction> = (self.history).read_wallet(&id, |h| {
-                    (txids.iter())
-                        .filter_map(|t| h.txs.get(t).map(|e| e.tx.clone()))
-                        .collect()
-                });
+                let (swept, own): (Vec<Transaction>, Vec<_>) =
+                    (self.history).read_wallet(&id, |h| {
+                        (txids.iter())
+                            .filter_map(|t| {
+                                h.txs.get(t).map(|e| (e.tx.clone(), e.own_inputs.clone()))
+                            })
+                            .unzip()
+                    });
                 // What can never confirm is recorded as dropped with the
                 // marks' removal, so a load drops what is built on it even
                 // when the drop below never ran (#739).
                 let dead =
                     crate::tx_actions::swept_claims(id, *superseded_by, &swept).unwrap_or_default();
+                // What is built on a never-valid claim stays listed, as
+                // dropped: its abandoned mark lists it again at a load, as
+                // the other drops of what is built on a claim do (#766).
+                let kept: Vec<(Txid, Transaction, crate::tx_actions::OwnInputs)> = (swept.iter())
+                    .zip(own)
+                    .map(|(tx, own)| (tx.txid(), tx.clone(), own))
+                    .filter(|(t, ..)| {
+                        dead.get(t) == Some(&crate::history::DropCause::InvalidSource)
+                    })
+                    .collect();
                 // Upstream deleted these records (provably beaten spends);
                 // the history drops them too, and their sent marks go.
                 self.history.with_wallet(id, |h| {
                     for t in txids {
-                        h.forget(t);
+                        match (kept.iter()).any(|(k, ..)| k == t) {
+                            true => {
+                                if let Some(e) = h.txs.get_mut(t) {
+                                    e.abandoned = true;
+                                }
+                                let info = crate::history::DropInfo::new(
+                                    crate::history::DropCause::InvalidSource,
+                                );
+                                h.drops.insert(*t, info);
+                            }
+                            false => h.forget(t),
+                        }
                         h.swept.insert(*t);
                     }
                 });
                 if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
-                    match crate::tx_actions::forget_swept(&appdb, id, txids, &dead) {
+                    match crate::tx_actions::forget_swept(&appdb, id, txids, &dead, &kept) {
                         Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
                         Err(e) => {
                             tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")

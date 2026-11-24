@@ -1022,6 +1022,20 @@ fn notices(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) -> Vec<
     notices.into_iter().map(|n| n.txid).collect()
 }
 
+/// The transactions `id`'s marks of `prefix` name.
+fn marked(
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    prefix: &str,
+) -> std::collections::BTreeSet<Txid> {
+    (session.live().unwrap().appdb)
+        .settings_with_prefix_lossy(&id.to_string(), prefix)
+        .unwrap()
+        .into_iter()
+        .filter_map(|(k, _)| k[prefix.len()..].parse().ok())
+        .collect()
+}
+
 /// S, dropped on the claim's change and b, shows Dropped, never counts,
 /// offers no Resend, and has no notice until b is back; once b is back it
 /// shows Released and its notice, which a dismiss ends for good.
@@ -1086,6 +1100,75 @@ fn assert_dropped_until_b_is_back(
     );
     assert_eq!(balances(&session, id).total, 2 * PAID, "S counts nowhere");
     session
+}
+
+/// The live path: key-wallet holds the claim and S and sweeps both when
+/// the scan finds the claimed coin. S stays listed as dropped, from an
+/// abandoned mark written with the sweep's; the claim is gone, with no
+/// mark.
+#[test]
+fn a_payment_swept_with_its_claim_in_the_session_stays_listed_as_dropped() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, funding, claim, payment) =
+        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("S is listed dropped", || {
+        drop_of(&engine, &session, id, payment.txid()).is_some()
+    });
+    assert!(
+        status(&engine, &session, id, claim.txid()).is_none(),
+        "the claim isn't listed"
+    );
+    let abandoned = marked(&session, id, "abandoned:");
+    assert!(abandoned.contains(&payment.txid()), "S is marked abandoned");
+    assert!(
+        !abandoned.contains(&claim.txid()),
+        "the claim isn't: {abandoned:?}"
+    );
+    let session = assert_dropped_until_b_is_back(&engine, &session, id, &payment, &b_funding);
+    assert!(
+        status(&engine, &session, id, claim.txid()).is_none(),
+        "nor after restarts"
+    );
+}
+
+/// The same payment's abandoned mark, its transaction already swept, does
+/// nothing at the next open: no coin changes, no replay is recorded, and
+/// the balance stays.
+#[test]
+fn a_swept_payments_abandoned_mark_changes_nothing_at_the_next_open() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, funding, _claim, payment) =
+        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("S is listed dropped", || {
+        drop_of(&engine, &session, id, payment.txid()).is_some()
+    });
+    b_scanned_again(&engine, &session, id, &b_funding);
+    let coins = |session: &Arc<NetworkSession>| {
+        let mut coins: Vec<(OutPoint, u64)> = engine
+            .block_on(session.utxos(
+                id,
+                crate::CoinFilter {
+                    include_locked: true,
+                    fully_mixed_only: false,
+                    min_confirmations: None,
+                },
+            ))
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.outpoint, c.amount))
+            .collect();
+        coins.sort();
+        coins
+    };
+    let before = (coins(&session), balances(&session, id).total);
+    let session = reopen(&engine, session);
+    assert_eq!((coins(&session), balances(&session, id).total), before);
+    let replay = engine
+        .block_on(session.live().unwrap().replay.get(id))
+        .unwrap();
+    assert!(replay.is_none(), "no replay recorded: {replay:?}");
 }
 
 /// The store drops the claim at an open, and the load drops S.
@@ -1368,4 +1451,46 @@ fn a_dropped_payment_on_an_unmined_coin_is_released_when_it_confirms() {
         .unwrap()
         .state;
     assert_eq!(state, DropState::Released);
+}
+
+/// The app stops after an in-session sweep's marks are written (the claim
+/// and S dropped, S's abandoned mark) and before key-wallet's sweep is
+/// stored: the store still holds both. The next start ends as the other
+/// drops do: S gone from the balance, listed as dropped, and b back once
+/// scanned again.
+#[test]
+fn a_stop_after_an_in_session_sweeps_marks_ends_with_the_payment_dropped() {
+    use crate::history::{DropCause, DropState};
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, funding, claim, payment) =
+        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+    let (t, s) = (claim.txid(), payment.txid());
+    let own = session.hub.history.get(&id, &s).unwrap().own_inputs;
+    let dead = crate::tx_actions::Dead::from([
+        (t, DropCause::InvalidClaim),
+        (s, DropCause::InvalidSource),
+    ]);
+    crate::tx_actions::forget_swept(
+        &session.live().unwrap().appdb,
+        id,
+        &[t, s],
+        &dead,
+        &[(s, payment.clone(), own)],
+    )
+    .unwrap();
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("the claim and S are dropped", || {
+        dropped(&engine, &session, id, t) && dropped(&engine, &session, id, s)
+    });
+    assert_eq!(
+        drop_of(&engine, &session, id, s).map(|d| d.cause),
+        Some(DropCause::InvalidSource)
+    );
+    let session = reopen(&engine, session);
+    assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
+    assert_eq!(
+        drop_of(&engine, &session, id, s).map(|d| (d.cause, d.state)),
+        Some((DropCause::InvalidSource, DropState::Released))
+    );
 }

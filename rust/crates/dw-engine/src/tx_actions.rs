@@ -404,21 +404,33 @@ pub(crate) fn forget_sent(
     wallet: WalletId,
     gone: &[Txid],
 ) -> Result<(), dw_appdb::AppDbError> {
-    forget_swept(appdb, wallet, gone, &Dead::new())
+    forget_swept(appdb, wallet, gone, &Dead::new(), &[])
 }
 
 /// [`forget_sent`] of a sweep's `gone`, recording `dead` as dropped
 /// ([`DROPPED_PREFIX`]) in the same write: a load seeds its walk with them
-/// even when the drop of what is built on them never ran (#739).
+/// even when the drop of what is built on them never ran (#739). Each of
+/// `kept`, swept transactions the history keeps listed as dropped, is
+/// marked abandoned with its copy in it too, so a load lists it again.
 pub(crate) fn forget_swept(
     appdb: &AppDb,
     wallet: WalletId,
     gone: &[Txid],
     dead: &Dead,
+    kept: &[(Txid, Transaction, OwnInputs)],
 ) -> Result<(), dw_appdb::AppDbError> {
     if gone.is_empty() && dead.is_empty() {
         return Ok(());
     }
+    let abandoned: Vec<(String, String)> = (kept.iter())
+        .map(|(t, tx, _)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
+        .collect();
+    let none = OwnInputs::new();
+    let inputs_of = |t: &Txid| {
+        (kept.iter())
+            .find(|(k, ..)| k == t)
+            .map_or(&none, |(.., i)| i)
+    };
     let keys: Vec<String> = (gone.iter())
         .flat_map(|t| [SENT_PREFIX, SENT_TX_PREFIX, SENT_IN_PREFIX].map(|p| format!("{p}{t}")))
         .collect();
@@ -426,12 +438,17 @@ pub(crate) fn forget_swept(
         .map(|(t, cause)| {
             (
                 format!("{DROPPED_PREFIX}{t}"),
-                drop_mark(*cause, &OwnInputs::new()),
+                drop_mark(*cause, inputs_of(t)),
             )
         })
         .collect();
     let writes: Vec<(&str, Option<&str>)> = (keys.iter().map(|k| (k.as_str(), None)))
         .chain(dropped.iter().map(|(k, v)| (k.as_str(), Some(v.as_str()))))
+        .chain(
+            abandoned
+                .iter()
+                .map(|(k, v)| (k.as_str(), Some(v.as_str()))),
+        )
         .collect();
     #[cfg(all(test, debug_assertions))]
     appdb.fault_point(FORGET_SENT_FAULT, dw_appdb::fault::Stage::Before)?;
