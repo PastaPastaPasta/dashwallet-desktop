@@ -1093,9 +1093,9 @@ export const masternodes = {
     /** Under a revealed owner or voting secret, where a copy button would be (it has none). */
     noCopy: "This key can't be copied, so it doesn't end up in your clipboard. Keep it in this wallet unless you're moving the masternode to another wallet.",
     watchOnly: "This wallet is watch-only, so it can't show masternode keys.",
-    /** A wallet without its recovery phrase (Forgot Passphrase left it watch-only) still lists its public
-     * keys. Restoring the phrase brings Reveal back: the keys derive from the phrase alone
-     * (dw-engine tests/m3_keychain_offline.rs, test_ios_083_*). */
+    /** A wallet without its secret (Forgot Passphrase left it watch-only) still lists its public keys.
+     * Restoring a backup, which carries the seed, or the phrase with its recovery passphrase brings
+     * Reveal back (dw-engine tests/m3_keychain_offline.rs, test_ios_083_*). */
     noSeed: "This wallet's private keys are no longer in Dash Wallet, so it shows only the public part of these keys. To reveal a private key, restore the wallet from a backup, or from its recovery phrase with its recovery passphrase if it has one.",
     /** A key's match line while the known masternodes are still being read, and after a read failed. */
     checking: "Checking…",

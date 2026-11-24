@@ -79,6 +79,8 @@ describe("when key matches are settled (D8)", () => {
   it("is failed, with no match from cached data, after a refresh fails", () => {
     expect(knownMatches(read(["11"]), [read(office, { isError: true })])).toEqual({ details: [], state: "failed" });
     expect(knownMatches(read(["11"], { isError: true }), [read(office)])).toEqual({ details: [], state: "failed" });
+    // Try again: checking until the retry settles.
+    expect(knownMatches(read(["11"], { isError: true, isFetching: true }), [read(office)])).toEqual({ details: [], state: "checking" });
   });
 });
 
@@ -246,6 +248,7 @@ describe("revealing a masternode key when something goes wrong", () => {
     await first;
     expect(m.step).toBe("working");
     expect(m.error).toBeNull();
+    expect(w.revoked).toEqual([]);
     answers[1](true);
     await second;
     expect(m.step).toBe("shown");
