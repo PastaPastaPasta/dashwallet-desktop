@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use dash_spv::EventHandler;
 use dash_spv::network::NetworkEvent;
 use dash_spv::sync::SyncProgress;
-use dashcore::Txid;
+use dashcore::{Transaction, Txid};
 use key_wallet::account::AccountType;
 use key_wallet::transaction_checking::TransactionContext;
 use key_wallet::wallet::balance::WalletCoreBalance;
@@ -498,6 +498,11 @@ pub(crate) type HeaderSource = Arc<
         + Sync,
 >;
 
+/// What drops the history's transactions built on a sweep's: the wallet,
+/// the swept txids, the transaction that superseded them and the swept
+/// transactions the history held (`tx_actions`, #739).
+pub(crate) type SweptDead = dyn Fn(WalletId, BTreeSet<Txid>, Txid, Vec<Transaction>) + Send + Sync;
+
 /// In-memory state of one session, updated from SPV and wallet callbacks.
 pub(crate) struct SessionHub {
     pub network: DashNetwork,
@@ -533,7 +538,11 @@ pub(crate) struct SessionHub {
     reconcile_pending: Mutex<HashSet<WalletId>>,
     /// Drops what the history built on a sweep's transactions
     /// (`tx_actions`, #739); unset in hub-only tests.
-    swept_dead: OnceLock<Box<dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync>>,
+    swept_dead: OnceLock<Box<SweptDead>>,
+    /// Drops the history's pending spends a new transaction shows its
+    /// coin's owner never signed (`tx_actions`, #739); unset in hub-only
+    /// tests.
+    funded: OnceLock<Box<dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync>>,
     /// Runs on each SPV peers 0 -> >0 transition: the recorded sweep
     /// chunks are sent again (`coinjoin`); unset in hub-only tests.
     peers_up: OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -778,6 +787,7 @@ impl SessionHub {
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
             swept_dead: OnceLock::new(),
+            funded: OnceLock::new(),
             peers_up: OnceLock::new(),
             balance_reread: OnceLock::new(),
             sweep_news: OnceLock::new(),
@@ -964,11 +974,14 @@ impl SessionHub {
 
     /// Sets what drops the history's transactions built on swept ones
     /// (once).
-    pub(crate) fn attach_swept_dead(
-        &self,
-        start: Box<dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync>,
-    ) {
+    pub(crate) fn attach_swept_dead(&self, start: Box<SweptDead>) {
         let _ = self.swept_dead.set(start);
+    }
+
+    /// Sets what checks the history's pending spends of a new
+    /// transaction's outputs (once).
+    pub(crate) fn attach_funded(&self, start: Box<dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync>) {
+        let _ = self.funded.set(start);
     }
 
     /// Starts wallet `id`'s reconcile unless one is started and not yet
@@ -1526,6 +1539,9 @@ impl SessionHub {
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
+                if let Some(start) = self.funded.get() {
+                    start(id, BTreeSet::from([record.txid]));
+                }
                 // An event queued before an Abandon this session took its
                 // transaction carries the balance from before the sweep:
                 // read the manager's instead. One queued while the entry
@@ -1589,6 +1605,13 @@ impl SessionHub {
                         },
                     },
                 );
+                // Read before the history forgets them: what is built on
+                // them is checked against their bytes (#739).
+                let swept: Vec<Transaction> = (self.history).read_wallet(&id, |h| {
+                    (txids.iter())
+                        .filter_map(|t| h.txs.get(t).map(|e| e.tx.clone()))
+                        .collect()
+                });
                 // Upstream deleted these records (provably beaten spends);
                 // the history drops them too, and their sent marks go.
                 self.history.with_wallet(id, |h| {
@@ -1613,7 +1636,7 @@ impl SessionHub {
                 // history alone holds built on its outputs (a payment
                 // key-wallet has no record of after a restart, #739).
                 if let Some(start) = self.swept_dead.get() {
-                    start(id, txids.iter().copied().collect());
+                    start(id, txids.iter().copied().collect(), *superseded_by, swept);
                 }
             }
             WalletEvent::ChainTruncated {
@@ -1677,6 +1700,11 @@ impl SessionHub {
                 // record's block was evidence already.
                 self.note_seen(id, inserted.iter().chain(updated).map(|r| r.txid));
                 self.schedule_reconcile(id);
+                if !inserted.is_empty()
+                    && let Some(start) = self.funded.get()
+                {
+                    start(id, inserted.iter().map(|r| r.txid).collect());
+                }
             }
             WalletEvent::SyncHeightAdvanced { height, .. } => {
                 if self.update_heights(id, Some(*height), Some(*height)) {

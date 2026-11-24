@@ -122,6 +122,10 @@ const RESEND_HANDOFF: std::time::Duration = std::time::Duration::from_secs(2);
 /// Settings key prefix (wallet scope) of an abandoned transaction; the
 /// value is its consensus hex.
 const ABANDONED_PREFIX: &str = "abandoned:";
+/// A transaction this app dropped as one that can never confirm, or built
+/// on one (#739): a load seeds the walk of what to drop with it, and never
+/// restores it from a sent mark.
+const DROPPED_PREFIX: &str = "dropped:";
 
 /// Settings key prefix (wallet scope) of a payment this app signed and
 /// handed to the network (#88): the evidence a spend claim is restored
@@ -410,6 +414,20 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Abandoned, boo
     (out, true)
 }
 
+/// The transactions this app dropped as ones that can never confirm, or
+/// built on one ([`DROPPED_PREFIX`]); none when they don't read.
+pub(crate) fn load_dropped(appdb: &AppDb, wallet: WalletId) -> BTreeSet<Txid> {
+    match appdb.settings_with_prefix_lossy(&wallet.to_string(), DROPPED_PREFIX) {
+        Ok(rows) => (rows.into_iter())
+            .filter_map(|(key, _)| Txid::from_str(&key[DROPPED_PREFIX.len()..]).ok())
+            .collect(),
+        Err(e) => {
+            tracing::warn!(%wallet, error = %e, "could not read the dropped transactions");
+            BTreeSet::new()
+        }
+    }
+}
+
 /// Finishes in the wallet store the abandons whose marks are stored but
 /// whose sweeps are not (the mark is the commit point): of `wallets`, each
 /// payment marked abandoned that is still stored out of a block and
@@ -617,6 +635,109 @@ struct ChainProof {
 
 fn locked(e: &TxEntry) -> bool {
     e.instant_locked || matches!(e.context, TransactionContext::InstantSend(_))
+}
+
+/// Out of a block, not InstantSend-locked and not abandoned.
+fn pending(e: &TxEntry) -> bool {
+    !e.is_abandoned() && e.context.block_info().is_none() && !locked(e)
+}
+
+/// What an abandon that drops transactions that can never confirm (#739)
+/// carries: those already dropped whose outputs it spends (`dead`: none of
+/// their outputs is released or scanned for again, as none exists), and
+/// what must still hold, read under the lock that applies it.
+pub(crate) struct DeadDrop<'a> {
+    dead: &'a BTreeSet<Txid>,
+    holds: &'a (dyn Fn(&HashMap<Txid, TxEntry>, &ManagedWalletInfo) -> bool + Sync),
+}
+
+/// The first transaction of `root`'s tree (it and all that descends from
+/// it, in the history and in key-wallet's records) that is mined,
+/// InstantSend-locked, or held settled by key-wallet.
+fn settled_in_tree(
+    txs: &HashMap<Txid, TxEntry>,
+    core: &ManagedWalletInfo,
+    root: Txid,
+) -> Option<Txid> {
+    let locks = core.instant_send_locks();
+    let records: Vec<(Txid, &Transaction)> = (core.accounts.all_accounts().into_iter())
+        .filter(|a| !a.managed_account_type().is_contact_owned())
+        .flat_map(|a| a.transactions().iter().map(|(t, r)| (*t, &r.transaction)))
+        .collect();
+    let (mut todo, mut seen) = (vec![root], HashSet::new());
+    while let Some(t) = todo.pop() {
+        if !seen.insert(t) {
+            continue;
+        }
+        let settled = txs
+            .get(&t)
+            .is_some_and(|e| e.context.block_info().is_some() || locked(e))
+            || locks.contains(&t)
+            || held_settled(core, &t).is_some();
+        if settled {
+            return Some(t);
+        }
+        let spends = |tx: &Transaction| tx.input.iter().any(|i| i.previous_output.txid == t);
+        todo.extend((txs.iter()).filter(|(_, e)| spends(&e.tx)).map(|(c, _)| *c));
+        todo.extend(
+            (records.iter())
+                .filter(|(_, tx)| spends(tx))
+                .map(|(c, _)| *c),
+        );
+    }
+    None
+}
+
+/// Whether every instruction of `script` parses and pushes bytes, as
+/// [`key_wallet::transaction_checking::verify_input_authorization`] reads
+/// a push-only input script.
+fn push_only(script: &dashcore::Script) -> bool {
+    (script.instructions()).all(|i| {
+        matches!(
+            i,
+            Ok(dashcore::blockdata::script::Instruction::PushBytes(_))
+        )
+    })
+}
+
+/// Whether `claim` is a pending transaction of the history that spends a
+/// coin of the wallet a transaction of `funded` pays, through a push-only
+/// input [`verify_input_authorization`] proves unsigned by the coin's owner
+/// (`Ok(false)`). The coin's output is read from the funding transaction
+/// the history holds under that txid, once it hashes to it, and must be one
+/// key-wallet holds unspent. An input the rule can't decide (`Err`) or one
+/// not push-only, whose key or signature the script could build as it
+/// runs, keeps the claim.
+///
+/// [`verify_input_authorization`]: key_wallet::transaction_checking::verify_input_authorization
+fn unsigned_claim(
+    txs: &HashMap<Txid, TxEntry>,
+    core: &ManagedWalletInfo,
+    claim: Txid,
+    funded: &BTreeSet<Txid>,
+) -> bool {
+    let Some(e) = txs.get(&claim).filter(|e| pending(e)) else {
+        return false;
+    };
+    if core.instant_send_locks().contains(&claim) {
+        return false;
+    }
+    let held = |o: &OutPoint| {
+        (core.accounts.all_funding_accounts().into_iter()).any(|a| a.utxos.contains_key(o))
+    };
+    (e.tx.input.iter().enumerate()).any(|(n, input)| {
+        let o = input.previous_output;
+        if !funded.contains(&o.txid) || !held(&o) || !push_only(&input.script_sig) {
+            return false;
+        }
+        let Some(output) = (txs.get(&o.txid))
+            .filter(|f| f.tx.txid() == o.txid)
+            .and_then(|f| f.tx.output.get(o.vout as usize))
+        else {
+            return false;
+        };
+        key_wallet::transaction_checking::verify_input_authorization(&e.tx, n, output) == Ok(false)
+    })
 }
 
 /// Whether the ChainLock exception cannot apply to a root: key-wallet
@@ -1124,7 +1245,7 @@ impl NetworkSession {
     ) -> Result<BTreeSet<Txid>, EngineError> {
         let mut recorded = None;
         let result = self
-            .abandon_unrewound(manager, wallet, root, &BTreeSet::new(), &mut recorded)
+            .abandon_unrewound(manager, wallet, root, None, &mut recorded)
             .await;
         let abandoned = result.as_ref().ok().cloned().unwrap_or_default();
         #[cfg(test)]
@@ -1149,15 +1270,14 @@ impl NetworkSession {
 
     /// [`Self::abandon_inner`] up to the rescan: the rewind is recorded,
     /// not made, and `recorded` lowered to the checkpoint it starts from,
-    /// failure or not. Returns the abandoned txids. `dead`: transactions
-    /// already dropped whose outputs `root` spends; none of their outputs
-    /// is released or scanned for again, as none exists.
+    /// failure or not. Returns the abandoned txids. `dead_drop`: when the
+    /// abandon drops transactions that can never confirm (#739).
     async fn abandon_unrewound(
         &self,
         manager: &Manager,
         wallet: WalletId,
         root: Txid,
-        dead: &BTreeSet<Txid>,
+        dead_drop: Option<&DeadDrop<'_>>,
         recorded: &mut Option<u32>,
     ) -> Result<BTreeSet<Txid>, EngineError> {
         #[cfg(test)]
@@ -1192,10 +1312,17 @@ impl NetworkSession {
             let info = wm
                 .get_wallet_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
+            if let Some(d) = dead_drop
+                && !(self.hub.history).read(&wallet, |txs| (d.holds)(txs, &info.core_wallet))
+            {
+                return Err(EngineError::Internal(
+                    "the drop's check no longer holds under the lock".into(),
+                ));
+            }
             let (descendants, mut links) = (self.hub.history).read(&wallet, |txs| {
                 unmined_descendants(txs, &info.core_wallet, root)
             });
-            links.extend(dead);
+            links.extend(dead_drop.into_iter().flat_map(|d| d.dead.iter().copied()));
             // Never one key-wallet holds settled, whatever the history
             // still says of it: its parents are the network's too.
             if let Some(refusal) =
@@ -1259,9 +1386,23 @@ impl NetworkSession {
             // InstantSend-locked, as it was (a mark on a locked payment
             // abandons nothing), and the open's sweep of marked payments
             // passes over it and takes its unlocked descendants.
-            let marks = (txs.iter())
-                .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
+            let mut marks: Vec<(String, Option<String>)> = (txs.iter())
+                .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), Some(serialize_hex(tx))))
                 .collect();
+            // A drop of what can never confirm is recorded with the marks,
+            // and its sent marks go in the same write: a stop before the
+            // sweep leaves it for the open's sweep of marked payments and
+            // the load's walk, never live (#739).
+            if let Some(d) = dead_drop {
+                for t in planned.iter().chain(d.dead) {
+                    marks.push((format!("{DROPPED_PREFIX}{t}"), Some(String::new())));
+                }
+                for t in &planned {
+                    for prefix in [SENT_PREFIX, SENT_TX_PREFIX, SENT_IN_PREFIX] {
+                        marks.push((format!("{prefix}{t}"), None));
+                    }
+                }
+            }
             self.write_abandoned_marks(wallet, marks).await?;
             let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
             if !abandoned.is_empty() {
@@ -1601,7 +1742,7 @@ impl NetworkSession {
     async fn write_abandoned_marks(
         &self,
         wallet: WalletId,
-        rows: Vec<(String, String)>,
+        rows: Vec<(String, Option<String>)>,
     ) -> Result<(), EngineError> {
         if rows.is_empty() {
             return Ok(());
@@ -1613,7 +1754,7 @@ impl NetworkSession {
         let scope = wallet.to_string();
         self.appdb_op(move |db| {
             let writes: Vec<(&str, Option<&str>)> = (rows.iter())
-                .map(|(k, v)| (k.as_str(), Some(v.as_str())))
+                .map(|(k, v)| (k.as_str(), v.as_deref()))
                 .collect();
             db.set_settings_durable(&scope, &writes)
         })
@@ -1882,7 +2023,7 @@ impl NetworkSession {
                         continue;
                     }
                     match this
-                        .abandon_unrewound(&manager, id, txid, &BTreeSet::new(), &mut lowest)
+                        .abandon_unrewound(&manager, id, txid, None, &mut lowest)
                         .await
                     {
                         Ok(set) => done.extend(set),
@@ -1918,7 +2059,7 @@ impl NetworkSession {
                     .collect();
                 for txid in damaged.into_iter().filter(|_| failed.is_none()) {
                     match this
-                        .abandon_unrewound(&manager, id, txid, &BTreeSet::new(), &mut lowest)
+                        .abandon_unrewound(&manager, id, txid, None, &mut lowest)
                         .await
                     {
                         Ok(set) => {
@@ -1966,22 +2107,36 @@ impl NetworkSession {
     /// that can never confirm: a sweep's, or claims the store dropped as
     /// unsigned by their coin's owner (#739). Each unconfirmed, unlocked
     /// transaction of the history that spends one of their outputs is
-    /// abandoned with what descends from it, as Remove Unconfirmed does; one
-    /// mined or InstantSend-locked, and what descends from it, is kept.
+    /// abandoned with what descends from it, as Remove Unconfirmed does.
+    /// Nothing is, while anything that descends from `dead` is mined or
+    /// InstantSend-locked. `claim`: the transaction a sweep named as
+    /// superseding `dead`, and the swept transactions the history held. One
+    /// that spends an output of it is an unsigned claim key-wallet dropped,
+    /// and through an input script that isn't push-only its verdict may be
+    /// wrong: nothing built on it is dropped.
     pub(crate) async fn abandon_on_dead(
         &self,
         manager: &Manager,
         wallet: WalletId,
         dead: &BTreeSet<Txid>,
+        claim: Option<(Txid, &[Transaction])>,
     ) {
+        if let Some((by, swept)) = claim
+            && let Some(tx) = (swept.iter()).find(|tx| {
+                (tx.input.iter()).any(|i| i.previous_output.txid == by && !push_only(&i.script_sig))
+            })
+        {
+            tracing::warn!(%wallet, claim = %tx.txid(), %by, "kept what is built on a dropped claim whose input script isn't push-only");
+            return;
+        }
+        // A dropped one the history holds pending again (a peer relayed it
+        // since) is dropped again itself; the rest are dead parents.
         let children: Vec<Txid> = (self.hub.history).read(&wallet, |txs| {
             (txs.iter())
                 .filter(|(t, e)| {
-                    !dead.contains(*t)
-                        && !e.is_abandoned()
-                        && e.context.block_info().is_none()
-                        && !locked(e)
-                        && (e.tx.input.iter()).any(|i| dead.contains(&i.previous_output.txid))
+                    pending(e)
+                        && (dead.contains(*t)
+                            || (e.tx.input.iter()).any(|i| dead.contains(&i.previous_output.txid)))
                 })
                 .map(|(t, _)| *t)
                 .collect()
@@ -1989,31 +2144,135 @@ impl NetworkSession {
         if children.is_empty() {
             return;
         }
-        let _batch = self.hub.abandon_batch(wallet);
-        let (mut done, mut lowest) = (BTreeSet::new(), None::<u32>);
-        for child in children {
-            if done.contains(&child) {
-                continue;
-            }
-            match (self.abandon_unrewound(manager, wallet, child, dead, &mut lowest)).await {
-                Ok(set) => done.extend(set),
-                Err(e) => {
-                    tracing::warn!(%wallet, txid = %child, error = %e, "kept a transaction built on one that can never confirm")
-                }
-            }
-        }
-        if (!done.is_empty() || lowest.is_some())
-            && let Err(e) = self.finish_abandons(manager, wallet, &done, lowest).await
+        let dead: BTreeSet<Txid> = (dead.iter())
+            .filter(|t| !children.contains(t))
+            .copied()
+            .collect();
+        let dead = &dead;
+        let holds = |txs: &HashMap<Txid, TxEntry>, core: &ManagedWalletInfo| match (dead.iter())
+            .find_map(|t| settled_in_tree(txs, core, *t))
         {
-            tracing::warn!(%wallet, error = %e, "the abandon of transactions built on dead ones did not finish");
+            Some(settled) => {
+                tracing::warn!(%wallet, %settled, "kept what descends from a dead transaction: one of them is settled");
+                false
+            }
+            None => true,
+        };
+        let drop = DeadDrop {
+            dead,
+            holds: &holds,
+        };
+        self.drop_trees(manager, wallet, children, &drop).await;
+    }
+
+    /// After a restart key-wallet holds no pending record, so it can't drop
+    /// a claim a new transaction (`funded`) shows unsigned: the history's
+    /// claims on a coin of the wallet `funded` pays ([`unsigned_claim`]).
+    pub(crate) async fn unsigned_claims(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        funded: &BTreeSet<Txid>,
+    ) -> Vec<Txid> {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let Some(info) = wm.get_wallet_info(&wallet.0) else {
+            return Vec::new();
+        };
+        (self.hub.history).read(&wallet, |txs| {
+            (txs.keys())
+                .filter(|t| unsigned_claim(txs, &info.core_wallet, **t, funded))
+                .copied()
+                .collect()
+        })
+    }
+
+    /// Abandons each of `claims`, the history's claims `funded` shows
+    /// unsigned, with what descends from it, when under the lock that
+    /// applies it the claim still is one and nothing of its tree is
+    /// settled (#739).
+    pub(crate) async fn abandon_unsigned_claims(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        claims: Vec<Txid>,
+        funded: &BTreeSet<Txid>,
+    ) {
+        for claim in claims {
+            let holds = |txs: &HashMap<Txid, TxEntry>, core: &ManagedWalletInfo| {
+                if !unsigned_claim(txs, core, claim, funded) {
+                    return false;
+                }
+                match settled_in_tree(txs, core, claim) {
+                    Some(settled) => {
+                        tracing::warn!(%wallet, %claim, %settled, "kept an unsigned claim: what descends from it is settled");
+                        false
+                    }
+                    None => true,
+                }
+            };
+            let none = BTreeSet::new();
+            let drop = DeadDrop {
+                dead: &none,
+                holds: &holds,
+            };
+            self.drop_trees(manager, wallet, vec![claim], &drop).await;
         }
     }
 
-    /// Hooks [`Self::abandon_on_dead`] to the hub's sweep events.
-    pub(crate) fn attach_swept_dead(self: &Arc<Self>) {
-        let weak = Arc::downgrade(self);
-        let rt = self.rt.clone();
-        self.hub.attach_swept_dead(Box::new(move |id, dead| {
+    /// Abandons each of `roots` with what descends from it, in one batch;
+    /// one refused, or whose `drop` check fails under the lock, is kept.
+    async fn drop_trees(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        roots: Vec<Txid>,
+        drop: &DeadDrop<'_>,
+    ) {
+        let _batch = self.hub.abandon_batch(wallet);
+        let (mut done, mut lowest) = (BTreeSet::new(), None::<u32>);
+        for root in roots {
+            if done.contains(&root) {
+                continue;
+            }
+            match (self.abandon_unrewound(manager, wallet, root, Some(drop), &mut lowest)).await {
+                Ok(set) => done.extend(set),
+                Err(e) => {
+                    tracing::warn!(%wallet, txid = %root, error = %e, "kept a transaction that can never confirm or is built on one")
+                }
+            }
+        }
+        if done.is_empty() && lowest.is_none() {
+            return;
+        }
+        if let Err(e) = self.finish_abandons(manager, wallet, &done, lowest).await {
+            tracing::warn!(%wallet, error = %e, "the abandon of transactions that can never confirm did not finish");
+        }
+    }
+
+    /// Hooks [`Self::abandon_on_dead`] to the hub's sweep events, and
+    /// [`Self::abandon_unsigned_claims`] to its new transactions.
+    pub(crate) fn attach_dead_claims(self: &Arc<Self>) {
+        let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
+        self.hub
+            .attach_swept_dead(Box::new(move |id, dead, by, swept| {
+                let weak = weak.clone();
+                rt.spawn(async move {
+                    let Some(session) = weak.upgrade() else {
+                        return;
+                    };
+                    let Ok(_op) = session.enter().await else {
+                        return;
+                    };
+                    let Ok(manager) = session.manager() else {
+                        return;
+                    };
+                    let _lifecycle = session.wallet_lifecycle.hold().await;
+                    (session.abandon_on_dead(&manager, id, &dead, Some((by, &swept)))).await;
+                });
+            }));
+        let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
+        self.hub.attach_funded(Box::new(move |id, funded| {
             let weak = weak.clone();
             rt.spawn(async move {
                 let Some(session) = weak.upgrade() else {
@@ -2022,11 +2281,17 @@ impl NetworkSession {
                 let Ok(_op) = session.enter().await else {
                     return;
                 };
-                let _lifecycle = session.wallet_lifecycle.hold().await;
                 let Ok(manager) = session.manager() else {
                     return;
                 };
-                session.abandon_on_dead(&manager, id, &dead).await;
+                // Most new transactions fund no claim: checked before the
+                // wallets' lifecycle lock is taken.
+                let claims = session.unsigned_claims(&manager, id, &funded).await;
+                if claims.is_empty() {
+                    return;
+                }
+                let _lifecycle = session.wallet_lifecycle.hold().await;
+                (session.abandon_unsigned_claims(&manager, id, claims, &funded)).await;
             });
         }));
     }

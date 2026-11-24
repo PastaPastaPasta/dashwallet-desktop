@@ -389,7 +389,8 @@ struct LoadedHistory {
     settled: HashSet<Txid>,
     /// [`Persisted::lock_parents`].
     lock_parents: HashMap<Txid, Vec<Txid>>,
-    /// [`Persisted::dropped`].
+    /// [`Persisted::dropped`] and what this app dropped
+    /// ([`crate::tx_actions::load_dropped`]).
     dropped: BTreeSet<Txid>,
 }
 
@@ -461,7 +462,10 @@ impl NetworkSession {
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
                     let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
-                    sent.retain(|t, _| persisted.keeps_mark(t, &abandoned.unread));
+                    let dropped_here = crate::tx_actions::load_dropped(&appdb, wallet);
+                    sent.retain(|t, _| {
+                        persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains(t)
+                    });
                     let abandoned = abandoned.copies;
                     let stored: HashSet<Txid> = match clean {
                         true => (persisted.records.into_iter())
@@ -489,7 +493,9 @@ impl NetworkSession {
                         stored,
                         settled,
                         lock_parents: persisted.lock_parents,
-                        dropped: persisted.dropped.into_iter().collect(),
+                        dropped: (persisted.dropped.into_iter())
+                            .chain(dropped_here)
+                            .collect(),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -581,10 +587,12 @@ impl NetworkSession {
         for (wallet, sent, complete, claims, stored, dropped) in sends {
             self.restore_unmined_spends(&live.manager, wallet, &sent, (complete, claims), &stored)
                 .await;
-            // What a payment of this app built on a claim the store's open
-            // dropped as unsigned is dropped with it (#739).
+            // What the history holds built on a claim the store's open
+            // dropped as unsigned, or on what this app dropped, is dropped
+            // with it (#739).
             if complete && !dropped.is_empty() {
-                self.abandon_on_dead(&live.manager, wallet, &dropped).await;
+                self.abandon_on_dead(&live.manager, wallet, &dropped, None)
+                    .await;
             }
         }
         Ok(())
@@ -846,7 +854,10 @@ impl NetworkSession {
             let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
             history.mark_abandoned(&abandoned.copies);
             let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
-            sent.retain(|t, _| persisted.keeps_mark(t, &abandoned.unread));
+            let dropped_here = crate::tx_actions::load_dropped(&appdb, wallet);
+            sent.retain(|t, _| {
+                persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains(t)
+            });
             if !(read && marks_read && sent_read != crate::tx_actions::SentRead::Failed) {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
                 return (history, crate::tx_actions::Sent::new());
