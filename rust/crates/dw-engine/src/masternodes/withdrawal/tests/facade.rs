@@ -1347,12 +1347,6 @@ fn a_v3_payout_change_holds_unless_its_one_payee_is_the_paid_script() {
 // payout's 20 bytes as P2PKH, so an owner-key withdrawal would pay a script
 // nobody can spend (dashpay/platform#5840).
 
-/// The masternode's payout as P2SH over the 20 bytes Drive's window pays as
-/// P2PKH.
-fn p2sh_payout() -> CoreScript {
-    CoreScript::new_p2sh(hash_of(&PAYOUT_SECRET))
-}
-
 /// `PRO_TX`'s ProRegTx, paying `to`.
 fn registration(to: &CoreScript) -> Transaction {
     use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -1538,7 +1532,7 @@ fn a_p2sh_payout_refuses_the_owner_key_only_while_drives_window_pays_p2pkh() {
         0,
         Purpose::TRANSFER,
         KeyType::BIP13_SCRIPT_HASH,
-        &hash_of(&PAYOUT_SECRET),
+        &p2sh_hash(),
     );
     fa.plat
         .with(|w| w.identity = Some(masternode_identity(&PRO_TX, vec![sh, owner_key()])));

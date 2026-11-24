@@ -46,7 +46,7 @@ use dw_appdb::{
     WithdrawalRow, WithdrawalState,
 };
 
-use super::check::{Gated, at_least, gated, identity_of, latest_is_p2sh, owner_payout_p2sh};
+use super::check::{Gated, any_is_p2sh, at_least, gated, identity_of, owner_key_resend_held};
 use super::drive::{candidates, document_status, matches, needs_identity};
 use super::net::{MnWithdrawNet, Proved};
 use super::sign::{floor_of, hand_off, shown};
@@ -428,9 +428,12 @@ async fn step_nonce(
 }
 
 /// Whether an owner-key record sent again now would pay a script nobody
-/// can spend (P4's `owner_payout_p2sh`): Drive takes its destination at
-/// execution, not at signing. An identity read that fails, or that rule 5
-/// doesn't pass, holds it too.
+/// can spend. Any P2SH payout in the history holds it: Drive takes the
+/// destination at execution, and a newer P2PKH change is not what it pays
+/// until the window shows that script and nothing in the history is still
+/// unconfirmed or above the proof's core height. A window that pays P2SH
+/// lifts the hold. An identity read that fails, or that rule 5 doesn't
+/// pass, holds it too. A record signed with another key is sent again.
 async fn owner_payout_p2sh_now(
     env: &impl Env,
     net: &impl MnWithdrawNet,
@@ -443,12 +446,12 @@ async fn owner_payout_p2sh_now(
         return true;
     };
     let changes = env.payout_changes(&pro_tx_hash);
-    if !latest_is_p2sh(&changes) {
+    if !any_is_p2sh(&changes) {
         return false;
     }
     let id = identity_of(&pro_tx_hash);
     match gated(env.rule_5(), env.waits().probe, || net.identity(id)).await {
-        Ok(g) if g.passed => owner_payout_p2sh(&changes, g.read.value.as_ref()),
+        Ok(g) if g.passed => owner_key_resend_held(&changes, &g.read),
         _ => true,
     }
 }

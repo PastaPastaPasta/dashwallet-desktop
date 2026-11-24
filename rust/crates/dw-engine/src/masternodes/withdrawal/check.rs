@@ -230,19 +230,83 @@ pub(super) fn owner_payout_p2sh(changes: &[PayoutChange], identity: Option<&Iden
         })
 }
 
+/// Whether an open owner-key record must stay unsent. Drive takes the
+/// destination at execution, so any P2SH payout in `changes` pays the
+/// P2PKH of that script's 20 bytes until the window has moved on. The hold
+/// lifts only when the window pays a P2SH script, or pays the latest
+/// payout's P2PKH script and [`unpaid_changes`] reports nothing unconfirmed
+/// or above the proof's core height. No window that shows either leaves it
+/// held.
+pub(super) fn owner_key_resend_held(
+    changes: &[PayoutChange],
+    read: &Proved<Option<Identity>>,
+) -> bool {
+    if !any_is_p2sh(changes) {
+        return false;
+    }
+    let Some(Window::Pays { script, .. }) = read.value.as_ref().map(window) else {
+        return true;
+    };
+    if dashcore::Script::from_bytes(script.as_bytes()).is_p2sh() {
+        return false;
+    }
+    if pays_latest_p2pkh(changes, script.as_bytes()) {
+        let (unconfirmed, unapplied) = unpaid_changes(changes, read);
+        if !unconfirmed && !unapplied {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether any payout in `changes` is P2SH.
+pub(super) fn any_is_p2sh(changes: &[PayoutChange]) -> bool {
+    changes
+        .iter()
+        .any(|c| c.script.as_deref().is_some_and(script_is_p2sh))
+}
+
 /// Whether the latest payout of `changes` is P2SH: the unconfirmed
 /// changes, else those in the highest block, else the registration's.
 pub(super) fn latest_is_p2sh(changes: &[PayoutChange]) -> bool {
-    let rank = |c: &PayoutChange| match (c.registration, c.height) {
-        (true, _) => 0,
-        (false, Some(h)) => u64::from(h) + 1,
-        (false, None) => u64::MAX,
-    };
-    let Some(top) = changes.iter().map(rank).max() else {
+    let Some(top) = changes.iter().map(payout_rank).max() else {
         return false;
     };
-    (changes.iter().filter(|c| rank(c) == top))
-        .any(|c| (c.script.as_deref()).is_some_and(|s| dashcore::Script::from_bytes(s).is_p2sh()))
+    (changes.iter().filter(|c| payout_rank(c) == top))
+        .any(|c| c.script.as_deref().is_some_and(script_is_p2sh))
+}
+
+/// The window's `paid` script is every latest payout, and that payout is
+/// P2PKH. Several payouts share the latest rank only when each of them is
+/// that script.
+fn pays_latest_p2pkh(changes: &[PayoutChange], paid: &[u8]) -> bool {
+    let Some(top) = changes.iter().map(payout_rank).max() else {
+        return false;
+    };
+    let mut latest = changes.iter().filter(|c| payout_rank(c) == top);
+    latest.next().is_some_and(|first| {
+        script_is_paid_p2pkh(first, paid) && latest.all(|c| script_is_paid_p2pkh(c, paid))
+    })
+}
+
+fn script_is_paid_p2pkh(change: &PayoutChange, paid: &[u8]) -> bool {
+    change
+        .script
+        .as_deref()
+        .is_some_and(|script| script == paid && dashcore::Script::from_bytes(script).is_p2pkh())
+}
+
+fn script_is_p2sh(script: &[u8]) -> bool {
+    dashcore::Script::from_bytes(script).is_p2sh()
+}
+
+/// Unconfirmed changes outrank a block; a block outranks the registration.
+fn payout_rank(change: &PayoutChange) -> u64 {
+    match (change.registration, change.height) {
+        (true, _) => 0,
+        (false, Some(height)) => u64::from(height) + 1,
+        (false, None) => u64::MAX,
+    }
 }
 
 /// Whether a payout-change barrier of the masternode is still pending
