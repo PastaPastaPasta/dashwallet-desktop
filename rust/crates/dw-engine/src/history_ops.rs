@@ -248,16 +248,19 @@ pub(crate) fn persisted_txids(
     // links through its record's inputs. A failed query fails the listing,
     // so no wallet loads complete without them.
     let mut stmt = conn.prepare(
-        "SELECT l.wallet_id, l.txid, l.islock_blob FROM core_instant_locks l \
-         WHERE l.verified = 1 AND NOT EXISTS (SELECT 1 FROM core_transactions t \
-         WHERE t.wallet_id = l.wallet_id AND t.txid = l.txid AND t.record_blob IS NOT NULL)",
+        "SELECT l.wallet_id, l.txid, length(l.islock_blob), l.islock_blob \
+         FROM core_instant_locks l WHERE l.verified = 1 AND NOT EXISTS \
+         (SELECT 1 FROM core_transactions t WHERE t.wallet_id = l.wallet_id \
+         AND t.txid = l.txid AND t.record_blob IS NOT NULL)",
     )?;
     let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, Vec<u8>>(0)?,
-            r.get::<_, Vec<u8>>(1)?,
-            r.get::<_, Vec<u8>>(2)?,
-        ))
+        let len = usize::try_from(r.get::<_, i64>(2)?).unwrap_or(usize::MAX);
+        let blob = if len > platform_wallet_storage::SIZE_LIMIT_BYTES {
+            None
+        } else {
+            Some(r.get::<_, Vec<u8>>(3)?)
+        };
+        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?, blob))
     })?;
     for row in rows {
         let (wallet, txid, blob) = row?;
@@ -265,7 +268,7 @@ pub(crate) fn persisted_txids(
             continue;
         };
         let persisted = out.entry(wallet).or_default();
-        match decode_lock(&blob) {
+        match blob.as_deref().and_then(decode_lock) {
             Some(lock) if lock.txid == txid => {
                 let parents = lock.inputs.iter().map(|o| o.txid).collect();
                 persisted.lock_parents.insert(txid, parents);
@@ -275,7 +278,7 @@ pub(crate) fn persisted_txids(
                 tracing::warn!(%txid, lock_txid = %lock.txid, "a stored lock names another transaction; ignored");
             }
             None => {
-                tracing::warn!(%txid, "a stored InstantSend lock doesn't decode");
+                tracing::warn!(%txid, "a stored InstantSend lock is over the size limit or doesn't decode");
                 persisted.locks_unread = true;
             }
         }
@@ -1062,4 +1065,75 @@ pub(crate) fn parse_txid(s: &str) -> Result<Txid, EngineError> {
         ));
     }
     Txid::from_str(s).map_err(|e| EngineError::InvalidArgument(format!("txid: {e}")))
+}
+
+#[cfg(test)]
+mod lock_row_tests {
+    use super::*;
+
+    fn encode(lock: &dashcore::InstantLock) -> Vec<u8> {
+        let config = bincode::config::standard()
+            .with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
+        bincode::serde::encode_to_vec(lock, config).unwrap()
+    }
+
+    /// A verified lock row with no record links its transaction to the
+    /// lock's inputs; one that doesn't decode, or is over the store's size
+    /// limit, leaves its wallet's locks unread; one with a record, an
+    /// unverified one, and one naming another transaction are skipped.
+    #[test]
+    fn lock_rows_without_a_record_are_read_as_the_store_reads_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(WALLET_DB_FILE);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE core_transactions (wallet_id BLOB, txid BLOB, record_blob BLOB, height INTEGER);
+             CREATE TABLE core_instant_locks (wallet_id BLOB, txid BLOB, islock_blob BLOB, verified INTEGER);",
+        )
+        .unwrap();
+        let txid = |n: u8| Txid::from_byte_array([n; 32]);
+        let lock = |t: Txid, parent: Txid| dashcore::InstantLock {
+            txid: t,
+            inputs: vec![OutPoint::new(parent, 0)],
+            ..Default::default()
+        };
+        let add_lock = |wallet: u8, t: Txid, blob: Vec<u8>, verified: bool| {
+            conn.execute(
+                "INSERT INTO core_instant_locks VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    [wallet; 32].as_slice(),
+                    t.as_byte_array().as_slice(),
+                    blob,
+                    verified
+                ],
+            )
+            .unwrap();
+        };
+        add_lock(1, txid(10), encode(&lock(txid(10), txid(11))), true);
+        add_lock(1, txid(12), encode(&lock(txid(12), txid(13))), true);
+        conn.execute(
+            "INSERT INTO core_transactions VALUES (?1, ?2, x'00', 5)",
+            rusqlite::params![[1u8; 32].as_slice(), txid(12).as_byte_array().as_slice()],
+        )
+        .unwrap();
+        add_lock(1, txid(14), encode(&lock(txid(14), txid(15))), false);
+        add_lock(1, txid(16), encode(&lock(txid(17), txid(18))), true);
+        add_lock(2, txid(20), vec![0xff; 8], true);
+        let mut oversize = encode(&lock(txid(30), txid(31)));
+        oversize.resize(platform_wallet_storage::SIZE_LIMIT_BYTES + 1, 0);
+        add_lock(3, txid(30), oversize, true);
+        drop(conn);
+
+        let out = persisted_txids(&path).unwrap();
+        let one = &out[&[1; 32]];
+        assert_eq!(
+            one.lock_parents,
+            HashMap::from([(txid(10), vec![txid(11)])])
+        );
+        assert!(!one.locks_unread);
+        for wallet in [2, 3] {
+            assert!(out[&[wallet; 32]].lock_parents.is_empty());
+            assert!(out[&[wallet; 32]].locks_unread, "wallet {wallet}");
+        }
+    }
 }
