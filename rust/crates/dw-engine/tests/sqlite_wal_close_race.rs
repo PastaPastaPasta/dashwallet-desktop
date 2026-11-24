@@ -1,10 +1,11 @@
 //! #105 against the SQLite the workspace links, with no lock of ours around
-//! it: raw `rusqlite` connections that open, read and close one WAL database
-//! on many threads must never hang. SQLite 3.51.0 and 3.51.1 can deadlock
-//! when one thread closes the last connection to a WAL database while
-//! another opens the same file; 3.51.2 fixes it. Alone in its own test
-//! binary: it replaces SQLite's `stat` for the whole process. Unix only: the
-//! bug and the `stat` it slows are the unix VFS's.
+//! it: connections that open, read and close one WAL database on many
+//! threads must never hang, raw `rusqlite` ones and the app database's.
+//! SQLite 3.51.0 and 3.51.1 can deadlock when one thread closes the last
+//! connection to a WAL database while another opens the same file; 3.51.2
+//! fixes it. Alone in its own test binary: it replaces SQLite's `stat` for
+//! the whole process. Unix only: the bug and the `stat` it slows are the unix
+//! VFS's.
 
 #![cfg(unix)]
 
@@ -15,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Once, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
+use dw_appdb::{AppDb, GLOBAL_SCOPE};
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 use rusqlite::{Connection, ffi};
 
@@ -23,7 +25,7 @@ const RUN: Duration = Duration::from_secs(3);
 const FINISH: Duration = Duration::from_secs(60);
 const READY: Duration = Duration::from_secs(30);
 const STAT_DELAY: Duration = Duration::from_millis(2);
-const STEPS: [&str; 4] = ["between cycles", "the open", "a schema read", "the drop"];
+const STEPS: [&str; 4] = ["between cycles", "the open", "a read", "the drop"];
 
 type Stat = unsafe extern "C" fn(*const c_char, *mut c_void) -> c_int;
 
@@ -68,13 +70,42 @@ fn journal_mode(path: &Path) -> String {
         .unwrap()
 }
 
-/// Four threads open `path`, read its schema (which opens the connection's
-/// WAL, so the drop closes it) and drop the connection, over and over for
+/// Steps of one cycle on `path`: the open, a read, the drop; `at` marks each.
+type Cycle = fn(&Path, &dyn Fn(u8));
+
+/// A raw connection: the read of the schema opens its WAL, so the drop
+/// closes it.
+fn raw_cycle(path: &Path, at: &dyn Fn(u8)) {
+    at(1);
+    let conn = Connection::open(path).unwrap();
+    at(2);
+    let tables: i64 = conn
+        .query_row("SELECT count(*) FROM main.sqlite_schema", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(tables > 0);
+    at(3);
+    drop(conn);
+}
+
+/// The app database, which opens and closes its connection with no lock of
+/// its own since the SQLite it links fixes #105.
+fn app_db_cycle(path: &Path, at: &dyn Fn(u8)) {
+    at(1);
+    let db = AppDb::open(path).unwrap();
+    at(2);
+    assert_eq!(db.setting(GLOBAL_SCOPE, "race").unwrap(), None);
+    at(3);
+    drop(db);
+}
+
+/// Four threads run `cycle` on `path` over and over for
 /// [`RUN`]; every one of them must run at least one cycle and then stop
 /// within [`FINISH`]. A hang ends the process: the stuck thread holds
-/// SQLite's global VFS mutex, which would block the other test of this binary
+/// SQLite's global VFS mutex, which would block the other tests of this binary
 /// with no timeout.
-fn race_opens_and_closes(fixture: &str, path: PathBuf) {
+fn race_opens_and_closes(fixture: &str, path: PathBuf, cycle: Cycle) {
     assert_eq!(journal_mode(&path), "wal");
     let path = Arc::new(path);
     let go = Arc::new(AtomicBool::new(false));
@@ -99,17 +130,9 @@ fn race_opens_and_closes(fixture: &str, path: PathBuf) {
                 std::thread::yield_now();
             }
             while !stop.load(Ordering::Relaxed) {
-                steps[i].store(1, Ordering::Relaxed);
-                let conn = Connection::open(path.as_path()).unwrap();
-                steps[i].store(2, Ordering::Relaxed);
-                let tables: i64 = conn
-                    .query_row("SELECT count(*) FROM main.sqlite_schema", [], |row| {
-                        row.get(0)
-                    })
-                    .unwrap();
-                assert!(tables > 0);
-                steps[i].store(3, Ordering::Relaxed);
-                drop(conn);
+                cycle(path.as_path(), &|step| {
+                    steps[i].store(step, Ordering::Relaxed)
+                });
                 steps[i].store(0, Ordering::Relaxed);
                 cycles[i].fetch_add(1, Ordering::Relaxed);
             }
@@ -185,7 +208,7 @@ fn raw_opens_and_closes_of_a_wal_file_racing_on_many_threads_never_hang() {
         assert_eq!(mode, "wal");
         conn.execute_batch("CREATE TABLE t (x INTEGER)").unwrap();
     }
-    race_opens_and_closes("plain WAL file", path);
+    race_opens_and_closes("plain WAL file", path, raw_cycle);
 }
 
 #[test]
@@ -194,5 +217,14 @@ fn raw_opens_and_closes_of_a_wallet_store_racing_on_many_threads_never_hang() {
     let dir = dw_testutil::private_tempdir();
     let path = dir.path().join("wallet.sqlite");
     drop(SqlitePersister::open(SqlitePersisterConfig::new(path.clone())).unwrap());
-    race_opens_and_closes("wallet store", path);
+    race_opens_and_closes("wallet store", path, raw_cycle);
+}
+
+#[test]
+fn app_database_opens_and_closes_racing_on_many_threads_never_hang() {
+    slow_down_sqlite_stat();
+    let dir = dw_testutil::private_tempdir();
+    let path = dir.path().join(dw_appdb::APP_DB_FILE);
+    drop(AppDb::open(&path).unwrap());
+    race_opens_and_closes("app database", path, app_db_cycle);
 }

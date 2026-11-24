@@ -88,6 +88,30 @@ pub struct RescanProgress {
     pub upgrade_wallets: Vec<WalletId>,
 }
 
+/// Open wallets whose history starts below the first block header this
+/// install stores ([`NetworkSession::history_gap`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryGap {
+    /// The first stored header's height, where dash-spv's scans start.
+    pub start_height: u32,
+    /// The open wallets whose scan start is below it, in id order.
+    pub wallets: Vec<WalletId>,
+}
+
+/// The wallets of `births` whose history starts below `start`: at their
+/// birth, or at the network's HD floor `floor` when that is later (dash-spv
+/// anchors no lower than it).
+pub(crate) fn wallets_below_header_start(
+    start: u32,
+    floor: u32,
+    births: impl IntoIterator<Item = (WalletId, u32)>,
+) -> Vec<WalletId> {
+    (births.into_iter())
+        .filter(|(_, birth)| (*birth).max(floor) < start)
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// One wallet's part of a running rescan.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct WalletRescan {
@@ -802,6 +826,51 @@ impl NetworkSession {
         .await
     }
 
+    /// The open wallets whose history starts below the first block header
+    /// stored under the network's `spv` directory. dash-spv anchors its
+    /// headers once, while its storage is empty, at the checkpoint at or
+    /// below the earliest birth of the wallets open then (raised to the HD
+    /// floor), and never scans a filter below that anchor: a wallet opened
+    /// later with an earlier birth misses its payments there until "Reset
+    /// chain data and resync" downloads the headers again. `None` when no
+    /// header is stored or every open wallet is covered.
+    ///
+    /// A wallet closed while the chain data was reset, and not open at the
+    /// next start, is reported once it is opened although its history was
+    /// scanned under the old anchor: another reset clears it.
+    pub async fn history_gap(self: &Arc<Self>) -> Result<Option<HistoryGap>, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let manager = this.manager()?;
+            let dir = this.data_dir().join(SPV_DIR);
+            let start = tokio::task::spawn_blocking(move || stored_header_start(&dir)).await??;
+            let Some(start_height) = start else {
+                return Ok(None);
+            };
+            let floor = {
+                use dashcore::network::constants::NetworkExt;
+                this.network.core_network().hd_wallet_sync_floor()
+            };
+            let births: Vec<(WalletId, u32)> = {
+                let wm = manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                (manager.list_wallet_ids_blocking().into_iter())
+                    .filter_map(|id| {
+                        let info = wm.get_wallet_info(&id)?;
+                        Some((WalletId(id), info.core_wallet.birth_height()))
+                    })
+                    .collect()
+            };
+            let wallets = wallets_below_header_start(start_height, floor, births);
+            Ok((!wallets.is_empty()).then_some(HistoryGap {
+                start_height,
+                wallets,
+            }))
+        })
+        .await
+    }
+
     /// Sets the wallet's birth height in wallet.sqlite, then in memory.
     /// Returns its filter checkpoint.
     pub(crate) async fn store_birth_height(
@@ -954,6 +1023,8 @@ impl NetworkSession {
             if this.platform_spv_state(&manager) != crate::SpvState::Stopped {
                 return Err(EngineError::SpvRunning);
             }
+            // No wallet opens or closes between the two lists below.
+            let _wallets = this.wallet_lifecycle.hold().await;
             let wallets: Vec<(WalletId, u32)> = (manager.list_wallet_ids_blocking().into_iter())
                 .map(|id| {
                     let wallet = WalletId(id);
@@ -964,6 +1035,7 @@ impl NetworkSession {
             for (wallet, checkpoint) in &wallets {
                 this.record_rewind(&manager, *wallet, *checkpoint).await?;
             }
+            this.record_closed_rewinds().await?;
             let dir = this.data_dir().join(SPV_DIR);
             tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
                 Ok(()) => Ok(()),
@@ -985,6 +1057,27 @@ impl NetworkSession {
             Ok(())
         })
         .await
+    }
+
+    /// A reset's replay record for each closed wallet: its next open rescans
+    /// it from its birth height, below the stored checkpoint the old block
+    /// data held it at, as the reset does for an open one.
+    async fn record_closed_rewinds(&self) -> Result<(), EngineError> {
+        let live = self.live()?;
+        for id in live.store.unloaded() {
+            let db_path = self.data_dir().join(crate::session::WALLET_DB_FILE);
+            let (synced, birth) =
+                tokio::task::spawn_blocking(move || crate::store::stored_heights(&db_path, &id))
+                    .await?
+                    .map_err(|e| EngineError::Storage(format!("the stored checkpoint: {e}")))?;
+            let floor = birth.map_or(0, |b| b.saturating_sub(1));
+            if let Some(synced) = synced.filter(|s| *s > floor) {
+                (live.replay)
+                    .note_rewind(WalletId(id), floor, synced, floor)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     /// IOS-113 "edit birth height": stores `height` as the wallet's birth
@@ -1065,6 +1158,72 @@ pub(crate) fn better_chainlock(
     }
 }
 
+/// The height of the first block header dash-spv stores under `spv_dir`:
+/// the first slot of the lowest header segment that is not an empty slot.
+/// `None` when no header is stored. dash-spv anchors its headers there once
+/// and never scans a filter below it. It replaces a segment file whole (a
+/// temporary `.segment_….tmp` renamed over it), so this reads a whole file
+/// while SPV runs too.
+pub(crate) fn stored_header_start(spv_dir: &std::path::Path) -> std::io::Result<Option<u32>> {
+    // dash-spv's `Persistable for HashedBlockHeader` (storage/segments.rs):
+    // 10,000 slots of 112 bytes, an 80-byte header and its hash; an empty
+    // slot holds a header of version `i32::MAX` and every other byte 0xFF.
+    const SLOTS: u32 = 10_000;
+    const SLOT_BYTES: usize = 112;
+    let dir = spv_dir.join("block_headers");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut lowest: Option<(u32, std::path::PathBuf)> = None;
+    for entry in entries {
+        let entry = entry?;
+        // dash-spv's layout names segments with six digits or more; files
+        // of its older four-digit layout are migrated when SPV opens them.
+        let id = (entry.file_name().to_str()).and_then(|name| {
+            let digits = name.strip_prefix("segment_")?.strip_suffix(".dat")?;
+            if digits.len() < 6 {
+                return None;
+            }
+            digits.parse::<u32>().ok()
+        });
+        if let Some(id) = id
+            && lowest.as_ref().is_none_or(|(l, _)| id < *l)
+        {
+            lowest = Some((id, entry.path()));
+        }
+    }
+    let Some((id, path)) = lowest else {
+        return Ok(None);
+    };
+    let mut empty = [0xFF_u8; 80];
+    empty[..4].copy_from_slice(&i32::MAX.to_le_bytes());
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        // Deleted since it was listed: dash-spv cleared its store.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let first = (bytes.as_chunks::<SLOT_BYTES>().0.iter()).position(|slot| slot[..80] != empty);
+    Ok(first.and_then(|offset| id.checked_mul(SLOTS)?.checked_add(offset as u32)))
+}
+
+/// Tests: stores `count` copies of the regtest genesis header from `height`
+/// under `spv_dir`, as dash-spv does.
+#[cfg(test)]
+pub(crate) async fn store_test_headers(spv_dir: &std::path::Path, height: u32, count: usize) {
+    use dash_spv::storage::{BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage};
+    let header = dashcore::blockdata::constants::genesis_block(dashcore::Network::Regtest).header;
+    let headers = vec![dash_spv::types::HashedBlockHeader::from(header); count];
+    let mut storage = PersistentBlockHeaderStorage::open(spv_dir).await.unwrap();
+    storage
+        .store_headers_at_height(&headers, height)
+        .await
+        .unwrap();
+    storage.persist(spv_dir).await.unwrap();
+}
+
 /// Tests: wallets whose birth height cannot be stored.
 #[cfg(test)]
 pub(crate) static FAIL_BIRTH_STORE: std::sync::Mutex<Vec<[u8; 32]>> =
@@ -1073,6 +1232,48 @@ pub(crate) static FAIL_BIRTH_STORE: std::sync::Mutex<Vec<[u8; 32]>> =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wallet is reported only when its history starts below the stored
+    /// headers: from its birth, or from the HD floor when that is later.
+    #[test]
+    fn wallets_below_the_header_start_count_from_their_birth_or_the_floor() {
+        let (a, b, c) = (WalletId([1; 32]), WalletId([2; 32]), WalletId([3; 32]));
+        let births = [(a, 0), (b, 300_000), (c, 500_000)];
+        assert_eq!(wallets_below_header_start(400_000, 227_121, births), [a, b]);
+        assert_eq!(wallets_below_header_start(200_000, 227_121, births), []);
+        assert_eq!(wallets_below_header_start(500_000, 0, births), [a, b]);
+        assert_eq!(wallets_below_header_start(0, 0, births), []);
+    }
+
+    /// The start height read from dash-spv's files is the one dash-spv
+    /// reads back, for headers stored at a checkpoint, in a later segment
+    /// and across two segments, and none for an empty or missing store.
+    #[test]
+    fn the_stored_header_start_is_the_one_dash_spv_reads() {
+        use dash_spv::storage::{
+            BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage,
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for height in [0, 9_999, 200_000, 1_234_567] {
+            let dir = tempfile::tempdir().unwrap();
+            assert_eq!(stored_header_start(dir.path()).unwrap(), None);
+            let read = rt.block_on(async {
+                store_test_headers(dir.path(), height, 2).await;
+                let reopened = PersistentBlockHeaderStorage::open(dir.path())
+                    .await
+                    .unwrap();
+                reopened.get_start_height().await
+            });
+            assert_eq!(read, Some(height));
+            assert_eq!(
+                stored_header_start(dir.path()).unwrap(),
+                read,
+                "at {height}"
+            );
+        }
+    }
 
     #[test]
     fn rescan_state_finishes_when_every_wallet_is_back() {

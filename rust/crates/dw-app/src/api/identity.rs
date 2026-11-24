@@ -39,7 +39,7 @@ use self::registration::{
 };
 use self::shielded::{
     FundAmount, MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
-    ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding,
+    ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding, UnshieldToPlatformOutcome,
 };
 use self::startup::{
     DashPayStatus, DashPaySyncStatus, ProtocolCompatibility, QuorumSource, SyncPassReport,
@@ -954,7 +954,7 @@ commands! {
         to: Option<String>,
         grant: String,
         confirm_unrecorded: bool,
-    ) -> ShieldedSpendOutcome {
+    ) -> UnshieldToPlatformOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         let credits = shielded::parse_credits(&credits)?;
         Ok(dashpay

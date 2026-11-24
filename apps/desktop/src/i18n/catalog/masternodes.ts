@@ -638,6 +638,8 @@ export const masternodes = {
       operation_state: "This item changed since you opened it.",
       update_pending:
         "An earlier change to this masternode hasn't reached the masternode list yet. Wait for it, or discard it in In progress if it was never sent.",
+      update_pending_sent:
+        "An earlier change to this masternode was sent but hasn't reached the masternode list yet. Wait for it to confirm. If it never will, because it was replaced or dropped from the network, abandon it in Activity. That frees its coins, and you can make a new change. Don't abandon a change that may still be on the network.",
       update_superseded: "A newer change to this masternode replaced this one.",
       share_not_mine: "This share isn't held by this wallet.",
       shared_too_early: "Available once the masternode list includes the registration.",
