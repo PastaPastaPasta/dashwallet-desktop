@@ -223,6 +223,7 @@ import type { VoteCast } from "./VoteCast";
 import type { VoteOutcomeName } from "./VoteOutcomeName";
 import type { VotingMasternode } from "./VotingMasternode";
 import type { WalletFileInfo } from "./WalletFileInfo";
+import type { WalletHistoryGap } from "./WalletHistoryGap";
 import type { WalletLoadStatus } from "./WalletLoadStatus";
 import type { WalletSummary } from "./WalletSummary";
 import type { WatchOnlyOptions } from "./WatchOnlyOptions";
@@ -903,6 +904,14 @@ export function nodeInfo(): Promise<NodeSummary> {
  */
 export function warnings(): Promise<Array<NodeWarning>> {
   return invoke<Array<NodeWarning>>("warnings");
+}
+
+/**
+ * The open wallets whose history starts before this install's block
+ * data, for the notice on Home; `null` when there are none.
+ */
+export function historyGap(): Promise<WalletHistoryGap | null> {
+  return invoke<WalletHistoryGap | null>("history_gap");
 }
 
 /**
@@ -3241,6 +3250,7 @@ export type CommandArgs = {
   cancel_rescan: {  };
   node_info: {  };
   warnings: {  };
+  history_gap: {  };
   reset_chain_data: {  };
   set_birth_height: { walletId: string; height: number };
   start_spv: {  };
@@ -3596,6 +3606,7 @@ export type CommandResults = {
   cancel_rescan: boolean;
   node_info: NodeSummary;
   warnings: Array<NodeWarning>;
+  history_gap: WalletHistoryGap | null;
   reset_chain_data: null;
   set_birth_height: null;
   start_spv: null;
@@ -3953,6 +3964,7 @@ export const COMMANDS: Record<CommandName, string> = {
   cancel_rescan: "chain",
   node_info: "chain",
   warnings: "chain",
+  history_gap: "chain",
   reset_chain_data: "chain",
   set_birth_height: "chain",
   start_spv: "chain",
