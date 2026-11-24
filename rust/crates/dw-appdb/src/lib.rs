@@ -2448,25 +2448,26 @@ mod tests {
                 .find(|r| r.reference == reference)
                 .and_then(|r| r.st_hash)
         };
-        let name = |reference: &str, hash: &str| {
-            db.set_dp_contact_payout_st_hash_durable(W, reference, hash)
+        let hash = |digit: &str| digit.repeat(64);
+        let name = |reference: &str, digit: &str| {
+            db.set_dp_contact_payout_st_hash_durable(W, reference, &hash(digit))
                 .unwrap()
         };
         db.insert_dp_contact_payout_durable(W, &row("bob", "sh-1", "shielded"))
             .unwrap();
         db.insert_dp_contact_payout_durable(W, &row("carol", "move-1", "platform"))
             .unwrap();
-        assert!(!name("sh-0", "aa"), "no such payout");
-        assert!(!name("move-1", "aa"), "a Platform payout has no st_hash");
-        assert!(name("sh-1", "aa"));
-        assert!(name("sh-1", "aa"), "the same transition again");
-        assert!(!name("sh-1", "bb"), "never a second transition");
-        assert_eq!(st_hash("sh-1").as_deref(), Some("aa"));
+        assert!(!name("sh-0", "a"), "no such payout");
+        assert!(!name("move-1", "a"), "a Platform payout has no st_hash");
+        assert!(name("sh-1", "a"));
+        assert!(name("sh-1", "a"), "the same transition again");
+        assert!(!name("sh-1", "b"), "never a second transition");
+        assert_eq!(st_hash("sh-1"), Some(hash("a")));
         db.settle_dp_contact_payout(W, "sh-1", "sent").unwrap();
         db.insert_dp_contact_payout_durable(W, &row("dave", "sh-2", "shielded"))
             .unwrap();
         db.settle_dp_contact_payout(W, "sh-2", "not_sent").unwrap();
-        assert!(!name("sh-2", "cc"), "a settled payout");
+        assert!(!name("sh-2", "c"), "a settled payout");
         assert_eq!(st_hash("sh-2"), None);
     }
 

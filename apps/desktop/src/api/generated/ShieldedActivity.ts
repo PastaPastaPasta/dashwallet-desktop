@@ -2,8 +2,14 @@
 import type { ShieldedActivityKind } from "./ShieldedActivityKind";
 import type { ShieldedActivityStatus } from "./ShieldedActivityStatus";
 import type { ShieldedDirection } from "./ShieldedDirection";
+import type { TxCounterparty } from "./TxCounterparty";
 
 /**
  * One row of the wallet's shielded history.
  */
-export type ShieldedActivity = { id: string, kind: ShieldedActivityKind, direction: ShieldedDirection, credits: string, feeCredits: string | null, counterparty: string | null, memo: string | null, blockHeight: number | null, status: ShieldedActivityStatus, createdAt: number | null, };
+export type ShieldedActivity = { id: string, kind: ShieldedActivityKind, direction: ShieldedDirection, credits: string, feeCredits: string | null, counterparty: string | null, memo: string | null, blockHeight: number | null, status: ShieldedActivityStatus, createdAt: number | null,
+/**
+ * The DashPay contact a withdrawal paid, when it was a contact
+ * payment.
+ */
+contact?: TxCounterparty, };

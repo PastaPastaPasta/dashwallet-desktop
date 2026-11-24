@@ -26,7 +26,18 @@ use super::shielded::{ShieldedActivity, ShieldedActivityKind, ShieldedSpendState
 use super::shielded_pool::{self as pool, MEMO_BYTES, Quoting, ShieldedLib, Spent, To};
 use super::signers::LockedContactCrypto;
 use super::trust::Rule5;
-use crate::{NetworkSession, WalletId};
+use crate::{DashNetwork, NetworkSession, WalletId};
+
+/// The flag that keeps this flow off on mainnet until its funds ruling:
+/// there it refuses `platform.feature_off{feature: FEATURE}` as every
+/// network did before it (`payout_source`).
+pub(crate) const FEATURE: &str = "shielded_contact_payment";
+
+/// Whether a contact payment from the Shielded balance runs on `network`:
+/// not on mainnet; testnet, devnet and regtest pay.
+pub(crate) fn enabled_on(network: &DashNetwork) -> bool {
+    *network != DashNetwork::Mainnet
+}
 
 /// The wallet's shielded payout whose spend the library is building, and
 /// the transition the hook named in its row (P6).
@@ -104,6 +115,12 @@ pub(crate) async fn pay_gated(
     pair: Pair,
     call: PayCall,
 ) -> Result<ContactPayOutcome, ContactError> {
+    if !enabled_on(&session.network) {
+        return Err(PlatformError::FeatureOff {
+            feature: FEATURE.into(),
+        }
+        .into());
+    }
     // The source's gates (P3), as an unshield's: the hook, the wallet's
     // lock, an unrecorded spend, the withdrawal range.
     pool::unhooked(lib).await?;
@@ -385,6 +402,9 @@ impl NetworkSession {
         wallet: WalletId,
         rows: &mut [ShieldedActivity],
     ) {
+        if !enabled_on(&self.network) {
+            return;
+        }
         if !rows
             .iter()
             .any(|r| r.kind == ShieldedActivityKind::Withdrawal)

@@ -429,3 +429,135 @@ fn a_kill_at_each_step_relaunches_into_what_the_records_prove() {
     let settled = rows.iter().find(|r| r.0 == row.0).unwrap();
     assert_eq!(settled.1, "sent");
 }
+
+/// Mainnet: off (flag `shielded_payout::FEATURE`). On mainnet a payment
+/// from the Shielded balance refuses as every network did before this
+/// slice: `begin_flow` and the payout itself are
+/// `platform.feature_off{feature: shielded_contact_payment}`, and the
+/// facade takes the old refusing path. Nothing is redeemed, reserved,
+/// written or sent. Testnet, devnet and regtest pay.
+#[test]
+fn mainnet_refuses_a_shielded_payout_before_anything_is_written() {
+    use crate::platform::shielded_payout::{FEATURE, enabled_on};
+    assert!(!enabled_on(&DashNetwork::Mainnet));
+    assert!(enabled_on(&DashNetwork::Testnet));
+    assert!(enabled_on(&DashNetwork::Regtest));
+    assert!(enabled_on(&DashNetwork::Devnet { name: "d".into() }));
+
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let session = engine
+        .block_on(engine.open_network(
+            DashNetwork::Mainnet,
+            crate::SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                no_platform: true,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    engine
+        .block_on(session.vault_op(|v| v.create(None)))
+        .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
+        .unwrap();
+    let wallet = engine
+        .block_on(session.import_wallet(
+            Zeroizing::new(PHRASE.as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                core_compat: false,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let purpose = GrantPurpose::PlatformOp {
+        max_duffs: 0,
+        max_credits: SHIELDED,
+    };
+    let grant = |s: &Arc<NetworkSession>| {
+        (s.vault()
+            .authorize(purpose.clone(), Some(&wallet.0), Credential::None))
+        .unwrap()
+        .id
+    };
+    let kept = |g: &str| {
+        (session.vault())
+            .check_grant(g, dw_vault::GrantKind::PlatformOp, Some(&wallet.0))
+            .is_ok()
+    };
+    let off = |e: &ContactError| matches!(e, ContactError::Platform(PlatformError::FeatureOff { feature }) if feature == FEATURE);
+
+    let g = grant(&session);
+    let s = Arc::clone(&session);
+    let begun = engine.block_on(async move {
+        let flow = FlowKind::ContactPayFromBalance;
+        s.begin_flow(wallet, flow, vec![g], Some(PaymentSource::Shielded))
+            .await
+    });
+    assert!(
+        matches!(&begun, Err(PlatformError::FeatureOff { feature }) if feature == FEATURE),
+        "{begun:?}"
+    );
+
+    let lib = Arc::new(FakeShielded::hooked_to(&session, wallet));
+    let g = grant(&session);
+    let call = PayCall {
+        identity: b58(ME),
+        contact: b58(BOB),
+        credits: credits(),
+        source: PaymentSource::Shielded,
+        note: None,
+        grant: g.clone(),
+        confirm_unrecorded: true,
+    };
+    let (s, l) = (Arc::clone(&session), Arc::clone(&lib));
+    let paid = engine.block_on(async move {
+        let pair = (id(ME), id(BOB));
+        shielded_payout::pay_gated(&s, wallet, &*l, pair, call).await
+    });
+    assert!(paid.as_ref().is_err_and(off), "{paid:?}");
+    assert!(kept(&g), "the grant is kept");
+
+    let g = grant(&session);
+    let dashpay = session.dashpay(wallet);
+    let (quoted, paid) = engine.block_on(async {
+        let quoted =
+            (dashpay.contact_pay_quote(b58(ME), b58(BOB), credits(), PaymentSource::Shielded))
+                .await;
+        let paid = dashpay
+            .contact_pay(
+                b58(ME),
+                b58(BOB),
+                credits(),
+                PaymentSource::Shielded,
+                None,
+                g.clone(),
+                true,
+            )
+            .await;
+        (quoted, paid)
+    });
+    assert!(quoted.is_err(), "{quoted:?}");
+    assert!(paid.is_err(), "{paid:?}");
+    assert!(kept(&g), "the grant is kept");
+
+    let w = wallet.to_string();
+    let rows = engine
+        .block_on(session.appdb_op(move |db| db.dp_contact_payouts(&w)))
+        .unwrap();
+    assert!(rows.is_empty(), "no payout row");
+    let pair = (id(ME), id(BOB));
+    assert!(
+        session
+            .platform
+            .payments
+            .reserved_checked(wallet, pair)
+            .is_none()
+    );
+    assert!(lib.withdrawn_to().is_empty(), "nothing sent");
+}

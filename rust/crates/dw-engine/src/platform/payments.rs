@@ -9,6 +9,7 @@ use super::contacts::ContactSummary;
 use super::dashpay::DashPay;
 use super::errors::{ContactError, PlatformError};
 use super::flows::GrantRequest;
+use super::shielded_payout;
 use super::shielded_pool::{on_pool, on_pool_signing};
 
 /// A per-contact send lock: a Core payment after an ambiguous broadcast
@@ -188,13 +189,14 @@ impl DashPay {
         source: PaymentSource,
     ) -> Result<ContactPayQuote, ContactError> {
         let (session, id) = (Arc::clone(&self.session), self.wallet_id());
-        if source == PaymentSource::Shielded {
+        // Off on mainnet (`shielded_payout::FEATURE`): the refusal below.
+        if source == PaymentSource::Shielded && shielded_payout::enabled_on(&self.session.network) {
             {
                 let _op = self.session.try_enter().map_err(PlatformError::from)?;
                 (self.session).payout_quote_gates(id, &identity, &contact, credits, source)?;
             }
             let quoted = on_pool(&self.session, id, move |_, lib| async move {
-                Ok(super::shielded_payout::quote(&lib, credits).await)
+                Ok(shielded_payout::quote(&lib, credits).await)
             });
             return quoted.await?;
         }
@@ -235,7 +237,7 @@ impl DashPay {
             grant,
             confirm_unrecorded,
         };
-        if source == PaymentSource::Shielded {
+        if source == PaymentSource::Shielded && shielded_payout::enabled_on(&self.session.network) {
             // The payee, the pair's lock and rule 5 before the pool opens.
             let gated = self
                 .session
@@ -250,7 +252,7 @@ impl DashPay {
                 .map_err(PlatformError::from)?;
             let (pair, call) = gated?;
             let paid = on_pool_signing(&self.session, id, move |session, lib| async move {
-                Ok(super::shielded_payout::pay_gated(&session, id, &lib, pair, call).await)
+                Ok(shielded_payout::pay_gated(&session, id, &lib, pair, call).await)
             });
             return paid.await?;
         }

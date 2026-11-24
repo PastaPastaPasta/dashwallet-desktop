@@ -960,7 +960,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: a8167f4355f2e778322e2a2d5e5ee2c363a1f3df43d802112e1c9b9767fd92a4 version: 75 -->
+<!-- surface-sha256: 23f2bb3a45eca8315417f3802be75ca145124ce9062f49b4698e04f94668e6aa version: 75 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2484,7 +2484,7 @@ pub struct ShieldedActivity {
     pub block_height: Option<u64>,
     pub status: ShieldedActivityStatus,
     pub created_at: Option<u64>,
-    pub contact: Option<super::payments::Counterparty>,
+    pub contact: Option<Counterparty>,
 }
 impl DashPay {
     pub async fn shielded_status(&self) -> Result<ShieldedStatus, ShieldedError>;
@@ -4608,7 +4608,10 @@ renames or reshapes them takes the next version bump:
     acknowledgement in Repair included, keeps the lock. Each pass's tail, `resolve_payment_lock` and a load settle it
     the same way. **History (P10):** `ShieldedActivity.contact` names the contact a withdrawal paid, from the payout
     row whose `st_hash` the row's artifact carries, else by the destination address through the payee scripts with
-    their shared-xpub exclusion. `ContactError` gains `Shielded(ShieldedError)` with the pool's codes.
+    their shared-xpub exclusion. `ContactError` gains `Shielded(ShieldedError)` with the pool's codes. **Mainnet: off.** On mainnet
+    the source refuses `platform.feature_off{feature: shielded_contact_payment}` as before this item: the facade's
+    gates run in main's order and then refuse, `begin_flow(ContactPayFromBalance, shielded)` refuses, and
+    `ShieldedActivity.contact` stays unset. Testnet, regtest and devnet pay.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 
