@@ -344,3 +344,105 @@ fn mg10_a_confirmed_registration_settles_as_before() {
         );
     }
 }
+
+impl Fx {
+    fn try_abandon(&self, txid: Txid) -> Result<BTreeSet<Txid>, crate::EngineError> {
+        let (s, id) = (Arc::clone(&self.session), self.wallet);
+        self.engine.block_on(self.session.on_runtime(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, id, txid).await
+        }))
+    }
+}
+
+/// The abandon stores its marks and its wallet sweep fails, and the app
+/// restarts: the load finishes the abandon from the marks, and the key
+/// change reads `abandoned`, its barrier is gone, its fee coin unlocks and
+/// is selectable, and a resend is refused.
+#[test]
+fn mg10_an_abandon_whose_sweep_failed_frees_the_coins_after_a_restart() {
+    let mut f = fx(Library::Accept);
+    let (_, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (op, tx, fee_coin) = f.sent_key_change(&hash);
+    (f.session.hub.fail_abandon_sweep).store(true, std::sync::atomic::Ordering::SeqCst);
+    let failed = f.try_abandon(tx.txid());
+    assert!(
+        matches!(failed, Err(crate::EngineError::Storage(_))),
+        "{failed:?}"
+    );
+    assert_eq!(f.barrier_ops(), std::slice::from_ref(&op.id));
+
+    f.restart(&[(2, COIN)]);
+    assert_eq!(kind(f.state(&op)), "abandoned");
+    assert!(f.barrier_ops().is_empty(), "the barrier stays");
+    f.unlock(fee_coin).unwrap();
+    assert!(f.selectable(fee_coin), "{:?}", f.held());
+    f.assert_resend_refused(&op);
+}
+
+/// An InstantSend lock seen after the abandon outranks it, as the key change
+/// will be mined: it reads `sent` again, holds the next update of its
+/// masternode, and a withdrawal waits on it through the history.
+#[test]
+fn mg10_an_instantsend_lock_after_the_abandon_makes_the_key_change_sent_again() {
+    let f = fx(Library::Accept);
+    let (reg_tx, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let pro_tx_hash = reg_tx.txid().to_byte_array();
+    let (op, tx, _) = f.sent_key_change(&hash);
+    f.abandon(tx.txid());
+    assert_eq!(kind(f.state(&op)), "abandoned");
+    assert!(f.session.withdrawal_payout_changes(&pro_tx_hash).is_empty());
+
+    let instant = TransactionContext::InstantSend(Default::default());
+    f.block_event(vec![tx_record(tx.clone(), instant)]);
+    assert_eq!(f.state(&op), ProTxOperationState::Sent);
+    let e = f.preview_update(key_change(&hash, 6)).unwrap_err();
+    assert_eq!(e.code(), "masternodes.update_pending");
+    let e = f.update(key_change(&hash, 6), f.grant(COIN)).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::UpdatePending { operation } if *operation == op.id),
+        "{e:?}"
+    );
+    assert_eq!(
+        f.session.withdrawal_payout_changes(&pro_tx_hash),
+        vec![None]
+    );
+}
+
+/// An abandon that lands while a resend waits for the coin fence, past its
+/// state check: the resend reads the state again under the fence, is
+/// refused as `abandoned`, and hands nothing off.
+#[test]
+fn mg10_an_abandon_during_a_resend_stops_its_hand_off() {
+    let f = fx(Library::Accept);
+    let (op, tx, _) = f.sent_registration();
+    let handed = f.lib.sent().len();
+    let fence = f.engine.block_on(f.session.coin_fence(f.wallet)).unwrap();
+    let resend = {
+        let (mn, id, operation, grant) = (f.mn(), f.wallet, op.id.clone(), f.grant(COIN));
+        f.session
+            .rt
+            .spawn(async move { mn.resend_operation(id, operation, grant).await })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while f.session.coin_fences.waiting(f.wallet) == 0 {
+        assert!(
+            !resend.is_finished(),
+            "the resend never waited for the fence"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the resend never waited for the fence"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    f.abandon(tx.txid());
+    drop(fence);
+    match f.engine.block_on(resend).unwrap() {
+        Err(MasternodesError::OperationState { state }) => assert_eq!(state, "abandoned"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.lib.sent().len(), handed, "handed off again");
+}

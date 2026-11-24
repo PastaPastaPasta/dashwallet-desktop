@@ -27,7 +27,7 @@ use super::super::protx_records::{
 };
 use super::super::shared::list_settled;
 use crate::coins::{CoinFence, WalletCoin, now_secs, read_coins};
-use crate::history::TxEntry;
+use crate::history::{TxEntry, instant_locked};
 use crate::send::{PreparedSummary, SpendCharge};
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -184,9 +184,9 @@ pub(crate) fn state_of(
 /// `state` once Activity's abandon is applied (MG-10 §1.10, D49): a `sent`
 /// registration or key change whose txid the wallet's abandoned marks name
 /// (an Abandon's durable commit point), and that isn't InstantSend-locked,
-/// is `abandoned`. Terminal: its fee
-/// inputs and payout-change barrier are released, it is never resent and
-/// it holds no later update of its masternode. Core may still mine it, so
+/// is `abandoned`. Terminal: its fee inputs and payout-change barrier are
+/// released, it is never resent and it holds no later update of its
+/// masternode. Core may still mine it, so
 /// the key checks (D51) read [`state_of`], where it is `sent`.
 pub(crate) fn abandon_settled(
     row: &MasternodeOpRow,
@@ -194,17 +194,19 @@ pub(crate) fn abandon_settled(
     history: &HashMap<Txid, TxEntry>,
     abandoned: &HashSet<Txid>,
 ) -> ProTxOperationState {
-    let covered = matches!(
-        kind_of(&row.kind),
-        ProTxOperationKind::Registration | ProTxOperationKind::UpdateRegistrar
-    );
+    if state != ProTxOperationState::Sent
+        || !matches!(
+            kind_of(&row.kind),
+            ProTxOperationKind::Registration | ProTxOperationKind::UpdateRegistrar
+        )
+    {
+        return state;
+    }
     // An InstantSend lock seen since outranks the mark: it will be mined.
     let marked = (row.txid.as_deref())
         .and_then(|t| Txid::from_str(t).ok())
-        .is_some_and(|t| {
-            abandoned.contains(&t) && !history.get(&t).is_some_and(|e| e.instant_locked)
-        });
-    if state == ProTxOperationState::Sent && covered && marked {
+        .is_some_and(|t| abandoned.contains(&t) && !history.get(&t).is_some_and(instant_locked));
+    if marked {
         ProTxOperationState::Abandoned
     } else {
         state
