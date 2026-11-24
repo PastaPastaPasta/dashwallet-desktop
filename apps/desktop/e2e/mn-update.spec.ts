@@ -12,10 +12,10 @@ import { fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
 
 const shots = process.env.DW_ROUTE_SHOTS;
 
-async function open(page: Page, scenario: string, theme: "light" | "dark" = "light") {
+async function open(page: Page, scenario: string, theme: "light" | "dark" = "light", network?: "mainnet") {
   const errors = trackPageErrors(page);
   await page.clock.setFixedTime(FIXTURE_NOW);
-  await page.goto(fixtureUrl(scenario, theme));
+  await page.goto(fixtureUrl(scenario, theme, network ? `&network=${network}` : ""));
   await page.getByTestId("toolbar").waitFor();
   await page.getByTestId("sidebar-masternodes").click();
   await expect(page.getByTestId("page-masternodes")).toBeVisible();
@@ -33,7 +33,7 @@ const sheet = (page: Page) => page.getByTestId("mn-change-keys-sheet");
 const PAYOUT = "yNewPayoutMn7qR2vWx9KfT4Mn7qR2vWx9";
 
 for (const theme of THEMES) {
-  test(`change keys ${theme}: the PoSe warning, the recorded payout, send; 0 serious axe issues`, async ({ page }) => {
+  test(`change keys ${theme}: the PoSe warning, the recorded payout, then send; 0 serious axe issues`, async ({ page }) => {
     const errors = await open(page, "mn-list", theme);
     await page.getByTestId(`mn-row-${HOME}`).click();
     await shot(page, "pane-home", theme);
@@ -102,7 +102,7 @@ test("a given operator key and another payout address are signed as reviewed; a 
   await page.getByTestId("mn-change-passphrase").fill(FIXTURE_PASSPHRASE);
   await page.getByTestId("mn-change-send").click();
   await expect(page.getByTestId("mn-change-keys-sent")).toBeVisible();
-  const terms = await page.evaluate(() => window.__dwFixture!.world.masternodes.updates[0].terms);
+  const terms = await page.evaluate(() => window.__dwFixture!.world.masternodes.operations.find((o) => o.kind === "update_registrar")!.terms);
   expect(terms).toMatchObject({ operatorPublicKey: "ab".repeat(48), payoutAddress: PAYOUT });
 });
 
@@ -141,6 +141,22 @@ test("discarding an update that didn't go out frees the masternode for another c
   await page.getByTestId("mn-change-keys-done").click();
   await page.getByTestId("mn-change-keys").click();
   await expect(page.getByTestId("mn-change-review-voting")).toBeVisible();
+});
+
+test("mainnet: Change keys can be reviewed, and nothing is sent", async ({ page }) => {
+  const errors = await open(page, "mn-list", "light", "mainnet");
+  await page.getByTestId(`mn-row-${HOME}`).click();
+  await page.getByTestId("mn-change-keys").click();
+  await expect(sheet(page)).toBeVisible();
+  await page.getByTestId("mn-change-operator-keychain").click();
+  await expect(page.getByTestId("mn-change-pose")).toBeVisible();
+  await expect(page.getByTestId("mn-change-held")).toHaveText("You can review this change, but this version can't send it yet. Nothing has been sent.");
+  await expect(page.getByTestId("mn-change-send")).toHaveCount(0);
+  await expect(page.getByTestId("mn-change-passphrase")).toHaveCount(0);
+  await sheet(page).locator("form").evaluate((f: HTMLFormElement) => f.requestSubmit());
+  await expect(sheet(page)).toBeVisible();
+  await expect(page.getByTestId("mn-change-keys-sent")).toHaveCount(0);
+  expect(errors).toEqual([]);
 });
 
 test("no Change keys for a tracked node without its registration: the reason line instead", async ({ page }) => {

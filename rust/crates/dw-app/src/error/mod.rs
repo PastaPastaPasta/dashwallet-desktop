@@ -391,6 +391,13 @@ pub enum ErrorData {
     MasternodeKey {
         role: crate::dto::masternodes::AttachedKeyRoleName,
     },
+    /// `masternodes.operation_state`: the operation's state now.
+    OperationState { state: String },
+    /// `masternodes.keys_exhausted`: the keychain role with no unused key.
+    KeyRole { role: String },
+    /// `masternodes.update_pending`, `masternodes.update_superseded`: the
+    /// other operation's id.
+    Operation { operation: String },
     /// `masternodes.shared_message`: why a message was refused (never its
     /// text), and the share whose approval doesn't verify.
     SharedMessage { reason: String, share: Option<u16> },
@@ -528,10 +535,13 @@ pub enum TxActionRefusalName {
     Coinbase,
     InMempool,
     NotSentByWallet,
+    /// Abandon can go through after a restart and a rescan from the
+    /// wallet's birth (the message says so).
+    RescanFirst,
 }
 
 crate::dto::mirror_enum!(dw_engine::TxActionRefusal => TxActionRefusalName {
-    Confirmed, InstantLocked, AlreadyAbandoned, Coinbase, InMempool, NotSentByWallet
+    Confirmed, InstantLocked, AlreadyAbandoned, Coinbase, InMempool, NotSentByWallet, RescanFirst
 });
 
 impl AppError {

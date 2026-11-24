@@ -48,6 +48,8 @@ import { MoreMenu, Notice, StatusChip, useNowSecs, VoteBar } from "./common";
 import { CreateProposalSheet } from "./CreateProposalSheet";
 import { MineList } from "./Mine";
 import { MyMasternodes } from "./MyMasternodes";
+import { RegisterSheet } from "./RegisterSheet";
+import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import { NamesTab } from "./NamesTab";
 import { NumbersSheet } from "./NumbersSheet";
 import { ProposalPane } from "./ProposalPane";
@@ -77,6 +79,8 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   const [showEnded, setShowEnded] = useState(false);
   const [filter, setFilter] = useState<ListFilter>("all");
   const [sheet, setSheet] = useState<"create" | "numbers" | null>(null);
+  /** The registration wizard: new, or reopened at Prove on a saved External registration. */
+  const [register, setRegister] = useState<{ resume?: ProTxOperation } | null>(null);
   /** The proposal the vote sheet is open on, as it was when Vote was pressed. */
   const [voteOn, setVoteOn] = useState<ProposalRow | null>(null);
   const [shared, setShared] = useState<OpenSession | "start" | null>(null);
@@ -160,6 +164,20 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
       <div className="page-column">
         <header className="top-intro mg-header">
           <h1 className="top-intro-title">{GovText.title}</h1>
+          {tab === "myMasternodes" && (
+            <span className="mg-header-actions" data-testid="mn-actions">
+              <DashButton
+                variant="filledBlue"
+                size="small"
+                data-testid="mn-set-up"
+                disabled={wallet.watchOnly}
+                why={wallet.watchOnly ? t("masternodes.register.watchOnly") : undefined}
+                onClick={() => setRegister({})}
+              >
+                {t("masternodes.register.setUp")}
+              </DashButton>
+            </span>
+          )}
           {/* Governance's actions; Username voting has none (MG-11 D2). */}
           {tab === "governance" && (
             <span className="mg-header-actions" data-testid="governance-actions">
@@ -204,6 +222,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
                 setFilter("needsVote");
                 setTab("governance");
               }}
+              onContinue={(op) => setRegister({ resume: op })}
             />
           ) : tab === "governance" ? (
             body
@@ -229,6 +248,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           }}
         />
       )}
+      {register && <RegisterSheet wallet={wallet} network={network} resume={register.resume} onClose={() => setRegister(null)} />}
       {voteOn && <VoteSheet row={voteOn} wallet={wallet} network={network} onClose={() => setVoteOn(null)} />}
       {shared === "start" && <SharedStartSheet wallet={wallet} network={network} onClose={() => setShared(null)} onOpen={setShared} />}
       {shared && shared !== "start" && <SharedSessionSheet key={shared.id} wallet={wallet} network={network} open={shared} onClose={() => setShared(null)} />}

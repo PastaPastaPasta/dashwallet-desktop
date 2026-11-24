@@ -40,6 +40,14 @@
     "allow-mn-shared-approve",
     "allow-mn-shared-discard",
     "allow-mn-shared-import",
-    "allow-mn-shared-import-file"
+    "allow-mn-shared-import-file",
+    "allow-mn-registration-keys",
+    "allow-mn-preview-registration",
+    "allow-mn-register",
+    "allow-mn-prepare-external-registration",
+    "allow-mn-refresh-external-registration",
+    "allow-mn-submit-external-registration",
+    "allow-mn-release-collateral",
+    "allow-mn-lock-collateral"
   ]
 }

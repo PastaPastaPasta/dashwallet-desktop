@@ -86,7 +86,6 @@ import type { IdentityRefresh } from "./IdentityRefresh";
 import type { IdentitySummary } from "./IdentitySummary";
 import type { ImportOptions } from "./ImportOptions";
 import type { InvitationStatus } from "./InvitationStatus";
-import type { JoinSharedRequest } from "./JoinSharedRequest";
 import type { JsonValue } from "./serde_json/JsonValue";
 import type { KeyCheckName } from "./KeyCheckName";
 import type { KeyMaterialInput } from "./KeyMaterialInput";
@@ -105,12 +104,15 @@ import type { MasternodeKeyRoleName } from "./MasternodeKeyRoleName";
 import type { MasternodeListState } from "./MasternodeListState";
 import type { MasternodeOverview } from "./MasternodeOverview";
 import type { MasternodePayout } from "./MasternodePayout";
+import type { MasternodeTypeName } from "./MasternodeTypeName";
 import type { MixedCoinsConsolidationPlan } from "./MixedCoinsConsolidationPlan";
 import type { MixedCoinsDestination } from "./MixedCoinsDestination";
 import type { MixedCoinsResend } from "./MixedCoinsResend";
 import type { MixedCoinsSweepPlan } from "./MixedCoinsSweepPlan";
 import type { MixedCoinsSweepResult } from "./MixedCoinsSweepResult";
 import type { MixedShieldQuote } from "./MixedShieldQuote";
+import type { MnRegistrationPreview } from "./MnRegistrationPreview";
+import type { MnRegistrationRequest } from "./MnRegistrationRequest";
 import type { MnemonicCheck } from "./MnemonicCheck";
 import type { MnemonicLanguageName } from "./MnemonicLanguageName";
 import type { MoveToCoreOutcome } from "./MoveToCoreOutcome";
@@ -147,6 +149,7 @@ import type { PlatformShieldQuote } from "./PlatformShieldQuote";
 import type { PreparedTxHandle } from "./PreparedTxHandle";
 import type { PreparedTxSummary } from "./PreparedTxSummary";
 import type { PrivateContactDetails } from "./PrivateContactDetails";
+import type { ProTxKeys } from "./ProTxKeys";
 import type { ProTxOperation } from "./ProTxOperation";
 import type { ProfileEditArgs } from "./ProfileEditArgs";
 import type { ProposalDetail } from "./ProposalDetail";
@@ -175,11 +178,6 @@ import type { RevealedMnemonic } from "./RevealedMnemonic";
 import type { ScannedContactInfo } from "./ScannedContactInfo";
 import type { ScreenScanMode } from "./ScreenScanMode";
 import type { SessionSettings } from "./SessionSettings";
-import type { SharedCapability } from "./SharedCapability";
-import type { SharedImport } from "./SharedImport";
-import type { SharedMessage } from "./SharedMessage";
-import type { SharedOutcome } from "./SharedOutcome";
-import type { SharedSession } from "./SharedSession";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
 import type { ShieldOutcome } from "./ShieldOutcome";
@@ -190,7 +188,6 @@ import type { ShieldedSpendOutcome } from "./ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
 import type { ShieldedStatus } from "./ShieldedStatus";
 import type { SpvStateName } from "./SpvStateName";
-import type { StartSharedRequest } from "./StartSharedRequest";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
 import type { StuckShieldFunding } from "./StuckShieldFunding";
 import type { StuckTopUpFunding } from "./StuckTopUpFunding";
@@ -208,7 +205,6 @@ import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
-import type { UnreadableSession } from "./UnreadableSession";
 import type { UntrackOutcome } from "./UntrackOutcome";
 import type { UpdateRegistrarPreview } from "./UpdateRegistrarPreview";
 import type { UpdateRegistrarRequest } from "./UpdateRegistrarRequest";
@@ -244,9 +240,6 @@ export const SHELL_EVENT = "shell://event";
 
 /** Txids per `historyChanged` or `newTransactions` event. */
 export const MAX_TXIDS = 256;
-
-/** What `mnSharedAbandon` and `mnSharedAbandonUnreadable` charge, in duffs: a `masternodeOp` grant's exact cap. */
-export const SHARED_ABANDON_FEE = 193;
 
 /**
  * How the app was launched: the self-test, the forced theme, and the
@@ -1007,10 +1000,23 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
 }
 
 /**
- * dash-qt "Abandon transaction": marks it abandoned, releases its
- * inputs and excludes it from balances. SPV cannot prove it is in no
- * mempool, so it may still confirm; the history then shows it
- * confirmed again.
+ * dash-qt "Abandon transaction": marks it abandoned, releases the
+ * inputs no processed block spent and excludes it from balances. SPV
+ * cannot prove it is in no mempool, so it may still confirm; the
+ * history then shows it confirmed again. An InstantSend-locked
+ * transaction is refused (`instantLocked`) unless a transaction in a
+ * ChainLocked block of the SPV header chain spends one of its inputs,
+ * nothing descending from it is in a block, locked or finalized, the
+ * wallet holds no record of it in a block or locked (in the session it
+ * was locked in, until a restart; #329), the history load was complete
+ * and the scan has passed the ChainLock with no replay pending; then
+ * only inputs proven unspent are released.
+ * `rescanFirst` instead when all of that holds and the only inputs
+ * missing are held by its own spend claim restored at load: a restart
+ * and a rescan give that evidence.
+ * Any transaction is refused (`instantLocked`, or `confirmed`) when
+ * abandoning it would also take one the history holds as InstantSend-
+ * locked (or in a block).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1026,9 +1032,12 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
 }
 
 /**
- * "Remove unconfirmed": abandons every unconfirmed, not
- * InstantSend-locked transaction of the wallet (every wallet when
- * `walletId` is `null`) and rescans from the lowest funding height.
+ * "Remove unconfirmed": abandons every unconfirmed transaction of the
+ * wallet (every wallet when `walletId` is `null`) that Abandon would,
+ * InstantSend-locked ones only under its ChainLock exception, then
+ * rescans once, from the lowest funding height of them all. One the
+ * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says)
+ * is skipped.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
@@ -2903,128 +2912,67 @@ export function mnDiscardOperation(walletId: string, operation: string): Promise
 }
 
 /**
- * What the wallet can do with shared masternodes: v24 as far as it can
- * tell, shared evonodes (always off), and whether sending is on.
+ * The keychain keys a registration of `kind` would use by default.
+ * Public keys and addresses only; needs the synced list.
  */
-export function mnSharedCapability(walletId: string): Promise<SharedCapability> {
-  return invoke<SharedCapability>("mn_shared_capability", { walletId });
+export function mnRegistrationKeys(walletId: string, kind: MasternodeTypeName): Promise<ProTxKeys> {
+  return invoke<ProTxKeys>("mn_registration_keys", { walletId, kind });
 }
 
 /**
- * Every shared-masternode session of the wallet, newest first.
+ * Checks a registration with Core's rules and plans its transaction.
+ * Locks, reserves and issues nothing.
  */
-export function mnSharedSessions(walletId: string): Promise<Array<SharedSession>> {
-  return invoke<Array<SharedSession>>("mn_shared_sessions", { walletId });
+export function mnPreviewRegistration(walletId: string, request: MnRegistrationRequest): Promise<MnRegistrationPreview> {
+  return invoke<MnRegistrationPreview>("mn_preview_registration", { walletId, request });
 }
 
 /**
- * Sessions whose stored record no longer reads, newest first: each can
- * be discarded while nothing of it may be out.
+ * Registers a masternode with a fund-new or existing-coin collateral
+ * under a `masternodeOp` grant, which the call consumes. The result is
+ * the saved operation, `sent` or `not_sent` with its `lastError`.
  */
-export function mnSharedUnreadable(walletId: string): Promise<Array<UnreadableSession>> {
-  return invoke<Array<UnreadableSession>>("mn_shared_unreadable", { walletId });
+export function mnRegister(walletId: string, request: MnRegistrationRequest, grant: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_register", { walletId, request, grant });
 }
 
 /**
- * One session, its stage derived now.
+ * Prepares an external-collateral registration: locks its fee inputs
+ * and saves it as `needs_signature` with the message the collateral's
+ * key signs. No grant; signs nothing.
  */
-export function mnSharedSession(walletId: string, session: string): Promise<SharedSession> {
-  return invoke<SharedSession>("mn_shared_session", { walletId, session });
+export function mnPrepareExternalRegistration(walletId: string, request: MnRegistrationRequest): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_prepare_external_registration", { walletId, request });
 }
 
 /**
- * Starts a session as its coordinator: reserves the coordinator's share
- * and the fee, signs nothing, and returns the Invitation.
+ * Re-plans an external registration whose fee inputs were spent: new
+ * inputs and a new message, the same terms.
  */
-export function mnSharedStart(walletId: string, request: StartSharedRequest): Promise<SharedOutcome> {
-  return invoke<SharedOutcome>("mn_shared_start", { walletId, request });
+export function mnRefreshExternalRegistration(walletId: string, operation: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_refresh_external_registration", { walletId, operation });
 }
 
 /**
- * Changes a draft's network fee before anyone replied.
+ * Finishes an external registration with the collateral key's
+ * `signmessage` signature (base64), under a `masternodeOp` grant.
  */
-export function mnSharedSetFee(walletId: string, session: string, fee: number): Promise<SharedOutcome> {
-  return invoke<SharedOutcome>("mn_shared_set_fee", { walletId, session, fee });
+export function mnSubmitExternalRegistration(walletId: string, operation: string, signature: string, grant: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_submit_external_registration", { walletId, operation, signature, grant });
 }
 
 /**
- * Joins an imported Invitation: reserves exactly the share, signs
- * nothing, and returns the reply.
+ * Unlocks a masternode's collateral coin and remembers it. Sends nothing.
  */
-export function mnSharedJoin(walletId: string, session: string, request: JoinSharedRequest): Promise<SharedOutcome> {
-  return invoke<SharedOutcome>("mn_shared_join", { walletId, session, request });
+export function mnReleaseCollateral(walletId: string, proTxHash: string): Promise<null> {
+  return invoke<null>("mn_release_collateral", { walletId, proTxHash });
 }
 
 /**
- * The message to copy or save now.
+ * Locks a released collateral coin again.
  */
-export function mnSharedMessage(walletId: string, session: string): Promise<SharedMessage> {
-  return invoke<SharedMessage>("mn_shared_message", { walletId, session });
-}
-
-/**
- * Locks the terms at the `revision` the coordinator reviewed and signs
- * its consent. Takes a `masternodeOp` grant of 0.
- */
-export function mnSharedLock(walletId: string, session: string, revision: number, grant: string): Promise<SharedOutcome> {
-  return invoke<SharedOutcome>("mn_shared_lock", { walletId, session, revision, grant });
-}
-
-/**
- * Unlocks the terms; every approval is dropped.
- */
-export function mnSharedUnlock(walletId: string, session: string): Promise<SharedOutcome> {
-  return invoke<SharedOutcome>("mn_shared_unlock", { walletId, session });
-}
-
-/**
- * Approves the locked terms of `consent_hash`, the one the participant
- * reviewed. Takes a `masternodeOp` grant of 0.
- */
-export function mnSharedApprove(walletId: string, session: string, consentHash: string, grant: string): Promise<SharedOutcome> {
-  return invoke<SharedOutcome>("mn_shared_approve", { walletId, session, consentHash, grant });
-}
-
-/**
- * Spends one reserved coin of a session that may be out back to the
- * wallet, so it can't confirm (`SharedSession.abandonable`). Takes a
- * `masternodeOp` grant covering `SHARED_ABANDON_FEE`. Every network.
- */
-export function mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
-  return invoke<SharedSession>("mn_shared_abandon", { walletId, session, grant });
-}
-
-/**
- * The same for a session whose stored record no longer reads
- * (`UnreadableSession.abandonable`).
- */
-export function mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession> {
-  return invoke<UnreadableSession>("mn_shared_abandon_unreadable", { walletId, session, grant });
-}
-
-/**
- * Deletes a session nothing of which may be out and releases its coins
- * (`SharedSession.discardable`).
- */
-export function mnSharedDiscard(walletId: string, session: string): Promise<null> {
-  return invoke<null>("mn_shared_discard", { walletId, session });
-}
-
-/**
- * Reads a pasted message, or one standby transaction line. A refusal
- * names its reason, never the text.
- */
-export function mnSharedImport(walletId: string, text: string, target: string | null): Promise<SharedImport> {
-  return invoke<SharedImport>("mn_shared_import", { walletId, text, target });
-}
-
-/**
- * Shows the open dialog and imports the chosen file: a message whole,
- * or each transaction of a standby file once. `null` when the user
- * cancelled. The file's text never reaches the renderer.
- */
-export function mnSharedImportFile(walletId: string, target: string | null): Promise<Array<SharedImport> | null> {
-  return invoke<Array<SharedImport> | null>("mn_shared_import_file", { walletId, target });
+export function mnLockCollateral(walletId: string, proTxHash: string): Promise<null> {
+  return invoke<null>("mn_lock_collateral", { walletId, proTxHash });
 }
 
 /**
@@ -3499,22 +3447,14 @@ export type CommandArgs = {
   mn_operations: { walletId: string };
   mn_resend_operation: { walletId: string; operation: string; grant: string };
   mn_discard_operation: { walletId: string; operation: string };
-  mn_shared_capability: { walletId: string };
-  mn_shared_sessions: { walletId: string };
-  mn_shared_unreadable: { walletId: string };
-  mn_shared_session: { walletId: string; session: string };
-  mn_shared_start: { walletId: string; request: StartSharedRequest };
-  mn_shared_set_fee: { walletId: string; session: string; fee: number };
-  mn_shared_join: { walletId: string; session: string; request: JoinSharedRequest };
-  mn_shared_message: { walletId: string; session: string };
-  mn_shared_lock: { walletId: string; session: string; revision: number; grant: string };
-  mn_shared_unlock: { walletId: string; session: string };
-  mn_shared_approve: { walletId: string; session: string; consentHash: string; grant: string };
-  mn_shared_abandon: { walletId: string; session: string; grant: string };
-  mn_shared_abandon_unreadable: { walletId: string; session: string; grant: string };
-  mn_shared_discard: { walletId: string; session: string };
-  mn_shared_import: { walletId: string; text: string; target: string | null };
-  mn_shared_import_file: { walletId: string; target: string | null };
+  mn_registration_keys: { walletId: string; kind: MasternodeTypeName };
+  mn_preview_registration: { walletId: string; request: MnRegistrationRequest };
+  mn_register: { walletId: string; request: MnRegistrationRequest; grant: string };
+  mn_prepare_external_registration: { walletId: string; request: MnRegistrationRequest };
+  mn_refresh_external_registration: { walletId: string; operation: string };
+  mn_submit_external_registration: { walletId: string; operation: string; signature: string; grant: string };
+  mn_release_collateral: { walletId: string; proTxHash: string };
+  mn_lock_collateral: { walletId: string; proTxHash: string };
   rates_status: {  };
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
@@ -3858,22 +3798,14 @@ export type CommandResults = {
   mn_operations: Array<ProTxOperation>;
   mn_resend_operation: ProTxOperation;
   mn_discard_operation: null;
-  mn_shared_capability: SharedCapability;
-  mn_shared_sessions: Array<SharedSession>;
-  mn_shared_unreadable: Array<UnreadableSession>;
-  mn_shared_session: SharedSession;
-  mn_shared_start: SharedOutcome;
-  mn_shared_set_fee: SharedOutcome;
-  mn_shared_join: SharedOutcome;
-  mn_shared_message: SharedMessage;
-  mn_shared_lock: SharedOutcome;
-  mn_shared_unlock: SharedOutcome;
-  mn_shared_approve: SharedOutcome;
-  mn_shared_abandon: SharedSession;
-  mn_shared_abandon_unreadable: UnreadableSession;
-  mn_shared_discard: null;
-  mn_shared_import: SharedImport;
-  mn_shared_import_file: Array<SharedImport> | null;
+  mn_registration_keys: ProTxKeys;
+  mn_preview_registration: MnRegistrationPreview;
+  mn_register: ProTxOperation;
+  mn_prepare_external_registration: ProTxOperation;
+  mn_refresh_external_registration: ProTxOperation;
+  mn_submit_external_registration: ProTxOperation;
+  mn_release_collateral: null;
+  mn_lock_collateral: null;
   rates_status: RatesView;
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
@@ -4219,22 +4151,14 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_operations: "masternodes",
   mn_resend_operation: "masternodes",
   mn_discard_operation: "masternodes",
-  mn_shared_capability: "masternodes",
-  mn_shared_sessions: "masternodes",
-  mn_shared_unreadable: "masternodes",
-  mn_shared_session: "masternodes",
-  mn_shared_start: "masternodes",
-  mn_shared_set_fee: "masternodes",
-  mn_shared_join: "masternodes",
-  mn_shared_message: "masternodes",
-  mn_shared_lock: "masternodes",
-  mn_shared_unlock: "masternodes",
-  mn_shared_approve: "masternodes",
-  mn_shared_abandon: "masternodes",
-  mn_shared_abandon_unreadable: "masternodes",
-  mn_shared_discard: "masternodes",
-  mn_shared_import: "masternodes",
-  mn_shared_import_file: "masternodes",
+  mn_registration_keys: "masternodes",
+  mn_preview_registration: "masternodes",
+  mn_register: "masternodes",
+  mn_prepare_external_registration: "masternodes",
+  mn_refresh_external_registration: "masternodes",
+  mn_submit_external_registration: "masternodes",
+  mn_release_collateral: "masternodes",
+  mn_lock_collateral: "masternodes",
   rates_status: "rates",
   rates_currencies: "rates",
   set_rates_settings: "rates",
@@ -4386,6 +4310,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "compat.invalid_key_material",
   "compat.watch_only",
   "compat.destination_unwritable",
+  "compat.wallet_too_large",
+  "compat.extra_hd_account",
   "backup.vault_locked",
   "backup.passphrase_required",
   "backup.wrong_passphrase",

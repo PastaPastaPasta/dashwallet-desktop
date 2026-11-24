@@ -30,7 +30,7 @@ use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use zeroize::Zeroizing;
 
-use crate::events::unix_now;
+use crate::events::{EngineEvent, NoticeCode, unix_now};
 use crate::history::AddressChain;
 use crate::keys::mnemonic_error;
 use crate::receive::AddressFilter;
@@ -73,6 +73,14 @@ pub enum CompatFailure {
     WatchOnly,
     /// The export file exists or cannot be written.
     DestinationUnwritable(String),
+    /// A legacy `wallet.dat` read and refused on purpose: more keys on one
+    /// chain than the import restores. Its funds move by sending them from
+    /// Dash Core.
+    WalletTooLarge,
+    /// A legacy `wallet.dat` with keys on an HD account other than 0.
+    ExtraHdAccount {
+        account: u32,
+    },
 }
 
 impl std::fmt::Display for CompatFailure {
@@ -98,6 +106,10 @@ impl std::fmt::Display for CompatFailure {
             Self::InvalidKeyMaterial(d) => write!(f, "invalid key material: {d}"),
             Self::WatchOnly => f.write_str("watch-only wallet"),
             Self::DestinationUnwritable(d) => write!(f, "cannot write: {d}"),
+            Self::WalletTooLarge => f.write_str("wallet too large to restore"),
+            Self::ExtraHdAccount { account } => {
+                write!(f, "HD account {account} cannot be restored")
+            }
         }
     }
 }
@@ -276,6 +288,11 @@ pub fn inspect_wallet_file(path: &Path) -> Result<WalletFileKind, EngineError> {
                     encrypted: w.encrypted(),
                     has_mnemonic: w.has_mnemonic(),
                 },
+                // Legacy records in a SQLite file (`createfromdump
+                // -format=sqlite`) are refused as the import refuses them.
+                Err(e @ (WalletDatError::RangeTooLarge | WalletDatError::ExtraHdAccount(_))) => {
+                    return Err(walletdat_failure(e));
+                }
                 _ => WalletFileKind::Unknown,
             });
         }
@@ -606,16 +623,10 @@ impl NetworkSession {
                     let mut issued = None;
                     for (account, external, internal) in wallet.hd_accounts() {
                         if account != 0 {
-                            return Err(CompatFailure::UnsupportedFormat(format!(
-                                "HD account {account} cannot be restored; only account 0 is"
-                            ))
-                            .into());
+                            return Err(CompatFailure::ExtraHdAccount { account }.into());
                         }
                         if external > MAX_ISSUED || internal > MAX_ISSUED {
-                            return Err(CompatFailure::UnsupportedFormat(
-                                "the wallet's address range is too large to restore".into(),
-                            )
-                            .into());
+                            return Err(CompatFailure::WalletTooLarge.into());
                         }
                         issued = Some((external, internal));
                     }
@@ -841,6 +852,7 @@ impl NetworkSession {
                     other => EngineError::Vault(other),
                 })?;
             let vault = this.vault.clone();
+            let appdb = this.live()?.appdb;
             tokio::task::spawn_blocking(move || -> Result<ExportReport, EngineError> {
                 let token =
                     vault.redeem_grant(&grant_id, GrantKind::RevealSecret, Some(&wallet_id.0))?;
@@ -885,7 +897,7 @@ impl NetworkSession {
                         (descriptors_of(&master, &addresses, network), 1)
                     }
                 };
-                write_new_private(&dest, text.as_bytes())?;
+                write_export(&appdb, &dest, text.as_bytes())?;
                 Ok(ExportReport {
                     path: dest,
                     format,
@@ -1125,6 +1137,8 @@ fn walletdat_failure(e: WalletDatError) -> EngineError {
         WalletDatError::PassphraseRequired => CompatFailure::PassphraseRequired,
         WalletDatError::WrongPassphrase => CompatFailure::WrongPassphrase,
         WalletDatError::NoHdChain => CompatFailure::NoHdChain,
+        WalletDatError::RangeTooLarge => CompatFailure::WalletTooLarge,
+        WalletDatError::ExtraHdAccount(account) => CompatFailure::ExtraHdAccount { account },
         WalletDatError::SeedLength(n) => {
             return EngineError::NotImplemented(format!("import_wallet_dat.seed_length.{n}"));
         }
@@ -1156,16 +1170,183 @@ fn check_destination(dest: &Path) -> Result<(), EngineError> {
     }
 }
 
-/// Creates `dest` (failing if it exists) with mode 0600 and writes `bytes`.
-/// A failed write removes the partial file.
-pub(crate) fn write_new_private(dest: &Path, bytes: &[u8]) -> Result<(), EngineError> {
-    write_new_private_io(dest, bytes)
-        .map_err(|e| CompatFailure::DestinationUnwritable(e.to_string()).into())
+/// Writes the Dash Core export `bytes` to `dest` (failing if it exists)
+/// with mode 0600 through [`publish_staged`]. The staging file holds keys in
+/// the clear, so its path is recorded in `appdb` before it exists and the
+/// record cleared once it is gone: [`clean_export_staging`] deletes one an
+/// interrupted export left. One the export could not delete fails it, the
+/// error naming the file.
+pub(crate) fn write_export(
+    appdb: &dw_appdb::AppDb,
+    dest: &Path,
+    bytes: &[u8],
+) -> Result<(), EngineError> {
+    let unwritable =
+        |e: std::io::Error| EngineError::from(CompatFailure::DestinationUnwritable(e.to_string()));
+    let staging = staging_path(dest, EXPORT_STAGING_TAG).map_err(unwritable)?;
+    let key = record_export_staging(appdb, &staging, dest).map_err(|e| {
+        CompatFailure::DestinationUnwritable(format!("could not record the export: {e}"))
+    })?;
+    let published = publish_staged(&staging, dest, bytes);
+    if staging.symlink_metadata().is_err()
+        && let Err(e) = appdb.set_setting_durable(dw_appdb::GLOBAL_SCOPE, &key, None)
+    {
+        tracing::warn!(error = %e, "could not clear the record of an export's staging file");
+    }
+    published.map_err(unwritable)
 }
 
-/// [`write_new_private`] with the I/O error, whose kind is `AlreadyExists`
-/// when `dest` exists.
-pub(crate) fn write_new_private_io(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// The tag of a Dash Core export's staging file.
+pub(crate) const EXPORT_STAGING_TAG: &str = "dash-wallet-export";
+
+/// The app database's global settings recording a Dash Core export's
+/// staging file, one per file: this prefix, then its name.
+pub(crate) const EXPORT_STAGING_PREFIX: &str = "compat.export_staging.";
+
+/// Records, durably, `staging` as the staging file of an export to `dest`;
+/// the record's key.
+pub(crate) fn record_export_staging(
+    appdb: &dw_appdb::AppDb,
+    staging: &Path,
+    dest: &Path,
+) -> dw_appdb::Result<String> {
+    let name = staging.file_name().unwrap_or_default().to_string_lossy();
+    let key = format!("{EXPORT_STAGING_PREFIX}{name}");
+    let record = serde_json::json!({
+        "staging": path_record(staging),
+        "destination": path_record(dest),
+    })
+    .to_string();
+    appdb.set_setting_durable(dw_appdb::GLOBAL_SCOPE, &key, Some(&record))?;
+    Ok(key)
+}
+
+/// A path as text that gives it back byte for byte: its bytes (UTF-16
+/// units on Windows) in hex.
+fn path_record(path: &Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        hex::encode(path.as_os_str().as_bytes())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str()
+            .encode_wide()
+            .map(|u| format!("{u:04x}"))
+            .collect()
+    }
+}
+
+fn path_of_record(record: &str) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let bytes = hex::decode(record).ok()?;
+        Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        if !record.len().is_multiple_of(4) {
+            return None;
+        }
+        let units = (0..record.len())
+            .step_by(4)
+            .map(|i| u16::from_str_radix(record.get(i..i + 4)?, 16).ok())
+            .collect::<Option<Vec<u16>>>()?;
+        Some(PathBuf::from(std::ffi::OsString::from_wide(&units)))
+    }
+}
+
+/// What [`clean_export_staging`] did with a staging file it found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StagingCleanup {
+    Deleted(PathBuf),
+    NotDeleted(PathBuf),
+}
+
+/// Deletes the staging files of Dash Core exports that did not end
+/// (recorded by [`write_export`]). A record whose file is gone from a folder
+/// that is there, or names no staging file of ours, is cleared silently;
+/// one whose folder is not there (a volume not mounted) stays, silently,
+/// and one whose file could not be deleted stays, for the next start.
+pub(crate) fn clean_export_staging(appdb: &dw_appdb::AppDb) -> Vec<StagingCleanup> {
+    let records = match appdb.settings_with_prefix(dw_appdb::GLOBAL_SCOPE, EXPORT_STAGING_PREFIX) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the records of export staging files");
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for (key, record) in records {
+        let paths = serde_json::from_str::<serde_json::Value>(&record)
+            .ok()
+            .and_then(|v| {
+                let path = |k: &str| v.get(k)?.as_str().and_then(path_of_record);
+                Some((path("staging")?, path("destination")?))
+            });
+        let ours = paths.filter(|(staging, destination)| {
+            staging != destination
+                && staging
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| is_staging_name(n, EXPORT_STAGING_TAG))
+        });
+        let keep = match ours {
+            None => false,
+            Some((staging, _)) => match std::fs::remove_file(&staging) {
+                Ok(()) => {
+                    out.push(StagingCleanup::Deleted(staging));
+                    false
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    !staging.parent().is_some_and(Path::is_dir)
+                }
+                Err(e) => {
+                    tracing::warn!(path = %staging.display(), error = %e, "could not delete an export's staging file");
+                    out.push(StagingCleanup::NotDeleted(staging));
+                    true
+                }
+            },
+        };
+        if !keep && let Err(e) = appdb.set_setting_durable(dw_appdb::GLOBAL_SCOPE, &key, None) {
+            tracing::warn!(error = %e, "could not clear the record of an export's staging file");
+        }
+    }
+    out
+}
+
+impl NetworkSession {
+    /// [`clean_export_staging`] on this session's database, each file found
+    /// sent as `Notice{ExportStagingDeleted}` or
+    /// `Notice{ExportStagingNotDeleted}` with its path.
+    pub(crate) async fn clean_export_staging(&self) {
+        let Ok(live) = self.live() else { return };
+        let Ok(found) =
+            tokio::task::spawn_blocking(move || clean_export_staging(&live.appdb)).await
+        else {
+            return;
+        };
+        for cleanup in found {
+            let (code, path) = match cleanup {
+                StagingCleanup::Deleted(p) => (NoticeCode::ExportStagingDeleted, p),
+                StagingCleanup::NotDeleted(p) => (NoticeCode::ExportStagingNotDeleted, p),
+            };
+            self.sink.emit(EngineEvent::Notice {
+                network: Some(self.network.clone()),
+                code,
+                detail: path.display().to_string(),
+            });
+        }
+    }
+}
+
+/// Creates `dest` (failing `AlreadyExists` if it exists) with mode 0600, and
+/// writes and syncs `bytes`. A failed write removes the partial file.
+fn write_new_private_io(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -1179,6 +1360,159 @@ pub(crate) fn write_new_private_io(dest: &Path, bytes: &[u8]) -> std::io::Result
         let _ = std::fs::remove_file(dest);
         return Err(e);
     }
+    Ok(())
+}
+
+/// Writes `bytes` to a hidden staging file beside `dest` (mode 0600, named
+/// after `tag`), syncs it and only then gives it the name `dest`, failing
+/// `AlreadyExists` if that exists: a stop mid-write leaves nothing at
+/// `dest`.
+pub(crate) fn publish_new_private(dest: &Path, bytes: &[u8], tag: &str) -> std::io::Result<()> {
+    publish_staged(&staging_path(dest, tag)?, dest, bytes)
+}
+
+/// The staging file of `dest`: `.<tag>.tmp-<pid>-<16 hex digits>` in its
+/// folder, short whatever `dest`'s name.
+pub(crate) fn staging_path(dest: &Path, tag: &str) -> std::io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+    if dest.file_name().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "no file name",
+        ));
+    }
+    let nonce = NONCE.fetch_add(1, Ordering::Relaxed) ^ rand::random::<u64>();
+    let dir = dest
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    Ok(dir.join(format!(
+        ".{tag}{TEMP_MARK}{}-{nonce:016x}",
+        std::process::id()
+    )))
+}
+
+/// Whether `name` is a staging file name of [`staging_path`] for `tag`.
+pub(crate) fn is_staging_name(name: &str, tag: &str) -> bool {
+    name.strip_prefix('.')
+        .and_then(|n| n.strip_prefix(tag))
+        .and_then(|n| n.strip_prefix(TEMP_MARK))
+        .is_some_and(|rest| {
+            rest.split_once('-').is_some_and(|(pid, nonce)| {
+                !pid.is_empty()
+                    && pid.bytes().all(|b| b.is_ascii_digit())
+                    && nonce.len() == 16
+                    && nonce.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        })
+}
+
+/// [`publish_new_private`] through `staging`. Its result covers the folder's
+/// sync, so `Ok` means the name is durable. A staging file it could not
+/// delete after the publish fails it too, the error naming the file.
+fn publish_staged(staging: &Path, dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    publish_staged_with(staging, dest, bytes, |from, to| {
+        std::fs::hard_link(from, to)
+    })
+}
+
+fn publish_staged_with(
+    staging: &Path,
+    dest: &Path,
+    bytes: &[u8],
+    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let dir = staging.parent().unwrap_or(Path::new("."));
+    write_new_private_io(staging, bytes)?;
+    let moved = publish_fault(dir).and_then(|()| move_new_with(staging, dest, &link));
+    let left = match moved {
+        Ok(left) => left,
+        Err(e) => {
+            let _ = std::fs::remove_file(staging);
+            return Err(e);
+        }
+    };
+    sync_dir(dir)?;
+    match left {
+        None => Ok(()),
+        Some(e) => Err(std::io::Error::new(
+            e.kind(),
+            format!(
+                "{} was written, but its temporary copy {} could not be deleted ({e}): delete it",
+                dest.display(),
+                staging.display()
+            ),
+        )),
+    }
+}
+
+/// Syncs the folder `dir`, making the names in it durable (Unix; Windows
+/// has no such sync). Its fault point is `backup.publish` after.
+pub(crate) fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    publish_after_fault(dir)?;
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
+/// What a staging file of [`staging_path`] has in its name, after its tag.
+pub(crate) const TEMP_MARK: &str = ".tmp-";
+
+/// Gives `from` the name `to`, failing `AlreadyExists` if anything is
+/// there: a hard link, then `from` removed. Where the file system has no
+/// hard links (FAT, exFAT), a rename that never replaces one
+/// ([`dw_fs::rename_noreplace`]), or nothing where there is none. A `from`
+/// left after the link fails it.
+pub(crate) fn move_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    match move_new_with(from, to, &|from: &Path, to: &Path| {
+        std::fs::hard_link(from, to)
+    })? {
+        None => Ok(()),
+        Some(e) => Err(e),
+    }
+}
+
+/// [`move_new`] with `link`; `Ok(Some(e))`: `to` has it, but `from` could
+/// not be removed.
+fn move_new_with(
+    from: &Path,
+    to: &Path,
+    link: &impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<Option<std::io::Error>> {
+    match link(from, to) {
+        Ok(()) => Ok(std::fs::remove_file(from).err()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) => dw_fs::rename_noreplace(from, to).map(|()| None),
+    }
+}
+
+/// The fault point `backup.publish` between the sync and the publish of a
+/// backup or a Dash Core export, armed for its directory;
+/// `DW_FAULT=backup.before_publish` aborts there.
+#[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+fn publish_fault(dir: &Path) -> std::io::Result<()> {
+    dw_appdb::fault::hit(dir, "backup.publish", dw_appdb::fault::Stage::Before)
+        .map_err(std::io::Error::other)
+}
+
+#[cfg(not(all(debug_assertions, any(test, feature = "fault-inject"))))]
+#[inline(always)]
+fn publish_fault(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The fault point `backup.publish` after the publish, at the folder's
+/// sync: the name is there but not durable.
+#[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+fn publish_after_fault(dir: &Path) -> std::io::Result<()> {
+    dw_appdb::fault::hit(dir, "backup.publish", dw_appdb::fault::Stage::After)
+        .map_err(std::io::Error::other)
+}
+
+#[cfg(not(all(debug_assertions, any(test, feature = "fault-inject"))))]
+#[inline(always)]
+fn publish_after_fault(_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -1708,17 +2042,31 @@ mod tests {
         assert_eq!(key_is_mainnet("garbage"), None);
     }
 
+    fn app_db(dir: &Path) -> dw_appdb::AppDb {
+        dw_appdb::AppDb::open(&dir.join(dw_appdb::APP_DB_FILE)).unwrap()
+    }
+
+    fn staging_records(db: &dw_appdb::AppDb) -> usize {
+        db.settings_with_prefix(dw_appdb::GLOBAL_SCOPE, EXPORT_STAGING_PREFIX)
+            .unwrap()
+            .len()
+    }
+
     #[test]
     fn destinations_are_never_replaced() {
         let dir = dw_testutil::private_tempdir();
+        let db_dir = dw_testutil::private_tempdir();
+        let db = app_db(db_dir.path());
         let f = dir.path().join("out.txt");
-        write_new_private(&f, b"x").unwrap();
+        write_export(&db, &f, b"x").unwrap();
         assert!(matches!(
             check_destination(&f),
             Err(EngineError::Compat(CompatFailure::DestinationUnwritable(_)))
         ));
-        assert!(write_new_private(&f, b"y").is_err());
+        assert!(write_export(&db, &f, b"y").is_err());
         assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(dir.path()), ["out.txt"]);
+        assert_eq!(staging_records(&db), 0);
         assert!(check_destination(&dir.path().join("missing/out.txt")).is_err());
         #[cfg(unix)]
         {
@@ -1726,5 +2074,199 @@ mod tests {
             let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn a_publish_replaces_no_file_and_leaves_no_temporary_file() {
+        let dir = dw_testutil::private_tempdir();
+        let f = dir.path().join("out.dwbackup");
+        publish_new_private(&f, b"x", "t").unwrap();
+        assert_eq!(
+            publish_new_private(&f, b"y", "t").unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(dir.path()), ["out.dwbackup"]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn without_hard_links_a_publish_renames_and_still_replaces_no_file() {
+        let dir = dw_testutil::private_tempdir();
+        let f = dir.path().join("out.dwbackup");
+        let unsupported =
+            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        let staged = |f: &Path| staging_path(f, "t").unwrap();
+        publish_staged_with(&staged(&f), &f, b"x", unsupported).unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(dir.path()), ["out.dwbackup"]);
+        assert_eq!(
+            publish_staged_with(&staged(&f), &f, b"y", unsupported)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(dir.path()), ["out.dwbackup"]);
+    }
+
+    #[test]
+    fn an_export_stopped_before_it_names_the_file_leaves_nothing_at_the_name() {
+        let dir = dw_testutil::private_tempdir();
+        let db_dir = dw_testutil::private_tempdir();
+        let db = app_db(db_dir.path());
+        let f = dir.path().join("wallet.txt");
+        dw_appdb::fault::arm(dir.path(), "backup.publish", dw_appdb::fault::Stage::Before);
+        assert!(matches!(
+            write_export(&db, &f, b"x"),
+            Err(EngineError::Compat(CompatFailure::DestinationUnwritable(_)))
+        ));
+        assert!(names(dir.path()).is_empty());
+        assert_eq!(staging_records(&db), 0);
+    }
+
+    /// A destination whose name is as long as a name can be still
+    /// publishes: the staging file's name does not grow with it.
+    #[test]
+    fn a_publish_to_a_long_name_stages_under_a_short_one() {
+        let dir = dw_testutil::private_tempdir();
+        let f = dir.path().join(format!("{}.dwbackup", "w".repeat(231)));
+        assert_eq!(f.file_name().unwrap().len(), 240);
+        publish_new_private(&f, b"x", "dash-wallet-backup").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(dir.path()).len(), 1);
+    }
+
+    /// A staging file that cannot be deleted once the file is published
+    /// fails the publish, the error naming it.
+    #[test]
+    fn a_staging_file_left_after_the_publish_is_reported() {
+        let dir = dw_testutil::private_tempdir();
+        let f = dir.path().join("wallet.txt");
+        let staging = staging_path(&f, EXPORT_STAGING_TAG).unwrap();
+        let undeletable = |from: &Path, to: &Path| {
+            std::fs::hard_link(from, to)?;
+            std::fs::remove_file(from)?;
+            std::fs::create_dir(from)?;
+            std::fs::write(from.join("x"), b"")
+        };
+        let e = publish_staged_with(&staging, &f, b"x", undeletable).unwrap_err();
+        assert!(
+            e.to_string().contains(&staging.display().to_string()),
+            "{e}"
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+    }
+
+    /// A publish whose folder cannot be synced fails, the name there but
+    /// not durable.
+    #[test]
+    fn a_publish_whose_folder_sync_fails_fails() {
+        let dir = dw_testutil::private_tempdir();
+        let f = dir.path().join("out.dwbackup");
+        dw_appdb::fault::arm(dir.path(), "backup.publish", dw_appdb::fault::Stage::After);
+        assert!(publish_new_private(&f, b"x", "t").is_err());
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(dir.path()), ["out.dwbackup"]);
+    }
+
+    /// The start's sweep deletes a recorded export staging file and clears
+    /// its record; one it cannot delete is reported by path and kept on
+    /// record; a record of a file that is gone, or of no staging file of
+    /// ours, is cleared and nothing is deleted.
+    #[test]
+    fn the_start_deletes_an_export_staging_file_or_names_it() {
+        let dir = dw_testutil::private_tempdir();
+        let db_dir = dw_testutil::private_tempdir();
+        let db = app_db(db_dir.path());
+        let record = |staging: &Path, dest: &Path| {
+            record_export_staging(&db, staging, dest).unwrap();
+        };
+        let dest = dir.path().join("wallet.txt");
+        let left = staging_path(&dest, EXPORT_STAGING_TAG).unwrap();
+        std::fs::write(&left, b"keys").unwrap();
+        record(&left, &dest);
+        let stuck = staging_path(&dest, EXPORT_STAGING_TAG).unwrap();
+        std::fs::create_dir(&stuck).unwrap();
+        std::fs::write(stuck.join("x"), b"").unwrap();
+        record(&stuck, &dest);
+        record(&staging_path(&dest, EXPORT_STAGING_TAG).unwrap(), &dest);
+        let not_ours = dir.path().join("mine.txt");
+        std::fs::write(&not_ours, b"mine").unwrap();
+        record(&not_ours, &dest);
+
+        let mut found = clean_export_staging(&db);
+        found.sort_by_key(|c| matches!(c, StagingCleanup::NotDeleted(_)));
+        assert_eq!(
+            found,
+            [
+                StagingCleanup::Deleted(left.clone()),
+                StagingCleanup::NotDeleted(stuck.clone())
+            ]
+        );
+        assert!(!left.exists() && stuck.exists() && not_ours.exists());
+        assert_eq!(staging_records(&db), 1);
+        assert_eq!(
+            clean_export_staging(&db),
+            [StagingCleanup::NotDeleted(stuck.clone())]
+        );
+        std::fs::remove_dir_all(&stuck).unwrap();
+        assert_eq!(clean_export_staging(&db), []);
+        assert_eq!(staging_records(&db), 0);
+    }
+
+    #[test]
+    fn an_export_record_whose_folder_is_not_there_stays_until_it_is() {
+        let dir = dw_testutil::private_tempdir();
+        let db_dir = dw_testutil::private_tempdir();
+        let db = app_db(db_dir.path());
+        let volume = dir.path().join("stick");
+        let dest = volume.join("wallet.txt");
+        let staging = staging_path(&dest, EXPORT_STAGING_TAG).unwrap();
+        record_export_staging(&db, &staging, &dest).unwrap();
+
+        assert_eq!(clean_export_staging(&db), []);
+        assert_eq!(staging_records(&db), 1);
+
+        std::fs::create_dir(&volume).unwrap();
+        std::fs::write(&staging, b"keys").unwrap();
+        assert_eq!(
+            clean_export_staging(&db),
+            [StagingCleanup::Deleted(staging.clone())]
+        );
+        assert!(!staging.exists());
+        assert_eq!(staging_records(&db), 0);
+    }
+
+    #[test]
+    fn a_path_record_gives_the_path_back() {
+        let p = Path::new("/tmp/dir with space/ünï/.dash-wallet-export.tmp-1-0000000000000000");
+        assert_eq!(path_of_record(&path_record(p)).as_deref(), Some(p));
+        assert_eq!(path_of_record("zz"), None);
+    }
+
+    #[test]
+    fn a_publish_stopped_before_it_names_the_file_leaves_nothing_at_the_name() {
+        let dir = dw_testutil::private_tempdir();
+        let f = dir.path().join("out.dwbackup");
+        dw_appdb::fault::arm(dir.path(), "backup.publish", dw_appdb::fault::Stage::Before);
+        assert!(publish_new_private(&f, b"x", "t").is_err());
+        assert!(names(dir.path()).is_empty());
+        publish_new_private(&f, b"x", "t").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
     }
 }

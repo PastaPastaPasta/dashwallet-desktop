@@ -238,7 +238,7 @@ function windowSum(purposes: GrantPurposeSpec[]): bigint {
 
 /** `admit_window`: an open window, a limit above 0, and the total within it. */
 function windowCovers(w: World, purposes: GrantPurposeSpec[]): boolean {
-  return windowOpen(w) && w.spendLimitDuffs > 0 && BigInt(w.windowCharged ?? 0) + windowSum(purposes) <= BigInt(w.spendLimitDuffs);
+  return windowOpen(w) && !w.spendLimitUnreadable && w.spendLimitDuffs > 0 && BigInt(w.windowCharged ?? 0) + windowSum(purposes) <= BigInt(w.spendLimitDuffs);
 }
 
 function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
@@ -280,6 +280,9 @@ function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPu
     }
     case "quickUnlock":
       if (!w.lock.quickUnlockEnrolled) throw fail("vault.quick_unlock_unavailable", "quick unlock is not enrolled");
+      // An unreadable sealed limit pays nothing by quick unlock (dw-vault `sealed_spend_limit`).
+      if (w.spendLimitUnreadable && purposes.some((p) => quickValue(p) !== null && quickValue(p)! > 0n))
+        throw fail("vault.credential_required", "the spending limit can't be read: the passphrase is required");
       return;
     case "unencrypted":
       if (w.lock.state === "locked") throw fail("vault.locked", "vault locked");
@@ -849,15 +852,20 @@ export const HANDLERS: Handlers = {
     world.paymentAuth = on;
     return null;
   },
-  quick_unlock_policy: (_, { world }) => ({
-    enrolled: world.lock.quickUnlockEnrolled,
-    spendLimitDuffs: world.spendLimitDuffs,
-    passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
-    lastPassphraseAt: null,
-    signingWindowOpen: windowOpen(world),
-    signingWindowRemainingDuffs: windowOpen(world) ? Math.max(0, world.spendLimitDuffs - (world.windowCharged ?? 0)) : null,
-    signingWindowSecs: SIGNING_WINDOW_MS / 1000,
-  }),
+  quick_unlock_policy: (_, { world }) => {
+    // Known only with the data key, as the vault reads it (a mixing-only unlock holds it too).
+    const unreadable = world.spendLimitUnreadable === true && (world.lock.state === "unlocked" || world.lock.state === "unlockedMixingOnly");
+    return {
+      enrolled: world.lock.quickUnlockEnrolled,
+      spendLimitDuffs: unreadable ? 0 : world.spendLimitDuffs,
+      passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
+      lastPassphraseAt: null,
+      signingWindowOpen: windowOpen(world),
+      signingWindowRemainingDuffs: windowOpen(world) && !world.spendLimitUnreadable ? Math.max(0, world.spendLimitDuffs - (world.windowCharged ?? 0)) : null,
+      signingWindowSecs: SIGNING_WINDOW_MS / 1000,
+      spendLimitUnreadable: unreadable,
+    };
+  },
   set_quick_unlock_spend_limit: ({ grantId, spendLimitDuffs }, { world }) => {
     if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
     if (!world.lock.encrypted) throw fail("vault.not_encrypted", "vault not encrypted");
@@ -865,6 +873,7 @@ export const HANDLERS: Handlers = {
     if (!credentialGrant(world, grantId)) throw fail("vault.grant_invalid", "grant invalid");
     useGrant(world, grantId);
     world.spendLimitDuffs = spendLimitDuffs;
+    world.spendLimitUnreadable = false;
     return {
       enrolled: world.lock.quickUnlockEnrolled,
       spendLimitDuffs,
@@ -873,6 +882,7 @@ export const HANDLERS: Handlers = {
       signingWindowOpen: windowOpen(world),
       signingWindowRemainingDuffs: windowOpen(world) ? Math.max(0, spendLimitDuffs - (world.windowCharged ?? 0)) : null,
       signingWindowSecs: SIGNING_WINDOW_MS / 1000,
+      spendLimitUnreadable: false,
     };
   },
   destroy_vault: ({ credential }, ctx) => {

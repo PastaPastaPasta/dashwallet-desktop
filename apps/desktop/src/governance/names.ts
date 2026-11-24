@@ -13,7 +13,7 @@ import type { NameVoter } from "../api/generated/NameVoter";
 import type { NameVoterState } from "../api/generated/NameVoterState";
 import { withTable } from "../dashpay/status";
 import { messageTable, t } from "../i18n";
-import { dateTime, governanceErrorText, nodeName, shortDate, shortHash, spanLong, type ChipView } from "./model";
+import { dateTime, governanceErrorText, nodeName, shortDate, shortHash, spanLong, type ChipView, type NodeNames } from "./model";
 
 const P = "masternodes.names";
 
@@ -290,13 +290,14 @@ export interface NameVoterRowView {
 /** One row per voter (§4.25.4's rows, D11): the key's custody and votes left; a voter that used its
  * votes on this name is off (MG-07 D6: the engine refuses it at the limit), and so is one whose
  * present choice is `choice` already (Platform answers `already_voted`, MG-07 D18). A PoSe-banned
- * masternode still votes on names (Drive looks it up in its full list, D12). */
-export function nameVoterRows(voters: NameVoter[], label: string, choice: NameChoice | null, allowed: number): NameVoterRowView[] {
+ * masternode still votes on names (Drive looks it up in its full list, D12). A voter the wallet has a
+ * label for is named by it (MG-09 F3). */
+export function nameVoterRows(voters: NameVoter[], label: string, choice: NameChoice | null, allowed: number, names?: NodeNames): NameVoterRowView[] {
   return voters.map((v) => {
     const s = voterState(v, label);
     const custody = v.key.kind === "keychain" ? t(`${P}.sheet.keychain`, { index: v.key.index + 1 }) : t(`${P}.sheet.added`);
     const votesLeft = Math.max(0, allowed - s.votesUsed);
-    const base = { proTxHash: v.proTxHash, name: nodeName(v), weight: v.weight, present: s.choice ? choiceText(s.choice) : t(`${P}.sheet.none`), votesLeft };
+    const base = { proTxHash: v.proTxHash, name: nodeName(v, names), weight: v.weight, present: s.choice ? choiceText(s.choice) : t(`${P}.sheet.none`), votesLeft };
     if (s.votesUsed >= allowed) return { ...base, sub: t(`${P}.sheet.usedAll`, { count: allowed }), eligible: false };
     if (sameChoice(s.choice, choice)) return { ...base, sub: t(`${P}.sheet.already`, { choice: choiceText(s.choice!) }), eligible: false };
     return { ...base, sub: t(v.valid ? `${P}.sheet.eligible` : `${P}.sheet.eligibleBanned`, { custody, left: votesLeftText(s.votesUsed, allowed) }), eligible: true };
@@ -373,13 +374,13 @@ const chip = (state: CastState): ChipView => ({ text: t(`${P}.result.chip.${stat
  * line per masternode. An `unconfirmed` vote is never counted (MG-07 D7) until a re-read
  * (`reread`, the contests read after the vote) shows its masternode's present choice is the one
  * cast (D14). */
-export function nameVoteResult(casts: NameVoteCast[], voters: NameVoter[], label: string, choice: NameChoice, reread?: ContestedNames): NameResultView {
+export function nameVoteResult(casts: NameVoteCast[], voters: NameVoter[], label: string, choice: NameChoice, reread?: ContestedNames, names?: NodeNames): NameResultView {
   const byHash = new Map(voters.map((v) => [v.proTxHash, v]));
   const now = new Map((reread?.voters ?? []).map((v) => [v.proTxHash, voterState(v, label).choice]));
   const weightOf = (h: string) => byHash.get(h)?.weight ?? 1;
   const rows = casts.map((c) => {
     const v = byHash.get(c.proTxHash);
-    const name = v ? nodeName(v) : t(`${P}.result.masternode`, { hash: shortHash(c.proTxHash) });
+    const name = v ? nodeName(v, names) : t(`${P}.result.masternode`, { hash: shortHash(c.proTxHash) });
     const weight = weightOf(c.proTxHash);
     let state: CastState, sub: string;
     if (c.rejected === null) [state, sub] = ["counted", t(`${P}.result.counted`, { weight })];

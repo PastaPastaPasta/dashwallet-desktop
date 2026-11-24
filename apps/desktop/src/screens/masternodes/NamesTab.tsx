@@ -12,7 +12,7 @@ import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { DashButton, Icon } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
 import { CopyIconButton } from "../../components/copy";
-import { nodeName } from "../../governance/model";
+import { nodeName, type NodeNames } from "../../governance/model";
 import {
   contestChip,
   contestRow,
@@ -29,6 +29,7 @@ import {
   type NameSort,
 } from "../../governance/names";
 import { useContestedNames } from "../../governance/queries";
+import { useNodeNames } from "../../masternodes/queries";
 import { formatLocale, useT } from "../../i18n";
 import { numberFormat } from "../../i18n/core";
 import { Notice, StatusChip, useNowSecs } from "./common";
@@ -40,6 +41,7 @@ const TALLY_BAR: Record<string, string> = { lock: "mg-tally-lock", abstain: "mg-
 export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: NetworkInfo }) {
   const t = useT();
   const names = useContestedNames(wallet.walletId);
+  const nodeNames = useNodeNames(wallet.walletId);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<NameSort>("ending");
   const [selected, setSelected] = useState<string | null>(null);
@@ -146,6 +148,7 @@ export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: 
                   <NamePane
                     contest={current}
                     names={data}
+                    nodeNames={nodeNames}
                     watchOnly={wallet.watchOnly}
                     now={now}
                     onVote={() => {
@@ -205,7 +208,21 @@ function ContestRowButton({ contest, names, now, current, onSelect }: { contest:
 
 /** The selected contest (D5–D9): when voting ends, the tally with who leads, the wallet's voters
  * with their present choice and votes left, and Vote. */
-function NamePane({ contest, names, watchOnly, now, onVote }: { contest: ContestedName; names: ContestedNames; watchOnly: boolean; now: number; onVote: () => void }) {
+function NamePane({
+  contest,
+  names,
+  nodeNames,
+  watchOnly,
+  now,
+  onVote,
+}: {
+  contest: ContestedName;
+  names: ContestedNames;
+  nodeNames: NodeNames;
+  watchOnly: boolean;
+  now: number;
+  onVote: () => void;
+}) {
   const t = useT();
   const tally = tallyView(contest);
   const chip = contestChip(contest, now);
@@ -272,7 +289,7 @@ function NamePane({ contest, names, watchOnly, now, onVote }: { contest: Contest
               {names.voters.map((v) => (
                 <li key={v.proTxHash} className="mg-roles-pair">
                   <span>
-                    {nodeName(v)}
+                    {nodeName(v, nodeNames)}
                     {v.weight > 1 && <span className="mg-muted"> {t("masternodes.names.pane.weight", { weight: v.weight })}</span>}
                   </span>
                   <span className="mg-muted">{voterLine(v, contest.label, names.votesAllowed)}</span>
