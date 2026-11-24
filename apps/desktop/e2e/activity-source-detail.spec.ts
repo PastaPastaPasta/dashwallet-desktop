@@ -80,39 +80,30 @@ test.describe("Activity: details of a Shielded or Platform-address row", () => {
     test(`a group that names no winner says so on every row, its debit on the newest only (${theme})`, async ({ page }) => {
       const errors = await activity(page, "platform-settled-unknown", theme);
       const settled = "Settled with another payment or move";
-      const rows = page.locator('button[data-txid$=":unknown"]');
-      await expect(rows).toHaveCount(4);
-      for (const id of ["moveToCore:pm-exit", "toIdentity:pt-topup", "moveToCore:pm-move", "send:ps-send"]) {
-        const row = page.locator(`button[data-txid="platform:${id}:unknown"]`);
+      const text = "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.";
+      await expect(page.locator('button[data-txid$=":unknown"]')).toHaveCount(4);
+      for (const id of ["pm-exit2", "pm-exit1", "pm-move", "pm-old"]) {
+        const row = page.locator(`button[data-txid="platform:moveToCore:${id}:unknown"]`);
         await expect(row).toContainText(settled);
         await expect(row).not.toContainText("Replaced by a retry");
         await expect(row).not.toContainText("Not accepted");
       }
-      await expect(page.locator('button[data-txid="platform:moveToCore:pm-move:unknown"] .tx-row-amount')).toHaveCount(1);
-      await expect(page.locator('button[data-txid="platform:send:ps-send:unknown"] .tx-row-amount')).toHaveCount(0);
-      await expect(page.locator('button[data-txid="platform:toIdentity:pt-topup:unknown"] .tx-row-amount')).toHaveCount(0);
+      for (const [id, shown] of [["pm-exit2", 1], ["pm-exit1", 0], ["pm-move", 1], ["pm-old", 0]] as const)
+        await expect(page.locator(`button[data-txid="platform:moveToCore:${id}:unknown"] .tx-row-amount`)).toHaveCount(shown);
+      // The top-up that did not land is not part of the doubt.
+      await expect(page.locator('button[data-txid="platform:toIdentity:pt-topup"]')).toContainText("Credit top-up from Platform");
       await page.screenshot({ path: test.info().outputPath(`${theme}-activity-settled-unknown.png`), animations: "disabled", caret: "hide" });
 
-      await page.locator('button[data-txid="platform:send:ps-send:unknown"]').click();
+      await page.locator('button[data-txid="platform:moveToCore:pm-old:unknown"]').click();
       await expect(page.getByTestId("source-detail-title")).toHaveText(settled);
-      await expect(page.getByTestId("source-detail-status")).toHaveText(
-        "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid.",
-      );
+      await expect(page.getByTestId("source-detail-status")).toHaveText(text);
       await expect(page.getByTestId("source-detail-status")).not.toHaveClass(/is-problem/);
       await expect(page.getByTestId("source-detail-amount")).toHaveCount(0);
-      await page.screenshot({ path: test.info().outputPath(`${theme}-activity-settled-unknown-send.png`), animations: "disabled", caret: "hide" });
-      await page.keyboard.press("Escape");
-
-      await page.locator('button[data-txid="platform:toIdentity:pt-topup:unknown"]').click();
-      await expect(page.getByTestId("source-detail-status")).toHaveText(
-        "This top-up and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your identity's balance before topping up again.",
-      );
+      await page.screenshot({ path: test.info().outputPath(`${theme}-activity-settled-unknown-older.png`), animations: "disabled", caret: "hide" });
       await page.keyboard.press("Escape");
 
       await page.locator('button[data-txid="platform:moveToCore:pm-move:unknown"]').click();
-      await expect(page.getByTestId("source-detail-status")).toHaveText(
-        "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.",
-      );
+      await expect(page.getByTestId("source-detail-status")).toHaveText(text);
       await expect(page.getByTestId("source-detail-amount")).toContainText("0.3");
       expect(await seriousAxeViolations(page)).toEqual([]);
       expect(errors).toEqual([]);

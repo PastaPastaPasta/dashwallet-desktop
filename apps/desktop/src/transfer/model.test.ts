@@ -143,6 +143,8 @@ describe("routes", () => {
     });
     expect(one.text).not.toMatch(/\d/);
     expect(platformToCoreOff(on(one))).toBeNull();
+    // A record Platform has not answered holds Move: its waiting line, not the off line.
+    expect(platformToCoreOff({ ...POOLS, platform: { ...POOLS.platform!, block: "pending", mainnet: empty } })).toBeNull();
     expect([platformChip(on(one), "from"), platformChip(on(one), "to")]).toEqual([false, true]);
     // Several records in one hold: one line with their count, still no amount.
     const several = mainnetOff("40000000000", 2, fmt);

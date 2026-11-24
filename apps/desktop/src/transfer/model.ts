@@ -46,10 +46,11 @@ export const unsupportedText = (from: Pool, to: Pool): string =>
   from === "shielded" && to === "platform" ? TRANSFER_COPY.offOnNetwork : from === "core" && to === "platform" ? MAINNET_OFF_COPY.add : TRANSFER_COPY.unsupported;
 
 /** Platform → Dash wallet where this version keeps it off (mainnet): the line in place of its form;
- * `null` where the route is on, or a held move's exit is what it offers. */
+ * `null` where the route is on, a held move's exit is what it offers, or a record Platform has not
+ * answered holds the move (its waiting line says so). */
 export function platformToCoreOff(pools: Pools): string | null {
   const off = pools.platform?.mainnet;
-  return off && !off.held ? off.text : null;
+  return off && !off.held && pools.platform?.block !== "pending" ? off.text : null;
 }
 
 /** The picker's Platform row says it can't be reached from this end on this network. */

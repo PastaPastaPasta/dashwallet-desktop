@@ -971,18 +971,20 @@ const SCENARIOS = {
     ];
     return w;
   },
-  /** Groups that settled with no evidence of which member went through: a move and a payment of
-   * different terms, and a top-up with a later exit. Only each group's newest row carries its debit. */
+  /** Groups that settled with no evidence of which member went through, as the engine marks them: two moves
+   * of other terms at the same inputs, and two exits of a top-up that did not land, of other amounts. Only
+   * each group's newest row carries its debit. */
   "platform-settled-unknown": (t) => {
     const w = base(t);
     const p = w.pending.platform!;
     const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
-    const row = { address: null, to: null, expectedDuffs: null, feeCredits: null, mayLand: false, estimated: false, winnerKnown: false } as const;
+    const row = { address: null, to: null, expectedDuffs: null, feeCredits: null, mayLand: false, estimated: false } as const;
     p.activity = [
-      { ...row, id: "pm-exit", kind: "moveToCore", state: "done", credits: "20000000000", at: at - 1800 },
+      { ...row, id: "pm-exit2", kind: "moveToCore", state: "done", credits: "20000000000", at: at - 1800, winnerKnown: false },
+      { ...row, id: "pm-exit1", kind: "moveToCore", state: "failed", credits: "19000000000", at: at - 2100, winnerKnown: false },
       { ...row, id: "pt-topup", kind: "toIdentity", state: "failed", credits: "20000000000", at: at - 2400 },
-      { ...row, id: "pm-move", kind: "moveToCore", state: "done", credits: "30000000000", at: at - 3600 },
-      { ...row, id: "ps-send", kind: "send", state: "replaced", credits: "25000000000", to: "dash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h", at: at - 7200 },
+      { ...row, id: "pm-move", kind: "moveToCore", state: "done", credits: "30000000000", at: at - 3600, winnerKnown: false },
+      { ...row, id: "pm-old", kind: "moveToCore", state: "replaced", credits: "25000000000", at: at - 7200, winnerKnown: false },
       ...p.activity,
     ];
     return w;
