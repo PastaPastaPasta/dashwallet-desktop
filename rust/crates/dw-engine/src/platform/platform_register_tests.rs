@@ -561,3 +561,142 @@ fn a_create_that_released_nothing_plans_again() {
     let e = w.pass(&mut row, true).unwrap_err();
     assert_eq!(e.code(), "platform.needs_grant", "{e:?}");
 }
+
+impl World {
+    /// The quote's move as the host confirms it: the exit of its `exit_of`
+    /// at its planned withdrawal, a move of no record `All`.
+    fn way_out(&self, q: &MoveToCoreQuote, grant: &str) -> Result<MoveToCoreOutcome, CreditsError> {
+        let (to, exit_of, grant) = (q.to.clone(), q.exit_of.clone(), grant.to_owned());
+        let amount = match exit_of {
+            Some(_) => WithdrawAmount::Credits {
+                credits: q.credits - q.fee_credits,
+            },
+            None => WithdrawAmount::All,
+        };
+        self.call(move |net, s, w, id| async move {
+            let ask = (amount, to.as_str(), exit_of.as_deref());
+            move_to_core(&*net, &s, &w, id, ask, &grant).await
+        })
+    }
+}
+
+/// A create failed by height and able to land, at nonce 4 of "a".
+fn held_register(id: &str, at: u64) -> MoveRecord {
+    let mut m = record(id, at, &[("a", 4)]);
+    m.kind = MoveKind::Register;
+    m.state = PlatformActivityState::Failed;
+    m.seen_at = Some(5);
+    m
+}
+
+/// N1: a create that lost to an identical one at its nonces failed and can
+/// no longer land; a move is never `replaced`, as a send's retry is.
+#[test]
+fn a_create_beside_its_identical_one_fails_unable_to_land() {
+    let mut moves = vec![held_register("r1", 1), held_register("r2", 2)];
+    moves[1].answered = true;
+    settle_with(&mut moves, &seen(20, &[("a", Some(4))]), &Exits::new());
+    assert_eq!(
+        moves.iter().map(|m| m.state).collect::<Vec<_>>(),
+        [PlatformActivityState::Failed, PlatformActivityState::Done]
+    );
+    assert!(!moves[0].can_land);
+    assert!(moves.iter().all(|m| !m.holds()));
+}
+
+/// N1: an amount out of range for a create reads as a send's, never a
+/// withdrawal's.
+#[test]
+fn a_create_out_of_range_is_a_send_out_of_range() {
+    let l = limits();
+    let e = Refused::OutOfRange.error(MoveKind::Register, &l);
+    assert!(
+        matches!(e, CreditsError::SendOutOfRange { min } if min == l.min),
+        "{e:?}"
+    );
+    let e = Refused::OutOfRange.error(MoveKind::ToCore, &l);
+    assert!(
+        matches!(e, CreditsError::WithdrawalOutOfRange { .. }),
+        "{e:?}"
+    );
+}
+
+/// N1, F10, F22: a held create and the "Move to Dash wallet" at its key
+/// settle by the exit's document, as a held top-up and its exit do: unread,
+/// both hold; present, the exit is done and the create failed; absent, the
+/// create is done and the exit failed. None is replaced.
+#[test]
+fn a_held_create_and_its_exit_settle_by_the_exit_document() {
+    let pair = || vec![held_register("r", 1), record("x", 2, &[("a", 4)])];
+    let landed = seen(20, &[("a", Some(4))]);
+    let mut moves = pair();
+    settle_with(&mut moves, &landed, &Exits::new());
+    assert!(moves.iter().all(MoveRecord::holds));
+
+    let mut moves = pair();
+    settle_with(&mut moves, &landed, &[("x".to_owned(), true)].into());
+    assert_eq!(
+        [
+            (moves[0].state, moves[0].can_land),
+            (moves[1].state, moves[1].can_land)
+        ],
+        [
+            (PlatformActivityState::Failed, false),
+            (PlatformActivityState::Done, true)
+        ]
+    );
+
+    let mut moves = pair();
+    settle_with(&mut moves, &landed, &[("x".to_owned(), false)].into());
+    assert_eq!(
+        [
+            (moves[0].state, moves[0].can_land),
+            (moves[1].state, moves[1].can_land)
+        ],
+        [
+            (PlatformActivityState::Done, true),
+            (PlatformActivityState::Failed, false)
+        ]
+    );
+}
+
+/// N1, F22: the Core quote beside a held create names it (`exit_of`), and
+/// the exit it confirms signs the create's inputs at its nonces; the row
+/// then goes back to Confirm. An `exit_of` naming no held create is
+/// `credits.quote_changed`, nothing signed and the grant kept.
+#[test]
+fn the_exit_of_a_held_create_names_it() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let mut row = w.row(1);
+    w.net.then(Act::Lost);
+    assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Unknown);
+    w.net.tick();
+    assert_eq!(w.pass(&mut row, false).unwrap(), RegisterOutcome::Held);
+    let create = w.registers()[0].clone();
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.exit_of, Some(create.id.clone()));
+
+    let mut other = q.clone();
+    other.exit_of = Some("move-0-9".into());
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.way_out(&other, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
+
+    let exit = w.way_out(&q, &grant).unwrap();
+    assert_eq!(exit.state, PlatformActivityState::Done);
+    let sent = w.net.sent.lock().unwrap().clone();
+    assert_eq!(
+        sent[1].keys().collect::<Vec<_>>(),
+        sent[0].keys().collect::<Vec<_>>()
+    );
+    for (a, (nonce, _)) in &sent[1] {
+        assert_eq!(*nonce, sent[0][a].0);
+    }
+    assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Exited);
+    assert!(!w.created(row.plan.as_ref().unwrap()));
+}
