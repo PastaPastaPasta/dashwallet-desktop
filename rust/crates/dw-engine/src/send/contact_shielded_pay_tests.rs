@@ -666,7 +666,10 @@ fn a_flow_lease_pays_one_payout() {
     let f = fixture(false);
     let lib = f.hooked();
     let s = Arc::clone(&f.session);
-    let grants = vec![f.credits_grant()];
+    let grants = vec![f.grant(GrantPurpose::PlatformOp {
+        max_duffs: 0,
+        max_credits: 10 * SHIELDED,
+    })];
     let lease = (f.engine)
         .block_on(async move {
             let flow = FlowKind::ContactPayFromBalance;
