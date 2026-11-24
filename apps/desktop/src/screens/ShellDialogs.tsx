@@ -62,9 +62,13 @@ export function AboutSheet({ launch }: { launch: LaunchInfo }) {
     <Sheet title={tr("app.about.title")} width="small" testId="about" onClose={close}>
       <dl className="about-list">
         <dt>{tr("app.about.version")}</dt>
-        <dd data-testid="about-version">{launch.buildVersion}</dd>
+        <dd data-testid="about-version">
+          <bdi dir="ltr">{launch.buildVersion}</bdi>
+        </dd>
         <dt>{tr("app.about.engine")}</dt>
-        <dd>{launch.engineVersion}</dd>
+        <dd>
+          <bdi dir="ltr">{launch.engineVersion}</bdi>
+        </dd>
         <dt>{tr("app.about.network")}</dt>
         <dd>{launch.network.dirName}</dd>
       </dl>

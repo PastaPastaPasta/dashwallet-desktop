@@ -54,7 +54,8 @@ describe("Information (QT-143, QT-144, QT-040)", () => {
     expect(row(NODE, "EvoNodes")?.value).toBe(NONE);
     expect(row(NODE, "Local Addresses")?.value).toBe(NONE);
     expect(row(NODE, "ChainLocks")?.value).toBe(`1199998, ${"11".repeat(32)}`);
-    expect(row(NODE, "Client version")?.value).toBe("0.1.0-dev.57.g1a2b3c4");
+    expect(row(NODE, "Client version")).toEqual({ title: "Client version", value: "0.1.0-dev.57.g1a2b3c4", ltr: true });
+    expect(row(NODE, "Engine version")).toEqual({ title: "Engine version", value: "0.4.2", ltr: true });
   });
 
   it("QT144_fullNodeValuesShowWhenTheEngineHasThem", () => {

@@ -422,6 +422,9 @@ pub(crate) enum Act {
     /// The protocol version rises after the pre-check, then a node answers
     /// the signed call with a structure error.
     VersionRisesThenInvalid,
+    /// Signed and broadcast; Platform answers that an input's balance is
+    /// short (a state error: nothing proves it never executes).
+    NotEnoughFunds,
     /// The signer refuses every input: the transition, short of its
     /// witnesses, is refused as Platform's checks refuse a malformed one
     /// (it fails for good: not every input was signed), with nothing signed.
@@ -746,6 +749,15 @@ impl FakeMoves {
                         .into(),
                 ))
             }
+            Act::NotEnoughFunds => {
+                use dpp::consensus::state::address_funds::AddressNotEnoughFundsError;
+                use dpp::consensus::state::state_error::StateError;
+                let (address, (_, credits)) = inputs.first_key_value().unwrap();
+                let short = AddressNotEnoughFundsError::new(*address, 0, *credits);
+                Err(PlatformWalletError::Sdk(
+                    ConsensusError::from(StateError::AddressNotEnoughFundsError(short)).into(),
+                ))
+            }
             Act::StopsBeforeSigning | Act::StopsAfterSigning => panic!("the process stops"),
             Act::Unsigned => unreachable!("returned before signing"),
             Act::StopsAfterBroadcast => {
@@ -923,7 +935,7 @@ impl World {
     ) -> Result<MoveToCoreOutcome, CreditsError> {
         let (to, grant) = (to.to_owned(), grant.to_owned());
         self.call(move |net, s, w, id| async move {
-            move_to_core(&*net, &s, &w, id, (amount, &to), &grant).await
+            move_to_core(&*net, &s, &w, id, (amount, &to, None), &grant).await
         })
     }
 
@@ -2621,6 +2633,16 @@ pub(crate) fn no_fee_steps() -> &'static PlatformVersion {
     Box::leak(Box::new(v))
 }
 
+/// The refusal [`no_fee_steps`] forces: Platform's own structure check
+/// (`FeeStrategyTooManyStepsError`), not an earlier step of the move.
+pub(crate) fn assert_no_fee_steps(e: &CreditsError) {
+    let shown = format!("{e:?}");
+    assert!(
+        shown.contains("Fee strategy has 1 steps, maximum allowed is 0"),
+        "{shown}"
+    );
+}
+
 /// The latest version, one protocol version higher.
 fn raised() -> &'static PlatformVersion {
     let mut v = PlatformVersion::latest().clone();
@@ -2639,12 +2661,9 @@ fn a_plan_the_structure_check_refuses_signs_nothing() {
     let one = WithdrawAmount::Credits { credits: DASH };
     *w.net.version.lock().unwrap() = no_fee_steps();
     let (move_grant, send_grant) = (w.f.grant(3 * DASH), w.f.grant(20 * DASH));
-    let refused = |r: Result<(), CreditsError>| {
-        let code = r.unwrap_err().code();
-        assert_ne!(code, "credits.move_pending");
-    };
-    refused(w.move_to(one, &w.to.clone(), &move_grant).map(drop));
-    refused(w.send(one, &to, &send_grant).map(drop));
+    assert_no_fee_steps(&w.move_to(one, &w.to.clone(), &move_grant).unwrap_err());
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_no_fee_steps(&w.confirm(&quote.operation, &send_grant).unwrap_err());
     assert!(w.net.sent.lock().unwrap().is_empty(), "nothing signed");
     assert!(w.moves().is_empty(), "nothing recorded");
     assert!(
@@ -2705,8 +2724,7 @@ fn a_retry_the_structure_check_refuses_signs_nothing() {
     let quote = w.send_quote(one, &to).unwrap();
     assert_eq!(quote.retry_of.as_deref(), Some(held.id.as_str()));
     let grant = w.f.grant(20 * DASH);
-    let refused = w.confirm(&quote.operation, &grant).unwrap_err();
-    assert_ne!(refused.code(), "credits.move_pending");
+    assert_no_fee_steps(&w.confirm(&quote.operation, &grant).unwrap_err());
     assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
     assert!(w.f.unused(&grant), "nothing redeemed");
     assert_eq!(w.moves().len(), 1, "nothing recorded");

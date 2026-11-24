@@ -20,7 +20,7 @@ mod protx_records;
 mod reads;
 mod records;
 mod shared;
-pub use shared::{shared_abandon_fee, standby_file_transactions};
+pub use shared::standby_file_transactions;
 mod shared_records;
 mod tracking;
 pub(crate) mod withdrawal;
@@ -46,11 +46,13 @@ pub use records::{
     MasternodeType, RegistrarCapability, RegistrarSigner, RegistrationFacts, UntrackOutcome,
 };
 pub use shared_records::{
-    Activation, DeadReason, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyBase,
-    KeyChangeRequest, KeyChangeView, MaintenanceSent, RewardAttempt, RewardAttemptState,
-    RewardChoice, RewardDestination, RewardUpdate, ShareFact, ShareReturn, ShareRow, ShareSlot,
-    ShareTerms, ShareTermsView, SharedCapability, SharedEligibility, SharedImport, SharedKind,
-    SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedShares, SharedStage,
+    AbandonSpend, AbandonSpendState, Activation, Blocked, BlockedReason, DeadReason,
+    DissolvePreview, DissolveRequest, HandoffError, HandoffErrorOutcome, HandoffTx,
+    JoinSharedRequest, KeyBase, KeyChangeRequest, KeyChangeView, MaintenanceSent, RecoveryAction,
+    RewardAttempt, RewardAttemptState, RewardChoice, RewardDestination, RewardUpdate, SettledBy,
+    Settlement, ShareFact, ShareReturn, ShareRow, ShareSlot, ShareTerms, ShareTermsView,
+    SharedCapability, SharedEligibility, SharedImport, SharedKind, SharedMessage, SharedNext,
+    SharedOutcome, SharedRecovery, SharedRole, SharedSession, SharedShares, SharedStage,
     SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource, StandbyVariant,
     StartSharedRequest, UnreadableSession, UpdateSharePreview, UpdateShareRequest,
 };

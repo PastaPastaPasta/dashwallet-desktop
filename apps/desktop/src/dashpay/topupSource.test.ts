@@ -52,9 +52,17 @@ describe("Pay with (C3-8)", () => {
       ["platform", SOURCE_COPY.platform, "0.4 tDASH"],
       ["shielded", SOURCE_COPY.shielded, "0.02 tDASH"],
     ]);
-    expect(reasons(inputs())).toEqual({ core: null, platform: null, shielded: SOURCE_COPY.notOffered });
+    expect(reasons(inputs())).toEqual({ core: null, platform: null, shielded: SOURCE_COPY.shieldedNotOffered });
     expect(canPay(rows, "platform")).toBe(true);
     expect(canPay(rows, "shielded")).toBe(false);
+  });
+
+  it("Shielded says paying from it isn't available here yet, on every network, while the other rows keep their reasons", () => {
+    for (const i of [inputs(), inputs({ mainnet: true }), inputs({ platform: null })]) {
+      expect(reasons(i).shielded).toBe("Paying from Shielded isn't available here yet.");
+    }
+    expect(reasons(inputs({ platform: null })).platform).toBe("Not available on this network yet.");
+    expect(SOURCE_COPY.notOffered).toBe("Not available on this network yet.");
   });
 
   it("discreet mode shows no balances", () => {

@@ -14,8 +14,10 @@
 #           read-only job; release-publish.sh repeats it. It is code of the pushed commit like the
 #           workflow itself, so it cannot stand against a tag whose workflow was edited: that needs an
 #           environment deployment policy or a tag ruleset (repository settings).
-# signing   publish, on a stable tag vX.Y.Z: the only run whose build jobs use the `release` environment
-#           and its updater signing key (docs/release/updater.md). Never rc, dry-run, main or a dispatch.
+# signing   publish, on a stable tag vX.Y.Z (or a release candidate vX.Y.Z-rc.N when the repository
+#           variable DW_SIGN_CANDIDATES=1 is set for the one-time signed-candidate dry run): the only
+#           runs whose jobs use the `release` environment and its signing keys (docs/release/CHECKLIST.md,
+#           docs/release/updater.md). Never dry-run, main, branch, PR, schedule or dispatch.
 # build     always, except a branch push or pull request that changes only documentation and files no
 #           release bundle is built from (docs, *.md, the Swift trees, the unrelated workflows). Main,
 #           tags and dispatch always build. A branch push is measured from its merge base with origin/main
@@ -63,8 +65,12 @@ if [[ "$ref" != refs/heads/main && "$ref" != refs/tags/* ]] && [[ -n "$base" ]] 
 fi
 
 signing=false
-if [[ "$publish" == true && "$event" == push && "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  signing=true
+if [[ "$publish" == true && "$event" == push ]]; then
+  if [[ "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    signing=true
+  elif [[ "${DW_SIGN_CANDIDATES:-}" == 1 && "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+    signing=true
+  fi
 fi
 
 echo "decide: kind=$kind publish=$publish build=$build signing=$signing"

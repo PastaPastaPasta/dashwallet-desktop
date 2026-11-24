@@ -81,7 +81,7 @@ describe("fixture pending commands", () => {
     const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
     expect(quote).toMatchObject({ credits: "40000000000", feeCredits: "2000000", expectedDuffs: 39_998_000, grant: { maxCredits: "40000000000" } });
     expect(quote.to).toMatch(/^y/);
-    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, "no-such-grant")).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, quote.exitOf, "no-such-grant")).rejects.toMatchObject({ code: "platform.grant_invalid" });
   });
 
   it("shows the Platform receive address and reads the addresses on request", async () => {
@@ -160,7 +160,7 @@ describe("fixture pending commands", () => {
     const g2 = await grantFor(q.operation);
     const move = await backend.platformMoveToCoreQuote(W, credits("1000000000"));
     expect(BigInt(move.credits) <= BigInt(q.credits)).toBe(true);
-    await expect(backend.platformMoveToCore(W, credits("1000000000"), move.to, g1.id)).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    await expect(backend.platformMoveToCore(W, credits("1000000000"), move.to, move.exitOf, g1.id)).rejects.toMatchObject({ code: "platform.grant_invalid" });
     await expect(backend.platformSend(W, q.operation, g1.id)).rejects.toMatchObject({ code: "platform.grant_invalid" });
     expect(await backend.platformSend(W, q.operation, g2.id)).toMatchObject({ state: "done" });
   });
@@ -320,7 +320,7 @@ describe("fixture pending commands", () => {
     fixture = installFixture({ scenario: "platform-move-failed-may-land" });
     backend = new IpcBackend("fixture");
     const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
-    expect(await backend.platformMoveToCore(W, { kind: "all" }, quote.to, (await opGrant(quote.grant.maxCredits)).id)).toMatchObject({ state: "done" });
+    expect(await backend.platformMoveToCore(W, { kind: "all" }, quote.to, quote.exitOf, (await opGrant(quote.grant.maxCredits)).id)).toMatchObject({ state: "done" });
     const activity = (await backend.platformActivity(W))!;
     expect(activity.find((a) => a.id === "pm-held")).toMatchObject({ state: "replaced", mayLand: false });
     expect(activity.some((a) => a.kind === "moveToCore" && a.mayLand)).toBe(false);
@@ -329,9 +329,9 @@ describe("fixture pending commands", () => {
   it("refuses a move beside a move Platform has not answered", async () => {
     platform().nextMove = "pending";
     const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
-    const first = await backend.platformMoveToCore(W, { kind: "all" }, quote.to, (await opGrant(quote.grant.maxCredits)).id);
+    const first = await backend.platformMoveToCore(W, { kind: "all" }, quote.to, quote.exitOf, (await opGrant(quote.grant.maxCredits)).id);
     expect(first.state).toBe("pending");
-    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, (await opGrant(quote.grant.maxCredits)).id)).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: first.id } });
+    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, quote.exitOf, (await opGrant(quote.grant.maxCredits)).id)).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: first.id } });
   });
 
   it("a done send that hid its fee counts the estimate", async () => {
@@ -348,7 +348,7 @@ describe("fixture pending commands", () => {
     const held = { code: "credits.move_pending", data: { artifact: outcome.id } };
     await expect(backend.platformMoveToCoreQuote(W, { kind: "all" })).rejects.toMatchObject(held);
     const grant = await opGrant(quote.grant.maxCredits);
-    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, grant.id)).rejects.toMatchObject(held);
+    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, quote.exitOf, grant.id)).rejects.toMatchObject(held);
   });
 
   it("seeds a send that may land for the scenario: its row carries mayLand and its exact retry is quoted", async () => {
