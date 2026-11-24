@@ -19,6 +19,7 @@ export const LAUNCH: LaunchInfo = {
   network: testnet,
   appVersion: "0.1.0",
   engineVersion: "0.4.2",
+  buildVersion: "0.1.0-dev.57.g1a2b3c4",
 };
 
 /** The Swift `FakeNodeInformation.sample()`. */
@@ -53,7 +54,7 @@ describe("Information (QT-143, QT-144, QT-040)", () => {
     expect(row(NODE, "EvoNodes")?.value).toBe(NONE);
     expect(row(NODE, "Local Addresses")?.value).toBe(NONE);
     expect(row(NODE, "ChainLocks")?.value).toBe(`1199998, ${"11".repeat(32)}`);
-    expect(row(NODE, "Client version")?.value).toBe("0.1.0");
+    expect(row(NODE, "Client version")?.value).toBe("0.1.0-dev.57.g1a2b3c4");
   });
 
   it("QT144_fullNodeValuesShowWhenTheEngineHasThem", () => {
