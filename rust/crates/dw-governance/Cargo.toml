@@ -17,6 +17,7 @@ dashcore = { workspace = true, features = ["bls"] }
 dw-message = { workspace = true }
 dw-p2p = { workspace = true }
 hex = { workspace = true }
+secp256k1 = { version = "0.33.1", default-features = false }
 serde = "1"
 # `raw_value`: numbers are read from their text as UniValue does;
 # `unbounded_depth`: UniValue nests 512 deep, serde_json stops at 128
@@ -27,4 +28,5 @@ tokio = { workspace = true, features = ["net", "io-util", "rt", "sync", "time", 
 tracing = { workspace = true }
 
 [dev-dependencies]
+secp256k1 = { version = "0.33.1", default-features = false, features = ["recovery"] }
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }

@@ -1,9 +1,9 @@
 //! D63's canonical vote-copy form against recovery itself (validator
 //! r13): equal forms exactly when the recovered keys are equal.
 
-use dashcore::hashes::{Hash, sha256};
-use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId, Signature};
-use dashcore::secp256k1::{Message, PublicKey, SecretKey};
+use dashcore::hashes::sha256;
+use secp256k1::ecdsa::{RecoverableSignature, RecoveryId, Signature};
+use secp256k1::{Message, PublicKey, SecretKey};
 
 use crate::vote::{canonical_compact, recover_compact, to_recoverable_compact};
 
@@ -67,9 +67,9 @@ fn canonical_forms_match_recovered_keys_for_honest_signatures() {
     for i in 0..24 {
         let sk = SecretKey::from_secret_bytes(h("key", i)).unwrap();
         let digest = h("digest", i);
-        let sig = dashcore::secp256k1::ecdsa::sign(Message::from_digest(digest), &sk);
+        let sig = secp256k1::ecdsa::sign(Message::from_digest(digest), &sk);
         let pk = PublicKey::from_secret_key(&sk);
-        let full = to_recoverable_compact(&sig.serialize_compact(), &pk, &digest).unwrap();
+        let full = to_recoverable_compact(&sig.serialize_compact(), &pk.into(), &digest).unwrap();
         // 32 headers per (flags) x 2 s forms x 2 compressions recover.
         assert_eq!(check_variants(&full, &digest), 256);
     }

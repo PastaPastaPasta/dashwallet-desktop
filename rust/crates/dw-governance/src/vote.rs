@@ -16,9 +16,8 @@ use dashcore::Network;
 use dashcore::OutPoint;
 use dashcore::bls_sig_utils::{BlsPkBytes, BlsScheme, BlsSigBytes};
 use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
-use dashcore::hashes::{Hash, hash160, sha256d};
-use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId, Signature};
-use dashcore::secp256k1::{Message, PublicKey};
+use dashcore::ecdsa::{EcdsaPublicKey, EcdsaRecSignature};
+use dashcore::hashes::{hash160, sha256d};
 
 use crate::object::{display_hex, outpoint_short};
 
@@ -266,18 +265,14 @@ impl GovernanceVote {
 /// compressed flag from `header - 27` with `int` arithmetic and no range
 /// check).
 pub fn recover_compact(sig: &[u8], digest: &[u8; 32]) -> Option<Vec<u8>> {
-    if sig.len() != COMPACT_SIG_SIZE {
-        return None;
-    }
-    let h = i32::from(sig[0]) - 27;
-    let recid = RecoveryId::try_from(h & 3).ok()?;
-    let compressed = h & 4 != 0;
-    let rsig = RecoverableSignature::from_compact(&sig[1..], recid).ok()?;
-    let pk = rsig.recover_ecdsa(Message::from_digest(*digest)).ok()?;
-    Some(if compressed {
-        pk.serialize().to_vec()
+    let mut sig = <[u8; COMPACT_SIG_SIZE]>::try_from(sig).ok()?;
+    sig[0] = 27 + (sig[0].wrapping_sub(27) & 7);
+    let sig = EcdsaRecSignature::from(sig);
+    let pk = EcdsaPublicKey::recover(digest, &sig).ok()?;
+    Some(if sig.is_compressed().ok()? {
+        pk.to_compressed().to_vec()
     } else {
-        pk.serialize_uncompressed().to_vec()
+        pk.to_uncompressed().to_vec()
     })
 }
 
@@ -291,7 +286,7 @@ pub fn canonical_compact(sig: &[u8]) -> Option<[u8; COMPACT_SIG_SIZE]> {
         return None;
     }
     let mut flags = ((i32::from(sig[0]) - 27) & 7) as u8;
-    let mut s = Signature::from_compact(&sig[1..]).ok()?;
+    let mut s = secp256k1::ecdsa::Signature::from_compact(&sig[1..]).ok()?;
     let raw = s.serialize_compact();
     s.normalize_s();
     let low = s.serialize_compact();
@@ -309,23 +304,18 @@ pub fn canonical_compact(sig: &[u8]) -> Option<[u8; COMPACT_SIG_SIZE]> {
 /// the recovery id is the one that recovers `pubkey`.
 pub fn to_recoverable_compact(
     compact64: &[u8; 64],
-    pubkey: &PublicKey,
+    pubkey: &EcdsaPublicKey,
     digest: &[u8; 32],
 ) -> Option<[u8; COMPACT_SIG_SIZE]> {
     for id in 0..4 {
-        let recid = RecoveryId::try_from(id).ok()?;
-        let Ok(rsig) = RecoverableSignature::from_compact(compact64, recid) else {
-            continue;
-        };
-        if rsig
-            .recover_ecdsa(Message::from_digest(*digest))
+        let mut out = [0u8; COMPACT_SIG_SIZE];
+        out[0] = 31 + id;
+        out[1..].copy_from_slice(compact64);
+        if EcdsaPublicKey::recover(digest, &EcdsaRecSignature::from(out))
             .ok()
             .as_ref()
             == Some(pubkey)
         {
-            let mut out = [0u8; COMPACT_SIG_SIZE];
-            out[0] = 31 + recid.to_u8();
-            out[1..].copy_from_slice(compact64);
             return Some(out);
         }
     }
@@ -367,7 +357,7 @@ pub fn current_vote_string(vote: &GovernanceVote, weight: u32) -> String {
 /// parity bit. 64 in all, `v`'s among them (validator r12).
 #[cfg(test)]
 pub(crate) fn malleations(v: &GovernanceVote) -> Vec<GovernanceVote> {
-    use dashcore::secp256k1::SecretKey;
+    use secp256k1::SecretKey;
     let sig = &v.signature;
     assert_eq!(sig.len(), COMPACT_SIG_SIZE);
     let flags = (i32::from(sig[0]) - 27) & 7;
@@ -426,7 +416,7 @@ pub fn same_operator_key(a: &[u8; 48], b: &[u8; 48]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dashcore::secp256k1::SecretKey;
+    use secp256k1::{Message, PublicKey, SecretKey};
 
     #[test]
     fn current_vote_string_prints_unknown_codes_as_core_does() {
@@ -456,9 +446,9 @@ mod tests {
 
     fn sign(vote: &mut GovernanceVote, network: Network, sk: &SecretKey) {
         let digest = vote.signing_digest(network);
-        let sig = dashcore::secp256k1::ecdsa::sign(Message::from_digest(digest), sk);
+        let sig = secp256k1::ecdsa::sign(Message::from_digest(digest), sk);
         let pk = PublicKey::from_secret_key(sk);
-        let full = to_recoverable_compact(&sig.serialize_compact(), &pk, &digest).unwrap();
+        let full = to_recoverable_compact(&sig.serialize_compact(), &pk.into(), &digest).unwrap();
         vote.signature = full.to_vec();
     }
 
@@ -538,7 +528,6 @@ mod tests {
         // the throwaway secret [0x42; 32]; the key in Core's basic encoding
         // and in the legacy one a v1 masternode entry carries.
         use dashcore::Txid;
-        use dashcore::hashes::Hash;
         let mut v = GovernanceVote::funding(
             OutPoint::new(Txid::from_byte_array([0x11; 32]), 1),
             [0x22; 32],

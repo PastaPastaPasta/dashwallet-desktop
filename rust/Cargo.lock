@@ -2660,6 +2660,7 @@ dependencies = [
  "dw-message",
  "dw-p2p",
  "hex",
+ "secp256k1 0.33.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
