@@ -255,6 +255,17 @@ pub(crate) trait ShieldedLib: Send + Sync {
     ) -> impl Future<Output = Result<(), SpendError>> + Send;
     /// A fresh Core receive address of the wallet, for an unshield to self.
     fn receive_address(&self) -> impl Future<Output = Result<String, PlatformError>> + Send;
+    /// Shielded → Platform: the library's keyset unshield
+    /// (`shielded_unshield_to_with_keyset`) to the Platform address `to`,
+    /// never its seed path.
+    fn unshield(
+        &self,
+        permit: &CallPermit,
+        to: &PlatformAddress,
+        credits: u64,
+    ) -> impl Future<Output = Result<(), SpendError>> + Send;
+    /// The wallet's Platform payment account, as an unshield to it reads it.
+    fn platform_pool(&self) -> impl Future<Output = Result<PlatformPool, PlatformError>> + Send;
 
     /// The wallet's tracked `AssetLockShieldedAddressTopUp` locks.
     fn shield_locks(&self) -> impl Future<Output = Vec<LockInfo>> + Send;
@@ -402,6 +413,15 @@ pub(crate) trait ShieldedLib: Send + Sync {
         minimum_lock_duffs: u64,
         permit: &CallPermit,
     ) -> impl Future<Output = Result<OutPoint, FundError>> + Send;
+}
+
+/// The wallet's Platform payment account (C-routes C1-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlatformPool {
+    /// Its lowest unused address, which an unshield pays when given no `to`.
+    pub(crate) receive: PlatformAddress,
+    /// Every address of the account the wallet derived.
+    pub(crate) addresses: BTreeSet<PlatformAddress>,
 }
 
 /// How an apply ended without an error.
@@ -903,6 +923,40 @@ pub(crate) fn activity(e: ShieldedActivityEntry, network: Network) -> ShieldedAc
 enum To {
     Shielded(OrchardAddress, String),
     Core(Address),
+    Platform(PlatformAddress),
+}
+
+/// `to` as a Platform address of `network`.
+fn platform_address(network: Network, to: &str) -> Result<PlatformAddress, ShieldedError> {
+    let to = to.trim();
+    let invalid = |detail: &str| ShieldedError::InvalidAddress {
+        detail: detail.into(),
+    };
+    let hrp = PlatformAddress::hrp_for_network(network);
+    let prefix = to.split_once('1').map(|(h, _)| h.to_ascii_lowercase());
+    if prefix.as_deref() != Some(hrp) {
+        return Err(invalid("not a Platform address of this network"));
+    }
+    PlatformAddress::from_bech32m_string(to).map_err(|_| invalid("not a Platform address"))
+}
+
+/// C-routes C1-1: an unshield pays only the wallet's own Platform payment
+/// account: `to`, or its receive address when `None`.
+async fn own_platform_address(
+    lib: &impl ShieldedLib,
+    to: Option<&str>,
+) -> Result<PlatformAddress, ShieldedError> {
+    let to = to
+        .map(|to| platform_address(lib.network(), to))
+        .transpose()?;
+    let pool = lib.platform_pool().await?;
+    match to {
+        None => Ok(pool.receive),
+        Some(to) if pool.addresses.contains(&to) => Ok(to),
+        Some(_) => Err(ShieldedError::InvalidAddress {
+            detail: "not this wallet's Platform address".into(),
+        }),
+    }
 }
 
 /// `to` as a shielded payment address of `network`.
@@ -1034,6 +1088,54 @@ pub(crate) async fn unshield_quote(
     unshield_plan(lib, credits).await
 }
 
+/// The quote of an unshield of `credits` to a Platform address: Platform's
+/// range for it (more than nothing, at most `i64::MAX`) and its fee, the
+/// flat cost of the address's credit included.
+async fn unshield_to_platform_plan(
+    lib: &impl ShieldedLib,
+    credits: u64,
+) -> Result<ShieldedSpendQuote, ShieldedError> {
+    let version = priced_gate(lib).await?;
+    if credits == 0 {
+        return Err(ShieldedError::BelowMinimum { min: 1 });
+    }
+    if credits > i64::MAX as u64 {
+        return Err(invalid("the amount is above Platform's largest unshield").into());
+    }
+    let fee = spend_fee(lib, version, credits, ShieldedFeeKind::Unshield).await?;
+    Ok(spend_quote(credits, fee, None))
+}
+
+/// The flag of `unshield_to_platform`: off on mainnet, on elsewhere, until
+/// its funds ruling.
+pub(crate) const UNSHIELD_TO_PLATFORM: &str = "unshield_to_platform";
+
+/// `platform.feature_off{feature: UNSHIELD_TO_PLATFORM}` on mainnet, before
+/// any read, grant or write: the facade's first step, before the wallet or
+/// the shielded store is opened.
+pub(crate) fn refuse_on_mainnet(network: Network) -> Result<(), ShieldedError> {
+    if network == Network::Mainnet {
+        return Err(PlatformError::FeatureOff {
+            feature: UNSHIELD_TO_PLATFORM.into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+pub(crate) async fn unshield_to_platform_quote(
+    lib: &impl ShieldedLib,
+    credits: u64,
+    to: Option<&str>,
+) -> Result<ShieldedSpendQuote, ShieldedError> {
+    refuse_on_mainnet(lib.network())?;
+    if let Some(to) = to {
+        gate(lib).await?;
+        own_platform_address(lib, Some(to)).await?;
+    }
+    unshield_to_platform_plan(lib, credits).await
+}
+
 /// The lease `grant` names (a `flow` lease of this wallet), or a new one
 /// redeemed from it.
 pub(super) async fn authority(
@@ -1160,6 +1262,7 @@ async fn spend(
     let operation = match to {
         To::Shielded(..) => "transfer",
         To::Core(_) => "withdraw",
+        To::Platform(_) => "unshield",
     };
     // Again under the wallet's lock, before the quote, the grant or a key.
     unhooked(lib).await?;
@@ -1176,6 +1279,7 @@ async fn spend(
     let quote = match to {
         To::Shielded(_, text) => send_quote(lib, text, credits).await?,
         To::Core(_) => unshield_plan(lib, credits).await?,
+        To::Platform(_) => unshield_to_platform_plan(lib, credits).await?,
     };
     let remaining = grant_cap(session, wallet, grant, BudgetPurpose::Credits).await?;
     if quote.total_credits > remaining {
@@ -1205,6 +1309,7 @@ async fn spend(
         match to {
             To::Shielded(address, _) => lib.transfer(&permit, address, quote.credits, memo).await,
             To::Core(address) => lib.withdraw(&permit, address, quote.credits).await,
+            To::Platform(address) => lib.unshield(&permit, address, quote.credits).await,
         }
     })
     .await;
@@ -1398,6 +1503,31 @@ pub(crate) async fn unshield(
     )
     .await?;
     Ok(outcome(credits, to.trim().to_owned(), spent))
+}
+
+/// Shielded → Platform (C-routes D-C1, C1b): `unshield`'s gates, then the
+/// own-address rule (C1-1) before the quote and the grant, then the spend
+/// to that address.
+pub(crate) async fn unshield_to_platform(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    credits: u64,
+    to: Option<&str>,
+    grant: &str,
+    confirmed: bool,
+) -> Result<ShieldedSpendOutcome, ShieldedError> {
+    refuse_on_mainnet(lib.network())?;
+    unhooked(lib).await?;
+    let lock = wallet_lock(session, wallet);
+    let _spending = lock.lock().await;
+    confirm_unrecorded(session, wallet, confirmed).await?;
+    let address = own_platform_address(lib, to).await?;
+    unshield_to_platform_plan(lib, credits).await?;
+    let to = To::Platform(address);
+    let spent = spend(session, wallet, lib, credits, grant, &to, [0; MEMO_BYTES]).await?;
+    let to = address.to_bech32m_string(lib.network());
+    Ok(outcome(credits, to, spent))
 }
 
 fn outcome(credits: u64, to: String, spent: Spent) -> ShieldedSpendOutcome {
@@ -2616,6 +2746,42 @@ impl ShieldedLib for PwShielded {
             .issue_address(self.pw.wallet_id, Some("Unshield".into()))
             .await?;
         Ok(issued.address)
+    }
+
+    async fn unshield(
+        &self,
+        permit: &CallPermit,
+        to: &PlatformAddress,
+        credits: u64,
+    ) -> Result<(), SpendError> {
+        let keys = permit.shielded_keys()?;
+        let prover = CachedOrchardProver::new();
+        (self.pw.wallet)
+            .shielded_unshield_to_with_keyset(
+                &self.coordinator,
+                &keys,
+                SHIELDED_ACCOUNT,
+                &to.to_bech32m_string(self.network()),
+                credits,
+                &prover,
+            )
+            .await
+            .map_err(|e| SpendError::Library(Box::new(e)))
+    }
+
+    async fn platform_pool(&self) -> Result<PlatformPool, PlatformError> {
+        let wallet = &self.pw.wallet;
+        let receive = super::platform_moves::next_receive_address(wallet, self.network()).await?;
+        let receive = super::platform_moves::parse(&receive.address).ok_or_else(|| {
+            PlatformError::Internal {
+                detail: "the receive address does not parse".into(),
+            }
+        })?;
+        let addresses = super::platform_moves::pool(wallet)
+            .await?
+            .into_keys()
+            .collect();
+        Ok(PlatformPool { receive, addresses })
     }
 
     fn own_locks(&self) -> Option<HashSet<Txid>> {

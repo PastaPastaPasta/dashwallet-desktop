@@ -457,7 +457,9 @@ test("In progress: each state's row and action; nothing on a conflicted one", as
   // Discard stays wherever the state allows it.
   await expect(page.getByTestId(`mn-op-continue-${OP_NEEDS_SIGNATURE}`)).toBeVisible();
   await expect(page.getByTestId(`mn-op-refresh-${OP_INPUTS_SPENT}`)).toBeVisible();
-  for (const id of [OP_SIGNED, OP_NOT_SENT, OP_SENT, OP_SENT_OVERDUE, OP_UPDATE]) await expect(page.getByTestId(`mn-op-resend-${id}`)).toBeVisible();
+  for (const id of [OP_SIGNED, OP_NOT_SENT, OP_SENT_OVERDUE]) await expect(page.getByTestId(`mn-op-resend-${id}`)).toBeVisible();
+  // Sent and still waiting for its block: no Send again until it's overdue.
+  for (const id of [OP_SENT, OP_UPDATE]) await expect(page.getByTestId(`mn-op-resend-${id}`)).toHaveCount(0);
   for (const id of [OP_NEEDS_SIGNATURE, OP_INPUTS_SPENT, OP_SIGNED, OP_NOT_SENT]) await expect(page.getByTestId(`mn-op-more-${id}`)).toBeVisible();
   // Sent: never Discard.
   await expect(page.getByTestId(`mn-op-status-${OP_SENT}`)).toHaveText("Registration · waiting for 1 confirmation");
@@ -528,11 +530,14 @@ for (const theme of ["light", "dark"] as const)
     // The engine sends no sign request for a spent row: Prove offers the new message, not an empty step.
     await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
     await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+    // No message yet, so no "sign this message": the notice carries the step (issue 641).
+    await expect(sheet(page)).not.toContainText("sign this message");
     await expect(page.getByTestId("reg-submit")).toBeDisabled();
     await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000453");
     await page.getByTestId("reg-new-message").click();
     await expect(page.getByTestId("reg-sign-request")).toBeVisible();
     await expect(page.getByTestId("reg-inputs-spent")).toHaveCount(0);
+    await expect(page.getByTestId("reg-prove-text")).toContainText("sign this message");
     // The new message comes with new fee inputs: Prove shows the replanned fee, and the grant is capped at it.
     await expect(page.getByTestId("reg-prove-fee")).toContainText("0.00000573");
     await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000573");
@@ -632,6 +637,7 @@ test("fee coins spent while Prove is open: the refusal hides the old message and
   await page.getByTestId("reg-submit").click();
   await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
   await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+  await expect(sheet(page)).not.toContainText("sign this message");
   await expect.poll(() => revokes(page)).toBe(before + 1);
   expect(await liveGrants(page)).toEqual([]);
   // Closed and resumed with no further read: the saved row reads spent too, and Prove asks for a new message.

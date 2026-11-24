@@ -214,6 +214,20 @@ pub enum ShieldedCmd {
         #[arg(long)]
         confirm_unrecorded: bool,
     },
+    /// Shielded -> Platform: unshield `--credits` to one of the wallet's
+    /// own Platform addresses, or to its Platform receive address.
+    UnshieldToPlatform {
+        #[arg(long)]
+        credits: u64,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        quote_only: bool,
+        /// Unshield even though a payment from before a restart may still
+        /// go through (`shielded.unrecorded_spend`).
+        #[arg(long)]
+        confirm_unrecorded: bool,
+    },
     /// The shielded history, pending rows first, then newest first.
     History {
         #[arg(long, default_value_t = 0)]
@@ -1815,6 +1829,21 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
                 ctx.block_on(dp.unshield_to_core(credits, to, grant, confirm_unrecorded))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
+        ShieldedCmd::UnshieldToPlatform {
+            credits,
+            to,
+            quote_only,
+            confirm_unrecorded,
+        } => {
+            let quote = ctx.block_on(dp.unshield_to_platform_quote(credits, to.clone()))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome =
+                ctx.block_on(dp.unshield_to_platform(credits, to, grant, confirm_unrecorded))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
         ShieldedCmd::History { offset, limit } => {
             out(ctx.block_on(dp.shielded_history(offset, limit))?)
         }
@@ -2897,6 +2926,10 @@ mod tests {
             r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Dash address","params":{"detail":"not a Dash address"}}}"#,
         ),
         (
+            "shielded unshield-to-platform --credits 5 --to yA",
+            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Platform address of this network","params":{"detail":"not a Platform address of this network"}}}"#,
+        ),
+        (
             "shielded history --offset 1 --limit 5",
             r#"{"ok":true,"result":[]}"#,
         ),
@@ -3140,6 +3173,10 @@ mod tests {
         (
             "shielded unshield --credits 5 --to yA",
             "DashPay.unshield_quote",
+        ),
+        (
+            "shielded unshield-to-platform --credits 5 --to yA",
+            "DashPay.unshield_to_platform_quote",
         ),
         (
             "shielded history --offset 1 --limit 5",

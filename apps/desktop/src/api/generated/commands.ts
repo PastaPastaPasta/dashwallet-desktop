@@ -2255,6 +2255,22 @@ export function unshieldToCore(walletId: string, credits: string, to: string | n
 }
 
 /**
+ * What moving `credits` from Shielded to the wallet's own Platform
+ * address `to` costs (`null` for its receive address).
+ */
+export function unshieldToPlatformQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote> {
+  return invoke<ShieldedSpendQuote>("unshield_to_platform_quote", { walletId, credits, to });
+}
+
+/**
+ * Shielded → Platform: unshields `credits` to the wallet's own Platform
+ * address `to` under `grant`.
+ */
+export function unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
+  return invoke<ShieldedSpendOutcome>("unshield_to_platform", { walletId, credits, to, grant, confirmUnrecorded });
+}
+
+/**
  * The wallet's shielded history for Activity, pending first, then
  * newest first (`limit` at most 500).
  */
@@ -3587,6 +3603,8 @@ export type CommandArgs = {
   shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean };
   unshield_quote: { walletId: string; credits: string; to: string | null };
   unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
+  unshield_to_platform_quote: { walletId: string; credits: string; to: string | null };
+  unshield_to_platform: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
   shielded_history: { walletId: string; offset: number; limit: number };
   unfinished_transfers: { walletId: string };
   finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };
@@ -3962,6 +3980,8 @@ export type CommandResults = {
   shielded_send: ShieldedSpendOutcome;
   unshield_quote: ShieldedSpendQuote;
   unshield_to_core: ShieldedSpendOutcome;
+  unshield_to_platform_quote: ShieldedSpendQuote;
+  unshield_to_platform: ShieldedSpendOutcome;
   shielded_history: Array<ShieldedActivity>;
   unfinished_transfers: UnfinishedTransfers;
   finish_transfer: LockFinish;
@@ -4339,6 +4359,8 @@ export const COMMANDS: Record<CommandName, string> = {
   shielded_send: "identity",
   unshield_quote: "identity",
   unshield_to_core: "identity",
+  unshield_to_platform_quote: "identity",
+  unshield_to_platform: "identity",
   shielded_history: "identity",
   unfinished_transfers: "identity",
   finish_transfer: "identity",
