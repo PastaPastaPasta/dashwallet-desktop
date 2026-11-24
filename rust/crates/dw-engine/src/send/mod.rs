@@ -493,6 +493,23 @@ impl PendingSpends {
         Ok(())
     }
 
+    /// Whether an owner other than `owner` claims one of `outpoints`.
+    pub(crate) fn held_by_other(
+        &self,
+        wallet: &WalletId,
+        owner: SpendOwner,
+        outpoints: &[OutPoint],
+    ) -> bool {
+        let map = self.map();
+        map.get(wallet).is_some_and(|claims| {
+            outpoints.iter().any(|o| {
+                claims
+                    .get(o)
+                    .is_some_and(|owners| owners.iter().any(|w| *w != owner))
+            })
+        })
+    }
+
     /// Removes every claim of `owner`.
     pub(crate) fn release(&self, wallet: &WalletId, owner: SpendOwner) {
         self.release_where(wallet, owner, |_| true);
