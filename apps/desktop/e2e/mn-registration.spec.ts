@@ -206,6 +206,36 @@ test("ExistingUtxo: a locked coin can't be picked, Continue needs a pick, the re
   expect(errors).toEqual([]);
 });
 
+for (const theme of ["light", "dark"] as const)
+  test(`ExistingUtxo ${theme}: while Register waits for the network, the wizard stays on Review (issue 595)`, async ({ page }, info) => {
+    const errors = await open(page, "reg", theme);
+    await setUp(page);
+    await next(page);
+    await page.getByTestId("reg-collateral-existing").click();
+    await page.getByTestId(`reg-coin-${REG_COIN}`).click();
+    await next(page);
+    await page.getByTestId("reg-operator-key").fill(OPERATOR_KEY);
+    await page.getByTestId("reg-service").fill(SERVICE);
+    await next(page);
+    await toReview(page);
+    await page.getByTestId("reg-passphrase").fill("demo");
+    // The send is handed to the network but its answer is late: our own operation already holds the coin.
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_register"));
+    await page.getByTestId("reg-register").click();
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_register").length)).toBe(1);
+    await page.waitForTimeout(500);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-sending-${theme}.png`) });
+    await expect(step(page, "collateral")).toHaveCount(0);
+    await expect(page.getByTestId("reg-error-outpoint")).toHaveCount(0);
+    await expect(step(page, "review")).toBeVisible();
+    await expect(page.getByTestId("reg-preview-loading")).toHaveCount(0);
+    await expect(page.getByTestId("reg-review-total")).toBeVisible();
+    await release.evaluate((r) => r());
+    await expect(page.getByTestId("reg-done-body")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
 test("External: Review names the other wallet's coin; Continue saves it and opens Prove", async ({ page }) => {
   const errors = await open(page, "reg");
   await setUp(page);
