@@ -39,10 +39,11 @@ export type NameContest = Pick<ContestedName, "label" | "contenders">;
 
 /** "Alice (8ZtW…R97P)" for a contender whose own spelling of the name Platform sent, else
  * "8ZtW…R97P" (D5, F1). */
-export function contenderText(identity: string, contest?: Pick<ContestedName, "contenders">): string {
-  const name = contest?.contenders.find((x) => x.identity === identity)?.name;
-  return name ? t(`${P}.contender`, { name, identity: shortIdentity(identity) }) : shortIdentity(identity);
-}
+export const contenderText = (identity: string, name?: string | null): string =>
+  name ? t(`${P}.contender`, { name, identity: shortIdentity(identity) }) : shortIdentity(identity);
+
+/** The spelling `contest` lists for `identity`, if any. */
+const nameIn = (identity: string, contest?: Pick<ContestedName, "contenders">) => contest?.contenders.find((x) => x.identity === identity)?.name;
 
 /** Text as DPNS compares names (MG-07 D15): lower case, `o` → `0`, `i` and `l` → `1`, so a
  * search for "Alice" finds "a11ce". */
@@ -58,7 +59,7 @@ export function sameChoice(a: NameChoice | null | undefined, b: NameChoice | nul
 export function choiceText(c: NameChoice, contest?: Pick<ContestedName, "contenders">): string {
   switch (c.kind) {
     case "towardsIdentity":
-      return contenderText(c.identity, contest);
+      return contenderText(c.identity, nameIn(c.identity, contest));
     case "lock":
       return t(`${P}.lock`);
     case "abstain":
@@ -147,7 +148,7 @@ export function tallyView(c: ContestedName): TallyView {
   const rows: TallyRowView[] = [
     ...contenders.map((x, i) => ({
       key: `id:${x.identity}`,
-      title: contenderText(x.identity, c),
+      title: contenderText(x.identity, x.name),
       identity: x.identity,
       named: !!x.name,
       votes: x.v,
@@ -178,7 +179,7 @@ export function tallyView(c: ContestedName): TallyView {
   else if (lockLeads) lead = t(`${P}.lead.lock`, { lock, count: total });
   else if (top === 0) lead = t(`${P}.lead.noContender`);
   else if (tied) lead = t(`${P}.lead.tied`, { count: top, contenders: topCount });
-  else lead = t(`${P}.lead.leads`, { name: contenderText(contenders[0].identity, c), votes: top, count: total });
+  else lead = t(`${P}.lead.leads`, { name: contenderText(contenders[0].identity, contenders[0].name), votes: top, count: total });
   return { rows, total, lead };
 }
 
@@ -271,7 +272,7 @@ export function choiceOptions(c: ContestedName): {
   return [
     ...c.contenders.map((x) => ({
       choice: { kind: "towardsIdentity", identity: x.identity } as NameChoice,
-      title: contenderText(x.identity, c),
+      title: contenderText(x.identity, x.name),
       identity: x.identity,
       named: !!x.name,
       votes: votesOf(x.votes),
@@ -417,7 +418,7 @@ export function nameVoteResult(casts: NameVoteCast[], voters: NameVoter[], conte
     title: t(pending > 0 ? `${P}.result.titlePending` : `${P}.result.title`, { counted: counted.length, count: casts.length, pending }),
     line:
       choice.kind === "towardsIdentity"
-        ? t(`${P}.result.lineFor`, { identity: contenderText(choice.identity, contest), label, weight, total })
+        ? t(`${P}.result.lineFor`, { identity: contenderText(choice.identity, nameIn(choice.identity, contest)), label, weight, total })
         : t(`${P}.result.line`, { choice: choiceText(choice, contest), label, weight, total }),
     rows,
     unconfirmed: pending > 0,

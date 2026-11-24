@@ -15,6 +15,7 @@ import { LANGUAGES, type Language } from "../i18n";
 import { FIXTURE_NOW, secs } from "../fixture/wallet";
 import {
   choiceOptions,
+  choiceText,
   contenderText,
   contestRow,
   defaultVoters,
@@ -67,8 +68,9 @@ describe("names and choices", () => {
     // F1: a contender whose own spelling came back reads by it, with the id; one without, by the id.
     expect(voteButtonText(towards(ID_1), A11CE)).toBe("Vote for Alice (8ZtW…R97P)");
     expect(voteButtonText(towards(ID_2), A11CE)).toBe("Vote for 4EfA…iSeF");
-    expect(contenderText(ID_2, DASH_PAY)).toBe("Dash-Pay (4EfA…iSeF)");
-    expect(contenderText(ID_1, DASH_PAY)).toBe("8ZtW…R97P");
+    expect(contenderText(ID_2, "Dash-Pay")).toBe("Dash-Pay (4EfA…iSeF)");
+    expect(choiceText(towards(ID_2), DASH_PAY)).toBe("Dash-Pay (4EfA…iSeF)");
+    expect(choiceText(towards(ID_1), DASH_PAY)).toBe("8ZtW…R97P");
     expect(contenderText(ID_1)).toBe("8ZtW…R97P");
     expect(voteButtonText(LOCK)).toBe("Vote Lock");
     expect(sameChoice(towards(ID_1), towards(ID_1))).toBe(true);
@@ -213,13 +215,15 @@ describe("contenders by their own spelling (F1)", () => {
     ]);
     expect(tallyView(c).lead).toBe("8ZtW…R97P leads with 9 of 18 votes");
     expect(voteButtonText(towards(ID_1), c)).toBe("Vote for 8ZtW…R97P");
-    expect(contenderText(ID_1, c)).toBe("8ZtW…R97P");
+    expect(choiceText(towards(ID_1), c)).toBe("8ZtW…R97P");
+    expect(contenderText(ID_2, "")).toBe("4EfA…iSeF");
   });
 
   it("keeps a spelling's exact characters, markup and placeholders included, as plain text", () => {
     for (const name of ["<b>Alice</b>", "<img src=x onerror=alert(1)>", "{identity}", "{name} {count}", "ALiCE", "a&amp;b"]) {
       const c = { ...lookAlike(), contenders: [{ identity: ID_1, votes: 9, name }] };
-      expect(contenderText(ID_1, c)).toBe(`${name} (8ZtW…R97P)`);
+      expect(contenderText(ID_1, name)).toBe(`${name} (8ZtW…R97P)`);
+      expect(choiceText(towards(ID_1), c)).toBe(`${name} (8ZtW…R97P)`);
       expect(tallyView(c).lead).toBe(`${name} (8ZtW…R97P) leads with 9 of 14 votes`);
       expect(voteButtonText(towards(ID_1), c)).toBe(`Vote for ${name} (8ZtW…R97P)`);
     }

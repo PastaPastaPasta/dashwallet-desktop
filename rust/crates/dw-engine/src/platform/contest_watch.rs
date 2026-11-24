@@ -150,6 +150,27 @@ impl Poll {
         }
     }
 
+    /// `state` with each contender's own spelling, but only when every
+    /// quorum key its proof used was SPV-verified (H-09): read through the
+    /// trusted-service fallback, the ids, tallies and winner stay and no
+    /// contender is named.
+    pub(crate) fn read(
+        state: Contenders,
+        normalized: &str,
+        version: &PlatformVersion,
+        verified: bool,
+    ) -> Self {
+        let labels = if verified {
+            contender_labels(&state, normalized, version)
+        } else {
+            BTreeMap::new()
+        };
+        Self {
+            labels,
+            ..Self::of(state)
+        }
+    }
+
     fn lists(&self, me: &Identifier) -> bool {
         self.contenders.iter().any(|(id, _)| id == me)
     }
@@ -360,12 +381,14 @@ impl ContestNet for SdkContests {
             limit: Some(limit),
             offset: None,
         };
-        let state = ContenderWithSerializedDocument::fetch_many(&self.0, query).await?;
-        let labels = contender_labels(&state, normalized, self.0.version());
-        Ok(Poll {
-            labels,
-            ..Poll::of(state)
-        })
+        let (state, tally) =
+            super::trust::scoped(ContenderWithSerializedDocument::fetch_many(&self.0, query)).await;
+        Ok(Poll::read(
+            state?,
+            normalized,
+            self.0.version(),
+            tally.verified(),
+        ))
     }
 
     async fn end_page(
