@@ -1137,7 +1137,8 @@ impl NetworkSession {
         // A refused attach puts back the lookahead row, the birth and the
         // marker it replaced, in that order: an exit in between leaves a
         // replay owed. A seed write the vault refuses before writing (no
-        // vault, locked, unlocked for mixing only) is refused the same way;
+        // vault, locked, unlocked for mixing only, its OS store
+        // unavailable) is refused the same way;
         // any other failed seed write puts back none of them, as the vault
         // may hold the seed all the same. Keys attached alone with a birth
         // below the wallet's, or to a wallet that still owes a replay, replay
@@ -1268,7 +1269,10 @@ impl NetworkSession {
                         let refused = matches!(
                             e,
                             EngineError::Vault(
-                                VaultError::NoVault | VaultError::Locked | VaultError::MixingOnly
+                                VaultError::NoVault
+                                    | VaultError::Locked
+                                    | VaultError::MixingOnly
+                                    | VaultError::OsStoreUnavailable(_)
                             )
                         );
                         if refused && restored {

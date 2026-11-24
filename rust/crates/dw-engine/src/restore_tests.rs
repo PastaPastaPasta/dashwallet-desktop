@@ -3756,6 +3756,73 @@ fn an_attach_the_vault_refuses_leaves_nothing_behind() {
     assert_eq!(replay_record(&engine, &session, id), None);
 }
 
+/// Keys attached while an unencrypted vault's data key is not in memory
+/// and its OS store is unavailable are refused before anything is written,
+/// and the marker, lookahead and birth they changed are back, as for a
+/// vault unlocked for mixing only.
+#[test]
+fn an_attach_the_os_store_refuses_leaves_nothing_behind() {
+    use crate::EngineConfig;
+    use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+    let dir = tempfile::tempdir().unwrap();
+    let engine_with = |store: MemoryOsStore| {
+        let config = EngineConfig {
+            data_root: dir.path().join("data"),
+            worker_threads: Some(2),
+            vault: VaultConfig {
+                kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                os_store: Arc::new(store),
+                ..Default::default()
+            },
+        };
+        let engine = Engine::new(config, Arc::new(Silent)).unwrap();
+        let session = engine
+            .block_on(engine.open_network(DashNetwork::Regtest, offline()))
+            .unwrap();
+        (engine, session)
+    };
+    let (engine, session) = engine_with(MemoryOsStore::new());
+    create_vault(&engine, &session);
+    let id = import_phrase(&engine, &session, PHRASE, HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
+    drop(session);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+    let (engine, session) = engine_with(MemoryOsStore::unavailable());
+
+    let refused = engine.block_on(session.import_wallet(
+        zeroize::Zeroizing::new(PHRASE.to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(0),
+            lookahead: Some(200),
+            ..Default::default()
+        },
+    ));
+
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::Vault(
+                dw_vault::VaultError::OsStoreUnavailable(_)
+            ))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
+    assert_eq!(stored_birth(&session, id), Some(HEIGHT));
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
 /// F-A: a seed import with the default lookahead deletes a row an earlier
 /// attempt left before registration: the next load scans with the default.
 #[test]
