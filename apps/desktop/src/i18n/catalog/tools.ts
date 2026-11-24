@@ -224,7 +224,7 @@ export const tools = {
     walletTitle: "Repair the wallet",
     dropUnconfirmed: "Remove unconfirmed transactions",
     dropUnconfirmedButton: "Remove unconfirmed transactions…",
-    dropUnconfirmedQuestion: "Abandon every unconfirmed transaction that the network does not have and rescan? A transaction that reached the network may still confirm. It also ends masternode registrations and key changes that haven't confirmed yet, even one sent moments ago. Their coins are released, and they're never sent again.",
+    dropUnconfirmedQuestion: "Abandon every unconfirmed transaction that isn't locked yet, and rescan? Locked transactions are kept, because they will confirm. Any other transaction that reached the network may still confirm.",
     dropAction: "Remove",
     resetChainData: "Reset chain data and resync",
     resetChainDataButton: "Reset chain data and resync…",
