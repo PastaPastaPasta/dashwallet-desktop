@@ -89,6 +89,18 @@ export interface SendWorld {
   /** What `resolve_contact_payment_lock` finds for a lock whose payment the fixture did not hand
    * over itself (a scenario's lock); one it handed over is `sent`. */
   lockEvidence: LockResolutionName | null;
+  /** InstantSend-locked payments a ChainLocked spend beat: Abandon is offered, and refused until
+   * the wallet restarts and rescans (the engine's `rescanFirst`). */
+  rescanFirst: string[];
+  /** Payments a later payment spends from, which locked while the detail was open: Abandon is
+   * offered, and refused (the engine's `settledDescendant`). */
+  settledChild: string[];
+  /** Payments a later payment spends from that is already locked or confirmed: the detail doesn't
+   * offer Abandon (the engine's `settledDescendant`), and an Abandon is refused. */
+  settledChildHidden: string[];
+  /** Payments of this wallet seen by their change before the coins they spent are known: the
+   * engine reports their debit as unknown (`totalDebit: null`). */
+  debitUnknown: string[];
 }
 
 export const newSendWorld = (): SendWorld => ({
@@ -100,6 +112,10 @@ export const newSendWorld = (): SendWorld => ({
   announced: {},
   contactIndex: {},
   lockEvidence: null,
+  rescanFirst: [],
+  settledChild: [],
+  settledChildHidden: [],
+  debitUnknown: [],
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -389,7 +405,10 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   const tooSmall = amounts.findIndex((a, i) => d.recipients[i].subtractFeeFromAmount && a < DUST);
   if (tooSmall >= 0) throw fail("send.amount_too_small_after_fee", "amount too small after the fee", { kind: "recipient", index: tooSmall });
   if (fee > MAX_TX_FEE) throw fail("send.absurd_fee", "absurd fee", { kind: "fee", fee, available: null });
-  return { fee, sizeBytes: sizeOf(inputs.length, outputs + (change === null ? 0 : 1)), inputCount: inputs.length, change, totalSent, inputs, amounts };
+  const sizeBytes = sizeOf(inputs.length, outputs + (change === null ? 0 : 1));
+  // The fee beyond the rate for the size: a dust rest, and a mixed spend's change (dw-engine `Plan::left_over`).
+  const leftOver = Math.max(0, fee - feeFor(sizeBytes, rate));
+  return { fee, sizeBytes, inputCount: inputs.length, change, totalSent, leftOver, inputs, amounts };
 }
 
 function maxSpendable(world: World, wallet: FixtureWallet, source: CoinSource, fee: FeeMode): number {
@@ -418,7 +437,13 @@ function rowOf(wallet: FixtureWallet, txid: string): TxRow {
   return row;
 }
 
-const refused = (refusal: TxActionRefusalName) => fail("tx_action_refused", `refused: ${refusal}`, { kind: "txAction", refusal });
+/** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`); the rescanFirst steps
+ * are marked as the fixture's, so only the renderer's catalog text can show them unmarked. */
+const refusalMessage = (refusal: TxActionRefusalName) =>
+  refusal === "rescanFirst"
+    ? "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+    : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
+const refused = (refusal: TxActionRefusalName) => fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal });
 
 // ---------------------------------------------------------------- the handlers
 
@@ -817,12 +842,13 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         txid,
         isCoinbase: row.txType === "generated",
         totalCredit: d.outputs.filter((o) => o.isMine).reduce((n, o) => n + (o.amount ?? 0), 0),
-        totalDebit: d.inputs.filter((i) => i.isMine).reduce((n, i) => n + (i.amount ?? 0), 0),
+        totalDebit: world.send.debitUnknown.includes(txid) ? null : d.inputs.filter((i) => i.isMine).reduce((n, i) => n + (i.amount ?? 0), 0),
+        inputsUnresolved: d.inputs.some((i) => !i.isMine),
         net: row.amount,
         maturesIn: row.status.maturesIn,
         inMempool: null,
         abandoned: row.status.kind === "abandoned",
-        canAbandon: abandonRefusal(row) === null,
+        canAbandon: (abandonRefusal(row) === null && !world.send.settledChildHidden.includes(txid)) || world.send.rescanFirst.includes(txid),
         canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
         lastAnnouncedAt: world.send.announced[txid] ?? null,
@@ -832,6 +858,8 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     abandon_transaction: ({ walletId, txid }, ctx) => {
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
+      if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
+      if (ctx.world.send.settledChild.includes(txid) || ctx.world.send.settledChildHidden.includes(txid)) throw refused("settledDescendant");
       const refusal = abandonRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));

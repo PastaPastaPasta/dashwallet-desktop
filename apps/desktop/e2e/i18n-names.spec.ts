@@ -148,7 +148,7 @@ for (const theme of THEMES)
 test("Username voting follows a language change with no reload", async ({ page }) => {
   const errors = trackPageErrors(page);
   await open(page, "names", "light", "en");
-  await expect(page.getByTestId("name-pane-lead")).toHaveText("8ZtW…R97P leads with 9 of 18 votes");
+  await expect(page.getByTestId("name-pane-lead")).toHaveText("Alice (8ZtW…R97P) leads with 9 of 18 votes");
   await page.evaluate(() => window.__dwFixture!.setLanguage("en-XA"));
   for (const id of ["names-intro", "name-pane-lead", "name-vote"]) await expect(page.getByTestId(id)).toHaveText(/^⟦.+⟧$/);
   await expect(page.getByTestId("names-sort").locator("option").first()).toHaveText(/^⟦.+⟧$/);

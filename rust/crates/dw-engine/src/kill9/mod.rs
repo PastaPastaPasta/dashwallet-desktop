@@ -3,8 +3,11 @@
 //! a named point and reports; the parent sends it SIGKILL, opens the same
 //! data folder again and checks the state it finds.
 //!
-//! Every row is opt-in, run by the nightly job:
-//! `cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding`.
+//! The rows are opt-in, run by the nightly job:
+//! `cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding`;
+//! R5b's (`send/contact_tests/kill9.rs`) run in every Unix suite, as they
+//! did before they moved onto this harness. The parent unlocks the vault of
+//! the folder it opens again ([`engine_at`]).
 //! A `kill9_finding_<issue>` row reproduces an open issue and stays out of
 //! it until the fix. A child test does nothing unless this harness started
 //! it.

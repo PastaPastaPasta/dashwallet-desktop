@@ -18,9 +18,10 @@ export type Step = (typeof STEPS)[number] | "prove" | "done";
 
 export type Runner = "hosted" | "self";
 
-/** Off until a registration's locked coins can always come back (D14): the wizard reads keys and
- * previews, and nothing is prepared, sent, released or locked. */
-export const REGISTRATION_SENDS = false;
+/** A registration may be prepared and sent on testnet, regtest and devnet. Mainnet stays off until
+ * a registration's locked coins can always come back (D14). Still loading: off. */
+export const registrationSends = (network: { kind: string } | null | undefined): boolean =>
+  network != null && network.kind !== "mainnet";
 
 /** The calls a held wizard may make: they read, and lock no coin. */
 export const HELD_CALLS = ["mnRegistrationKeys", "mnPreviewRegistration"] as const;
@@ -38,7 +39,7 @@ export type RegistrationCalls = Pick<Backend, (typeof HELD_CALLS)[number] | (typ
 
 /** The backend as the wizard, its rows and the collateral actions see it: while held, every
  * sending call rejects before it reaches the backend. */
-export function registrationCalls(b: Backend, sends: boolean = REGISTRATION_SENDS): RegistrationCalls {
+export function registrationCalls(b: Backend, sends: boolean): RegistrationCalls {
   const calls = Object.fromEntries(HELD_CALLS.map((k) => [k, b[k].bind(b)])) as Pick<Backend, (typeof HELD_CALLS)[number]>;
   const held = () => Promise.reject(new Error("registration sending is held"));
   const sending = Object.fromEntries(SENDING_CALLS.map((k) => [k, sends ? b[k].bind(b) : held]));
@@ -49,7 +50,7 @@ export function registrationCalls(b: Backend, sends: boolean = REGISTRATION_SEND
  * Review and the send-off line in its place. */
 export type FinalAction = "continue" | "register" | "submit" | "sendOff";
 
-export function finalAction(step: Step, external: boolean, sends: boolean = REGISTRATION_SENDS): FinalAction {
+export function finalAction(step: Step, external: boolean, sends: boolean): FinalAction {
   if (step === "prove") return sends ? "submit" : "sendOff";
   if (step === "review") return !sends ? "sendOff" : external ? "continue" : "register";
   return "continue";

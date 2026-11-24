@@ -327,6 +327,46 @@ pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Optio
         || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
 }
 
+/// Whether another transaction in a block the SPV header chain proves
+/// final ([`proven_final`] under the wallet's own `chainlock`, `active`
+/// the chain's block hash at each height it has) spends one of `txid`'s
+/// inputs: a ChainLock outranks an InstantSend lock (DIP-10, as
+/// key-wallet's conflict sweep orders them), so `txid` can never confirm.
+/// A record's ChainLocked context can come from its height alone, and a
+/// record of a block a fork replaced comes back from wallet.sqlite after a
+/// restart.
+pub(crate) fn chainlock_beaten(
+    txs: &HashMap<Txid, TxEntry>,
+    txid: &Txid,
+    chainlock: Option<(u32, dashcore::BlockHash)>,
+    active: &HashMap<u32, dashcore::BlockHash>,
+) -> bool {
+    let Some(e) = txs.get(txid) else {
+        return false;
+    };
+    let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
+    (txs.iter()).any(|(w, we)| {
+        w != txid
+            && (we.context.block_info())
+                .is_some_and(|b| proven_final((b.height(), b.block_hash()), chainlock, active))
+            && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
+    })
+}
+
+/// Heights of the blocks holding a transaction that spends an input of a
+/// transaction out of a block: the headers [`chainlock_beaten`] reads.
+pub(crate) fn rival_heights(txs: &HashMap<Txid, TxEntry>) -> BTreeSet<u32> {
+    let unmined: HashSet<OutPoint> = (txs.values())
+        .filter(|e| e.context.block_info().is_none())
+        .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .collect();
+    (txs.values())
+        .filter_map(|e| Some((e, e.context.block_info()?.height())))
+        .filter(|(e, _)| (e.tx.input.iter()).any(|i| unmined.contains(&i.previous_output)))
+        .map(|(_, h)| h)
+        .collect()
+}
+
 /// The outpoints the wallet's transactions spend by Dash Core's
 /// `CWallet::IsSpent` (v24.0.0-rc.6 8d195f18 wallet/wallet.cpp:755-770): the
 /// spender is in a block, or out of one (depth 0, :4072-4082) and not
@@ -487,14 +527,24 @@ pub(crate) fn proven_settled(
     chainlock: Option<(u32, dashcore::BlockHash)>,
     headers: &HashMap<u32, dashcore::BlockHash>,
 ) -> Vec<Txid> {
-    let locked = chainlock.is_some_and(|(height, hash)| headers.get(&height) == Some(&hash));
     (candidates.into_iter())
-        .filter(|(_, block)| match block {
-            None => true,
-            Some((height, hash)) => locked && headers.get(height) == Some(hash),
-        })
+        .filter(|(_, block)| block.is_none_or(|b| proven_final(b, chainlock, headers)))
         .map(|(t, _)| t)
         .collect()
+}
+
+/// Whether the SPV header chain `headers` proves the block `(height, hash)`
+/// final: it holds that block, at or below the block of the wallet's own
+/// `chainlock`, which it holds too. A stored context, a height or a
+/// missing header proves nothing.
+pub(crate) fn proven_final(
+    (height, hash): (u32, dashcore::BlockHash),
+    chainlock: Option<(u32, dashcore::BlockHash)>,
+    headers: &HashMap<u32, dashcore::BlockHash>,
+) -> bool {
+    chainlock.is_some_and(|(cl_height, cl_hash)| {
+        height <= cl_height && headers.get(&cl_height) == Some(&cl_hash)
+    }) && headers.get(&height) == Some(&hash)
 }
 
 #[derive(Debug, Default)]
@@ -523,6 +573,11 @@ pub(crate) struct WalletHistory {
     /// Records only read from storage are not among them (platform-wallet
     /// rebuilds no records at load).
     pub session_held: HashSet<Txid>,
+    /// The last load of the history missed a stored record or mark.
+    pub load_incomplete: bool,
+    /// The spend claims restored this session, by coin, with the payment
+    /// each names.
+    pub claimed: HashMap<OutPoint, Txid>,
     /// A ProRegTx, or an output one names as its collateral, was merged
     /// since the masternode follower last locked this wallet's collaterals
     /// (MG-00 D9).
@@ -3026,6 +3081,83 @@ mod tests {
             (0..16).all(|n| !spent.contains(&coin(100 + n))),
             "no A held"
         );
+    }
+
+    /// #170 case 14: only another transaction that spends one of a
+    /// payment's inputs in a block of the header chain at or below the
+    /// wallet's ChainLock overrides its InstantSend lock; a block above it,
+    /// a record's own ChainLocked context or another lock does not.
+    #[test]
+    fn only_a_chainlocked_spend_of_an_input_beats_a_payment() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let spend = |n: u8, coins: &[OutPoint], context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(n.into(), &hash_addr(9))],
+                ),
+                context,
+            )
+        };
+        let locked = || TransactionContext::InstantSend(dashcore::InstantLock::default());
+        let payment = spend(1, &[coin(1), coin(2)], locked());
+        let txid = payment.tx.txid();
+        let active = HashMap::from([(12, BlockHash::all_zeros())]);
+        let beaten_on =
+            |winner: TxEntry, chainlock: Option<u32>, active: &HashMap<u32, BlockHash>| {
+                let mut active = active.clone();
+                let chainlock = chainlock.map(|h| {
+                    (
+                        h,
+                        *active
+                            .entry(h)
+                            .or_insert(BlockHash::from_byte_array([7; 32])),
+                    )
+                });
+                let txs = HashMap::from([(txid, payment.clone()), (winner.tx.txid(), winner)]);
+                chainlock_beaten(&txs, &txid, chainlock, &active)
+            };
+        let beaten = |winner, chainlock| beaten_on(winner, chainlock, &active);
+        let chainlocked =
+            TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
+        assert!(beaten(spend(2, &[coin(2)], chainlocked.clone()), Some(12)));
+        assert!(
+            !beaten(spend(2, &[coin(2)], chainlocked.clone()), None),
+            "a ChainLocked context alone"
+        );
+        assert!(beaten(spend(2, &[coin(2)], in_block(12, 0)), Some(12)));
+        assert!(!beaten(spend(2, &[coin(2)], in_block(12, 0)), Some(11)));
+        assert!(!beaten(spend(2, &[coin(2)], in_block(12, 0)), None));
+        assert!(!beaten(spend(2, &[coin(2)], locked()), Some(12)));
+        assert!(!beaten(spend(2, &[coin(3)], chainlocked.clone()), Some(12)));
+        let forked = HashMap::from([(12, BlockHash::from_byte_array([1; 32]))]);
+        let winner = || spend(2, &[coin(2)], chainlocked.clone());
+        assert!(
+            !beaten_on(winner(), Some(12), &forked),
+            "a fork replaced it"
+        );
+        assert!(!beaten_on(winner(), Some(12), &HashMap::new()), "no header");
+        let txs = HashMap::from([(txid, payment.clone()), (winner().tx.txid(), winner())]);
+        let lock = Some((13, BlockHash::from_byte_array([7; 32])));
+        assert!(
+            !chainlock_beaten(&txs, &txid, lock, &active),
+            "the ChainLock's header is not known"
+        );
+        let alone = HashMap::from([(txid, payment.clone())]);
+        let lock = Some((12, BlockHash::all_zeros()));
+        assert!(!chainlock_beaten(&alone, &txid, lock, &active));
+        let mut mined = payment.clone();
+        mined.context = in_block(12, 0);
+        let alone = HashMap::from([(txid, mined)]);
+        assert!(
+            !chainlock_beaten(&alone, &txid, lock, &active),
+            "not by itself"
+        );
+        let txs = HashMap::from([(txid, payment.clone()), (winner().tx.txid(), winner())]);
+        assert_eq!(rival_heights(&txs), BTreeSet::from([12]));
+        let unrelated = spend(3, &[coin(3)], in_block(7, 0));
+        let txs = HashMap::from([(txid, payment.clone()), (unrelated.tx.txid(), unrelated)]);
+        assert!(rival_heights(&txs).is_empty());
     }
 
     /// #170 case 1: a payment whose mark holds its transaction and that

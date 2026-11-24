@@ -82,6 +82,7 @@ mod recovery_tests;
 mod registration;
 pub(crate) mod registration_flow;
 pub(crate) mod registration_ledger;
+mod registration_platform;
 mod registration_rows;
 #[cfg(test)]
 mod registration_tests;
@@ -129,9 +130,10 @@ pub use contacts::{
     RequestOutcome, ScannedCode, ScannedContact,
 };
 pub use credits::{
-    CoreMax, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding, TopUpOutcome,
-    TopUpQuote, TopUpState, WithdrawAmount, WithdrawOutcome, WithdrawQuote,
-    WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal, WithdrawalStatus,
+    CoreMax, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding,
+    TopUpFromPlatformOutcome, TopUpFromPlatformQuote, TopUpOutcome, TopUpQuote, TopUpState,
+    WithdrawAmount, WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome,
+    WithdrawToPlatformQuote, Withdrawal, WithdrawalStatus,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
@@ -170,9 +172,10 @@ pub use profile::{
     ProfileBaseline, ProfileEdit, ProfileField, ProfileLimits,
 };
 pub use registration::{
-    FaucetLockKey, FinishReport, InitialProfile, RegistrationFailure, RegistrationFunding,
-    RegistrationInvitation, RegistrationPhase, RegistrationQuote, RegistrationRequest,
-    RegistrationStatus, RegistrationWait, ShieldedCheck, ShieldedCheckState, ShieldedReadiness,
+    FaucetLockKey, FinishReport, InitialProfile, PlatformRegistrationQuote, RegistrationFailure,
+    RegistrationFunding, RegistrationInvitation, RegistrationPhase, RegistrationQuote,
+    RegistrationRequest, RegistrationStatus, RegistrationWait, ShieldedCheck, ShieldedCheckState,
+    ShieldedReadiness,
 };
 pub use shielded::{
     MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote,

@@ -22,7 +22,7 @@ extension L10n {
 
         public static let abandonTitle = "Abandon transaction"
         public static let abandonQuestion =
-            "Abandon this transaction? Its inputs become spendable again and its amount no longer counts toward the balance."
+            "Abandon this transaction? Dash Wallet stops counting it, and any coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again."
         public static let abandonMayConfirm =
             "This wallet cannot see whether the network still holds the transaction, so it may still confirm."
         public static let abandoned = "The transaction was abandoned."
@@ -37,6 +37,10 @@ extension L10n {
             case .coinbase: "Mined transactions cannot be abandoned or resent."
             case .inMempool: "The network still has this transaction."
             case .notSentByWallet: "This transaction was not sent by this wallet."
+            case .rescanFirst:
+                "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+            case .settledDescendant:
+                "This transaction can't be abandoned. A later transaction that spends from it is already locked or confirmed, so this one will confirm too."
             }
         }
 

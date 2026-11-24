@@ -36,10 +36,13 @@ fn contested_names() -> ContestedNames {
                     NameContender {
                         identity: ID1.into(),
                         votes: Some(9),
+                        name: Some("Alice".into()),
                     },
+                    // No document came back for it (MG-11 F1).
                     NameContender {
                         identity: ID2.into(),
                         votes: Some(4),
+                        name: None,
                     },
                 ],
                 // The evonode b2 (weight 4) votes Lock here: Platform's
@@ -54,6 +57,7 @@ fn contested_names() -> ContestedNames {
                 contenders: vec![NameContender {
                     identity: ID2.into(),
                     votes: Some(0),
+                    name: Some("Dash-Pay".into()),
                 }],
                 lock_votes: Some(0),
                 // b2's Abstain, weight 4.

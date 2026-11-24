@@ -1123,7 +1123,7 @@ fn a_raised_lookahead_keeps_a_coin_past_a_spent_bridge_counted_once() {
 /// past the spent bridge, left in BIP44, and an account the raise can't
 /// reach. The other accounts are raised, the restore still takes the coin
 /// home, the hub reads the wallet before the error (naming that account)
-/// returns, no lookahead is stored, and a replay counts the coin once.
+/// returns, and a replay counts the coin once.
 #[test]
 fn a_partial_recovery_raise_still_takes_a_coin_past_a_spent_bridge_home_counted_once() {
     let (_dir, engine, session, id) = engine_wallet();
@@ -1139,7 +1139,6 @@ fn a_partial_recovery_raise_still_takes_a_coin_past_a_spent_bridge_home_counted_
     let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
     assert_eq!(gap(&engine, &session, id, cj()), raised);
     assert_eq!(gap(&engine, &session, id, bip44()), raised);
-    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
     assert_home(&engine, &session, id, &coin);
     replay(&engine, &session, id, &history);
     assert_home(&engine, &session, id, &coin);
@@ -1147,8 +1146,8 @@ fn a_partial_recovery_raise_still_takes_a_coin_past_a_spent_bridge_home_counted_
 
 /// Sol r1 M1 through the recovery scan's raise, its restore failing: the
 /// coin past the spent bridge stays where the load left it (BIP44), counted
-/// once; the hub reads the wallet before the error returns; no lookahead is
-/// stored. A replay copies it into CoinJoin; the replay's block event starts
+/// once; the hub reads the wallet before the error returns. A replay copies
+/// it into CoinJoin; the replay's block event starts
 /// the reconcile, which leaves one copy, at home. The next load keeps it
 /// there.
 #[test]
@@ -1165,7 +1164,6 @@ fn a_failed_recovery_restore_keeps_a_coin_past_a_spent_bridge_counted_once() {
 
     assert!(error.contains("restoring coins past the gap"), "{error}");
     assert!(!error.contains("raising the lookahead"), "{error}");
-    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
     assert_eq!(
         session.hub.wallet_state(&id).unwrap().balance.total(),
         VALUE
@@ -1203,7 +1201,6 @@ fn a_recovery_raise_failing_twice_names_both_failures() {
     assert!(error.contains("restoring coins past the gap"), "{error}");
     assert!(error.contains("raising the lookahead to 1000"), "{error}");
     assert!(error.contains("BIP44 #1"), "{error}");
-    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
 }
 
 /// Signs, through the session, a PSBT spending `outpoint` of `prev`: whether
@@ -2609,17 +2606,20 @@ fn a_restored_backup_raises_its_lookahead_before_the_wallet_is_registered() {
     assert_eq!(gap(&engine, &session, id, bip44()), 200);
 }
 
-/// Review r7 finding 3: CoinJoin Recovery whose larger lookahead cannot be
-/// stored is refused, rather than rescanning with a range a restart would
-/// lose.
+/// CoinJoin Recovery stores the replay it owes from the birth and its
+/// larger lookahead in one write: when that write fails, neither is stored,
+/// so no replay is owed without the range it needs. Before, the replay was
+/// stored first, and a failure or a quit before the lookahead left it owed
+/// with the narrow BIP44 range.
 #[test]
-fn a_recovery_scan_whose_lookahead_cannot_be_stored_is_refused() {
+fn a_recovery_scan_whose_write_fails_stores_neither_its_replay_nor_its_lookahead() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, session) = open_spv_engine(dir.path().join("data"));
     create_vault(&engine, &session);
     let id = created(&engine, &session);
     store_checkpoint(&engine, &session, id, HEIGHT);
     start_offline_spv(&engine, &session);
+    let marker = wide_scan(&engine, &session, id);
 
     let recovered = failing(&crate::keys::FAIL_LOOKAHEAD_WRITE, id, || {
         engine.block_on(async {
@@ -2632,10 +2632,73 @@ fn a_recovery_scan_whose_lookahead_cannot_be_stored_is_refused() {
     });
 
     assert!(
-        matches!(recovered, Ok(Err(_))),
-        "refused at once: {recovered:?}"
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("test: lookahead not stored")),
+        "refused at the write: {recovered:?}"
     );
     assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    assert_eq!(wide_scan(&engine, &session, id), marker);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
+/// CoinJoin Recovery that stops right after its write, as a quit there
+/// would: the next open raises the BIP44 range to the stored lookahead and
+/// replays from the wallet's birth, which finds a payment to BIP44 index
+/// 150 below the old checkpoint.
+#[test]
+fn a_recovery_scan_that_quits_after_its_write_replays_with_its_lookahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let birth = birth_height(&engine, &session, id).saturating_sub(1);
+    let to = bip44_address(&engine, &session, id, 150);
+    let tx = pays(1, &to);
+    let data = session.data_dir().to_path_buf();
+    (crate::coinjoin::QUIT_AFTER_RECOVERY_WRITE_IN
+        .lock()
+        .unwrap())
+    .push(data);
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            session.coinjoin_recovery_scan(id),
+        )
+        .await
+    });
+    assert!(
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("test: quit after the write")),
+        "{recovered:?}"
+    );
+    assert!(gap(&engine, &session, id, bip44()) < crate::coinjoin::RECOVERY_LOOKAHEAD);
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(crate::coinjoin::RECOVERY_LOOKAHEAD)
+    );
+    assert_eq!(
+        gap(&engine, &session, id, bip44()),
+        crate::coinjoin::RECOVERY_LOOKAHEAD
+    );
+    assert_eq!(synced_height(&engine, &session, id), birth);
+    assert_eq!(replay_record(&engine, &session, id), Some((birth, HEIGHT)));
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+    replay(&engine, &session, id, std::slice::from_ref(&tx));
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[(OutPoint::new(tx.txid(), 0), to)],
+        bip44(),
+        VALUE,
+    );
 }
 
 /// Review r7 finding 2: a wallet scanned to 1,000 holds a cancelled replay
@@ -3205,10 +3268,10 @@ fn an_attach_stores_its_replay_before_its_lookahead() {
     );
 }
 
-/// Review r2 finding 2, CoinJoin Recovery: one whose replay obligation
-/// cannot be stored is refused before it stores its larger lookahead.
+/// CoinJoin Recovery whose wide-scan marker cannot be read is refused
+/// before it stores anything.
 #[test]
-fn a_recovery_scan_stores_its_replay_before_its_lookahead() {
+fn a_recovery_scan_whose_marker_cannot_be_read_stores_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, session) = open_spv_engine(dir.path().join("data"));
     create_vault(&engine, &session);
@@ -3226,8 +3289,12 @@ fn a_recovery_scan_stores_its_replay_before_its_lookahead() {
         })
     });
 
-    assert!(matches!(recovered, Ok(Err(_))), "refused at once");
+    assert!(
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("test: marker not read")),
+        "refused at the read: {recovered:?}"
+    );
     assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    assert_eq!(replay_record(&engine, &session, id), None);
 }
 
 /// Review r2 finding 4: a birth height that cannot be stored leaves the

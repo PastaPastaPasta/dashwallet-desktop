@@ -29,7 +29,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   autohideBalance: false,
   autoLockSecs: null,
   subtractFeeByDefault: false,
-  showMasternodes: false,
+  masternodesItem: "auto",
   masternodesTab: "myMasternodes",
   // dw-app's default is false (the first-run notice); the fixture starts past it so a scenario
   // opens on its screen, and `pre-release-notice` is the one that shows it.
@@ -88,6 +88,12 @@ export interface FixtureFile {
 }
 
 export interface SettingsWorld {
+  /** `open_backup_directory` calls the fixture took (it opens nothing). */
+  foldersOpened?: number;
+  /** No automatic backup has created the backup folder yet (a pruned last backup leaves it). */
+  backupFolderMissing?: boolean;
+  /** `open_backup_directory` finds the folder but no file manager opens it. */
+  folderOpenFails?: boolean;
   /** `<data root>/settings.json` (U-04 D2). */
   ui: UiSettings;
   /** Registered wallets `unload_wallet` closed: still in `World.wallets`, but every
@@ -367,6 +373,12 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     automatic_backup_failures: (_, { world }) =>
       world.settings.backupFailures.filter((f) => world.wallets.some((w) => w.summary.walletId === f.walletId)),
     backup_directory: () => FIXTURE_BACKUP_DIR,
+    open_backup_directory: (_, { world }) => {
+      if (world.settings.backupFolderMissing) throw fail("app.backup_folder_missing", "fixture: the backup folder is missing");
+      if (world.settings.folderOpenFails) throw fail("app.folder_open", "fixture: the file manager did not open");
+      world.settings.foldersOpened = (world.settings.foldersOpened ?? 0) + 1;
+      return null;
+    },
     backup_policy: (_, { world }) => ({ keep: world.settings.keep, directory: FIXTURE_BACKUP_DIR }),
     set_backup_policy: ({ keep }, { world }) => {
       if (!Number.isInteger(keep) || keep < 0 || keep > MAX_KEEP) throw fail("invalid_argument", "keep 0 to 10 backups");

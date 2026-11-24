@@ -1906,6 +1906,14 @@ input[type="radio"]:disabled {
   user-select: text;
 }
 
+/* Amounts in a confirm list: tabular digits, aligned on their last digit, so the decimals line up. An amount reads
+ * left to right in any language, so its cell does too, and its end is the right in a right-to-left window as well. */
+.detail-amount {
+  direction: ltr;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
 .detail-note {
   color: var(--dw-role-text-secondary);
 }
@@ -4534,6 +4542,10 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-xs);
 }
 
+.shielded-card-actions > * {
+  white-space: nowrap;
+}
+
 .platform-card-title {
   margin: 0;
   font-size: var(--dw-type-subhead-medium-size);
@@ -4754,6 +4766,11 @@ button.bell-row-open:focus-visible {
 
 .pay-shielded {
   margin: var(--dw-space-m) 0 0;
+}
+
+.pay-shielded-route {
+  display: flex;
+  margin-top: calc(-1 * var(--dw-space-s));
 }
 
 /* ------------------------------------------------------------------ Protocol advisory */
@@ -5329,6 +5346,20 @@ button.bell-row-open:focus-visible {
   border-color: var(--dw-role-text-link);
 }
 
+/* "Pay with": a source that cannot pay says why under it. */
+.topup-choice[data-disabled] {
+  cursor: default;
+}
+
+.topup-sources {
+  margin-bottom: var(--dw-space-s);
+}
+
+/* A top-up from Platform names the address its fee is taken from: a long run that wraps. */
+.topup-platform-message {
+  overflow-wrap: anywhere;
+}
+
 .topup-choice-amount {
   font-weight: var(--dw-type-subhead-medium-weight);
 }
@@ -5526,8 +5557,16 @@ button.bell-row-open:focus-visible {
 
 .mg-header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--dw-space-s);
+  min-width: 0;
+}
+
+/* A disabled action's reason wraps under it, end-aligned, instead of widening the header. */
+.mg-header-actions > .dash-button-why {
+  text-align: end;
 }
 
 .page-masternodes .page-column {
@@ -5720,6 +5759,39 @@ button.bell-row-open:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: var(--dw-space-m);
+}
+
+/* Masternode keys (MG-10 §1.5): one row per keypair, the open one with its facts. */
+.mg-key-list {
+  margin: var(--dw-space-m) 0;
+  padding: 0 var(--dw-space-m);
+  list-style: none;
+}
+
+.mg-key-row {
+  padding: var(--dw-space-s) 0;
+}
+
+.mg-key-row + .mg-key-row {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.mg-key-secret {
+  display: grid;
+  gap: var(--dw-space-xs);
+  justify-items: start;
+}
+
+.mg-key-no-copy {
+  user-select: none;
+  -webkit-user-select: none;
+  overflow-wrap: anywhere;
+}
+
+.mg-key-secret-line {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
 }
 
 /* Votes bar: yes / no / abstain segments by weight, with the funding threshold as a tick. */
@@ -6037,6 +6109,20 @@ button.bell-row-open:focus-visible {
   flex-wrap: nowrap;
 }
 
+/* The wizard's long steps keep the footer, and the primary action, in view while they scroll. */
+.sheet .mg-sheet-footer-sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--dw-role-card);
+}
+
+/* A 64-hex hash breaks in the middle (its <wbr>), never before its last character. */
+.mg-hash {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
 .sheet .mg-sheet-body {
   padding-top: var(--dw-space-xxs);
 }
@@ -6098,6 +6184,11 @@ button.bell-row-open:focus-visible {
 
 .mg-node-result {
   text-align: end;
+}
+
+/* A username vote's present choice names its contender: "Alice (8ZtW…R97P)". */
+.mg-nodes-names .mg-node {
+  grid-template-columns: 20px minmax(0, 1fr) 64px 160px;
 }
 
 /* A "More" button's menu (mg-00.css's .mg-menu, with real menu items). */
@@ -6269,8 +6360,8 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-text-tertiary);
 }
 
-/* A group, not a fieldset, as on Restore options (issue 108): a flex fieldset's legend could move
-   the centred sheet under the first click on WebKitGTK. */
+/* A radio group, not a fieldset, as on Restore options (issue 108): a flex fieldset's legend could
+   move the centred sheet under the first click on WebKitGTK. */
 .mg-choices {
   display: flex;
   flex-direction: column;

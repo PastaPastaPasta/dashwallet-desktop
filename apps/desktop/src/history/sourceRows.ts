@@ -19,11 +19,13 @@ export const SourceRowText = {
   platformOutgoing: "Sent from Platform",
   moveToCore: "Moved to Dash wallet",
   platformSend: "Sent to a Platform address",
+  /** A top-up of the wallet's own identity paid from the Platform addresses. */
+  toIdentity: "Credit top-up from Platform",
   /** "Add from Dash wallet": the lock of the Core coins and what Platform added for it. */
   fromCore: "Moved from Dash wallet",
   /** A move the engine superseded with a retry: neither a loss nor a completed move. */
   replaced: "Replaced by a retry",
-  /** A move or send that failed by height but may still execute: not "Not accepted". */
+  /** A move, send or top-up that failed by height but may still execute: not "Not accepted". */
   mayLand: "May still go through",
   shieldedAdd: "Added to Shielded",
   shieldedToPlatform: "Moved to Platform",
@@ -77,8 +79,9 @@ export function platformRow(a: PlatformActivity): TxRow {
   const received = a.kind === "incoming" || a.kind === "fromCore";
   // A move with no proved arrival shows what left (`credits`), never an amount that "arrives".
   const amount = replaced ? 0 : move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
-  const paid = a.kind === "outgoing" || a.kind === "send" || a.kind === "contactPayment";
-  const mayLand = a.state === "failed" && a.mayLand && (move || a.kind === "send" || a.kind === "contactPayment");
+  const topUp = a.kind === "toIdentity";
+  const paid = a.kind === "outgoing" || a.kind === "send" || a.kind === "contactPayment" || topUp;
+  const mayLand = a.state === "failed" && a.mayLand && (move || a.kind === "send" || a.kind === "contactPayment" || topUp);
   const kind = a.state === "done" || replaced ? "confirmed" : a.state === "pending" || mayLand ? "unconfirmed" : "notAccepted";
   return {
     ...base(`platform:${a.kind}:${a.id}${replaced ? REPLACED : mayLand ? MAY_LAND : ""}`, statusOf(kind), a.at, paid && amount !== 0 ? -amount : amount),
@@ -108,7 +111,8 @@ export function shieldedRow(a: ShieldedActivity): TxRow {
 
 export function sourceRowTitle(row: TxRow): string {
   const kind = row.txid.split(":")[1];
-  if (rowSource(row) === "platform") return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "send" ? SourceRowText.platformSend : kind === "fromCore" ? SourceRowText.fromCore : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
+  if (rowSource(row) === "platform")
+    return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
   switch (kind) {
     case "shield":
     case "shieldFromCore":

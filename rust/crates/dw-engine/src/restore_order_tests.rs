@@ -76,6 +76,14 @@ fn launch(root: &Path) -> (Engine, Arc<NetworkSession>) {
     (engine, session)
 }
 
+/// Shuts `engine` down, so the next [`launch`] on its data folder in this
+/// process can open it: a dropped engine closes its sessions in the
+/// background.
+fn close(engine: Engine, session: Arc<NetworkSession>) {
+    drop(session);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 fn import_phrase(engine: &Engine, session: &Arc<NetworkSession>, phrase: &[u8]) -> WalletId {
     engine
         .block_on(session.import_wallet(
@@ -111,6 +119,7 @@ fn backup_of(dir: &Path, phrase: &[u8], txid: &'static str, n: u8, dest: &Path) 
     engine
         .block_on(session.backup_wallet(id, dest.to_path_buf(), None))
         .unwrap();
+    close(engine, session);
     id
 }
 
@@ -546,6 +555,7 @@ fn a_registration_left_without_its_seed_or_rows_is_recovered_by_restoring_again(
         engine
             .block_on(session.appdb_op(move |db| db.delete_wallet(&scope)))
             .unwrap();
+        close(engine, session);
     }
     let (engine, session) = launch(&root);
     assert!(registered(&engine, &session, id));

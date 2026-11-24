@@ -34,7 +34,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
   const model = recoveryFor(backend, walletId);
   useModel(model);
   const query = useUnfinishedTransfers(walletId);
-  const fmt = useFormats(network);
+  const fmt = useFormats(network, "compact");
   const [details, setDetails] = useState(false);
   const errorText = (e: unknown) => shieldedErrorText(e, fmt.credits, fmt.duffs);
   const status = useShieldedStatus(walletId);
@@ -94,7 +94,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
               <p key={p.txid} className="platform-card-text" data-testid={p.consumptionUnknown ? "shielded-checking" : "shielded-unfinished"}>
                 {p.consumptionUnknown ? (
                   <>
-                    <strong>{S.done.checking.title}.</strong> {S.done.checking.text}
+                    <strong>{S.done.checking.title}.</strong> {S.done.checking.row}
                   </>
                 ) : (
                   S.card.unfinished(fmt.duffs(p.duffs))
@@ -170,7 +170,7 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
   const tr = useT();
   useModel(model);
   const query = useUnfinishedTransfers(walletId);
-  const fmt = useFormats(network);
+  const fmt = useFormats(network, "compact");
   const errorText = (e: unknown) => shieldedErrorText(e, fmt.credits, fmt.duffs);
   const status = useShieldedStatus(walletId);
   const rows = sheetRows(query.isSuccess ? withoutPendingShields(query.data, status.data?.pendingShields) : null, model.results);

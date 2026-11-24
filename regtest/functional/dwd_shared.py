@@ -55,6 +55,13 @@ Sessions:
       minimum (one duff less is refused), dashd signs it (`shared_sign`) and B imports the
       signature as a bare array for its session, combines and sends: Core mines dashd's
       `shared_combine` bytes, the masternode leaves the list, and P's unsent request reads dead.
+  X   a user's way out through Dash Core, twice: A and C register S4, then S5 (a 100-block early
+      period), A creates its standby and saves Core's file; read back from disk, its immediate line
+      passes dashd's `testmempoolaccept` and its full one is refused until the early period ends.
+      dashd's `sendrawtransaction` takes a line verbatim and mines it: S4's immediate line at once,
+      S5's full line at its first valid block. Each masternode leaves the list, A's and C's wallets
+      read it `removed`, A's session asks for nothing and A's history reads the dissolution
+      `Confirmed`.
 
 Run (DWCLI = a built dwcli, DASHCORE_DIR = Dash Core v24.0.0-rc.3; on a loaded machine add
 `--timeout-factor=4`, dashd's start alone can take over the default 60 s):
@@ -76,6 +83,7 @@ PHRASE_C = "letter advice cage absurd amount doctor acoustic avoid letter advice
 FEE = 50_000  # the coordinator's registration fee, duffs
 EARLY_BLOCKS = 720
 EARLY_PENALTY = 5 * COIN
+X_EARLY_BLOCKS = 100
 SEQUENCE_FINAL = 0xFFFFFFFF
 
 
@@ -699,6 +707,56 @@ class DwdShared(DwdProtx):
         assert_equal({o["id"]: o for o in b.mn(h, "operations")}[op["id"]]["state"]["kind"], "confirmed")
         assert_equal(shared(b, "show", t2["id"])["stage"]["kind"], "confirmed")
         assert_equal(shared(b, "show", t1["id"])["stage"], {"kind": "dead", "reason": "delisted"})
+
+        self.log.info("6. X: S4's and S5's standby files, saved early, sent by dashd's sendrawtransaction")
+        for full in (False, True):
+            inv = shared(a, "start", "--share", f"A:{700 * COIN}", "--share", f"C:{300 * COIN}",
+                         "--service", f"127.0.0.1:{p2p_port(19 + full)}",
+                         "--operator-key", node.bls("generate")["public"], "--early-period-blocks", str(X_EARLY_BLOCKS),
+                         "--early-penalty", str(EARLY_PENALTY), "--fee", str(FEE))
+            sid = inv["session"]["id"]
+            join(c, inv["message"]["text"], 1, "refund")
+            locked = shared(a, "lock", sid, "--revision", str(shared(a, "show", sid)["revision"]))
+            got = shared(c, "import", stdin=locked["message"]["text"])
+            approval = shared(c, "approve", sid, "--consent-hash", got["session"]["consent_hash"])
+            shared(a, "import", stdin=approval["message"]["text"])
+            shared(c, "import", stdin=shared(a, "message", sid)["text"])
+            shared(a, "import", stdin=shared(c, "sign", sid)["message"]["text"])
+            sent, h = self.send(a, h, sid)
+            pro_tx = sent["session"]["pro_tx_hash"]
+            valid_from = self.core_info(pro_tx)[1]["registeredHeight"] + X_EARLY_BLOCKS
+            assert self.tip() < valid_from - 1, (self.tip(), valid_from)
+            created = shared(a, "create-standby", pro_tx)
+            assert_equal([(s["share_index"], s["full"], s["immediate"], s["full_valid_from"]) for s in created],
+                         [(0, True, True, valid_from)])
+            out = os.path.join(self.options.tmpdir, f"standby-x{int(full)}.txt")
+            shared(a, "export-standby", pro_tx, "--share-index", "0", "--out", out)
+            # The saved file, as a user keeps it: read back from disk, its lines taken verbatim.
+            with open(out, encoding="utf-8") as f:
+                saved = f.read().split("\n")
+            line_after = lambda prefix: saved[1 + next(i for i, l in enumerate(saved) if l.startswith(prefix))]
+            full_line = line_after(f"FULL PRINCIPAL — valid from block {valid_from} ")
+            immediate_line = line_after("IMMEDIATE — pays")
+            assert_equal(node.testmempoolaccept([immediate_line])[0]["allowed"], True)
+            assert_equal(node.testmempoolaccept([full_line])[0]["reject-reason"], "bad-prodis-penalty-floor")
+            if full:
+                h = self.mine(valid_from - 1 - self.tip())
+            line = full_line if full else immediate_line
+            txid = node.sendrawtransaction(line)
+            h = self.mine(6)  # RECOMMENDED_CONFIRMATIONS
+            mined = node.getrawtransaction(txid, True)
+            assert_equal((mined["type"], mined["confirmations"], mined["hex"]), (10, 6, line))
+            height = node.getblock(mined["blockhash"])["height"]
+            assert height == valid_from if full else height < valid_from, (height, valid_from)
+            self.log.info(f"dashd mined the file's {'full' if full else 'immediate'} line {txid} in block "
+                          f"{height} {mined['blockhash']}")
+            assert pro_tx not in {m["proTxHash"] for m in node.protx("list", "registered", True)}, pro_tx
+            for w in (a, c):
+                detail = w.mn(h, "status", pro_tx)
+                assert_equal((detail["row"]["status"], detail["list"]), ("removed", None))
+            assert_equal(shared(a, "show", sid)["next"], "nothing")
+            history = [l.split() for l in a.run("history").stdout.splitlines()]
+            assert_equal({l[4] for l in history if l[0] == txid}, {"Confirmed"})
 
 
 if __name__ == "__main__":

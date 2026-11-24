@@ -197,6 +197,8 @@ import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import type { Withdrawal } from "./generated/Withdrawal";
 import type { WithdrawOutcome } from "./generated/WithdrawOutcome";
 import type { WithdrawQuote } from "./generated/WithdrawQuote";
+import type { TopUpFromPlatformOutcome } from "./generated/TopUpFromPlatformOutcome";
+import type { TopUpFromPlatformQuote } from "./generated/TopUpFromPlatformQuote";
 import type { WithdrawToPlatformOutcome } from "./generated/WithdrawToPlatformOutcome";
 import type { WithdrawToPlatformQuote } from "./generated/WithdrawToPlatformQuote";
 import type { DashPayEventPage } from "./generated/DashPayEventPage";
@@ -207,6 +209,7 @@ import type { PublishStateName } from "./generated/PublishStateName";
 import type { FoundIdentity } from "./generated/FoundIdentity";
 import type { IdentityDetail } from "./generated/IdentityDetail";
 import type { IdentityRefresh } from "./generated/IdentityRefresh";
+import type { ProjectLinkName } from "./generated/ProjectLinkName";
 import type { ProtocolCompatibility } from "./generated/ProtocolCompatibility";
 import type { RecentNotice } from "./generated/RecentNotice";
 
@@ -329,6 +332,8 @@ export interface Backend {
   openTxInExplorer(txid: string): Promise<null>;
   /** Opens the GitHub releases page in the system browser. */
   openReleasesPage(): Promise<null>;
+  /** Opens a project page from Settings ▸ About; the URL is fixed in Rust. */
+  openProjectLink(link: ProjectLinkName): Promise<null>;
   /** The network's observed Platform protocol version and the version this build supports. */
   protocolCompatibility(): Promise<ProtocolCompatibility>;
   // Receive (U-03 D11).
@@ -416,6 +421,8 @@ export interface Backend {
   /** Wallets whose latest automatic backup failed, and when. */
   automaticBackupFailures(): Promise<AutomaticBackupFailure[]>;
   backupDirectory(): Promise<string>;
+  /** Shows the automatic-backup folder in the system file manager. */
+  openBackupDirectory(): Promise<null>;
   backupPolicy(): Promise<BackupPolicyInfo>;
   setBackupPolicy(keep: number): Promise<BackupPolicyInfo>;
   readBackupHeader(path: string): Promise<BackupFileHeader>;
@@ -610,6 +617,10 @@ export interface Backend {
   creditsWithdrawToPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawToPlatformQuote>;
   /** Moves credits to `to`, one of the wallet's own Platform addresses, under the quote's `platformOp` grant. */
   creditsWithdrawToPlatform(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawToPlatformOutcome>;
+  /** C-routes D-C3: what a top-up of `identity` from the Platform addresses gives, its fee and grant; `all` keeps the fee band on the first input. */
+  creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote>;
+  /** Tops up `identity` from the Platform addresses under the quote's `platformOp` grant. */
+  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome>;
   /** The identity's withdrawals on Platform, newest first. */
   creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;

@@ -88,6 +88,16 @@ pub enum RegistrationFunding {
         #[serde(with = "crate::dto::credits")]
         denomination: u64,
     },
+    /// From the Platform balance: the quote's `platform.fundingCredits` and
+    /// `platform.feeReserveCredits`, passed back as shown.
+    PlatformAddresses {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        funding_credits: u64,
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        fee_reserve_credits: u64,
+    },
 }
 
 impl From<RegistrationFunding> for engine::RegistrationFunding {
@@ -110,6 +120,13 @@ impl From<RegistrationFunding> for engine::RegistrationFunding {
             RegistrationFunding::Shielded { denomination } => {
                 engine::RegistrationFunding::Shielded { denomination }
             }
+            RegistrationFunding::PlatformAddresses {
+                funding_credits,
+                fee_reserve_credits,
+            } => engine::RegistrationFunding::PlatformAddresses {
+                funding_credits,
+                fee_reserve_credits,
+            },
         }
     }
 }
@@ -151,6 +168,48 @@ pub struct RegistrationQuote {
     pub grant: GrantRequest,
     /// Shielded funding only: whether the Shielded balance can pay now.
     pub readiness: Option<ShieldedReadiness>,
+    /// Platform funding only: what the Platform balance pays.
+    pub platform: Option<PlatformRegistrationQuote>,
+}
+
+/// What a registration from the Platform balance takes, in credits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformRegistrationQuote {
+    /// What the identity receives, exactly.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub funding_credits: u64,
+    /// The network fee, about: Platform meters it.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_credits: u64,
+    /// What stays on the first address for that fee.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_reserve_credits: u64,
+    /// The planned debit (the funding and the reserve), which sizes the
+    /// grant; not shown, and not a bound: Platform meters the fee.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub debit_credits: u64,
+}
+
+impl From<engine::PlatformRegistrationQuote> for PlatformRegistrationQuote {
+    fn from(q: engine::PlatformRegistrationQuote) -> Self {
+        let engine::PlatformRegistrationQuote {
+            funding_credits,
+            fee_credits,
+            fee_reserve_credits,
+            debit_credits,
+        } = q;
+        PlatformRegistrationQuote {
+            funding_credits,
+            fee_credits,
+            fee_reserve_credits,
+            debit_credits,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -205,6 +264,7 @@ impl From<engine::RegistrationQuote> for RegistrationQuote {
             available_duffs,
             grant,
             readiness,
+            platform,
         } = q;
         RegistrationQuote {
             contested,
@@ -215,6 +275,7 @@ impl From<engine::RegistrationQuote> for RegistrationQuote {
             available_duffs,
             grant: grant.into(),
             readiness: readiness.map(Into::into),
+            platform: platform.map(Into::into),
         }
     }
 }
@@ -510,6 +571,36 @@ mod tests {
                 "denomination": "3000000000",
                 "checks": [{"check": "noUnsettledSpend", "ready": false}],
                 "readyAt": 7,
+            })
+        );
+    }
+
+    #[test]
+    fn platform_funding_and_its_quote_carry_credits_as_strings() {
+        let f: RegistrationFunding = serde_json::from_str(
+            r#"{"kind":"platformAddresses","fundingCredits":"25000000","feeReserveCredits":"64500000"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            engine::RegistrationFunding::from(f),
+            engine::RegistrationFunding::PlatformAddresses {
+                funding_credits: 25_000_000,
+                fee_reserve_credits: 64_500_000,
+            }
+        );
+        let q = PlatformRegistrationQuote::from(engine::PlatformRegistrationQuote {
+            funding_credits: 25_000_000,
+            fee_credits: 21_500_000,
+            fee_reserve_credits: 64_500_000,
+            debit_credits: 89_500_000,
+        });
+        assert_eq!(
+            serde_json::to_value(&q).unwrap(),
+            serde_json::json!({
+                "fundingCredits": "25000000",
+                "feeCredits": "21500000",
+                "feeReserveCredits": "64500000",
+                "debitCredits": "89500000",
             })
         );
     }

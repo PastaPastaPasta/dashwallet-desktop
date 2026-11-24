@@ -155,80 +155,119 @@ impl Json {
         out
     }
 
-    fn write_into(&self, pretty: usize, indent_level: usize, out: &mut Vec<u8>) {
+    /// The length of [`Json::write`]'s output, counted without writing it.
+    pub fn written_len(&self, pretty_indent: usize) -> usize {
+        let mut count = Count(0);
+        self.write_into(pretty_indent, 0, &mut count);
+        count.0
+    }
+
+    fn write_into(&self, pretty: usize, indent_level: usize, out: &mut impl Out) {
         let level = indent_level.max(1);
         match self {
-            Json::Null => out.extend_from_slice(b"null"),
-            Json::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
-            Json::Num(t) => out.extend_from_slice(t.as_bytes()),
+            Json::Null => out.bytes(b"null"),
+            Json::Bool(b) => out.bytes(if *b { b"true" } else { b"false" }),
+            Json::Num(t) => out.bytes(t.as_bytes()),
             Json::Str(s) => write_string(s, out),
             Json::Arr(values) => {
-                out.push(b'[');
+                out.bytes(b"[");
                 if pretty > 0 {
-                    out.push(b'\n');
+                    out.bytes(b"\n");
                 }
                 for (i, v) in values.iter().enumerate() {
-                    indent(pretty, level, out);
+                    out.spaces(pretty * level);
                     v.write_into(pretty, level + 1, out);
                     if i + 1 != values.len() {
-                        out.push(b',');
+                        out.bytes(b",");
                     }
                     if pretty > 0 {
-                        out.push(b'\n');
+                        out.bytes(b"\n");
                     }
                 }
-                indent(pretty, level - 1, out);
-                out.push(b']');
+                out.spaces(pretty * (level - 1));
+                out.bytes(b"]");
             }
             Json::Obj(entries) => {
-                out.push(b'{');
+                out.bytes(b"{");
                 if pretty > 0 {
-                    out.push(b'\n');
+                    out.bytes(b"\n");
                 }
                 for (i, (k, v)) in entries.iter().enumerate() {
-                    indent(pretty, level, out);
+                    out.spaces(pretty * level);
                     write_string(k, out);
-                    out.push(b':');
+                    out.bytes(b":");
                     if pretty > 0 {
-                        out.push(b' ');
+                        out.bytes(b" ");
                     }
                     v.write_into(pretty, level + 1, out);
                     if i + 1 != entries.len() {
-                        out.push(b',');
+                        out.bytes(b",");
                     }
                     if pretty > 0 {
-                        out.push(b'\n');
+                        out.bytes(b"\n");
                     }
                 }
-                indent(pretty, level - 1, out);
-                out.push(b'}');
+                out.spaces(pretty * (level - 1));
+                out.bytes(b"}");
             }
         }
     }
 }
 
-fn indent(pretty: usize, level: usize, out: &mut Vec<u8>) {
-    out.extend(std::iter::repeat_n(b' ', pretty * level));
+/// Where the writer puts its output: the bytes, or only their count.
+trait Out {
+    fn bytes(&mut self, b: &[u8]);
+    fn spaces(&mut self, n: usize);
+}
+
+impl Out for Vec<u8> {
+    fn bytes(&mut self, b: &[u8]) {
+        self.extend_from_slice(b);
+    }
+
+    fn spaces(&mut self, n: usize) {
+        self.extend(std::iter::repeat_n(b' ', n));
+    }
+}
+
+struct Count(usize);
+
+impl Out for Count {
+    fn bytes(&mut self, b: &[u8]) {
+        self.0 = self.0.saturating_add(b.len());
+    }
+
+    fn spaces(&mut self, n: usize) {
+        self.0 = self.0.saturating_add(n);
+    }
 }
 
 /// `json_escape` with `escapes[256]` (rc.3 `univalue/lib/univalue_write.cpp:12-28`,
 /// `univalue/include/univalue_escapes.h`).
-fn write_string(s: &[u8], out: &mut Vec<u8>) {
-    out.push(b'"');
+fn write_string(s: &[u8], out: &mut impl Out) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.bytes(b"\"");
     for &b in s {
         match b {
-            b'"' => out.extend_from_slice(b"\\\""),
-            b'\\' => out.extend_from_slice(b"\\\\"),
-            0x08 => out.extend_from_slice(b"\\b"),
-            0x09 => out.extend_from_slice(b"\\t"),
-            0x0a => out.extend_from_slice(b"\\n"),
-            0x0c => out.extend_from_slice(b"\\f"),
-            0x0d => out.extend_from_slice(b"\\r"),
-            0x00..=0x1f | 0x7f => out.extend_from_slice(format!("\\u{b:04x}").as_bytes()),
-            _ => out.push(b),
+            b'"' => out.bytes(b"\\\""),
+            b'\\' => out.bytes(b"\\\\"),
+            0x08 => out.bytes(b"\\b"),
+            0x09 => out.bytes(b"\\t"),
+            0x0a => out.bytes(b"\\n"),
+            0x0c => out.bytes(b"\\f"),
+            0x0d => out.bytes(b"\\r"),
+            0x00..=0x1f | 0x7f => out.bytes(&[
+                b'\\',
+                b'u',
+                b'0',
+                b'0',
+                HEX[usize::from(b >> 4)],
+                HEX[usize::from(b & 0xf)],
+            ]),
+            _ => out.bytes(&[b]),
         }
     }
-    out.push(b'"');
+    out.bytes(b"\"");
 }
 
 /// `JSONUTF8StringFilter` (rc.3 `univalue/include/univalue_utffilter.h`),

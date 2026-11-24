@@ -54,6 +54,8 @@ export const shell = {
       masternodes: "Masternode list",
     },
     done: "Done",
+    /** Under "Up to date" while the status bar holds it through a new block (the rows may read 99.9%). */
+    processingBlock: "Processing the latest block…",
     waiting: "Waiting",
     /** `current` and `target` are block heights; `percent` is formatted. */
     progress: "{current} of {target} ({percent})",

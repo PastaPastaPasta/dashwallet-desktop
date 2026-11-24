@@ -187,9 +187,10 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
 /** Back is offered when a new quote may pass. */
 export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits");
 
-/** A move, send or contact payment Platform has not answered (`pending`) or that may still execute
- * (`mayLand`: also a `failed` one by height). They share one hold on the wallet's Platform addresses. */
-const holdingKind = (a: PlatformActivity) => a.kind === "moveToCore" || a.kind === "send" || a.kind === "contactPayment";
+/** A move, send, contact payment or top-up from Platform that Platform has not answered (`pending`) or
+ * that may still execute (`mayLand`: also a `failed` one by height). They share one hold on the wallet's
+ * Platform addresses. */
+const holdingKind = (a: PlatformActivity) => a.kind === "moveToCore" || a.kind === "send" || a.kind === "contactPayment" || a.kind === "toIdentity";
 export const isHeldOp = (a: PlatformActivity): boolean => holdingKind(a) && (a.state === "pending" || a.mayLand);
 
 /** Whether a move or send of this wallet holds the Platform addresses: recorded `pending` or able to

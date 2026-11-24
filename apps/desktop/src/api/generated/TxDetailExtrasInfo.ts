@@ -15,6 +15,11 @@ totalCredit: number,
  */
 totalDebit: number | null,
 /**
+ * Some input spends a coin this wallet holds no record of: another
+ * party's, or this wallet's whose funding it has not seen.
+ */
+inputsUnresolved: boolean,
+/**
  * Signed duffs.
  */
 net: number,

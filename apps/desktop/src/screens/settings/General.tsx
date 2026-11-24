@@ -5,6 +5,7 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
+import type { MasternodesItem } from "../../api/generated/MasternodesItem";
 import type { ThemeName } from "../../api/generated/ThemeName";
 import type { UiSettings } from "../../api/generated/UiSettings";
 import { keys, useBackend, useDustProtection, useNodeInfo } from "../../api/queries";
@@ -150,7 +151,7 @@ export function GeneralTab() {
           {t("settings.general.subtractFee")}
         </label>
         <LanguageRow choice={prefs.language} save={save} />
-        <ShowMasternodesRow checked={prefs.showMasternodes} save={save} />
+        <ShowMasternodesRow choice={prefs.masternodesItem} save={save} />
       </SettingsCard>
       <LocalCurrencyCard />
       <DustCard />
@@ -338,22 +339,44 @@ function LanguageRow({ choice, save }: { choice: string | null; save: (patch: Pa
   );
 }
 
-function ShowMasternodesRow({ checked, save }: { checked: boolean; save: (patch: Partial<UiSettings>) => Promise<boolean> }) {
+const MASTERNODES_ITEM: { item: MasternodesItem; label: "masternodesAuto" | "masternodesOn" | "masternodesOff" }[] = [
+  { item: "auto", label: "masternodesAuto" },
+  { item: "on", label: "masternodesOn" },
+  { item: "off", label: "masternodesOff" },
+];
+
+function ShowMasternodesRow({ choice, save }: { choice: MasternodesItem; save: (patch: Partial<UiSettings>) => Promise<boolean> }) {
   const t = useT();
+  const id = useId();
   const backend = useBackend();
   const { turnOn } = useTurnOnGovernance();
   const [ask, setAsk] = useState(false);
-  const change = async (on: boolean) => {
-    if (!(await save({ showMasternodes: on })) || !on) return;
+  const change = async (item: MasternodesItem) => {
+    if (!(await save({ masternodesItem: item })) || item !== "on") return;
     if (!(await backend.governanceSyncEnabled().catch(() => true))) setAsk(true);
   };
   return (
     <>
-      <label className="checkbox-row">
-        <input type="checkbox" data-testid="settings-show-masternodes" checked={checked} onChange={(e) => void change(e.target.checked)} />
-        {t("settings.general.showMasternodes")}
-      </label>
-      <Hint>{t("settings.general.showMasternodesHint")}</Hint>
+      <div className="settings-row">
+        <span className="settings-row-title" id={`${id}-masternodes`}>
+          {t("settings.general.showMasternodes")}
+        </span>
+        <div className="segmented" role="group" aria-labelledby={`${id}-masternodes`} aria-describedby={`${id}-masternodes-hint`}>
+          {MASTERNODES_ITEM.map((c) => (
+            <button
+              key={c.item}
+              type="button"
+              className="segment"
+              data-testid={`settings-show-masternodes-${c.item}`}
+              aria-pressed={choice === c.item}
+              onClick={() => void change(c.item)}
+            >
+              {t(`settings.general.${c.label}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <Hint id={`${id}-masternodes-hint`}>{t("settings.general.showMasternodesHint")}</Hint>
       {ask && (
         <QuestionSheet
           title={t("settings.general.governanceAskTitle")}

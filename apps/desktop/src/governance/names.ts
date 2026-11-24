@@ -31,8 +31,19 @@ export const NameText = withTable(
 
 // ---------------------------------------------------------------- names and choices
 
-/** "8ZtW…R97P": an identity id (base58) the facade carries without a name (D5). */
+/** "8ZtW…R97P": an identity id (base58), shortened (D5). */
 export const shortIdentity = (id: string) => (id.length > 12 ? `${id.slice(0, 4)}…${id.slice(-4)}` : id);
+
+/** A contest as far as naming its contenders goes. */
+export type NameContest = Pick<ContestedName, "label" | "contenders">;
+
+/** "Alice (8ZtW…R97P)" for a contender whose own spelling of the name Platform sent, else
+ * "8ZtW…R97P" (D5, F1). */
+export const contenderText = (identity: string, name?: string | null): string =>
+  name ? t(`${P}.contender`, { name, identity: shortIdentity(identity) }) : shortIdentity(identity);
+
+/** The spelling `contest` lists for `identity`, if any. */
+const nameIn = (identity: string, contest?: Pick<ContestedName, "contenders">) => contest?.contenders.find((x) => x.identity === identity)?.name;
 
 /** Text as DPNS compares names (MG-07 D15): lower case, `o` → `0`, `i` and `l` → `1`, so a
  * search for "Alice" finds "a11ce". */
@@ -44,11 +55,11 @@ export function sameChoice(a: NameChoice | null | undefined, b: NameChoice | nul
   return a.kind === b.kind;
 }
 
-/** "8ZtW…R97P", "Abstain", "Lock". */
-export function choiceText(c: NameChoice): string {
+/** "Alice (8ZtW…R97P)", "8ZtW…R97P", "Abstain", "Lock". */
+export function choiceText(c: NameChoice, contest?: Pick<ContestedName, "contenders">): string {
   switch (c.kind) {
     case "towardsIdentity":
-      return shortIdentity(c.identity);
+      return contenderText(c.identity, nameIn(c.identity, contest));
     case "lock":
       return t(`${P}.lock`);
     case "abstain":
@@ -56,10 +67,10 @@ export function choiceText(c: NameChoice): string {
   }
 }
 
-/** The vote button's label: "Vote for 8ZtW…R97P", "Vote Lock", "Vote Abstain". */
-export function voteButtonText(c: NameChoice | null): string {
+/** The vote button's label: "Vote for Alice (8ZtW…R97P)", "Vote Lock", "Vote Abstain". */
+export function voteButtonText(c: NameChoice | null, contest?: Pick<ContestedName, "contenders">): string {
   if (c === null) return t(`${P}.vote`);
-  if (c.kind === "towardsIdentity") return t(`${P}.voteFor`, { choice: choiceText(c) });
+  if (c.kind === "towardsIdentity") return t(`${P}.voteFor`, { choice: choiceText(c, contest) });
   return c.kind === "lock" ? t(`${P}.voteLock`) : t(`${P}.voteAbstain`);
 }
 
@@ -101,6 +112,8 @@ export interface TallyRowView {
   title: string;
   /** The full identity id for a contender (title and copy), else `null`. */
   identity: string | null;
+  /** A contender shown by its name, not by its id alone (F1). */
+  named: boolean;
   votes: number;
   /** Percent of every vote cast on the name. */
   pct: number;
@@ -135,8 +148,9 @@ export function tallyView(c: ContestedName): TallyView {
   const rows: TallyRowView[] = [
     ...contenders.map((x, i) => ({
       key: `id:${x.identity}`,
-      title: shortIdentity(x.identity),
+      title: contenderText(x.identity, x.name),
       identity: x.identity,
+      named: !!x.name,
       votes: x.v,
       pct: pct(x.v),
       leading: i === 0 && top > 0 && !tied && !lockLeads,
@@ -145,6 +159,7 @@ export function tallyView(c: ContestedName): TallyView {
       key: "lock",
       title: t(`${P}.lock`),
       identity: null,
+      named: false,
       votes: lock,
       pct: pct(lock),
       leading: lockLeads,
@@ -153,6 +168,7 @@ export function tallyView(c: ContestedName): TallyView {
       key: "abstain",
       title: t(`${P}.abstain`),
       identity: null,
+      named: false,
       votes: abstain,
       pct: pct(abstain),
       leading: false,
@@ -163,7 +179,7 @@ export function tallyView(c: ContestedName): TallyView {
   else if (lockLeads) lead = t(`${P}.lead.lock`, { lock, count: total });
   else if (top === 0) lead = t(`${P}.lead.noContender`);
   else if (tied) lead = t(`${P}.lead.tied`, { count: top, contenders: topCount });
-  else lead = t(`${P}.lead.leads`, { name: shortIdentity(contenders[0].identity), votes: top, count: total });
+  else lead = t(`${P}.lead.leads`, { name: contenderText(contenders[0].identity, contenders[0].name), votes: top, count: total });
   return { rows, total, lead };
 }
 
@@ -178,13 +194,13 @@ export interface ContestRowView {
   chip: ChipView | null;
 }
 
-/** "You: …" over the wallet's voters on `label` (MG-09's "You:" line, D8). */
-export function youText(voters: NameVoter[], label: string): string | null {
+/** "You: …" over the wallet's voters on `contest` (MG-09's "You:" line, D8). */
+export function youText(voters: NameVoter[], contest: NameContest): string | null {
   if (voters.length === 0) return null;
-  const choices = voters.map((v) => voterState(v, label).choice);
+  const choices = voters.map((v) => voterState(v, contest.label).choice);
   const voted = choices.filter((c) => c !== null);
   if (voted.length === 0) return t(`${P}.you.none`);
-  if (voted.length === voters.length && voted.every((c) => sameChoice(c, voted[0]))) return t(`${P}.you.choice`, { choice: choiceText(voted[0]) });
+  if (voted.length === voters.length && voted.every((c) => sameChoice(c, voted[0]))) return t(`${P}.you.choice`, { choice: choiceText(voted[0], contest) });
   return t(`${P}.you.some`, { voted: voted.length, count: voters.length });
 }
 
@@ -202,7 +218,7 @@ export function contestRow(c: ContestedName, voters: NameVoter[], now: number, l
   return {
     label: c.label,
     sub: t(key, { count: c.contenders.length, date: shortDate(c.endsAt, locale) }),
-    you: youText(voters, c.label),
+    you: youText(voters, c),
     total: tallyView(c).total,
     chip: contestChip(c, now, locale),
   };
@@ -236,9 +252,9 @@ export function voteBlocked(c: ContestedName, names: ContestedNames, watchOnly: 
 }
 
 /** The pane's "Your masternodes" line for one voter: its present choice and votes left. */
-export function voterLine(v: NameVoter, label: string, allowed: number): string {
-  const s = voterState(v, label);
-  const present = s.choice ? t(`${P}.votesChoice`, { choice: choiceText(s.choice) }) : t(`${P}.noVoteYet`);
+export function voterLine(v: NameVoter, contest: NameContest, allowed: number): string {
+  const s = voterState(v, contest.label);
+  const present = s.choice ? t(`${P}.votesChoice`, { choice: choiceText(s.choice, contest) }) : t(`${P}.noVoteYet`);
   return t(`${P}.voterLine`, { present, left: votesLeftText(s.votesUsed, allowed) });
 }
 
@@ -250,25 +266,29 @@ export function choiceOptions(c: ContestedName): {
   choice: NameChoice;
   title: string;
   identity: string | null;
+  named: boolean;
   votes: number;
 }[] {
   return [
     ...c.contenders.map((x) => ({
       choice: { kind: "towardsIdentity", identity: x.identity } as NameChoice,
-      title: shortIdentity(x.identity),
+      title: contenderText(x.identity, x.name),
       identity: x.identity,
+      named: !!x.name,
       votes: votesOf(x.votes),
     })),
     {
       choice: { kind: "abstain" },
       title: t(`${P}.abstain`),
       identity: null,
+      named: false,
       votes: votesOf(c.abstainVotes),
     },
     {
       choice: { kind: "lock" },
       title: t(`${P}.lock`),
       identity: null,
+      named: false,
       votes: votesOf(c.lockVotes),
     },
   ];
@@ -292,14 +312,14 @@ export interface NameVoterRowView {
  * present choice is `choice` already (Platform answers `already_voted`, MG-07 D18). A PoSe-banned
  * masternode still votes on names (Drive looks it up in its full list, D12). A voter the wallet has a
  * label for is named by it (MG-09 F3). */
-export function nameVoterRows(voters: NameVoter[], label: string, choice: NameChoice | null, allowed: number, names?: NodeNames): NameVoterRowView[] {
+export function nameVoterRows(voters: NameVoter[], contest: NameContest, choice: NameChoice | null, allowed: number, names?: NodeNames): NameVoterRowView[] {
   return voters.map((v) => {
-    const s = voterState(v, label);
+    const s = voterState(v, contest.label);
     const custody = v.key.kind === "keychain" ? t(`${P}.sheet.keychain`, { index: v.key.index + 1 }) : t(`${P}.sheet.added`);
     const votesLeft = Math.max(0, allowed - s.votesUsed);
-    const base = { proTxHash: v.proTxHash, name: nodeName(v, names), weight: v.weight, present: s.choice ? choiceText(s.choice) : t(`${P}.sheet.none`), votesLeft };
+    const base = { proTxHash: v.proTxHash, name: nodeName(v, names), weight: v.weight, present: s.choice ? choiceText(s.choice, contest) : t(`${P}.sheet.none`), votesLeft };
     if (s.votesUsed >= allowed) return { ...base, sub: t(`${P}.sheet.usedAll`, { count: allowed }), eligible: false };
-    if (sameChoice(s.choice, choice)) return { ...base, sub: t(`${P}.sheet.already`, { choice: choiceText(s.choice!) }), eligible: false };
+    if (sameChoice(s.choice, choice)) return { ...base, sub: t(`${P}.sheet.already`, { choice: choiceText(s.choice!, contest) }), eligible: false };
     return { ...base, sub: t(v.valid ? `${P}.sheet.eligible` : `${P}.sheet.eligibleBanned`, { custody, left: votesLeftText(s.votesUsed, allowed) }), eligible: true };
   });
 }
@@ -374,7 +394,8 @@ const chip = (state: CastState): ChipView => ({ text: t(`${P}.result.chip.${stat
  * line per masternode. An `unconfirmed` vote is never counted (MG-07 D7) until a re-read
  * (`reread`, the contests read after the vote) shows its masternode's present choice is the one
  * cast (D14). */
-export function nameVoteResult(casts: NameVoteCast[], voters: NameVoter[], label: string, choice: NameChoice, reread?: ContestedNames, names?: NodeNames): NameResultView {
+export function nameVoteResult(casts: NameVoteCast[], voters: NameVoter[], contest: NameContest, choice: NameChoice, reread?: ContestedNames, names?: NodeNames): NameResultView {
+  const { label } = contest;
   const byHash = new Map(voters.map((v) => [v.proTxHash, v]));
   const now = new Map((reread?.voters ?? []).map((v) => [v.proTxHash, voterState(v, label).choice]));
   const weightOf = (h: string) => byHash.get(h)?.weight ?? 1;
@@ -397,8 +418,8 @@ export function nameVoteResult(casts: NameVoteCast[], voters: NameVoter[], label
     title: t(pending > 0 ? `${P}.result.titlePending` : `${P}.result.title`, { counted: counted.length, count: casts.length, pending }),
     line:
       choice.kind === "towardsIdentity"
-        ? t(`${P}.result.lineFor`, { identity: shortIdentity(choice.identity), label, weight, total })
-        : t(`${P}.result.line`, { choice: choiceText(choice), label, weight, total }),
+        ? t(`${P}.result.lineFor`, { identity: contenderText(choice.identity, nameIn(choice.identity, contest)), label, weight, total })
+        : t(`${P}.result.line`, { choice: choiceText(choice, contest), label, weight, total }),
     rows,
     unconfirmed: pending > 0,
   };

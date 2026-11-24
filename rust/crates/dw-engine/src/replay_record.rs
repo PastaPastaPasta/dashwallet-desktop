@@ -277,6 +277,7 @@ impl ReplayRecords {
         hub.wallet_state(&wallet)
             .is_some_and(|s| s.replay_cancelled.is_some() || s.loading)
             || (hub.rescan().as_ref()).is_some_and(|r| r.replaying(&wallet))
+            || hub.abandon_batch_pending(&wallet)
     }
 
     /// After a clean shutdown of the manager, whose persistence adapter

@@ -80,6 +80,12 @@ impl Plan {
     pub fn total_sent(&self) -> u64 {
         self.amounts.iter().sum()
     }
+
+    /// The fee beyond `rate` for the transaction's size: a dust remainder,
+    /// and a CoinJoin payment's change (U-06b).
+    pub fn left_over(&self, rate: FeeRate) -> u64 {
+        fee_for(rate, self.estimated_size).map_or(0, |f| self.fee.saturating_sub(f))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -664,6 +670,48 @@ mod tests {
             (p.inputs.len(), p.amounts, p.fee),
             (1, vec![9_999_908], 192)
         );
+    }
+
+    /// U-06b: a mixed payment's change and its output's fee are the fee
+    /// beyond the rate; an exact payment and a normal one leave none.
+    #[test]
+    fn the_left_over_is_the_fee_beyond_the_rate() {
+        const NO_CHANGE: u64 = 148 * 2 + 34 + 10;
+        let coins = [coin(1, 1_000_010), coin(2, 1_000_010)];
+        let finished = |amount, subtract, coinjoin| {
+            let p = plan(
+                InputChoice::UseAll(&coins),
+                &[out(9, amount, subtract)],
+                rate1(),
+                P2PKH,
+                1000,
+            )
+            .unwrap();
+            super::super::finish(p, coinjoin, P2PKH).unwrap()
+        };
+        let normal = finished(1_500_000, false, false);
+        let change = normal.change.unwrap();
+        assert_eq!(normal.left_over(rate1()), 0);
+        let mixed = finished(1_500_000, false, true);
+        assert_eq!(mixed.change, None);
+        assert_eq!(mixed.left_over(rate1()), change + 34);
+        assert_eq!(mixed.fee, mixed.left_over(rate1()) + NO_CHANGE);
+        let exact = finished(2_000_020 - NO_CHANGE, false, true);
+        assert_eq!((exact.change, exact.left_over(rate1())), (None, 0));
+        // A dust remainder is fee beyond the rate, with or without subtract fee.
+        let dust = finished(2_000_020 - NO_CHANGE - 100, false, false);
+        assert_eq!((dust.change, dust.left_over(rate1())), (None, 100));
+        let dust_subtract = finished(2_000_020 - 400, true, false);
+        assert_eq!(
+            (dust_subtract.change, dust_subtract.left_over(rate1())),
+            (None, 400 - NO_CHANGE)
+        );
+        // Subtract fee from mixed coins: the payee paid for the change output
+        // that `finish` drops, so its 34 duffs are in the left-over too.
+        let mixed_subtract = finished(1_500_000, true, true);
+        assert_eq!(mixed_subtract.left_over(rate1()), 500_020 + 34);
+        // Subtract fee with change kept leaves none.
+        assert_eq!(finished(1_500_000, true, false).left_over(rate1()), 0);
     }
 
     #[test]

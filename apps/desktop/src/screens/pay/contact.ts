@@ -4,6 +4,7 @@
 // confirm, check and result logic is U-03's (model.ts) with its contact branch.
 
 import { hasCode, type Backend } from "../../api/backend";
+import type { AppError } from "../../api/generated/AppError";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { ContactList } from "../../api/generated/ContactList";
@@ -287,13 +288,25 @@ export class AcceptFailed extends Error {
   }
 }
 
+/** The signing window ended before the lease took its grants: asked again with the passphrase. */
+const WINDOW_ENDED: AppError = { code: "vault.credential_required", message: "The signing window ended. Enter the passphrase.", data: null };
+
 /** One credential check for both grants, one `acceptAndPay` lease, then the accept under it:
  * returns the lease the payment's `prepare` takes. `contact.already_contact` (another surface or
  * device accepted first) is what was asked for. On a refusal nothing is left: the grants are
  * revoked, or the lease ended. */
 export async function acceptUnderLease(
   api: AcceptApi,
-  a: { walletId: string; identity: string; from: string; spendCap: number; credential: CredentialSpec },
+  a: {
+    walletId: string;
+    identity: string;
+    from: string;
+    spendCap: number;
+    credential: CredentialSpec;
+    /** The grants come from an encrypted vault's signing window (no passphrase typed): a window
+     * that ends before the lease drops them, and the passphrase is what asks again. */
+    windowed?: boolean;
+  },
 ): Promise<string> {
   let grants: AuthGrant[];
   try {
@@ -319,6 +332,11 @@ export async function acceptUnderLease(
     );
   } catch (e) {
     for (const g of grants) void api.revokeGrant(g.id).catch(() => null);
+    // The signing window ended between the grants and the lease (issue 173, item 9): its grants went with
+    // it. Nothing was accepted or paid, so the passphrase is asked for, as when the window is closed.
+    // An unencrypted vault has no window and no passphrase to ask for: its refusal stays the accept's.
+    if (a.windowed && a.credential.kind === "unencrypted" && (hasCode(e, "platform.grant_invalid") || hasCode(e, "vault.grant_invalid")))
+      throw new AcceptFailed("authorize", WINDOW_ENDED);
     throw new AcceptFailed("accept", e);
   }
   try {

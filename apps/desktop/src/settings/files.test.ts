@@ -10,7 +10,7 @@ import { FIXTURE_PASSPHRASE as PASS, FIXTURE_WALLET_ID as A, type ScenarioName }
 import { CORE_WALLET_PASSPHRASE, FIXTURE_BACKUP_DIR, FIXTURE_FILES } from "../fixture/settings";
 import { WRONG_PASSPHRASE } from "../onboarding/model";
 import { PassphraseText } from "../onboarding/passphrase";
-import { BackupModel, deletedByKeep, ExportModel, fileName, fileStem, FilesText, ImportFileModel, ImportKeysModel, importPlan, inDirectory, keepAsks, keyMaterial } from "./files";
+import { BackupModel, deletedByKeep, ExportModel, fileName, fileStem, FilesText, folderErrorText, ImportFileModel, ImportKeysModel, importPlan, inDirectory, keepAsks, keyMaterial } from "./files";
 
 const AT = new Date(2026, 9, 6, 9, 5);
 
@@ -87,6 +87,15 @@ describe("import a wallet file (D21)", () => {
     await model.run(PASS, "");
     expect(model.step).toBe("done");
     expect(model.done).toEqual({ walletIds: [A], lines: [FilesText.restored(1)], report: null });
+  });
+
+  it("choosing another file clears the last path's problem", async () => {
+    const model = new ImportFileModel(b, "testnet");
+    await model.inspect("  ");
+    expect(model.error).toBe("Enter the file's full path.");
+    model.clearError();
+    expect(model.error).toBeNull();
+    expect(model.step).toBe("path");
   });
 
   it("QT107_dumpwalletImportReportsKeysNotImported", async () => {
@@ -268,5 +277,15 @@ describe("export for Dash Core", () => {
     // A passphrase grant carries its own key, so a locked vault exports too.
     await model.export("importDescriptorsJson", PASS);
     expect(model.done?.path).toBe(`${FIXTURE_BACKUP_DIR}/Main-2026-10-06-09-05-00-descriptors.json`);
+  });
+});
+
+describe("Show Folder's refusals", () => {
+  const err = (code: string) => ({ code, message: code, data: null });
+  it("says there is no folder yet before the first automatic backup", () => {
+    expect(folderErrorText(err("app.backup_folder_missing"))).toBe("There's no backup folder yet. Dash Wallet creates it with the first automatic backup.");
+  });
+  it("points to the path's copy button when the folder exists but won't open", () => {
+    expect(folderErrorText(err("app.folder_open"))).toBe("The backup folder couldn't be opened. Copy its path and open it in your file manager.");
   });
 });

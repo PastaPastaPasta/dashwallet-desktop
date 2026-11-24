@@ -1709,7 +1709,7 @@ fn finish_now(session: &NetworkSession, id: WalletId) -> Result<(), crate::Engin
     crate::tx_actions::finish_marked_abandons(&live.persister, &live.appdb, &db_path, &[id])
 }
 
-fn record_stored(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
+pub(super) fn record_stored(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
     use platform_wallet::changeset::PlatformWalletPersistence;
     (session.live().unwrap().persister)
         .get_core_tx_record(id.0, &txid)
@@ -2203,8 +2203,9 @@ fn a_bad_abandoned_mark_leaves_a_healthy_payments_coin_out() {
 }
 
 /// Resend is never offered or done for a payment whose Abandon committed
-/// its mark: while the Abandon is between its mark and its sweep, and
-/// after a sweep that failed, also after a restart.
+/// its mark: one asked while the Abandon is between its mark and its sweep
+/// waits for the Abandon (it holds the wallet manager through its sweep),
+/// and is refused after a sweep that failed, also after a restart.
 #[test]
 fn a_payment_marked_abandoned_is_never_resent() {
     let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
@@ -2235,12 +2236,29 @@ fn a_payment_marked_abandoned_is_never_resent() {
     eventually("the abandon reached its sweep", || {
         pause.reached.load(std::sync::atomic::Ordering::SeqCst)
     });
-    refused(&session);
+    let resending = {
+        let s = Arc::clone(&session);
+        session
+            .rt
+            .spawn(async move { s.resend_transaction(id, txid).await })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!resending.is_finished(), "a resend ran inside the abandon");
     fail_the_next_sweep(&session);
     pause.release.notify_one();
     assert!(
         engine.block_on(abandoning).unwrap().is_err(),
         "the sweep was stored"
+    );
+    let resent = engine.block_on(resending).unwrap();
+    assert!(
+        matches!(
+            resent,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::AlreadyAbandoned
+            ))
+        ),
+        "{resent:?}"
     );
     refused(&session);
 

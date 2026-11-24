@@ -4,7 +4,7 @@
 
 import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { errorMessage } from "../api/backend";
+import { errorMessage, isAppError } from "../api/backend";
 import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
@@ -26,6 +26,7 @@ import { useDisplay } from "../format/display";
 import { useT } from "../i18n";
 import { explorerUrl } from "../format/explorer";
 import { fiatText } from "../format/fiat";
+import { t } from "../i18n";
 import { Avatar } from "./contacts/Avatar";
 import { contactLetters, contactName, detailDate, detailWhat, detailWho, isProblem, rowDate, shownAmount, txIcon } from "../format/tx";
 
@@ -161,11 +162,22 @@ function LabelEditor({ walletId, txid, label }: { walletId: string; txid: string
 
 /** The abandon confirmation. Whether the wallet spent inputs decides it (`totalDebit`, the engine's
  * `from_me`), not the amount's sign: a payment to yourself nets only the fee but spends this wallet's
- * coins. An unknown debit takes the spending text. */
-export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit">): string {
-  return x.totalDebit === 0
-    ? "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again."
-    : "Abandon this transaction? Its coins come back to the balance. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.";
+ * coins. An unknown debit takes the spending text. A debit of none with an input whose coin the
+ * engine holds no record of (`inputsUnresolved`) may still be a payment sent from this wallet on
+ * another device, so it says what sending it again would do. */
+export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inputsUnresolved">): string {
+  if (x.totalDebit !== 0) return t("activity.abandon.spending");
+  return x.inputsUnresolved ? t("activity.abandon.unknownInputs") : t("activity.abandon.notSpending");
+}
+
+/** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`
+ * refusal and why a `settledDescendant` one can't be abandoned from the catalog. */
+export function actionProblem(e: unknown): string {
+  if (isAppError(e) && e.data?.kind === "txAction") {
+    if (e.data.refusal === "rescanFirst") return t("activity.abandon.rescanFirst");
+    if (e.data.refusal === "settledDescendant") return t("activity.abandon.settledChild");
+  }
+  return errorMessage(e);
 }
 
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
@@ -191,7 +203,7 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       await client.invalidateQueries({ queryKey: keys.txDetailAll(walletId) });
       await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
     } catch (e) {
-      setNote({ text: errorMessage(e), problem: true });
+      setNote({ text: actionProblem(e), problem: true });
     } finally {
       setBusy(false);
     }

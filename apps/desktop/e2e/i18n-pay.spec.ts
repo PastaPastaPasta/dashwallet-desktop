@@ -129,6 +129,30 @@ const STATES: State[] = [
     },
   },
   {
+    // U-06b: twelve fully mixed coins, of which paying 1.05 spends eleven, so the confirm sheet shows the count, the warning and the left-over.
+    name: "pay-confirm-mixed",
+    roots: ["pay-confirm"],
+    data: ADDRESSES,
+    open: async (page, theme, lang) => {
+      await toAddress(page, theme, lang);
+      await page.evaluate(`(() => {
+        const f = window.__dwFixture;
+        const wallet = f.world.wallets[0];
+        const c = wallet.coins[0];
+        for (let i = 0; i < 12; i++) wallet.coins.push({ ...c, outpoint: { ...c.outpoint, vout: 40 + i }, amount: 10_000_100, spendable: true, confirmations: 10, coinjoinDenominated: true, coinjoinRounds: 4 });
+        f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: wallet.summary.walletId });
+      })()`);
+      await page.getByTestId("pay-address").fill(PAYEE);
+      await page.getByTestId("pay-amount").fill("1.05");
+      await page.getByTestId("pay-advanced").locator("summary").click();
+      await page.getByTestId("coin-choice-mixed").check();
+      await page.getByTestId("pay-fee-line").waitFor();
+      await confirm(page);
+      await expect(page.getByTestId("pay-confirm-mixed-warning")).toBeVisible();
+      await expect(page.getByTestId("pay-confirm-mixed-change")).toBeVisible();
+    },
+  },
+  {
     name: "pay-result-sent",
     roots: ["pay-result"],
     data: ADDRESSES,

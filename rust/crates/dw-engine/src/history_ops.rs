@@ -476,6 +476,7 @@ impl NetworkSession {
             let seen: HashMap<String, u64> = seen.into_iter().collect();
             self.hub.history.with_wallet(wallet, |h| {
                 h.set_loaded_coins(loaded_coins);
+                h.load_incomplete = !complete;
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
                 }
@@ -580,19 +581,35 @@ impl NetworkSession {
         candidates: Vec<(Txid, Option<(u32, dashcore::BlockHash)>)>,
         chainlock: Option<(u32, dashcore::BlockHash)>,
     ) -> Vec<Txid> {
-        let mut headers = HashMap::new();
-        if let Some((height, hash)) = chainlock
-            && candidates.iter().any(|(_, b)| b.is_some())
-            && self.hub.header_hash(height).await == Some(hash)
-        {
-            headers.insert(height, hash);
-            let heights = candidates
-                .iter()
-                .filter_map(|(_, b)| b.map(|b| b.0))
-                .collect();
-            headers.extend(self.hub.header_hashes(heights).await);
+        let heights: BTreeSet<u32> = (candidates.iter())
+            .filter_map(|(_, b)| b.map(|b| b.0))
+            .collect();
+        let headers = match chainlock {
+            Some(cl) if !heights.is_empty() => self.headers_under(cl, heights).await,
+            _ => None,
+        };
+        crate::history::proven_settled(candidates, chainlock, &headers.unwrap_or_default())
+    }
+
+    /// The SPV header chain's hashes at `heights` and at the ChainLock's,
+    /// read after any guard, if the chain holds the ChainLock's block
+    /// before and after (a Rebuild Index keeps the lock but not the
+    /// headers): what [`crate::history::proven_final`] reads.
+    pub(crate) async fn headers_under(
+        &self,
+        (height, hash): (u32, dashcore::BlockHash),
+        heights: BTreeSet<u32>,
+    ) -> Option<HashMap<u32, dashcore::BlockHash>> {
+        let holds = || async { self.hub.header_hash(height).await == Some(hash) };
+        if !holds().await {
+            return None;
         }
-        crate::history::proven_settled(candidates, chainlock, &headers)
+        let mut headers = self.hub.header_hashes(heights).await;
+        if !holds().await {
+            return None;
+        }
+        headers.insert(height, hash);
+        Some(headers)
     }
 
     /// Restores the claims `select` chooses, given the wallet and the best
@@ -661,6 +678,10 @@ impl NetworkSession {
             .map(|(o, t)| (*o, Some(*t)))
             .collect();
         let held = core.restore_spent_outpoints(&restore);
+        (self.hub.history).with_wallet(wallet, |h| {
+            h.claimed
+                .extend(restore.iter().filter_map(|(o, t)| Some((*o, (*t)?))))
+        });
         if held.is_empty() {
             return;
         }
@@ -833,12 +854,18 @@ impl NetworkSession {
                 .last_processed_height
                 .max(meta.synced_height)
                 .max(self.hub.wallet_state(wallet).map_or(0, |s| s.tip())),
-            chainlock_height: meta
-                .last_applied_chain_lock
-                .as_ref()
-                .map(|c| c.block_height)
-                .max(self.hub.tracker().chainlock_height()),
+            chainlock_height: self.chainlock_height(&info.core_wallet),
         }
+    }
+
+    /// Height of the best ChainLock the wallet applied or SPV reported.
+    pub(crate) fn chainlock_height(
+        &self,
+        core: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    ) -> Option<u32> {
+        (core.metadata.last_applied_chain_lock.as_ref())
+            .map(|c| c.block_height)
+            .max(self.hub.tracker().chainlock_height())
     }
 
     /// Runs `f` with the wallet's chain view, over the history store's own

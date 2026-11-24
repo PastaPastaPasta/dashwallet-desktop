@@ -39,6 +39,9 @@ pub struct TxDetailExtrasInfo {
     pub total_credit: u64,
     /// Sum of this wallet's inputs; `null` when an input value is unknown.
     pub total_debit: Option<u64>,
+    /// Some input spends a coin this wallet holds no record of: another
+    /// party's, or this wallet's whose funding it has not seen.
+    pub inputs_unresolved: bool,
     /// Signed duffs.
     pub net: i64,
     /// Immature coinbase: blocks until it matures.
@@ -62,6 +65,7 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             is_coinbase,
             total_credit,
             total_debit,
+            inputs_unresolved,
             net,
             matures_in,
             in_mempool,
@@ -76,6 +80,7 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             is_coinbase,
             total_credit,
             total_debit,
+            inputs_unresolved,
             net,
             matures_in,
             in_mempool,
@@ -153,10 +158,26 @@ commands! {
         Ok(state.session().await?.tx_detail_extras(id, txid).await?.into())
     }
 
-    /// dash-qt "Abandon transaction": marks it abandoned, releases its
-    /// inputs and excludes it from balances. SPV cannot prove it is in no
-    /// mempool, so it may still confirm; the history then shows it
-    /// confirmed again.
+    /// dash-qt "Abandon transaction": marks it abandoned, releases the
+    /// inputs no processed block spent and excludes it from balances. SPV
+    /// cannot prove it is in no mempool, so it may still confirm; the
+    /// history then shows it confirmed again. An InstantSend-locked
+    /// transaction is refused (`instantLocked`) unless a transaction in a
+    /// ChainLocked block of the SPV header chain spends one of its inputs,
+    /// nothing descending from it is in a block, locked or finalized, the
+    /// wallet holds no record of it in a block or locked (in the session it
+    /// was locked in, until a restart; #329), the history load was complete
+    /// and the scan has passed the ChainLock with no replay pending; then
+    /// only inputs proven unspent are released.
+    /// `rescanFirst` instead when all of that holds and the only inputs
+    /// missing are held by its own spend claim restored at load: a restart
+    /// and a rescan give that evidence.
+    /// Any transaction is refused (`instantLocked`, or `confirmed`) when
+    /// abandoning it would also take one the history holds as InstantSend-
+    /// locked (or in a block). One that is not InstantSend-locked itself is
+    /// refused (`settledDescendant`) when a later transaction spending from
+    /// it is InstantSend-locked, in a block or finalized, unless a ChainLocked
+    /// spend of one of its inputs beat it and those are only locked (#446).
     #[facade("NetworkSession::abandon_transaction")]
     fn abandon_transaction(state, wallet_id: String, txid: String) -> () {
         let id = parse_wallet_id(&wallet_id)?;
@@ -176,9 +197,13 @@ commands! {
         Ok(session.resend_transaction(id, txid).await?)
     }
 
-    /// "Remove unconfirmed": abandons every unconfirmed, not
-    /// InstantSend-locked transaction of the wallet (every wallet when
-    /// `walletId` is `null`) and rescans from the lowest funding height.
+    /// "Remove unconfirmed": abandons every unconfirmed transaction of the
+    /// wallet (every wallet when `walletId` is `null`) that Abandon would,
+    /// InstantSend-locked ones only under its ChainLock exception, then
+    /// rescans once, from the lowest funding height of them all. One the
+    /// exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
+    /// or that a settled later transaction holds (`settledDescendant`), is
+    /// skipped.
     /// Needs a running SPV client. Returns how many were dropped.
     #[facade("NetworkSession::drop_unconfirmed")]
     fn drop_unconfirmed(state, wallet_id: Option<String>) -> u32 {
