@@ -389,6 +389,10 @@ struct LoadedHistory {
     settled: HashSet<Txid>,
     /// [`Persisted::lock_parents`].
     lock_parents: HashMap<Txid, Vec<Txid>>,
+    /// The transactions the store dropped as unsigned claims
+    /// ([`Persisted::dropped`]), and those key-wallet swept as claims
+    /// (`tx_actions::claims_swept`).
+    dropped: HashSet<Txid>,
 }
 
 impl NetworkSession {
@@ -461,6 +465,15 @@ impl NetworkSession {
                     let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
                     sent.retain(|t, _| persisted.keeps_mark(t, &abandoned.unread));
                     let abandoned = abandoned.copies;
+                    // Unread, no load is complete: nothing is dropped.
+                    let (swept_claims, claims_read) =
+                        match crate::tx_actions::claims_swept(&appdb, wallet) {
+                            Ok(swept) => (swept, true),
+                            Err(e) => {
+                                tracing::warn!(%wallet, error = %e, "could not read the claims swept");
+                                (HashSet::new(), false)
+                            }
+                        };
                     let stored: HashSet<Txid> = match clean {
                         true => (persisted.records.into_iter())
                             .chain(persisted.recordless)
@@ -479,6 +492,7 @@ impl NetworkSession {
                         sent,
                         complete: clean
                             && !persisted.locks_unread
+                            && claims_read
                             && marks_read
                             && sent_read == crate::tx_actions::SentRead::Complete,
                         claims: clean
@@ -487,6 +501,7 @@ impl NetworkSession {
                         stored,
                         settled,
                         lock_parents: persisted.lock_parents,
+                        dropped: (persisted.dropped.into_iter()).chain(swept_claims).collect(),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -516,6 +531,7 @@ impl NetworkSession {
             stored,
             settled,
             lock_parents,
+            dropped,
         } in loaded
         {
             let info = wm.get_wallet_info(&wallet.0);
@@ -572,16 +588,16 @@ impl NetworkSession {
                     }
                 }
             });
-            sends.push((wallet, sent, complete, claims, settled, stored));
+            sends.push((wallet, sent, complete, claims, settled, (stored, dropped)));
         }
         drop(wm);
-        for (wallet, sent, complete, claims, settled, stored) in sends {
+        for (wallet, sent, complete, claims, settled, (stored, dropped)) in sends {
             self.restore_unmined_spends(
                 &live.manager,
                 wallet,
                 &sent,
                 (complete, claims),
-                (&settled, &stored),
+                (&settled, (&stored, &dropped)),
             )
             .await;
         }
@@ -604,14 +620,15 @@ impl NetworkSession {
     /// except that one whose sent marks read without their saved copies
     /// still restores the claims. A complete load then drops what can never
     /// confirm (`NetworkSession::drop_dead`), with `all`, every stored
-    /// transaction, for the orphans.
+    /// transaction and those the store dropped as unsigned claims, for the
+    /// orphans.
     async fn restore_unmined_spends(
         &self,
         manager: &Manager,
         wallet: WalletId,
         sent: &crate::tx_actions::Sent,
         (complete, claims): (bool, bool),
-        (stored, all): (&HashSet<Txid>, &HashSet<Txid>),
+        (stored, all): (&HashSet<Txid>, (&HashSet<Txid>, &HashSet<Txid>)),
     ) {
         if !claims {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");

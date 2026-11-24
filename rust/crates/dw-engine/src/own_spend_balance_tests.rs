@@ -2829,7 +2829,7 @@ fn a_drop_cut_after_its_marks_keeps_its_held_coin_out_across_restarts() {
             format!("abandoned:{}", c.txid()),
             dashcore::consensus::encode::serialize_hex(&c),
         ),
-        (format!("dropped:{}", c.txid()), d.to_string()),
+        (format!("drop_holds:{}", c.txid()), d.to_string()),
     ];
     let writes: Vec<(&str, Option<&str>)> = (rows.iter())
         .map(|(k, v)| (k.as_str(), Some(v.as_str())))
@@ -3003,6 +3003,136 @@ fn abandoning_while_another_wallet_is_opening_is_not_refused_as_unreadable() {
         abandoned.as_ref().is_ok_and(|a| a.contains(&txid)),
         "{abandoned:?}"
     );
+}
+
+/// A peer's claim T on a coin the scan hasn't found yet, whose input script
+/// isn't push-only (its verdict may be wrong, #739), paying change to the
+/// wallet; S pays from that change and the wallet's coin b. Returns b's
+/// funding, T's funding, T and S.
+fn payment_on_a_doubtful_claim(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+) -> (Transaction, Transaction, Transaction, Transaction) {
+    let b_to = fresh_address(engine, session, id);
+    let b_funding = funding(3, &[b_to], super::PAID);
+    mined(
+        engine,
+        session,
+        id,
+        super::BIRTH - 40,
+        vec![b_funding.clone()],
+    );
+    let (_, claim_funding, mut claim) = super::funding_and_spend(engine, session, id);
+    claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
+    mempool(engine, session, id, &claim);
+    let b = OutPoint::new(b_funding.txid(), 0);
+    let s = send(
+        engine,
+        session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(claim.txid(), 1), b]),
+        super::CHANGE + super::PAID / 2,
+        false,
+    );
+    assert_eq!(s.input.len(), 2, "S spends the change and b");
+    mempool(engine, session, id, &s);
+    wait_stored(session, id, &[claim.txid(), s.txid()]);
+    (b_funding, claim_funding, claim, s)
+}
+
+/// S is kept, and b, which it spends, stays held.
+fn assert_kept_with_b(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    s: &Transaction,
+    b: OutPoint,
+    state: &str,
+) {
+    assert!(live_in_history(session, id, s.txid()), "{state}: S is kept");
+    assert!(!spendable(engine, session, id, b), "{state}: b stays held");
+}
+
+/// #739's T8 with the drops in: the doubtful claim T, relayed again after a
+/// restart, is swept by key-wallet when the scan finds its coin. That
+/// sweep's winner is T's funding; what is built on T is #739's to judge,
+/// so no drop takes S, and b stays held.
+#[test]
+fn a_swept_doubtful_claims_payment_is_left_to_the_claim_rule() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, claim_funding, claim, s) = payment_on_a_doubtful_claim(&engine, &session, id);
+    let b = OutPoint::new(b_funding.txid(), 0);
+    let session = reopen(&engine, session);
+    echo(&engine, &session, id, &claim);
+    mined(
+        &engine,
+        &session,
+        id,
+        super::BIRTH - 20,
+        vec![claim_funding],
+    );
+    reconciled(&engine, &session, id);
+    assert_kept_with_b(&engine, &session, id, &s, b, "swept");
+    let session = reopen(&engine, session);
+    assert_kept_with_b(&engine, &session, id, &s, b, "restarted");
+}
+
+/// The same claim dropped by the store's own check at an open: S, whose
+/// parent then has no row, is left to #739 too, not dropped as orphaned.
+#[test]
+fn a_payment_on_a_claim_the_store_dropped_is_not_taken_as_orphaned() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, claim_funding, claim, s) = payment_on_a_doubtful_claim(&engine, &session, id);
+    let b = OutPoint::new(b_funding.txid(), 0);
+    let session = reopen(&engine, session);
+    mined(
+        &engine,
+        &session,
+        id,
+        super::BIRTH - 20,
+        vec![claim_funding],
+    );
+    let session = reopen(&engine, session);
+    assert!(
+        !live_in_history(&session, id, claim.txid()),
+        "the store dropped the claim"
+    );
+    assert_kept_with_b(&engine, &session, id, &s, b, "loaded");
+    let session = reopen(&engine, session);
+    assert_kept_with_b(&engine, &session, id, &s, b, "restarted");
+}
+
+/// C dropped with its winner unknown, so D is held through a note; then a
+/// `dropped:` key for C is written empty, as #739's load walk writes its
+/// own marks. PR A's notes are its own: D stays held after a restart and a
+/// rescan of its block.
+#[test]
+fn an_empty_dropped_key_does_not_erase_a_drops_holds() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: winner.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
+    let key = format!("dropped:{}", c.txid());
+    (session.live().unwrap().appdb)
+        .set_settings_durable(&id.to_string(), &[(key.as_str(), Some(""))])
+        .unwrap();
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned");
 }
 
 /// The phrase of a device that holds a watch-only wallet's secret.
