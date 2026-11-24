@@ -1,7 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
-import { SHARED_ABANDON_FEE } from "../src/api/generated/commands";
 import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
-import { SH_TEXT } from "../src/fixture/shared";
+import { abandonFee, SH_TEXT } from "../src/fixture/shared";
+
+/** `sh-close-out`'s listed Abandon charge: its one reserved coin spent whole. */
+const CHARGE = abandonFee(1);
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 
@@ -211,7 +213,7 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
-  test(`shared masternode ${theme}: a signed-out session names Abandon, which spends one coin back for exactly the fee`, async ({ page }, info) => {
+  test(`shared masternode ${theme}: a signed-out session names Abandon, which spends its coins back for exactly the listed charge`, async ({ page }, info) => {
     const errors = await open(page, "sh-close-out", theme);
     await page.getByTestId("mn-shared").click();
     await page.getByTestId("sh-in-progress").getByRole("button").first().click();
@@ -220,7 +222,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-abandon-button")).toHaveText("Abandon");
     await page.getByTestId("sh-abandon-button").click();
     await expect(page.getByTestId("sh-abandon")).toBeVisible();
-    await expect(page.getByTestId("sh-abandon-text")).toContainText(`paying a ${(SHARED_ABANDON_FEE / 1e8).toFixed(8)} tDASH network fee`);
+    await expect(page.getByTestId("sh-abandon-text")).toContainText(`paying a ${(CHARGE / 1e8).toFixed(8)} tDASH network fee`);
     await page.getByTestId("sh-abandon-passphrase").fill(FIXTURE_PASSPHRASE);
     await expect(page.getByTestId("sh-abandon-abandon"), "not until ticked").toBeDisabled();
     await page.getByTestId("sh-abandon-understand").check();
@@ -241,7 +243,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-row-signedOut")).toContainText("To cancel it, choose Abandon");
     if (info.project.name === "chromium") await shot(page, "sh-signed-out-abandon", theme);
     await page.getByTestId("sh-abandon-button").click();
-    await expect(page.getByTestId("sh-abandon-text")).toContainText(`paying a ${(SHARED_ABANDON_FEE / 1e8).toFixed(8)} DASH network fee`);
+    await expect(page.getByTestId("sh-abandon-text")).toContainText(`paying a ${(CHARGE / 1e8).toFixed(8)} DASH network fee`);
     await page.getByTestId("sh-abandon-passphrase").fill(FIXTURE_PASSPHRASE);
     await page.getByTestId("sh-abandon-understand").check();
     if (info.project.name === "chromium") await shot(page, "sh-abandon-confirm-mainnet", theme);
@@ -359,6 +361,16 @@ for (const theme of THEMES) {
     const chip = page.getByTestId("tx-route-filter");
     await expect(chip).toContainText("Session 3F9A2C");
     await expect(chip).toHaveAttribute("data-txids", "7e".repeat(32));
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: an overdue registration's way out opens expanded, and still collapses`, async ({ page }) => {
+    const errors = await openSession(page, "sh-coordinator-sent-overdue", theme);
+    await expect(page.getByTestId("sh-way-out-toggle")).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByTestId("sh-way-out-text")).toContainText("first abandon the registration transaction in Activity");
+    await page.getByTestId("sh-way-out-toggle").click();
+    await expect(page.getByTestId("sh-way-out-text")).toHaveCount(0);
+    await expect(page.getByTestId("sh-way-out-toggle")).toHaveAttribute("aria-expanded", "false");
     expect(errors).toEqual([]);
   });
 

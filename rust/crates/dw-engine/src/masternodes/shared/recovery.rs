@@ -23,11 +23,11 @@ use super::super::protx::ops::{conflict_of, overdue, tip_overdue};
 use super::super::shared_records::{
     AbandonSpend, AbandonSpendState, Blocked, BlockedReason, HandoffError, HandoffErrorOutcome,
     HandoffTx, RecoveryAction, SettledBy, Settlement, SharedKind, SharedRecovery, SharedRole,
-    SharedSession, SharedStage,
+    SharedSession, SharedStage, UnreadableSession,
 };
 use super::key_change;
 use super::key_change::KeyChange;
-use super::store::{ChainView, Loaded, reserved_of, session_hash};
+use super::store::{ChainView, Loaded, reserved_of, session_hash, unreadable_view};
 use crate::coins::{own_address_info, read_coins};
 use crate::history::TxEntry;
 use crate::send::plan::{dust_threshold, fee_for};
@@ -306,6 +306,29 @@ pub(super) struct ReadContext {
 }
 
 impl NetworkSession {
+    /// [`unreadable_view`] with the coin test `abandon_unreadable_shared_session`
+    /// spends by: `abandonable` only while it passes, charged its fee. A coin
+    /// read that fails lists the row not abandonable.
+    pub(super) async fn unreadable_listing(
+        &self,
+        wallet: WalletId,
+        row: &SharedSessionRow,
+        chain: &ChainView,
+    ) -> UnreadableSession {
+        let mut view = unreadable_view(row, chain);
+        if view.abandonable {
+            view.abandon_charge = match self.coin_facts(wallet, row, chain).await {
+                Ok(facts) => match facts.test(&chain.history) {
+                    AbandonCoins::Usable { fee, .. } => Some(fee),
+                    _ => None,
+                },
+                Err(_) => None,
+            };
+        }
+        view.abandonable = view.abandon_charge.is_some();
+        view
+    }
+
     /// [`CoinFacts`] of `row` as the wallet holds its coins now.
     pub(super) async fn coin_facts(
         &self,

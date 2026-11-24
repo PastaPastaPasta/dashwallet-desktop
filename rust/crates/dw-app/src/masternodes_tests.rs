@@ -521,7 +521,7 @@ fn abandon_reaches_the_engine_on_every_network() {
         dw_engine::DashNetwork::Regtest,
     ] {
         let (demo, wallet) = demo_on(network);
-        let grant = op_grant(&demo, &wallet, dw_engine::masternodes::shared_abandon_fee());
+        let grant = op_grant(&demo, &wallet, 1_000);
         for cmd in ["mn_shared_abandon", "mn_shared_abandon_unreadable"] {
             demo.err(
                 cmd,

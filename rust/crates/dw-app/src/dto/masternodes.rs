@@ -12,15 +12,14 @@ use super::mirror_enum;
 use crate::error::{AppError, EngineCode};
 
 /// `From` an engine record by destructuring every field (no `..`), so a new
-/// engine field fails to compile until its twin has it or `skip` names it.
-/// `into`, `opt`, `vec` and `optvec` convert the field; a bare field moves
-/// as is.
+/// engine field fails to compile until its twin has it. `into`, `opt`, `vec`
+/// and `optvec` convert the field; a bare field moves as is.
 macro_rules! mirror_struct {
-    ($from:path => $to:ident { $($field:ident $(: $conv:ident)?),+ $(,)? } $(skip { $($skip:ident),+ $(,)? })?) => {
+    ($from:path => $to:ident { $($field:ident $(: $conv:ident)?),+ $(,)? }) => {
         impl From<$from> for $to {
             fn from(x: $from) -> Self {
                 use $from as From_;
-                let From_ { $($field,)+ $($($skip: _,)+)? } = x;
+                let From_ { $($field),+ } = x;
                 $to { $($field: mirror_struct!(@ $field $($conv)?)),+ }
             }
         }

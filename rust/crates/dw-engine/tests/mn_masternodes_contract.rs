@@ -67,7 +67,6 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.shared_capability",
     "Masternodes.shared_shares",
     "standby_file_transactions",
-    "shared_abandon_fee",
     "Masternodes.shared_sessions",
     "Masternodes.unreadable_shared_sessions",
     "Masternodes.shared_session",

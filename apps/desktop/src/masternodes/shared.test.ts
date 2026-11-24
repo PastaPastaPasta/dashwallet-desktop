@@ -6,7 +6,6 @@ import { coordinatorSession, participantSession } from "../fixture/shared";
 import { en } from "../i18n/en";
 import { flatten } from "../i18n/core";
 import { t } from "../i18n";
-import { SHARED_ABANDON_FEE } from "../api/generated/commands";
 import {
   abandonNeedsOwnFirst,
   canAbandon,
@@ -218,19 +217,29 @@ describe("sign and send copy", () => {
     const tx = { txid: "7e".repeat(32), discardable: false };
     const row = (x: SharedSession) => renderSession(x, S5_SLICE).row;
     const shown = (x: SharedSession) => wayOutShown(x, row(x));
-    expect(shown(coordinator({ kind: "sent" }, "wait", tx)), "sent").toBe(true);
-    expect(shown(participantSession("sent", tx)), "sent, participant").toBe(true);
-    expect(shown(coordinator({ kind: "sent" }, "wait", { ...tx, txid: null })), "not held").toBe(false);
+    expect(shown(coordinator({ kind: "sent" }, "wait", tx)), "sent").toBe("collapsed");
+    expect(shown(participantSession("sent", tx)), "sent, participant").toBe("collapsed");
+    expect(shown(coordinator({ kind: "sent" }, "wait", { ...tx, txid: null })), "not held").toBeNull();
     const out = participantSession("funding_signed", { ...tx, abandonable: false });
-    expect(wayOutShown(out, "signedOut"), "signedOut hidden").toBe(true);
-    expect(wayOutShown({ ...out, abandonable: true }, "signedOut"), "Abandon offered").toBe(false);
+    expect(wayOutShown(out, "signedOut"), "signedOut hidden").toBe("collapsed");
+    expect(wayOutShown({ ...out, abandonable: true, abandonCharge: 193 }, "signedOut"), "Abandon offered").toBeNull();
+    expect(wayOutShown({ ...out, abandonable: true }, "signedOut"), "abandonable, but the recovery read lists no Abandon").toBe("collapsed");
     const unvalued = { ...out, warnings: [{ kind: "unvalued_inputs" as const, shares: [1], count: 1 }] };
-    expect(wayOutShown(unvalued, "sendSigned"), "unvalued_inputs_out hidden").toBe(true);
-    expect(wayOutShown({ ...unvalued, txid: null }, "sendSigned"), "not held").toBe(false);
-    expect(wayOutShown(out, "sendSigned"), "nothing hidden").toBe(false);
+    expect(wayOutShown(unvalued, "sendSigned"), "unvalued_inputs_out hidden").toBe("collapsed");
+    expect(wayOutShown({ ...unvalued, txid: null }, "sendSigned"), "not held").toBeNull();
+    expect(wayOutShown(out, "sendSigned"), "nothing hidden").toBeNull();
     for (const stage of [{ kind: "confirmed", height: 1 }, { kind: "conflicted" }, { kind: "dead", reason: "inputs_spent" }] as SharedSession["stage"][]) {
-      expect(wayOutShown({ ...unvalued, stage }, "confirmed"), stage.kind).toBe(false);
+      expect(wayOutShown({ ...unvalued, stage }, "confirmed"), stage.kind).toBeNull();
     }
+  });
+
+  it("expands the way out once the session is overdue, and only where it is shown (D49)", () => {
+    const tx = { txid: "7e".repeat(32), discardable: false };
+    const out = participantSession("funding_signed", { ...tx, abandonable: false });
+    expect(wayOutShown({ ...out, overdue: true }, "signedOut")).toBe("expanded");
+    expect(wayOutShown(coordinator({ kind: "sent" }, "wait", { ...tx, overdue: true }), "sent")).toBe("expanded");
+    expect(wayOutShown({ ...out, overdue: true, abandonable: true, abandonCharge: 193 }, "signedOut"), "Abandon offered").toBeNull();
+    expect(wayOutShown({ ...out, overdue: true, txid: null }, "signedOut"), "not held").toBeNull();
   });
 
   it("reads as refused exactly the codes the engine does", () => {
@@ -301,13 +310,16 @@ describe("Abandon", () => {
     expect(abandonNeedsOwnFirst(new Error("x"))).toBe(false);
   });
 
-  it("caps its grant at the engine's exact fee", () => {
-    expect(SHARED_ABANDON_FEE).toBe(193);
+  it("offers Abandon only while the recovery read lists it", () => {
+    const out = participantSession("funding_signed", { txid: "7e".repeat(32), discardable: false });
+    expect(out.abandonCharge, "one reserved coin spent whole").toBe(193);
+    expect(canAbandon(out)).toBe(true);
+    expect(canAbandon({ ...out, abandonCharge: null }), "no Abandon listed").toBe(false);
   });
 });
 
 describe("unreadable sessions in progress", () => {
-  const row = { id: "a".repeat(64), code: "AAAAAA", kind: "registration" as const, role: "participant" as const, discardable: false, abandonable: false, reserved: ["x-0"], updatedAt: 1 };
+  const row = { id: "a".repeat(64), code: "AAAAAA", kind: "registration" as const, role: "participant" as const, discardable: false, abandonable: false, abandonCharge: null, reserved: ["x-0"], updatedAt: 1 };
   it("lists one it may discard or one still holding coins, and drops one whose locks were released", () => {
     expect(unreadableInProgress([row])).toHaveLength(1);
     expect(unreadableInProgress([{ ...row, discardable: true, reserved: [] }])).toHaveLength(1);

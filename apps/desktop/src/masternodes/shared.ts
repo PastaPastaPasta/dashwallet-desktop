@@ -236,21 +236,23 @@ export function abandonNeedsOwnFirst(e: unknown): boolean {
   return stage === "sent" || stage === "funding_signed";
 }
 
-/** Whether the sheet offers Abandon (§9.3): the engine's refusal rule. A registration that may
- * be out (`discardable` false), not settled, with a reserved coin this wallet still holds
- * (`abandonable`, which the engine reads by the same rule it spends by). */
+/** Whether the sheet offers Abandon (§9.3): a registration that may be out (`discardable`
+ * false), not settled, with a reserved coin, whose recovery read lists Abandon (`abandonCharge`,
+ * from the same coin test the call spends by). */
 export function canAbandon(s: SharedSession): boolean {
   const settled = s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
-  return isRegistration(s) && !s.discardable && !settled && s.reserved.length > 0 && s.abandonable;
+  return isRegistration(s) && !s.discardable && !settled && s.reserved.length > 0 && s.abandonable && s.abandonCharge !== null;
 }
 
-/** MG's way-out line, collapsed: wherever this wallet holds the registration (`txid`), at `sent`,
- * and wherever `row.signedOut` or `unvalued_inputs_out` is hidden because Abandon isn't offered. */
-export function wayOutShown(s: SharedSession, row: RowKey): boolean {
+/** MG's way-out line: wherever this wallet holds the registration (`txid`), at `sent`, and
+ * wherever `row.signedOut` or `unvalued_inputs_out` is hidden because Abandon isn't offered.
+ * Collapsed until the session is `overdue` (D49), then expanded; `null` where it isn't shown. */
+export function wayOutShown(s: SharedSession, row: RowKey): "collapsed" | "expanded" | null {
   const settled = s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
-  if (!s.txid || !isRegistration(s) || settled) return false;
-  if (s.stage.kind === "sent") return true;
-  return !canAbandon(s) && (row === "signedOut" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs")));
+  if (!s.txid || !isRegistration(s) || settled) return null;
+  const shown = s.stage.kind === "sent" || (!canAbandon(s) && (row === "signedOut" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs"))));
+  if (!shown) return null;
+  return s.overdue ? "expanded" : "collapsed";
 }
 
 /** The exact funding line (§2.3.2): what leaves this wallet and why, from `debit`. */

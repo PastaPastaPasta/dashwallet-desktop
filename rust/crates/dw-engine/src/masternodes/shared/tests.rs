@@ -2686,7 +2686,7 @@ fn test_an_abandon_spend_is_stored_with_its_outcome() {
         super::super::protx::build::tx_size(1, &[spend.output[0].script_pubkey.len()], 0),
     );
     assert_eq!(log[0]["fee"].as_u64(), fee);
-    assert_eq!(fee, Some(crate::masternodes::shared_abandon_fee()));
+    assert_eq!(fee, Some(super::recovery::spend_fee(1)));
     assert_eq!(log[0]["legacy"], serde_json::json!(false));
     assert!(!row.legacy_bound && !row.resend_marked);
     assert_eq!(row.last_error, None);
@@ -3729,7 +3729,13 @@ fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {
     f.rewrite(1, &id, |u| u.envelope = "{\"not\": \"an envelope\"".into());
     assert!(f.abandon(1, &id).is_err());
     assert!(f.net.sent().is_empty(), "refused before any spend");
-    let fee = crate::masternodes::shared_abandon_fee();
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[1]))
+        .unwrap();
+    assert!(listed[0].abandonable && !listed[0].discardable);
+    // The coin test's charge: every reserved coin held, spent at once.
+    let fee = listed[0].abandon_charge.expect("charged while abandonable");
+    assert_eq!(fee, super::recovery::spend_fee(reserved.len()));
     let abandon = |w: usize, id: &str| {
         f.run(f.mn().abandon_unreadable_shared_session(
             f.wallets[w],
@@ -3737,10 +3743,13 @@ fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {
             f.grant(w, fee),
         ))
     };
-    let listed = f
-        .run(f.mn().unreadable_shared_sessions(f.wallets[1]))
-        .unwrap();
-    assert!(listed[0].abandonable && !listed[0].discardable);
+    let short = f.run(f.mn().abandon_unreadable_shared_session(
+        f.wallets[1],
+        id.clone(),
+        f.grant(1, fee - 1),
+    ));
+    assert_eq!(send_code(&short.unwrap_err()), "send.grant_exceeded");
+    assert!(f.net.sent().is_empty());
     let after = abandon(1, &id).unwrap();
     assert_eq!(after.id, id);
     let sent = f.net.sent();
@@ -3753,6 +3762,7 @@ fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {
         .run(f.mn().unreadable_shared_sessions(f.wallets[1]))
         .unwrap();
     assert!(!listed[0].abandonable, "no coin left to spend");
+    assert_eq!(listed[0].abandon_charge, None);
     assert_eq!(f.locked(1), reserved, "kept until a block settles it");
     f.mine(spend, 60);
     f.tip(60);
@@ -3955,7 +3965,21 @@ fn test_QT_126_mainnet_refuses_shared_registration_and_key_change_sends() {
         f.locked(0).is_empty() && f.locked(1).is_empty(),
         "no coin locked"
     );
-    let (w0, kc) = (f.wallets[0], "c".repeat(64));
+    // The engine's own refusal of the sign and the send redeems neither
+    // grant: both still redeem afterwards.
+    let (w0, w1, sid) = (f.wallets[0], f.wallets[1], "ab".repeat(32));
+    let (g0, g1) = (f.grant(0, 500 * COIN), f.grant(1, 500 * COIN));
+    let sign = f.run(f.mn().sign_shared_funding(w1, sid.clone(), g1.clone()));
+    assert!(refusal(&sign.map(drop)), "mainnet sign");
+    let send = f.run(f.mn().send_shared_registration(w0, sid, g0.clone()));
+    assert!(refusal(&send.map(drop)), "mainnet send");
+    for (w, g) in [(0, &g0), (1, &g1)] {
+        f.session
+            .vault()
+            .redeem_grant(g, dw_vault::GrantKind::MasternodeOp, Some(&f.wallets[w].0))
+            .unwrap_or_else(|e| panic!("wallet {w}'s grant was consumed: {e:?}"));
+    }
+    let kc = "c".repeat(64);
     let abandon = f.run(
         f.mn()
             .abandon_shared_session(w0, kc.clone(), f.grant(0, COIN)),

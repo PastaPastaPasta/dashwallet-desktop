@@ -13,10 +13,9 @@ use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut};
 use dw_appdb::AbandonOutcome;
 use dw_protx::shared::session::Stage;
 use dw_protx::shared::{ProRegTxV3, SpecialTx};
-use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 
 use super::super::MasternodesError;
-use super::super::protx::build::{Context, SEQUENCE, to_sign, tx_size};
+use super::super::protx::build::{Context, SEQUENCE, to_sign};
 use super::super::protx::charge_fee;
 use super::super::protx::ops::{encode_inputs, error_code};
 use super::super::shared_records::SharedStage;
@@ -27,10 +26,9 @@ use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::coins::{CoinFence, now_secs};
 use crate::masternodes::shared_records::AbandonSpendState;
 use crate::platform::lease::Outcome;
-use crate::send::plan::fee_for;
 use crate::send::{
-    BroadcastOutcome, MIN_FEE_PER_KB, PreparedSummary, SendFailure, SpendCharge, TxDraft,
-    attempt_outcome, l1_address,
+    BroadcastOutcome, PreparedSummary, SendFailure, SpendCharge, TxDraft, attempt_outcome,
+    l1_address,
 };
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -473,12 +471,6 @@ impl NetworkSession {
         lease.end();
         result
     }
-}
-
-/// The abandon spend's fee: one P2PKH input spent whole to one output of
-/// `script_len` bytes, at the relay minimum.
-pub(super) fn abandon_fee(script_len: usize) -> Option<u64> {
-    fee_for(FeeRate::new(MIN_FEE_PER_KB), tx_size(1, &[script_len], 0))
 }
 
 /// `signed` as the pin's typed transaction, which the hand-off and the

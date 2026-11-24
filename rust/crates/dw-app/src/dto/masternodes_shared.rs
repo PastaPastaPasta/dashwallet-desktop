@@ -425,8 +425,8 @@ pub struct SharedSession {
     pub next: SharedNextName,
     /// `mn_shared_discard` would delete it now and release its coins.
     pub discardable: bool,
-    /// `mn_shared_abandon` would spend one of its reserved coins back to
-    /// the wallet now, charged `SHARED_ABANDON_FEE`.
+    /// The session may be out, not settled, and holds a reserved coin. The
+    /// renderer offers Abandon only while `abandon_charge` is set too.
     pub abandonable: bool,
     pub warnings: Vec<SharedWarning>,
     /// The terms this wallet last approved: the consent diff's base.
@@ -437,14 +437,84 @@ pub struct SharedSession {
     pub created_at: u64,
     pub updated_at: u64,
     pub last_error: Option<String>,
+    /// The engine's recovery read lists Abandon: `mn_shared_abandon` spends
+    /// every reserved coin back to the wallet now, charged exactly this, its
+    /// grant cap. `null` while it isn't listed.
+    pub abandon_charge: Option<u64>,
+    /// Advisory: out, the list current with the tip, and three hours of tip
+    /// time since it went out (MG-10 §4.2).
+    pub overdue: bool,
 }
 
-mirror_struct!(engine::SharedSession => SharedSession {
-    id, code, message_code, kind: into, role: into, stage: into, revision, consent_hash,
-    rows: vec, terms: into, node_run_by, fee, debit, pro_tx_hash, txid, reserved, next: into,
-    discardable, abandonable, warnings: vec, approved_terms: opt, base_keys: opt, key_change: opt, actor_fee,
-    created_at, updated_at, last_error,
-} skip { recovery });
+impl From<engine::SharedSession> for SharedSession {
+    fn from(x: engine::SharedSession) -> Self {
+        let engine::SharedSession {
+            id,
+            code,
+            message_code,
+            kind,
+            role,
+            stage,
+            revision,
+            consent_hash,
+            rows,
+            terms,
+            node_run_by,
+            fee,
+            debit,
+            pro_tx_hash,
+            txid,
+            reserved,
+            next,
+            discardable,
+            abandonable,
+            warnings,
+            approved_terms,
+            base_keys,
+            key_change,
+            actor_fee,
+            created_at,
+            updated_at,
+            last_error,
+            recovery,
+        } = x;
+        let abandon_charge = recovery.actions.iter().find_map(|a| match a {
+            engine::RecoveryAction::Abandon { charge, .. } => Some(*charge),
+            _ => None,
+        });
+        SharedSession {
+            id,
+            code,
+            message_code,
+            kind: kind.into(),
+            role: role.into(),
+            stage: stage.into(),
+            revision,
+            consent_hash,
+            rows: rows.into_iter().map(Into::into).collect(),
+            terms: terms.into(),
+            node_run_by,
+            fee,
+            debit,
+            pro_tx_hash,
+            txid,
+            reserved,
+            next: next.into(),
+            discardable,
+            abandonable,
+            warnings: warnings.into_iter().map(Into::into).collect(),
+            approved_terms: approved_terms.map(Into::into),
+            base_keys: base_keys.map(Into::into),
+            key_change: key_change.map(Into::into),
+            actor_fee,
+            created_at,
+            updated_at,
+            last_error,
+            abandon_charge,
+            overdue: recovery.overdue,
+        }
+    }
+}
 
 /// A session whose stored record this wallet can no longer read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -458,15 +528,18 @@ pub struct UnreadableSession {
     pub role: SharedRoleName,
     /// `mn_shared_discard` would delete it now: nothing of it may be out.
     pub discardable: bool,
-    /// `mn_shared_abandon_unreadable` would spend one of its reserved coins
-    /// back to the wallet now, charged `SHARED_ABANDON_FEE`.
+    /// `mn_shared_abandon_unreadable` would spend every reserved coin back
+    /// to the wallet now, charged `abandon_charge`.
     pub abandonable: bool,
+    /// What that spend charges, exactly its grant cap; `null` while it
+    /// isn't `abandonable`.
+    pub abandon_charge: Option<u64>,
     pub reserved: Vec<String>,
     pub updated_at: u64,
 }
 
 mirror_struct!(engine::UnreadableSession => UnreadableSession {
-    id, code, kind: into, role: into, discardable, abandonable, reserved, updated_at,
+    id, code, kind: into, role: into, discardable, abandonable, abandon_charge, reserved, updated_at,
 });
 
 /// The message to copy or save now.

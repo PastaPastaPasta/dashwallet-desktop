@@ -4,7 +4,7 @@
 // fixed fake JSON blobs (no keys, documentation IPs, `y…` addresses); an import looks its text up in
 // `SH_TEXT`, so a spec pastes what another party "sent". A change `emit`s `masternodes`.
 
-import { SHARED_ABANDON_FEE, type AppError } from "../api/generated/commands";
+import type { AppError } from "../api/generated/commands";
 import type { SharedCapability } from "../api/generated/SharedCapability";
 import type { SharedImport } from "../api/generated/SharedImport";
 import type { SharedMessage } from "../api/generated/SharedMessage";
@@ -99,8 +99,15 @@ const messageCode = (tag: string) => {
   return `${s.slice(0, 4)}-${s.slice(4)}`;
 };
 
+/** The relay minimum of an abandon spend of `inputs` P2PKH coins to one P2PKH output, as the
+ * engine's coin test charges it. */
+export const abandonFee = (inputs: number): number => 45 + 148 * inputs;
+
+/** The recovery read's Abandon charge: every reserved coin spent, while Abandon is offered. */
+const withCharge = <T extends { abandonable: boolean; reserved: string[]; abandonCharge: number | null }>(s: T): T => ({ ...s, abandonCharge: s.abandonable ? abandonFee(s.reserved.length) : null });
+
 function session(id: string, role: SharedSession["role"], patch: Partial<SharedSession>): SharedSession {
-  return {
+  return withCharge({
     id,
     code: code(id),
     messageCode: messageCode(`${id.slice(6, 10)}${patch.revision ?? 1}`),
@@ -128,8 +135,10 @@ function session(id: string, role: SharedSession["role"], patch: Partial<SharedS
     createdAt: NOW - 2 * DAY,
     updatedAt: NOW - DAY,
     lastError: null,
+    overdue: false,
+    abandonCharge: null,
     ...patch,
-  };
+  });
 }
 
 /** Alice (this wallet) coordinates Alice 400 · Bob 300 · Carol 300. `joined` rows are in. */
@@ -625,8 +634,9 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
         if (st === "confirmed" || st === "conflicted" || st === "dead") throw stageRefusal(st);
       } else if (s.discardable || st === "confirmed" || st === "conflicted") throw stageRefusal(st);
       if (!s.abandonable) throw stageRefusal(outStage(s.role));
-      capped(world, walletId, grantId, SHARED_ABANDON_FEE);
+      capped(world, walletId, grantId, s.abandonCharge ?? 0);
       s.abandonable = false;
+      s.abandonCharge = null;
       if (st === "sent") world.shared.abandoned.push(s.id);
       const out = put(world, s);
       changed(ctx);
@@ -643,8 +653,9 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       if (row.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
       if (!lost) throw fail("invalid_argument", "the session reads: abandon_shared_session");
       if (lost.discardable || !lost.abandonable) throw stageRefusal(outStage(lost.role));
-      capped(world, walletId, grantId, SHARED_ABANDON_FEE);
+      capped(world, walletId, grantId, lost.abandonCharge ?? 0);
       lost.abandonable = false;
+      lost.abandonCharge = null;
       lost.updatedAt = Math.max(lost.updatedAt + 1, NOW);
       changed(ctx);
       return copy(lost);
@@ -713,6 +724,8 @@ export function sharedScenarios(base: Base) {
     "sh-coordinator-send-mainnet": (t: ThemeName | null) => shBase(base, t, (s, w) => (onMainnet(w), (s.sessions = [readyToSend()]))),
     /** Sent, waiting for its confirmation: Send again. */
     "sh-coordinator-sent": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration())),
+    /** Sent three hours of tip time ago and still unconfirmed: the way out opens expanded (D49). */
+    "sh-coordinator-sent-overdue": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ overdue: true }))),
     /** Sent, the hand-off's outcome unknown. */
     "sh-coordinator-sent-unknown": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ lastError: "send.broadcast_unknown" }))),
     /** Sent, then abandoned: Send again is refused. */
@@ -751,7 +764,7 @@ export function sharedScenarios(base: Base) {
     "sh-unreadable": (t: ThemeName | null) =>
       shBase(base, t, (s) => {
         s.sessions = [coordinatorSession(["Bob"])];
-        s.unreadable = [unreadable("7c", true, 2), unreadable("9e", false, 3), { ...unreadable("5a", false, 4), abandonable: false, reserved: [] }];
+        s.unreadable = [unreadable("7c", true, 2), unreadable("9e", false, 3), { ...unreadable("5a", false, 4), abandonable: false, abandonCharge: null, reserved: [] }];
       }),
     /** Both sessions, for the In progress list and the badge. */
     "sh-sessions": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob", "Carol"]), participantSession("signing"))),
@@ -796,5 +809,5 @@ function sentRegistration(patch: Partial<SharedSession> = {}): SharedSession {
 
 function unreadable(byte: string, discardable: boolean, ago: number): UnreadableSession {
   const id = h(byte);
-  return { id, code: id.slice(0, 6).toUpperCase(), kind: "registration", role: "participant", discardable, abandonable: !discardable, reserved: [`${h("d" + byte[1])}-0`], updatedAt: NOW - ago * 3_600 };
+  return withCharge({ id, code: id.slice(0, 6).toUpperCase(), kind: "registration", role: "participant", discardable, abandonable: !discardable, abandonCharge: null, reserved: [`${h("d" + byte[1])}-0`], updatedAt: NOW - ago * 3_600 });
 }

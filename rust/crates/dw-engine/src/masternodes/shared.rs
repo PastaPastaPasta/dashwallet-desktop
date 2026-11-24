@@ -48,7 +48,7 @@ use self::flow::{
 };
 use self::store::{
     Approved, Loaded, bad_signature, envelope_refusal, may_discard, message_name, message_refusal,
-    parses, settled_by_columns, stage_refusal, terms_view, unparsed, unreadable_view, view,
+    parses, settled_by_columns, stage_refusal, terms_view, unparsed, view,
 };
 use super::protx::build::{Context, invalid, shared_voting};
 use super::protx::ops::InFlight;
@@ -81,17 +81,6 @@ fn unrecorded() -> MasternodesError {
 /// `resend_operation` of an `update_share` or `dissolve` row) refuses
 /// `unsupported{feature: "shared_masternodes"}` after the wallet check.
 pub(super) const SHARED_SENDING: bool = true;
-
-/// A wallet change address's script: P2PKH.
-const P2PKH_SCRIPT_LEN: usize = 25;
-
-/// What `abandon_shared_session` and `abandon_unreadable_shared_session`
-/// charge, in duffs: one reserved coin spent whole to a change address of
-/// the wallet at the relay minimum. A `MasternodeOp` grant of exactly this
-/// covers either call.
-pub fn shared_abandon_fee() -> u64 {
-    send::abandon_fee(P2PKH_SCRIPT_LEN).unwrap_or(0)
-}
 
 /// `masternodes.unsupported{feature: "shared_masternodes"}`.
 fn unsupported(field: Option<&str>) -> MasternodesError {
@@ -301,8 +290,10 @@ impl Masternodes {
                 return Ok(Vec::new());
             }
             let chain = s.shared_chain(wallet).await?;
-            let mut out: Vec<UnreadableSession> =
-                rows.iter().map(|r| unreadable_view(r, &chain)).collect();
+            let mut out = Vec::with_capacity(rows.len());
+            for row in &rows {
+                out.push(s.unreadable_listing(wallet, row, &chain).await);
+            }
             out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
             Ok(out)
         })
@@ -1003,9 +994,9 @@ impl Masternodes {
     /// row alone: a registration or key change with `out_at` set
     /// (`shared_stage` naming the role's out stage otherwise, as an
     /// unparsed row reads), not settled by its stored columns
-    /// (`shared_stage{stage: "confirmed" | "conflicted"}`), spends its
-    /// largest reserved coin the wallet holds unspent and free of other
-    /// pending spends back to the wallet, as `abandon_shared_session` does.
+    /// (`shared_stage{stage: "confirmed" | "conflicted"}`), spends every
+    /// reserved coin the wallet holds back to it by `abandon_shared_session`'s
+    /// coin test, charged its fee (`UnreadableSession.abandon_charge`).
     /// The follower releases its locks once that spend is buried. A
     /// dissolve-together session is `invalid_argument`, as is one that
     /// parses (`abandon_shared_session` is its exit). Returns the row's
@@ -1044,7 +1035,10 @@ impl Masternodes {
                 .shared_row(wallet, &session)
                 .await?
                 .ok_or(MasternodesError::SharedSessionNotFound)?;
-            Ok(unreadable_view(&row, &s.shared_chain(wallet).await?))
+            Ok(
+                s.unreadable_listing(wallet, &row, &s.shared_chain(wallet).await?)
+                    .await,
+            )
         })
         .await
     }

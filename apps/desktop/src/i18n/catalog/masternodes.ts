@@ -1080,7 +1080,7 @@ export const masternodes = {
     /** B7 where sends are on: without its last sentence. */
     reservationNoteSends:
       "Your share is paid from whole coins, and every coin chosen for it stays unavailable for other payments until you discard the session, even the part above your share.",
-    /** Collapsed (no overdue signal yet) where this wallet holds the registration; expanded it shows `abandon.ownFirst`. */
+    /** Where this wallet holds the registration: collapsed until the session is `overdue` (D49), then expanded; expanded it shows `abandon.ownFirst`. */
     wayOut: {
       title: "Changed your mind? Ways to get your coins back ▸",
     },
@@ -1213,7 +1213,7 @@ export const masternodes = {
       spvStopped: "Available once the wallet is connected.",
       signLater: "Signing comes in a later version of the wallet. Keep this session: nothing has left this wallet, and your coins stay reserved until you discard it.",
       signedOut:
-        "This wallet may already have sent its funding signature, so this session can't be discarded. Its coins stay reserved until the registration confirms. To cancel it, choose {abandon}: this wallet spends one of its coins back to itself, so the registration can't confirm, and the others come back about 15 minutes later.",
+        "This wallet may already have sent its funding signature, so this session can't be discarded. Its coins stay reserved until the registration confirms. To cancel it, choose {abandon}: this wallet spends the session's coins back to itself, so the registration can't confirm. They come back once that spend confirms.",
       sendSigned: "Send your signed contribution to {coordinator}. They can send the registration once they have everyone's.",
       copySigned: "Copy signed contribution",
       waitingSigned: "Waiting for signed contributions: {signed} of {total}",

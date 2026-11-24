@@ -1,7 +1,8 @@
 // Shared masternodes (MG-10 §2, MG-10b S5): Start or join (`sh-start`), the coordinator's setup
 // wizard (`sh-setup`, `sh-terms`), and the session sheet (`sh-session`, `sh-join`, `sh-close`).
 // Every session screen renders the engine's `next` (D2); Discard shows only while the engine says
-// the session is `discardable`; Abandon only while the engine says it is `abandonable`. Sign, Send
+// the session is `discardable`; Abandon only while its recovery read lists it (`abandonCharge`),
+// confirming and granting exactly that charge. Sign, Send
 // and Send again confirm the exact `debit` and take a `masternodeOp{debit}` grant, where this network
 // sends (`sh-sign-confirm`, `sh-send-confirm`, `sh-resend-confirm`).
 
@@ -21,7 +22,6 @@ import { chainOf, useDisplay } from "../../format/display";
 import { shortDate } from "../../governance/model";
 import { useT } from "../../i18n";
 import { useMasternodesRefresh, useSharedCapability, useSharedSession, useSharedSessions, useSharedUnreadable } from "../../masternodes/queries";
-import { SHARED_ABANDON_FEE } from "../../api/generated/commands";
 import {
   abandonNeedsOwnFirst,
   basisPoints,
@@ -137,6 +137,7 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
         wallet={wallet}
         network={network}
         code={abandoning.code}
+        charge={abandoning.abandonCharge ?? 0}
         testId="sh-unreadable-abandon-confirm"
         abandon={(grant) => b.mnSharedAbandonUnreadable(wallet.walletId, abandoning.id, grant)}
         onDone={() => setAbandoning(null)}
@@ -233,7 +234,7 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
                       {t(`${P}.unreadable.discard`)}
                     </DashButton>
                   )}
-                  {s.abandonable && (
+                  {s.abandonable && s.abandonCharge !== null && (
                     <DashButton variant="plainRed" size="small" data-testid={`sh-unreadable-abandon-${s.code}`} disabled={wallet.watchOnly} onClick={() => setAbandoning(s)}>
                       {t(`${P}.session.abandon`)}
                     </DashButton>
@@ -292,7 +293,7 @@ function DiscardUnreadable({ wallet, network, session, onDone }: { wallet: Walle
 
 /** Abandon's confirm (§9.3, MG-10 §2.3.3): the exact fee, "can't be undone" ticked, the
  * passphrase, then one call. The grant's cap is that fee, so the call can charge nothing more. */
-function AbandonSheet({ wallet, network, code, testId, abandon, onDone }: { wallet: WalletSummary; network: NetworkInfo; code: string; testId: string; abandon: (grant: string) => Promise<unknown>; onDone: () => void }) {
+function AbandonSheet({ wallet, network, code, charge, testId, abandon, onDone }: { wallet: WalletSummary; network: NetworkInfo; code: string; charge: number; testId: string; abandon: (grant: string) => Promise<unknown>; onDone: () => void }) {
   const t = useT();
   const { dash, networkName } = useSharedText(network);
   const refresh = useMasternodesRefresh();
@@ -307,7 +308,7 @@ function AbandonSheet({ wallet, network, code, testId, abandon, onDone }: { wall
     setBusy(true);
     setOwnFirst(false);
     try {
-      const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: SHARED_ABANDON_FEE });
+      const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: charge });
       if (!grant) return;
       await abandon(grant.id);
       onDone();
@@ -329,7 +330,7 @@ function AbandonSheet({ wallet, network, code, testId, abandon, onDone }: { wall
           void run();
         }}
       >
-        <p data-testid={`${testId}-text`}>{t(`${P}.abandon.question`, { charge: dash(SHARED_ABANDON_FEE) })}</p>
+        <p data-testid={`${testId}-text`}>{t(`${P}.abandon.question`, { charge: dash(charge) })}</p>
         <p className="mg-muted">{t(`${P}.abandon.after`)}</p>
         <label className="mg-choice">
           <input type="checkbox" data-testid={`${testId}-understand`} checked={understood} disabled={busy} onChange={(e) => setUnderstood(e.target.checked)} />
@@ -401,7 +402,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const [abandoning, setAbandoning] = useState(false);
   const [pickedShare, setPickedShare] = useState<number | null>(null);
   const [confirming, setConfirming] = useState<SendAction | null>(null);
-  const [wayOut, setWayOut] = useState(false);
+  const [wayOut, setWayOut] = useState<boolean | null>(null);
   const replyId = useId();
   const s = pick(query.data, latest);
   const debit = s?.debit ?? 0;
@@ -441,6 +442,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const handoffHeld = disconnected && (offered === "send" || offered === "resend");
   const mainnetOff = mainnetHoldsBack(s, network);
   const showWayOut = wayOutShown(s, v.row);
+  const wayOutOpen = wayOut ?? showWayOut === "expanded";
   const handoff = handoffLine(s, (code) => sendErrorText({ code, message: "", data: null }, chainOf(network))?.text ?? null);
   const openShares = s.rows.filter((r) => !r.ownerAddress);
   const joinShare = openShares.length === 1 ? openShares[0]!.index : pickedShare;
@@ -589,6 +591,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
         wallet={wallet}
         network={network}
         code={s.code}
+        charge={s.abandonCharge ?? 0}
         testId="sh-abandon"
         abandon={async (grant) => setLatest(await b.mnSharedAbandon(wallet.walletId, s.id, grant))}
         onDone={() => setAbandoning(false)}
@@ -705,10 +708,10 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
         )}
         {showWayOut && (
           <div data-testid="sh-way-out">
-            <DashButton variant="plainBlue" size="small" aria-expanded={wayOut} data-testid="sh-way-out-toggle" onClick={() => setWayOut((o) => !o)}>
+            <DashButton variant="plainBlue" size="small" aria-expanded={wayOutOpen} data-testid="sh-way-out-toggle" onClick={() => setWayOut(!wayOutOpen)}>
               {t(`${P}.wayOut.title`)}
             </DashButton>
-            {wayOut && (
+            {wayOutOpen && (
               <p className="mg-muted mg-small" data-testid="sh-way-out-text">
                 {t(`${P}.abandon.ownFirst`)}{" "}
                 <DashButton

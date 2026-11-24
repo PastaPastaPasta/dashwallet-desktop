@@ -46,11 +46,22 @@ debit: number | null, proTxHash: string | null, txid: string | null, reserved: A
  */
 discardable: boolean,
 /**
- * `mn_shared_abandon` would spend one of its reserved coins back to
- * the wallet now, charged `SHARED_ABANDON_FEE`.
+ * The session may be out, not settled, and holds a reserved coin. The
+ * renderer offers Abandon only while `abandon_charge` is set too.
  */
 abandonable: boolean, warnings: Array<SharedWarning>,
 /**
  * The terms this wallet last approved: the consent diff's base.
  */
-approvedTerms: ShareTermsView | null, baseKeys: KeyBase | null, keyChange: KeyChangeView | null, actorFee: number | null, createdAt: number, updatedAt: number, lastError: string | null, };
+approvedTerms: ShareTermsView | null, baseKeys: KeyBase | null, keyChange: KeyChangeView | null, actorFee: number | null, createdAt: number, updatedAt: number, lastError: string | null,
+/**
+ * The engine's recovery read lists Abandon: `mn_shared_abandon` spends
+ * every reserved coin back to the wallet now, charged exactly this, its
+ * grant cap. `null` while it isn't listed.
+ */
+abandonCharge: number | null,
+/**
+ * Advisory: out, the list current with the tip, and three hours of tip
+ * time since it went out (MG-10 §4.2).
+ */
+overdue: boolean, };

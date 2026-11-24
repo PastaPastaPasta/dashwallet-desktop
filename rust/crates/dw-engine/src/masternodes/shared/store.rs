@@ -186,7 +186,8 @@ pub(crate) fn unparsed() -> MasternodesError {
 /// `discardable` is the rule every discard of an unparsed row applies:
 /// `may_discard` for registrations and key changes, and together's
 /// parse-failure branch, which is the same `out_at` test. `abandonable`
-/// is the rule `abandon_unreadable_shared_session` spends by.
+/// is the call's guards before its coin test, which
+/// `unreadable_listing` adds with the charge.
 pub(crate) fn unreadable_view(row: &SharedSessionRow, chain: &ChainView) -> UnreadableSession {
     let code: String = row.id.chars().take(6).collect();
     let kind = kind_of(&row.kind);
@@ -200,6 +201,7 @@ pub(crate) fn unreadable_view(row: &SharedSessionRow, chain: &ChainView) -> Unre
             && kind != SharedKind::DissolveTogether
             && settled_by_columns(row, chain).is_none()
             && chain.holds_any(&reserved_of(row)),
+        abandon_charge: None,
         reserved: serde_json::from_str::<Vec<String>>(&row.reserved).unwrap_or_default(),
         updated_at: row.updated_at,
     }
