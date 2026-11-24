@@ -3,17 +3,18 @@
 // CoinJoin cards (DP1-08, U-06), the frequent contacts
 // (DP3-07), then the recent history in day-group cards.
 
-import { Fragment, useEffect, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import type { Balances } from "../api/generated/Balances";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { errorMessage } from "../api/backend";
-import { useBackend, useBalance, useHeroSync, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
+import { useBackend, useBalance, useHeroSync, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, useWallets, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
 import { historyEmptyCopy, listDisplay, type ListArrival } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
+import { Sheet } from "../components/sheet";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
 import { useStatusInputs } from "../dashpay/queries";
@@ -21,6 +22,7 @@ import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
+import { heldLine, heldWayOutText } from "../format/heldUnfinished";
 import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type HeroSync, type PoolReading } from "../format/homeBalance";
 import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
@@ -66,7 +68,34 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
   );
 }
 
-function BalanceHero({ balances, shielded, platform, network, hero }: { balances: Balances | null; shielded: PoolReading; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
+/** The coins a dropped payment holds back, and a link to how to get them back. Shown whenever any
+ * coin is held, in discreet mode too (with the amount masked). */
+function HeldLine({ text, walletId }: { text: string; walletId: string }) {
+  const tr = useT();
+  const wallets = useWallets();
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <p className="hero-held" data-testid="hero-held">
+        <span className="hero-held-text" data-testid="hero-held-text">
+          {text}
+        </span>
+        <button type="button" className="hero-held-link" data-testid="hero-held-way-out" onClick={() => setOpen(true)}>
+          {tr("home.core.heldWhatCanIDo")}
+        </button>
+      </p>
+      {open && (
+        <Sheet title={tr("home.core.heldWhatCanIDo")} width="small" testId="held-way-out" onClose={() => setOpen(false)}>
+          <p className="sheet-text" data-testid="held-way-out-text">
+            {heldWayOutText(walletId, wallets.data ?? [])}
+          </p>
+        </Sheet>
+      )}
+    </>
+  );
+}
+
+function BalanceHero({ walletId, balances, shielded, platform, network, hero }: { walletId: string; balances: Balances | null; shielded: PoolReading; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
   const tr = useT();
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
@@ -78,6 +107,7 @@ function BalanceHero({ balances, shielded, platform, network, hero }: { balances
   const rows = home ? breakdownRows(home.pools, discreet) : [];
   // Without a breakdown, what Core still has arriving or held goes under the hero (not in discreet mode).
   const coreNote = balances && rows.length === 0 && !discreet ? coreSubtitle(balances, fmt, "") : "";
+  const held = balances ? heldLine(balances, fmt) : "";
   const digits = home ? heroDigits(fmt(home.total)) : null;
   const fiat = useFiat();
   return (
@@ -130,6 +160,7 @@ function BalanceHero({ balances, shielded, platform, network, hero }: { balances
           })}
         </div>
       )}
+      {held && <HeldLine text={held} walletId={walletId} />}
     </section>
   );
 }
@@ -275,7 +306,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
     <main className="page page-overview" data-testid="page-home">
       <h1 className="sr-only">{tr("home.title")}</h1>
       <div className="hero-band" data-testid="hero-band">
-        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} hero={hero} />
+        <BalanceHero walletId={walletId} balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} hero={hero} />
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">

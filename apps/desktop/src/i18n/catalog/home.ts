@@ -34,6 +34,31 @@ export const home = {
     immature: "{amount} immature",
     locked: "{amount} locked",
     separator: " · ",
+    /** Coins a dropped payment holds back, every one of known value. */
+    heldUnfinished: "{amount} held by an unfinished payment",
+    /** As `heldUnfinished`, when some held coins' value is unknown: {amount} sums the known ones. */
+    heldUnfinishedAtLeast: "At least {amount} held by an unfinished payment",
+    /** No held coin's value is known; {count} is how many are held. */
+    heldUnfinishedUnvalued: {
+      one: "A coin held by an unfinished payment",
+      other: "{count} coins held by an unfinished payment",
+    },
+    /** The link beside the held line that opens `heldUnfinished.wayOut…`. */
+    heldWhatCanIDo: "What can I do?",
+  },
+  /** How to get back the coins a dropped payment holds: remove {wallet} and add it again, scanning
+   * the whole chain. The labels are the app's own: Settings ▸ Wallet, its add buttons, and the
+   * restore options' scan choice. The …Single texts are for a lone open wallet, which can't be
+   * removed until another is added. */
+  heldUnfinished: {
+    wayOut:
+      "Dash Wallet stopped this payment but still holds the coins it was using, and this version can't release them on its own. To get back any coins the payment didn't spend, you'll remove {wallet} and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in {settings} ▸ {walletTab}, remove {wallet} and restore it with {addWallet} and its phrase. On {optionsTitle}, under {scanFrom}, choose The beginning. It scans the whole chain again, which can take a long time. Coins the payment didn't spend come back once it has finished syncing.",
+    wayOutSingle:
+      "Dash Wallet stopped this payment but still holds the coins it was using, and this version can't release them on its own. To get back any coins the payment didn't spend, you'll remove {wallet} and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in {settings} ▸ {walletTab}: add another wallet (a new one is fine), remove {wallet}, and restore it with {addWallet} and its phrase. On {optionsTitle}, under {scanFrom}, choose The beginning. It scans the whole chain again, which can take a long time. Coins the payment didn't spend come back once it has finished syncing. You can remove the extra wallet afterwards.",
+    wayOutWatchOnly:
+      "Dash Wallet stopped this payment but still holds the coins it was using, and this version can't release them on its own. To get back any coins the payment didn't spend, you'll remove {wallet} and add it again as a watch-only wallet. First make sure you have its extended public key (the wallet that signs for it can show it) and your own copies of any masternode keys or shared-masternode standbys you added, because the key doesn't restore them. Then, in {settings} ▸ {walletTab}, remove {wallet} and add it again with {addWatchOnly} and that key. It scans the whole chain again, which can take a long time. Coins the payment didn't spend come back once it has finished syncing.",
+    wayOutWatchOnlySingle:
+      "Dash Wallet stopped this payment but still holds the coins it was using, and this version can't release them on its own. To get back any coins the payment didn't spend, you'll remove {wallet} and add it again as a watch-only wallet. First make sure you have its extended public key (the wallet that signs for it can show it) and your own copies of any masternode keys or shared-masternode standbys you added, because the key doesn't restore them. Then, in {settings} ▸ {walletTab}: add another wallet (a new one is fine), remove {wallet}, and add it again with {addWatchOnly} and that key. It scans the whole chain again, which can take a long time. Coins the payment didn't spend come back once it has finished syncing. You can remove the extra wallet afterwards.",
   },
   shortcuts: {
     label: "Shortcuts",
