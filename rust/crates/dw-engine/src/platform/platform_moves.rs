@@ -2261,6 +2261,39 @@ fn covered(
         .collect()
 }
 
+/// One proved read of the payment account's addresses under rule 5, for a
+/// plan that signs no other record's terms: `credits.move_pending` while a
+/// move of the wallet holds nonces the read shows unused.
+pub(crate) struct ProvedRead {
+    pub(crate) balances: BTreeMap<PlatformAddress, u64>,
+    /// Platform's stored nonce of each address it holds.
+    pub(crate) nonces: BTreeMap<PlatformAddress, u32>,
+}
+
+pub(crate) async fn proved_read(
+    net: &impl MoveNet,
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+) -> Result<ProvedRead, CreditsError> {
+    let lock = wallet_lock(wallet_id);
+    let _one = lock.lock().await;
+    let network = session.vault.network();
+    let pool = pool(wallet).await?;
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    if let Some(m) = (moves.iter()).find(|m| m.holds() && !m.reached(&seen)) {
+        return Err(CreditsError::MovePending { id: m.id.clone() });
+    }
+    let nonces = (pool.keys())
+        .filter_map(|a| Some((*a, seen.nonce(&bech32m(a, network))?)))
+        .collect();
+    Ok(ProvedRead {
+        balances: proved_balances(&pool, &seen, network),
+        nonces,
+    })
+}
+
 /// The proved balances of the payment account's addresses.
 fn proved_balances(
     pool: &BTreeMap<PlatformAddress, DerivationPath>,
