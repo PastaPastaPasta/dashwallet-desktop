@@ -179,14 +179,24 @@ jobs:
             -n "unsigned-signing-inputs-v$VERSION" -D "$RUNNER_TEMP/unsigned"
           ls -la "$RUNNER_TEMP/unsigned"
 
-          # M2: Cryptographically bind every downloaded unsigned CI file to release.yml on refs/tags/$TAG @ $TAG_SHA.
+          # M2 / L4: Cryptographically bind every downloaded unsigned CI file to release.yml on refs/tags/$TAG @ $TAG_SHA.
+          count=0
           for f in "$RUNNER_TEMP/unsigned"/*; do
+            [[ -f "$f" && ! -L "$f" ]] || {
+              echo "::error::unexpected non-regular or symlink entry in downloaded unsigned artifacts: $f" >&2
+              exit 1
+            }
             gh attestation verify "$f" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
               --source-ref "refs/tags/$TAG" \
               --source-digest "$TAG_SHA"
+            count=$((count + 1))
           done
+          [[ $count -ge 9 ]] || {
+            echo "::error::expected at least 9 attested unsigned files, verified $count" >&2
+            exit 1
+          }
       - name: Fetch detached signatures repository
         env:
           SIGS_REPO: ${{ inputs.sigs_repo }}

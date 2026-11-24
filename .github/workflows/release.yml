@@ -109,6 +109,8 @@ jobs:
 
   script-tests-macos:
     name: Release scripts (macOS Bash 3.2, Python, osslsigncode)
+    # Keep PR CI Linux-only (PR #58: 5-concurrent macOS cap shared across repos); run on main, tags, schedule, dispatch.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-15
     timeout-minutes: 10
     steps:
@@ -125,7 +127,12 @@ jobs:
       - name: Run detached-sigs and publish tests under macOS /bin/bash (3.2)
         env:
           DW_TEST_FAST: "1"
-        run: /bin/bash ci/github/release-publish-test.sh
+        run: |
+          # Prepend a shim so every `#!/usr/bin/env bash` subscript also runs under macOS /bin/bash 3.2.
+          mkdir -p "$RUNNER_TEMP/bash32-bin"
+          ln -sf /bin/bash "$RUNNER_TEMP/bash32-bin/bash"
+          PATH="$RUNNER_TEMP/bash32-bin:$PATH" /bin/bash -c '[[ "${BASH_VERSINFO[0]}" -eq 3 ]] || { echo "expected bash 3.x, got $BASH_VERSION" >&2; exit 1; }'
+          PATH="$RUNNER_TEMP/bash32-bin:$PATH" /bin/bash ci/github/release-publish-test.sh
 
   # Read-only: what this run builds and whether it may publish. Gates the builds (docs-only branch and
   # pull-request changes skip them) and the publish job (a release tag outside main never starts it).

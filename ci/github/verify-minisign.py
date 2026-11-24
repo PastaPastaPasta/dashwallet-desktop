@@ -15,7 +15,6 @@ import base64
 import hashlib
 import json
 from pathlib import Path
-from urllib.parse import urlparse
 
 # Retired / dead CI updater key IDs and Ed25519 public-key SHA-256 fingerprints that must NEVER sign a stable feed.
 RETIRED_UPDATER_KEY_IDS = frozenset({
@@ -125,7 +124,11 @@ def decode_minisign_pubkey(b64_pubkey: str) -> tuple[bytes, bytes]:
 def decode_minisign_sig(b64_sig: str) -> tuple[bytes, bytes, bytes, str, bytes]:
     raw_text = base64.b64decode(b64_sig.strip()).decode("utf-8")
     lines = [line.rstrip("\r\n") for line in raw_text.splitlines() if line.strip()]
-    if len(lines) != 4 or not lines[0].startswith("untrusted comment:") or not lines[2].startswith("trusted comment:"):
+    if (
+        len(lines) != 4
+        or not lines[0].startswith("untrusted comment:")
+        or not lines[2].startswith("trusted comment: ")
+    ):
         raise ValueError("Invalid minisign signature box format")
     sig_line = base64.b64decode(lines[1])
     if len(sig_line) != 74:
@@ -135,20 +138,94 @@ def decode_minisign_sig(b64_sig: str) -> tuple[bytes, bytes, bytes, str, bytes]:
         raise ValueError(f"Unsupported minisign algorithm {alg!r}")
     key_id = sig_line[2:10]
     sig_bytes = sig_line[10:74]
-    trusted_comment = lines[2][len("trusted comment:") :].lstrip(" ")
+    trusted_comment = lines[2][len("trusted comment: ") :]
     global_sig = base64.b64decode(lines[3])
     if len(global_sig) != 64:
         raise ValueError(f"Invalid minisign global signature length {len(global_sig)}")
     return alg, key_id, sig_bytes, trusted_comment, global_sig
 
 
+def _ed_is_identity(pt: tuple[int, int, int, int]) -> bool:
+    return (pt[0] % _P == 0) and ((pt[1] - pt[2]) % _P == 0)
+
+
+def _ed_is_prime_order(pt: tuple[int, int, int, int]) -> bool:
+    """True iff pt lies in the prime-order L subgroup and is not small-order (8*pt != O and L*pt == O)."""
+    if _ed_is_identity(_ed_scalar_mul(pt, 8)):
+        return False
+    return _ed_is_identity(_ed_scalar_mul(pt, _L))
+
+
+def validate_updater_pubkey(pubkey_b64: str, source: str = "pubkey") -> tuple[bytes, bytes]:
+    """Decode a minisign Ed25519 pubkey, enforce prime-order subgroup membership, and reject retired CI keys."""
+    pub_key_id, pub_ed25519 = decode_minisign_pubkey(pubkey_b64)
+    a_pt = _ed_decode_point(pub_ed25519)
+    if a_pt is None or not _ed_is_prime_order(a_pt):
+        raise SystemExit(
+            f"verify-minisign: refusing non-prime-order or small-order Ed25519 public key in {source} "
+            "(public key must satisfy [8]A != O and [L]A == O)"
+        )
+    key_id_hex = pub_key_id[::-1].hex().upper()
+    pub_sha256 = hashlib.sha256(pub_ed25519).hexdigest()
+    if key_id_hex in RETIRED_UPDATER_KEY_IDS or pub_sha256 in RETIRED_UPDATER_PUBKEY_SHA256:
+        raise SystemExit(
+            f"verify-minisign: refusing retired updater key (key ID {key_id_hex}, "
+            f"ed25519 sha256:{pub_sha256[:16]}...) in {source} "
+            "(rotate to a fresh local-only stable updater key in tauri.conf.json before tagging 1.0)"
+        )
+    return pub_key_id, pub_ed25519
+
+
+def load_pubkey_from_tauri(conf_path: Path, extra_configs: list[str] | None = None) -> str:
+    """Read plugins.updater.pubkey from tauri.conf.json and refuse pubkey overrides in any overlay config."""
+    if not conf_path.is_file():
+        raise SystemExit(f"verify-minisign: missing tauri.conf.json at {conf_path}")
+    conf = json.loads(conf_path.read_text())
+    pubkey_b64 = conf.get("plugins", {}).get("updater", {}).get("pubkey", "")
+    if not isinstance(pubkey_b64, str) or not pubkey_b64.strip():
+        raise SystemExit(f"verify-minisign: missing plugins.updater.pubkey in {conf_path}")
+
+    # L1: Refuse plugins.updater.pubkey in any sibling Tauri overlay/platform config (tauri.*.conf.json)
+    # or extra merged --config file/JSON so no overlay can smuggle an unchecked or retired key.
+    for sib in sorted(conf_path.parent.glob("tauri.*.conf.json")):
+        if sib.resolve() == conf_path.resolve() or not sib.is_file():
+            continue
+        sib_data = json.loads(sib.read_text())
+        if isinstance(sib_data, dict) and "pubkey" in sib_data.get("plugins", {}).get("updater", {}):
+            raise SystemExit(
+                f"verify-minisign: refusing plugins.updater.pubkey override in overlay config {sib} "
+                f"(keep plugins.updater.pubkey exclusively in {conf_path.name})"
+            )
+    for extra in extra_configs or []:
+        extra_str = extra.strip()
+        if extra_str.startswith("{"):
+            extra_data = json.loads(extra_str)
+            label = "inline --config JSON"
+        else:
+            p = Path(extra)
+            if not p.is_file():
+                continue
+            if p.resolve() == conf_path.resolve():
+                continue
+            extra_data = json.loads(p.read_text())
+            label = str(p)
+        if isinstance(extra_data, dict) and "pubkey" in extra_data.get("plugins", {}).get("updater", {}):
+            raise SystemExit(
+                f"verify-minisign: refusing plugins.updater.pubkey override in {label} "
+                f"(keep plugins.updater.pubkey exclusively in {conf_path.name})"
+            )
+    return pubkey_b64
+
+
 def ed25519_verify(pub_ed25519: bytes, message: bytes, signature: bytes) -> bool:
-    """RFC 8032 §5.1.7 strict Ed25519 verification (canonical S < L, [S]B == R + [k]A)."""
+    """RFC 8032 §5.1.7 strict Ed25519 verification with prime-order pubkey check (S < L, [S]B == R + [k]A)."""
     if len(pub_ed25519) != 32 or len(signature) != 64:
         return False
     a_pt = _ed_decode_point(pub_ed25519)
     r_pt = _ed_decode_point(signature[:32])
     if a_pt is None or r_pt is None:
+        return False
+    if not _ed_is_prime_order(a_pt):
         return False
     s = int.from_bytes(signature[32:], "little")
     if s >= _L:
@@ -218,32 +295,43 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--pubkey-from-tauri", help="Path to tauri.conf.json")
     group.add_argument("--pubkey", help="Base64-encoded minisign public key")
-    parser.add_argument("--latest-json", required=True, help="Path to latest.json")
-    parser.add_argument("--version", required=True, help="Expected release version (X.Y.Z)")
+    parser.add_argument(
+        "--extra-config",
+        action="append",
+        default=[],
+        help="Optional extra Tauri --config file path or JSON string to check for pubkey overrides",
+    )
+    parser.add_argument(
+        "--check-key-only",
+        action="store_true",
+        help="Validate the updater public key (format, prime-order subgroup, non-retired, no overlay overrides) and exit",
+    )
+    parser.add_argument("--latest-json", help="Path to latest.json")
+    parser.add_argument("--version", help="Expected release version (X.Y.Z)")
     parser.add_argument(
         "--files-dir",
         action="append",
-        required=True,
+        default=[],
         help="Directory containing signed updater artifacts (may be passed multiple times)",
     )
-    parser.add_argument("--repo", help="Optional expected GitHub owner/repo in download URLs")
+    parser.add_argument("--repo", help="Expected GitHub owner/repo in download URLs (required unless --check-key-only)")
     args = parser.parse_args()
 
     if args.pubkey_from_tauri:
-        conf = json.loads(Path(args.pubkey_from_tauri).read_text())
-        pubkey_b64 = conf["plugins"]["updater"]["pubkey"]
+        source = args.pubkey_from_tauri
+        pubkey_b64 = load_pubkey_from_tauri(Path(args.pubkey_from_tauri), args.extra_config)
     else:
+        source = "--pubkey"
         pubkey_b64 = args.pubkey
 
-    pub_key_id, pub_ed25519 = decode_minisign_pubkey(pubkey_b64)
-    key_id_hex = pub_key_id[::-1].hex().upper()
-    pub_sha256 = hashlib.sha256(pub_ed25519).hexdigest()
-    if key_id_hex in RETIRED_UPDATER_KEY_IDS or pub_sha256 in RETIRED_UPDATER_PUBKEY_SHA256:
-        raise SystemExit(
-            f"verify-minisign: refusing retired updater key (key ID {key_id_hex}, "
-            f"ed25519 sha256:{pub_sha256[:16]}...) "
-            "(rotate to a fresh local-only stable updater key in tauri.conf.json before tagging 1.0)"
-        )
+    pub_key_id, pub_ed25519 = validate_updater_pubkey(pubkey_b64, source)
+    if args.check_key_only:
+        print(f"verify-minisign: validated updater public key (key ID {pub_key_id[::-1].hex().upper()})")
+        return
+
+    if not args.latest_json or not args.version or not args.files_dir or not args.repo:
+        parser.error("--latest-json, --version, --files-dir, and --repo are required unless --check-key-only is set")
+
     latest = json.loads(Path(args.latest_json).read_text())
 
     if latest.get("version") != args.version:
@@ -258,7 +346,7 @@ def main() -> None:
             f"!= expected {list(EXPECTED_PLATFORMS)}"
         )
 
-    url_prefix = f"https://github.com/{args.repo}/releases/download/v{args.version}/" if args.repo else None
+    url_prefix = f"https://github.com/{args.repo}/releases/download/v{args.version}/"
     search_dirs = [Path(d) for d in args.files_dir]
 
     for plat in EXPECTED_PLATFORMS:
@@ -266,16 +354,9 @@ def main() -> None:
         url = entry.get("url", "")
         sig = entry.get("signature", "")
         expected_filename = EXPECTED_PLATFORM_FILES[plat].format(version=args.version)
-        if url_prefix:
-            expected_url = f"{url_prefix}{expected_filename}"
-            if url != expected_url:
-                raise SystemExit(f"verify-minisign: {plat} url {url!r} != expected {expected_url!r}")
-        else:
-            parsed_url = urlparse(url)
-            if ".." in parsed_url.path.split("/") or Path(parsed_url.path).name != expected_filename:
-                raise SystemExit(
-                    f"verify-minisign: {plat} url {url!r} does not match expected filename {expected_filename!r}"
-                )
+        expected_url = f"{url_prefix}{expected_filename}"
+        if url != expected_url:
+            raise SystemExit(f"verify-minisign: {plat} url {url!r} != expected {expected_url!r}")
         file_path = find_file(search_dirs, expected_filename)
         try:
             verify_file_signature(pub_key_id, pub_ed25519, file_path, sig, args.version)

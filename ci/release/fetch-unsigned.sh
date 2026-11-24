@@ -17,7 +17,7 @@
 #     --unsigned-dir <dir> \
 #     --sigs-dir <dir>
 set -euo pipefail
-umask 022
+umask 077
 
 tag=
 tag_sha=
@@ -52,6 +52,18 @@ check_fresh_dir() {
     [[ -d "$dir" ]] || die "$label exists and is not a directory: $dir"
     [[ -z "$(ls -A "$dir")" ]] ||
       die "$label must be absent or an empty directory (refusing to overwrite/delete existing files in $dir)"
+    # L3: Refuse an existing directory not owned by the current user or writable by group/others.
+    python3 - "$label" "$dir" <<'PY' || exit 1
+import os, stat, sys
+label, path = sys.argv[1], sys.argv[2]
+st = os.lstat(path)
+if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+    raise SystemExit(f"fetch-unsigned: {label} is not a real directory: {path}")
+if st.st_uid != os.getuid():
+    raise SystemExit(f"fetch-unsigned: {label} is not owned by current user (uid {st.st_uid} != {os.getuid()}): {path}")
+if st.st_mode & 0o022:
+    raise SystemExit(f"fetch-unsigned: {label} must not be group- or world-writable (mode {oct(st.st_mode & 0o777)}): {path}")
+PY
   fi
 }
 
@@ -113,20 +125,32 @@ else
   (cd "$stage" && shasum -a 256 -c unsigned.SHA256SUMS)
 fi
 
-# Re-verify destinations are still fresh/empty right before writing (never rm -rf user directories
-# and never follow symlinks at destination paths).
+# Re-verify destinations are still fresh/empty/owner-only right before writing (never rm -rf user
+# directories and open destinations with O_CREAT|O_EXCL|O_NOFOLLOW to prevent symlink TOCTOU).
 check_fresh_dir "--unsigned-dir" "$unsigned_dir"
 check_fresh_dir "--sigs-dir" "$sigs_dir"
 mkdir -p "$unsigned_dir" "$sigs_dir"
+chmod 700 "$unsigned_dir" "$sigs_dir"
 [[ "$(cd "$unsigned_dir" && pwd -P)" != "$(cd "$sigs_dir" && pwd -P)" ]] ||
   die "--unsigned-dir and --sigs-dir resolve to the same directory"
-for f in "$stage"/*; do
-  [[ -f "$f" && ! -L "$f" ]] || die "unexpected non-regular entry in staged download: $f"
-  dst="$unsigned_dir/${f##*/}"
-  [[ ! -e "$dst" && ! -L "$dst" ]] || die "refusing to overwrite existing path: $dst"
-  cp -P "$f" "$dst"
-done
-sigs_sums="$sigs_dir/unsigned.SHA256SUMS"
-[[ ! -e "$sigs_sums" && ! -L "$sigs_sums" ]] || die "refusing to overwrite existing path: $sigs_sums"
-cp -P "$unsigned_dir/unsigned.SHA256SUMS" "$sigs_sums"
+python3 - "$stage" "$unsigned_dir" "$sigs_dir" <<'PY'
+import os, shutil, stat, sys
+from pathlib import Path
+
+stage, u_dir, s_dir = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+
+def safe_copy(src: Path, dst: Path) -> None:
+    st = os.lstat(src)
+    if not stat.S_ISREG(st.st_mode):
+        raise SystemExit(f"fetch-unsigned: unexpected non-regular entry in staged download: {src}")
+    mode = 0o700 if (st.st_mode & 0o100) else 0o600
+    fd = os.open(str(dst), flags, mode)
+    with os.fdopen(fd, "wb") as out_f, src.open("rb") as in_f:
+        shutil.copyfileobj(in_f, out_f)
+
+for entry in sorted(stage.iterdir(), key=lambda p: p.name):
+    safe_copy(entry, u_dir / entry.name)
+safe_copy(stage / "unsigned.SHA256SUMS", s_dir / "unsigned.SHA256SUMS")
+PY
 echo "fetch-unsigned: verified $count attested unsigned files for $tag ($want_sha) into $unsigned_dir"

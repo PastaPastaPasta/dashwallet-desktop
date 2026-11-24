@@ -227,6 +227,9 @@ verify_signed_manifest() {
       die "$tag: signed-manifest.json hash mismatch for $fname (got $got_h, expected $want_h; re-run ci/github/release-attach.sh)"
   done
 }
+if [[ "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "${DW_UPDATER_REQUIRED:-}" == 1 ]] && ((!${#feed[@]})); then
+  die "$tag: DW_UPDATER_REQUIRED=1 is set but no updater feed (latest.json + macos-universal.app.tar.gz) was provided"
+fi
 if ((require_signed)); then
   missing_sigs=()
   ((${#asc[@]})) || missing_sigs+=("SHA256SUMS.asc")
@@ -259,12 +262,34 @@ prepare)
     cp "$out/continuous"/"$cont_prefix"-* "$out/attest/"
     cp "$out/continuous/SHA256SUMS" "$out/attest/SHA256SUMS.continuous"
   fi
+  jq -n \
+    --arg repo "$repo" \
+    --arg kind "$kind" \
+    --arg tag "$tag" \
+    --arg version "$VERSION" \
+    --arg sha "$sha" \
+    '{repo: $repo, kind: $kind, tag: $tag, version: $version, sha: $sha}' > "$out/prepare-meta.json"
   echo "release-publish: kind=$kind tag=$tag"
   ls -l "$out/attest"
   ;;
 
 publish)
-  [[ -d "$out/attest" ]] || die "run prepare first"
+  [[ -d "$out/attest" && -f "$out/prepare-meta.json" ]] || die "run prepare first"
+  if [[ "$kind" == tag ]]; then
+    jq -e \
+      --arg repo "$repo" \
+      --arg kind "$kind" \
+      --arg tag "$tag" \
+      --arg version "$VERSION" \
+      --arg sha "$sha" \
+      '.repo == $repo and .kind == $kind and .tag == $tag and .version == $version and .sha == $sha' \
+      "$out/prepare-meta.json" >/dev/null ||
+      die "$tag: staged $out/attest was prepared for a different repo/tag/version/commit (re-run prepare for $tag @ $sha)"
+  else
+    jq -e --arg repo "$repo" --arg kind "$kind" '.repo == $repo and .kind == $kind' \
+      "$out/prepare-meta.json" >/dev/null ||
+      die "$tag: staged $out was prepared for a different repo or trigger kind"
+  fi
   verify_note="Attested by GitHub: \`gh attestation verify <file> --repo $repo\`. See docs/release/verifying.md."
   if [[ "$kind" == tag ]]; then
     version=${tag#v}
@@ -327,7 +352,13 @@ publish)
       [[ ${#attest_files[@]} -eq $want_n ]] ||
         die "$tag: expected $want_n attested files in $out/attest, found ${#attest_files[@]}"
       flavour=()
-      [[ "$version" != *-rc.* ]] || flavour=(--prerelease --latest=false)
+      if [[ "$version" == *-rc.* ]]; then
+        flavour=(--prerelease --latest=false)
+      elif ((!${#feed[@]})); then
+        # An unsigned stable override (DW_ALLOW_UNSIGNED_STABLE=1 without latest.json) must never
+        # become Latest and displace a signed release's /releases/latest/download/latest.json feed.
+        flavour=(--latest=false)
+      fi
       w gh release create "$tag" "${attest_files[@]}" --repo "$repo" --verify-tag \
         ${flavour[@]+"${flavour[@]}"} --title "Dash Wallet Desktop $version" "${notes[@]}"
     fi

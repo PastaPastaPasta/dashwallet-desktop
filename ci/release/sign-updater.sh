@@ -52,8 +52,21 @@ win_name="dash-wallet-$version-windows-x64-setup.exe"
 mac_name="dash-wallet-$version-macos-universal.app.tar.gz"
 
 for f in "$dist_dir/$linux_name" "$dist_dir/$win_name" "$feed_dir/$mac_name"; do
-  [[ -f "$f" ]] || die "missing artifact to sign: $f"
+  [[ -f "$f" && ! -L "$f" ]] || die "missing or symlink artifact to sign: $f"
 done
+
+# L3: Re-verify the unchanged CI Linux AppImage against unsigned.SHA256SUMS right before signing.
+unsigned_sums="$sigs_dir/unsigned.SHA256SUMS"
+[[ -f "$unsigned_sums" && ! -L "$unsigned_sums" ]] || die "missing $unsigned_sums (run ci/release/fetch-unsigned.sh first)"
+want_linux_sha=$(awk -v f="$linux_name" '$2 == f { print $1; exit }' "$unsigned_sums")
+[[ "$want_linux_sha" =~ ^[0-9a-f]{64}$ ]] || die "$linux_name not listed in $unsigned_sums"
+if command -v sha256sum >/dev/null 2>&1; then
+  got_linux_sha=$(sha256sum "$dist_dir/$linux_name" | awk '{print $1}')
+else
+  got_linux_sha=$(shasum -a 256 "$dist_dir/$linux_name" | awk '{print $1}')
+fi
+[[ "$got_linux_sha" == "$want_linux_sha" ]] ||
+  die "$linux_name changed since fetch (got $got_linux_sha != expected $want_linux_sha in $unsigned_sums)"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

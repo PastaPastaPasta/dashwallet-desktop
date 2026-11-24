@@ -31,6 +31,7 @@ import stat
 import struct
 import sys
 import tarfile
+import tempfile
 from pathlib import Path, PurePosixPath
 
 FAT_MAGIC = 0xCAFEBABE
@@ -350,6 +351,33 @@ def walk_bundle(root: Path) -> dict[str, Path]:
     return files
 
 
+def _paths_overlap(a: Path, b: Path) -> bool:
+    """True if two paths resolve to the same location or one contains the other."""
+    ra = Path(os.path.realpath(a))
+    rb = Path(os.path.realpath(b))
+    return ra == rb or ra in rb.parents or rb in ra.parents
+
+
+def _atomic_replace_dir(stage_dir: Path, target_dir: Path) -> None:
+    """Replace target_dir with stage_dir, preserving target_dir on failure."""
+    backup_dir: Path | None = None
+    if target_dir.exists() or target_dir.is_symlink():
+        backup_dir = Path(tempfile.mkdtemp(prefix=".tmp-backup-", dir=str(target_dir.parent)))
+        backup_dir.rmdir()
+        os.rename(target_dir, backup_dir)
+    try:
+        os.rename(stage_dir, target_dir)
+    except Exception:
+        if backup_dir is not None and (backup_dir.exists() or backup_dir.is_symlink()):
+            os.rename(backup_dir, target_dir)
+        raise
+    if backup_dir is not None:
+        if backup_dir.is_symlink() or backup_dir.is_file():
+            backup_dir.unlink()
+        else:
+            shutil.rmtree(backup_dir)
+
+
 def cmd_extract(args: argparse.Namespace) -> None:
     unsigned_app = Path(args.unsigned_app)
     signed_app = Path(args.signed_app)
@@ -357,6 +385,8 @@ def cmd_extract(args: argparse.Namespace) -> None:
 
     if not unsigned_app.is_dir() or not signed_app.is_dir():
         raise SystemExit("extract: both unsigned_app and signed_app must be .app directories")
+    if _paths_overlap(sigs_dir, unsigned_app) or _paths_overlap(sigs_dir, signed_app):
+        raise SystemExit(f"extract: refusing sigs_dir {sigs_dir} overlapping an input .app bundle")
 
     u_files = walk_bundle(unsigned_app)
     s_files = walk_bundle(signed_app)
@@ -376,84 +406,89 @@ def cmd_extract(args: argparse.Namespace) -> None:
         missing = sorted(u_non_sig - s_non_sig)
         raise SystemExit(f"extract: bundle file list differs (extra={extra}, missing={missing})")
 
-    if sigs_dir.exists():
-        shutil.rmtree(sigs_dir)
-    sigs_dir.mkdir(parents=True)
+    sigs_dir.parent.mkdir(parents=True, exist_ok=True)
+    stage_dir = Path(tempfile.mkdtemp(prefix=".tmp-sigs-", dir=str(sigs_dir.parent)))
+    try:
+        # Copy bundle-level code signature and stapled ticket files.
+        bundle_sig_files = []
+        for rel in sorted(SKIP_BUNDLE_FILES):
+            if rel in s_files:
+                dst = stage_dir / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(s_files[rel], dst)
+                bundle_sig_files.append({"path": rel, "sha256": sha256_file(dst)})
 
-    # Copy bundle-level code signature and stapled ticket files.
-    bundle_sig_files = []
-    for rel in sorted(SKIP_BUNDLE_FILES):
-        if rel in s_files:
-            dst = sigs_dir / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(s_files[rel], dst)
-            bundle_sig_files.append({"path": rel, "sha256": sha256_file(dst)})
+        unchanged_files: dict[str, str] = {}
+        macho_entries = []
 
-    unchanged_files: dict[str, str] = {}
-    macho_entries = []
+        for rel in sorted(u_non_sig):
+            up = u_files[rel]
+            sp = s_files[rel]
+            if up.is_symlink() or sp.is_symlink():
+                if not (up.is_symlink() and sp.is_symlink() and os.readlink(up) == os.readlink(sp)):
+                    raise SystemExit(f"extract: symlink differs at {rel}")
+                continue
 
-    for rel in sorted(u_non_sig):
-        up = u_files[rel]
-        sp = s_files[rel]
-        if up.is_symlink() or sp.is_symlink():
-            if not (up.is_symlink() and sp.is_symlink() and os.readlink(up) == os.readlink(sp)):
-                raise SystemExit(f"extract: symlink differs at {rel}")
-            continue
+            if is_macho(up):
+                u_bytes = up.read_bytes()
+                s_bytes = sp.read_bytes()
+                u_parsed = parse_macho(u_bytes)
+                s_parsed = parse_macho(s_bytes)
+                if u_parsed["format"] != s_parsed["format"] or len(u_parsed["slices"]) != len(s_parsed["slices"]):
+                    raise SystemExit(f"extract: Mach-O format/slice count changed for {rel}")
 
-        if is_macho(up):
-            u_bytes = up.read_bytes()
-            s_bytes = sp.read_bytes()
-            u_parsed = parse_macho(u_bytes)
-            s_parsed = parse_macho(s_bytes)
-            if u_parsed["format"] != s_parsed["format"] or len(u_parsed["slices"]) != len(s_parsed["slices"]):
-                raise SystemExit(f"extract: Mach-O format/slice count changed for {rel}")
+                slice_metas = []
+                for idx, (us, ss) in enumerate(zip(u_parsed["slices"], s_parsed["slices"])):
+                    if us["cputype"] != ss["cputype"] or us["cpusubtype"] != ss["cpusubtype"]:
+                        raise SystemExit(f"extract: slice {idx} architecture changed for {rel}")
+                    if us["non_sig_sha256"] != ss["non_sig_sha256"]:
+                        raise SystemExit(
+                            f"extract: non-signature code/data bytes changed in {rel} ({us['arch']}); refusing"
+                        )
+                    if not args.allow_adhoc and not has_cms_signature(ss["cs_blob"]):
+                        raise SystemExit(
+                            f"extract: {rel} ({ss['arch']}) appears ad-hoc signed (no CMS signature in LC_CODE_SIGNATURE)"
+                        )
+                    cs_rel = f"{rel}.{ss['arch']}.cs"
+                    cs_dst = stage_dir / cs_rel
+                    cs_dst.parent.mkdir(parents=True, exist_ok=True)
+                    cs_dst.write_bytes(ss["cs_blob"])
+                    meta = {k: v for k, v in ss.items() if k != "cs_blob"}
+                    meta["cs_file"] = cs_rel
+                    meta["cs_sha256"] = sha256_bytes(ss["cs_blob"])
+                    slice_metas.append(meta)
 
-            slice_metas = []
-            for idx, (us, ss) in enumerate(zip(u_parsed["slices"], s_parsed["slices"])):
-                if us["cputype"] != ss["cputype"] or us["cpusubtype"] != ss["cpusubtype"]:
-                    raise SystemExit(f"extract: slice {idx} architecture changed for {rel}")
-                if us["non_sig_sha256"] != ss["non_sig_sha256"]:
-                    raise SystemExit(
-                        f"extract: non-signature code/data bytes changed in {rel} ({us['arch']}); refusing"
-                    )
-                if not args.allow_adhoc and not has_cms_signature(ss["cs_blob"]):
-                    raise SystemExit(
-                        f"extract: {rel} ({ss['arch']}) appears ad-hoc signed (no CMS signature in LC_CODE_SIGNATURE)"
-                    )
-                cs_rel = f"{rel}.{ss['arch']}.cs"
-                cs_dst = sigs_dir / cs_rel
-                cs_dst.parent.mkdir(parents=True, exist_ok=True)
-                cs_dst.write_bytes(ss["cs_blob"])
-                meta = {k: v for k, v in ss.items() if k != "cs_blob"}
-                meta["cs_file"] = cs_rel
-                meta["cs_sha256"] = sha256_bytes(ss["cs_blob"])
-                slice_metas.append(meta)
+                macho_meta = {
+                    "path": rel,
+                    "format": s_parsed["format"],
+                    "unsigned_sha256": sha256_bytes(u_bytes),
+                    "signed_sha256": sha256_bytes(s_bytes),
+                    "slices": slice_metas,
+                }
+                macho_entries.append(macho_meta)
+            else:
+                u_sha = sha256_file(up)
+                s_sha = sha256_file(sp)
+                if u_sha != s_sha:
+                    raise SystemExit(f"extract: non-Mach-O file {rel} modified during signing ({u_sha} != {s_sha})")
+                unchanged_files[rel] = u_sha
 
-            macho_meta = {
-                "path": rel,
-                "format": s_parsed["format"],
-                "unsigned_sha256": sha256_bytes(u_bytes),
-                "signed_sha256": sha256_bytes(s_bytes),
-                "slices": slice_metas,
-            }
-            macho_entries.append(macho_meta)
-        else:
-            u_sha = sha256_file(up)
-            s_sha = sha256_file(sp)
-            if u_sha != s_sha:
-                raise SystemExit(f"extract: non-Mach-O file {rel} modified during signing ({u_sha} != {s_sha})")
-            unchanged_files[rel] = u_sha
+        if not macho_entries:
+            raise SystemExit("extract: no Mach-O binaries found in .app bundle")
 
-    if not macho_entries:
-        raise SystemExit("extract: no Mach-O binaries found in .app bundle")
+        manifest = {
+            "schema": 1,
+            "bundle_sig_files": bundle_sig_files,
+            "macho_binaries": macho_entries,
+            "unchanged_files": unchanged_files,
+        }
+        (stage_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        _atomic_replace_dir(stage_dir, sigs_dir)
+    except BaseException:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        raise
 
-    manifest = {
-        "schema": 1,
-        "bundle_sig_files": bundle_sig_files,
-        "macho_binaries": macho_entries,
-        "unchanged_files": unchanged_files,
-    }
-    (sigs_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(
         f"macos-detached-sig: extracted {len(macho_entries)} Mach-O binary signature(s) and "
         f"{len(bundle_sig_files)} bundle signature file(s) into {sigs_dir}"
@@ -464,6 +499,11 @@ def cmd_apply(args: argparse.Namespace) -> None:
     unsigned_app = Path(args.unsigned_app)
     sigs_dir = Path(args.sigs_dir)
     out_app = Path(args.out_app)
+
+    if _paths_overlap(out_app, unsigned_app) or _paths_overlap(out_app, sigs_dir):
+        raise SystemExit(
+            f"apply: refusing out_app {out_app} overlapping unsigned_app ({unsigned_app}) or sigs_dir ({sigs_dir})"
+        )
 
     assert_no_symlinks(sigs_dir)
     manifest_path = safe_subpath(sigs_dir, "manifest.json")
@@ -508,45 +548,52 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 "detached signature does not match this unsigned build"
             )
 
-    if out_app.exists():
-        shutil.rmtree(out_app)
-    shutil.copytree(unsigned_app, out_app, symlinks=True)
+    out_app.parent.mkdir(parents=True, exist_ok=True)
+    stage_parent = Path(tempfile.mkdtemp(prefix=".tmp-apply-", dir=str(out_app.parent)))
+    stage_app = stage_parent / out_app.name
+    try:
+        shutil.copytree(unsigned_app, stage_app, symlinks=True)
 
-    # Remove any ad-hoc _CodeSignature before installing signed files.
-    for rel in SKIP_BUNDLE_FILES:
-        p = safe_subpath(out_app, rel)
-        if p.exists() or p.is_symlink():
-            p.unlink()
+        # Remove any ad-hoc _CodeSignature before installing signed files.
+        for rel in SKIP_BUNDLE_FILES:
+            p = safe_subpath(stage_app, rel)
+            if p.exists() or p.is_symlink():
+                p.unlink()
 
-    for rel, m in expected_macho.items():
-        target = safe_subpath(out_app, rel)
-        mode = target.stat().st_mode
-        try:
-            patched = patch_macho(target.read_bytes(), m, sigs_dir)
-        except ValueError as e:
-            raise SystemExit(f"apply: {rel}: {e}") from None
-        target.write_bytes(patched)
-        os.chmod(target, mode)
+        for rel, m in expected_macho.items():
+            target = safe_subpath(stage_app, rel)
+            mode = target.stat().st_mode
+            try:
+                patched = patch_macho(target.read_bytes(), m, sigs_dir)
+            except ValueError as e:
+                raise SystemExit(f"apply: {rel}: {e}") from None
+            target.write_bytes(patched)
+            os.chmod(target, mode)
 
-    for entry in manifest["bundle_sig_files"]:
-        rel = entry.get("path")
-        if rel not in SKIP_BUNDLE_FILES:
-            raise SystemExit(
-                f"apply: refusing bundle_sig_files path {rel!r} outside allowlist {sorted(SKIP_BUNDLE_FILES)}"
-            )
-        try:
-            src = safe_subpath(sigs_dir, rel)
-            dst = safe_subpath(out_app, rel)
-        except ValueError as e:
-            raise SystemExit(f"apply: invalid bundle_sig_files path: {e}") from None
-        if not src.is_file() or src.is_symlink():
-            raise SystemExit(f"apply: missing or non-regular detached bundle signature file {src}")
-        got_sha = sha256_file(src)
-        if got_sha != entry["sha256"]:
-            raise SystemExit(f"apply: detached signature file {rel} corrupted ({got_sha} != {entry['sha256']})")
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dst)
-        os.chmod(dst, 0o644)
+        for entry in manifest["bundle_sig_files"]:
+            rel = entry.get("path")
+            if rel not in SKIP_BUNDLE_FILES:
+                raise SystemExit(
+                    f"apply: refusing bundle_sig_files path {rel!r} outside allowlist {sorted(SKIP_BUNDLE_FILES)}"
+                )
+            try:
+                src = safe_subpath(sigs_dir, rel)
+                dst = safe_subpath(stage_app, rel)
+            except ValueError as e:
+                raise SystemExit(f"apply: invalid bundle_sig_files path: {e}") from None
+            if not src.is_file() or src.is_symlink():
+                raise SystemExit(f"apply: missing or non-regular detached bundle signature file {src}")
+            got_sha = sha256_file(src)
+            if got_sha != entry["sha256"]:
+                raise SystemExit(f"apply: detached signature file {rel} corrupted ({got_sha} != {entry['sha256']})")
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            os.chmod(dst, 0o644)
+
+        _atomic_replace_dir(stage_app, out_app)
+    finally:
+        if stage_parent.exists():
+            shutil.rmtree(stage_parent, ignore_errors=True)
 
     print(f"macos-detached-sig: applied detached signatures to {out_app} (hashes verified)")
 

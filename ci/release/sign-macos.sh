@@ -61,7 +61,23 @@ else
 fi
 
 unsigned_tar="$unsigned_dir/dash-wallet-$version-macos-unsigned.tar.gz"
-[[ -f "$unsigned_tar" ]] || die "missing $unsigned_tar"
+[[ -f "$unsigned_tar" && ! -L "$unsigned_tar" ]] || die "missing or symlink $unsigned_tar"
+unsigned_sums="$unsigned_dir/unsigned.SHA256SUMS"
+[[ -f "$unsigned_sums" && ! -L "$unsigned_sums" ]] || die "missing $unsigned_sums (run ci/release/fetch-unsigned.sh first)"
+if [[ -f "$sigs_dir/unsigned.SHA256SUMS" ]]; then
+  cmp -s "$unsigned_sums" "$sigs_dir/unsigned.SHA256SUMS" ||
+    die "$unsigned_sums differs from $sigs_dir/unsigned.SHA256SUMS"
+fi
+# L3: Re-verify unsigned input hash against unsigned.SHA256SUMS right before invoking Apple signing.
+want_tar_sha=$(awk -v f="${unsigned_tar##*/}" '$2 == f { print $1; exit }' "$unsigned_sums")
+[[ "$want_tar_sha" =~ ^[0-9a-f]{64}$ ]] || die "${unsigned_tar##*/} not listed in $unsigned_sums"
+if command -v sha256sum >/dev/null 2>&1; then
+  got_tar_sha=$(sha256sum "$unsigned_tar" | awk '{print $1}')
+else
+  got_tar_sha=$(shasum -a 256 "$unsigned_tar" | awk '{print $1}')
+fi
+[[ "$got_tar_sha" == "$want_tar_sha" ]] ||
+  die "unsigned input ${unsigned_tar##*/} changed since fetch (got $got_tar_sha != expected $want_tar_sha in $unsigned_sums)"
 
 notarize_and_staple() {
   local target=$1 submit_file=$2 label=$3

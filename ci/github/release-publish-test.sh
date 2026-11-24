@@ -258,12 +258,20 @@ tag_bundles() { # the seven files under version $1, alone in their own dist
   (cd "$work/tagdist" && sha256sum dash-wallet-* > SHA256SUMS); }
 tag_bundles 0.1.0; fs_reset
 DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
-check "tag v0.1.0 (DW_ALLOW_UNSIGNED_STABLE=1): a full release, not a prerelease, Latest left to GitHub" \
-  '[[ $status -eq 0 ]] && log_has "release create v0.1.0 " && ! log_has "--prerelease" && ! log_has "--latest"'
+check "tag v0.1.0 (DW_ALLOW_UNSIGNED_STABLE=1, no feed): full release, not prerelease, --latest=false so it never displaces a signed updater feed" \
+  '[[ $status -eq 0 ]] && log_has "release create v0.1.0 " && ! log_has "--prerelease" && log_has "--latest=false"'
+fs_reset
+DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 DW_UPDATER_REQUIRED=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
+refused "DW_UPDATER_REQUIRED=1 refuses unsigned stable override without latest.json"
 tag_bundles 0.1.0-rc.1; fs_reset
 DIST=$work/tagdist run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
 check "tag v0.1.0-rc.1: a prerelease, not Latest" \
   '[[ $status -eq 0 ]] && log_has "release create v0.1.0-rc.1 " && log_has "--prerelease" && log_has "--latest=false"'
+# r4687084410: publish must refuse staged $OUT/attest prepared for a different tag/version
+tag_bundles 0.1.0-rc.2; fs_reset
+DIST=$work/tagdist VERSION=0.1.0-rc.2 GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v0.1.0-rc.2 GITHUB_SHA=$c2 publish_only
+check "release-publish refuses staged attest dir prepared for a different tag (v0.1.0-rc.1 vs v0.1.0-rc.2)" \
+  '[[ $status -ne 0 && $(writes) -eq 0 ]] && grep -q "prepared for a different" "$work/pub.out"'
 
 # --- push to main again: the per-run release exists, continuous exists at the older commit
 seed_old
@@ -531,40 +539,84 @@ printf -- '-----BEGIN PGP SIGNATURE-----\nmain\n-----END PGP SIGNATURE-----\n' >
 DIST=$work/maindist run push refs/heads/main "$c2" "$ver"
 refused "main never publishes SHA256SUMS.asc"
 
-# --- tauri-build.sh: DW_ENABLE_UPDATER=1 embeds stable feed URL with zero private keys & rejects retired key
-python3 - "$work" <<'PY'
-import base64, json, sys
+# --- tauri-build.sh: DW_ENABLE_UPDATER=1 embeds stable feed URL with zero private keys & rejects retired/small-order/overlay keys
+python3 - "$work" "$here" <<'PY'
+import base64, importlib.util, json, sys
 from pathlib import Path
-wk = Path(sys.argv[1])
+wk, here = Path(sys.argv[1]), Path(sys.argv[2])
+vm_spec = importlib.util.spec_from_file_location("vm_tb", str(here / "verify-minisign.py"))
+vm = importlib.util.module_from_spec(vm_spec); vm_spec.loader.exec_module(vm)
+
+def enc(pt):
+    x, y, z, _ = pt
+    zi = pow(z, vm._P - 2, vm._P)
+    return (((y * zi) % vm._P) | ((((x * zi) % vm._P) & 1) << 255)).to_bytes(32, "little")
+
+# Find an order-8 torsion point T8 and compute torsion-shifted retired key A' = A_retired + T8 (L2)
+ident = (1).to_bytes(32, "little")
+t8 = None
+for y in range(2, 10000):
+    pt = vm._ed_decode_point(y.to_bytes(32, "little"))
+    if pt is None:
+        continue
+    q = vm._ed_scalar_mul(pt, vm._L)
+    if enc(q) != ident and enc(vm._ed_scalar_mul(q, 4)) != ident:
+        t8 = q
+        break
+assert t8 is not None
+
+valid_ed25519 = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
 retired_ed25519 = bytes.fromhex("5482c426fb97af310e6cccdb492b20e0fa2fa94dc9bc0424066ecd7e1a144152")
-def make_conf(kid_hex: str, path: Path, ed_bytes: bytes = b"\x11" * 32) -> None:
+torsion_retired_ed25519 = enc(vm._ed_point_add(vm._ed_decode_point(retired_ed25519), t8))
+
+def make_conf(kid_hex: str, path: Path, ed_bytes: bytes = valid_ed25519) -> None:
     kid = bytes.fromhex(kid_hex)[::-1]
     pub = b"Ed" + kid + ed_bytes
     b64 = base64.b64encode(f"untrusted comment: minisign public key: {kid_hex}\n{base64.b64encode(pub).decode()}\n".encode()).decode()
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"plugins": {"updater": {"pubkey": b64}}}))
-make_conf("1122334455667788", wk / "tauri-rotated.conf.json")
-make_conf("ED322B963B527B21", wk / "tauri-retired.conf.json")
-make_conf("1122334455667788", wk / "tauri-relabelled-retired.conf.json", retired_ed25519)
+
+make_conf("1122334455667788", wk / "tb-ok/tauri.conf.json")
+make_conf("ED322B963B527B21", wk / "tb-retired/tauri.conf.json")
+make_conf("1122334455667788", wk / "tb-relabelled/tauri.conf.json", retired_ed25519)
+make_conf("1122334455667788", wk / "tb-torsion/tauri.conf.json", torsion_retired_ed25519)
+make_conf("1122334455667788", wk / "tb-ident/tauri.conf.json", ident)
+# L1: valid base tauri.conf.json with a sibling tauri.macos.conf.json attempting a pubkey override
+make_conf("1122334455667788", wk / "tb-overlay/tauri.conf.json")
+make_conf("ED322B963B527B21", wk / "tb-overlay/tauri.macos.conf.json")
 PY
-tb() { # tb ENABLE_UPDATER LOCAL_KEY [TAURI_CONF]: runs tauri-build.sh with a fake pnpm; sets $tbs, $TB
-  local env_file=$work/tb-env
+tb() { # tb ENABLE_UPDATER LOCAL_KEY [TAURI_CONF] [EXTRA_ARGS...]: runs tauri-build.sh with fake pnpm; sets $tbs, $TB
+  local env_file=$work/tb-env en=$1 lk=$2 tc=${3:-$work/tb-ok/tauri.conf.json}
+  shift 3 2>/dev/null || shift $#
   : > "$env_file"
   tbs=0
-  TB=$(cd "$work" && PATH="$work/tb-bin:$PATH" DW_ENABLE_UPDATER=$1 TAURI_SIGNING_PRIVATE_KEY=$2 \
-    TAURI_CONF=${3:-$work/tauri-rotated.conf.json} GITHUB_ENV=$env_file "$here/tauri-build.sh" --bundles appimage 2>&1) || tbs=$?
+  TB=$(cd "$work" && PATH="$work/tb-bin:$PATH" DW_ENABLE_UPDATER=$en TAURI_SIGNING_PRIVATE_KEY=$lk \
+    TAURI_CONF=$tc GITHUB_ENV=$env_file "$here/tauri-build.sh" --bundles appimage "$@" 2>&1) || tbs=$?
 }
 mkdir -p "$work/tb-bin"
 printf '#!/usr/bin/env bash\necho "pnpm $*"\n' > "$work/tb-bin/pnpm"; chmod +x "$work/tb-bin/pnpm"
-tb 1 "" "$work/tauri-rotated.conf.json"
+tb 1 "" "$work/tb-ok/tauri.conf.json"
 check "tauri-build: DW_ENABLE_UPDATER=1 merges feed URL with createUpdaterArtifacts=false and no secret" \
   '[[ $tbs -eq 0 && "$TB" == *"--config ../../rust/crates/dw-app/tauri.updater.conf.json"* && "$TB" == *"createUpdaterArtifacts\":false"* && ! -s "$work/tb-env" ]]'
-tb 1 "" "$work/tauri-retired.conf.json"
+tb 1 "" "$work/tb-retired/tauri.conf.json"
 check "Blocker #6: tauri-build refuses DW_ENABLE_UPDATER=1 with retired CI key ED322B963B527B21" \
   '[[ $tbs -ne 0 && "$TB" == *"ED322B963B527B21"* ]]'
-tb 1 "" "$work/tauri-relabelled-retired.conf.json"
+tb 1 "" "$work/tb-relabelled/tauri.conf.json"
 check "tauri-build refuses DW_ENABLE_UPDATER=1 when retired CI Ed25519 pubkey bytes are relabelled with a new key ID" \
   '[[ $tbs -ne 0 && "$TB" == *"7821a52f7420d388"* ]]'
-tb 0 "" "$work/tauri-retired.conf.json"
+tb 1 "" "$work/tb-torsion/tauri.conf.json"
+check "L2: tauri-build refuses torsion-shifted retired Ed25519 pubkey (A' = A + T8)" \
+  '[[ $tbs -ne 0 && "$TB" == *"non-prime-order"* ]]'
+tb 1 "" "$work/tb-ident/tauri.conf.json"
+check "L2: tauri-build refuses small-order identity Ed25519 pubkey" \
+  '[[ $tbs -ne 0 && "$TB" == *"non-prime-order"* ]]'
+tb 1 "" "$work/tb-overlay/tauri.conf.json"
+check "L1: tauri-build refuses plugins.updater.pubkey override in sibling tauri.macos.conf.json" \
+  '[[ $tbs -ne 0 && "$TB" == *"tauri.macos.conf.json"* ]]'
+tb 1 "" "$work/tb-ok/tauri.conf.json" --config '{"plugins":{"updater":{"pubkey":"evil"}}}'
+check "L1: tauri-build refuses plugins.updater.pubkey override in inline --config JSON" \
+  '[[ $tbs -ne 0 && "$TB" == *"inline --config JSON"* ]]'
+tb 0 "" "$work/tb-retired/tauri.conf.json"
 check "tauri-build: plain build without DW_ENABLE_UPDATER adds no updater config (even before key rotation)" \
   '[[ $tbs -eq 0 && "$TB" == *"pnpm tauri build --bundles appimage"* && "$TB" != *config* && ! -s "$work/tb-env" ]]'
 tb 0 local-key
@@ -760,7 +812,8 @@ import importlib.util
 vm_spec = importlib.util.spec_from_file_location("vm", str(here / "verify-minisign.py"))
 vm = importlib.util.module_from_spec(vm_spec); vm_spec.loader.exec_module(vm)
 
-# Blocker #3: Cross-check pure-Python Ed25519 verifier against official RFC 8032 §7.1 vectors 1-3
+# Blocker #3 / L2: Cross-check pure-Python Ed25519 verifier against 4 official RFC 8032 §7.1 vectors
+# (vectors 1-3 + SHA(abc)) and verify small-order identity and torsion-shifted keys are rejected.
 rfc_vectors = [
     ("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "",
      "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"),
@@ -768,9 +821,14 @@ rfc_vectors = [
      "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"),
     ("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025", "af82",
      "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"),
+    ("ec172b93ad5e563bf4932c70e1245034c35467ef2efd4d64ebf819683467e2bf",
+     "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+     "dc2a4459e7369633a52b1bf277839a00201009a3efbf3ecb69bea2186c26b58909351fc9ac90b3ecfdfbc7c66431e0303dca179c138ac17ad9bef1177331a704"),
 ]
 for vpub, vmsg, vsig in rfc_vectors:
     assert vm.ed25519_verify(bytes.fromhex(vpub), bytes.fromhex(vmsg), bytes.fromhex(vsig)), "RFC 8032 vector failed"
+ident_pt = (1).to_bytes(32, "little")
+assert not vm.ed25519_verify(ident_pt, b"anything", ident_pt + bytes(32)), "identity pubkey must be rejected"
 
 def ed_encode_point(pt):
     x, y, z, _ = pt
@@ -817,9 +875,38 @@ kp2 = ed_keypair(bytes(range(32, 64)))
 key_id = bytes.fromhex("8877665544332211")  # key ID 1122334455667788 (non-retired)
 retired_kid = bytes.fromhex("217b523b962b32ed")  # ED322B963B527B21 (retired CI key)
 retired_ed25519 = bytes.fromhex("5482c426fb97af310e6cccdb492b20e0fa2fa94dc9bc0424066ecd7e1a144152")
+# L2: Torsion-shifted retired key A' = A_retired + T8 (must be rejected by prime-order subgroup check)
+t8_pt = None
+for y_cand in range(2, 10000):
+    pt_cand = vm._ed_decode_point(y_cand.to_bytes(32, "little"))
+    if pt_cand is None:
+        continue
+    q_cand = vm._ed_scalar_mul(pt_cand, vm._L)
+    if ed_encode_point(q_cand) != ident_pt and ed_encode_point(vm._ed_scalar_mul(q_cand, 4)) != ident_pt:
+        t8_pt = q_cand
+        break
+assert t8_pt is not None
+torsion_retired_ed25519 = ed_encode_point(vm._ed_point_add(vm._ed_decode_point(retired_ed25519), t8_pt))
+# Also prove kp1's torsion-shifted A' = A1 + T8 cannot forge a signature accepted by ed25519_verify
+a1_shifted = ed_encode_point(vm._ed_point_add(vm._ed_decode_point(kp1[3]), t8_pt))
+for trial in range(16):
+    r_pt = vm._ed_point_add(vm._ed_scalar_mul(vm._B, trial + 1), vm._ed_scalar_mul(t8_pt, trial % 8))
+    r_enc = ed_encode_point(r_pt)
+    k_val = int.from_bytes(hashlib.sha512(r_enc + a1_shifted + b"msg").digest(), "little") % vm._L
+    s_val = ((trial + 1) + k_val * kp1[1]) % vm._L
+    assert not vm.ed25519_verify(a1_shifted, b"msg", r_enc + s_val.to_bytes(32, "little")), "torsion-shifted key must be rejected"
+
 (wk / "tauri.conf.json").write_text(json.dumps({"plugins": {"updater": {"pubkey": make_minisign_pub(key_id, kp1[3])}}}))
 (wk / "tauri-retired.conf.json").write_text(json.dumps({"plugins": {"updater": {"pubkey": make_minisign_pub(retired_kid, kp1[3])}}}))
 (wk / "tauri-relabelled-retired.conf.json").write_text(json.dumps({"plugins": {"updater": {"pubkey": make_minisign_pub(key_id, retired_ed25519)}}}))
+(wk / "tauri-torsion-retired.conf.json").write_text(json.dumps({"plugins": {"updater": {"pubkey": make_minisign_pub(key_id, torsion_retired_ed25519)}}}))
+# Test-owned placeholder signing-identities.json (never rely on production docs/release/signing-identities.json staying unpopulated)
+(wk / "identities-placeholder.json").write_text(json.dumps({
+    "schema": 1,
+    "pgp_fingerprint": "REPLACE_WITH_40_HEX_PRIMARY_PGP_FINGERPRINT",
+    "apple_team_id": "REPLACE_WITH_10_CHAR_APPLE_TEAM_ID",
+    "windows_leaf_sha256": "sha256:REPLACE_WITH_64_HEX_WINDOWS_LEAF_CERT_SHA256",
+}, indent=2) + "\n")
 
 # Real Tauri CLI (@tauri-apps/cli 2.12.1) minisign fixture: exercises verify-minisign.py against
 # genuine Tauri-emitted prehashing (BLAKE2b-512), envelope framing, trusted-comment signing, and
@@ -1175,6 +1262,18 @@ PY
     "refusing retired updater key .*7821a52f7420d388" "$e2e/attach-relabelled-ms.out" \
     "${attach_base[@]}" --tauri-conf "$e2e/work/tauri-relabelled-retired.conf.json" --out-dir "$e2e/attached-relabelled-ms"
 
+  expect_attach_fail \
+    "L2: verify-minisign refuses torsion-shifted retired CI Ed25519 pubkey (A' = A + T8)" \
+    "non-prime-order" "$e2e/attach-torsion-ms.out" \
+    "${attach_base[@]}" --tauri-conf "$e2e/work/tauri-torsion-retired.conf.json" --out-dir "$e2e/attached-torsion-ms"
+
+  norepo_rc=0
+  python3 "$here/verify-minisign.py" --pubkey "$real_ms_pub" \
+    --latest-json "$e2e/work/tauri-real-fixture/latest.json" --version 0.1.0 \
+    --files-dir "$e2e/work/tauri-real-fixture" > "$e2e/real-ms-norepo.out" 2>&1 || norepo_rc=$?
+  check "N3: verify-minisign requires --repo when verifying latest.json" \
+    '[[ $norepo_rc -ne 0 ]] && grep -q -- "--repo" "$e2e/real-ms-norepo.out"'
+
   # Unsigned input tampering
   cp -R "$e2e/unsigned" "$e2e/unsigned-bad"
   echo "mutated" >> "$e2e/unsigned-bad/dash-wallet-0.1.0-linux-amd64.deb"
@@ -1209,13 +1308,17 @@ PY
     "differs from CI" "$e2e/attach-trunc-unsigned.out" \
     "${attach_base[@]}" --sigs-dir "$e2e/sigs-trunc-unsigned" --out-dir "$e2e/attached-trunc-unsigned"
 
-  # H2 / Decision 5: default repo placeholder signing-identities.json fails closed (no fingerprint)
+  # H2 / Decision 5 / r4687084401: test-owned placeholder signing-identities.json fails closed (independent of production repo file),
+  # and validate production docs/release/signing-identities.json adaptively whether placeholder or populated.
   expect_attach_fail \
-    "H2/Decision 5: release-attach fails closed on placeholder repo signing-identities.json (no fingerprint)" \
+    "H2/Decision 5: release-attach fails closed on placeholder signing-identities.json fixture (no fingerprint)" \
     "pinned PGP primary fingerprint" "$e2e/attach-nofpr.out" \
     --version 0.1.0 --unsigned-dir "$e2e/unsigned" --sigs-dir "$e2e/sigs" \
+    --identities-file "$e2e/work/identities-placeholder.json" \
     --out-dir "$e2e/attached-nofpr" --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg" \
     --allow-non-darwin
+  check "signing-identities.json: production repo file is valid schema 1 (placeholder or properly formatted real identities)" \
+    'jq -e ".schema == 1 and ((.pgp_fingerprint | startswith(\"REPLACE_\")) or (.pgp_fingerprint | test(\"^[0-9a-fA-F]{40}$\"))) and ((.apple_team_id | startswith(\"REPLACE_\")) or (.apple_team_id | test(\"^[A-Z0-9]{10}$\"))) and ((.windows_leaf_sha256 | contains(\"REPLACE_\")) or (.windows_leaf_sha256 | test(\"^sha256:[0-9a-fA-F]{64}$\")))" "$here/../../docs/release/signing-identities.json" >/dev/null'
 
   # H2: missing SHA256SUMS.asc at attach time
   cp -R "$e2e/sigs" "$e2e/sigs-noasc"
@@ -1278,6 +1381,35 @@ PY
     "$e2e/work/sigs-cs" "$e2e/work/out-cs.app" > "$e2e/cs.out" 2>&1 || cs_rc=$?
   check "H1/L2: macos-detached-sig.py apply refuses non-canonical cs_file path" \
     '[[ $cs_rc -ne 0 ]] && grep -qF "Untrusted cs_file" "$e2e/cs.out"'
+
+  # r4687084381: failed extract preserves previously valid sigs_dir intact (atomic temp-dir swap)
+  cp -R "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/sigs-preserve"
+  printf 'keep-prior-sigs\n' > "$e2e/work/sigs-preserve/SENTINEL"
+  ext_fail_rc=0
+  python3 "$here/macos-detached-sig.py" extract "$e2e/work/unsigned-app/Dash Wallet.app" \
+    "$e2e/work/tampered-app/Dash Wallet.app" "$e2e/work/sigs-preserve" > "$e2e/ext-preserve.out" 2>&1 || ext_fail_rc=$?
+  check "r4687084381: failed macos-detached-sig.py extract preserves previous sigs_dir intact" \
+    '[[ $ext_fail_rc -ne 0 && "$(cat "$e2e/work/sigs-preserve/SENTINEL")" == "keep-prior-sigs" ]]'
+
+  # r4687084393: apply refuses overlapping out_app (same as or inside unsigned_app) and preserves prior out_app on error
+  cp -R "$e2e/work/unsigned-app/Dash Wallet.app" "$e2e/work/overlap-app.app"
+  ov_rc=0
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/overlap-app.app" \
+    "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/overlap-app.app" > "$e2e/ov.out" 2>&1 || ov_rc=$?
+  check "r4687084393: macos-detached-sig.py apply refuses out_app overlapping unsigned_app without deleting input" \
+    '[[ $ov_rc -ne 0 && -f "$e2e/work/overlap-app.app/Contents/MacOS/dash-wallet" ]] && grep -q "overlapping" "$e2e/ov.out"'
+  ov_in_rc=0
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/overlap-app.app" \
+    "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/overlap-app.app/sub.app" > "$e2e/ov-in.out" 2>&1 || ov_in_rc=$?
+  check "r4687084393: macos-detached-sig.py apply refuses out_app nested inside unsigned_app" \
+    '[[ $ov_in_rc -ne 0 ]] && grep -q "overlapping" "$e2e/ov-in.out"'
+  mkdir -p "$e2e/work/prior-out.app"
+  printf 'keep-prior-app\n' > "$e2e/work/prior-out.app/SENTINEL"
+  app_fail_rc=0
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
+    "$e2e/work/sigs-cs" "$e2e/work/prior-out.app" > "$e2e/app-preserve.out" 2>&1 || app_fail_rc=$?
+  check "r4687084393: failed macos-detached-sig.py apply preserves prior out_app intact" \
+    '[[ $app_fail_rc -ne 0 && "$(cat "$e2e/work/prior-out.app/SENTINEL")" == "keep-prior-app" ]]'
 
   # H2/M4: verify-dmg-layout accepts exact {Dash Wallet.app, Applications -> /Applications} and refuses extras/mode tamper
   mkdir -p "$e2e/work/dmg-ok"
@@ -1424,6 +1556,57 @@ FGH
     --unsigned-dir "$fu/sym-unsigned" --sigs-dir "$fu/sigs-sym" > "$fu/sym-u.out" 2>&1 || fu_rc=$?
   check "fetch-unsigned.sh refuses symlink --unsigned-dir" \
     '[[ $fu_rc -ne 0 && -z "$(ls -A "$fu/sym-target")" ]] && grep -q "must not be a symlink" "$fu/sym-u.out"'
+
+  # L3: fetch-unsigned.sh refuses group- or world-writable existing empty output dirs
+  mkdir -p "$fu/gw-unsigned" "$fu/ww-sigs"
+  chmod 775 "$fu/gw-unsigned"
+  chmod 777 "$fu/ww-sigs"
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/unsigned" FU_REMOTE_SHA="$fu_sha" \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/gw-unsigned" --sigs-dir "$fu/sigs-gw" > "$fu/gw.out" 2>&1 || fu_rc=$?
+  check "L3: fetch-unsigned.sh refuses group-writable existing --unsigned-dir" \
+    '[[ $fu_rc -ne 0 && -z "$(ls -A "$fu/gw-unsigned")" ]] && grep -q "group- or world-writable" "$fu/gw.out"'
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/unsigned" FU_REMOTE_SHA="$fu_sha" \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/out-ww" --sigs-dir "$fu/ww-sigs" > "$fu/ww.out" 2>&1 || fu_rc=$?
+  check "L3: fetch-unsigned.sh refuses world-writable existing --sigs-dir" \
+    '[[ $fu_rc -ne 0 && ! -d "$fu/out-ww" ]] && grep -q "group- or world-writable" "$fu/ww.out"'
+
+  # L3: Local signing scripts re-verify unsigned inputs against unsigned.SHA256SUMS before signing
+  l3=$e2e/l3-tamper
+  mkdir -p "$l3/unsigned" "$l3/sigs" "$l3/dist" "$l3/feed" "$l3/out"
+  cp "$e2e/unsigned"/* "$l3/unsigned/"
+  cp "$e2e/unsigned/unsigned.SHA256SUMS" "$l3/sigs/unsigned.SHA256SUMS"
+  cp "$e2e/unsigned"/* "$l3/dist/"
+  cp "$e2e/work/dash-wallet-0.1.0-macos-universal.app.tar.gz" "$l3/feed/"
+  printf 'tampered' >> "$l3/unsigned/dash-wallet-0.1.0-windows-x64-setup.exe"
+  printf 'tampered' >> "$l3/dist/dash-wallet-0.1.0-linux-x86_64.AppImage"
+  touch "$l3/dummy-mod" "$l3/dummy-key"
+  sw_rc=0
+  "$here/../release/sign-windows.sh" --version 0.1.0 --unsigned-dir "$l3/unsigned" --sigs-dir "$l3/sigs" --out-dir "$l3/out" \
+    --pkcs11-module "$l3/dummy-mod" --pkcs11-cert "pkcs11:id=%01" --pkcs11-key "pkcs11:id=%01" > "$l3/sw.out" 2>&1 || sw_rc=$?
+  check "L3: sign-windows.sh refuses unsigned .exe modified since fetch before invoking osslsigncode" \
+    '[[ $sw_rc -ne 0 ]] && grep -q "changed since fetch" "$l3/sw.out"'
+  su_rc=0
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" "$here/../release/sign-updater.sh" --version 0.1.0 --dist-dir "$l3/dist" \
+    --feed-dir "$l3/feed" --sigs-dir "$l3/sigs" --key-file "$l3/dummy-key" > "$l3/su.out" 2>&1 || su_rc=$?
+  check "L3: sign-updater.sh refuses Linux AppImage modified since fetch before invoking tauri signer" \
+    '[[ $su_rc -ne 0 ]] && grep -q "changed since fetch" "$l3/su.out"'
+  sc_rc=0
+  "$here/../release/sign-checksums.sh" --version 0.1.0 --dist-dir "$l3/dist" --feed-dir "$l3/feed" \
+    --sigs-dir "$l3/sigs" --gpg-key "$e2e_fpr" > "$l3/sc.out" 2>&1 || sc_rc=$?
+  check "L3: sign-checksums.sh refuses unchanged CI artifact modified since fetch before PGP signing" \
+    '[[ $sc_rc -ne 0 ]] && grep -q "changed since fetch" "$l3/sc.out"'
+  if [[ "$(uname -s)" == Darwin ]]; then
+    printf 'tampered' >> "$l3/unsigned/dash-wallet-0.1.0-macos-unsigned.tar.gz"
+    sm_rc=0
+    "$here/../release/sign-macos.sh" --version 0.1.0 --unsigned-dir "$l3/unsigned" --sigs-dir "$l3/sigs" --out-dir "$l3/out" \
+      --identity "Developer ID Application: Test" --notary-profile "test" > "$l3/sm.out" 2>&1 || sm_rc=$?
+    check "L3: sign-macos.sh refuses macos-unsigned.tar.gz modified since fetch before invoking codesign" \
+      '[[ $sm_rc -ne 0 ]] && grep -q "changed since fetch" "$l3/sm.out"'
+  fi
 fi
 
 # --- release-version.sh

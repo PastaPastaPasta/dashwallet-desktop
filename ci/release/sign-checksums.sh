@@ -46,6 +46,25 @@ sha256_line() {
   fi
 }
 
+# L3: Re-verify all 5 unchanged CI files against unsigned.SHA256SUMS before hashing and PGP-signing.
+unsigned_sums="$sigs_dir/unsigned.SHA256SUMS"
+[[ -f "$unsigned_sums" && ! -L "$unsigned_sums" ]] || die "missing $unsigned_sums (run ci/release/fetch-unsigned.sh first)"
+unchanged_ci=(
+  "dash-wallet-$version-linux-amd64.deb"
+  "dash-wallet-$version-linux-x86_64.AppImage"
+  "dash-wallet-$version-linux-x86_64.flatpak"
+  "dash-wallet-$version-sbom-npm.cdx.json"
+  "dash-wallet-$version-sbom-rust.cdx.json"
+)
+for name in "${unchanged_ci[@]}"; do
+  [[ -f "$dist_dir/$name" && ! -L "$dist_dir/$name" ]] || die "missing or symlink $dist_dir/$name"
+  want_sha=$(awk -v f="$name" '$2 == f { print $1; exit }' "$unsigned_sums")
+  [[ "$want_sha" =~ ^[0-9a-f]{64}$ ]] || die "$name not listed in $unsigned_sums"
+  got_sha=$(sha256_line "$dist_dir" "$name" | awk '{print $1}')
+  [[ "$got_sha" == "$want_sha" ]] ||
+    die "$name changed since fetch (got $got_sha != expected $want_sha in $unsigned_sums)"
+done
+
 mkdir -p "$sigs_dir"
 sums="$sigs_dir/SHA256SUMS"
 asc="$sigs_dir/SHA256SUMS.asc"

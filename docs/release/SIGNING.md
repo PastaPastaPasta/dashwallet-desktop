@@ -157,12 +157,14 @@ Before the first signed 1.0 release, Pasta provides or confirms:
    (`pnpm --dir apps/desktop tauri signer generate -w ~/.config/dashwallet-release/stable-updater.key`), and
    commit its public key into `rust/crates/dw-app/tauri.conf.json` (`plugins.updater.pubkey`) (and update
    `RELEASE_KEY_ID` in `rust/crates/dw-app/src/updates_tests.rs`) before tagging 1.0.
-7. **Safe pre-publish rehearsal (`dry_run=true`):** once items 1–6 are in place (including
-   `docs/release/windows-ca.pem`) and `v1.0.0` is signed locally and staged on `staging-dmg-v1.0.0`, run
-   `release-publish-signed.yml` first with `-f dry_run=true`. That executes the **entire** `macos-15`
-   verification and attachment pipeline (including live Windows CA chain/CRL verification and Apple Developer ID
-   + notarization + `.dmg` layout checks) and stops cleanly **before** final attestation, public GitHub Release
-   creation, and staging-draft cleanup — so it cannot publish or alter the live updater feed.
+7. **Required pre-publish rehearsal (`dry_run=true`):** before **every** stable release, once `vX.Y.Z` is
+   signed locally and staged on `staging-dmg-vX.Y.Z`, run `release-publish-signed.yml` first with
+   `-f dry_run=true`. That executes the **entire** `macos-15` verification and attachment pipeline —
+   including confirming that the repacked `.app.tar.gz` deflate/zlib stream on `macos-15` is byte-identical
+   to the `.app.tar.gz` packed and signed on the release signer's Mac (catching any macOS/Python zlib
+   implementation drift before publication), live Windows CA chain/CRL verification, and Apple Developer ID
+   + notarization + `.dmg` layout checks — and stops cleanly **before** final attestation, public GitHub
+   Release creation, and staging-draft cleanup.
 8. **Fail-closed default:** final stable tags (`vX.Y.Z`) fail closed automatically and wait for detached
    signatures — no repo variable is required to enforce signing. (`DW_ALLOW_UNSIGNED_STABLE=1` is an explicit
    escape hatch only if an unsigned pre-1.0 stable tag is ever needed; when set, CI also omits the updater
@@ -446,9 +448,12 @@ echo "SIGS_COMMIT=$SIGS_COMMIT"
      --repo "$REPO" --draft --title "Staging signed dmg for ${TAG}"
    ```
 
-2. **(Recommended rehearsal)** Dispatch `release-publish-signed.yml` with `-f dry_run=true` first to verify
-   everything end-to-end on `macos-15` (including live Windows CA chain + CRL verification and Apple Developer ID
-   + notarization checks) without minting final attestations, publishing, or deleting `staging-dmg-${TAG}`:
+2. **(Required before every stable release)** Dispatch `release-publish-signed.yml` with `-f dry_run=true`
+   first and wait for it to pass green. This exercises the entire `macos-15` attach/verify pipeline — in
+   particular verifying that `macos-15`'s repacked `.app.tar.gz` (zlib/deflate stream) is byte-identical to
+   the locally packed and minisign-signed `.app.tar.gz`, alongside live Windows CA chain + CRL verification
+   and Apple Developer ID + notarization checks — without minting final attestations, publishing, or deleting
+   `staging-dmg-${TAG}`:
 
    ```sh
    gh workflow run release-publish-signed.yml \

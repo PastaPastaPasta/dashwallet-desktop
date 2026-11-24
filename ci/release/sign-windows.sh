@@ -57,7 +57,23 @@ command -v osslsigncode >/dev/null 2>&1 || die "osslsigncode not found (brew ins
 
 exe_name="dash-wallet-$version-windows-x64-setup.exe"
 unsigned_exe="$unsigned_dir/$exe_name"
-[[ -f "$unsigned_exe" ]] || die "missing $unsigned_exe"
+[[ -f "$unsigned_exe" && ! -L "$unsigned_exe" ]] || die "missing or symlink $unsigned_exe"
+unsigned_sums="$unsigned_dir/unsigned.SHA256SUMS"
+[[ -f "$unsigned_sums" && ! -L "$unsigned_sums" ]] || die "missing $unsigned_sums (run ci/release/fetch-unsigned.sh first)"
+if [[ -f "$sigs_dir/unsigned.SHA256SUMS" ]]; then
+  cmp -s "$unsigned_sums" "$sigs_dir/unsigned.SHA256SUMS" ||
+    die "$unsigned_sums differs from $sigs_dir/unsigned.SHA256SUMS"
+fi
+# L3: Re-verify unsigned .exe hash against unsigned.SHA256SUMS right before invoking YubiKey signing.
+want_exe_sha=$(awk -v f="$exe_name" '$2 == f { print $1; exit }' "$unsigned_sums")
+[[ "$want_exe_sha" =~ ^[0-9a-f]{64}$ ]] || die "$exe_name not listed in $unsigned_sums"
+if command -v sha256sum >/dev/null 2>&1; then
+  got_exe_sha=$(sha256sum "$unsigned_exe" | awk '{print $1}')
+else
+  got_exe_sha=$(shasum -a 256 "$unsigned_exe" | awk '{print $1}')
+fi
+[[ "$got_exe_sha" == "$want_exe_sha" ]] ||
+  die "unsigned input $exe_name changed since fetch (got $got_exe_sha != expected $want_exe_sha in $unsigned_sums)"
 
 # Auto-detect Homebrew libp11 OpenSSL provider on macOS when not passed explicitly.
 if [[ -z "$pkcs11_provider" ]] && command -v brew >/dev/null 2>&1; then
