@@ -5696,10 +5696,31 @@ pub(super) fn chain_lock(
 #[test]
 fn a_wallet_closed_through_a_reset_of_chain_data_rescans_from_its_birth_when_opened() {
     let (_dir, engine, session, id) = engine_wallet();
-    mined(&engine, &session, id, TIP, vec![foreign()]);
-    assert_eq!(synced(&engine, &session, id), TIP);
+    let open = engine
+        .block_on(session.import_wallet(
+            zeroize::Zeroizing::new(b"zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong".to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(BIRTH),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    for wallet in [id, open] {
+        mined(&engine, &session, wallet, TIP, vec![foreign()]);
+        assert_eq!(synced(&engine, &session, wallet), TIP);
+    }
     engine.block_on(session.unload_wallet(id)).unwrap();
     engine.block_on(session.reset_chain_data()).unwrap();
+    assert_eq!(
+        synced(&engine, &session, open),
+        BIRTH - 1,
+        "the open wallet"
+    );
     engine.block_on(session.load_wallet(id)).unwrap();
-    assert_eq!(synced(&engine, &session, id), BIRTH - 1);
+    assert_eq!(
+        synced(&engine, &session, id),
+        BIRTH - 1,
+        "the closed wallet"
+    );
 }
