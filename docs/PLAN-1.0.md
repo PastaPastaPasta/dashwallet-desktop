@@ -89,7 +89,7 @@ owner updates the State column as items land and reports against it daily.
 | 0.5 | — | not released: its contents (commerce, BIP70) are cut to 1.0.x |
 | 0.6 | Sun 11-29 | hardening: fuzzing, kill -9 matrix, performance, trust gate, auto-update; the lane C items kept and merged after 0.4; the last screens' copy in the catalog; the translations |
 | 0.9 (RC) | Mon 11-30 | security review fixes in; QA pass on three OSes |
-| 1.0 | Wed 12-02 | RC fixes; release checklist; signed if the certificates exist |
+| 1.0 | Wed 12-02 | RC fixes; release checklist; signed locally by pasta (#780) |
 
 ## Lanes
 
@@ -333,18 +333,23 @@ shielded-note sync. It is an RC item in lane C, sized and scheduled by the relea
 
 ## What only pasta can unblock
 
-Without these the release still ships on 12-02, in the reduced form the release plan already allows.
+Without these the release still ships on 12-02, in the reduced form the release plan already allows, except for
+signing: without it the final tag waits (first row).
 No longer on this list: partner credentials and Explore database access (lane L is cut), and Transifex access
 (the translations are made in this repository).
 
 | Needed | For | By | If it does not arrive |
 |---|---|---|---|
-| Apple Developer ID and notarization, Windows signing certificate | signed installers, auto-update | 11-27 | 1.0 ships unsigned and says so; auto-update ships off |
-| A release key, and the choice of PGP or Sigstore | signed checksums | 11-27 | build attestations only, as today |
+| Signing 1.0 on pasta's own machines with Dash Core's identities: the Apple Developer ID with notarization, the Windows Authenticode certificate on pasta's YubiKey, pasta's PGP key over `SHA256SUMS`, and a stable updater key that stays local | signed installers, `SHA256SUMS.asc`, the signed update feed | 11-27 | the final tag fails closed and doesn't publish (#780); shipping 1.0 unsigned needs a written ruling. Release candidates are unsigned either way |
 | Up to 0.5 DASH on mainnet and an iOS user for an hour | mainnet canary (H-07) | 11-28 | canary runs on testnet only |
 | A funded testnet wallet created on iOS and one on Android | same-seed restore test | 11-24 | checked by code comparison only |
 | A real-Mac session and a real Windows PC | Touch ID, VoiceOver, Narrator, first notarized launch | 11-28 | passphrase unlock only on macOS; screen-reader checks on Linux only |
 | Go-ahead for the upstream platform pull request (E0-04.P3/P4), or agreement to drop it | Mode A dispatch | 11-21 | dropped as superseded by item 0's hook |
+
+Signing follows Dash Core's detached-signatures model (#780; the runbook is `docs/release/SIGNING.md`, which lands
+with it). CI builds the unsigned files and `SHA256SUMS` and holds no signing secrets. pasta signs on his own
+machines, and CI attaches the detached signatures, checks them and publishes. Release candidates (`-rc.N`) stay
+unsigned.
 
 ## Risks
 
