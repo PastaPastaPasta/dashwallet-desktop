@@ -47,10 +47,11 @@ pub enum TxActionRefusal {
     Coinbase,
     InMempool,
     NotSentByWallet,
-    /// The ChainLock exception (#170 case 14) lacks a coin the payment's
-    /// own spend claim, restored at the wallet's load, keeps out of the
-    /// wallet: a restart (which no longer restores it) and a rescan give
-    /// the evidence.
+    /// The evidence is incomplete: the ChainLock exception (#170 case 14)
+    /// lacks a coin the payment's own spend claim, restored at the wallet's
+    /// load, keeps out of the wallet; or a stored record of any loaded
+    /// wallet didn't read at its load, so what descends from the payment is
+    /// unknown (#611). A restart and a rescan give the evidence.
     RescanFirst,
     /// A later transaction that spends from it is InstantSend-locked, in a
     /// block or finalized: the network holds this one too (#446).
@@ -639,7 +640,7 @@ fn override_blocked<'a>(
 /// history (abandoned entries too), key-wallet's records, its locks and the
 /// txids it keeps finalized: first under one InstantSend-locked, in a block
 /// or finalized, then under one in a block or finalized. Reads `txs` once.
-fn settled_under(
+pub(crate) fn settled_under(
     txs: &HashMap<Txid, TxEntry>,
     core: &ManagedWalletInfo,
 ) -> (HashSet<Txid>, HashSet<Txid>) {
@@ -704,14 +705,41 @@ fn settled_under(
 /// an InstantSend lock.
 fn settled_descendant(
     txs: &HashMap<Txid, TxEntry>,
-    core: &ManagedWalletInfo,
+    settled: &Settled,
     root: &Txid,
     proof: &ChainProof,
 ) -> bool {
-    let (under, under_mined) = settled_under(txs, core);
-    under.contains(root)
-        && (under_mined.contains(root)
+    settled.under.contains(root)
+        && (settled.mined.contains(root)
             || !chainlock_beaten(txs, root, proof.chainlock, &proof.active))
+}
+
+/// [`settled_under`] of every loaded wallet, joined: what one wallet
+/// settled can descend from another's payment, a transfer between them
+/// (#611). `incomplete` when a stored record of any of them didn't read at
+/// its load.
+#[derive(Default)]
+struct Settled {
+    under: HashSet<Txid>,
+    mined: HashSet<Txid>,
+    incomplete: bool,
+}
+
+impl NetworkSession {
+    fn settled_all<'a>(
+        &self,
+        infos: impl IntoIterator<Item = (&'a [u8; 32], &'a ManagedWalletInfo)>,
+    ) -> Settled {
+        let mut all = Settled::default();
+        for (id, core) in infos {
+            let (under, mined) =
+                (self.hub.history).read(&WalletId(*id), |txs| settled_under(txs, core));
+            all.under.extend(under);
+            all.mined.extend(mined);
+            all.incomplete |= (self.hub.history).read_wallet(&WalletId(*id), |h| h.load_incomplete);
+        }
+        all
+    }
 }
 
 /// How key-wallet holds `t` in this wallet's own accounts when it is
@@ -893,20 +921,23 @@ impl NetworkSession {
         if offer && !f.instant_locked && f.abandon_refusal().is_none() {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
-            f.settled_descendant = (wm.get_wallet_info(&wallet.0)).is_some_and(|i| {
-                (self.hub.history).read(&wallet, |txs| {
-                    settled_descendant(txs, &i.core_wallet, &txid, &proof)
-                })
+            let infos = wm.get_all_wallet_infos().iter();
+            let settled = self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)));
+            f.settled_descendant = (self.hub.history).read(&wallet, |txs| {
+                settled_descendant(txs, &settled, &txid, &proof)
             });
         }
         if offer && f.chainlock_beaten && f.abandon_refusal().is_none() {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
+            let infos = wm.get_all_wallet_infos().iter();
+            let settled = self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)));
             let planned = (wm.get_wallet_info(&wallet.0)).map(|i| {
                 let (descendants, _) = (self.hub.history).read(&wallet, |txs| {
                     unmined_descendants(txs, &i.core_wallet, txid)
                 });
-                self.plan_abandon(wallet, txid, &descendants, &proof, &i.core_wallet)
+                let core = &i.core_wallet;
+                self.plan_abandon(wallet, txid, &descendants, &proof, core, &settled)
             });
             if let Some(Err(EngineError::TxActionRefused(
                 TxActionRefusal::InstantLocked | TxActionRefusal::Confirmed,
@@ -1090,6 +1121,10 @@ impl NetworkSession {
         let mut wm = wm.write().await;
         let held_since = std::time::Instant::now();
         let (abandoned, released, overridden, txs, links) = {
+            let settled = {
+                let infos = wm.get_all_wallet_infos().iter();
+                self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)))
+            };
             let info = wm
                 .get_wallet_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
@@ -1103,8 +1138,14 @@ impl NetworkSession {
             {
                 return Err(EngineError::TxActionRefused(refusal));
             }
-            let (planned, overridden) =
-                self.plan_abandon(wallet, root, &descendants, &proof, &info.core_wallet)?;
+            let (planned, overridden) = self.plan_abandon(
+                wallet,
+                root,
+                &descendants,
+                &proof,
+                &info.core_wallet,
+                &settled,
+            )?;
             // What key-wallet abandons and the history has not heard of is
             // marked, and its coins released, from key-wallet's copy in this
             // wallet's own accounts.
@@ -1300,6 +1341,7 @@ impl NetworkSession {
         descendants: &[Txid],
         proof: &ChainProof,
         core: &ManagedWalletInfo,
+        settled: &Settled,
     ) -> Result<(BTreeSet<Txid>, Option<Vec<OutPoint>>), EngineError> {
         let mut trial = core.clone();
         let planned = abandon_with(&mut trial, root, descendants);
@@ -1326,10 +1368,20 @@ impl NetworkSession {
         if held_locked || planned.iter().any(|t| locks.contains(t) && !exempt(t)) {
             return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
         }
-        // A descendant settled anywhere, which the walk passes over: the
-        // network holds the root too (#446).
+        // While a stored record of any loaded wallet failed to read, what
+        // descends from the root is not known: one settled could be behind
+        // it (#611). Only a root the ChainLock exception proved dead, which
+        // this wallet's own incomplete load already refuses, goes ahead.
+        if overridden.is_none() && settled.incomplete {
+            return Err(EngineError::TxActionRefused(TxActionRefusal::RescanFirst));
+        }
+        // A descendant settled anywhere, in this wallet or another loaded
+        // one, which the walk passes over: the network holds the root too
+        // (#446).
         if overridden.is_none()
-            && (self.hub.history).read(&wallet, |txs| settled_descendant(txs, core, &root, proof))
+            && (self.hub.history).read(&wallet, |txs| {
+                settled_descendant(txs, settled, &root, proof)
+            })
         {
             return Err(EngineError::TxActionRefused(
                 TxActionRefusal::SettledDescendant,
@@ -1353,10 +1405,11 @@ impl NetworkSession {
                 let wm = manager.wallet_manager_arc();
                 let wm = wm.read().await;
                 (wm.get_wallet_info(&wallet.0)).is_some_and(|i| {
-                    let core = &i.core_wallet;
-                    core.instant_send_locks().contains(&root)
-                        || (self.hub.history)
-                            .read(&wallet, |txs| settled_under(txs, core).0.contains(&root))
+                    i.core_wallet.instant_send_locks().contains(&root) || {
+                        let infos = wm.get_all_wallet_infos().iter();
+                        let settled = self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)));
+                        settled.under.contains(&root)
+                    }
                 })
             }
         };

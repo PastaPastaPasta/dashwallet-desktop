@@ -30,6 +30,7 @@ import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
 import { ExportStagingBanner } from "./ExportStagingBanner";
 import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
+import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 import { defaultRoute, transferFor } from "../transfer/model";
@@ -277,6 +278,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">
+        <UpgradeReplayNotice walletId={walletId} />
         <ProtocolAdvisoryBanner network={network} />
         <ExportStagingBanner />
         <RatesConsentCard network={network} />

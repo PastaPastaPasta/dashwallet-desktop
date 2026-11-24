@@ -13,6 +13,7 @@ import { useDefaultPayTab } from "./pay/contactQueries";
 import { PayToAddress } from "./pay/PayToAddress";
 import { PayToContact } from "./pay/PayToContact";
 import { ShieldedSendLink } from "./ShieldedSheet";
+import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 
 /** The placeholder text of each route that `Placeholder` renders. */
 type NotYetRoute = Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "coinJoin" | "tools" | "settings" | "notifications" | "joinDashPay" | "profile" | "masternodes">;
@@ -148,6 +149,7 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
   }, [chosen, auto]);
   return (
     <Page route="pay">
+      <UpgradeReplayNotice walletId={walletId} />
       {tab === null ? (
         <LoadingState testId="pay-tab-loading" text={tr("app.pay.loading")} />
       ) : (

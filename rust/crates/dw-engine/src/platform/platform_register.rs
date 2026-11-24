@@ -106,12 +106,21 @@ pub(crate) async fn register_fund<'w>(
     let mut funds = store.funds().await?;
     let held = fund_holds(session, wallet_id);
     let evidence = exits(session, net, &moves, &seen).await;
-    if observe(&store, (&mut moves, &mut funds), held, (&seen, &evidence)).await? {
+    let docs = documents(session, net, &moves, &seen).await;
+    if observe(
+        &store,
+        (&mut moves, &mut funds),
+        held,
+        (&seen, &evidence, &docs),
+    )
+    .await?
+    {
         session
             .hub
             .pump
             .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
     }
+    super::contact_payout::settled(session, wallet_id, &moves).await;
     let plan = match &ask.plan {
         Some(plan) => plan.clone(),
         None => {
@@ -518,7 +527,9 @@ async fn sign(
         match read(session, net, signed.collect(), false).await {
             Ok(after) => {
                 let evidence = exits(session, net, moves, &after).await;
+                let docs = documents(session, net, moves, &after).await;
                 settle_with(moves, &after, &evidence);
+                settle_payouts(moves, &after, &docs);
             }
             Err(e) => tracing::info!(id = %moves[at].id, "reading a registration's nonces: {e}"),
         }
@@ -529,6 +540,7 @@ async fn sign(
         // land: the next read settles it by its nonces.
         tracing::warn!(id = %moves[at].id, "storing a registration's outcome: {e}");
     }
+    super::contact_payout::settled(session, wallet_id, moves).await;
     session
         .hub
         .pump

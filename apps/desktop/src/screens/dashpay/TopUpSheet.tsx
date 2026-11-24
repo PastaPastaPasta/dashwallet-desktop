@@ -24,6 +24,7 @@ import {
   liveOutcome,
   offersMove,
   platformHold,
+  maxMasked,
   platformOutcomeText,
   SOURCE_COPY,
   topUpSources,
@@ -56,7 +57,8 @@ function useSources(walletId: string, network: NetworkInfo, amount: (duffs: numb
   const hold = platformHold(activity.data);
   const rows = topUpSources({
     coreDuffs: balance.data?.confirmed,
-    platform: platform.isError ? null : platform.data,
+    // Holds come from Activity: unread, nothing is known about them yet.
+    platform: platform.isError || activity.isError ? "unread" : activity.data === undefined ? undefined : platform.data,
     hold,
     mainnet: network.kind === "mainnet",
     shieldedDuffs,
@@ -247,7 +249,7 @@ function ConfirmStep({ flow, walletId, costs, amount, discreet }: { flow: TopUpF
 }
 
 /** T2 from Platform: the quote, the D-C3 confirm copy, Confirm & pay under the quote's grant. */
-function PlatformConfirmStep({ flow, walletId, name, amount, discreet }: { flow: TopUpFlow; walletId: string; name: string; amount: (duffs: number) => string; discreet: boolean }) {
+function PlatformConfirmStep({ flow, walletId, name, amount, discreet, masked }: { flow: TopUpFlow; walletId: string; name: string; amount: (duffs: number) => string; discreet: boolean; masked: string }) {
   useT();
   const b = useBackend();
   const asked = platformAmount(flow.duffs);
@@ -262,7 +264,8 @@ function PlatformConfirmStep({ flow, walletId, name, amount, discreet }: { flow:
   // Only a current answer pays: never one cached from before, one being read again, or one a
   // later read refused.
   const q = quote.isSuccess && !quote.isFetching ? quote.data : undefined;
-  const credits = (c: string) => amount(creditsToDuffs(c));
+  const hidden = maxMasked(discreet, flow.duffs === null, masked);
+  const credits = (c: string) => hidden ?? amount(creditsToDuffs(c));
   return (
     <>
       {quote.isError ? (
@@ -304,7 +307,7 @@ function PlatformConfirmStep({ flow, walletId, name, amount, discreet }: { flow:
         <DashButton variant="tintedGray" size="large" data-testid="topup-back" disabled={flow.running} onClick={() => flow.back()}>
           {TOPUP_COPY.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="topup-pay" disabled={!q || flow.running} onClick={() => q && void flow.payFromPlatform(q.grant)}>
+        <DashButton variant="filledBlue" size="large" data-testid="topup-pay" disabled={!q || flow.running} onClick={() => q && void flow.payFromPlatform(q)}>
           {TOPUP_COPY.confirm.pay}
         </DashButton>
       </div>
@@ -324,7 +327,7 @@ export function TopUpSheet({ flow, walletId, network, costs, name }: { flow: Top
   const { step } = flow;
   const balance = (credits: string) => creditBalance(credits, costs, discreet, amount, shown.masked());
   // A top-up from Platform answered `pending` may since have failed by height: Activity says.
-  const fromPlatform = step === "done" && flow.platformOutcome ? platformOutcomeText(liveOutcome(flow.platformOutcome, activity.data), balance) : null;
+  const fromPlatform = step === "done" && flow.platformOutcome ? platformOutcomeText(liveOutcome(flow.platformOutcome, activity.data), balance, maxMasked(discreet, flow.duffs === null, shown.masked())) : null;
   const done = fromPlatform ?? (step === "done" && flow.outcome ? outcomeText(flow.outcome, balance) : null);
   const errorText = flow.source === "platform" ? fromPlatformErrorText : topUpErrorText;
   return (
@@ -332,7 +335,7 @@ export function TopUpSheet({ flow, walletId, network, costs, name }: { flow: Top
       <Sheet title={TOPUP_COPY.title} width="small" testId="topup-sheet" onClose={() => flow.close()}>
         <div data-testid="topup-body" data-step={step} data-source={flow.source} data-outcome={flow.platformOutcome?.state ?? flow.outcome?.state.kind}>
           {step === "amount" && <AmountStep flow={flow} walletId={walletId} costs={costs} network={network} amount={amount} discreet={discreet} />}
-          {step === "confirm" && flow.source === "platform" && <PlatformConfirmStep flow={flow} walletId={walletId} name={name} amount={amount} discreet={discreet} />}
+          {step === "confirm" && flow.source === "platform" && <PlatformConfirmStep flow={flow} walletId={walletId} name={name} amount={amount} discreet={discreet} masked={shown.masked()} />}
           {step === "confirm" && flow.source !== "platform" && <ConfirmStep flow={flow} walletId={walletId} costs={costs} amount={amount} discreet={discreet} />}
           {step === "running" && (
             <div role="status" className="topup-running">

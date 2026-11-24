@@ -245,6 +245,7 @@ const NOT_FACADE: &[&str] = &[
     "banner_tests.rs",
     "bringup.rs",
     "contact_names.rs",
+    "contact_payout.rs",
     "contacts_model.rs",
     "contacts_perf_tests.rs",
     "contacts_tests",
@@ -890,7 +891,11 @@ fn contract_row(name: &str) -> Vec<String> {
 fn is_wrapper(v: &syn::Variant) -> bool {
     match &v.fields {
         syn::Fields::Unnamed(u) if u.unnamed.len() == 1 => {
-            tidy(&u.unnamed[0].ty).ends_with("Error")
+            let ty = tidy(&u.unnamed[0].ty);
+            ty.strip_prefix("Box<")
+                .and_then(|t| t.strip_suffix('>'))
+                .unwrap_or(&ty)
+                .ends_with("Error")
         }
         _ => false,
     }
