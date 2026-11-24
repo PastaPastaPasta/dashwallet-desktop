@@ -745,7 +745,7 @@ fn dropped_records(
 ) -> std::collections::BTreeSet<Txid> {
     let (dropped, read) = crate::tx_actions::load_dropped(&session.live().unwrap().appdb, id);
     assert!(read, "the dropped records read");
-    dropped
+    dropped.into_keys().collect()
 }
 
 /// Path (b) with b: after a restart a peer relays the claim, key-wallet
@@ -952,4 +952,420 @@ fn a_dropped_record_that_names_no_transaction_is_skipped() {
     assert!(!(session.hub.history).read_wallet(&id, |h| h.load_incomplete));
     let (dropped, read) = crate::tx_actions::load_dropped(&session.live().unwrap().appdb, id);
     assert!(read && dropped.is_empty(), "{dropped:?}");
+}
+
+// ---------------------------------------------------------------------------
+// What a dropped payment shows (#790, #766)
+// ---------------------------------------------------------------------------
+
+/// The history's records of `txid`.
+fn records(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) -> Vec<crate::history::TxRecord> {
+    let page = engine
+        .block_on(session.history_page(
+            id,
+            HistoryQuery {
+                filter: HistoryFilter::default(),
+                sort: HistorySort::NewestFirst,
+                cursor: None,
+                limit: 100,
+            },
+        ))
+        .unwrap();
+    let txid = txid.to_string();
+    (page.records.into_iter())
+        .filter(|r| r.txid == txid)
+        .collect()
+}
+
+/// The status of `txid`'s first record, when the history lists it.
+fn status(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) -> Option<crate::history::TxStatus> {
+    (records(engine, session, id, txid).into_iter())
+        .next()
+        .map(|r| r.status)
+}
+
+/// The category and amount of `txid`'s first record.
+fn shown(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) -> Option<(crate::history::TxCategory, i64)> {
+    (records(engine, session, id, txid).into_iter())
+        .next()
+        .map(|r| (r.category, r.amount))
+}
+
+/// The drop `txid`'s row shows, if any.
+fn drop_of(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) -> Option<crate::history::TxDrop> {
+    status(engine, session, id, txid).and_then(|s| s.dropped)
+}
+
+/// The txids of the dropped payments' notices.
+fn notices(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) -> Vec<String> {
+    let notices = engine.block_on(session.dropped_notices(id)).unwrap();
+    notices.into_iter().map(|n| n.txid).collect()
+}
+
+/// S, dropped on the claim's change and b, shows Dropped, never counts,
+/// offers no Resend, and has no notice until b is back; once b is back it
+/// shows Released and its notice, which a dismiss ends for good.
+fn assert_dropped_until_b_is_back(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    payment: &Transaction,
+    b_funding: &Transaction,
+) -> Arc<NetworkSession> {
+    use crate::history::{DropCause, DropState};
+    let s = payment.txid();
+    let drop = drop_of(engine, session, id, s).expect("S is listed dropped");
+    assert_eq!(drop.cause, DropCause::InvalidSource);
+    assert_eq!(
+        status(engine, session, id, s).unwrap().kind,
+        TxStatusKind::Abandoned
+    );
+    let extras = engine.block_on(session.tx_detail_extras(id, s)).unwrap();
+    assert!(!extras.can_resend, "a dropped payment offers no Resend");
+    assert!(
+        matches!(
+            engine.block_on(session.resend_transaction(id, s)),
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::AlreadyAbandoned
+            ))
+        ),
+        "and refuses one"
+    );
+    if drop.state != DropState::Released {
+        assert!(
+            notices(engine, session, id).is_empty(),
+            "no notice before b is back: {drop:?}"
+        );
+    }
+    b_scanned_again(engine, session, id, b_funding);
+    let drop = drop_of(engine, session, id, s).unwrap();
+    assert_eq!(drop.state, DropState::Released, "b is back");
+    assert_eq!(notices(engine, session, id), vec![s.to_string()]);
+    let before = shown(engine, session, id, s).unwrap();
+    assert_eq!(before.0, crate::history::TxCategory::Sent);
+    let session = reopen(engine, Arc::clone(session));
+    assert_eq!(
+        shown(engine, &session, id, s),
+        Some(before),
+        "listed as sent after a restart"
+    );
+    assert_eq!(
+        drop_of(engine, &session, id, s).map(|d| (d.cause, d.state)),
+        Some((DropCause::InvalidSource, DropState::Released)),
+        "after a restart"
+    );
+    assert_eq!(notices(engine, &session, id), vec![s.to_string()]);
+    engine
+        .block_on(session.dismiss_dropped_notices(id, vec![s]))
+        .unwrap();
+    assert!(notices(engine, &session, id).is_empty(), "dismissed");
+    let session = reopen(engine, session);
+    assert!(
+        notices(engine, &session, id).is_empty(),
+        "dismissed for good"
+    );
+    assert_eq!(balances(&session, id).total, 2 * PAID, "S counts nowhere");
+    session
+}
+
+/// The store drops the claim at an open, and the load drops S.
+#[test]
+fn a_payment_on_a_claim_the_store_dropped_shows_dropped() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, funding, _claim, payment) =
+        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+    let session = reopen(&engine, session);
+    skip_unsigned_check(&session);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    let session = reopen(&engine, session);
+    assert_dropped_until_b_is_back(&engine, &session, id, &payment, &b_funding);
+}
+
+/// After a restart the engine finds the claim unsigned: S shows dropped as
+/// built on it, and the claim's own row as the never-valid transaction,
+/// which counts nowhere and never has a notice.
+#[test]
+fn a_claim_found_unsigned_shows_dropped_as_never_valid_and_counts_nowhere() {
+    use crate::history::DropCause;
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, funding, claim, payment) =
+        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("the claim and S are dropped", || {
+        drop_of(&engine, &session, id, claim.txid()).is_some()
+            && drop_of(&engine, &session, id, payment.txid()).is_some()
+    });
+    let claim_row = |session: &Arc<NetworkSession>| records(&engine, session, id, claim.txid());
+    let rows = claim_row(&session);
+    assert!(!rows.is_empty(), "the claim is listed");
+    for r in rows {
+        assert_eq!(
+            r.status.dropped.map(|d| d.cause),
+            Some(DropCause::InvalidClaim)
+        );
+        assert!(!r.counts_toward_balance, "the claim counts nowhere");
+    }
+    let session = assert_dropped_until_b_is_back(&engine, &session, id, &payment, &b_funding);
+    let b = balances(&session, id);
+    assert_eq!(
+        (b.total, b.unconfirmed, b.locked),
+        (2 * PAID, 0, 0),
+        "not in the balance, pending or held"
+    );
+    let rows = claim_row(&session);
+    assert!(!rows.is_empty(), "the claim is listed after restarts");
+    for r in rows {
+        assert_eq!(
+            r.status.dropped.map(|d| d.cause),
+            Some(DropCause::InvalidClaim),
+            "after restarts"
+        );
+    }
+}
+
+/// A payment the user abandons shows no drop.
+#[test]
+fn a_payment_the_user_abandons_shows_no_drop() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (_funding, _claim, payment) = payment_on_a_claims_change(&engine, &session, id);
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.abandon_transaction(id, payment.txid()))
+        .unwrap();
+    let st = status(&engine, &session, id, payment.txid()).unwrap();
+    assert_eq!((st.kind, st.dropped), (TxStatusKind::Abandoned, None));
+    let session = reopen(&engine, session);
+    let st = status(&engine, &session, id, payment.txid()).unwrap();
+    assert_eq!((st.kind, st.dropped), (TxStatusKind::Abandoned, None));
+    assert!(notices(&engine, &session, id).is_empty());
+}
+
+/// A drop an earlier build recorded, its mark's value empty, reads as built
+/// on a never-valid claim.
+#[test]
+fn an_earlier_builds_dropped_mark_reads_as_built_on_a_claim() {
+    use crate::history::DropCause;
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, funding, _claim, payment) =
+        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+    let session = reopen(&engine, session);
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("S is listed dropped", || {
+        drop_of(&engine, &session, id, payment.txid()).is_some()
+    });
+    b_scanned_again(&engine, &session, id, &b_funding);
+    (session.live().unwrap().appdb)
+        .set_setting(
+            &id.to_string(),
+            &format!("dropped:{}", payment.txid()),
+            Some(""),
+        )
+        .unwrap();
+    let session = reopen(&engine, session);
+    assert_eq!(
+        drop_of(&engine, &session, id, payment.txid()).map(|d| d.cause),
+        Some(DropCause::InvalidSource)
+    );
+}
+
+/// S dropped when the scan finds the claimed coin after a restart, with
+/// the rewind that brings b back, before b is back. `fail_rewind` makes
+/// that rewind fail after its record is stored.
+fn dropped_after_a_restart(
+    engine: &Engine,
+    session: Arc<NetworkSession>,
+    id: WalletId,
+    fail_rewind: bool,
+) -> (Arc<NetworkSession>, Transaction, Transaction) {
+    let (b_funding, funding, _claim, payment) =
+        payment_on_a_claims_change_and_a_coin(engine, &session, id, |_| {});
+    let session = reopen(engine, session);
+    if fail_rewind {
+        (session.live().unwrap().replay)
+            .crash_after_write
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    mined(engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("S is listed dropped", || {
+        drop_of(engine, &session, id, payment.txid()).is_some()
+    });
+    (session, b_funding, payment)
+}
+
+/// The state S's row shows once its abandon batch is done.
+fn settled_state(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    s: Txid,
+) -> crate::history::DropState {
+    super::own_spend_disk_tests::eventually("the abandon batch is done", || {
+        !session.hub.abandon_batch_pending(&id)
+    });
+    drop_of(engine, session, id, s)
+        .expect("S is listed dropped")
+        .state
+}
+
+/// The drop's rewind runs: S shows Releasing until the rescan passes b's
+/// block, then Released.
+#[test]
+fn a_dropped_payment_shows_releasing_while_its_rescan_runs() {
+    use crate::history::DropState;
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, b_funding, payment) = dropped_after_a_restart(&engine, session, id, false);
+    let state = settled_state(&engine, &session, id, payment.txid());
+    assert_eq!(state, DropState::Releasing);
+    assert!(notices(&engine, &session, id).is_empty());
+    b_scanned_again(&engine, &session, id, &b_funding);
+    assert_eq!(
+        drop_of(&engine, &session, id, payment.txid())
+            .unwrap()
+            .state,
+        DropState::Released
+    );
+}
+
+/// The drop's rewind fails: no scan brings b back, so S asks for one,
+/// here from below the birth height b's block is under; a later scan
+/// that brings b back makes it Released.
+#[test]
+fn a_dropped_payment_whose_rewind_failed_asks_for_a_rescan() {
+    use crate::history::DropState;
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, b_funding, payment) = dropped_after_a_restart(&engine, session, id, true);
+    let state = settled_state(&engine, &session, id, payment.txid());
+    assert_eq!(state, DropState::RescanFromHeight { height: BIRTH - 40 });
+    assert!(notices(&engine, &session, id).is_empty());
+    b_scanned_again(&engine, &session, id, &b_funding);
+    assert_eq!(
+        drop_of(&engine, &session, id, payment.txid())
+            .unwrap()
+            .state,
+        DropState::Released
+    );
+    assert_eq!(
+        notices(&engine, &session, id),
+        vec![payment.txid().to_string()]
+    );
+}
+
+/// Saving a birth height at or below b's block starts a rescan: S shows
+/// Releasing, then Released once it brings b back.
+#[test]
+fn a_lower_birth_height_rescans_and_brings_a_dropped_payments_coin_back() {
+    use crate::history::DropState;
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, b_funding, payment) = dropped_after_a_restart(&engine, session, id, true);
+    assert_eq!(
+        settled_state(&engine, &session, id, payment.txid()),
+        DropState::RescanFromHeight { height: BIRTH - 40 }
+    );
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.set_birth_height(id, BIRTH - 50))
+        .unwrap();
+    let state = drop_of(&engine, &session, id, payment.txid())
+        .unwrap()
+        .state;
+    assert_eq!(state, DropState::Releasing);
+    b_scanned_again(&engine, &session, id, &b_funding);
+    assert_eq!(
+        drop_of(&engine, &session, id, payment.txid())
+            .unwrap()
+            .state,
+        DropState::Released
+    );
+}
+
+/// The rescan a lower birth started is cancelled before b's block: S asks
+/// for a rescan again, now from the birth, which b is above; never
+/// Releasing without a scan running.
+#[test]
+fn a_cancelled_rescan_leaves_a_dropped_payment_asking_for_one() {
+    use crate::history::DropState;
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, b_funding, payment) = dropped_after_a_restart(&engine, session, id, true);
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.set_birth_height(id, BIRTH - 50))
+        .unwrap();
+    assert_eq!(
+        drop_of(&engine, &session, id, payment.txid())
+            .unwrap()
+            .state,
+        DropState::Releasing
+    );
+    assert!(engine.block_on(session.cancel_rescan()).unwrap());
+    let state = drop_of(&engine, &session, id, payment.txid())
+        .unwrap()
+        .state;
+    assert_eq!(state, DropState::RescanNeeded);
+    // A later scan brings b back; spends still wait for the rescan the
+    // cancel left owed.
+    mined(&engine, &session, id, BIRTH - 40, vec![b_funding]);
+    assert_eq!(balances(&session, id).total, 2 * PAID, "b counts once");
+    assert_eq!(
+        drop_of(&engine, &session, id, payment.txid())
+            .unwrap()
+            .state,
+        DropState::Released
+    );
+}
+
+/// b's funding is still unmined when S is dropped: S waits for it, and
+/// shows Released by itself once its block comes.
+#[test]
+fn a_dropped_payment_on_an_unmined_coin_is_released_when_it_confirms() {
+    use crate::history::DropState;
+    let (_dir, engine, session, id) = engine_wallet();
+    let b_to = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    let b_funding = super::own_spend_disk_tests::funding(3, &[b_to], PAID);
+    mempool(&engine, &session, id, &b_funding);
+    let (_, funding, claim) = funding_and_spend(&engine, &session, id);
+    mempool(&engine, &session, id, &claim);
+    let b = OutPoint::new(b_funding.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(claim.txid(), 1), b]),
+        CHANGE + PAID / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("S is listed dropped", || {
+        drop_of(&engine, &session, id, payment.txid()).is_some()
+    });
+    let state = settled_state(&engine, &session, id, payment.txid());
+    assert_eq!(state, DropState::AwaitingFunding);
+    mined(&engine, &session, id, BIRTH + 1, vec![b_funding]);
+    let state = drop_of(&engine, &session, id, payment.txid())
+        .unwrap()
+        .state;
+    assert_eq!(state, DropState::Released);
 }

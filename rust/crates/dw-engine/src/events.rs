@@ -500,7 +500,7 @@ pub(crate) type HeaderSource = Arc<
 
 /// What drops the history's transactions built on a sweep's: the wallet
 /// and what the sweep dropped that can never confirm (`tx_actions`, #739).
-pub(crate) type SweptDead = dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync;
+pub(crate) type SweptDead = dyn Fn(WalletId, crate::tx_actions::Dead) + Send + Sync;
 
 /// What checks the history's pending spends of new transactions' outputs
 /// for unsigned claims: the wallet and the new txids (`tx_actions`, #739).
@@ -717,12 +717,19 @@ pub(crate) struct AbandonBatch<'a> {
 
 impl Drop for AbandonBatch<'_> {
     fn drop(&mut self) {
-        let mut batches = (self.hub.abandon_batches.lock()).unwrap_or_else(|p| p.into_inner());
-        if let Some(n) = batches.get_mut(&self.wallet) {
-            *n -= 1;
-            if *n == 0 {
+        let done = {
+            let mut batches = (self.hub.abandon_batches.lock()).unwrap_or_else(|p| p.into_inner());
+            let done = (batches.get_mut(&self.wallet)).is_some_and(|n| {
+                *n -= 1;
+                *n == 0
+            });
+            if done {
                 batches.remove(&self.wallet);
             }
+            done
+        };
+        if done {
+            self.hub.mark_drops(self.wallet);
         }
     }
 }
@@ -1378,6 +1385,26 @@ impl SessionHub {
         }
     }
 
+    /// Whether wallet `id`'s checkpoint is below its scan target: a rescan
+    /// or replay is bringing its coins back.
+    fn scanning(&self, id: &WalletId) -> bool {
+        (self.wallets.read().unwrap_or_else(|p| p.into_inner()))
+            .get(id)
+            .is_some_and(|s| s.synced_height < s.scan_target)
+    }
+
+    /// Re-reads wallet `id`'s dropped rows, whose state follows the scan
+    /// ([`crate::history::scan_facts`]): when it ends, is cancelled, or an
+    /// abandon batch is done.
+    pub(crate) fn mark_drops(&self, id: WalletId) {
+        let txids: Vec<Txid> = self
+            .history
+            .read_wallet(&id, |h| h.drops.keys().copied().collect());
+        if !txids.is_empty() {
+            self.pump.mark_history(id, Some(&txids));
+        }
+    }
+
     /// Advances the wallet's scan heights. Returns whether the wallet
     /// started or stopped catching up.
     fn update_heights(&self, id: WalletId, synced: Option<u32>, processed: Option<u32>) -> bool {
@@ -1785,8 +1812,12 @@ impl SessionHub {
                 }
             }
             WalletEvent::SyncHeightAdvanced { height, .. } => {
+                let scanning = self.scanning(&id);
                 if self.update_heights(id, Some(*height), Some(*height)) {
                     self.pump.mark_balances(id);
+                }
+                if scanning && !self.scanning(&id) {
+                    self.mark_drops(id);
                 }
                 if let Some(rescan) = self.rescan().as_mut() {
                     rescan.note_height(&id, *height);

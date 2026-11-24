@@ -133,6 +133,218 @@ pub struct TxStatus {
     pub instant_locked: bool,
     pub chain_locked: bool,
     pub matures_in: Option<u32>,
+    /// Set on an `Abandoned` transaction this app dropped itself, as one
+    /// that can never confirm, rather than one the user abandoned.
+    pub dropped: Option<TxDrop>,
+}
+
+/// Why this app dropped a transaction as one that can never confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DropCause {
+    /// It spends what a transaction that was never valid paid (#739).
+    InvalidSource,
+    /// It is that never-valid transaction: it spends a coin of the wallet
+    /// its owner never signed for.
+    InvalidClaim,
+    /// It spends what a payment another transaction beat paid (#170 cases
+    /// 3 and 4).
+    Replaced,
+}
+
+/// Where the wallet's own coins a dropped transaction spent are. The
+/// variants are in precedence order, lowest first: a row takes the highest
+/// state any of its coins needs ([`row_state`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DropState {
+    /// Each is back: unspent in the wallet, or spent by a block or by
+    /// another transaction the wallet counts.
+    Released,
+    /// One is not back yet, and a scan that brings it back is running.
+    Releasing,
+    /// One is not back, and no scan is running that would bring it back:
+    /// a rescan from the wallet's birth would.
+    RescanNeeded,
+    /// One is not back and its funding block is below the wallet's birth:
+    /// the birth must be lowered to `height` (the lowest such block) or
+    /// below.
+    RescanFromHeight { height: u32 },
+    /// One came from a transaction that is not in a block yet: it is back
+    /// once that confirms.
+    AwaitingFunding,
+    /// The drop holds some for good: the wallet can't tell whether they
+    /// were spent elsewhere.
+    Held,
+}
+
+/// A transaction this app dropped as one that can never confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TxDrop {
+    pub cause: DropCause,
+    pub state: DropState,
+}
+
+/// What the history keeps of a transaction this app dropped: why, and the
+/// coins its drop holds for good.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DropInfo {
+    pub cause: DropCause,
+    pub held: BTreeSet<OutPoint>,
+}
+
+impl DropInfo {
+    pub(crate) fn new(cause: DropCause) -> Self {
+        Self {
+            cause,
+            held: BTreeSet::new(),
+        }
+    }
+}
+
+/// The resolved drop of each dropped transaction a view shows.
+pub(crate) type DropStates = BTreeMap<Txid, TxDrop>;
+
+/// What a view shows of the transactions this app dropped: each one's
+/// resolved drop, and the own inputs of those listed from their marks
+/// alone (shown, never spent or released by them).
+#[derive(Debug, Default)]
+pub(crate) struct Drops {
+    pub states: DropStates,
+    pub inputs: BTreeMap<Txid, crate::tx_actions::OwnInputs>,
+}
+
+/// A view that shows no transaction as dropped.
+#[cfg(test)]
+pub(crate) static NO_DROPS: Drops = Drops {
+    states: BTreeMap::new(),
+    inputs: BTreeMap::new(),
+};
+
+/// What [`drop_states`] reads of key-wallet and the scan.
+pub(crate) struct DropFacts<'a> {
+    /// A coin key-wallet holds unspent in a funding account.
+    pub unspent: &'a dyn Fn(&OutPoint) -> bool,
+    /// A coin key-wallet saw a block spend.
+    pub block_spent: &'a dyn Fn(&OutPoint) -> bool,
+    /// The checkpoint of the wallet's running scan: one below its target
+    /// and not cancelled. It brings back a coin funded above it.
+    pub scan_at: Option<u32>,
+    /// A drop's batch has not finished, or the wallet is opening: the
+    /// rewinds they owe are not made yet.
+    pub pending: bool,
+    /// The wallet's birth height: a rescan from it finds no coin funded
+    /// below it.
+    pub birth: u32,
+}
+
+/// What [`DropFacts`] says of the scan, from the wallet's scan state and
+/// whether a drop's batch is in progress (`batch`): the checkpoint of a
+/// scan that is running (below its target and not cancelled), and whether
+/// rewinds are owed and not made yet (the batch, or the wallet opening).
+pub(crate) fn scan_facts(
+    state: Option<&crate::events::WalletState>,
+    batch: bool,
+) -> (Option<u32>, bool) {
+    let scan_at = state
+        .filter(|s| s.replay_cancelled.is_none() && s.synced_height < s.scan_target)
+        .map(|s| s.synced_height);
+    (scan_at, batch || state.is_some_and(|s| s.loading))
+}
+
+/// The state one coin a dropped transaction waits for needs, when it is
+/// not back: its funding transaction's block height (`None` when it is in
+/// none).
+pub(crate) fn coin_state(funded_at: Option<u32>, facts: &DropFacts<'_>) -> DropState {
+    match funded_at {
+        None => DropState::AwaitingFunding,
+        Some(h) if facts.scan_at.is_some_and(|c| c < h) => DropState::Releasing,
+        Some(h) if h < facts.birth => DropState::RescanFromHeight { height: h },
+        Some(_) if facts.pending => DropState::Releasing,
+        Some(_) => DropState::RescanNeeded,
+    }
+}
+
+/// A dropped row's one state: `Held` when its drop holds coins for good,
+/// else the highest state of those of its coins not back (`Released` when
+/// all are), with the lowest height among `RescanFromHeight` ones.
+pub(crate) fn row_state(held: bool, coins: impl IntoIterator<Item = DropState>) -> DropState {
+    if held {
+        return DropState::Held;
+    }
+    let coins: Vec<DropState> = coins.into_iter().collect();
+    let lowest = (coins.iter())
+        .filter_map(|c| match c {
+            DropState::RescanFromHeight { height } => Some(*height),
+            _ => None,
+        })
+        .min();
+    match coins.into_iter().max() {
+        Some(DropState::RescanFromHeight { .. }) => DropState::RescanFromHeight {
+            height: lowest.unwrap_or_default(),
+        },
+        Some(state) => state,
+        None => DropState::Released,
+    }
+}
+
+/// The state of each of `drops` whose transaction `txs` holds abandoned.
+/// The coins a drop waits for are its inputs that pay an `owned` script of
+/// a transaction the history holds, counts (not abandoned) and did not
+/// drop: what a dropped or never-valid parent paid never comes back. A coin
+/// is back when it is unspent, spent by a block, or spent by another
+/// transaction of the history that is not abandoned. One pass over the
+/// history's inputs only when some coin is not found otherwise.
+pub(crate) fn drop_states(
+    txs: &HashMap<Txid, TxEntry>,
+    drops: &HashMap<Txid, DropInfo>,
+    owned: &HashMap<ScriptBuf, Owned>,
+    facts: &DropFacts<'_>,
+) -> DropStates {
+    let waited = |e: &TxEntry| -> Vec<OutPoint> {
+        (e.tx.input.iter())
+            .map(|i| i.previous_output)
+            .filter(|o| {
+                !drops.contains_key(&o.txid)
+                    && (txs.get(&o.txid)).is_some_and(|f| {
+                        !f.is_abandoned()
+                            && (f.tx.output.get(o.vout as usize))
+                                .is_some_and(|out| owned.contains_key(&out.script_pubkey))
+                    })
+            })
+            .collect()
+    };
+    let mut spent_by_live: Option<HashSet<OutPoint>> = None;
+    let mut out = DropStates::new();
+    for (t, info) in drops {
+        let Some(e) = txs.get(t).filter(|e| e.is_abandoned()) else {
+            continue;
+        };
+        let mut missing: Vec<OutPoint> = (waited(e).into_iter())
+            .filter(|o| !(facts.unspent)(o) && !(facts.block_spent)(o))
+            .collect();
+        if !missing.is_empty() {
+            let live = spent_by_live.get_or_insert_with(|| {
+                (txs.values())
+                    .filter(|e| !e.is_abandoned())
+                    .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+                    .collect()
+            });
+            missing.retain(|o| !live.contains(o));
+        }
+        let coins = missing.iter().map(|o| {
+            let funded_at =
+                (txs.get(&o.txid)).and_then(|f| f.context.block_info().map(|b| b.height()));
+            coin_state(funded_at, facts)
+        });
+        let state = row_state(!info.held.is_empty(), coins);
+        out.insert(
+            *t,
+            TxDrop {
+                cause: info.cause,
+                state,
+            },
+        );
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,6 +762,13 @@ pub(crate) fn proven_final(
 #[derive(Debug, Default)]
 pub(crate) struct WalletHistory {
     pub txs: HashMap<Txid, TxEntry>,
+    /// The transactions this app dropped as ones that can never confirm,
+    /// from their `dropped:` marks and as each drop runs.
+    pub drops: HashMap<Txid, DropInfo>,
+    /// The own inputs of dropped transactions listed from their abandoned
+    /// marks alone, as their `dropped:` marks keep them: what their rows
+    /// show, which nothing spends or releases.
+    pub drop_inputs: BTreeMap<Txid, crate::tx_actions::OwnInputs>,
     /// Transactions a conflict sweep removed this session: a load whose
     /// marks were read before the sweep restores none of them.
     pub swept: HashSet<Txid>,
@@ -639,6 +858,8 @@ impl WalletHistory {
     /// Drops a transaction upstream deleted, seen or kept out of sight.
     pub fn forget(&mut self, txid: &Txid) {
         self.txs.remove(txid);
+        self.drops.remove(txid);
+        self.drop_inputs.remove(txid);
         self.hidden_registrations.remove(txid);
         self.lock_parents.remove(txid);
     }
@@ -711,6 +932,20 @@ impl WalletHistory {
                     abandoned: true,
                 })
                 .abandoned = true;
+        }
+    }
+
+    /// Notes, for each abandoned entry listed from its mark alone (so with no
+    /// own inputs), those its drop mark keeps: its row shows the payment it
+    /// was. Its entry stays without them, so nothing releases them.
+    pub(crate) fn fill_dropped_inputs(
+        &mut self,
+        inputs: &BTreeMap<Txid, crate::tx_actions::OwnInputs>,
+    ) {
+        for (txid, own) in inputs {
+            if (self.txs.get(txid)).is_some_and(|e| e.abandoned && e.own_inputs.is_empty()) {
+                self.drop_inputs.insert(*txid, own.clone());
+            }
         }
     }
 
@@ -1056,6 +1291,8 @@ pub(crate) struct ChainView<'a> {
     pub network: Network,
     /// Who the wallet's DashPay payments are with.
     pub payees: &'a Payees,
+    /// The transactions this app dropped, resolved ([`drop_states`]).
+    pub drops: &'a Drops,
 }
 
 fn depth(context: &TransactionContext, tip: u32) -> u32 {
@@ -1085,8 +1322,18 @@ pub(crate) fn resolve_own_input(
 }
 
 fn own_input(view: &ChainView<'_>, entry: &TxEntry, index: usize) -> Option<(u64, Address)> {
+    let marked = || {
+        (entry.abandoned && entry.own_inputs.is_empty() && !view.drops.inputs.is_empty())
+            .then(|| {
+                view.drops
+                    .inputs
+                    .get(&entry.tx.txid())?
+                    .get(&(index as u32))
+            })
+            .flatten()
+    };
     resolve_own_input(
-        entry.own_inputs.get(&(index as u32)),
+        entry.own_inputs.get(&(index as u32)).or_else(marked),
         entry
             .tx
             .input
@@ -1135,6 +1382,7 @@ pub(crate) fn status_of(
             instant_locked,
             chain_locked,
             matures_in,
+            dropped: None,
         },
         counts,
     )
@@ -1475,7 +1723,10 @@ pub(crate) fn records_of(
 ) -> (Vec<TxRecord>, Decomposed, TxStatus) {
     let txid_s = txid.to_string();
     let d = decompose_with(entry, view, labels.coinjoin_sends.contains(&txid_s));
-    let (status, counts) = status_of(entry, view, d.all_from_me);
+    let (mut status, counts) = status_of(entry, view, d.all_from_me);
+    if status.kind == TxStatusKind::Abandoned {
+        status.dropped = view.drops.states.get(txid).copied();
+    }
     let tx_label = labels.tx.get(&txid_s).cloned();
     let sides = view.payees.sides(txid, &entry.tx, &d.parts);
     let records = d
@@ -1975,6 +2226,7 @@ mod tests {
                 chainlock_height: None,
                 network: NET,
                 payees: &self.payees,
+                drops: &crate::history::NO_DROPS,
             }
         }
 
@@ -2586,6 +2838,7 @@ mod tests {
                 instant_locked: false,
                 chain_locked: false,
                 matures_in: None,
+                dropped: None,
             },
             timestamp: ts,
             block_height: Some(1),
@@ -3249,5 +3502,287 @@ mod tests {
         let mut both = vec![damaged, old];
         both.sort();
         assert_eq!(gone(&HashSet::from([damaged])), both);
+    }
+
+    /// A dropped row's state, by precedence: the drop's hold, then the
+    /// highest state any coin not back needs (#790).
+    #[test]
+    fn a_dropped_row_takes_the_highest_state_its_coins_need() {
+        use DropState::*;
+        let from = |height| RescanFromHeight { height };
+        let cases: [(bool, Vec<DropState>, DropState); 12] = [
+            (false, vec![], Released),
+            (false, vec![Releasing], Releasing),
+            (false, vec![Releasing, RescanNeeded], RescanNeeded),
+            (false, vec![RescanNeeded, from(90)], from(90)),
+            (false, vec![from(90), from(70), Releasing], from(70)),
+            (false, vec![from(90), AwaitingFunding], AwaitingFunding),
+            (
+                false,
+                vec![AwaitingFunding, Releasing, RescanNeeded],
+                AwaitingFunding,
+            ),
+            (true, vec![], Held),
+            (true, vec![AwaitingFunding], Held),
+            (true, vec![from(5), RescanNeeded, Releasing], Held),
+            (false, vec![Releasing, Releasing], Releasing),
+            (
+                false,
+                vec![RescanNeeded, Releasing, RescanNeeded],
+                RescanNeeded,
+            ),
+        ];
+        for (held, coins, want) in cases {
+            assert_eq!(
+                row_state(held, coins.clone()),
+                want,
+                "held {held}, coins {coins:?}"
+            );
+        }
+    }
+
+    fn facts<'a>(
+        unspent: &'a dyn Fn(&OutPoint) -> bool,
+        scan_at: Option<u32>,
+        pending: bool,
+        birth: u32,
+    ) -> DropFacts<'a> {
+        DropFacts {
+            unspent,
+            block_spent: &|_| false,
+            scan_at,
+            pending,
+            birth,
+        }
+    }
+
+    /// What one coin not back needs: its funding unmined, a running scan
+    /// below its block, a block below the birth, owed rewinds, or else a
+    /// rescan.
+    #[test]
+    fn a_coin_not_back_needs_what_its_block_and_the_scan_say() {
+        use DropState::*;
+        let no = |_: &OutPoint| false;
+        let cases = [
+            (None, None, false, 100, AwaitingFunding),
+            (None, Some(10), true, 100, AwaitingFunding),
+            (Some(150), Some(120), false, 100, Releasing),
+            (Some(150), Some(150), false, 100, RescanNeeded),
+            (Some(150), Some(160), false, 100, RescanNeeded),
+            (Some(150), None, true, 100, Releasing),
+            (Some(150), None, false, 100, RescanNeeded),
+            (Some(80), None, false, 100, RescanFromHeight { height: 80 }),
+            (Some(80), None, true, 100, RescanFromHeight { height: 80 }),
+            (Some(80), Some(60), false, 100, Releasing),
+            (Some(100), None, false, 100, RescanNeeded),
+        ];
+        for (funded_at, scan_at, pending, birth, want) in cases {
+            let f = facts(&no, scan_at, pending, birth);
+            assert_eq!(
+                coin_state(funded_at, &f),
+                want,
+                "funded {funded_at:?}, scan {scan_at:?}, pending {pending}, birth {birth}"
+            );
+        }
+    }
+
+    /// The scan the state reads: a cancelled replay, or a rewind that never
+    /// lowered the checkpoint (it failed), runs no scan; a rewind's replay
+    /// does until it is back at its target; an open owes its rewinds.
+    #[test]
+    fn the_scan_a_drop_reads_runs_only_below_its_target_and_not_cancelled() {
+        let state = |synced, target, cancelled: Option<u32>, loading| crate::events::WalletState {
+            synced_height: synced,
+            scan_target: target,
+            replay_cancelled: cancelled,
+            loading,
+            ..Default::default()
+        };
+        assert_eq!(scan_facts(None, false), (None, false));
+        assert_eq!(scan_facts(None, true), (None, true));
+        assert_eq!(
+            scan_facts(Some(&state(90, 200, None, false)), false),
+            (Some(90), false),
+            "a rewind's replay"
+        );
+        assert_eq!(
+            scan_facts(Some(&state(90, 200, Some(90), false)), false),
+            (None, false),
+            "a cancelled replay"
+        );
+        assert_eq!(
+            scan_facts(Some(&state(200, 200, None, false)), false),
+            (None, false),
+            "back at its target, or never lowered"
+        );
+        assert_eq!(
+            scan_facts(Some(&state(200, 200, None, true)), false),
+            (None, true),
+            "an open owes its rewinds"
+        );
+    }
+
+    /// A dropped payment's coins: one spent from a dropped or abandoned
+    /// parent, or a never-valid one's, is never waited for; one unspent,
+    /// spent by a block or by a transaction the history counts is back.
+    #[test]
+    fn a_drop_waits_only_for_the_wallets_own_coins_of_counted_parents() {
+        let mut f = Fixture::new();
+        let fund = |n: u8, v| {
+            tx(
+                vec![foreign_input(n)],
+                vec![out(v, &hash_addr(1)), out(v, &hash_addr(60))],
+            )
+        };
+        let a = f.add(entry(fund(40, 1_000), in_block(150, 1)));
+        let b = f.add(entry(fund(41, 2_000), in_block(160, 1)));
+        let mut gone = entry(fund(42, 3_000), TransactionContext::Mempool);
+        gone.abandoned = true;
+        let gone = f.add(gone);
+        let claim = f.add(entry(fund(43, 4_000), TransactionContext::Mempool));
+        let mut s = entry(
+            tx(
+                vec![
+                    input(a, 0),
+                    input(b, 0),
+                    input(gone, 0),
+                    input(claim, 0),
+                    input(a, 1),
+                ],
+                vec![out(9_000, &hash_addr(70))],
+            ),
+            TransactionContext::Mempool,
+        );
+        s.abandoned = true;
+        let s = f.add(s);
+        let drops = HashMap::from([
+            (s, DropInfo::new(DropCause::InvalidSource)),
+            (claim, DropInfo::new(DropCause::InvalidClaim)),
+        ]);
+        let (a0, b0) = (OutPoint::new(a, 0), OutPoint::new(b, 0));
+        let state = |unspent: &dyn Fn(&OutPoint) -> bool, scan_at| {
+            let facts = facts(unspent, scan_at, false, 100);
+            drop_states(&f.history, &drops, &f.owned, &facts)
+        };
+        let back = |o: &OutPoint| *o == a0 || *o == b0;
+        assert_eq!(
+            state(&back, None).get(&s),
+            Some(&TxDrop {
+                cause: DropCause::InvalidSource,
+                state: DropState::Released
+            }),
+            "only a and b, the wallet's own coins of counted parents, are waited for"
+        );
+        assert!(
+            !state(&back, None).contains_key(&claim),
+            "the claim isn't abandoned: no row"
+        );
+        let only_a = |o: &OutPoint| *o == a0;
+        assert_eq!(
+            state(&only_a, Some(155)).get(&s).map(|d| d.state),
+            Some(DropState::Releasing),
+            "a scan below b's block"
+        );
+        assert_eq!(
+            state(&only_a, None).get(&s).map(|d| d.state),
+            Some(DropState::RescanNeeded)
+        );
+        let spender = f.add(entry(
+            tx(vec![input(b, 0)], vec![out(1_500, &hash_addr(71))]),
+            TransactionContext::Mempool,
+        ));
+        let facts = facts(&only_a, None, false, 100);
+        assert_eq!(
+            drop_states(&f.history, &drops, &f.owned, &facts)
+                .get(&s)
+                .map(|d| d.state),
+            Some(DropState::Released),
+            "b is spent by a transaction the history counts"
+        );
+        f.history.get_mut(&spender).unwrap().abandoned = true;
+        assert_eq!(
+            drop_states(&f.history, &drops, &f.owned, &facts)
+                .get(&s)
+                .map(|d| d.state),
+            Some(DropState::RescanNeeded),
+            "not by an abandoned one"
+        );
+        let birth_above = super::tests::facts(&only_a, None, false, 170);
+        assert_eq!(
+            drop_states(&f.history, &drops, &f.owned, &birth_above)
+                .get(&s)
+                .map(|d| d.state),
+            Some(DropState::RescanFromHeight { height: 160 }),
+        );
+        let block_spent = |o: &OutPoint| *o == b0;
+        let by_block = DropFacts {
+            block_spent: &block_spent,
+            ..super::tests::facts(&only_a, None, false, 100)
+        };
+        assert_eq!(
+            drop_states(&f.history, &drops, &f.owned, &by_block)
+                .get(&s)
+                .map(|d| d.state),
+            Some(DropState::Released)
+        );
+        let mut held = drops.clone();
+        held.get_mut(&s).unwrap().held.insert(b0);
+        assert_eq!(
+            drop_states(&f.history, &held, &f.owned, &facts)
+                .get(&s)
+                .map(|d| d.state),
+            Some(DropState::Held)
+        );
+    }
+
+    /// A dropped row's status names its drop; a user's abandon, or a row
+    /// mined since, names none.
+    #[test]
+    fn only_an_abandoned_row_the_app_dropped_says_dropped() {
+        let mut f = Fixture::new();
+        let fund = f.add(entry(
+            tx(vec![foreign_input(50)], vec![out(5_000, &hash_addr(1))]),
+            in_block(150, 1),
+        ));
+        let mut s = entry(
+            tx(vec![input(fund, 0)], vec![out(4_000, &hash_addr(70))]),
+            TransactionContext::Mempool,
+        );
+        s.abandoned = true;
+        let s = f.add(s);
+        let mut user = entry(
+            tx(vec![foreign_input(51)], vec![out(4_000, &hash_addr(71))]),
+            TransactionContext::Mempool,
+        );
+        user.abandoned = true;
+        let user = f.add(user);
+        let mined = f.add(entry(
+            tx(vec![input(fund, 0)], vec![out(3_000, &hash_addr(72))]),
+            in_block(151, 1),
+        ));
+        let drop = TxDrop {
+            cause: DropCause::InvalidSource,
+            state: DropState::Released,
+        };
+        let drops = Drops {
+            states: [(s, drop), (mined, drop)].into_iter().collect(),
+            ..Drops::default()
+        };
+        let mut view = f.view(160);
+        view.drops = &drops;
+        let status = |t: Txid| records_of(&t, &f.history[&t], &view, &Labels::default()).2;
+        let dropped = records_of(&s, &f.history[&s], &view, &Labels::default());
+        assert_eq!(dropped.0[0].status.dropped, Some(drop));
+        assert!(
+            !dropped.0[0].counts_toward_balance,
+            "a dropped row never counts"
+        );
+        assert_eq!(status(user).dropped, None, "the user's abandon");
+        assert_eq!(status(mined).kind, TxStatusKind::Confirmed);
+        assert_eq!(
+            status(mined).dropped,
+            None,
+            "mined since: its ordinary status"
+        );
     }
 }

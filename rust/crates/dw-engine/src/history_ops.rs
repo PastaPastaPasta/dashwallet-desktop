@@ -1,7 +1,7 @@
 //! Session operations over the history read model: loading persisted
 //! history at open, `history_page` and `tx_detail`.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -376,6 +376,7 @@ pub(crate) struct ViewParts {
     pub payees: Payees,
     pub tip: u32,
     pub chainlock_height: Option<u32>,
+    pub drops: crate::history::Drops,
 }
 
 impl ViewParts {
@@ -391,6 +392,7 @@ impl ViewParts {
             chainlock_height: self.chainlock_height,
             network,
             payees: &self.payees,
+            drops: &self.drops,
         }
     }
 }
@@ -406,6 +408,8 @@ struct LoadedHistory {
     records: Vec<TransactionRecord>,
     seen: Vec<(String, u64)>,
     abandoned: Vec<(Txid, dashcore::Transaction)>,
+    /// [`crate::tx_actions::load_drop_inputs`].
+    drop_inputs: BTreeMap<Txid, crate::tx_actions::OwnInputs>,
     /// The payments this app sent (#88).
     sent: crate::tx_actions::Sent,
     /// Every stored record was listed and read, and so were the abandoned
@@ -422,9 +426,9 @@ struct LoadedHistory {
     settled: HashSet<Txid>,
     /// [`Persisted::lock_parents`].
     lock_parents: HashMap<Txid, Vec<Txid>>,
-    /// [`Persisted::dropped`] and what this app dropped
-    /// ([`crate::tx_actions::load_dropped`]).
-    dropped: BTreeSet<Txid>,
+    /// [`Persisted::dropped`] (never-valid claims) and what this app
+    /// dropped ([`crate::tx_actions::load_dropped`]).
+    dropped: crate::tx_actions::Dead,
 }
 
 impl NetworkSession {
@@ -460,6 +464,7 @@ impl NetworkSession {
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
         let wallet_ids = ids.clone();
+        let network = self.network.core_network();
         let loaded = tokio::task::spawn_blocking(move || {
             #[cfg(test)]
             let mut fault = fault;
@@ -499,13 +504,14 @@ impl NetworkSession {
                         Vec::new()
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
+                    let drop_inputs = crate::tx_actions::load_drop_inputs(&appdb, wallet, network);
                     let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
                     let (dropped_here, dropped_read) = match fail_dropped {
-                        true => (BTreeSet::new(), false),
+                        true => (crate::tx_actions::Dead::new(), false),
                         false => crate::tx_actions::load_dropped(&appdb, wallet),
                     };
                     sent.retain(|t, _| {
-                        persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains(t)
+                        persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains_key(t)
                     });
                     let abandoned = abandoned.copies;
                     let stored: HashSet<Txid> = match clean {
@@ -523,6 +529,7 @@ impl NetworkSession {
                         records,
                         seen,
                         abandoned,
+                        drop_inputs,
                         sent,
                         complete: clean
                             && dropped_read
@@ -535,10 +542,16 @@ impl NetworkSession {
                         stored,
                         settled,
                         lock_parents: persisted.lock_parents,
-                        dropped: (persisted.dropped.into_iter())
-                            .filter(|t| !persisted.dropped_doubtful.contains(t))
-                            .chain(dropped_here)
-                            .collect(),
+                        dropped: {
+                            let mut dead: crate::tx_actions::Dead = (persisted.dropped.iter())
+                                .filter(|t| !persisted.dropped_doubtful.contains(*t))
+                                .map(|t| (*t, crate::history::DropCause::InvalidClaim))
+                                .collect();
+                            for (t, cause) in dropped_here {
+                                dead.entry(t).or_insert(cause);
+                            }
+                            dead
+                        },
                     }
                 })
                 .collect::<Vec<_>>()
@@ -562,6 +575,7 @@ impl NetworkSession {
             records,
             seen,
             abandoned,
+            drop_inputs,
             sent,
             complete,
             claims,
@@ -608,6 +622,10 @@ impl NetworkSession {
                 }
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
                 h.mark_abandoned(&abandoned);
+                h.fill_dropped_inputs(&drop_inputs);
+                for (t, cause) in &dropped {
+                    (h.drops).insert(*t, crate::history::DropInfo::new(*cause));
+                }
                 if complete {
                     h.add_unrecorded_sends(&sent, &settled, self.network.core_network());
                 }
@@ -899,7 +917,7 @@ impl NetworkSession {
             let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
             let (dropped_here, dropped_read) = crate::tx_actions::load_dropped(&appdb, wallet);
             sent.retain(|t, _| {
-                persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains(t)
+                persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains_key(t)
             });
             if !(read && marks_read && dropped_read && sent_read != crate::tx_actions::SentRead::Failed) {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
@@ -983,15 +1001,52 @@ impl NetworkSession {
     /// ChainLock height.
     pub(crate) fn view_parts(&self, info: &PlatformWalletInfo, wallet: &WalletId) -> ViewParts {
         let meta = &info.core_wallet.metadata;
+        let owned = owned_scripts(info);
+        let drops = self.drop_states(info, wallet, &owned);
         ViewParts {
-            owned: owned_scripts(info),
+            owned,
             payees: self.payees(info, wallet),
             tip: meta
                 .last_processed_height
                 .max(meta.synced_height)
                 .max(self.hub.wallet_state(wallet).map_or(0, |s| s.tip())),
             chainlock_height: self.chainlock_height(&info.core_wallet),
+            drops,
         }
+    }
+
+    /// The state of each transaction of `wallet` this app dropped
+    /// ([`crate::history::drop_states`]), read under the manager's lock
+    /// `info` is held under. Empty, and no read of the history, when the
+    /// wallet dropped nothing.
+    fn drop_states(
+        &self,
+        info: &PlatformWalletInfo,
+        wallet: &WalletId,
+        owned: &HashMap<ScriptBuf, Owned>,
+    ) -> crate::history::Drops {
+        if (self.hub.history).read_wallet(wallet, |h| h.drops.is_empty()) {
+            return crate::history::Drops::default();
+        }
+        let core = &info.core_wallet;
+        let funding = core.accounts.all_funding_accounts();
+        let unspent = |o: &OutPoint| funding.iter().any(|a| a.utxos.contains_key(o));
+        let spent = core.observed_spent_outpoints();
+        let block_spent = |o: &OutPoint| spent.contains_key(o);
+        let state = self.hub.wallet_state(wallet);
+        let (scan_at, pending) =
+            crate::history::scan_facts(state.as_ref(), self.hub.abandon_batch_pending(wallet));
+        let facts = crate::history::DropFacts {
+            unspent: &unspent,
+            block_spent: &block_spent,
+            scan_at,
+            pending,
+            birth: core.birth_height(),
+        };
+        (self.hub.history).read_wallet(wallet, |h| crate::history::Drops {
+            states: crate::history::drop_states(&h.txs, &h.drops, owned, &facts),
+            inputs: h.drop_inputs.clone(),
+        })
     }
 
     /// Height of the best ChainLock the wallet applied or SPV reported.
