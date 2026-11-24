@@ -278,7 +278,7 @@ export function trackErrorText(e: unknown, name: string | null): string {
 export function registrarLine(d: MasternodeDetail): { text: string; unlock: boolean } | null {
   switch (d.registrar.kind) {
     case "registration_unavailable": {
-      const withdraw = d.row.kind === "evonode" && (d.row.roles.attached ?? []).some((k) => k.role === "owner" || k.role === "payout");
+      const withdraw = d.row.kind === "evonode" && (d.row.roles.attached ?? []).some((k) => (k.role === "owner" || k.role === "payout") && k.check === "matched");
       return { text: t(`${P}.registrar.${withdraw ? "registrationUnavailableWithdraw" : "registration_unavailable"}`), unlock: false };
     }
     case "no_owner_key":
