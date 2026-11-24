@@ -392,7 +392,10 @@ fn a_released_or_restored_create_keeps_its_hold() {
     assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Unknown);
     assert!(row.plan.is_some());
     let r = &w.registers()[0];
-    assert_eq!((r.state, r.can_land), (PlatformActivityState::Pending, true));
+    assert_eq!(
+        (r.state, r.can_land),
+        (PlatformActivityState::Pending, true)
+    );
 
     let w = World::new();
     w.net.fund(w.address(0), 5 * DASH);
@@ -402,10 +405,16 @@ fn a_released_or_restored_create_keeps_its_hold() {
     let mut restored = w.row(1);
     restored.plan = first.plan.clone();
     w.net.then(Act::Unsigned);
-    assert_eq!(w.pass(&mut restored, true).unwrap(), RegisterOutcome::Unknown);
+    assert_eq!(
+        w.pass(&mut restored, true).unwrap(),
+        RegisterOutcome::Unknown
+    );
     assert_eq!(restored.plan, first.plan, "kept");
     let r = &w.registers()[0];
-    assert_eq!((r.state, r.can_land), (PlatformActivityState::Pending, true));
+    assert_eq!(
+        (r.state, r.can_land),
+        (PlatformActivityState::Pending, true)
+    );
 }
 
 /// A stored plan signs only as it was made: one that repeats an address,
