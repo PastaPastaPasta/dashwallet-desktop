@@ -819,8 +819,8 @@ fn settled_descendant(
 /// What something settled descends from, walked over every loaded
 /// wallet's transactions at once: what one wallet settled can descend from
 /// another's payment, through transfers between them either way (#611).
-/// `incomplete`: the first of them whose history is not whole
-/// ([`NetworkSession::history_unread`]).
+/// `incomplete`: the first of them a stored record of didn't read at its
+/// load.
 #[derive(Default)]
 struct Settled {
     under: HashSet<Txid>,
@@ -829,9 +829,10 @@ struct Settled {
 }
 
 impl NetworkSession {
-    /// Whether wallet `id`'s history is not whole: a stored record or mark
-    /// didn't read at its load, or it is part-way through opening, its
-    /// history not loaded yet.
+    /// Whether wallet `id`'s history is not whole for a drop: a stored
+    /// record or mark didn't read at its load, or it is part-way through
+    /// opening, its history not loaded yet. Abandon's rule is the first
+    /// alone ([`Self::settled_all`]).
     pub(crate) fn history_unread(&self, id: WalletId) -> bool {
         (self.hub.history).read_wallet(&id, |h| h.load_incomplete)
             || self.hub.wallet_state(&id).is_some_and(|s| s.loading)
@@ -843,8 +844,11 @@ impl NetworkSession {
     ) -> Settled {
         let (mut known, mut incomplete) = (HashMap::new(), None);
         for (id, core) in infos {
-            (self.hub.history).read_wallet(&WalletId(*id), |h| add_wallet(&mut known, h, core));
-            if self.history_unread(WalletId(*id)) {
+            let unread = (self.hub.history).read_wallet(&WalletId(*id), |h| {
+                add_wallet(&mut known, h, core);
+                h.load_incomplete
+            });
+            if unread {
                 incomplete.get_or_insert(WalletId(*id));
             }
         }

@@ -499,6 +499,11 @@ impl NetworkSession {
             // build): a coin read holds back a collateral-sized coin whose
             // transaction the history doesn't know.
             let history = this.load_history_for(vec![id]).await;
+            // A history that did not load is not whole: no drop reads it as
+            // such once the open is over.
+            if history.is_err() {
+                (this.hub.history).with_wallet(id, |h| h.load_incomplete = true);
+            }
             this.hub.update_wallet_state(id, |s| s.loading = false);
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;

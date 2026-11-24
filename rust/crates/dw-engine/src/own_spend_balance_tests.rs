@@ -2969,3 +2969,38 @@ fn nothing_is_dropped_while_another_wallet_is_opening() {
     assert!(!live_in_history(&session, id, p.txid()), "the payment goes");
     assert!(!held(&engine, &session, id).contains(&change));
 }
+
+/// An Abandon in one wallet while another wallet is part-way through its
+/// open is not refused as unreadable: only a stored record that did not
+/// read is (#611). The drop's own check counts the open (above).
+#[test]
+fn abandoning_while_another_wallet_is_opening_is_not_refused_as_unreadable() {
+    let (_dir, engine, session, id, _paid) = funded_wallet_and_funding();
+    let p = send(&engine, &session, id, CoinSource::Any, COIN / 2, false);
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    let other = second_wallet(&engine, &session);
+
+    let session = reopen(&engine, session);
+    engine.block_on(session.unload_wallet(other)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_load.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move { s.load_wallet(other).await })
+    };
+    eventually("the open's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let (s, txid) = (Arc::clone(&session), p.txid());
+    let abandoned = engine.block_on(session.on_runtime(async move {
+        let manager = s.manager()?;
+        s.abandon_inner(&manager, id, txid).await
+    }));
+    pause.release.notify_one();
+    engine.block_on(load).unwrap().unwrap();
+    assert!(
+        abandoned.as_ref().is_ok_and(|a| a.contains(&txid)),
+        "{abandoned:?}"
+    );
+}
