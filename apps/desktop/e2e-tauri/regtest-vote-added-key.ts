@@ -10,7 +10,10 @@
 // voting key, typed only into the masked field → "Matches this masternode's voting key." → the
 // tracked row says the key matches → Governance ▸ the proposal ▸ Vote…: the masternode is listed
 // with "key you added", Yes, passphrase, Vote Yes → "1 of 1 vote sent". Screenshots (none while the
-// key is in a field), the app's log and result.json go to $DW_E2E_OUT; none may hold the key.
+// key is in a field), the app's log and ui.json (what the UI showed) go to $DW_E2E_OUT; none may
+// hold the key. The suite writes result.json once Core has judged. tauri-driver and WebKitWebDriver
+// listen on free ports, and the run talks to them only once both listeners are in the group it
+// spawned; that group's id goes to $DW_E2E_OUT/driver.pid, so the suite can stop it on a timeout.
 //
 //   DW_APP=…/dash-wallet DWCLI=…/dwcli TAURI_DRIVER=…/tauri-driver DW_E2E_DATADIR=… \
 //   DW_E2E_PASSPHRASE=… DW_E2E_SPV_PEER=127.0.0.1:… DW_E2E_RPC=http://u:p@127.0.0.1:… \
@@ -21,7 +24,9 @@
 import type { ChildProcess } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { APP, CHAIN, driverGone, env, fillSecret, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
+import { freePort } from "./dashd.ts";
+import { APP, CHAIN, driverGone, driverReady, env, fillSecret, leaks, poll, spawnDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
+import { ownedProbe, processGroup, ssListing } from "./listeners.ts";
 
 const OUT = resolve(env("DW_E2E_OUT", "test-results/tauri-regtest-vote-added-key"));
 const DATADIR = resolve(env("DW_E2E_DATADIR"));
@@ -33,7 +38,6 @@ const VOTER = env("DW_E2E_VOTER");
 const VOTING_KEY = env("DW_E2E_VOTING_KEY");
 // Not passed on to tauri-driver, WebKitWebDriver or the app.
 delete process.env.DW_E2E_VOTING_KEY;
-const PORT = Number(env("DW_E2E_PORT", "4796"));
 /** SPV, the masternode list and governance sync on a loaded host (as regtest-send.ts allows). */
 const LOAD_WAIT_MS = Number(env("DW_E2E_LOAD_WAIT_MS", "600000"));
 const SHORT = VOTER.slice(0, 8);
@@ -49,9 +53,13 @@ async function main() {
     console.log(`regtest-vote-added-key: ${s}`);
   };
 
-  const started = await startDriver(PORT, OUT);
-  driver = started.driver;
-  const wd = new WebDriver(started.base, OUT);
+  const port = await freePort();
+  let native = await freePort();
+  while (native === port) native = await freePort();
+  driver = spawnDriver(port, OUT, native);
+  writeFileSync(resolve(OUT, "driver.pid"), `${driver.pid}\n`);
+  await poll(30_000, "both drivers to listen", ownedProbe(ssListing, [port, native], driver.pid, processGroup));
+  const wd = new WebDriver(await driverReady(port), OUT);
   // Regtest has no DAPI: masternodes' ProRegTxs, which a vote's collateral comes from, are read from
   // dashd (MG-02 D80, MG-09 D28).
   const args = ["--datadir", DATADIR, ...CHAIN, "--quorum-url", "http://127.0.0.1:1", "--collateral-rpc", RPC.href, "--sync", "--spv-peer", PEER, "--theme", "light"];
@@ -184,10 +192,24 @@ async function main() {
     await wd.press(tid(row));
     await poll(LOAD_WAIT_MS, "Vote… enabled (a voting key in the wallet)", async () => ((await enabled("proposal-vote")) ? true : undefined));
     await wd.press(tid("proposal-vote"));
+    // The row turns votable once governance has the masternode's collateral too, which it reads
+    // apart from the list the key was matched against; a row votable only after the sheet opened
+    // starts unticked.
     const node = `vote-node-${SHORT}`;
-    await wd.waitFor(tid(node), "the tracked masternode in the vote sheet");
-    evidence.voteRow = (await textOf(node)).trim();
-    if (!String(evidence.voteRow).includes("key you added")) throw new Error(`the vote sheet's row: ${evidence.voteRow}`);
+    let seen = "";
+    const voter = await poll(LOAD_WAIT_MS, "the tracked masternode votable with the key you added", async () => {
+      const r = await wd.script<{ text: string; enabled: boolean; checked: boolean } | null>(
+        `const li = document.querySelector(arguments[0]); const box = li?.querySelector("input[type=checkbox]");
+         return li && box ? { text: li.textContent ?? "", enabled: !box.disabled, checked: box.checked } : null`,
+        [tid(node)],
+      );
+      seen = r?.text.trim() ?? "";
+      return r?.enabled && r.text.includes("key you added") ? r : undefined;
+    }).catch(() => {
+      throw new Error(`the vote sheet's row: "${seen}"`);
+    });
+    if (!voter.checked) await wd.script(`document.querySelector(arguments[0]).querySelector("input[type=checkbox]").click()`, [tid(node)]);
+    evidence.voteRow = voter.text.trim();
     await wd.press(tid("vote-outcome-yes"));
     await enter("vote-passphrase", PASSPHRASE);
     await wd.screenshot("4-vote-sheet");
@@ -203,8 +225,8 @@ async function main() {
   } finally {
     await wd.end().catch(() => undefined);
   }
-  writeFileSync(resolve(OUT, "result.json"), JSON.stringify({ ok: true, steps, evidence }, null, 2));
-  console.log(`regtest-vote-added-key: PASS (${steps.length} steps); evidence in ${OUT}`);
+  writeFileSync(resolve(OUT, "ui.json"), JSON.stringify({ steps, evidence }, null, 2));
+  console.log(`regtest-vote-added-key: the UI's ${steps.length} steps done; Core judges the vote`);
 }
 
 main()

@@ -21,9 +21,12 @@ Setup:
 Checks, after the UI run:
  1. every node holds a funding Yes from masternode 2's collateral on dwd_ak_p0, and Core's Yes
     count went from 0 to 1;
- 2. neither the run's output (logs, result.json, screenshots) nor the app's data directory holds
-    the key in plain text (WIF, hex, raw bytes in either order), checked whether the UI run
-    passed or not.
+ 2. neither the run's output (logs, ui.json, screenshots) nor the app's data directory holds
+    the key in plain text (WIF, hex, raw bytes in either order). This runs on every way the UI run
+    ends, a timeout too (both the script's and the driver's process groups are stopped first),
+    and before any line of the run is logged.
+
+result.json (ok, the UI's steps and evidence, Core's vote) is written only once every check passed.
 
 Run (DW_APP, TAURI_DRIVER and DISPLAY as for scripts/e2e-regtest-vote-added-key.sh):
   DWCLI=<target>/debug/dwcli DW_APP=<target>/debug/dash-wallet TAURI_DRIVER=<tauri-driver> \\
@@ -45,6 +48,31 @@ from test_framework.messages import uint256_to_string
 from test_framework.util import assert_equal, p2p_port, rpc_url
 
 PROPOSAL = "dwd_ak_p0"
+UI = "regtest-vote-added-key"
+
+
+def stop_group(pgid):
+    """Ends process group `pgid` (one this run started): TERM, then KILL after 10 s."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.2)
+
+
+def driver_group(out):
+    """The driver's process group the UI script recorded, if it got that far."""
+    with contextlib.suppress(FileNotFoundError, ValueError):
+        with open(os.path.join(out, "driver.pid"), encoding="utf8") as f:
+            return int(f.read().strip())
+    return None
 
 
 def leaks(root, secrets):
@@ -111,26 +139,34 @@ class DwdGovernanceAddedKeyUi(DwdGovernanceUi):
         self.log.info(f"The UI run on {source['head']}{' (dirty tree)' if source['dirty'] else ''}: track masternode 2, add its voting key, vote Yes on {PROPOSAL}")
         out = os.environ.get("DW_E2E_OUT", os.path.join(self.options.tmpdir, "ui"))
         os.makedirs(out, exist_ok=True)
+        for stale in ("ui.json", "result.json", "driver.pid"):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(os.path.join(out, stale))
         env = dict(os.environ, DW_E2E_OUT=out, DW_E2E_DATADIR=dwcli.root, DW_E2E_PASSPHRASE=PASSPHRASE,
                    DW_E2E_SPV_PEER=f"127.0.0.1:{p2p_port(0)}", DW_E2E_RPC=rpc_url(node.datadir, 0, self.chain),
                    DW_E2E_PROPOSAL=PROPOSAL, DW_E2E_VOTER=voter.proTxHash, DW_E2E_VOTING_KEY=wif)
         env.setdefault("RUST_LOG", "warn,dw_engine::governance=debug,dw_governance=debug")
-        with open(os.path.join(out, "app.log"), "w", encoding="utf8") as log:
-            # Its own session, so a timeout also ends tauri-driver, WebKitWebDriver and the app.
-            p = subprocess.Popen(["node", "e2e-tauri/regtest-vote-added-key.ts"], cwd=DESKTOP, env=env,
-                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-            try:
-                p.wait(timeout=UI_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(p.pid, signal.SIGKILL)
-                p.wait()
-                raise
-        with open(os.path.join(out, "app.log"), encoding="utf8") as log:
-            self.log.info("".join(line for line in log if line.startswith("regtest-vote-added-key:")))
-        self.log.info("No file of the run or of the app's data holds the key in plain text")
         secrets = [wif.encode(), secret.hex().encode(), secret.hex().upper().encode(), secret, secret[::-1], secret[::-1].hex().encode()]
-        assert_equal(leaks(out, secrets) + leaks(dwcli.root, secrets), [])
+        p = None
+        try:
+            with open(os.path.join(out, "app.log"), "w", encoding="utf8") as log:
+                # Its own session; tauri-driver is in another group, which it records in driver.pid.
+                p = subprocess.Popen(["node", f"e2e-tauri/{UI}.ts"], cwd=DESKTOP, env=env,
+                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                p.wait(timeout=UI_TIMEOUT)
+        finally:
+            if p is not None and p.poll() is None:
+                stop_group(p.pid)
+                p.wait()
+            group = driver_group(out)
+            if group is not None:
+                stop_group(group)
+            found = sorted(set(leaks(out, secrets) + leaks(dwcli.root, secrets)))
+            if found:
+                raise AssertionError(f"the voting key in plain text in {found}; the run's lines are not logged")
+        self.log.info("No file of the run or of the app's data holds the key in plain text")
+        with open(os.path.join(out, "app.log"), encoding="utf8") as log:
+            self.log.info("".join(line for line in log if line.startswith(f"{UI}:")))
         assert_equal(p.returncode, 0)
 
         self.log.info(f"1. Core holds the app's Yes from masternode 2 on {PROPOSAL}")
@@ -143,12 +179,11 @@ class DwdGovernanceAddedKeyUi(DwdGovernanceUi):
             assert_equal(ours[0].split(":")[2:], ["yes", "funding", "1"])
             self.log.info(f"node{n.index}: {ours[0]}")
 
-        with open(os.path.join(out, "result.json"), encoding="utf8") as f:
-            result = json.load(f)
-        result["evidence"]["core"] = {"vote": ours[0], "votingAddress": voting}
-        result["source"] = source
+        with open(os.path.join(out, "ui.json"), encoding="utf8") as f:
+            ui = json.load(f)
+        ui["evidence"]["core"] = {"vote": ours[0], "votingAddress": voting}
         with open(os.path.join(out, "result.json"), "w", encoding="utf8") as f:
-            json.dump(result, f, indent=2)
+            json.dump({"ok": True, **ui, "source": source}, f, indent=2)
         self.log.info("governance_added_key_ui suite passed")
 
 
