@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { CLUB, HOME, OFFICE } from "../src/fixture/masternodes";
 import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
+import { REGISTRAR_UPDATE_SENDS } from "../src/masternodes/changeKeys";
 import { seriousAxeViolations } from "./axe";
 import { fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
 
@@ -33,7 +34,7 @@ const sheet = (page: Page) => page.getByTestId("mn-change-keys-sheet");
 const PAYOUT = "yNewPayoutMn7qR2vWx9KfT4Mn7qR2vWx9";
 
 for (const theme of THEMES) {
-  test(`change keys ${theme}: the PoSe warning, the recorded payout, send; 0 serious axe issues`, async ({ page }) => {
+  test(`change keys ${theme}: the PoSe warning, the recorded payout, then send or the held line; 0 serious axe issues`, async ({ page }) => {
     const errors = await open(page, "mn-list", theme);
     await page.getByTestId(`mn-row-${HOME}`).click();
     await shot(page, "pane-home", theme);
@@ -43,7 +44,8 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("mn-change-payout-recorded").locator("input")).toBeChecked();
     await expect(sheet(page)).toContainText("If the payout was changed elsewhere, this sets it back.");
     await expect(page.getByTestId("mn-change-nothing")).toBeVisible();
-    await expect(page.getByTestId("mn-change-send")).toBeDisabled();
+    if (REGISTRAR_UPDATE_SENDS) await expect(page.getByTestId("mn-change-send")).toBeDisabled();
+    else await expect(page.getByTestId("mn-change-send")).toHaveCount(0);
     await shot(page, "change-keys-open", theme);
     await page.getByTestId("mn-change-operator-keychain").click();
     await expect(page.getByTestId("mn-change-pose")).toContainText("Changing the operator key immediately PoSe-bans the masternode.");
@@ -52,6 +54,13 @@ for (const theme of THEMES) {
     await fontsReady(page);
     expect(await seriousAxeViolations(page)).toEqual([]);
     await shot(page, "change-keys-operator", theme);
+    if (!REGISTRAR_UPDATE_SENDS) {
+      await expect(page.getByTestId("mn-change-held")).toHaveText("You can review this change, but this version can't send it yet. Nothing has been sent.");
+      await expect(page.getByTestId("mn-change-send")).toHaveCount(0);
+      await expect(page.getByTestId("mn-change-passphrase")).toHaveCount(0);
+      expect(errors).toEqual([]);
+      return;
+    }
     await page.getByTestId("mn-change-passphrase").fill(FIXTURE_PASSPHRASE);
     await page.getByTestId("mn-change-send").click();
     await expect(page.getByTestId("mn-change-keys-sent")).toContainText("Change sent. It applies once it's in a block.");
@@ -96,18 +105,24 @@ test("a given operator key and another payout address are signed as reviewed; a 
   await expect(page.getByTestId("mn-change-operator-key-error")).toHaveCount(0);
   await expect(page.getByTestId("mn-change-pose")).toBeVisible();
   await page.getByTestId("mn-change-payout-address").click();
-  await expect(page.getByTestId("mn-change-send")).toBeDisabled();
+  if (REGISTRAR_UPDATE_SENDS) await expect(page.getByTestId("mn-change-send")).toBeDisabled();
   await page.getByTestId("mn-change-payout-input").fill(PAYOUT);
   await expect(page.getByTestId("mn-change-review-payout")).toContainText("Changes");
+  if (!REGISTRAR_UPDATE_SENDS) {
+    await expect(page.getByTestId("mn-change-held")).toBeVisible();
+    await expect(page.getByTestId("mn-change-send")).toHaveCount(0);
+    return;
+  }
   await page.getByTestId("mn-change-passphrase").fill(FIXTURE_PASSPHRASE);
   await page.getByTestId("mn-change-send").click();
   await expect(page.getByTestId("mn-change-keys-sent")).toBeVisible();
-  const terms = await page.evaluate(() => window.__dwFixture!.world.masternodes.updates[0].terms);
+  const terms = await page.evaluate(() => window.__dwFixture!.world.masternodes.operations.find((o) => o.kind === "update_registrar")!.terms);
   expect(terms).toMatchObject({ operatorPublicKey: "ab".repeat(48), payoutAddress: PAYOUT });
 });
 
 for (const theme of THEMES)
   test(`an update that didn't go out ${theme}: send it again, or discard it`, async ({ page }) => {
+    test.skip(!REGISTRAR_UPDATE_SENDS, "this version can't send registrar updates");
     const errors = await open(page, "mn-update-not-sent", theme);
     await page.getByTestId(`mn-row-${HOME}`).click();
     await page.getByTestId("mn-change-keys").click();
@@ -130,6 +145,7 @@ for (const theme of THEMES)
   });
 
 test("discarding an update that didn't go out frees the masternode for another change", async ({ page }) => {
+  test.skip(!REGISTRAR_UPDATE_SENDS, "this version can't send registrar updates");
   await open(page, "mn-update-not-sent");
   await page.getByTestId(`mn-row-${HOME}`).click();
   await page.getByTestId("mn-change-keys").click();

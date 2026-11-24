@@ -3034,6 +3034,9 @@ mod pay;
 #[path = "contact_shielded_pay_tests.rs"]
 mod shielded_pay;
 
+#[cfg(unix)]
+mod kill9;
+
 /// Where [`contact_payment_killed_child`] keeps its data and its report.
 const KILL_ROOT: &str = "DWD_CASE1_CONTACT_KILL_ROOT";
 /// Where the child dies: `handed` (the library holds the payment, its

@@ -205,6 +205,21 @@ describe("the vote sheet's voters", () => {
     expect(rows[2].eligible).toBe(true);
   });
 
+  it("names a voter by the wallet's label and service when it has one (MG-09 F3)", () => {
+    const n = names();
+    const known = new Map([
+      [VOTER_A, { label: "Home node", service: "203.0.113.7:19999" }],
+      [VOTER_B, { label: null, service: null }],
+    ]);
+    const rows = nameVoterRows(n.voters, "a11ce", null, n.votesAllowed, known);
+    expect(rows.map((r) => r.name)).toEqual(["Home node · 203.0.113.7:19999", "Evonode b2b2b2b2", "Masternode c3c3c3c3"]);
+    n.voters[0].current[0].votesUsed = 4;
+    const last = nameVoterRows(n.voters, "a11ce", ABSTAIN, n.votesAllowed, known);
+    expect(lastVoteNotice(pickedVoters(last, new Set([VOTER_A])))).toBe("This is the last vote Home node · 203.0.113.7:19999 has on this name: after it, its choice can't change.");
+    const view = nameVoteResult([cast(VOTER_A, null), cast(VOTER_C, null)], n.voters, "a11ce", ABSTAIN, undefined, known);
+    expect(view.rows.map((r) => r.name)).toEqual(["Home node · 203.0.113.7:19999", "Masternode c3c3c3c3"]);
+  });
+
   // Mutant 3 (an ineligible voter sent) dies here: a checked voter that can't vote is not picked.
   it("sends only checked voters that can vote with the choice", () => {
     const n = names();

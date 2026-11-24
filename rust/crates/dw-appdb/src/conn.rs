@@ -4,7 +4,9 @@
 //! SQLite 3.51.0 and 3.51.1 can deadlock when one thread closes the last
 //! connection to a WAL database while another opens or closes the same file
 //! (#105). Every connection here opens through [`AppConn::open`] and closes
-//! in its `Drop`, both under one process-wide lock.
+//! in its `Drop`, both under one process-wide lock. The SQLite linked now
+//! is 3.51.2 or later, which fixes the deadlock; the lock stays until a
+//! follow-up removes it on its own.
 
 use std::cell::Cell;
 use std::ops::{Deref, DerefMut};
