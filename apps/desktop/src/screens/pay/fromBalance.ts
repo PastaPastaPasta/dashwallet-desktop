@@ -113,7 +113,7 @@ export function outcomeText(state: ContactPayOutcomeInfo["state"], name: string)
   }
 }
 
-export type ContactPayApi = Pick<Backend, "contactPay" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
+export type ContactPayApi = Pick<Backend, "contactPay" | "platformActivity" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
 /** `lost`: the call failed after it was sent, without a definitive refusal: it may have paid. */
 export type FromStep = "confirm" | "running" | "done" | "refused" | "lost";
@@ -132,6 +132,8 @@ export class ContactPayFlow extends Model {
   unresolved: { known: ReadonlySet<string> | null; since: number; lostAt: number } | null = null;
   error: unknown = null;
   running = false;
+  /** A read for `recheck` is running. */
+  checking = false;
   readonly grants: GrantModel;
 
   constructor(
@@ -146,13 +148,13 @@ export class ContactPayFlow extends Model {
     this.grants.subscribe(() => this.changed());
   }
 
-  /** Settles a lost reply from a Platform activity read made at `readAt` (ms): a payout to this
-   * contact since the attempt that is done was sent, and one that failed and can no longer land,
-   * or none at all, was not (the engine records a payout before it signs). While one may still
-   * land, or the read is older than the loss or failed, the contact stays held: `null`. */
-  reconcile(rows: readonly PlatformActivity[] | null | undefined, readAt: number): Exclude<LockResolutionName, "unknown"> | null {
+  /** Settles a lost reply from a Platform activity read that started at `startedAt` (ms): a payout
+   * to this contact since the attempt that is done was sent, and one that failed and can no longer
+   * land, or none at all, was not (the engine records a payout before it signs). While one may
+   * still land, or the read started before the loss or failed, the contact stays held: `null`. */
+  reconcile(rows: readonly PlatformActivity[] | null | undefined, startedAt: number): Exclude<LockResolutionName, "unknown"> | null {
     const u = this.unresolved;
-    if (u === null || !rows || readAt <= u.lostAt) return null;
+    if (u === null || !rows || startedAt < u.lostAt) return null;
     const mine = rows.filter((r) => this.isMine(r) && (u.known ? !u.known.has(r.id) : r.at >= u.since));
     if (mine.some(isHeldOp)) return null;
     this.unresolved = null;
@@ -160,7 +162,24 @@ export class ContactPayFlow extends Model {
     return mine.some((r) => r.state === "done") ? "sent" : "notSent";
   }
 
-  private isMine = (r: PlatformActivity) => r.kind === "contactPayment" && r.contact?.identity === this.contact;
+  /** A payout row of this contact; one the engine could not name may be this one too. */
+  private isMine = (r: PlatformActivity) => r.kind === "contactPayment" && (!r.contact || r.contact.identity === this.contact);
+
+  /** Reads Platform activity now, after the loss, and settles the lost reply from it. */
+  async recheck(): Promise<Exclude<LockResolutionName, "unknown"> | null> {
+    if (this.unresolved === null || this.checking) return null;
+    const startedAt = Date.now();
+    this.checking = true;
+    this.changed();
+    try {
+      return this.reconcile(await this.api.platformActivity(this.walletId), startedAt);
+    } catch {
+      return null;
+    } finally {
+      this.checking = false;
+      this.changed();
+    }
+  }
 
   /** Back to the form: drops a seen result or refusal (not a running call). A lost reply's hold stays. */
   reset() {
@@ -174,7 +193,7 @@ export class ContactPayFlow extends Model {
 
   /** `before`: the Platform activity as last read, to tell this payment's row from earlier ones. */
   async pay(quote: ContactPayQuoteInfo, note: string | null, before?: readonly PlatformActivity[] | null): Promise<void> {
-    if (this.running) return;
+    if (this.running || this.unresolved !== null) return;
     let ran = false;
     const known = before ? new Set(before.filter(this.isMine).map((r) => r.id)) : null;
     const since = Math.floor(Date.now() / 1000) - 1;

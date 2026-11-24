@@ -82,10 +82,13 @@ describe("a payment from a balance's copy (D-C5 Copy)", () => {
 
 const QUOTE: ContactPayQuoteInfo = { source: "platform", credits: "10000000000", expectedDuffs: 9_999_774, feeCredits: "2000000", grant: { maxDuffs: 0, maxCredits: "10006000000" } };
 
-function payFlow(contactPay: () => Promise<never>, lock = { encrypted: false }) {
+function payFlow(contactPay: () => Promise<never>, lock = { encrypted: false }, platformActivity: () => Promise<PlatformActivity[] | null> = () => Promise.resolve([])) {
   const vault = fakeVault(lock);
-  return new ContactPayFlow({ ...vault.api, contactPay: vi.fn(contactPay) }, WALLET_A, "me", "bob");
+  return new ContactPayFlow({ ...vault.api, contactPay: vi.fn(contactPay), platformActivity: vi.fn(platformActivity) }, WALLET_A, "me", "bob");
 }
+
+const payout = (over: Partial<PlatformActivity>): PlatformActivity =>
+  ({ id: "move-9", kind: "contactPayment", state: "done", credits: "10002000000", address: null, to: null, expectedDuffs: 9_999_774, feeCredits: "2000000", at: 0, mayLand: false, estimated: false, contact: { identity: "bob", username: null, displayName: null, avatarUrl: null }, ...over }) as PlatformActivity;
 
 describe("a payment from a balance's flow", () => {
   it("a failure after the call was sent may have paid: unknown, never 'nothing was paid'", async () => {
@@ -106,7 +109,7 @@ describe("a payment from a balance's flow", () => {
     const row = (over: Partial<PlatformActivity>): PlatformActivity =>
       ({ id: "move-9", kind: "contactPayment", state: "done", credits: "10002000000", address: null, to: null, expectedDuffs: 9_999_774, feeCredits: "2000000", at: since + 1, mayLand: false, estimated: false, contact: { identity: "bob", username: null, displayName: null, avatarUrl: null }, ...over }) as PlatformActivity;
     // A read from before the loss, a failed read, or a payout that may still land: still held.
-    expect(flow.reconcile([row({})], lostAt)).toBeNull();
+    expect(flow.reconcile([row({})], lostAt - 1)).toBeNull();
     expect(flow.reconcile(undefined, lostAt + 1)).toBeNull();
     expect(flow.reconcile([row({ state: "pending", mayLand: true })], lostAt + 1)).toBeNull();
     expect(flow.reconcile([row({ state: "failed", mayLand: true })], lostAt + 1)).toBeNull();
@@ -120,6 +123,39 @@ describe("a payment from a balance's flow", () => {
     const older = row({ at: again.unresolved!.since - 60 });
     const other = row({ contact: { identity: "carol", username: null, displayName: null, avatarUrl: null } });
     expect(again.reconcile([older, other, row({ state: "failed", mayLand: false })], at)).toBe("notSent");
+  });
+
+  it("payout rows the read before the attempt listed say nothing of it; a new one does, named or not", async () => {
+    const flow = payFlow(() => Promise.reject(appError("internal")));
+    await flow.pay(QUOTE, null, [payout({ id: "move-1" })]);
+    const at = flow.unresolved!.lostAt;
+    expect(flow.reconcile([payout({ id: "move-1" })], at)).toBe("notSent");
+    const again = payFlow(() => Promise.reject(appError("internal")));
+    await again.pay(QUOTE, null, [payout({ id: "move-1" })]);
+    expect(again.reconcile([payout({ id: "move-1" }), payout({ id: "move-2", state: "pending", mayLand: true, contact: undefined })], at)).toBeNull();
+    expect(again.reconcile([payout({ id: "move-1" }), payout({ id: "move-2", contact: undefined })], again.unresolved!.lostAt)).toBe("sent");
+  });
+
+  it("Check again reads after the loss; a failed read settles nothing", async () => {
+    let rows: Promise<PlatformActivity[] | null> = Promise.reject(new Error("offline"));
+    const flow = payFlow(() => Promise.reject(appError("internal")), undefined, () => rows);
+    await flow.pay(QUOTE, null, []);
+    expect(await flow.recheck()).toBeNull();
+    expect(flow.unresolved).not.toBeNull();
+    rows = Promise.resolve([payout({ state: "pending", mayLand: true })]);
+    expect(await flow.recheck()).toBeNull();
+    rows = Promise.resolve([payout({})]);
+    expect(await flow.recheck()).toBe("sent");
+    expect([flow.unresolved, flow.checking]).toEqual([null, false]);
+  });
+
+  it("no payment starts while a lost reply is unsettled", async () => {
+    const contactPay = vi.fn(() => Promise.reject(appError("internal")));
+    const flow = new ContactPayFlow({ ...fakeVault({ encrypted: false }).api, contactPay, platformActivity: vi.fn(() => Promise.resolve([])) }, WALLET_A, "me", "bob");
+    await flow.pay(QUOTE, null);
+    flow.reset();
+    await flow.pay(QUOTE, null);
+    expect(contactPay).toHaveBeenCalledTimes(1);
   });
 
   it("a payout the engine never recorded was not sent", async () => {

@@ -4,7 +4,7 @@
 // subtract fee, note, coin control. Review opens U-03's confirm sheet with the contact, which can
 // accept their request and pay in one step; U-03's result follows.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { ContactRecipient } from "../../api/generated/ContactRecipient";
@@ -377,16 +377,20 @@ function ContactForm({
   // A payment whose reply was lost holds the contact until a later read settles it (P6).
   const [lostFound, setLostFound] = useState<{ text: string; resolved: boolean } | null>(null);
   const { flow } = balance;
-  useEffect(() => {
-    const r = flow.reconcile(activity.data, activity.dataUpdatedAt);
+  const settleLost = useCallback(async () => {
+    const r = await flow.recheck();
     if (r) setLostFound(resolveText(r));
-  }, [flow, flow.unresolved, activity.data, activity.dataUpdatedAt]);
+  }, [flow]);
+  const lost = flow.unresolved !== null;
+  useEffect(() => {
+    if (lost) void settleLost();
+  }, [lost, settleLost]);
   const lostHeld = !lockHeld && flow.unresolved !== null;
   const held = lockHeld || lostHeld;
   const shownBanner: Banner | null = lostHeld ? { kind: "paymentLock", text: t("pay.contact.banner.paymentLockPlatform"), txid: "", source: "platform" } : banner;
   const recheck = () => {
     setLostFound(null);
-    void activity.refetch();
+    void settleLost();
     void detail.refetch();
   };
   const recipient: ContactRecipient | null =
@@ -430,7 +434,7 @@ function ContactForm({
             {t("pay.contact.change")}
           </DashButton>
         </section>
-        {shownBanner && <PayBanner banner={shownBanner} contact={contact} checking={lostHeld ? activity.isFetching : resolve.isPending} onCheck={lostHeld ? recheck : check} retry={() => void detail.refetch()} />}
+        {shownBanner && <PayBanner banner={shownBanner} contact={contact} checking={lostHeld ? flow.checking : resolve.isPending} onCheck={lostHeld ? recheck : check} retry={() => void detail.refetch()} />}
         <ActionLine ok={(found ?? lostFound)?.resolved ?? true} text={(found ?? lostFound)?.text ?? null} testId="pay-lock-resolve" />
         {!held && (
           <section className="pay-card card-l1">
