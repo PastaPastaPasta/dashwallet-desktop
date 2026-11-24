@@ -99,15 +99,20 @@ test("remove an added voting key: it asks first, then it leaves Keys you added a
   const errors = await open(page, "mn-track-voting");
   await expect(page.getByTestId("mn-vote")).toBeEnabled();
   await expect(page.getByTestId("mn-key-remove-voting")).toHaveText("Remove voting key");
+  const detaches = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_detach_key").length);
   await page.getByTestId("mn-key-remove-voting").click();
   const confirm = page.getByTestId("mn-remove-key-sheet");
   await expect(confirm).toContainText("Remove the voting key?");
   await expect(confirm).toContainText("This deletes it from Dash Wallet on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.");
-  // Cancel keeps the key.
+  // Nothing is deleted before Confirm, and Cancel keeps the key.
+  expect(await detaches()).toBe(0);
   await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toHaveCount(0);
+  expect(await detaches()).toBe(0);
   await expect(page.getByTestId("mn-key-added-voting")).toBeVisible();
   await page.getByTestId("mn-key-remove-voting").click();
   await page.getByTestId("mn-remove-key-confirm").click();
+  await expect.poll(detaches).toBe(1);
   await expect(page.getByTestId("mn-keys-added")).toHaveCount(0);
   await expect(page.getByTestId("mn-vote")).toBeDisabled();
   expect(errors).toEqual([]);
