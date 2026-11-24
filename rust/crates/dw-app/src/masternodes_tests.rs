@@ -468,3 +468,65 @@ fn a_revealed_key_is_in_no_log_and_no_event() {
         assert!(!refusal.to_string().contains(secret.as_str()));
     }
 }
+
+/// An open demo on `network` with an unencrypted vault (mainnet and testnet
+/// refuse the tests' weak KDF) and one seed wallet. Its session opens with
+/// unreachable local endpoints (the test seam mainnet and testnet need) and
+/// no SPV.
+fn demo_on(network: dw_engine::DashNetwork) -> (Demo, String) {
+    let demo = Demo::launched(|launch, _| {
+        launch.network = network;
+        launch.sync = Some(false);
+    });
+    *demo.state().test_endpoints.lock().unwrap() = Some(crate::api::network::SessionSettings {
+        dapi_addresses: vec!["https://127.0.0.1:1".into()],
+        quorum_url: Some("https://127.0.0.1:1".into()),
+        spv_peers: vec!["127.0.0.1:1".into()],
+        no_platform: true,
+        ..Default::default()
+    });
+    demo.ok("open_network", json!({}));
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (demo, wallet)
+}
+
+/// A `masternodeOp` grant of `max` on [`demo_on`]'s unencrypted vault.
+fn op_grant(demo: &Demo, wallet: &str, max: u64) -> String {
+    demo.ok(
+        "authorize",
+        json!({
+            "purpose": { "kind": "masternodeOp", "maxDuffs": max },
+            "walletId": wallet,
+            "credential": { "kind": "unencrypted" },
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Abandon is the way out of a session that may be out, so no network gates
+/// it: on mainnet as on the test networks both commands reach the engine,
+/// which answers for the session itself.
+#[test]
+fn abandon_reaches_the_engine_on_every_network() {
+    for network in [
+        dw_engine::DashNetwork::Mainnet,
+        dw_engine::DashNetwork::Testnet,
+        dw_engine::DashNetwork::Regtest,
+    ] {
+        let (demo, wallet) = demo_on(network);
+        let grant = op_grant(&demo, &wallet, dw_engine::masternodes::shared_abandon_fee());
+        for cmd in ["mn_shared_abandon", "mn_shared_abandon_unreadable"] {
+            demo.err(
+                cmd,
+                json!({ "walletId": wallet, "session": hash("cd"), "grant": grant }),
+                "masternodes.shared_session_not_found",
+            );
+        }
+    }
+}

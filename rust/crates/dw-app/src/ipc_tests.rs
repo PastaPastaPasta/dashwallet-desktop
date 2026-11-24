@@ -2311,7 +2311,7 @@ fn launched_on_mainnet_with_sync(sync: Option<bool>) -> Demo {
 }
 
 impl Demo {
-    fn state(&self) -> tauri::State<'_, crate::state::AppState> {
+    pub(crate) fn state(&self) -> tauri::State<'_, crate::state::AppState> {
         use tauri::Manager;
         self.app.state::<crate::state::AppState>()
     }
