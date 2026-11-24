@@ -2303,6 +2303,7 @@ pub struct RegistrationStatus {
     pub name_failure: Option<String>,
     pub profile_failure: Option<String>,
     pub invitation: Option<RegistrationInvitation>,
+    pub from_platform: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
