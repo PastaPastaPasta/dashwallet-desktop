@@ -384,7 +384,7 @@ impl DashPay {
         self.run_lib(true, move |session, _, lib| async move {
             let lease = authority(&session, wallet, &grant).await?;
             let mut report = finish_under(&session, wallet, &*lib, &lease).await?;
-            super::topup::finish(&session, wallet, &*lib, &lease, &mut report).await;
+            super::topup::finish(&session, wallet, &*lib, &lease, &mut report).await?;
             super::unfinished::finish_all(&session, wallet, &lease, &mut report).await;
             Ok(report)
         })

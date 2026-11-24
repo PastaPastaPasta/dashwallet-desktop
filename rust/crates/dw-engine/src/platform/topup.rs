@@ -736,20 +736,16 @@ pub(crate) async fn resolve<L: TopUpLib>(
 /// lock is counted only when Platform applies it: any other answer
 /// (already consumed, a cached refusal of the same transition, an error)
 /// counts nothing, as `pending_top_ups` lists nothing for it.
+/// Fails when it cannot read the wallet's identities (the wallet left the
+/// manager): it counts nothing then, not "nothing pending".
 pub(crate) async fn finish<L: TopUpLib>(
     session: &NetworkSession,
     wallet: WalletId,
     lib: &L,
     lease: &Lease,
     report: &mut FinishReport,
-) {
-    let identities = match lib.identities().await {
-        Ok(identities) => identities,
-        Err(e) => {
-            tracing::warn!(error = %e, "Finish transfers cannot read the identities for top-ups");
-            return;
-        }
-    };
+) -> Result<(), PlatformError> {
+    let identities = lib.identities().await?;
     let signer = match lease.uncounted_funding_signer() {
         Ok(signer) => Some(signer),
         Err(e) => {
@@ -793,6 +789,7 @@ pub(crate) async fn finish<L: TopUpLib>(
             }
         }
     }
+    Ok(())
 }
 
 impl TopUpLib for PwLib {

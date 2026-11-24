@@ -1,9 +1,9 @@
-// Masternodes ▸ My masternodes (MG-10 §1.2, S1): the summary, the groups, the pane and the page's
-// states; Track, Add keys, Keys you added and Stop tracking (tracking.tsx). The pane offers Change
-// keys or payout (S3) and the operator explanation sheet; setting up, release and withdraw come with
-// other slices.
+// Masternodes ▸ My masternodes (MG-10 §1.2): the summary, the groups with In progress (S2), the
+// pane with Release collateral / Lock it again (S2), Change keys or payout (S3) and the operator
+// explanation sheet, Track, Add keys, Keys you added and Stop tracking (tracking.tsx), and the
+// page's states. Withdraw comes with another slice.
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { MasternodeDetail } from "../../api/generated/MasternodeDetail";
 import type { MasternodeRow } from "../../api/generated/MasternodeRow";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -38,7 +38,12 @@ import {
   summary,
   voteBlocked,
 } from "../../masternodes/model";
-import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh } from "../../masternodes/queries";
+import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh, useMasternodeOperations } from "../../masternodes/queries";
+import { conflicted, inProgress } from "../../masternodes/operations";
+import type { ProTxOperation } from "../../api/generated/ProTxOperation";
+import { InProgressGroup } from "./InProgress";
+import { REGISTRATION_SENDS, registrationCalls } from "../../masternodes/registration";
+import { collateralErrorText, ReleaseSheet } from "./ReleaseSheet";
 import { useT } from "../../i18n";
 import { ChangeKeysSheet, OperatorSheet } from "./ChangeKeysSheet";
 import { MoreMenu, Notice, StatusChip } from "./common";
@@ -52,10 +57,12 @@ export function MyMasternodes({
   onVote,
   tracking,
   onTrackClose,
+  onContinue,
 }: {
   wallet: WalletSummary;
   network: NetworkInfo;
   onVote: () => void;
+  onContinue: (op: ProTxOperation) => void;
   /** Track a masternode… was chosen in the page's header. */
   tracking: boolean;
   onTrackClose: () => void;
@@ -74,7 +81,7 @@ export function MyMasternodes({
   }, [unlockNext]);
   return (
     <>
-      <Board wallet={wallet} network={network} onVote={onVote} selected={selected} setSelected={setSelected} onAddKey={setAddingKey} />
+      <Board wallet={wallet} network={network} onVote={onVote} onContinue={onContinue} selected={selected} setSelected={setSelected} onAddKey={setAddingKey} />
       {tracking && (
         <TrackSheet
           rows={rows}
@@ -104,6 +111,7 @@ function Board({
   wallet,
   network,
   onVote,
+  onContinue,
   selected,
   setSelected,
   onAddKey,
@@ -111,11 +119,13 @@ function Board({
   wallet: WalletSummary;
   network: NetworkInfo;
   onVote: () => void;
+  onContinue: (op: ProTxOperation) => void;
   selected: string | null;
   setSelected: (hash: string) => void;
   onAddKey: (hash: string) => void;
 }) {
   const list = useMasternodes(wallet.walletId);
+  const ops = useMasternodeOperations(wallet.walletId);
   const refresh = useMasternodesRefresh();
   const t = useT();
   const shown = useDisplay(network);
@@ -142,7 +152,9 @@ function Board({
       <strong>{MnText.watchOnly}</strong> {MnText.watchOnlyText}
     </Notice>
   );
-  if (isEmpty(o))
+  const work = ops.data ?? [];
+  const progress = <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />;
+  if (isEmpty(o) && inProgress(work).length === 0 && conflicted(work).length === 0)
     return (
       <>
         {watchNotice}
@@ -197,7 +209,8 @@ function Board({
       </div>
       <div className="contacts-split">
         <div className="contacts-list">
-          {all.map((g) => (
+          {all.flatMap((g, i) => [
+            g.id !== "attention" && (i === 0 || all[i - 1].id === "attention") ? <Fragment key="in-progress">{progress}</Fragment> : null,
             <section key={g.id} className="tx-group card-l1" data-testid={`mn-group-${g.id}`}>
               <h2 className="contacts-group-title">
                 {g.id === "retired" ? (
@@ -232,8 +245,9 @@ function Board({
                   ))}
                 </ul>
               )}
-            </section>
-          ))}
+            </section>,
+          ])}
+          {all.every((g) => g.id === "attention") && progress}
         </div>
         {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} network={network} shown={shown} onVote={onVote} onAddKey={() => onAddKey(current.proTxHash)} />}
       </div>
@@ -260,7 +274,21 @@ function Pane({
 }) {
   const t = useT();
   const detail = useMasternode(wallet.walletId, row.proTxHash);
+  const backend = useBackend();
+  const refresh = useMasternodesRefresh();
   const [renaming, setRenaming] = useState(false);
+  const [releasing, setReleasing] = useState(false);
+  const [lockError, setLockError] = useState<string | null>(null);
+  const holdsCollateral = row.mine && row.roles.collateral && row.status !== "removed" && !wallet.watchOnly;
+  const lockAgain = async () => {
+    setLockError(null);
+    try {
+      await registrationCalls(backend).mnLockCollateral(wallet.walletId, row.proTxHash);
+    } catch (e) {
+      setLockError(collateralErrorText(e, t));
+    }
+    void refresh();
+  };
   const [sheet, setSheet] = useState<"change-keys" | "operator" | "untrack" | null>(null);
   const d = detail.isError ? undefined : detail.data;
   const name = rowName(row);
@@ -287,6 +315,21 @@ function Pane({
           </p>
         )}
         {detail.isError && <p className="mg-field-error" data-testid="mn-detail-failed">{mnErrorText(detail.error)}</p>}
+        {holdsCollateral && row.collateralReleased && (
+          <p className="mg-notice mg-notice-warning mg-notice-row" data-testid="mn-released">
+            <span>{t("masternodes.release.released")}</span>
+            {REGISTRATION_SENDS && (
+              <DashButton variant="tintedBlue" size="small" data-testid="mn-lock-again" onClick={() => void lockAgain()}>
+                {t("masternodes.release.lockAgain")}
+              </DashButton>
+            )}
+          </p>
+        )}
+        {lockError && (
+          <p className="mg-field-error" role="alert" data-testid="mn-lock-error">
+            {lockError}
+          </p>
+        )}
         <dl className="mg-facts" data-testid="mn-facts">
           <Facts row={row} detail={d} shown={shown} />
         </dl>
@@ -330,6 +373,13 @@ function Pane({
               { id: "rename", title: MnText.rename, onSelect: () => setRenaming(true) },
               { id: "copy-hash", title: MnText.copyHash, onSelect: () => void copyWithToast(row.proTxHash) },
               ...(outpoint ? [{ id: "copy-outpoint", title: MnText.copyOutpoint, onSelect: () => void copyWithToast(outpoint) }] : []),
+              ...(holdsCollateral && REGISTRATION_SENDS
+                ? [
+                    row.collateralReleased
+                      ? { id: "lock-again", title: t("masternodes.release.lockAgain"), onSelect: () => void lockAgain() }
+                      : { id: "release", title: t("masternodes.release.action"), onSelect: () => setReleasing(true) },
+                  ]
+                : []),
               ...(row.status !== "removed" ? [{ id: "operator", title: t("masternodes.myMasternodes.operatorSheet.menu"), onSelect: () => setSheet("operator") }] : []),
               ...(row.tracked
                 ? [
@@ -342,6 +392,7 @@ function Pane({
         </div>
       </section>
       {renaming && <RenameSheet row={row} onClose={() => setRenaming(false)} />}
+      {releasing && <ReleaseSheet row={row} wallet={wallet} onClose={() => setReleasing(false)} />}
       {sheet === "change-keys" && d && canChange && <ChangeKeysSheet wallet={wallet} network={network} row={row} detail={d} onClose={() => setSheet(null)} />}
       {sheet === "operator" && <OperatorSheet row={row} detail={d} onChangeKeys={canChange ? () => setSheet("change-keys") : null} onClose={() => setSheet(null)} />}
       {sheet === "untrack" && <UntrackSheet row={row} onClose={() => setSheet(null)} />}

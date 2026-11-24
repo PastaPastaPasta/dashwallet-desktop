@@ -391,6 +391,13 @@ pub enum ErrorData {
     MasternodeKey {
         role: crate::dto::masternodes::AttachedKeyRoleName,
     },
+    /// `masternodes.operation_state`: the operation's state now.
+    OperationState { state: String },
+    /// `masternodes.keys_exhausted`: the keychain role with no unused key.
+    KeyRole { role: String },
+    /// `masternodes.update_pending`, `masternodes.update_superseded`: the
+    /// other operation's id.
+    Operation { operation: String },
     /// `masternodes.unsupported`: what the call needs that the libraries
     /// lack, and the field that needs it.
     Unsupported {

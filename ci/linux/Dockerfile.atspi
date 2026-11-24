@@ -1,0 +1,49 @@
+# The Linux screen-reader check (apps/desktop/scripts/atspi-walk-docker.sh): builds the debug app
+# and dwcli and drives them through tauri-driver under Xvfb, reading the AT-SPI tree Orca reads.
+#
+# Ubuntu 24.04, as the CI runner of the Tauri E2E job, with the same apt set
+# (ci/github/linux-host-deps.sh tauri: WebKitGTK, its WebDriver, Xvfb, D-Bus and the AT-SPI stack),
+# so what passes here passes there. The Rust-only builder (ci/linux/Dockerfile) is Debian
+# bookworm without the WebDriver or AT-SPI.
+#
+# Build context: ci/ (docker build -f ci/linux/Dockerfile.atspi ci).
+FROM ubuntu:24.04
+ARG PROTOC_VERSION=29.3
+ARG RUST_VERSION=1.98.1
+ARG NODE_VERSION=24.21.0
+ARG PNPM_VERSION=12.9.1
+ARG TAURI_DRIVER_VERSION=2.1.0
+ENV DEBIAN_FRONTEND=noninteractive
+
+COPY github/linux-host-deps.sh /opt/dw/linux-host-deps.sh
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends sudo ca-certificates \
+    && /opt/dw/linux-host-deps.sh tauri \
+    && apt-get install -y -qq --no-install-recommends libclang-dev clang cmake unzip git xz-utils fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+# The zip's SHA-256 is checked (the values of ci/github/install-protoc.sh).
+RUN arch=$(uname -m | sed 's/aarch64/aarch_64/') \
+    && case "$arch" in \
+         x86_64) sha256=3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a ;; \
+         aarch_64) sha256=6427349140e01f06e049e707a58709a4f221ae73ab9a0425bc4a00c8d0e1ab32 ;; \
+       esac \
+    && curl -fsSL -o /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${arch}.zip" \
+    && echo "${sha256:-unknown}  /tmp/protoc.zip" | sha256sum -c - \
+    && unzip -q /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip && protoc --version
+
+# Node from nodejs.org, checked against its SHASUMS256.txt.
+RUN arch=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/') \
+    && cd /tmp && tarball="node-v${NODE_VERSION}-linux-${arch}.tar.xz" \
+    && curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${tarball}" \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" | grep " ${tarball}\$" | sha256sum -c - \
+    && tar -xJf "$tarball" -C /usr/local --strip-components=1 && rm "$tarball" \
+    && npm install --global "pnpm@${PNPM_VERSION}" && node --version && pnpm --version
+
+# Rust (rust/rust-toolchain.toml's channel and components, so rustup installs nothing at run time)
+# and tauri-driver. CARGO_HOME points at the registry volumes at run time.
+ENV RUSTUP_HOME=/opt/rustup PATH=/opt/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | CARGO_HOME=/opt/cargo sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}" \
+      --component rustfmt --component clippy --no-modify-path \
+    && CARGO_HOME=/opt/cargo cargo install tauri-driver --version "${TAURI_DRIVER_VERSION}" --locked \
+    && rm -rf /opt/cargo/registry /opt/cargo/git \
+    && chmod -R a+rX /opt/rustup /opt/cargo && rustc --version && tauri-driver --help >/dev/null
