@@ -4370,47 +4370,68 @@ fn keys_attached_alone_whose_lower_birth_cannot_be_stored_leave_the_replay_owed(
 
 /// A refused attach that cannot put its lower birth back keeps the replay
 /// owed rather than marking the lower birth scanned: the next load
-/// replays from it.
+/// replays from it. That is also what a quit between the lowering and the
+/// keys leaves, and attaching the keys again, alone or with a lookahead,
+/// stores them and keeps that replay.
 #[test]
 fn keys_attached_alone_whose_birth_cannot_be_put_back_leave_the_replay_owed() {
-    let dir = tempfile::tempdir().unwrap();
-    let (engine, session) = open_engine(dir.path().join("data"));
-    create_vault(&engine, &session);
-    let import = |birth| {
-        engine.block_on(session.import_wallet(
-            zeroize::Zeroizing::new(PUT_BACK_PHRASE.to_vec()),
-            zeroize::Zeroizing::new(Vec::new()),
-            crate::ImportOptions {
-                birth_height: Some(birth),
-                ..Default::default()
-            },
-        ))
-    };
-    let id = import(HEIGHT).unwrap();
-    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
-    store_checkpoint(&engine, &session, id, HEIGHT + 100);
-    let appdb = session.data_dir().join(dw_appdb::APP_DB_FILE);
-    dw_appdb::fault::arm(
-        &appdb,
-        crate::keys::IMPORT_ROWS,
-        dw_appdb::fault::Stage::After,
-    );
+    for retry_lookahead in [None, Some(200)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, session) = open_engine(dir.path().join("data"));
+        create_vault(&engine, &session);
+        let import = |session: &Arc<NetworkSession>, birth, lookahead| {
+            engine.block_on(session.import_wallet(
+                zeroize::Zeroizing::new(PUT_BACK_PHRASE.to_vec()),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(birth),
+                    lookahead,
+                    ..Default::default()
+                },
+            ))
+        };
+        let id = import(&session, HEIGHT, None).unwrap();
+        assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+        store_checkpoint(&engine, &session, id, HEIGHT + 100);
+        let appdb = session.data_dir().join(dw_appdb::APP_DB_FILE);
+        dw_appdb::fault::arm(
+            &appdb,
+            crate::keys::IMPORT_ROWS,
+            dw_appdb::fault::Stage::After,
+        );
 
-    let refused = failing(&crate::keys::FAIL_BIRTH_PUT_BACK, id, || {
-        import(HEIGHT - 500)
-    });
+        let refused = failing(&crate::keys::FAIL_BIRTH_PUT_BACK, id, || {
+            import(&session, HEIGHT - 500, None)
+        });
 
-    dw_appdb::fault::disarm(&appdb);
-    assert!(refused.is_err());
-    assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500);
-    assert_eq!(
-        wide_scan(&engine, &session, id),
-        Some(crate::keys::WideScan::From(HEIGHT - 501))
-    );
-    let session = reopen(&engine, session);
-    assert_eq!(synced_height(&engine, &session, id), HEIGHT - 501);
-    assert_eq!(
-        replay_record(&engine, &session, id),
-        Some((HEIGHT - 501, HEIGHT + 100))
-    );
+        dw_appdb::fault::disarm(&appdb);
+        assert!(refused.is_err());
+        assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500);
+        assert_eq!(
+            wide_scan(&engine, &session, id),
+            Some(crate::keys::WideScan::From(HEIGHT - 501))
+        );
+        let session = reopen(&engine, session);
+        assert_eq!(synced_height(&engine, &session, id), HEIGHT - 501);
+        assert_eq!(
+            replay_record(&engine, &session, id),
+            Some((HEIGHT - 501, HEIGHT + 100))
+        );
+
+        let retried = import(&session, HEIGHT - 500, retry_lookahead);
+
+        assert_eq!(retried.unwrap(), id, "retry with {retry_lookahead:?}");
+        assert!(session.vault().has_wallet_secret(&id.0));
+        assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500);
+        assert_eq!(stored_birth(&session, id), Some(HEIGHT - 500));
+        assert_eq!(synced_height(&engine, &session, id), HEIGHT - 501);
+        assert_eq!(
+            replay_record(&engine, &session, id),
+            Some((HEIGHT - 501, HEIGHT + 100)),
+            "retry with {retry_lookahead:?}"
+        );
+        if let Some(lookahead) = retry_lookahead {
+            assert_eq!(gap(&engine, &session, id, bip44()), lookahead);
+        }
+    }
 }
