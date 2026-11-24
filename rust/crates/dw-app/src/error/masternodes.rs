@@ -80,7 +80,7 @@ impl From<MasternodesError> for AppError {
             M::NotEvonode => (C::NotEvonode, None),
             M::NoIdentity => (C::NoIdentity, None),
             M::PlatformUnavailable { .. } => (C::PlatformUnavailable, None),
-            M::ProtxRefused { .. } => (C::ProtxRefused, None),
+            M::ProtxRefused { reason, .. } => (C::ProtxRefused, Some(ErrorData::Reason { reason })),
             M::CollateralUnavailable => (C::CollateralUnavailable, None),
             M::SignatureMismatch => (C::SignatureMismatch, None),
             M::OperationNotFound => (C::OperationNotFound, None),
@@ -240,6 +240,13 @@ mod tests {
                 call: "Masternodes.list".into()
             }),
             serde_json::json!({ "kind": "call", "call": "Masternodes.list" })
+        );
+        assert_eq!(
+            data(MasternodesError::ProtxRefused {
+                reason: "bad-protx-payee-reuse".into(),
+                operation: None
+            }),
+            serde_json::json!({ "kind": "reason", "reason": "bad-protx-payee-reuse" })
         );
         assert_eq!(
             data(MasternodesError::SharedMessage {

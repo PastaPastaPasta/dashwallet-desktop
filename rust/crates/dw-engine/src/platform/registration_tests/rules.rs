@@ -57,7 +57,7 @@ impl RegistrationLib for Hooked {
         self.fake.tracked_locks().await
     }
 
-    async fn identities(&self) -> Vec<(u32, String)> {
+    async fn identities(&self) -> Result<Vec<(u32, String)>, PlatformError> {
         self.fake.identities().await
     }
 

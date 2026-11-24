@@ -152,7 +152,7 @@ export function participantSession(stage: SharedSession["stage"]["kind"], patch:
   const rows = [
     shareRow(0, "Alice", 400, { approved: stage !== "invited" && stage !== "draft" }),
     shareRow(1, "Bob", 300),
-    shareRow(2, "You", 300, joined ? { mine: true } : { ownerAddress: null, refundAddress: null, contributed: false }),
+    shareRow(2, "Dana", 300, joined ? { mine: true } : { ownerAddress: null, refundAddress: null, contributed: false }),
   ];
   const next: SharedSession["next"] = (
     {
@@ -551,7 +551,9 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       requireV24(world);
       const s = find(world, id);
       if (s.stage.kind !== "invited") throw stageRefusal(s.stage.kind);
-      const index = request.shareIndex ?? s.rows.findIndex((r) => !r.ownerAddress);
+      const open = s.rows.filter((r) => !r.ownerAddress).map((r) => r.index);
+      if (request.shareIndex === null && open.length !== 1) throw fail("invalid_argument", "name the share to join");
+      const index = request.shareIndex ?? open[0]!;
       const row = s.rows[index];
       if (!row || row.ownerAddress) throw fail("invalid_argument", "that share is taken");
       s.rows[index] = { ...shareRow(index, row.label, row.amount / COIN), mine: true };
@@ -689,12 +691,15 @@ export function sharedScenarios(base: Base) {
         withSessions(coordinatorSession(["Bob", "Carol"], { stage: { kind: "combined" }, next: "copy", consentHash: h("cd"), revision: 5, rows: [0, 1, 2].map((i) => shareRow(i, ["Alice", "Bob", "Carol"][i], i ? 300 : 400, { mine: i === 0, approved: true })) })),
       ),
     "sh-participant-invited": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("invited"))),
+    /** Invited with two shares open (Bob's and Dana's): Join waits for a pick. */
+    "sh-participant-invited-two": (t: ThemeName | null) =>
+      shBase(base, t, withSessions(participantSession("invited", { rows: participantSession("invited").rows.map((r) => (r.index === 1 ? { ...r, ownerAddress: null, refundAddress: null, contributed: false } : r)) }))),
     "sh-participant-joined": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("draft"))),
     "sh-participant-approve": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("signing"))),
     /** Re-locked after this wallet approved: the penalty went 20 → 30 Dash. */
     "sh-participant-approve-diff": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("signing", { approvedTerms: terms(), terms: terms({ earlyPenalty: 30 * COIN }), consentHash: h("ce"), revision: 5 }))),
     "sh-participant-approved": (t: ThemeName | null) =>
-      shBase(base, t, withSessions(participantSession("signing", { next: "copy", approvedTerms: terms(), rows: [shareRow(0, "Alice", 400, { approved: true }), shareRow(1, "Bob", 300), shareRow(2, "You", 300, { mine: true, approved: true })] }))),
+      shBase(base, t, withSessions(participantSession("signing", { next: "copy", approvedTerms: terms(), rows: [shareRow(0, "Alice", 400, { approved: true }), shareRow(1, "Bob", 300), shareRow(2, "Dana", 300, { mine: true, approved: true })] }))),
     "sh-participant-combined": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("combined"))),
     "sh-participant-signed": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed"))),
     "sh-participant-sent": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("sent"))),

@@ -24,6 +24,7 @@ export const mnKeys = {
   payouts: (walletId: string, hash: string, since: number | null) => [...m, "payouts", walletId, hash, since] as const,
   find: (query: string) => [...m, "find", query] as const,
   keychain: (walletId: string, role: MasternodeKeyRoleName, start: number, count: number) => [...m, "keychain", walletId, role, start, count] as const,
+  operations: (walletId: string) => [...m, "operations", walletId] as const,
   credits: (hash: string) => ["mnPlatform", hash, "credits"] as const,
   sharedCapability: (walletId: string) => [...m, "sharedCapability", walletId] as const,
   sharedSessions: (walletId: string) => [...m, "sharedSessions", walletId] as const,
@@ -67,6 +68,12 @@ export function useEvonodeCredits(hash: string, enabled = true) {
 export function useMasternodeKeys(walletId: string, role: MasternodeKeyRoleName, start: number, count: number) {
   const b = useBackend();
   return useQuery({ queryKey: mnKeys.keychain(walletId, role, start, count), queryFn: () => b.mnKeys(walletId, role, start, count) });
+}
+
+/** The wallet's ProTx operations (registrations and registrar updates). */
+export function useMasternodeOperations(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.operations(walletId), queryFn: () => b.mnOperations(walletId), enabled });
 }
 
 /** What the wallet can do with shared masternodes (MG-10 §2.9). */

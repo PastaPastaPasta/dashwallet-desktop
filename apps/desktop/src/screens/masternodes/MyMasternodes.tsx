@@ -1,7 +1,7 @@
-// Masternodes ▸ My masternodes (MG-10 §1.2, S1): the summary, the groups, the read-only pane and
-// the page's states; a shared masternode's pane reads its shares instead of the 30-day payouts
-// (§2.4, S6). Setting up, tracking, keys, changing keys, release and withdraw come with later
-// slices; nothing of theirs shows here yet.
+// Masternodes ▸ My masternodes (MG-10 §1.2, S1): the summary, the groups, the pane and the page's
+// states. The pane offers Change keys or payout (S3) and the operator explanation sheet; a shared
+// masternode's pane reads its shares instead of the 30-day payouts (§2.4, S6). Setting up, tracking,
+// keys, release and withdraw come with other slices.
 
 import { useState } from "react";
 import type { MasternodeDetail } from "../../api/generated/MasternodeDetail";
@@ -41,6 +41,7 @@ import {
 import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh } from "../../masternodes/queries";
 import { isSharedRow, percentText } from "../../masternodes/shared";
 import { useT } from "../../i18n";
+import { ChangeKeysSheet, OperatorSheet } from "./ChangeKeysSheet";
 import { MoreMenu, Notice, StatusChip } from "./common";
 import { SharedSection } from "./SharedPane";
 
@@ -170,21 +171,23 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
             </section>
           ))}
         </div>
-        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} shown={shown} onVote={onVote} />}
+        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} network={network} shown={shown} onVote={onVote} />}
       </div>
     </>
   );
 }
 
-function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: MasternodeRow[]; wallet: WalletSummary; shown: Display; onVote: () => void }) {
+function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRow; rows: MasternodeRow[]; wallet: WalletSummary; network: NetworkInfo; shown: Display; onVote: () => void }) {
   const t = useT();
   const detail = useMasternode(wallet.walletId, row.proTxHash);
   const [renaming, setRenaming] = useState(false);
+  const [sheet, setSheet] = useState<"change-keys" | "operator" | null>(null);
   const d = detail.isError ? undefined : detail.data;
   const name = rowName(row);
   const blocked = voteBlocked(row, wallet.watchOnly);
   const outpoint = row.collateral.kind === "known" ? row.collateral.outpoint : null;
   const line = d ? registrarLine(d) : null;
+  const canChange = d?.registrar.kind === "available" && !wallet.watchOnly && row.status !== "removed";
   return (
     <aside className="contacts-pane" aria-label={t("masternodes.myMasternodes.pane")} data-testid="mn-pane">
       <section className="mg-pane card-l1">
@@ -205,6 +208,7 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
         {row.status === "pose_banned" && (
           <p className="mg-notice mg-notice-danger mn-banned-notice" data-testid="mn-banned">
             <strong>{MnText.banned}</strong> {MnText.bannedText(row.bannedSeenAt === null ? null : shortDate(row.bannedSeenAt))}
+            {canChange && <> {t("masternodes.myMasternodes.bannedMove")}</>}
           </p>
         )}
         {detail.isError && <p className="mg-field-error" data-testid="mn-detail-failed">{mnErrorText(detail.error)}</p>}
@@ -238,17 +242,25 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
               {MnText.vote}
             </DashButton>
           )}
+          {canChange && (
+            <DashButton variant="tintedBlue" size="small" data-testid="mn-change-keys" onClick={() => setSheet("change-keys")}>
+              {t("masternodes.myMasternodes.changeKeys.action")}
+            </DashButton>
+          )}
           <MoreMenu
             testId="mn-more"
             items={[
               { id: "rename", title: MnText.rename, onSelect: () => setRenaming(true) },
               { id: "copy-hash", title: MnText.copyHash, onSelect: () => void copyWithToast(row.proTxHash) },
               ...(outpoint ? [{ id: "copy-outpoint", title: MnText.copyOutpoint, onSelect: () => void copyWithToast(outpoint) }] : []),
+              ...(row.status !== "removed" ? [{ id: "operator", title: t("masternodes.myMasternodes.operatorSheet.menu"), onSelect: () => setSheet("operator") }] : []),
             ]}
           />
         </div>
       </section>
       {renaming && <RenameSheet row={row} onClose={() => setRenaming(false)} />}
+      {sheet === "change-keys" && d && canChange && <ChangeKeysSheet wallet={wallet} network={network} row={row} detail={d} onClose={() => setSheet(null)} />}
+      {sheet === "operator" && <OperatorSheet row={row} detail={d} onChangeKeys={canChange ? () => setSheet("change-keys") : null} onClose={() => setSheet(null)} />}
     </aside>
   );
 }

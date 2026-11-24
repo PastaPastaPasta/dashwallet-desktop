@@ -91,7 +91,7 @@ impl NetworkSession {
         address: &dashcore::Address,
     ) -> Result<bool, EngineError> {
         let wallet = self.wallet(wallet_id).await?;
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(&wallet).await?;
         Ok(wallet_funds_address(&state.core_wallet, address))
     }
 

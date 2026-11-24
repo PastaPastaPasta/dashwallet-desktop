@@ -443,6 +443,8 @@ export const masternodes = {
     banned: "This masternode is banned and earns nothing.",
     /** The operator, not this wallet, fixes a banned node: it needs the operator key. */
     bannedText: "The server stopped doing its work. Your operator fixes the server, then sends a service update from the node. The wallet can't do that: it needs the operator key.",
+    /** After the banned text, only when Change keys or payout is offered. */
+    bannedMove: "To move to another operator, use Change keys or payout.",
     bannedTextSeen:
       "This wallet first saw it banned on {date}: the server stopped doing its work. Your operator fixes the server, then sends a service update from the node. The wallet can't do that: it needs the operator key.",
     vote: "Vote on proposals",
@@ -527,6 +529,102 @@ export const masternodes = {
       hash: "ProTx hash",
     },
     activity: { payouts: "Payouts of {name}", flagged: "Payments to {name}'s payout address" },
+    /** Change keys or payout (ProUpRegTx): signed with the owner key, never the operator key. */
+    changeKeys: {
+      action: "Change keys or payout…",
+      title: "Change keys or payout",
+      intro:
+        "Sends a registrar update signed with this masternode's owner key. The masternode uses the new keys and payout address once the update is in a block.",
+      operator: {
+        legend: "Operator key",
+        keep: "Keep the current operator key",
+        /** `key`: the start of the BLS public key. */
+        keepValue: "{key}…",
+        keychain: "Use this wallet's next operator key",
+        keychainNote: "For running the node yourself. Its secret is in Masternode keys.",
+        given: "Use the operator's public key",
+        givenHelp: "The 96-character BLS public key your operator gives you.",
+        givenInvalid: "Enter the 96-character hex public key your operator gave you.",
+      },
+      voting: {
+        legend: "Voting key",
+        keep: "Keep the current voting key",
+        keychain: "Use this wallet's next voting key",
+        address: "Use another wallet's voting address",
+        addressHelp: "The wallet holding this address votes for the masternode.",
+        addressInvalid: "Enter a Dash address.",
+      },
+      payout: {
+        legend: "Payouts go to",
+        /** `address`: the payout address in this wallet's records. */
+        recorded: "{address} (the address this wallet registered)",
+        recordedNote: "If the payout was changed elsewhere, this sets it back.",
+        newAddress: "A new address in this wallet",
+        address: "Another address",
+        addressHelp: "Payouts go here once the change is in a block.",
+        addressInvalid: "Enter a Dash address.",
+        none: "This wallet has no record of this masternode's payout address. Choose where payouts go.",
+      },
+      review: {
+        title: "After the change",
+        operator: "Operator key",
+        voting: "Voting key",
+        payout: "Payout address",
+        changes: "Changes",
+        stays: "Stays the same",
+        /** The wallet holds no payout record to compare with. */
+        set: "Set",
+        newAddress: "a new address in this wallet",
+        fee: "Network fee",
+        signerKeychain: "Signed with its owner key from this wallet.",
+        signerAttached: "Signed with the owner key you added.",
+        checking: "Checking…",
+      },
+      /** MG-00 D29: dash-qt's warning, verbatim, then the plain explanation. */
+      poseWarning: "Changing the operator key immediately PoSe-bans the masternode.",
+      poseExplain: "It earns nothing until the new operator sends a service update from the node.",
+      nothing: "Nothing would change. Choose a new key or a different payout address.",
+      ask: "Enter your passphrase to sign this change.",
+      send: "Send change",
+      sending: "Sending…",
+      sent: "Change sent. It applies once it's in a block.",
+      sentEvonode: "Credit withdrawals wait until Platform sees the new payout address.",
+      done: "Done",
+      payeeReuse: "The payout address can't be the address of the owner or voting key.",
+      keyInUse: "Another of this wallet's masternode changes already uses that operator key.",
+      keyListed: "Another masternode already uses that operator key. Ask your operator for a new one.",
+      /** The grant asked for less than the fee coin selection settled on. */
+      feeChanged: "The network fee changed. Check the new fee, then send again.",
+      /** Sent, but the hand-off couldn't be confirmed. */
+      sentUnsure: "The wallet couldn't confirm it reached the network. It keeps checking; nothing more to do now.",
+      notSent: {
+        title: "This change didn't go out",
+        text: "It's signed and saved, but the wallet couldn't hand it to the network. Send it again, or discard it to make a different change.",
+        noPeers: "The wallet had no connected peers.",
+        resend: "Send again",
+        resending: "Sending…",
+        discard: "Discard",
+        discarded: "Discarded. Nothing was sent.",
+        ask: "Enter your passphrase to send this change again.",
+      },
+    },
+    /** More ▸ Service update or revoke…: operator-signed, so an explanation only (MG-00 D24). */
+    operatorSheet: {
+      menu: "Service update or revoke…",
+      title: "Service update or revoke",
+      hosted:
+        "Your operator signs these with the operator key, which stays on the server. Dash Wallet doesn't hold that key, so it can't send them.",
+      selfRun:
+        "This wallet derives your operator key, but Dash Wallet doesn't use it to sign service updates or revocations. Send those from your node; the secret is in Masternode keys.",
+      covers:
+        "A service update sets a new IP address or port (and an evonode's Platform ports), and brings a banned node back once its server is fixed. A revocation ends the operator's role.",
+      instead: "From this wallet you can:",
+      replace: "Replace the operator: Change keys or payout gives the masternode a new operator key.",
+      end: "End the masternode: spend or move its collateral.",
+      elsewhere:
+        "This wallet holds neither the owner key nor the collateral. Whoever holds the owner key can replace the operator, and whoever holds the collateral can end the masternode.",
+      close: "Close",
+    },
     errors: {
       list_unavailable: "The masternode list isn't loaded yet. Try again once the wallet has synced.",
       not_found: "This masternode isn't in the masternode list.",
@@ -768,6 +866,11 @@ export const masternodes = {
     },
     session: {
       title: "Shared masternode · Session {code}",
+      loading: "Reading the session…",
+      readFailed: "Couldn't read this session. {reason}",
+      retry: "Try again",
+      pickShare: "Which share is yours? Choose the one the coordinator assigned to you.",
+      pickShareOption: "{label} · {amount}",
       checkCode: "Check code {code}",
       sessionCode: "session {code}",
       participants: "Participants",
@@ -807,7 +910,7 @@ export const masternodes = {
     },
     warning: {
       edited_message: "This message was edited after it was copied. Ask for it again before you approve.",
-      unvalued_inputs: "This wallet can't check the amounts of {labels}'s coins. If one is short, the registration never confirms; your coins come back only through Abandon.",
+      unvalued_inputs: "This wallet can't check the amounts of {labels}'s coins. If one is short, the registration can't confirm. Discard this session to release your coins.",
       empty_service: "The coordinator gave no server address: the masternode starts banned until the operator sends a service update.",
       zero_penalty: "With an early period and no penalty, anyone can leave early for just the network fee.",
       skipped_signatures: { one: "{count} signature for {labels} didn't apply to this session and was skipped.", other: "{count} signatures for {labels} didn't apply to this session and were skipped." },
@@ -830,7 +933,7 @@ export const masternodes = {
       approvedCount: "{approved} of {total} approved the locked terms",
       copyLocked: "Copy locked terms",
       signText: "Sign your coins into the registration: {debit} leaves this wallet when {coordinator} sends it. After you sign, only Abandon gets them back.",
-      signLater: "Signing comes in a later version of the wallet. Keep this session: nothing has left this wallet.",
+      signLater: "Signing comes in a later version of the wallet. Keep this session: nothing has left this wallet, and your coins stay reserved until you discard it.",
       sendSigned: "Send your signed contribution to {coordinator}. They can send the registration once they have everyone's.",
       copySigned: "Copy signed contribution",
       waitingSigned: "Waiting for signed contributions: {signed} of {total}",
@@ -889,8 +992,8 @@ export const masternodes = {
       remove: "Remove",
       add: "Add a participant",
       total: "{sum} of 1,000 Dash · {count} shares",
-      unassigned: "{amount} still unassigned",
-      tooMuch: "{amount} too much",
+      unassigned: "{amount} Dash still unassigned",
+      tooMuch: "{amount} Dash too much",
       service: "Server address",
       serviceHelp: "The masternode's IPv4 address and port, as the operator gives it.",
       operator: "Operator",
@@ -910,7 +1013,7 @@ export const masternodes = {
       nothingSent: "Creating the invitation reserves your coins and sends nothing to the network.",
       sessionCode: "Session code",
       checkCode: "Check code",
-      readBack: "Send it to each participant. Ask each to read the check code back to you.",
+      readBack: "Send it to each participant, and ask each one to read its check code back to you.",
       done: "Done",
       sharesHelp:
         "2 to 8 people. Each share is at least 100 Dash and earns its part of every payout, after the operator's share once the operator sets a payout address. Names are labels: they go into the invitation so everyone sees the same list, and nothing else uses them.",
@@ -920,7 +1023,7 @@ export const masternodes = {
       periodHelp: "Counted from the registration.",
       periods: { none: "None", m3: "3 months", m6: "6 months (105,120 blocks)", y1: "1 year", y2: "2 years (the longest)" },
       penalty: "Early-exit penalty",
-      penaltyHelp: "Less than the smallest share ({smallest}). Split among the others by share.",
+      penaltyHelp: "Must be less than the smallest share ({smallest} Dash). Whoever leaves alone during the early period pays it, split among the others by share.",
       reward: "Your payouts go to",
       rewardRefund: "Your refund address",
       rewardNew: "A new address in this wallet",
@@ -993,7 +1096,8 @@ export const masternodes = {
     },
     feeSheet: {
       title: "Change network fee",
-      label: "Network fee",
+      label: "Network fee, in duffs",
+      range: "Between 1 and {max} duffs ({maxDash}).",
       save: "Change fee",
     },
     error: {
@@ -1012,7 +1116,7 @@ export const masternodes = {
       bad_signature_unknown: "A signature in this message doesn't verify. Ask for the approval again.",
       not_participant: "Continue this session on the device that joined it.",
       labels: "Two participants have the same name in this message.",
-      replied: "Someone has replied, so the fee can't change now.",
+      replied: "A participant has already replied, so the network fee can't change now.",
       stage: "This changed since you opened it.",
       fileRead: "Couldn't read this file.",
       fileNotMessage: "This file isn't a shared-masternode message.",

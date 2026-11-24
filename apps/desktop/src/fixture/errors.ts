@@ -15,6 +15,10 @@ const TXID = "7e".repeat(32);
 type Samples = { [K in ErrorData["kind"]]: { code: AppError["code"]; data: Extract<ErrorData, { kind: K }> } };
 
 const SAMPLES: Samples = {
+  sharedMessage: { code: "masternodes.shared_message", data: { kind: "sharedMessage", reason: "bad_signature", share: 2 } },
+  sharedStage: { code: "masternodes.shared_stage", data: { kind: "sharedStage", stage: "replied" } },
+  sharedFunding: { code: "masternodes.shared_funding_mismatch", data: { kind: "sharedFunding", reason: "fee_low", needed: 120_000 } },
+  sharedActorFee: { code: "masternodes.shared_actor_fee", data: { kind: "sharedActorFee", fee: 1_000 } },
   retryAfter: { code: "vault.throttled", data: { kind: "retryAfter", secs: 90 } },
   wrongPassphrase: { code: "vault.wrong_passphrase", data: { kind: "wrongPassphrase", failedAttempts: 3, retryAfterSecs: 60 } },
   rpc: { code: "console.rpc_error", data: { kind: "rpc", rpcCode: -8, rpcMessage: "Block height out of range" } },
@@ -78,10 +82,6 @@ const SAMPLES: Samples = {
   contender: { code: "governance.not_a_contender", data: { kind: "contender", identity: "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P" } },
   call: { code: "platform.not_implemented", data: { kind: "call", call: "create_invitation" } },
   masternodeKey: { code: "masternodes.key_mismatch", data: { kind: "masternodeKey", role: "owner" } },
-  sharedMessage: { code: "masternodes.shared_message", data: { kind: "sharedMessage", reason: "not_shared", share: null } },
-  sharedStage: { code: "masternodes.shared_stage", data: { kind: "sharedStage", stage: "draft" } },
-  sharedFunding: { code: "masternodes.shared_funding_mismatch", data: { kind: "sharedFunding", reason: "fee_low", needed: 120_000 } },
-  sharedActorFee: { code: "masternodes.shared_actor_fee", data: { kind: "sharedActorFee", fee: 1_000_001 } },
   unsupported: { code: "masternodes.unsupported", data: { kind: "unsupported", feature: "shared_masternodes", field: null } },
   reason: { code: "send.broadcast_rejected", data: { kind: "reason", reason: "bad-txns-inputs-missingorspent" } },
   txAction: { code: "tx_action_refused", data: { kind: "txAction", refusal: "instantLocked" } },
