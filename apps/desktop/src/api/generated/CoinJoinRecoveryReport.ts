@@ -13,9 +13,10 @@ coinjoinAddressesScanned: number,
  */
 bip44AddressesScanned: number,
 /**
- * The CoinJoin account's balance after the scan.
+ * The fully mixed amount after the scan: the CoinJoin screen's Mixed
+ * figure.
  */
-coinjoinBalance: number,
+fullyMixed: number,
 /**
  * Transactions the scan found that the wallet did not know.
  */

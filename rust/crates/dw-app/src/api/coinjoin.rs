@@ -483,8 +483,9 @@ pub struct CoinJoinRecoveryReport {
     pub coinjoin_addresses_scanned: u32,
     /// BIP44 addresses checked (gap 1000, Core-mixed funds).
     pub bip44_addresses_scanned: u32,
-    /// The CoinJoin account's balance after the scan.
-    pub coinjoin_balance: u64,
+    /// The fully mixed amount after the scan: the CoinJoin screen's Mixed
+    /// figure.
+    pub fully_mixed: u64,
     /// Transactions the scan found that the wallet did not know.
     pub new_transactions: u32,
 }
@@ -494,13 +495,14 @@ impl From<RecoveryReport> for CoinJoinRecoveryReport {
         let RecoveryReport {
             coinjoin_addresses_scanned,
             bip44_addresses_scanned,
-            coinjoin_balance,
+            coinjoin_balance: _,
+            fully_mixed,
             new_transactions,
         } = r;
         CoinJoinRecoveryReport {
             coinjoin_addresses_scanned,
             bip44_addresses_scanned,
-            coinjoin_balance,
+            fully_mixed,
             new_transactions,
         }
     }

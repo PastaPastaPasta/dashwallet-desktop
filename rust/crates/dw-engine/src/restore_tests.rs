@@ -4134,3 +4134,120 @@ fn keys_attached_show_no_replay_spv_already_finished() {
         None
     );
 }
+
+/// Starts CoinJoin Recovery of wallet `id` on the engine's runtime and
+/// returns it once its rescan runs.
+fn recovery_running(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+) -> tokio::task::JoinHandle<Result<crate::coinjoin::RecoveryReport, EngineError>> {
+    let s = Arc::clone(session);
+    let runtime = engine.block_on(async { tokio::runtime::Handle::current() });
+    let recovery = runtime.spawn(async move { s.coinjoin_recovery_scan(id).await });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while session.rescan_progress().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Recovery's rescan did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    recovery
+}
+
+/// A wallet born at its creation, scanned to `HEIGHT`, whose CoinJoin
+/// Recovery was cancelled while its rescan ran: Recovery returns
+/// `RescanInterrupted`, not a report.
+fn cancelled_recovery(dir: &std::path::Path) -> (Engine, Arc<NetworkSession>, WalletId) {
+    let (engine, session) = open_spv_engine(dir.join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let recovery = recovery_running(&engine, &session, id);
+
+    assert!(engine.block_on(session.cancel_rescan()).unwrap());
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+    assert!(
+        matches!(recovered, Ok(Ok(Err(EngineError::RescanInterrupted)))),
+        "{recovered:?}"
+    );
+    (engine, session, id)
+}
+
+/// A cancelled CoinJoin Recovery is not reported as finished: it returns
+/// `RescanInterrupted`, and sends stay held as interrupted.
+#[test]
+fn a_cancelled_recovery_scan_is_not_reported_as_finished() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session, id) = cancelled_recovery(dir.path());
+
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInterrupted)),
+        "{guard:?}"
+    );
+}
+
+/// After a cancelled CoinJoin Recovery, a plain rescan from the wallet's
+/// birth lifts the cancel's hold and scans with Recovery's 1,000-address
+/// range on both chains; once it reaches the old checkpoint, sends go.
+#[test]
+fn a_cancelled_recovery_then_a_rescan_from_the_birth_keeps_its_range_and_lifts_the_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session, id) = cancelled_recovery(dir.path());
+
+    (engine.block_on(session.rescan(crate::RescanFrom::WalletBirth))).unwrap();
+
+    let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
+    assert_eq!(gap(&engine, &session, id, bip44()), raised);
+    assert_eq!(gap(&engine, &session, id, cj()), raised);
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(raised)
+    );
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInProgress)),
+        "{guard:?}"
+    );
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(guard.is_ok(), "{guard:?}");
+}
+
+/// A quit while CoinJoin Recovery's rescan runs: the next start resumes the
+/// replay from the wallet's birth with the 1,000-address range, shows it as
+/// a rescan, and holds sends until it ends.
+#[test]
+fn a_recovery_scan_quit_mid_rescan_resumes_at_the_next_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let birth = birth_height(&engine, &session, id).saturating_sub(1);
+    let recovery = recovery_running(&engine, &session, id);
+
+    let session = reopen(&engine, session);
+
+    let ended = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+    assert!(matches!(ended, Ok(Ok(Err(_)))), "{ended:?}");
+    let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
+    assert_eq!(gap(&engine, &session, id, bip44()), raised);
+    assert_eq!(synced_height(&engine, &session, id), birth);
+    assert_eq!(replay_record(&engine, &session, id), Some((birth, HEIGHT)));
+    assert!(session.rescan_progress().unwrap().is_some());
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInProgress)),
+        "{guard:?}"
+    );
+}

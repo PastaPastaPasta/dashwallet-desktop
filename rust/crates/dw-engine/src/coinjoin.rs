@@ -231,7 +231,10 @@ pub struct CoinJoinStatus {
 pub struct RecoveryReport {
     pub coinjoin_addresses_scanned: u32,
     pub bip44_addresses_scanned: u32,
+    /// Every coin of the CoinJoin account, mixed or not.
     pub coinjoin_balance: u64,
+    /// The fully mixed amount, as the CoinJoin status reports it.
+    pub fully_mixed: u64,
     pub new_transactions: u32,
 }
 
@@ -2663,22 +2666,37 @@ impl NetworkSession {
                     return Err(CoinJoinFailure::SpvNotRunning.into());
                 }
             }
-            let view = this.read_mix_view(wallet_id).await?;
-            let coinjoin_balance = view
-                .coins
-                .iter()
-                .filter(|c| c.coin.coinjoin_account)
-                .map(MixViewCoin::value)
-                .sum();
+            // A cancel ends the rescan short of the wallet's target and holds
+            // sends until a rescan from the birth: nothing to report.
+            if (this.hub.wallet_state(&wallet_id)).is_some_and(|s| s.replay_cancelled.is_some()) {
+                return Err(EngineError::RescanInterrupted);
+            }
             let known_after = this.hub.history.snapshot(&wallet_id).len();
-            Ok(RecoveryReport {
-                coinjoin_addresses_scanned: RECOVERY_LOOKAHEAD * 2,
-                bip44_addresses_scanned: RECOVERY_LOOKAHEAD * 2,
-                coinjoin_balance,
-                new_transactions: known_after.saturating_sub(known_before) as u32,
-            })
+            let found = known_after.saturating_sub(known_before) as u32;
+            this.recovery_report(wallet_id, found).await
         })
         .await
+    }
+
+    /// CoinJoin Recovery's report on wallet `wallet_id`, read from the mix
+    /// view the CoinJoin status reads.
+    pub(crate) async fn recovery_report(
+        &self,
+        wallet_id: WalletId,
+        new_transactions: u32,
+    ) -> Result<RecoveryReport, EngineError> {
+        let view = self.read_mix_view(wallet_id).await?;
+        let coinjoin_balance = (view.coins.iter())
+            .filter(|c| c.coin.coinjoin_account)
+            .map(MixViewCoin::value)
+            .sum();
+        Ok(RecoveryReport {
+            coinjoin_addresses_scanned: RECOVERY_LOOKAHEAD * 2,
+            bip44_addresses_scanned: RECOVERY_LOOKAHEAD * 2,
+            coinjoin_balance,
+            fully_mixed: view.balances.fully_mixed,
+            new_transactions,
+        })
     }
 
     /// The CoinJoin account's coins a sweep to `target` takes, in its

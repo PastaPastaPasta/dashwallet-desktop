@@ -5165,6 +5165,8 @@ mod normal_payment_beside_mixing {
         let status = f.session.coinjoin_status(id).unwrap();
         assert_eq!(status.balances.denominated, denom_count * d);
         assert_eq!(status.balances.fully_mixed, 2 * d);
+        let report = f.engine.block_on(f.session.recovery_report(id, 0)).unwrap();
+        assert_eq!(report.fully_mixed, status.balances.fully_mixed);
         assert_eq!(status.balances.normalized_anonymized, d * 14 / 4);
         assert_eq!(status.progress.average_rounds, f64::from(14_f32 / 6_f32));
         assert_eq!(status.balances.coinjoin_account, 0);
