@@ -665,6 +665,26 @@ fn an_exit_after_its_top_up_landed_is_refused_and_keeps_the_grant() {
     assert_eq!(w.sent(), 3);
 }
 
+/// An exit reports what it moved, not what its quote showed: on a read at
+/// submit that shows the held input lower than the quote's read did (that
+/// read included a deposit), the smaller amount.
+#[test]
+fn an_exit_reports_the_amount_it_moved() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    w.net.fund(a, DASH);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.credits, 6 * DASH);
+    w.net.state.lock().unwrap().get_mut(&a).unwrap().1 -= DASH;
+    let out = w.exit(&q, &w.f.grant(q.credits)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert!(
+        out.credits <= 5 * DASH,
+        "at most what the input held at submit"
+    );
+    assert!(out.expected_duffs.unwrap() < q.expected_duffs);
+}
+
 /// The same race with no `exit_of`: as before it, the move is planned on the
 /// read under the lock, an ordinary withdrawal of what the addresses hold.
 #[test]

@@ -102,7 +102,7 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
   const amount = (duffs: number) => (discreet ? shown.masked() : `${shown.full(duffs)} ${shown.name}`);
   const credits = (c: string) => amount(creditsToDuffs(c));
   const { step, outcome } = flow;
-  // A failed move that may still execute is shown as not confirmed; one that cannot moved nothing.
+  // A failed move that may still execute is shown as not confirmed; one that cannot found its credits used.
   const failed = outcome?.state === "failed" && !activity.data?.find((a) => a.id === outcome.id)?.mayLand;
   return (
     <div data-testid="platform-move-body" data-step={step}>

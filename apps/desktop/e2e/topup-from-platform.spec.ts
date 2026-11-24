@@ -228,7 +228,27 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
-  test(`the exit of a held top-up that executed in its place moved nothing (${theme})`, async ({ page }) => {
+  test(`an exit's outcome shows what it moved, not what its quote showed (${theme})`, async ({ page }) => {
+    const errors = await heldTopUp(page, theme);
+    await page.getByTestId("topup-move-to-core").click();
+    await moveConfirm(page);
+    const quoted = await page.getByTestId("platform-move-quote-duffs").innerText();
+    // The held input holds less at submit than the quote read.
+    await page.evaluate(() => {
+      const p = window.__dwFixture!.world.pending.platform!;
+      const held = p.activity.find((a) => a.kind === "toIdentity" && a.mayLand)!;
+      const inputs = p.heldInputs?.[held.id] ?? [];
+      p.addresses = p.addresses.map((a) => (inputs.includes(a.address) ? { ...a, credits: String(BigInt(a.credits) / 2n) } : a));
+    });
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
+    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("is on its way to your Dash wallet");
+    expect(await page.getByTestId("platform-move-outcome-text").innerText()).not.toContain(quoted);
+    expect(errors).toEqual([]);
+  });
+
+  test(`the exit of a held top-up that executed in its place finds its credits used (${theme})`, async ({ page }) => {
     const errors = await heldTopUp(page, theme);
     await page.evaluate(() => void (window.__dwFixture!.world.pending.platform!.nextMove = "lost"));
     await page.getByTestId("topup-move-to-core").click();
@@ -236,7 +256,7 @@ for (const theme of THEMES) {
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("The move did not go through");
-    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Nothing moved to your Dash wallet. Activity shows what happened.");
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("These credits were already used: either the top-up went through, or an earlier move to your Dash wallet took them. Activity shows which.");
     await moveShot(page, theme, "exit-lost");
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);

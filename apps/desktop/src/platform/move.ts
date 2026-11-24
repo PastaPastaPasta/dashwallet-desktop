@@ -78,7 +78,7 @@ export const MOVE_COPY = {
     text: (amount: string) => t("transfer.move.pending.text", { amount }),
     debitOnly: (taken: string) => t("transfer.move.pending.debitOnly", { taken }),
   },
-  /** A move that cannot execute: its held top-up executed in its place. */
+  /** A move that cannot execute: the top-up it exits, or an earlier exit, took its credits. */
   failed: {
     get title() {
       return t("transfer.move.failed.title");
