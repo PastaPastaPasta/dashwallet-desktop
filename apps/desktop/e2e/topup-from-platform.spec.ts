@@ -7,6 +7,9 @@ import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme 
 // copy and outcomes, a held top-up offering "Move to Dash wallet"; Shielded is listed and not
 // offered yet. `DW_SHOTS_DIR` also writes each state's screenshot for the pull request.
 
+// Each walk runs two or three axe scans, which take WebKit most of the default budget.
+test.describe.configure({ timeout: 60_000 });
+
 const sheet = (page: Page) => page.getByTestId("topup-body");
 const shots = process.env.DW_SHOTS_DIR;
 
