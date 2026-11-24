@@ -383,12 +383,16 @@ function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQu
   const sending = p.activity.find((a) => a.kind === "send" && isHeldOp(a));
   if (sending) throw moveHeld(sending.id);
   const credits = moveCredits(p, amount);
-  // An exit signs exactly its top-up's inputs: an amount the largest of fewer of them carry is refused.
-  const held = heldTopUp(p);
+  // An exit signs exactly its held record's inputs: an amount the largest of fewer of them carry is refused
+  // (on mainnet, the flag's refusal).
+  const held = heldTopUp(p) ?? heldExitOp(p.activity);
   if (held && amount.kind === "credits") {
     const sources = moveSources(p).map((a) => BigInt(a.credits)).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
     let carried = 0n;
-    if (sources.slice(0, -1).some((c) => (carried += c) >= credits)) throw moveHeld(held.id);
+    if (sources.slice(0, -1).some((c) => (carried += c) >= credits)) {
+      refuseSendsOff(ctx.world);
+      throw moveHeld(held.id);
+    }
   }
   const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
   return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) }, exitOf: heldTopUp(p)?.id ?? null };
@@ -779,7 +783,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   platform_move_to_core: ({ walletId, amount, to, exitOf, grant }: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string }, ctx: Ctx): MoveToCoreOutcome => {
     const { world } = ctx;
     // As the engine, first: the exit of a top-up that no longer holds is not the move Confirm showed.
-    if (exitOf != null && heldTopUp(platformOf(world, "platform_move_to_core"))?.id !== exitOf) throw fail("credits.quote_changed", "the held top-up settled since this move was quoted");
+    if (exitOf != null && heldTopUp(platformOf(world, "platform_move_to_core"))?.id !== exitOf) {
+      refuseSendsOff(world);
+      throw fail("credits.quote_changed", "the held top-up settled since this move was quoted");
+    }
     // An exit moves its quoted amount: inputs that no longer carry it are not the move Confirm showed.
     const q = (() => {
       try {
