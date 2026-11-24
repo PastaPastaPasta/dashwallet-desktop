@@ -28,12 +28,13 @@ export interface Credential {
 }
 
 /** `windowAmount`: what the grant would charge the signing window, in duffs, or `null` for a grant
- * the window never issues (a vote), which always asks on an encrypted vault. */
-export function useCredential(walletId: string, ask: string, windowAmount: number | bigint | null): Credential {
+ * the window never issues (a vote), which always asks on an encrypted vault. `active` false (a held
+ * sheet that can sign nothing): no lock or policy read, and never ready. */
+export function useCredential(walletId: string, ask: string, windowAmount: number | bigint | null, active = true): Credential {
   const b = useBackend();
-  const lock = useLockStatus();
-  const policy = usePaymentAuthentication();
-  const quick = useQuickUnlockPolicy(policy.data === false);
+  const lock = useLockStatus(active);
+  const policy = usePaymentAuthentication(active);
+  const quick = useQuickUnlockPolicy(active && policy.data === false);
   const [askAnyway, setAskAnyway] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +48,7 @@ export function useCredential(walletId: string, ask: string, windowAmount: numbe
   }, [retryAt]);
   // A wait left by earlier attempts holds the button from the start (Pay's rule).
   useEffect(() => {
+    if (!active) return;
     let live = true;
     b.lockStatus().then(
       ({ retryAfterSecs: secs }) => {
@@ -59,7 +61,7 @@ export function useCredential(walletId: string, ask: string, windowAmount: numbe
     return () => {
       live = false;
     };
-  }, [b]);
+  }, [b, active]);
   const windowNeeded = policy.data === false;
   const cover =
     quick.isSuccess && windowAmount !== null
@@ -95,7 +97,7 @@ export function useCredential(walletId: string, ask: string, windowAmount: numbe
   };
 
   return {
-    ready: !policy.isPending && (!windowNeeded || quick.isSuccess || quick.isError) && waitKnown && retryAt === null,
+    ready: active && !policy.isPending && (!windowNeeded || quick.isSuccess || quick.isError) && waitKnown && retryAt === null,
     prompt,
     passphrase,
     setPassphrase,

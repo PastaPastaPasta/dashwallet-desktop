@@ -593,6 +593,29 @@ test("a released collateral offers Lock it again on testnet", async ({ page }) =
   expect(errors).toEqual([]);
 });
 
+/** Reads the held wizard makes beyond keys and the preview: none locks a coin, and none is its own. */
+const HELD_EXTRA = ["lock_status", "payment_authentication", "quick_unlock_policy", "mn_list"];
+
+for (const theme of ["light", "dark"] as const)
+  test(`mainnet ${theme}: the held wizard reads only keys and the preview (issue 635)`, async ({ page }, info) => {
+    const errors = await open(page, "reg", theme, "mainnet");
+    await expect(page.getByTestId("mn-set-up")).toBeVisible();
+    await page.waitForTimeout(500);
+    const from = await page.evaluate(() => window.__dwFixture!.calls.length);
+    await setUp(page);
+    await hostedToKeys(page, "203.0.113.20:9999");
+    await toReview(page);
+    await expectSendOff(page);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-held-review-${theme}.png`) });
+    const made = await page.evaluate((n) => window.__dwFixture!.calls.slice(n), from);
+    expect(made.filter((c) => HELD_EXTRA.includes(c))).toEqual([]);
+    expect(made).toContain("mn_registration_keys");
+    expect(made).toContain("mn_preview_registration");
+    await expect(page.getByTestId("reg-passphrase")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
 test("mainnet: Review ends with the send-off line and sends nothing", async ({ page }) => {
   const errors = await open(page, "reg", "light", "mainnet");
   await setUp(page);
