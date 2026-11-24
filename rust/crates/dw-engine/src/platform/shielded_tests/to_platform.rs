@@ -13,7 +13,7 @@ fn unshield(
     to: Option<String>,
     grant: &str,
     confirmed: bool,
-) -> Result<super::super::shielded::ShieldedSpendOutcome, ShieldedError> {
+) -> Result<super::super::shielded::UnshieldToPlatformOutcome, ShieldedError> {
     let (wallet, grant) = (fx.wallet, grant.to_owned());
     run(fx, lib, move |s, lib| async move {
         let to = to.as_deref();
@@ -369,4 +369,51 @@ fn unshield_to_platform_double_submit_sends_once() {
     let refused = results.into_iter().find_map(Result::err).unwrap();
     assert_eq!(refused.code(), "platform.grant_invalid");
     assert_eq!(lib.spent().len(), 1, "the library sent one unshield");
+}
+
+/// The library's call runs with the wallet's unshield intent standing (the
+/// address and the quoted credits the hook checks the signed transition
+/// against); the record row the hook notes there is the outcome's, and the
+/// intent is gone once the call returns.
+#[test]
+fn unshield_to_platform_reports_the_record_its_hook_armed() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let (s, wallet) = (Arc::clone(&fx.s), fx.wallet);
+    *lib.probe.lock().unwrap() = Some(Box::new(move || {
+        let mut intents = s.platform.unshield_intents.lock().unwrap();
+        let Some(intent) = intents.get_mut(&wallet) else {
+            return false;
+        };
+        let seen = (intent.to, intent.credits) == (own_platform(2), NOTE);
+        intent.record = Some("from-shielded-ab".into());
+        seen
+    }));
+    let to = Some(platform_text(own_platform(2)));
+    let out = unshield(&fx, &lib, NOTE, to, &lease(&fx), false).unwrap();
+    assert_eq!(lib.probed.lock().unwrap().as_slice(), [true]);
+    assert_eq!(out.record.as_deref(), Some("from-shielded-ab"));
+    assert!(fx.s.platform.unshield_intents.lock().unwrap().is_empty());
+
+    // A send stands no intent; a failed unshield leaves none behind.
+    let l = lease(&fx);
+    let out = run(&fx, &lib, move |s, lib| async move {
+        pool::send(
+            &s,
+            wallet,
+            &*lib,
+            (&payee_text(), NOTE / 4),
+            None,
+            &l,
+            false,
+        )
+        .await
+    });
+    assert!(out.is_ok());
+    assert_eq!(lib.probed.lock().unwrap().as_slice(), [true, false]);
+    lib.fail_with(PlatformWalletError::ShieldedDispatchRefused {
+        reason: "the plan check failed".into(),
+    });
+    assert!(unshield(&fx, &lib, NOTE / 4, None, &lease(&fx), false).is_err());
+    assert!(fx.s.platform.unshield_intents.lock().unwrap().is_empty());
 }

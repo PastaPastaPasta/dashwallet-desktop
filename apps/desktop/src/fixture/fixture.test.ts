@@ -95,6 +95,7 @@ describe("fixture backend", () => {
       "topup.test.ts",
       "topup.ts",
       "transfer.ts",
+      "unshieldToPlatform.test.ts",
       "updates.ts",
       "vault.ts",
       "vectors/accept.json",

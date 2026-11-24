@@ -243,12 +243,20 @@ declare global {
     /** Playwright and manual runs: the same report `--selftest` writes. `canUnlock: false` is a
      * run launched without `--selftest-passphrase-file`. */
     __dwSelftest?: (opts?: { canUnlock?: boolean }) => Promise<Report>;
+    /** Playwright: every cached query result and mutation variable as text, to show a secret
+     * never lands in a cache. */
+    __dwCachedText?: () => string;
   }
 }
 
 /** For Playwright, in fixture builds only. */
 export function exposeSelftest(backend: Backend, client: QueryClient, passphrase: string) {
   window.__dwSelftest = (opts) => collectReport(backend, client, opts?.canUnlock === false ? null : () => backend.unlock(passphrase));
+  window.__dwCachedText = () =>
+    JSON.stringify(
+      [client.getQueryCache().getAll().map((q) => [q.queryKey, q.state.data]), client.getMutationCache().getAll().map((m) => m.state.variables)],
+      (_, v: unknown) => (typeof v === "bigint" ? v.toString() : v),
+    );
 }
 
 async function refused(f: () => Promise<unknown>): Promise<string> {
