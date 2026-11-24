@@ -437,7 +437,7 @@ test.describe("Home", () => {
     await authorize(page);
     await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Locked, not applied");
     await expect(page.getByTestId("platform-fund-outcome-text")).toHaveText(
-      "Your 0.50 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+      "Your 0.50000000 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
     );
     expect(await seriousAxeViolations(page)).toEqual([]);
     await page.getByTestId("platform-fund-outcome-finish").click();
@@ -455,7 +455,7 @@ test.describe("Home", () => {
     await page.getByTestId("platform-fund-finish").click();
     await authorize(page);
     await expect(page.getByTestId("platform-fund-refusal")).toHaveText(
-      "Your 0.50 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+      "Your 0.50000000 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
     );
     await expect(page.getByTestId("platform-fund-refused-back")).toHaveCount(0);
     expect(await seriousAxeViolations(page)).toEqual([]);
@@ -487,7 +487,7 @@ test.describe("Home", () => {
     for (const id of ["platform-fund-stuck", "platform-fund-finish", "platform-fund-unfinished", "unfinished-card", "platform-card"]) await expect(page.getByTestId(id)).toHaveCount(0);
     await openTransfer(page, "coreToPlatform");
     const row = page.getByTestId("platform-fund-stuck");
-    await expect(row).toHaveText("0.00005 tDASH was locked to add to Platform, but it's worth less than the Platform fee, so it can't be added.");
+    await expect(row).toHaveText("0.00005000 tDASH was locked to add to Platform, but it's worth less than the Platform fee, so it can't be added.");
     expect(await seriousAxeViolations(page)).toEqual([]);
     await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
     await page.getByTestId("transfer-amount").fill("0.5");

@@ -119,6 +119,10 @@ export interface World {
   explorerOpened?: string[];
   /** How many times `open_releases_page` was called. */
   releasesOpened?: number;
+  /** `open_project_link` calls, in order (the fixture opens nothing). */
+  linksOpened?: string[];
+  /** `open_project_link` fails as when no browser opens. */
+  linkOpenFails?: boolean;
   /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
   protocolCompatibility?: ProtocolCompatibility;
   /** "Ask for my passphrase for every payment". The funded scenario leaves it on, so the
@@ -712,6 +716,42 @@ const SCENARIOS = {
     };
     wallet.rows = [row, ...wallet.rows];
     w.send.rescanFirst = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment whose later payment locked while its detail was open: Abandon is
+   * offered and refused, and the detail says why. */
+  "abandon-settled-child": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5c".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChild = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment a later payment spends from, already locked when the detail opens:
+   * Abandon isn't offered. */
+  "abandon-settled-child-hidden": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5d".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChildHidden = [row.txid];
     return w;
   },
   /** A payment this wallet made on another device, seen only by its change before the coins it
