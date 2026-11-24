@@ -348,6 +348,38 @@ fn a_payout_pays_the_reserved_address_and_settles_sent() {
     );
 }
 
+/// #533: a payout planned on a read behind a done payout would sign the
+/// nonce that payout took. Refused before the grant is redeemed or an
+/// address taken; once the read is current, the same grant pays.
+#[test]
+fn a_payout_on_a_read_behind_a_done_payout_is_refused() {
+    let f = fixture(false);
+    let (net, pool) = f.funded(DASH);
+    let first = f.paid(&net, BOB, PAY, &f.op_grant(debit())).unwrap();
+    assert_eq!(first.state, PayoutState::Sent);
+    assert_eq!(net.sent()[0][&pool[0]].0, 1);
+
+    net.lag(pool[0], true);
+    let grant = f.op_grant(debit());
+    let stale = f.paid(&net, BOB, PAY, &grant).unwrap_err();
+    assert_eq!(code(&stale), "platform.unavailable");
+    assert_eq!(net.sent().len(), 1, "nothing signed");
+    assert!(f.unused_grant(&grant));
+    assert!(f.reserved(BOB).is_none(), "no address taken");
+    assert!(f.lock(BOB).is_none());
+    assert_eq!(f.payout_states().len(), 1);
+    assert_eq!(f.move_records().len(), 1);
+
+    net.lag(pool[0], false);
+    let second = f.paid(&net, BOB, PAY, &grant).unwrap();
+    assert_eq!(second.state, PayoutState::Sent);
+    let sent = net.sent();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1][&pool[0]].0, 2, "the nonce after the done payout's");
+    let records = f.move_records();
+    assert_eq!(records[1].to, f.contact_address(BOB, 1).to_string());
+}
+
 /// P2, P14: the withdrawal range and the grant's cap refuse before the
 /// grant is redeemed and before an address is taken; nothing is signed.
 #[test]

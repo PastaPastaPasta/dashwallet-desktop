@@ -517,6 +517,14 @@ impl FakeMoves {
         self.tick();
     }
 
+    /// A lagging node: reads prove `address` one nonce behind (`true`), or
+    /// current again (`false`).
+    pub(crate) fn lag(&self, address: PlatformAddress, behind: bool) {
+        let mut state = self.state.lock().unwrap();
+        let nonce = &mut state.get_mut(&address).unwrap().0;
+        *nonce = if behind { *nonce - 1 } else { *nonce + 1 };
+    }
+
     /// Platform's metered fee from now on.
     pub(crate) fn set_fee(&self, fee: u64) {
         self.fee.store(fee, Ordering::SeqCst);
