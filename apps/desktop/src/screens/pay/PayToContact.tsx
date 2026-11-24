@@ -8,9 +8,10 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { ContactRecipient } from "../../api/generated/ContactRecipient";
+import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { UserHit } from "../../api/generated/UserHit";
-import { useLockStatus, usePoolBalances, useWallets } from "../../api/queries";
+import { keys, useLockStatus, usePoolBalances, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
@@ -482,10 +483,18 @@ function ContactForm({
           note={note.trim() || null}
           shown={shown}
           onClose={(paid) => {
+            const unknown = balance.flow.outcome?.state === "pending" ? balance.flow.outcome.reference : null;
             balance.close();
+            // The contact is locked from here, whatever the next read takes (P6).
+            if (unknown !== null)
+              client.setQueryData<ContactDetailInfo>([...keys.contactsAll(walletId), "detail", identity, contact], (d) =>
+                d && !d.paymentLock ? { ...d, paymentLock: { txid: unknown, since: Math.floor(Date.now() / 1000), source: "platform", reference: unknown } } : d,
+              );
             if (paid) {
               amount.setText("");
               setNote("");
+              // The next payment opens on the Dash wallet again (P16).
+              setChosen("core");
             }
             refreshAfter(client, walletId, identity, ["contacts"]);
             backToForm()?.focus();

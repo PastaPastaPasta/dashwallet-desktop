@@ -112,7 +112,11 @@ export function outcomeText(state: ContactPayOutcomeInfo["state"], name: string)
 
 export type ContactPayApi = Pick<Backend, "contactPay" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
-export type FromStep = "confirm" | "running" | "done" | "refused";
+/** `lost`: the call failed after it was sent, without a definitive refusal: it may have paid. */
+export type FromStep = "confirm" | "running" | "done" | "refused" | "lost";
+
+/** A refusal the engine answered before anything was signed (every coded refusal but `internal`). */
+const definitive = (e: unknown) => isAppError(e) && e.code !== "internal";
 
 /** One payment from a balance: the grant the quote sizes, then `contactPay` (one call at a time). */
 export class ContactPayFlow extends Model {
@@ -164,7 +168,7 @@ export class ContactPayFlow extends Model {
       } else this.step = "confirm";
     } catch (e) {
       this.error = e;
-      this.step = "refused";
+      this.step = ran && !definitive(e) ? "lost" : "refused";
     } finally {
       this.running = false;
       // Balances, Activity and the contact's lock follow a payment as they follow a move.

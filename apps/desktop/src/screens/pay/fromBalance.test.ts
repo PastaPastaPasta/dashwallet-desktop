@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { fromErrorText, fromRows, liveSources, outcomeText, payingSource, type FromInputs } from "./fromBalance";
+import { describe, expect, it, vi } from "vitest";
+import type { ContactPayQuoteInfo } from "../../api/generated/ContactPayQuoteInfo";
+import { appError, WALLET_A } from "../../onboarding/testWorld";
+import { fakeVault } from "../../tools/testApi";
+import { ContactPayFlow, fromErrorText, fromRows, liveSources, outcomeText, payingSource, type FromInputs } from "./fromBalance";
 
 const amount = (d: number) => `${d / 1e8} tDASH`;
 const credits = (c: string) => amount(Number(BigInt(c) / 1000n));
@@ -57,5 +60,40 @@ describe("a payment from a balance's copy (D-C5 Copy)", () => {
     expect(fromErrorText(range, "1000", credits)).toBe("The smallest payment from here is 0.0000119 tDASH. Pay a smaller amount from your Dash wallet.");
     expect(fromErrorText({ code: "credits.move_pending", message: "", data: null }, "1", credits)).toBe("Another Platform transfer is still being confirmed. Try again when it is done.");
     expect(fromErrorText({ code: "platform.feature_off", message: "", data: null }, "1", credits)).toBe("Not available on this network yet.");
+  });
+});
+
+const QUOTE: ContactPayQuoteInfo = { source: "platform", credits: "10000000000", expectedDuffs: 9_999_774, feeCredits: "2000000", grant: { maxDuffs: 0, maxCredits: "10006000000" } };
+
+function payFlow(contactPay: () => Promise<never>, lock = { encrypted: false }) {
+  const vault = fakeVault(lock);
+  return new ContactPayFlow({ ...vault.api, contactPay: vi.fn(contactPay) }, WALLET_A, "me", "bob");
+}
+
+describe("a payment from a balance's flow", () => {
+  it("a failure after the call was sent may have paid: unknown, never 'nothing was paid'", async () => {
+    const lost = payFlow(() => Promise.reject(new Error("the connection to the engine closed")));
+    await lost.pay(QUOTE, null);
+    expect(lost.step).toBe("lost");
+    const internal = payFlow(() => Promise.reject(appError("internal")));
+    await internal.pay(QUOTE, null);
+    expect(internal.step).toBe("lost");
+  });
+
+  it("a coded refusal is one: nothing was paid", async () => {
+    const refused = payFlow(() => Promise.reject(appError("credits.move_pending")));
+    await refused.pay(QUOTE, null);
+    expect(refused.step).toBe("refused");
+  });
+
+  it("a prompt cancelled (the sheet went with a lock) leaves the flow idle, nothing sent", async () => {
+    const send = vi.fn(() => Promise.reject(new Error("never called")));
+    const flow = payFlow(send, { encrypted: true });
+    const paying = flow.pay(QUOTE, null);
+    await vi.waitFor(() => expect(flow.grants.pending).not.toBeNull());
+    flow.grants.cancel();
+    await paying;
+    expect([flow.step, flow.running]).toEqual(["confirm", false]);
+    expect(send).not.toHaveBeenCalled();
   });
 });

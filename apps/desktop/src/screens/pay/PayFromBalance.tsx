@@ -2,7 +2,7 @@
 // (C-funding D-C5, fromBalance.ts). The amount typed is what leaves the balance; the confirm says
 // about what the contact receives and the fee (P13). No Max, no "subtract fee", no coin control.
 
-import { useId, useState, type Ref } from "react";
+import { useEffect, useId, useState, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ContactPayQuoteInfo } from "../../api/generated/ContactPayQuoteInfo";
 import { CREDITS_PER_DUFF, creditsToDuffs } from "../../api/pending";
@@ -144,8 +144,11 @@ export function BalancePaySheet({
   const amount = (duffs: number) => (discreet ? shown.masked() : shown.withUnit(duffs));
   const credit = (c: string) => amount(creditsToDuffs(c));
   const { step, outcome } = flow;
-  const close = () => onClose(step === "done" && outcome !== null && outcome.state !== "notSent");
-  const text = outcome ? outcomeText(outcome.state, name) : null;
+  // A prompt still open when the sheet goes (a lock) is cancelled: the flow is not left running.
+  useEffect(() => () => flow.grants.cancel(), [flow]);
+  const close = () => onClose((step === "done" && outcome !== null && outcome.state !== "notSent") || step === "lost");
+  const state = step === "lost" ? "pending" : outcome?.state;
+  const text = state ? outcomeText(state, name) : null;
   return (
     <>
       <Sheet title={t("pay.contact.pay", { name })} width="small" testId="pay-balance-sheet" closable={!flow.running} onClose={close}>
@@ -173,16 +176,16 @@ export function BalancePaySheet({
               </p>
             </div>
           )}
-          {step === "done" && outcome && text && (
+          {(step === "done" || step === "lost") && state && text && (
             <div role="status">
-              <p className="topup-title" data-testid="pay-balance-outcome-title" data-state={outcome.state}>
+              <p className="topup-title" data-testid="pay-balance-outcome-title" data-state={step === "lost" ? "lost" : state}>
                 {text.title}
               </p>
               <p className="sheet-text" data-testid="pay-balance-outcome-text">
                 {text.text}
               </p>
               <div className="sheet-actions">
-                {outcome.state !== "notSent" && (
+                {state !== "notSent" && (
                   <DashButton
                     variant="tintedGray"
                     size="large"
@@ -196,7 +199,7 @@ export function BalancePaySheet({
                   </DashButton>
                 )}
                 <DashButton variant="filledBlue" size="large" data-testid="pay-balance-done" onClick={close}>
-                  {outcome.state === "notSent" ? t("pay.result.back") : t("pay.result.close")}
+                  {state === "notSent" ? t("pay.result.back") : t("pay.result.close")}
                 </DashButton>
               </div>
             </div>

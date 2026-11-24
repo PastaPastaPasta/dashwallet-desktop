@@ -69,6 +69,8 @@ test("PAY-FROM pays a contact from the Platform balance", async ({ page }) => {
   await expect(page.getByTestId("pay-balance-outcome-text")).toHaveText("Payment sent. It arrives in Bob Builder’s wallet once the Dash network processes it. This can take a while.");
   await page.getByTestId("pay-balance-done").click();
   await expect(page.getByTestId("pay-amount")).toHaveValue("");
+  // The next payment opens on the Dash wallet again (P16).
+  await expect(page.getByTestId("pay-from").getByRole("radio", { name: /Dash wallet/ })).toBeChecked();
   expect(errors).toEqual([]);
 });
 

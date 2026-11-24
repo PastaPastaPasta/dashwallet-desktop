@@ -325,7 +325,7 @@ function Activity({ contact, pane }: { contact: string; pane: PaneContext }) {
             const when = item.timestamp === null ? null : new Date(item.timestamp * 1000);
             return (
               <li key={`${item.txid}:${item.direction}`} className="tx-row-item">
-                <button type="button" className="tx-row" data-testid="contact-activity-row" data-txid={item.txid} onClick={() => ui.set({ detail: item.txid })}>
+                <button type="button" className="tx-row" data-testid="contact-activity-row" data-txid={item.txid} onClick={() => (item.source === "core" ? ui.set({ detail: item.txid }) : item.coreTxid ? ui.set({ detail: item.coreTxid }) : navigate("activity"))}>
                   <Icon id={item.direction === "sent" ? "txSent" : "txReceived"} size={30} className="tx-row-icon" />
                   <span className="tx-row-text">
                     <span className="tx-row-title">{row.title}</span>
