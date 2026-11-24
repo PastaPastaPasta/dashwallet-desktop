@@ -1005,7 +1005,14 @@ fn named_lease(
 ) -> Option<Result<Lease, PlatformError>> {
     let lease = session.lease_for(&wallet, grant)?;
     Some(match lease {
-        Ok(lease) if lease.flow() == FlowKind::ShieldDrain => Err(PlatformError::GrantInvalid),
+        Ok(lease)
+            if matches!(
+                lease.flow(),
+                FlowKind::ShieldDrain | FlowKind::ContactPayFromBalance
+            ) =>
+        {
+            Err(PlatformError::GrantInvalid)
+        }
         lease => lease.map_err(PlatformError::from),
     })
 }

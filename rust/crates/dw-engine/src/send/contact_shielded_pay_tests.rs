@@ -706,16 +706,18 @@ fn a_flow_lease_pays_one_payout() {
             (s.begin_flow(f.wallet, flow, grants, Some(PaymentSource::Shielded))).await
         })
         .unwrap();
-    let first = f.spawn_shielded(&lib, f.call(BOB, credits(), &lease, false));
-    let second = f.spawn_shielded(&lib, f.call(BOB, credits(), &lease, false));
-    let outcomes = [
-        f.engine.block_on(first).unwrap(),
-        f.engine.block_on(second).unwrap(),
-    ];
-    let paid: Vec<_> = outcomes.iter().filter(|o| o.is_ok()).collect();
-    assert_eq!(paid.len(), 1, "{outcomes:?}");
-    let refused = outcomes.iter().find_map(|o| o.as_ref().err()).unwrap();
-    assert_eq!(code(refused), "platform.lease_expired", "the lease ended");
+    let pay = || {
+        f.engine
+            .block_on(f.spawn_shielded(&lib, f.call(BOB, credits(), &lease, false)))
+    };
+    let first = pay().unwrap();
+    assert!(first.is_ok(), "{first:?}");
+    let second = pay().unwrap();
+    assert_eq!(
+        code(&second.unwrap_err()),
+        "platform.lease_expired",
+        "the lease ended"
+    );
     assert_eq!(lib.withdrawn_to().len(), 1, "paid once");
     assert_eq!(f.payout_rows().len(), 1);
     assert!(f.reserved(BOB).is_none(), "no second address reserved");

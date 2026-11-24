@@ -4866,6 +4866,69 @@ fn a_drain_lease_starts_no_registration() {
     assert_eq!(lease.available(BudgetPurpose::Funding).unwrap(), 10 * COIN);
 }
 
+/// A contact payout's lease, from either source, starts or resumes no
+/// registration: refused `grant_invalid`, nothing funded or signed, the
+/// lease unchanged, its signers included.
+#[test]
+fn a_payout_lease_starts_or_resumes_no_registration() {
+    use crate::platform::PaymentSource;
+    for source in [PaymentSource::Shielded, PaymentSource::Platform] {
+        let f = fixture(false);
+        let lib = f.fake();
+        let g = f.grant(0, 1_000, Credential::None);
+        let s = Arc::clone(&f.session);
+        let flow = FlowKind::ContactPayFromBalance;
+        let id = (f.engine)
+            .block_on(async move { s.begin_flow(f.wallet, flow, vec![g], Some(source)).await })
+            .unwrap();
+        let lease = f.session.lease_for(&f.wallet, &id).unwrap().unwrap();
+        let held = |l: &Lease| {
+            let signers = (
+                l.call_platform_address_signer().is_ok(),
+                l.call_shielded_spend_key().is_ok(),
+            );
+            (l.state(), l.available(BudgetPurpose::Credits), signers)
+        };
+        let before = held(&lease);
+        assert_eq!(
+            before.2,
+            (
+                source == PaymentSource::Platform,
+                source == PaymentSource::Shielded
+            )
+        );
+        let started = f.engine.block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            request(PLAIN),
+            id.clone(),
+        ));
+        assert_eq!(
+            started.unwrap_err().code(),
+            "platform.grant_invalid",
+            "{source:?}"
+        );
+        assert!(f.rows().is_empty());
+        let draft = f.insert(core_row(PLAIN));
+        let resumed = f.engine.block_on(registration::resume(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            &draft.to_string(),
+            Some(id.clone()),
+        ));
+        assert_eq!(
+            resumed.unwrap_err().code(),
+            "platform.grant_invalid",
+            "{source:?}"
+        );
+        assert!(!f.running(draft));
+        assert_eq!(lib.counts(), (0, 0), "nothing funded or created");
+        assert_eq!(held(&lease), before, "{source:?}");
+    }
+}
+
 /// A contact payout's lease a registration run holds (its grant named it)
 /// is never rebound by a resume: the resume is refused `grant_invalid`, the
 /// fresh grant stays unredeemed and the lease never gets a Platform address
