@@ -8,9 +8,9 @@ import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./h
 
 const shots = process.env.DW_ROUTE_SHOTS;
 
-async function open(page: Page, scenario: string, theme: Theme) {
+async function open(page: Page, scenario: string, theme: Theme, extra = "") {
   const errors = trackPageErrors(page);
-  await page.goto(fixtureUrl(scenario, theme));
+  await page.goto(fixtureUrl(scenario, theme, extra));
   await page.getByTestId("hero").waitFor();
   return errors;
 }
@@ -35,6 +35,32 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("history-gap-reset")).toHaveText("Reset chain data and resync…");
     await expect(page.getByTestId("history-gap-not-now")).toHaveText("Not now");
     await shoot(page, `home-history-gap-${theme}`);
+    expect(errors).toEqual([]);
+  });
+
+  test(`the reset asks, works, and says why it was refused (${theme})`, async ({ page }) => {
+    const errors = await open(page, "history-gap", theme);
+    await page.getByTestId("history-gap-reset").click();
+    await expect(page.getByTestId("history-gap-confirm-ok")).toBeVisible();
+    await shoot(page, `home-history-gap-confirm-${theme}`);
+
+    await open(page, "history-gap", theme, "&hold=reset_chain_data");
+    await page.getByTestId("history-gap-reset").click();
+    await page.getByTestId("history-gap-confirm-ok").click();
+    await expect(page.getByTestId("history-gap-reset")).toBeDisabled();
+    await expect(page.getByTestId("history-gap-not-now")).toBeDisabled();
+    await shoot(page, `home-history-gap-working-${theme}`);
+
+    for (const [scenario, name] of [
+      ["history-gap-mixing", "mixing"],
+      ["history-gap-settling", "settling"],
+    ]) {
+      await open(page, scenario, theme);
+      await page.getByTestId("history-gap-reset").click();
+      await page.getByTestId("history-gap-confirm-ok").click();
+      await expect(page.getByTestId("history-gap-error")).toBeVisible();
+      await shoot(page, `home-history-gap-refused-${name}-${theme}`);
+    }
     expect(errors).toEqual([]);
   });
 
