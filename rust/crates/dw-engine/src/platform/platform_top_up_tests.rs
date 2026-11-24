@@ -822,6 +822,39 @@ fn an_exit_platform_refuses_after_signing_is_recorded() {
     assert!(exit.signed && exit.can_land);
 }
 
+/// An exit beside a held top-up that Platform's stateless checks refuse
+/// for good, every input signed, fails alone: only a send's exact retry
+/// releases the record it names, so the top-up still holds, its inputs
+/// stay held, and the next quote is its exit again.
+#[test]
+fn an_exit_refused_for_good_leaves_its_top_up_held() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    let top_up = w.moves()[0].id.clone();
+    w.net.then(Act::Invalid);
+    let refused = w.exit(&q, &w.f.grant(q.credits)).unwrap_err();
+    assert_ne!(refused.code(), "credits.quote_changed");
+    let moves = w.moves();
+    assert_eq!(moves.len(), 2);
+    let exit = moves.iter().find(|m| m.id != top_up).unwrap();
+    assert!(exit.signed, "every input signed");
+    assert_eq!(
+        (exit.state, exit.can_land),
+        (PlatformActivityState::Failed, false)
+    );
+    let held = moves.iter().find(|m| m.id == top_up).unwrap();
+    assert!(held.holds(), "the top-up still holds");
+
+    let again = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(again.exit_of, Some(top_up));
+    let out = w.exit(&again, &w.f.grant(again.credits)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    let sent = w.net.sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[2][&a].0, sent[0][&a].0, "at the top-up's nonce");
+}
+
 /// The same race with no `exit_of`: as before it, the move is planned on the
 /// read under the lock, an ordinary withdrawal of what the addresses hold.
 #[test]
