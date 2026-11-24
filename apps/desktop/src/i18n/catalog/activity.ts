@@ -16,4 +16,27 @@ export const activity = {
     /** The row's copy button. */
     copyRawTransaction: "Copy raw transaction",
   },
+  /** The details of a Shielded or Platform-address row, from its own activity record. */
+  sourceDetail: {
+    title: "Transaction details",
+    loading: "Loading details",
+    /** The record left the list while its details were open. */
+    gone: "This activity is no longer listed.",
+    status: {
+      confirmed: "Confirmed",
+      pending: "Pending",
+      notAccepted: "Not accepted",
+    },
+    /** The text the sender attached to a Shielded payment. */
+    memo: "Memo",
+    from: "From",
+    to: "To",
+    /** The wallet's own Platform address that a Platform row changed. */
+    platformAddress: "Platform address",
+    fee: "Fee",
+    /** A Platform send whose fee is the estimate it was charged. */
+    feeEstimated: "Fee (estimated)",
+    platformBlock: "Platform block",
+    copyAddress: "Copy address",
+  },
 } as const satisfies Tree;

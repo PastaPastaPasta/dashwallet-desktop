@@ -25,7 +25,7 @@ import { DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 250;
 
-/** A Platform or Shielded row among the Core ones: titled and tagged, and it opens nothing. */
+/** A Platform or Shielded row among the Core ones: titled and tagged; it opens its own details. */
 const decorateSource = (row: TxRow): RowDecor => {
   const source = rowSource(row);
   if (!source) return {};
@@ -33,7 +33,6 @@ const decorateSource = (row: TxRow): RowDecor => {
   return {
     title: sourceRowTitle(row),
     tag: SOURCE_TAG[source],
-    readOnly: true,
     ...(replaced ? { note: SourceRowText.replaced, hideAmount: true } : isMayLandRow(row) ? { note: SourceRowText.mayLand } : {}),
   };
 };

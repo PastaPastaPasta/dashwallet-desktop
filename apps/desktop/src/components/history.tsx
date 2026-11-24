@@ -76,8 +76,6 @@ export interface RowDecor {
   leading?: ReactNode;
   /** The row's source, as a tag beside the time (Platform rows among the Core ones). */
   tag?: string;
-  /** The row opens nothing: it is not a button. */
-  readOnly?: boolean;
   /** Replaces the status chip with a neutral note (not a problem). */
   note?: string;
   /** The row shows no amount (it has none to show). */
@@ -118,15 +116,9 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
   );
   return (
     <li className="tx-row-item">
-      {decor?.readOnly ? (
-        <div className="tx-row is-readonly" data-testid={rowTestId(row)} data-txid={row.txid}>
-          {body}
-        </div>
-      ) : (
-        <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>
-          {body}
-        </button>
-      )}
+      <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>
+        {body}
+      </button>
     </li>
   );
 }

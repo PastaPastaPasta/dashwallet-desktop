@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
-import { filterExtra, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
+import { filterExtra, findSourceRecord, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
 
 const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity => ({
   id,
@@ -178,5 +178,31 @@ describe("merging into Activity", () => {
   it("returns the Core rows as they are without extra rows", () => {
     const rows = [core("c1", 1)];
     expect(mergeActivity(rows, false, [])).toBe(rows);
+  });
+});
+
+describe("findSourceRecord", () => {
+  const platform = [act("pa-1"), act("pm-1", { kind: "moveToCore", state: "failed", mayLand: true, address: null, to: "yCore" })];
+  const shielded = [shield("sh-1"), shield("sh-2", { kind: "sent", direction: "out", memo: null })];
+
+  it("finds the record a row was made from, with that row", () => {
+    const found = findSourceRecord(shieldedRow(shielded[0]).txid, platform, shielded);
+    expect(found?.source).toBe("shielded");
+    expect(found?.record).toBe(shielded[0]);
+    expect(found?.row).toEqual(shieldedRow(shielded[0]));
+    expect(findSourceRecord("platform:incoming:pa-1", platform, shielded)?.record).toBe(platform[0]);
+  });
+
+  it("keeps a move whose state changed while its details are open", () => {
+    expect(findSourceRecord("platform:moveToCore:pm-1:mayland", platform, shielded)?.record).toBe(platform[1]);
+    const replaced = [act("pm-1", { kind: "moveToCore", state: "replaced", address: null })];
+    expect(findSourceRecord("platform:moveToCore:pm-1:mayland", replaced, shielded)?.record).toBe(replaced[0]);
+  });
+
+  it("finds nothing for a Core txid, another source, or a record the read no longer has", () => {
+    expect(findSourceRecord("ab".repeat(32), platform, shielded)).toBeNull();
+    expect(findSourceRecord("shielded:received:pa-1", platform, shielded)).toBeNull();
+    expect(findSourceRecord("shielded:received:sh-9", platform, shielded)).toBeNull();
+    expect(findSourceRecord("platform:incoming:pa-1", undefined, shielded)).toBeNull();
   });
 });
