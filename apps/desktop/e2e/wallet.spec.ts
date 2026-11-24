@@ -841,6 +841,15 @@ test.describe("Activity", () => {
     expect(errors).toEqual([]);
   });
 
+  test("Abandon isn't offered for a payment a settled later payment spends from", async ({ page }) => {
+    const errors = await open(page, "abandon-settled-child-hidden");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5d".repeat(32)}"]`).first().click();
+    await expect(page.getByTestId("tx-detail")).toContainText("Waiting for confirmation");
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
   test("a settledDescendant refusal says why the payment can't be abandoned", async ({ page }) => {
     const errors = await open(page, "abandon-settled-child");
     await page.getByTestId("sidebar-activity").click();

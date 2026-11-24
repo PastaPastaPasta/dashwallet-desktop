@@ -307,6 +307,9 @@ describe("fixture send engine", () => {
       data: { kind: "txAction", refusal: "rescanFirst" },
     });
     clearMocks();
+    installFixture({ scenario: "abandon-settled-child-hidden" });
+    expect(await cmd.txDetailExtras(W, "5d".repeat(32))).toMatchObject({ canAbandon: false, abandoned: false });
+    clearMocks();
     installFixture({ scenario: "abandon-settled-child" });
     const held = "5c".repeat(32);
     expect(await cmd.txDetailExtras(W, held)).toMatchObject({ canAbandon: true, abandoned: false });
