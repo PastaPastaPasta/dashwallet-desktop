@@ -74,4 +74,14 @@ abandonSpend: AbandonSpendView | null,
  * The recovery read lists `mn_shared_resend_abandon`: the latest abandon
  * spend's saved bytes again, charged exactly this, its grant cap.
  */
-resendAbandonCharge: number | null, };
+resendAbandonCharge: number | null,
+/**
+ * The recorded transactions Activity can abandon now: the spend back,
+ * or this wallet's own transaction spending a reserved coin.
+ */
+activityAbandonTxids: Array<string>,
+/**
+ * The recorded transactions Activity can send again now: the spend
+ * back, when the session holds no bytes of its own to replay.
+ */
+activityResendTxids: Array<string>, };
