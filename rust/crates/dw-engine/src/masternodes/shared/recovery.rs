@@ -27,7 +27,7 @@ use super::super::shared_records::{
 };
 use super::key_change;
 use super::key_change::KeyChange;
-use super::store::{ChainView, Loaded, reserved_of, session_hash, unreadable_view};
+use super::store::{ChainView, Loaded, reserved_of, session_hash, signed_inputs, unreadable_view};
 use crate::coins::{own_address_info, read_coins};
 use crate::history::TxEntry;
 use crate::send::plan::{dust_threshold, fee_for};
@@ -151,10 +151,11 @@ pub(super) enum AbandonCoins {
     HeldInFlight,
     /// The wallet can't sign for a reserved coin it holds.
     NoOwnershipPath { outpoint: OutPoint },
-    /// No reserved coin is held, and this unconfirmed, not abandoned
-    /// history transaction spends one.
+    /// No reserved coin is held (none of the session's own signed
+    /// transaction's inputs, with its bytes saved), and this unconfirmed,
+    /// not abandoned history transaction spends one.
     BlockedByWalletTx { txid: Txid },
-    /// No reserved coin is held, and no such transaction is known.
+    /// No such coin is held, and no such transaction is known.
     Unavailable,
     /// The held coins don't include every outpoint a new spend must take
     /// to conflict with every earlier abandon spend.
@@ -183,6 +184,9 @@ pub(super) struct CoinFacts {
     /// With an abandon spend signed: its id (when it parses) and the
     /// outpoints a new one must take.
     pub latest: Option<(Option<Txid>, Vec<OutPoint>)>,
+    /// The inputs of the session's own transaction whose signed bytes the
+    /// row saved: a new spend conflicts with it only by taking one.
+    pub signed: Option<Vec<OutPoint>>,
 }
 
 impl CoinFacts {
@@ -219,7 +223,9 @@ impl CoinFacts {
                 outpoint: u.outpoint,
             };
         }
-        if self.held.is_empty() {
+        let conflicts = (self.signed.as_ref())
+            .is_none_or(|inputs| self.held_outpoints().any(|o| inputs.contains(&o)));
+        if self.held.is_empty() || !conflicts {
             return match self.blocker(history) {
                 Some(txid) => AbandonCoins::BlockedByWalletTx { txid },
                 None => AbandonCoins::Unavailable,
@@ -384,6 +390,7 @@ impl NetworkSession {
             pending: self.spends.snapshot(&wallet),
             own: own_txids(row, chain, self.network.core_network()),
             latest,
+            signed: signed_inputs(row),
         })
     }
 
@@ -622,7 +629,7 @@ impl NetworkSession {
             ),
             false => (
                 Loaded::of(row.clone(), network)
-                    .map(|l| l.own_inputs())
+                    .map(|l| l.conflict_inputs())
                     .unwrap_or_else(|_| reserved_of(row)),
                 txid_of(session.pro_tx_hash.as_deref()).or(txid_of(row.txid.as_deref())),
             ),

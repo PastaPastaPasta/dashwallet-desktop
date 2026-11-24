@@ -1082,8 +1082,8 @@ fn restore(f: &Fx, w: usize, id: &str, before: &dw_appdb::SharedSessionRow) {
         .execute(
             "UPDATE shared_mn_sessions SET envelope = ?1, contribution = ?2,
                  approved_terms = ?3, signed_tx = ?4, txid = ?5, out_at = ?6,
-                 last_error = ?7, updated_at = ?8
-             WHERE wallet_id = ?9 AND id = ?10",
+                 last_error = ?7, updated_at = ?8, reserved = ?9
+             WHERE wallet_id = ?10 AND id = ?11",
             rusqlite::params![
                 before.envelope,
                 before.contribution,
@@ -1093,6 +1093,7 @@ fn restore(f: &Fx, w: usize, id: &str, before: &dw_appdb::SharedSessionRow) {
                 before.out_at.map(|v| v as i64),
                 before.last_error,
                 before.updated_at as i64,
+                before.reserved,
                 f.wallets[w].to_string(),
                 id
             ],
@@ -1144,6 +1145,125 @@ fn test_a_refused_copy_carrying_our_signature_reads_possibly_out() {
         .run(f.mn().discard_shared_session(f.wallets[1], id.clone()))
         .unwrap_err();
     assert_eq!(code(e), "masternodes.shared_stage");
+}
+
+/// A coordinator whose database was restored from a backup of its draft
+/// taken before a fee change re-selected its coins: the draft records
+/// `{c1, c2}`, the registration sent spends `{c1, c3}`. Its Final Record,
+/// refused `older`, marks the session possibly out with the registration's
+/// bytes. The registration, its coins c1 and c3, and the held c2.
+fn restored_coordinator(f: &Fx) -> (String, Transaction, OutPoint) {
+    f.credit(1, 2, 300 * COIN + 50_000);
+    f.credit(2, 3, 350 * COIN);
+    let c1 = f.credit(0, 1, 399 * COIN + COIN / 2);
+    let c2 = f.credit(0, 4, COIN);
+    let req = request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
+    let id = start(f, 0, req).unwrap().session.id;
+    let mut drafted = vec![c1, c2];
+    drafted.sort();
+    assert_eq!(reserved_coins(f, 0, &id), drafted);
+    let before = f.row(0, &id);
+    let c3 = f.credit(0, 5, 2 * COIN);
+    f.run(f.mn().set_shared_fee(f.wallets[0], id.clone(), 2 * FEE))
+        .unwrap();
+    let mut chosen = vec![c1, c3];
+    chosen.sort();
+    assert_eq!(reserved_coins(f, 0, &id), chosen, "re-selected");
+    let invitation = f.message(0, &id);
+    for w in [1, 2] {
+        f.imported(w, &invitation);
+    }
+    for w in [1, 2] {
+        let joined = f.join(w, &id);
+        f.imported(0, &joined.message.text);
+    }
+    let locked = f.lock(0, &id).unwrap();
+    for w in [1, 2] {
+        f.imported(w, &locked.message.text);
+        let approval = f.approve(w, &id).unwrap();
+        f.imported(0, &approval.message.text);
+    }
+    f.both_signed(&id);
+    f.send(0, &id, 401 * COIN).unwrap();
+    let registration = f.net.sent()[0].clone();
+    assert!(chosen.iter().all(|c| inputs(&registration).contains(c)));
+    assert!(!inputs(&registration).contains(&c2));
+    let record = f.message(0, &id);
+    restore(f, 0, &id, &before);
+    assert_message(f.import(0, &record).unwrap_err(), "older");
+    let row = f.row(0, &id);
+    assert!(row.out_at.is_some(), "{row:?}");
+    assert_eq!(row.txid, Some(registration.txid().to_string()));
+    assert_eq!(reserved_coins(f, 0, &id), drafted);
+    f.record(0, &registration);
+    assert!(f.held_coin(0, c1).is_none() && f.held_coin(0, c2).is_some());
+    f.spv(true, 1);
+    (id, registration, c2)
+}
+
+/// [`restored_coordinator`]: the held c2 alone isn't an input of the
+/// registration, so its spend back wouldn't conflict with it; the read and
+/// the call take Activity's abandon of the registration as the exit instead.
+#[test]
+fn test_a_restored_draft_never_spends_back_beside_its_registration() {
+    let f = fx(3, true);
+    let (id, registration, _) = restored_coordinator(&f);
+    let r = f.recovery(0, &id);
+    assert_eq!(abandon_action(&r), None, "{r:?}");
+    assert!(
+        r.actions.contains(&RecoveryAction::AbandonWalletTx {
+            txid: registration.txid().to_string()
+        }),
+        "{r:?}"
+    );
+    assert_stage(f.abandon(0, &id).unwrap_err(), "sent");
+    assert_eq!(f.net.sent().len(), 1, "nothing spent back");
+}
+
+/// [`restored_coordinator`]: a spend of c2 in a block leaves the
+/// registration valid, so it settles nothing and the follower keeps the
+/// reservation.
+#[test]
+fn test_a_restored_draft_is_not_settled_by_a_coin_its_registration_never_spent() {
+    let f = fx(3, true);
+    let (id, _, c2) = restored_coordinator(&f);
+    f.mine_locked(foreign_spend(&[c2], 1), 60);
+    f.tip(60);
+    f.session.hub.tracker().set_chainlock_height(60);
+    let s = f.session_of(0, &id);
+    assert_eq!(s.stage, SharedStage::Sent);
+    assert_eq!(s.recovery.settlement, Settlement::None);
+    f.follow();
+    assert!(!reserved_coins(&f, 0, &id).is_empty(), "kept");
+}
+
+/// [`restored_coordinator`] with its envelope no longer parsing: read by
+/// its columns, a spend of c2 in a block doesn't settle it, so the follower
+/// keeps the reservation and the abandon refuses at its out stage, not
+/// `conflicted`.
+#[test]
+fn test_an_unreadable_restored_draft_is_not_settled_by_a_coin_its_registration_never_spent() {
+    let f = fx(3, true);
+    let (id, _, c2) = restored_coordinator(&f);
+    let conn =
+        rusqlite::Connection::open(f.session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.execute(
+        "UPDATE shared_mn_sessions SET envelope = '{' WHERE wallet_id = ?1 AND id = ?2",
+        rusqlite::params![f.wallets[0].to_string(), id],
+    )
+    .unwrap();
+    f.mine_locked(foreign_spend(&[c2], 1), 60);
+    f.tip(60);
+    f.session.hub.tracker().set_chainlock_height(60);
+    f.follow();
+    assert!(!reserved_coins(&f, 0, &id).is_empty(), "kept");
+    let e = f
+        .run(
+            f.mn()
+                .abandon_unreadable_shared_session(f.wallets[0], id.clone(), f.grant(0, COIN)),
+        )
+        .unwrap_err();
+    assert_stage(e, "sent");
 }
 
 /// A refused copy spending one of our own inputs fifty times, each with our

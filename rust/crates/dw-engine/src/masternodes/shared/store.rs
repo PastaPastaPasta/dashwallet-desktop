@@ -128,6 +128,25 @@ pub(crate) struct Approved {
     pub consent_hash: String,
 }
 
+/// The inputs of the session's own transaction whose signed bytes `row`
+/// saved (the registration sent, this wallet's signed copy, or a refused
+/// copy marked possibly out), when they parse.
+pub(crate) fn signed_inputs(row: &SharedSessionRow) -> Option<Vec<OutPoint>> {
+    let tx = SpecialTx::from_bytes(row.signed_tx.as_deref()?).ok()?;
+    Some(tx.input.iter().map(|i| i.previous_output).collect())
+}
+
+/// The reserved coins whose spend conflicts with the session's own
+/// transaction, read from `row`'s columns: with its signed bytes saved,
+/// those they spend ([`Loaded::conflict_inputs`]'s rule).
+pub(crate) fn conflict_coins(row: &SharedSessionRow) -> Vec<OutPoint> {
+    let reserved = reserved_of(row);
+    match signed_inputs(row) {
+        Some(spent) => reserved.into_iter().filter(|o| spent.contains(o)).collect(),
+        None => reserved,
+    }
+}
+
 /// `"txid:vout"` strings, as `reserved` and [`Recorded::inputs`] hold them.
 pub(crate) fn encode_outpoints(outpoints: &[OutPoint]) -> Vec<String> {
     outpoints
@@ -200,7 +219,7 @@ pub(crate) fn unreadable_view(row: &SharedSessionRow, chain: &ChainView) -> Unre
         abandonable: row.out_at.is_some()
             && kind != SharedKind::DissolveTogether
             && settled_by_columns(row, chain).is_none()
-            && chain.holds_any(&reserved_of(row)),
+            && chain.holds_any(&conflict_coins(row)),
         abandon_charge: None,
         reserved: serde_json::from_str::<Vec<String>>(&row.reserved).unwrap_or_default(),
         updated_at: row.updated_at,
@@ -382,6 +401,18 @@ impl Loaded {
             .unwrap_or_default()
     }
 
+    /// The own inputs whose spend conflicts with the session's transaction:
+    /// with its signed bytes saved, those they spend (a refused copy marked
+    /// possibly out may spend fewer than a side restored from an older
+    /// backup records, MG-10 §4.4).
+    pub fn conflict_inputs(&self) -> Vec<OutPoint> {
+        let own = self.own_inputs();
+        match signed_inputs(&self.row) {
+            Some(spent) => own.into_iter().filter(|o| spent.contains(o)).collect(),
+            None => own,
+        }
+    }
+
     pub fn out(&self) -> bool {
         self.row.out_at.is_some()
     }
@@ -524,7 +555,7 @@ pub(crate) fn releasable(
     let (txid, inputs) = match Loaded::of(row.clone(), network) {
         Ok(l) => match derive_stage(&l, chain) {
             SharedStage::Confirmed { .. } | SharedStage::Dead { .. } => return true,
-            SharedStage::Conflicted => (session_hash(&l, chain).or(stored), l.own_inputs()),
+            SharedStage::Conflicted => (session_hash(&l, chain).or(stored), l.conflict_inputs()),
             _ => return false,
         },
         Err(_) => return releasable_by_columns(row, chain, buried),
@@ -535,15 +566,14 @@ pub(crate) fn releasable(
 /// A row whose envelope no longer parses, judged by its stored columns
 /// alone (BL-346 (c)): its stored transaction in a block releases it; not
 /// out, a spent reserved coin does (it can no longer be signed); out, a
-/// buried spend of a reserved coin does. Registrations and key changes
-/// alike, so no unreadable session holds its coins with no way out.
+/// buried spend of a [`conflict_coins`] coin does. Registrations and key
+/// changes alike, so no unreadable session holds its coins with no way out.
 pub(crate) fn releasable_by_columns(
     row: &SharedSessionRow,
     chain: &ChainView,
     buried: impl Fn(u32) -> bool,
 ) -> bool {
     let stored = stored_txid(row);
-    let reserved = reserved_of(row);
     let confirmed = stored.and_then(|t| chain.confirmed_height(&t));
     if kind_of(&row.kind) == SharedKind::KeyChange {
         if confirmed.is_some_and(&buried) {
@@ -553,20 +583,20 @@ pub(crate) fn releasable_by_columns(
         return true;
     }
     if row.out_at.is_none() {
-        return reserved.iter().any(|o| !chain.unspent.contains(o));
+        return reserved_of(row).iter().any(|o| !chain.unspent.contains(o));
     }
-    conflict_height(&chain.history, &reserved, stored.as_ref()).is_some_and(buried)
+    conflict_height(&chain.history, &conflict_coins(row), stored.as_ref()).is_some_and(buried)
 }
 
 /// A row whose envelope no longer parses, settled by its stored columns:
-/// its stored transaction in a block (`confirmed`), or a reserved coin
-/// spent in a block by another (`conflicted`).
+/// its stored transaction in a block (`confirmed`), or a
+/// [`conflict_coins`] coin spent in a block by another (`conflicted`).
 pub(crate) fn settled_by_columns(row: &SharedSessionRow, chain: &ChainView) -> Option<SharedStage> {
     let stored = stored_txid(row);
     if let Some(height) = stored.and_then(|t| chain.confirmed_height(&t)) {
         return Some(SharedStage::Confirmed { height });
     }
-    conflict_height(&chain.history, &reserved_of(row), stored.as_ref())
+    conflict_height(&chain.history, &conflict_coins(row), stored.as_ref())
         .map(|_| SharedStage::Conflicted)
 }
 
@@ -609,13 +639,13 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
     if let Some(height) = txid.as_ref().and_then(|t| chain.confirmed_height(t)) {
         return SharedStage::Confirmed { height };
     }
-    let own = l.own_inputs();
     if l.out() {
-        if conflict_height(&chain.history, &own, txid.as_ref()).is_some() {
+        if conflict_height(&chain.history, &l.conflict_inputs(), txid.as_ref()).is_some() {
             return SharedStage::Conflicted;
         }
         return out_stage(l.role);
     }
+    let own = l.own_inputs();
     if !own.is_empty() && own.iter().any(|o| !chain.unspent.contains(o)) {
         return SharedStage::Dead {
             reason: DeadReason::InputsSpent,
