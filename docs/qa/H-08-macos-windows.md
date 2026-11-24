@@ -223,7 +223,7 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
        - run E: the lock screen, not Welcome, and the passphrase unlocks. Run S: the wallet opens with no
          passphrase. A macOS Keychain prompt to let Dash Wallet use its own item is a finding if **Always Allow**
          makes it go away, and a failure if it does not or the wallet reports a missing key;
-       - the network is Testnet; Settings ▸ About shows the candidate's `X.Y.Z`;
+       - the network is Testnet; Settings ▸ About shows the candidate's `X.Y.Z-rc.N`;
        - everything in baseline 1 is the same (statuses may have moved on to more confirmations or ChainLocked);
        - Tools ▸ Sign/Verify verifies the baseline signature, and signing `h08 upgrade` with the same address gives
          the same signature.
