@@ -84,7 +84,8 @@ export function RegisterSheet({
   const id = useId();
   const refresh = useMasternodesRefresh();
   const queryClient = useQueryClient();
-  const overview = useMasternodes(wallet.walletId);
+  // Held, the wizard follows the page's list but never reads it again on its own; Try again is the page's.
+  const overview = useMasternodes(wallet.walletId, true, sends);
   const [step, setStep] = useState<Step>(resume ? "prove" : "type");
   const [d, setD] = useState<RegDraft>(newDraft);
   const [errors, setErrors] = useState<FieldErrors>({});
@@ -147,7 +148,7 @@ export function RegisterSheet({
   }, [keys.isError, keys.error]);
 
   const cap = op && step === "prove" ? op.debit : op && op.state.kind === "not_sent" ? op.debit : figures ? registerCap(figures) : null;
-  const credential = useCredential(wallet.walletId, t(`${R}.review.ask`), cap);
+  const credential = useCredential(wallet.walletId, t(`${R}.review.ask`), cap, sends);
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -447,7 +448,7 @@ export function RegisterSheet({
               </span>
             ) : (
               <>
-                <input data-testid="reg-operator-key" className="mono" value={d.operatorKey} autoComplete="off" spellCheck={false} data-autofocus onChange={(e) => set({ operatorKey: e.target.value })} {...fieldProps("operatorKey")} />
+                <input data-testid="reg-operator-key" className="mono" value={d.operatorKey} autoComplete="off" spellCheck={false} data-autofocus={askDiscard ? undefined : true} onChange={(e) => set({ operatorKey: e.target.value })} {...fieldProps("operatorKey")} />
                 {self && (
                   <DashButton variant="plainBlue" size="small" data-testid="reg-operator-use-wallet" onClick={() => set({ operatorFromWallet: true, operatorKey: "" })}>
                     {t(`${R}.operator.useWallet`)}
@@ -551,13 +552,17 @@ export function RegisterSheet({
       preview.isPending || (preview.data && !figures) ? (
         <LoadingState testId="reg-preview-loading" text={t(`${R}.review.checking`)} />
       ) : figures ? (
-        <Review d={d} p={figures} amount={amount} changed={changed} />
+        <Review d={d} p={figures} amount={amount} />
       ) : null;
   else if (step === "prove" && op)
     body = (
       <>
         <h4 className="mg-section-title">{t(`${R}.prove.heading`)}</h4>
-        <p className="mg-small">{t(`${R}.prove.text`, { outpoint: op.terms.collateralOutpoint ? shortOutpoint(op.terms.collateralOutpoint) : "" })}</p>
+        {!needsNewMessage && (
+          <p className="mg-small" data-testid="reg-prove-text">
+            {t(`${R}.prove.text`, { outpoint: op.terms.collateralOutpoint ? shortOutpoint(op.terms.collateralOutpoint) : "" })}
+          </p>
+        )}
         {op.signRequest && !needsNewMessage && (
         <dl className="detail-list card-l1" data-testid="reg-sign-request">
           <DetailRow label={t(`${R}.prove.address`)}>
@@ -596,7 +601,7 @@ export function RegisterSheet({
         ) : (
           <label className={`mg-field mg-span ${errors.signature ? "has-error" : ""}`}>
             {t(`${R}.prove.signature`)}
-            <textarea data-testid="reg-signature" className="mono" rows={3} value={signature} autoComplete="off" spellCheck={false} data-autofocus onChange={(e) => setSignature(e.target.value)} {...fieldProps("signature")} />
+            <textarea data-testid="reg-signature" className="mono" rows={3} value={signature} autoComplete="off" spellCheck={false} data-autofocus={askDiscard ? undefined : true} onChange={(e) => setSignature(e.target.value)} {...fieldProps("signature")} />
             <span className="mg-field-help">{t(`${R}.prove.signatureHelp`)}</span>
             {fieldError("signature")}
           </label>
@@ -632,10 +637,18 @@ export function RegisterSheet({
   const action = finalAction(step, external, sends);
   const sendOff = action === "sendOff";
   const notSent = step === "done" && op?.state.kind === "not_sent";
+  // Review, Prove and Not sent keep their messages beside the passphrase and the action, in the
+  // sticky footer, so a long step can't scroll them out of view.
+  const messagesInFooter = reviewing || proving || notSent;
+  const generalLine = (
+    <p className="form-problem" role="alert" data-testid="reg-general">
+      {general}
+    </p>
+  );
   const title = d.kind === "evonode" || op?.terms.masternodeType === "evonode" ? t(`${R}.titleEvonode`) : t(`${R}.titleRegular`);
   const count = external || proving ? STEPS.length + 1 : STEPS.length;
   return (
-    <Sheet title={title} width="large" testId="reg-sheet" closable={!busy} focusKey={step} onClose={close}>
+    <Sheet title={title} width="large" testId="reg-sheet" closable={!busy} focusKey={askDiscard ? "discard" : step} onClose={close}>
       <form
         className="mg-sheet-body"
         onSubmit={(e) => {
@@ -657,25 +670,21 @@ export function RegisterSheet({
           <div className="mg-step" data-testid={`reg-step-${step}`}>
             <h3 className="mg-step-title">{stepHeading(step, d.kind, d.runner === "self", t)}</h3>
             {body}
-            {sendOff ? (
+            {sendOff && (
               <p className="mg-notice mg-notice-warning" data-testid="reg-send-off">
                 {t(`${R}.sendOff`)}
               </p>
-            ) : (
-              ((reviewing && !external) || proving || notSent) && <CredentialField c={credential} busy={busy} testId="reg" />
             )}
-            <p className="form-problem" role="alert" data-testid="reg-general">
-              {general}
-            </p>
+            {!messagesInFooter && generalLine}
           </div>
         </div>
         {askDiscard ? (
           <footer className="mg-sheet-footer" data-testid="reg-discard">
-            <span className="mg-sheet-footer-note">
+            <span className="mg-sheet-footer-note" id={`${id}-discard-note`}>
               <strong>{t(`${R}.discardTitle`)}</strong> {t(`${R}.discardText`)}
             </span>
             <span className="mg-actions">
-              <DashButton variant="tintedGray" size="medium" data-testid="reg-keep" onClick={() => setAskDiscard(false)}>
+              <DashButton variant="tintedGray" size="medium" data-testid="reg-keep" data-autofocus aria-describedby={`${id}-discard-note`} onClick={() => setAskDiscard(false)}>
                 {t(`${R}.keepEditing`)}
               </DashButton>
               <DashButton variant="plainRed" size="medium" data-testid="reg-discard-confirm" onClick={onClose}>
@@ -685,6 +694,17 @@ export function RegisterSheet({
           </footer>
         ) : (
           <footer className="mg-sheet-footer mg-sheet-footer-sticky">
+            {messagesInFooter && (
+              <div className="mg-sheet-footer-credential">
+                {reviewing && changed && (
+                  <p className="mg-notice mg-notice-warning" role="alert" data-testid="reg-changed">
+                    {t(`${R}.review.changed`)}
+                  </p>
+                )}
+                {generalLine}
+                {!sendOff && ((reviewing && !external) || proving || notSent) && <CredentialField c={credential} busy={busy} testId="reg" />}
+              </div>
+            )}
             <span className="mg-sheet-footer-note">
               {step !== "done" && t(`${R}.stepOf`, { step: String(proving ? count : index + 1), count: String(count) })}
               {reviewing && figures && <span className="mg-small mg-muted"> {d.collateral === "fund_new" ? t(`${R}.review.withCollateral`) : external ? t(`${R}.review.external`) : t(`${R}.review.onlyFee`)}</span>}
@@ -762,7 +782,7 @@ function stepHeading(step: Step, kind: MasternodeTypeName, self: boolean, t: Ret
   }
 }
 
-function Review({ d, p, amount, changed }: { d: RegDraft; p: MnRegistrationPreview; amount: (duffs: number) => ReactNode; changed: boolean }) {
+function Review({ d, p, amount }: { d: RegDraft; p: MnRegistrationPreview; amount: (duffs: number) => ReactNode }) {
   const t = useT();
   const terms = p.terms;
   const self = d.runner === "self";
@@ -806,11 +826,6 @@ function Review({ d, p, amount, changed }: { d: RegDraft; p: MnRegistrationPrevi
         </DetailRow>
         <DetailRow label={t(`${R}.review.then`)}>{t(self ? `${R}.review.thenSelf` : `${R}.review.thenHosted`)}</DetailRow>
       </dl>
-      {changed && (
-        <p className="mg-notice mg-notice-warning" role="alert" data-testid="reg-changed">
-          {t(`${R}.review.changed`)}
-        </p>
-      )}
     </>
   );
 }

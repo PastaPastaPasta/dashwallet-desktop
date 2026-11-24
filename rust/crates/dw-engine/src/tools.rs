@@ -807,7 +807,7 @@ impl NetworkSession {
 
     /// Sets the wallet's birth height in wallet.sqlite, then in memory.
     /// Returns its filter checkpoint.
-    async fn store_birth_height(
+    pub(crate) async fn store_birth_height(
         &self,
         wallet_id: WalletId,
         height: u32,

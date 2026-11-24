@@ -11,6 +11,7 @@ import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { TxDetailExtrasInfo } from "../api/generated/TxDetailExtrasInfo";
 import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
+import type { WalletSummary } from "../api/generated/WalletSummary";
 import type { TxFiat } from "../api/generated/TxFiat";
 import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
 import { navigate, ui, useUi } from "../app/ui";
@@ -20,6 +21,7 @@ import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { CopyValue, DetailRow } from "../components/detail";
 import { findContact, subtitle } from "../contacts/model";
+import { recordUnreadableText, unreadableWallet } from "../history/recordUnreadable";
 import { contactListQuery, useContactsOwner } from "../contacts/queries";
 import { FiatLine, timeText, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
@@ -171,8 +173,11 @@ export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inpu
 }
 
 /** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`
- * refusal and why a `settledDescendant` one can't be abandoned from the catalog. */
-export function actionProblem(e: unknown): string {
+ * refusal, why a `settledDescendant` one can't be abandoned, and which open wallet (of `wallets`)
+ * a `recordUnreadable` one names from the catalog. */
+export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = []): string {
+  const unreadable = unreadableWallet(e);
+  if (unreadable !== undefined) return recordUnreadableText(unreadable, wallets);
   if (isAppError(e) && e.data?.kind === "txAction") {
     if (e.data.refusal === "rescanFirst") return t("activity.abandon.rescanFirst");
     if (e.data.refusal === "settledDescendant") return t("activity.abandon.settledChild");
@@ -203,7 +208,8 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       await client.invalidateQueries({ queryKey: keys.txDetailAll(walletId) });
       await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
     } catch (e) {
-      setNote({ text: actionProblem(e), problem: true });
+      const wallets = await b.listWallets().catch(() => []);
+      setNote({ text: actionProblem(e, wallets), problem: true });
     } finally {
       setBusy(false);
     }
