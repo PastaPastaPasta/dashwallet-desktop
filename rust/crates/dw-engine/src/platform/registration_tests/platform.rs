@@ -6,7 +6,9 @@ use dpp::address_funds::PlatformAddress;
 use super::*;
 use crate::platform::registration::{PlatformRegistrationQuote, RegistrationQuote};
 use crate::platform::registration_flow::is_unsupported;
-use crate::platform::registration_platform::{REGISTER_FEE_BAND, min_funding, register_fee};
+use crate::platform::registration_platform::{
+    FEATURE, REGISTER_FEE_BAND, min_funding, register_fee,
+};
 use crate::platform::registration_rows::PlatformPlan;
 
 const HELD: u64 = 900_000_000;
@@ -114,7 +116,7 @@ fn a_start_checks_the_quoted_numbers_and_writes_nothing() {
     let e = start(&f, &lib, quoted(&p));
     assert!(
         matches!(&e, RegistrationError::Platform(PlatformError::FeatureOff { feature })
-            if feature == "platform_registration"),
+            if feature == FEATURE),
         "{e:?}"
     );
     for changed in [
@@ -160,4 +162,31 @@ fn a_platform_row_is_never_run_by_this_build() {
         let draft = f.insert(row);
         assert!(is_unsupported(&f.row(draft)));
     }
+}
+
+/// Mainnet: off (flag `platform_registration`). On mainnet the quote and
+/// the start are refused before the addresses are read (the held move is
+/// never reached), the grant redeemed or a row written; a Core-funded
+/// registration is unchanged there.
+#[test]
+fn mainnet_refuses_a_platform_registration_before_anything_is_written() {
+    let f = fixture(false);
+    let lib = f.fake();
+    funded(&lib);
+    let p = quote(&f, &lib).unwrap().platform.unwrap();
+    lib.w().mainnet = true;
+    lib.w().platform_held = Some("move-7-0".into());
+    let off = |e: &RegistrationError| {
+        matches!(e, RegistrationError::Platform(PlatformError::FeatureOff { feature })
+            if feature == FEATURE)
+    };
+    let e = quote(&f, &lib).unwrap_err();
+    assert!(off(&e), "{e:?}");
+    let e = start(&f, &lib, quoted(&p));
+    assert!(off(&e), "{e:?}");
+    assert!(f.rows().is_empty());
+    let core = f
+        .engine
+        .block_on(registration::quote(&*lib, &request(PLAIN)));
+    assert!(core.unwrap().platform.is_none());
 }

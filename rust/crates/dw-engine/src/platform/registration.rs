@@ -26,6 +26,7 @@ use super::lease::{Lease, LeaseError};
 use super::names::valid_label;
 use super::registration_flow::{self as flow, PwLib, RegistrationLib};
 use super::registration_ledger::{Ledger, Standing};
+use super::registration_platform;
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
 use super::shielded::SHIELDED_ACTIVATION_VERSION;
 use super::shielded_pool::MIN_ACTIONS;
@@ -598,6 +599,7 @@ async fn plan<L: RegistrationLib>(
 /// names and profile take, at least dpp's funding minimum; Platform meters
 /// the create's fee from the first input, which keeps the reserve for it.
 async fn platform_plan<L: RegistrationLib>(lib: &L, base: Plan) -> Result<Plan, RegistrationError> {
+    registration_platform::refuse_on_mainnet(&lib.network())?;
     let planned = lib.platform_plan(base.credits).await?;
     let quote = PlatformRegistrationQuote {
         funding_credits: planned.funding_credits,
@@ -632,7 +634,7 @@ fn platform_start(
             && *fee_reserve_credits == quote.fee_reserve_credits =>
         {
             Err(PlatformError::FeatureOff {
-                feature: "platform_registration".into(),
+                feature: registration_platform::FEATURE.into(),
             }
             .into())
         }
@@ -868,10 +870,9 @@ pub(crate) async fn quote<L: RegistrationLib>(
     };
     // F5: the notes spent, or what the addresses may lose; then the names
     // and the profile.
-    let spent_credits = match (&plan.funding, &plan.platform) {
-        (Funding::Shielded { denomination, .. }, _) => *denomination,
-        (_, Some(platform)) => platform.debit_credits,
-        _ => 0,
+    let spent_credits = match &plan.funding {
+        Funding::Shielded { denomination, .. } => *denomination,
+        _ => plan.platform.as_ref().map_or(0, |p| p.debit_credits),
     };
     Ok(RegistrationQuote {
         contested: plan.contested,

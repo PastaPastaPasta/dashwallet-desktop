@@ -2778,3 +2778,6 @@ fn only_a_rise_beyond_an_applied_fund_is_incoming() {
 
 #[path = "platform_shield_tests.rs"]
 mod shield;
+
+#[path = "platform_register_tests.rs"]
+mod register;

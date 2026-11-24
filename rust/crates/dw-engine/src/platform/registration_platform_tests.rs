@@ -122,3 +122,57 @@ fn a_plan_that_cannot_pay_is_refused() {
     .unwrap_err();
     assert_eq!(e, PlatformError::Unavailable);
 }
+
+/// A reserve for two inputs leaves the first address out (it holds less);
+/// the next is input 0, and the last input's claim below the input minimum
+/// is raised to it, so the identity receives the claims' sum.
+#[test]
+fn a_last_claim_raised_to_the_input_minimum_is_funded() {
+    let funding = 25_000_000;
+    let min_input = version()
+        .dpp
+        .state_transitions
+        .address_funds
+        .min_input_amount;
+    let short = 50_000;
+    let p = plan(
+        &[
+            (1, reserve(1) + 200_000),
+            (2, reserve(2) + funding - short),
+            (3, 900_000_000),
+        ],
+        funding,
+    )
+    .unwrap();
+    assert_eq!(
+        p.inputs,
+        [
+            (address(2), (3, funding - short)),
+            (address(3), (4, min_input))
+        ]
+        .into()
+    );
+    assert_eq!(p.funding_credits, funding - short + min_input);
+    assert_eq!(p.fee_reserve_credits, reserve(2));
+    assert_eq!(p.fee_credits, register_fee(version(), 2, KEYS));
+}
+
+/// The flag: off on mainnet, on for every test network.
+#[test]
+fn the_flag_is_off_on_mainnet_only() {
+    assert_eq!(
+        refuse_on_mainnet(&DashNetwork::Mainnet),
+        Err(PlatformError::FeatureOff {
+            feature: "platform_registration".into()
+        })
+    );
+    for on in [
+        DashNetwork::Testnet,
+        DashNetwork::Regtest,
+        DashNetwork::Devnet {
+            name: "devnet-a".into(),
+        },
+    ] {
+        assert_eq!(refuse_on_mainnet(&on), Ok(()), "{on:?}");
+    }
+}

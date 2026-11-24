@@ -73,6 +73,10 @@ impl RegistrationLib for Hooked {
         self.fake.claim_hold()
     }
 
+    fn network(&self) -> DashNetwork {
+        self.fake.network()
+    }
+
     async fn invitation(
         &self,
         link_id: &str,

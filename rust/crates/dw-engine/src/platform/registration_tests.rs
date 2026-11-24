@@ -447,6 +447,8 @@ struct World {
     /// address's first byte), and a move that holds them.
     platform: BTreeMap<dpp::address_funds::PlatformAddress, u64>,
     platform_held: Option<String>,
+    /// The session's network reads as mainnet.
+    mainnet: bool,
     locks: Vec<LockInfo>,
     identities: Vec<(u32, String)>,
     names: Vec<(String, String)>,
@@ -1055,6 +1057,14 @@ impl RegistrationLib for Fake {
 
     async fn credit_balance(&self, _: &str) -> Result<Option<u64>, PlatformError> {
         Ok(Some(0))
+    }
+
+    fn network(&self) -> DashNetwork {
+        if self.w().mainnet {
+            DashNetwork::Mainnet
+        } else {
+            DashNetwork::Regtest
+        }
     }
 
     fn claim_hold(&self) -> Option<RegistrationWait> {

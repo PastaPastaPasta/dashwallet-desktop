@@ -13,7 +13,21 @@ use super::credits::WithdrawAmount;
 use super::errors::{CreditsError, PlatformError};
 use super::input0::{self, Input0Plan, Input0Refused, Input0Rules};
 use super::platform_moves::{self, MoveNet};
-use crate::{NetworkSession, WalletId};
+use crate::{DashNetwork, NetworkSession, WalletId};
+
+/// The flag of a registration from the Platform addresses: off on mainnet
+/// until its funds ruling, on for every test network.
+pub(crate) const FEATURE: &str = "platform_registration";
+
+/// `platform.feature_off{feature: FEATURE}` on mainnet.
+pub(crate) fn refuse_on_mainnet(network: &DashNetwork) -> Result<(), PlatformError> {
+    match network {
+        DashNetwork::Mainnet => Err(PlatformError::FeatureOff {
+            feature: FEATURE.into(),
+        }),
+        _ => Ok(()),
+    }
+}
 
 /// What input 0 keeps for the create's fee, as a multiple of dpp's minimum
 /// (the top-up's band, C-routes C3-3).
@@ -65,7 +79,7 @@ pub(crate) fn min_funding(version: &PlatformVersion) -> u64 {
 /// `balances`; with its fee estimate and the reserve input 0 keeps, the
 /// band of the fee for as many inputs as the plan takes. Refused, before
 /// anything is written, when no plan meets dpp's input and funding minimums.
-pub(crate) fn register_inputs(
+fn register_inputs(
     balances: &BTreeMap<PlatformAddress, u64>,
     funding: u64,
     keys: usize,
@@ -73,24 +87,24 @@ pub(crate) fn register_inputs(
 ) -> Result<(Input0Plan, u64, u64), PlatformError> {
     let funds = &version.dpp.state_transitions;
     let min_input = funds.address_funds.min_input_amount;
+    let amount = WithdrawAmount::Credits { credits: funding };
+    let mut rules = Input0Rules {
+        reserve: 0,
+        min_input,
+        max_inputs: funds.max_address_inputs as usize,
+        min_claim_0: min_input,
+        min_total: min_funding(version),
+    };
     let mut inputs = 1;
     loop {
-        let reserve = register_fee(version, inputs, keys).saturating_mul(REGISTER_FEE_BAND);
-        let rules = Input0Rules {
-            reserve,
-            min_input,
-            max_inputs: funds.max_address_inputs as usize,
-            min_claim_0: min_input,
-            min_total: min_funding(version),
-        };
-        let amount = WithdrawAmount::Credits { credits: funding };
+        rules.reserve = register_fee(version, inputs, keys).saturating_mul(REGISTER_FEE_BAND);
         let planned = input0::plan(balances, amount, &rules).map_err(|r| match r {
             Input0Refused::Short { needed, available } => {
                 PlatformError::InsufficientCredits { needed, available }
             }
             Input0Refused::ClaimBelow { min } | Input0Refused::TotalBelow { min } => {
                 PlatformError::InsufficientCredits {
-                    needed: min.saturating_add(reserve),
+                    needed: min.saturating_add(rules.reserve),
                     available: balances.values().copied().fold(0, u64::saturating_add),
                 }
             }
@@ -98,7 +112,7 @@ pub(crate) fn register_inputs(
         let taken = planned.inputs.len();
         // A reserve for more inputs than the plan took still covers its fee.
         if taken <= inputs {
-            return Ok((planned, register_fee(version, taken, keys), reserve));
+            return Ok((planned, register_fee(version, taken, keys), rules.reserve));
         }
         inputs = taken;
     }
@@ -118,11 +132,12 @@ pub(crate) fn register_plan(
     let funding = funding.max(min_funding(version));
     let (planned, fee_credits, fee_reserve_credits) =
         register_inputs(balances, funding, keys, version)?;
-    let mut inputs = BTreeMap::new();
-    for (address, credits) in planned.inputs {
-        let nonce = nonces.get(&address).ok_or(PlatformError::Unavailable)?;
-        inputs.insert(address, (nonce.saturating_add(1), credits));
-    }
+    let inputs: BTreeMap<_, _> = (planned.inputs.into_iter())
+        .map(|(address, credits)| {
+            let nonce = nonces.get(&address).ok_or(PlatformError::Unavailable)?;
+            Ok((address, (nonce.saturating_add(1), credits)))
+        })
+        .collect::<Result<_, PlatformError>>()?;
     let funding_credits = inputs
         .values()
         .map(|(_, c)| *c)
@@ -135,22 +150,21 @@ pub(crate) fn register_plan(
     })
 }
 
-/// [`register_plan`] from one proved read of the addresses under rule 5
-/// (C-funding F9). Refused while any move of the wallet may still execute
-/// (`credits.move_pending`): a registration signs no other record's terms.
+/// [`register_plan`] for the registration keys from one proved read of the
+/// addresses under rule 5 (C-funding F9). Refused while any move of the
+/// wallet may still execute (`credits.move_pending`): a registration signs
+/// no other record's terms.
 pub(crate) async fn register_quote(
     net: &impl MoveNet,
     session: &NetworkSession,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (funding, keys): (u64, usize),
+    funding: u64,
 ) -> Result<RegisterPlan, CreditsError> {
     let version = net.sends_version().await;
     platform_moves::sends_active(version)?;
     let read = platform_moves::proved_read(net, session, wallet, wallet_id).await?;
-    if let Some(id) = read.held {
-        return Err(CreditsError::MovePending { id });
-    }
+    let keys = super::keys_policy::registration_specs().len();
     Ok(register_plan(
         (&read.balances, &read.nonces),
         funding,

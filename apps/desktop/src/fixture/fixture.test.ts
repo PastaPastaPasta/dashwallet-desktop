@@ -229,6 +229,16 @@ describe("fixture backend", () => {
     await expect(
       cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits }, initialProfile: null }, "g"),
     ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "platform_registration" } });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits: "1" }, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "registration.quote_changed" });
+    // Mainnet: off (flag platform_registration).
+    clearMocks();
+    backend({ scenario: "dashpay-no-identity", network: "mainnet" });
+    await expect(quote("dashpaydesktopquote2", { kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" })).rejects.toMatchObject({
+      code: "platform.feature_off",
+      data: { feature: "platform_registration" },
+    });
   });
 
   it("opens a transaction on the window's network and refuses regtest and devnet", async () => {

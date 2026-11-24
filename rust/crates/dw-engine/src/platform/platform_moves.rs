@@ -1958,13 +1958,12 @@ fn covered(
 }
 
 /// One proved read of the payment account's addresses under rule 5, for a
-/// plan that signs no other record's terms.
+/// plan that signs no other record's terms: `credits.move_pending` while a
+/// move of the wallet holds nonces the read shows unused.
 pub(crate) struct ProvedRead {
     pub(crate) balances: BTreeMap<PlatformAddress, u64>,
     /// Platform's stored nonce of each address it holds.
     pub(crate) nonces: BTreeMap<PlatformAddress, u32>,
-    /// A move that may still execute, whose nonces the read shows unused.
-    pub(crate) held: Option<String>,
 }
 
 pub(crate) async fn proved_read(
@@ -1972,21 +1971,20 @@ pub(crate) async fn proved_read(
     session: &NetworkSession,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-) -> Result<ProvedRead, PlatformError> {
+) -> Result<ProvedRead, CreditsError> {
     let network = session.vault.network();
     let pool = pool(wallet).await?;
     let moves = Store::of(session, wallet_id)?.moves().await?;
     let seen = read(session, net, covered(&pool, &moves), true).await?;
-    let held = (moves.iter())
-        .find(|m| m.holds() && !m.reached(&seen))
-        .map(|m| m.id.clone());
+    if let Some(m) = (moves.iter()).find(|m| m.holds() && !m.reached(&seen)) {
+        return Err(CreditsError::MovePending { id: m.id.clone() });
+    }
     let nonces = (pool.keys())
         .filter_map(|a| Some((*a, seen.nonce(&bech32m(a, network))?)))
         .collect();
     Ok(ProvedRead {
         balances: proved_balances(&pool, &seen, network),
         nonces,
-        held,
     })
 }
 

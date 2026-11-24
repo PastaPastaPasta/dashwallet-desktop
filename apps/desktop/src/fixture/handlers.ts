@@ -20,7 +20,6 @@ import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { Budget } from "../api/generated/Budget";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
-import type { PlatformRegistrationQuote } from "../api/generated/PlatformRegistrationQuote";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FlowKindName } from "../api/generated/FlowKindName";
 import type { FundAmount } from "../api/generated/FundAmount";
@@ -45,7 +44,7 @@ import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { masternodesHandlers } from "./masternodes";
-import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers, shieldedQuote } from "./registration";
+import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedQuote } from "./registration";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
@@ -119,25 +118,6 @@ function published(dp: DashPayWorld, candidate: string) {
   if (!c) throw fail("invalid_argument", `invalid argument: ${unknown}`);
   if (c.url === null) throw fail("invalid_argument", `invalid argument: ${noUrl}`);
   return { ...c, url: c.url };
-}
-
-/** dpp's fee for an identity created from one address with six keys (2,000,000 + 500,000 +
- * 6 × 6,500,000), and the least such an identity receives. */
-const REGISTER_FEE_CREDITS = 41_500_000n;
-const MIN_IDENTITY_FUNDING = 200_000n;
-
-/** DashPay::registration_quote for Platform funding (registration_platform.rs): the identity receives
- * the name's credits, at least dpp's minimum; the first address keeps three fees. The fixture plans
- * one input, so the address must hold both. */
-function platformRegistration(w: World, nameCredits: bigint): PlatformRegistrationQuote {
-  const p = w.pending.platform;
-  if (p === null) throw fail("platform.feature_off", "platform", { kind: "feature", feature: "platform" });
-  const funding = nameCredits > MIN_IDENTITY_FUNDING ? nameCredits : MIN_IDENTITY_FUNDING;
-  const reserve = 3n * REGISTER_FEE_CREDITS;
-  const best = p.addresses.reduce((n, a) => (BigInt(a.credits) > n ? BigInt(a.credits) : n), 0n);
-  if (best < funding + reserve)
-    throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(funding + reserve), available: String(best) });
-  return { fundingCredits: String(funding), feeCredits: String(REGISTER_FEE_CREDITS), feeReserveCredits: String(reserve), debitCredits: String(funding + reserve) };
 }
 
 function contact(w: World, walletId: string, identity: string, id: string): ContactDetailInfo {
@@ -1095,22 +1075,8 @@ export const HANDLERS: Handlers = {
     }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     if (funding.kind === "shielded") return shieldedQuote(label, world.pending.shielded);
+    if (funding.kind === "platformAddresses") return platformQuote(label, world.pending.platform, world.launch.network.kind === "mainnet");
     const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label);
-    if (funding.kind === "platformAddresses") {
-      const platform = platformRegistration(world, credits);
-      const debit = BigInt(platform.debitCredits);
-      return {
-        contested,
-        lockDuffs: 0,
-        feeDuffs: 0,
-        totalDuffs: 0,
-        remainingCredits: String(BigInt(platform.fundingCredits) - credits),
-        availableDuffs: 0,
-        grant: { maxDuffs: 0, maxCredits: String(debit + credits) },
-        readiness: null,
-        platform,
-      };
-    }
     return {
       contested,
       lockDuffs,

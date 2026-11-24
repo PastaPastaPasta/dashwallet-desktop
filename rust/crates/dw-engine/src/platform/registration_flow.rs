@@ -75,7 +75,7 @@ use super::registration_platform::RegisterPlan;
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
 use super::startup::StartupStatus;
 use crate::coins::CoinFence;
-use crate::{NetworkSession, WalletId};
+use crate::{DashNetwork, NetworkSession, WalletId};
 
 /// The asset lock of a registration with a plain name: 0.03 DASH, as the
 /// iOS wallet locks (`DWDashPayConstants.m`).
@@ -392,6 +392,8 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// without SPV's sync, since no Core funds move: DP3-04's trust gate
     /// and the bring-up's answer about the seed's identity indexes.
     fn claim_hold(&self) -> Option<RegistrationWait>;
+    /// The session's network.
+    fn network(&self) -> DashNetwork;
     /// `NetworkSession::invitation_status` of the stashed link `link_id`,
     /// with the identity a `Valid` link's claim creates (D26).
     fn invitation(
@@ -3482,6 +3484,10 @@ impl RegistrationLib for PwLib {
         self.claim_hold()
     }
 
+    fn network(&self) -> DashNetwork {
+        self.session.network().clone()
+    }
+
     fn claim_hold(&self) -> Option<RegistrationWait> {
         // DP3-04: no funding or claim while Platform writes wait for
         // masternode sync (`Enforcing`); SPV caught up is another reading
@@ -3571,13 +3577,12 @@ impl RegistrationLib for PwLib {
             sdk: Arc::clone(&self.sdk),
             wallet: Arc::clone(&self.wallet),
         };
-        let keys = super::keys_policy::registration_specs().len();
         super::registration_platform::register_quote(
             &net,
             &self.session,
             &self.wallet,
             self.wallet_id,
-            (funding, keys),
+            funding,
         )
         .await
     }
