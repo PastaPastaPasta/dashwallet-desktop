@@ -69,6 +69,9 @@ export const REG_COPY = {
     get continue() {
       return COPY.continue;
     },
+    get moveToCore() {
+      return COPY.moveToCore;
+    },
     get unlockAction() {
       return COPY.unlock;
     },
@@ -183,9 +186,11 @@ export type ScreenKind =
   /** R10: the identity exists, its name was refused. */
   | "nameFailed"
   /** R11 */
-  | "voting";
+  | "voting"
+  /** A Platform payment that may still go through (#685): Continue or Move to Dash wallet. */
+  | "held";
 
-export type ScreenActionKind = "home" | "continue" | "unlock" | "finish" | "repair" | "another" | "done" | "wallet" | "votingInfo" | Exclude<WelcomeStepKind, "share">;
+export type ScreenActionKind = "home" | "continue" | "moveToCore" | "unlock" | "finish" | "repair" | "another" | "done" | "wallet" | "votingInfo" | Exclude<WelcomeStepKind, "share">;
 
 /** R9's next steps (PRODUCT #4). */
 export type WelcomeStepKind = "editProfile" | "findFriends" | "share";
@@ -298,6 +303,8 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
     return base("failed", REG_COPY.failed.title, [why], [act("another", REG_COPY.failed.another)], { step: null });
   }
 
+  if (row.waiting === "paymentHeld")
+    return base("held", progressTitle, [REG_COPY.progress.message(label), WAITS.paymentHeld], [act("continue", REG_COPY.progress.continue), act("moveToCore", REG_COPY.progress.moveToCore)]);
   if (awaitsContinue(row)) return base("paused", progressTitle, [REG_COPY.progress.authorize(label)], [act("continue", REG_COPY.progress.continue)]);
   if (row.waiting === "unlock") return base("unlock", progressTitle, [REG_COPY.progress.unlock(label)], [act("unlock", REG_COPY.progress.unlockAction)]);
 

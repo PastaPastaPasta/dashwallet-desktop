@@ -34,13 +34,14 @@ export type CardState =
   | "creatingUnlock"
   | "creatingPaused"
   | "creatingRepair"
+  | "creatingHeld"
   | "voting"
   | "noUsername"
   | "lowCredits"
   | "emptyCredits";
 
 /** What a card's button does: the screen maps each to its navigation or call. */
-export type CardActionKind = "join" | "retry" | "unlock" | "continue" | "repair" | "votingInfo" | "chooseName" | "buyCredits";
+export type CardActionKind = "join" | "retry" | "unlock" | "continue" | "moveToCore" | "repair" | "votingInfo" | "chooseName" | "buyCredits";
 
 export interface CardAction {
   kind: CardActionKind;
@@ -70,6 +71,8 @@ export interface CardModel {
   /** The pill under the card (iOS "Available after sync finishes"). */
   note: string | null;
   action: CardAction | null;
+  /** A second button beside `action` (a held Platform payment's Move to Dash wallet). */
+  secondary: CardAction | null;
 }
 
 export interface StatusInputs {
@@ -138,6 +141,9 @@ export const COPY = {
   },
   get continue() {
     return t("dashpay.card.continue");
+  },
+  get moveToCore() {
+    return t("dashpay.card.moveToCore");
   },
 };
 
@@ -268,6 +274,7 @@ const card = (state: CardState, tone: CardTone, title: string, lines: string[] =
   busy: false,
   note: null,
   action: null,
+  secondary: null,
   ...rest,
 });
 
@@ -310,6 +317,14 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
     const what = r.waiting === "fundingUnknown" ? COPY.repair.unknown : COPY.repair.finish;
     return card("creatingRepair", "problem", title, [what, COPY.repair.message], { step, action: action("repair", COPY.repair.action) });
   }
+  // F22 (#685): a Platform payment that may still go through: Continue retries it, Move to Dash
+  // wallet frees the balance instead.
+  if (r.waiting === "paymentHeld" && !r.failure)
+    return card("creatingHeld", "problem", title, [WAITS.paymentHeld], {
+      step,
+      action: action("continue", COPY.continue),
+      secondary: action("moveToCore", COPY.moveToCore),
+    });
   if (r.failure || awaitsContinue(r)) {
     const why = r.failure ? failureText(r.failure, i.amount, i.discreet) : WAITS.authorize;
     return card("creatingPaused", "problem", title, [COPY.paused, why], { step, action: action("continue", COPY.continue) });

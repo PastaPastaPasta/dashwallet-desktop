@@ -21,7 +21,7 @@ import {
   startErrorText,
   type ScreenInputs,
 } from "./registration";
-import { COPY } from "./status";
+import { COPY, WAITS } from "./status";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -56,6 +56,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   nameFailure: null,
   profileFailure: null,
   invitation: null,
+  fromPlatform: false,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -132,6 +133,16 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     expect(kinds(row({ waiting: "unlock", holdsKey: false }))).toEqual(["unlock", "unlock"]);
     expect(isRunning(row({ waiting: "authorize" }))).toBe(false);
     expect(isRunning(row({ waiting: "unlock" }))).toBe(false);
+  });
+
+  it("#685: a held Platform payment's screen offers Continue, then Move to Dash wallet", () => {
+    const m = screenModel(row({ waiting: "paymentHeld", running: false, fundsCommitted: true, fromPlatform: true }), I);
+    expect(m).toMatchObject({ kind: "held", busy: false, step: { n: 1 } });
+    expect(m.lines).toEqual([REG_COPY.progress.message("alice"), WAITS.paymentHeld]);
+    expect(m.actions).toEqual([
+      { kind: "continue", label: "Continue" },
+      { kind: "moveToCore", label: "Move to Dash wallet" },
+    ]);
   });
 
   it("D21, D26: an idle row waiting for a proof (after a relaunch) is paused, Continue", () => {

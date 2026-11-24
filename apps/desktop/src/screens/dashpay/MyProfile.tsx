@@ -33,7 +33,7 @@ import { SettingsCard } from "../settings/parts";
 import { showToast } from "../../components/toast";
 import { EditProfileSheet } from "./EditProfileSheet";
 import { VotingInfoSheet } from "./AboutDashPay";
-import { DashPayCard, defaultCardAction } from "./DashPayCard";
+import { DashPayCard, defaultCardAction, moveToDashWallet } from "./DashPayCard";
 import { TopUpSheet } from "./TopUpSheet";
 import { FROM_PLATFORM_COPY } from "../../dashpay/topupSource";
 import { ShareSheet } from "./ShareSheet";
@@ -389,7 +389,7 @@ export function MyProfilePage({ walletId, network }: { walletId: string; network
   const onAction = (kind: CardActionKind) => {
     if (kind === "chooseName" && inputs.main) return chooseName(b, walletId, inputs.main.identity, false);
     if (kind === "buyCredits" && inputs.main) return buyCredits(b, walletId, inputs.main);
-    return defaultCardAction(kind, retry);
+    return defaultCardAction(kind, retry, () => moveToDashWallet(b, walletId));
   };
   return (
     <Page route="profile">
