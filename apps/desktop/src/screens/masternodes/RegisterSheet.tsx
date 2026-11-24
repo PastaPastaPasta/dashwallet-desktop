@@ -622,11 +622,11 @@ export function RegisterSheet({
         </div>
         {askDiscard ? (
           <footer className="mg-sheet-footer" data-testid="reg-discard">
-            <span className="mg-sheet-footer-note">
+            <span className="mg-sheet-footer-note" id={`${id}-discard-note`}>
               <strong>{t(`${R}.discardTitle`)}</strong> {t(`${R}.discardText`)}
             </span>
             <span className="mg-actions">
-              <DashButton variant="tintedGray" size="medium" data-testid="reg-keep" data-autofocus onClick={() => setAskDiscard(false)}>
+              <DashButton variant="tintedGray" size="medium" data-testid="reg-keep" data-autofocus aria-describedby={`${id}-discard-note`} onClick={() => setAskDiscard(false)}>
                 {t(`${R}.keepEditing`)}
               </DashButton>
               <DashButton variant="plainRed" size="medium" data-testid="reg-discard-confirm" onClick={onClose}>
