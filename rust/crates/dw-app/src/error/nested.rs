@@ -96,6 +96,8 @@ codes! {
         InvalidKeyMaterial = "compat.invalid_key_material",
         WatchOnly = "compat.watch_only",
         DestinationUnwritable = "compat.destination_unwritable",
+        WalletTooLarge = "compat.wallet_too_large",
+        ExtraHdAccount = "compat.extra_hd_account",
     }
 }
 
@@ -347,6 +349,8 @@ impl From<CompatFailure> for AppError {
             F::InvalidKeyMaterial(_) => (CompatCode::InvalidKeyMaterial.into(), None),
             F::WatchOnly => (CompatCode::WatchOnly.into(), None),
             F::DestinationUnwritable(_) => (CompatCode::DestinationUnwritable.into(), None),
+            F::WalletTooLarge => (CompatCode::WalletTooLarge.into(), None),
+            F::ExtraHdAccount { .. } => (CompatCode::ExtraHdAccount.into(), None),
         };
         build(message, mapped)
     }
@@ -616,6 +620,11 @@ mod tests {
             (
                 CompatFailure::DestinationUnwritable(s()),
                 "compat.destination_unwritable",
+            ),
+            (CompatFailure::WalletTooLarge, "compat.wallet_too_large"),
+            (
+                CompatFailure::ExtraHdAccount { account: 1 },
+                "compat.extra_hd_account",
             ),
         ];
         assert_eq!(compat.len(), CompatCode::ALL.len());

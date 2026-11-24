@@ -315,6 +315,18 @@ function pickCoins(world: World, coins: Utxo[], source: CoinSource): Utxo[] {
 
 interface Built extends TxEstimate {
   inputs: Utxo[];
+  /** What each recipient receives, in order (plan.rs: subtract-fee payers split the fee equally,
+   * the first of them paying the remainder). */
+  amounts: number[];
+}
+
+/** Each recipient's amount once the subtract-fee payers took `reduce` from theirs (plan.rs). */
+function paidAmounts(recipients: Draft["recipients"], reduce: number): number[] {
+  const payers = recipients.flatMap((r, i) => (r.subtractFeeFromAmount ? [i] : []));
+  const share = payers.length ? Math.floor(reduce / payers.length) : 0;
+  const amounts = recipients.map((r) => r.amount);
+  payers.forEach((i, n) => (amounts[i] -= share + (n === 0 ? reduce - share * payers.length : 0)));
+  return amounts;
 }
 
 /** The draft's transaction: its checks in dw-engine's order, then the inputs, fee and change. */
@@ -328,7 +340,8 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
     if (r.amount <= 0 || r.amount > MAX_MONEY) throw fail("send.invalid_amount", "invalid amount", { kind: "recipient", index });
     if (r.amount < DUST) throw fail("send.dust_amount", "dust amount", { kind: "recipient", index });
   });
-  if (new Set(d.recipients.map((r) => r.address)).size !== d.recipients.length) throw fail("send.duplicate_address", "duplicate address");
+  const duplicate = d.recipients.findIndex((r, i) => d.recipients.findIndex((o) => o.address === r.address) !== i);
+  if (duplicate >= 0) throw fail("send.duplicate_address", "duplicate address", { kind: "recipient", index: duplicate });
   if (d.change.kind === "address" && classifyAddress(network, d.change.address).kind !== "core")
     throw fail("send.invalid_change_address", "invalid change address");
   checkRate(d.fee);
@@ -372,12 +385,14 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   const totalSent = pay - reduce;
   // A fully mixed spend makes no change: the rest is fee (dw-engine `send::finish`).
   if (d.source.kind === "fullyMixedOnly" && change !== null) [fee, change] = [fee + change, null];
-  if (subtract && totalSent < DUST) throw fail("send.amount_too_small_after_fee", "amount too small after the fee", { kind: "recipient", index: 0 });
+  const amounts = paidAmounts(d.recipients, reduce);
+  const tooSmall = amounts.findIndex((a, i) => d.recipients[i].subtractFeeFromAmount && a < DUST);
+  if (tooSmall >= 0) throw fail("send.amount_too_small_after_fee", "amount too small after the fee", { kind: "recipient", index: tooSmall });
   if (fee > MAX_TX_FEE) throw fail("send.absurd_fee", "absurd fee", { kind: "fee", fee, available: null });
   const sizeBytes = sizeOf(inputs.length, outputs + (change === null ? 0 : 1));
   // The fee beyond the rate for the size: a dust rest, and a mixed spend's change (dw-engine `Plan::left_over`).
   const leftOver = Math.max(0, fee - feeFor(sizeBytes, rate));
-  return { fee, sizeBytes, inputCount: inputs.length, change, totalSent, leftOver, inputs };
+  return { fee, sizeBytes, inputCount: inputs.length, change, totalSent, leftOver, inputs, amounts };
 }
 
 function maxSpendable(world: World, wallet: FixtureWallet, source: CoinSource, fee: FeeMode): number {
@@ -681,7 +696,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     draft_estimate: ({ draft }, { world }) => {
       const d = draftOf(world, draft);
       if (d.contact) checkContact(world, d.walletId, d.contact, "draft");
-      const { inputs: _, ...estimate } = build(world, wallet(world, d.walletId), d);
+      const { inputs: _, amounts: __, ...estimate } = build(world, wallet(world, d.walletId), d);
       return estimate;
     },
     // dash-qt "Create Unsigned" (QT-077): the draft's plan as a PSBT the PSBT tab can analyze,
@@ -693,7 +708,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       const change = d.change.kind === "address" ? d.change.address : receiveAddress(w, 2000 + draft, null).address;
       const psbt = btoa(`psbt\xffdraft-${draft}`);
       const outputs = [
-        ...d.recipients.map((r, i) => ({ address: r.address, amount: i === 0 ? built.totalSent : r.amount, isMine: owns(w, r.address) })),
+        ...d.recipients.map((r, i) => ({ address: r.address, amount: built.amounts[i], isMine: owns(w, r.address) })),
         ...(built.change === null ? [] : [{ address: change, amount: built.change, isMine: d.change.kind === "auto" || owns(w, change) }]),
       ];
       world.tools.psbts[psbt] = {
@@ -724,7 +739,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       const recipient = d.recipients[0];
       const changeAddress = d.change.kind === "address" ? d.change.address : receiveAddress(w, 1000 + h, null).address;
       const outputs = [
-        ...d.recipients.map((r) => ({ address: r.address, amount: r === recipient ? built.totalSent : r.amount, isChange: false, label: r.label, isMine: !d.contact && owns(w, r.address) })),
+        ...d.recipients.map((r, i) => ({ address: r.address, amount: built.amounts[i], isChange: false, label: r.label, isMine: !d.contact && owns(w, r.address) })),
         ...(built.change === null ? [] : [{ address: changeAddress, amount: built.change, isChange: true, label: null, isMine: d.change.kind === "auto" || owns(w, changeAddress) }]),
       ];
       const externalSent = outputs.filter((o) => !o.isMine).reduce((n, o) => n + o.amount, 0);

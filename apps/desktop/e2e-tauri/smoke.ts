@@ -46,9 +46,10 @@ function launchAndForward(args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
 
 /** A second launch on the same data root that cannot hand its link over (no session bus, or a
  * malformed bus address): it must stop at the root's instance lock with a clear message, without
- * a panic and without opening the wallet (U-01 D2). */
+ * a panic and without opening the wallet (U-01 D2). Its dialog, which no one here answers, is
+ * off (a debug build's `DW_NO_LAUNCH_DIALOG`). */
 function refusedLaunch(dataRoot: string, link: string, bus: Record<string, string>) {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...bus };
+  const env: NodeJS.ProcessEnv = { ...process.env, ...bus, DW_NO_LAUNCH_DIALOG: "1" };
   if (!("DBUS_SESSION_BUS_ADDRESS" in bus)) delete env.DBUS_SESSION_BUS_ADDRESS;
   const r = spawnSync(APP, ["--datadir", dataRoot, link], { encoding: "utf8", env, timeout: 60_000, killSignal: "SIGKILL" });
   const tail = r.error?.message ?? r.stderr.slice(-600);

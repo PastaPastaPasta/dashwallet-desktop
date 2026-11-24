@@ -4294,6 +4294,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "compat.invalid_key_material",
   "compat.watch_only",
   "compat.destination_unwritable",
+  "compat.wallet_too_large",
+  "compat.extra_hd_account",
   "backup.vault_locked",
   "backup.passphrase_required",
   "backup.wrong_passphrase",

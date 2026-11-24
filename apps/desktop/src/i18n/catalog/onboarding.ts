@@ -209,6 +209,8 @@ export const onboarding = {
       passphrase_required: "This wallet.dat is encrypted: enter its passphrase.",
       unsupported_format: "Dash Wallet cannot read this kind of file.",
       watch_only: "A watch-only wallet has no keys to export.",
+      wallet_too_large: "This wallet.dat uses more than 10,000 addresses in a row, more than Dash Wallet imports. Open it in Dash Core, then send its funds to an address from Receive in Dash Wallet.",
+      extra_hd_account: "This wallet.dat uses an HD account other than the first one, and Dash Wallet imports only the first. Open it in Dash Core, then send its funds to an address from Receive in Dash Wallet.",
       wrong_passphrase: "The passphrase does not open this wallet.dat.",
     },
   },
