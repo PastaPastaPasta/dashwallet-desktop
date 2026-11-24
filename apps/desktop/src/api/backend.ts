@@ -731,6 +731,9 @@ export interface Backend {
   /** Only while `abandonCharge` is set: spends every reserved coin back to the wallet under a
    * `masternodeOp` grant of that charge. */
   mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession>;
+  /** Only while `resendAbandonCharge` is set: the latest spend back's saved bytes again, under a
+   * `masternodeOp` grant of that charge. */
+  mnSharedResendAbandon(walletId: string, session: string, grant: string): Promise<SharedSession>;
   /** The same for a session this wallet can no longer read. */
   mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession>;
   /** Refused on mainnet (`app.shared_send_off`) before the engine. Grant: `masternodeOp{session.debit}`. */

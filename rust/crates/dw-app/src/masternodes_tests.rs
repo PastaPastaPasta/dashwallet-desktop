@@ -511,7 +511,7 @@ fn op_grant(demo: &Demo, wallet: &str, max: u64) -> String {
 }
 
 /// Abandon is the way out of a session that may be out, so no network gates
-/// it: on mainnet as on the test networks both commands reach the engine,
+/// it: on mainnet as on the test networks every abandon command reaches the engine,
 /// which answers for the session itself.
 #[test]
 fn abandon_reaches_the_engine_on_every_network() {
@@ -522,7 +522,11 @@ fn abandon_reaches_the_engine_on_every_network() {
     ] {
         let (demo, wallet) = demo_on(network);
         let grant = op_grant(&demo, &wallet, 1_000);
-        for cmd in ["mn_shared_abandon", "mn_shared_abandon_unreadable"] {
+        for cmd in [
+            "mn_shared_abandon",
+            "mn_shared_resend_abandon",
+            "mn_shared_abandon_unreadable",
+        ] {
             demo.err(
                 cmd,
                 json!({ "walletId": wallet, "session": hash("cd"), "grant": grant }),

@@ -35,7 +35,6 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("Masternodes::preview_dissolve", "deferred (MG-10 S6)"),
     ("Masternodes::preview_update_share", "deferred (MG-10 S6)"),
     ("Masternodes::recheck_withdrawal", "deferred (MG-10 S4)"),
-    ("Masternodes::resend_shared_abandon", "deferred (MG-10 S5)"),
     (
         "Masternodes::resolve_collateral",
         "not bound: always refuses collateral_lookup (MG-03 D11)",
@@ -492,6 +491,25 @@ commands! {
         Ok(session.into())
     }
 
+    /// The latest abandon spend's saved bytes handed off again, while the
+    /// spend may be out (`SharedSession.resendAbandonCharge`). Takes a
+    /// `masternodeOp` grant of exactly that charge. Every network.
+    #[facade("Masternodes::resend_shared_abandon")]
+    fn mn_shared_resend_abandon(
+        state,
+        wallet_id: String,
+        session: String,
+        grant: String,
+    ) -> SharedSession {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let session = state
+            .masternodes()
+            .await?
+            .resend_shared_abandon(wallet, session, grant)
+            .await?;
+        Ok(session.into())
+    }
+
     /// The same for a session whose stored record no longer reads
     /// (`UnreadableSession.abandonCharge`).
     #[facade("Masternodes::abandon_unreadable_shared_session")]
@@ -652,6 +670,7 @@ pub(crate) const SHARED_SEND_GATE: &[(&str, SendGate)] = &[
     ("Masternodes::abandon_shared_session", SendGate::Never),
     ("Masternodes::resend_shared_abandon", SendGate::Never),
     ("mn_shared_abandon", SendGate::Never),
+    ("mn_shared_resend_abandon", SendGate::Never),
     ("mn_shared_abandon_unreadable", SendGate::Never),
     ("mn_shared_lock", SendGate::Never),
     ("mn_shared_approve", SendGate::Never),
@@ -764,6 +783,7 @@ mod tests {
             "Masternodes::abandon_shared_session",
             "Masternodes::resend_shared_abandon",
             "mn_shared_abandon",
+            "mn_shared_resend_abandon",
             "mn_shared_abandon_unreadable",
         ] {
             assert!(SHARED_SEND_GATE.contains(&(abandon, SendGate::Never)), "{abandon}");

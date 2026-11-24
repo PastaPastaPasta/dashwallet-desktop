@@ -56,6 +56,8 @@ export interface SharedWorld {
   abandoned: string[];
   /** The `last_error` the next registration hand-off leaves: `null` when it went out. */
   handoff: string | null;
+  /** How the next abandon spend's hand-off ends: `null` when it went out and the wallet recorded it. */
+  abandonHandoff: "uncertain" | "refused" | null;
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -137,6 +139,8 @@ function session(id: string, role: SharedSession["role"], patch: Partial<SharedS
     lastError: null,
     overdue: false,
     abandonCharge: null,
+    abandonSpend: null,
+    resendAbandonCharge: null,
     ...patch,
   });
 }
@@ -266,7 +270,7 @@ const REFUSALS: Partial<Record<string, [string, number | null]>> = {
 };
 
 export function newSharedWorld(): SharedWorld {
-  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [], unreadable: [], abandoned: [], handoff: null };
+  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [], unreadable: [], abandoned: [], handoff: null, abandonHandoff: null };
 }
 
 function find(world: World, id: string): SharedSession {
@@ -502,6 +506,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       wallet(world, walletId);
       const s = find(world, id);
       if (s.stage.kind === "invited") throw stageRefusal("invited");
+      if (s.abandonSpend) throw stageRefusal("abandoning");
       const m = message(s, messageName(s));
       world.shared.saved.push(m.text);
       return m;
@@ -633,11 +638,36 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
         if (s.role !== "coordinator") throw stageRefusal("participant");
         if (st === "confirmed" || st === "conflicted" || st === "dead") throw stageRefusal(st);
       } else if (s.discardable || st === "confirmed" || st === "conflicted") throw stageRefusal(st);
-      if (!s.abandonable) throw stageRefusal(outStage(s.role));
-      capped(world, walletId, grantId, s.abandonCharge ?? 0);
-      s.abandonable = false;
-      s.abandonCharge = null;
+      if (!s.abandonable || s.abandonCharge === null) throw stageRefusal(s.abandonSpend ? "abandoning" : outStage(s.role));
+      const fee = s.abandonCharge;
+      capped(world, walletId, grantId, fee);
+      // The engine's recovery read after the spend's hand-off: the spend recorded (its coins spent),
+      // its outcome unknown (no new spend while it may be out), or definitely refused (Try again).
+      const outcome = world.shared.abandonHandoff;
+      world.shared.abandonHandoff = null;
+      const state = outcome ?? "in_history";
+      s.abandonSpend = { txid: h(outcome === "refused" ? "a9" : "a8"), state, overdue: false, code: outcome === "refused" ? "send.broadcast_rejected" : outcome === "uncertain" ? "send.broadcast_unknown" : null };
+      s.abandonable = outcome !== null;
+      s.abandonCharge = outcome === "refused" ? fee : null;
+      s.resendAbandonCharge = state === "refused" ? null : fee;
+      if (s.next === "copy" || s.next === "send" || s.next === "sign" || s.next === "wait") s.next = "nothing";
       if (st === "sent") world.shared.abandoned.push(s.id);
+      const out = put(world, s);
+      changed(ctx);
+      return out;
+    },
+    /** The latest abandon spend's saved bytes again, while it may be out: recorded once it reaches the network. */
+    mn_shared_resend_abandon: ({ walletId, session: id, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      requireSending(world);
+      const s = find(world, id);
+      if (!s.abandonSpend) throw stageRefusal(outStage(s.role));
+      if (s.abandonSpend.state === "refused") throw stageRefusal("abandon_refused");
+      if (s.resendAbandonCharge === null) throw stageRefusal("abandoning");
+      capped(world, walletId, grantId, s.resendAbandonCharge);
+      s.abandonSpend = { ...s.abandonSpend, state: "in_history", code: null };
+      s.abandonable = false;
       const out = put(world, s);
       changed(ctx);
       return out;
@@ -724,6 +754,10 @@ export function sharedScenarios(base: Base) {
     "sh-coordinator-send-mainnet": (t: ThemeName | null) => shBase(base, t, (s, w) => (onMainnet(w), (s.sessions = [readyToSend()]))),
     /** Sent, waiting for its confirmation: Send again. */
     "sh-coordinator-sent": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration())),
+    /** Out; the next Abandon's hand-off times out, so the spend back may be on the network. */
+    "sh-close-out-abandon-uncertain": (t: ThemeName | null) => shBase(base, t, (s) => ((s.sessions = [participantSession("funding_signed")]), (s.abandonHandoff = "uncertain"))),
+    /** Out; the network definitely refuses the next Abandon's spend back. */
+    "sh-close-out-abandon-refused": (t: ThemeName | null) => shBase(base, t, (s) => ((s.sessions = [participantSession("funding_signed")]), (s.abandonHandoff = "refused"))),
     /** Sent three hours of tip time ago and still unconfirmed: the way out opens expanded (D49). */
     "sh-coordinator-sent-overdue": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ overdue: true }))),
     /** Sent, the hand-off's outcome unknown. */
@@ -757,7 +791,7 @@ export function sharedScenarios(base: Base) {
     /** Close before out (Keep / Discard) and out (no question). */
     "sh-close-before": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob"]))),
     "sh-close-out": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed"))),
-    /** Out, and its Abandon spend already sent: no coin left to spend, so no Abandon and no line naming it. */
+    /** Out, with no coin left for this wallet to spend: no Abandon and no line naming it. */
     "sh-signed-out-abandoned": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed", { abandonable: false }))),
     /** Sessions this wallet can't read: one it may discard, one that may be out (Abandon), and one
      * out whose locks the follower already released (not listed). */

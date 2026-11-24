@@ -3787,6 +3787,25 @@ fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {
     );
 }
 
+/// Once this wallet signed an abandon spend, the session hands nothing on:
+/// `next` is `nothing` and `shared_message` refuses `abandoning`, so the
+/// Signed Contribution can't compete with the cancellation.
+#[test]
+fn test_an_abandoned_session_neither_offers_nor_gives_its_message() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.imported(1, &f.message(0, &id));
+    f.sign(1, &id, 301 * COIN).unwrap();
+    assert_eq!(f.session_of(1, &id).next, SharedNext::Copy);
+    let message = || f.run(f.mn().shared_message(f.wallets[1], id.clone()));
+    assert!(message().is_ok());
+    f.abandon(1, &id).unwrap();
+    let s = f.session_of(1, &id);
+    assert_eq!(s.stage, SharedStage::FundingSigned);
+    assert_eq!(s.next, SharedNext::Nothing);
+    assert_stage(message().unwrap_err(), "abandoning");
+}
+
 /// A stored key-change session of wallet `w`, its message never read.
 fn key_change_row(f: &Fx, w: usize) -> String {
     let id = "c".repeat(64);

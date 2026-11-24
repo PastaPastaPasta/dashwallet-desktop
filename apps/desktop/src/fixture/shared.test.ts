@@ -81,7 +81,41 @@ describe("fixture shared masternodes", () => {
     await expect(cmd.mnSharedAbandon(W, s.id, await cap(charge - 1))).rejects.toMatchObject({ code: "send.grant_exceeded" });
     const after = await cmd.mnSharedAbandon(W, s.id, await cap(charge));
     expect(after).toMatchObject({ id: s.id, stage: { kind: "funding_signed" }, discardable: false, abandonable: false, abandonCharge: null });
-    await expect(cmd.mnSharedAbandon(W, s.id, await cap(charge))).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "funding_signed" } });
+    await expect(cmd.mnSharedAbandon(W, s.id, await cap(charge))).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "abandoning" } });
+  });
+
+  it("once abandoned, hands the message on no more and reads the spend back as recorded", async () => {
+    installFixture({ scenario: "sh-close-out" });
+    const [s] = await cmd.mnSharedSessions(W);
+    expect(s.next).toBe("copy");
+    await cmd.mnSharedMessage(W, s.id);
+    const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
+    const after = await cmd.mnSharedAbandon(W, s.id, await cap(s.abandonCharge!));
+    expect(after).toMatchObject({ next: "nothing", abandonSpend: { state: "in_history", code: null }, resendAbandonCharge: s.abandonCharge });
+    await expect(cmd.mnSharedMessage(W, s.id)).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "abandoning" } });
+  });
+
+  it("an uncertain spend back offers Send again under exactly its charge, and no new spend", async () => {
+    installFixture({ scenario: "sh-close-out-abandon-uncertain" });
+    const [s] = await cmd.mnSharedSessions(W);
+    const fee = s.abandonCharge!;
+    const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
+    const after = await cmd.mnSharedAbandon(W, s.id, await cap(fee));
+    expect(after).toMatchObject({ abandonSpend: { state: "uncertain" }, abandonCharge: null, resendAbandonCharge: fee });
+    await expect(cmd.mnSharedAbandon(W, s.id, await cap(fee)), "no new spend while it may be out").rejects.toMatchObject({ data: { stage: "abandoning" } });
+    await expect(cmd.mnSharedResendAbandon(W, s.id, await cap(fee - 1))).rejects.toMatchObject({ code: "send.grant_exceeded" });
+    expect(await cmd.mnSharedResendAbandon(W, s.id, await cap(fee))).toMatchObject({ abandonSpend: { state: "in_history" } });
+  });
+
+  it("a refused spend back offers a new spend of the same coins, and no Send again", async () => {
+    installFixture({ scenario: "sh-close-out-abandon-refused" });
+    const [s] = await cmd.mnSharedSessions(W);
+    const fee = s.abandonCharge!;
+    const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
+    const after = await cmd.mnSharedAbandon(W, s.id, await cap(fee));
+    expect(after).toMatchObject({ abandonSpend: { state: "refused", code: "send.broadcast_rejected" }, abandonCharge: fee, resendAbandonCharge: null });
+    await expect(cmd.mnSharedResendAbandon(W, s.id, await cap(fee))).rejects.toMatchObject({ data: { stage: "abandon_refused" } });
+    expect(await cmd.mnSharedAbandon(W, s.id, await cap(fee))).toMatchObject({ abandonSpend: { state: "in_history" } });
   });
 
   it("refuses Abandon of a session not out, or settled, as the engine does", async () => {

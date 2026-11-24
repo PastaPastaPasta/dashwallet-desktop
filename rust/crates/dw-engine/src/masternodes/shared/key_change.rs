@@ -1433,6 +1433,7 @@ fn view(
         SharedStage::Stale if funder => SharedNext::Abandon,
         _ => SharedNext::Nothing,
     };
+    let next = super::store::after_abandon(&k.row, next);
     let mut warnings = Vec::new();
     if requested.operator_public_key != k.base.operator_public_key {
         warnings.push(SharedWarning::OperatorReset);

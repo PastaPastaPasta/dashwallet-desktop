@@ -232,7 +232,59 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-session")).toBeVisible();
     await expect(page.getByTestId("sh-abandon-button")).toHaveCount(0);
     await expect(page.getByTestId("sh-session")).not.toContainText("choose Abandon");
+    // The signed contribution can't compete with the cancellation: no Copy or Save of it.
+    await expect(page.getByTestId("sh-row-abandoning")).toContainText("Abandoning: waiting for the spend back (a8a8a8a8) to confirm. Your coins are still reserved.");
+    await expect(page.getByTestId("sh-copy")).toHaveCount(0);
+    await expect(page.getByTestId("sh-save")).toHaveCount(0);
+    await expect(page.getByTestId("sh-row-sendSigned")).toHaveCount(0);
     if (info.project.name === "chromium") await shot(page, "sh-signed-out-abandoned", theme);
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: an Abandon whose spend back may be out says so, and Send again replays it for exactly its charge`, async ({ page }, info) => {
+    const errors = await open(page, "sh-close-out-abandon-uncertain", theme);
+    await page.getByTestId("mn-shared").click();
+    await page.getByTestId("sh-in-progress").getByRole("button").first().click();
+    await page.getByTestId("sh-abandon-button").click();
+    await page.getByTestId("sh-abandon-passphrase").fill(FIXTURE_PASSPHRASE);
+    await page.getByTestId("sh-abandon-understand").check();
+    await page.getByTestId("sh-abandon-abandon").click();
+    await expect(page.getByTestId("sh-abandon")).toBeHidden();
+    const row = page.getByTestId("sh-row-abandoning");
+    await expect(row).toHaveText("The spend back to this wallet (a8a8a8a8) may already be on the network. The wallet couldn't confirm it went out.");
+    await expect(page.getByTestId("sh-session")).not.toContainText("didn't go out");
+    await expect(page.getByTestId("sh-copy")).toHaveCount(0);
+    await expect(page.getByTestId("sh-abandon-button"), "no new spend while it may be out").toHaveCount(0);
+    if (info.project.name === "chromium") await shot(page, "sh-spend-back-uncertain", theme);
+    await page.getByTestId("sh-spend-back-resend").click();
+    await expect(page.getByTestId("sh-resend-abandon-text")).toHaveText(`Send the same spend again. It's the same transaction, so it costs at most ${(CHARGE / 1e8).toFixed(8)} tDASH, once.`);
+    await page.getByTestId("sh-resend-abandon-passphrase").fill(FIXTURE_PASSPHRASE);
+    await page.getByTestId("sh-resend-abandon-send").click();
+    await expect(page.getByTestId("sh-resend-abandon")).toBeHidden();
+    await expect(row).toContainText("Abandoning: waiting for the spend back (a8a8a8a8) to confirm.");
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: a refused spend back says it didn't go out, and Try again is a new spend of the same coins`, async ({ page }, info) => {
+    const errors = await open(page, "sh-close-out-abandon-refused", theme);
+    await page.getByTestId("mn-shared").click();
+    await page.getByTestId("sh-in-progress").getByRole("button").first().click();
+    await page.getByTestId("sh-abandon-button").click();
+    await page.getByTestId("sh-abandon-passphrase").fill(FIXTURE_PASSPHRASE);
+    await page.getByTestId("sh-abandon-understand").check();
+    await page.getByTestId("sh-abandon-abandon").click();
+    await expect(page.getByTestId("sh-abandon")).toBeHidden();
+    await expect(page.getByTestId("sh-row-abandoning")).toContainText("The spend back to this wallet didn't go out: ");
+    await expect(page.getByTestId("sh-spend-back-resend")).toHaveCount(0);
+    await expect(page.getByTestId("sh-copy")).toHaveCount(0);
+    if (info.project.name === "chromium") await shot(page, "sh-spend-back-refused", theme);
+    await page.getByTestId("sh-spend-back-tryAgain").click();
+    await expect(page.getByTestId("sh-abandon-again")).toHaveText(`This is a new spend of the same coins and pays the ${(CHARGE / 1e8).toFixed(8)} tDASH network fee again.`);
+    await page.getByTestId("sh-abandon-passphrase").fill(FIXTURE_PASSPHRASE);
+    await page.getByTestId("sh-abandon-understand").check();
+    await page.getByTestId("sh-abandon-abandon").click();
+    await expect(page.getByTestId("sh-abandon")).toBeHidden();
+    await expect(page.getByTestId("sh-row-abandoning")).toContainText("Abandoning: waiting for the spend back");
     expect(errors).toEqual([]);
   });
 
@@ -406,9 +458,9 @@ for (const theme of THEMES) {
     await page.getByTestId("sh-abandon-abandon").click();
     await expect(page.getByTestId("sh-abandon")).toBeHidden();
     await expect(page.getByTestId("sh-abandon-button")).toHaveCount(0);
-    await page.getByTestId("sh-resend").click();
-    await confirmWith(page, "resend");
-    await expect(page.getByTestId("sh-resend-error")).toContainText("abandoned, so it can't be sent again");
+    // Once this wallet signed the spend back, the registration isn't offered again (D50).
+    await expect(page.getByTestId("sh-row-abandoning")).toContainText("Abandoning: waiting for the spend back");
+    await expect(page.getByTestId("sh-resend")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 }

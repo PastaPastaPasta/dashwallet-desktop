@@ -34,6 +34,8 @@ import {
   stageStep,
   unreadableInProgress,
   warningText,
+  spendBackAction,
+  spendBackLine,
   wayOutShown,
 } from "./shared";
 
@@ -308,6 +310,33 @@ describe("Abandon", () => {
     expect(abandonNeedsOwnFirst(refusal("conflicted"))).toBe(false);
     expect(abandonNeedsOwnFirst({ code: "send.grant_exceeded", message: "m", data: null })).toBe(false);
     expect(abandonNeedsOwnFirst(new Error("x"))).toBe(false);
+  });
+
+  it("reads an abandoned session as its spend back, by state, and never says it didn't go out without a refusal", () => {
+    const out = participantSession("funding_signed", { txid: "7e".repeat(32), discardable: false });
+    const spend = (state: NonNullable<SharedSession["abandonSpend"]>["state"], patch: Partial<SharedSession> = {}): SharedSession => ({
+      ...out,
+      next: "nothing",
+      abandonable: state === "refused" || state === "abandoned_in_activity",
+      abandonCharge: state === "refused" || state === "abandoned_in_activity" ? 193 : null,
+      resendAbandonCharge: state === "uncertain" || state === "in_history" ? 193 : null,
+      abandonSpend: { txid: "a8".repeat(32), state, overdue: false, code: state === "refused" ? "send.broadcast_rejected" : null },
+      ...patch,
+    });
+    const refused = (code: string) => (code === "send.broadcast_rejected" ? "The network refused it." : null);
+    expect(renderSession(spend("uncertain"), S5_SLICE)).toMatchObject({ row: "abandoning", copy: false, primary: null, known: true });
+    expect(spendBackLine(spend("uncertain"), refused)).toBe("The spend back to this wallet (a8a8a8a8) may already be on the network. The wallet couldn't confirm it went out.");
+    expect(spendBackAction(spend("uncertain"))).toBe("resend");
+    expect(spendBackLine(spend("refused"), refused)).toBe("The spend back to this wallet didn't go out: The network refused it.");
+    expect(spendBackAction(spend("refused"))).toBe("tryAgain");
+    expect(spendBackLine(spend("in_history"), refused)).toBe("Abandoning: waiting for the spend back (a8a8a8a8) to confirm. Your coins are still reserved.");
+    expect(spendBackAction(spend("in_history"))).toBe("resend");
+    expect(spendBackAction(spend("abandoned_in_activity"))).toBe("abandonAgain");
+    expect(spendBackAction(spend("legacy"))).toBeNull();
+    for (const state of ["uncertain", "in_history", "abandoned_in_activity", "legacy"] as const) {
+      expect(spendBackLine(spend(state), refused), state).not.toMatch(/didn't go out/);
+    }
+    expect(renderSession({ ...spend("in_history"), stage: { kind: "conflicted" } }, S5_SLICE).row, "settled").toBe("conflicted");
   });
 
   it("offers Abandon only while the recovery read lists it", () => {

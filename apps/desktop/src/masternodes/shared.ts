@@ -66,6 +66,7 @@ export type RowKey =
   | "waitingSigned"
   | "signLater"
   | "signedOut"
+  | "abandoning"
   | "send"
   | "sent"
   | "confirmed"
@@ -92,6 +93,8 @@ export function renderSession(s: SharedSession, slice: SharedSlice = NO_SENDS): 
   const r = (row: RowKey, primary: SessionRender["primary"], copy = false, known = true): SessionRender => ({ row: row === "signLater" && !s.discardable ? "signedOut" : row, primary, copy, known });
   if (!isRegistration(s)) return r("unknown", null, false, false);
   const stage = s.stage.kind;
+  // This wallet signed a spend back (D50): nothing hands the session's message or transaction on.
+  if (s.abandonSpend && s.next === "nothing" && stage !== "confirmed" && stage !== "conflicted" && stage !== "dead") return r("abandoning", null);
   const c = coordinator(s);
   switch (s.next) {
     case "join":
@@ -222,6 +225,38 @@ export function handoffLine(s: SharedSession, refused: (code: string) => string 
   const sentence =
     code === "send.resend_in_progress" ? t("masternodes.shared.row.handoffResending") : code === "send.broadcast_unknown" ? t("masternodes.shared.row.handoffTimeout") : bare();
   return t("masternodes.shared.row.handoffUnknown", { sentence });
+}
+
+/** D50's line for the spend back while it is pending, by its state; `null` without one. "Didn't go
+ * out" only for a recorded refusal, whose `{sentence}` is the refusal's own. */
+export function spendBackLine(s: SharedSession, refused: (code: string) => string | null): string | null {
+  const a = s.abandonSpend;
+  if (!a?.state) return null;
+  const txid = a.txid.slice(0, 8);
+  switch (a.state) {
+    case "uncertain":
+      return t("masternodes.shared.spendBack.uncertain", { txid });
+    case "refused": {
+      const code = a.code ?? "";
+      const sentence = (refused(code) ?? t("masternodes.shared.row.handoffCode", { code })).replace(/[.。]\s*$/, "");
+      return t("masternodes.shared.spendBack.refused", { sentence });
+    }
+    case "in_history":
+      return t("masternodes.shared.spendBack.inHistory", { txid });
+    case "abandoned_in_activity":
+      return t("masternodes.shared.spendBack.cancelled", { txid });
+    case "legacy":
+      return t("masternodes.shared.spendBack.legacy", { txid });
+  }
+}
+
+/** The spend back's own action (D50): Send again replays the same bytes while the read lists it;
+ * Try again (refused) and Abandon again (cancelled in Activity) are a new spend of the same coins. */
+export function spendBackAction(s: SharedSession): "resend" | "tryAgain" | "abandonAgain" | null {
+  const state = s.abandonSpend?.state;
+  if (state === "refused") return canAbandon(s) ? "tryAgain" : null;
+  if (state === "abandoned_in_activity") return canAbandon(s) ? "abandonAgain" : null;
+  return s.resendAbandonCharge !== null && (state === "uncertain" || state === "in_history") ? "resend" : null;
 }
 
 /** `row.signedOut` with its `{abandon}` filled by the Abandon button's own label. Shown only

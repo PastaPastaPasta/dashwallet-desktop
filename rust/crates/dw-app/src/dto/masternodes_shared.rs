@@ -237,6 +237,40 @@ pub enum DeadReasonName {
 
 mirror_enum!(engine::DeadReason => DeadReasonName { InputsSpent, Delisted, Abandoned });
 
+/// Where the latest abandon spend stands while it is pending (MG-10 §2.3.3,
+/// D50).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AbandonSpendStateName {
+    /// Its first hand-off was definitely refused.
+    Refused,
+    /// It may be on the network.
+    Uncertain,
+    /// The wallet recorded it, unconfirmed.
+    InHistory,
+    /// The wallet recorded it and the user abandoned it in Activity.
+    AbandonedInActivity,
+    /// Saved by an earlier version and not in the wallet's history.
+    Legacy,
+}
+
+mirror_enum!(engine::AbandonSpendState => AbandonSpendStateName {
+    Refused, Uncertain, InHistory, AbandonedInActivity, Legacy,
+});
+
+/// The latest abandon spend this wallet signed of a session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AbandonSpendView {
+    pub txid: String,
+    /// Only while the spend is pending and the session isn't settled.
+    pub state: Option<AbandonSpendStateName>,
+    /// Advisory: three hours of tip time since it was signed.
+    pub overdue: bool,
+    /// The code its latest failed hand-off recorded.
+    pub code: Option<String>,
+}
+
 /// The wallet's view of a session, derived on every read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -444,6 +478,11 @@ pub struct SharedSession {
     /// Advisory: out, the list current with the tip, and three hours of tip
     /// time since it went out (MG-10 §4.2).
     pub overdue: bool,
+    /// The latest abandon spend, once this wallet signed one.
+    pub abandon_spend: Option<AbandonSpendView>,
+    /// The recovery read lists `mn_shared_resend_abandon`: the latest abandon
+    /// spend's saved bytes again, charged exactly this, its grant cap.
+    pub resend_abandon_charge: Option<u64>,
 }
 
 impl From<engine::SharedSession> for SharedSession {
@@ -482,6 +521,20 @@ impl From<engine::SharedSession> for SharedSession {
             engine::RecoveryAction::Abandon { charge, .. } => Some(*charge),
             _ => None,
         });
+        let resend_abandon_charge = recovery.actions.iter().find_map(|a| match a {
+            engine::RecoveryAction::ResendAbandon { charge } => Some(*charge),
+            _ => None,
+        });
+        let handoff_code = recovery
+            .handoff_error
+            .filter(|e| e.tx == engine::HandoffTx::Abandon)
+            .and_then(|e| e.code);
+        let abandon_spend = recovery.abandon_spend.map(|a| AbandonSpendView {
+            txid: a.txid,
+            state: a.state.map(Into::into),
+            overdue: a.overdue,
+            code: handoff_code,
+        });
         SharedSession {
             id,
             code,
@@ -512,6 +565,8 @@ impl From<engine::SharedSession> for SharedSession {
             last_error,
             abandon_charge,
             overdue: recovery.overdue,
+            abandon_spend,
+            resend_abandon_charge,
         }
     }
 }

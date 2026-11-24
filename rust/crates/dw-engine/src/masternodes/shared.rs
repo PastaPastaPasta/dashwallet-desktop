@@ -630,7 +630,10 @@ impl Masternodes {
     }
 
     /// The message to copy or save now: its text, code, name and Core's
-    /// file name `shared-mn-session-<CODE>.json`.
+    /// file name `shared-mn-session-<CODE>.json`. Once this wallet signed an
+    /// abandon spend of a registration or key change,
+    /// `shared_stage{stage: "abandoning"}`: the message would let the
+    /// registration compete with the cancellation.
     pub async fn shared_message(
         &self,
         wallet: WalletId,
@@ -645,9 +648,11 @@ impl Masternodes {
             }
             if s.is_key_change(wallet, &session).await? {
                 let k = s.key_change_loaded(wallet, &session).await?;
+                store::check_no_abandon(&k.row)?;
                 return Ok(k.message(s.network.core_network()));
             }
             let l = s.shared_loaded(wallet, &session).await?;
+            store::check_no_abandon(&l.row)?;
             message_of(&l)
         })
         .await

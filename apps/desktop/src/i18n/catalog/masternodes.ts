@@ -1166,6 +1166,22 @@ export const masternodes = {
       ownFirst: "To get your coins back: first abandon the registration transaction in Activity, then abandon here to spend your coins back to this wallet.",
       openActivity: "Open in Activity",
     },
+    /** The spend back while it is pending, by state (D50, MG-10 §2.3.3). Each names the spend by its
+     * short txid; none says it didn't go out unless the wallet recorded a definite refusal. */
+    spendBack: {
+      uncertain: "The spend back to this wallet ({txid}) may already be on the network. The wallet couldn't confirm it went out.",
+      refused: "The spend back to this wallet didn't go out: {sentence}.",
+      inHistory: "Abandoning: waiting for the spend back ({txid}) to confirm. Your coins are still reserved.",
+      cancelled: "You cancelled the earlier spend back ({txid}) in Activity.",
+      legacy: "The wallet couldn't confirm the spend back ({txid}) went out. It may still confirm.",
+      sendAgain: "Send again",
+      tryAgain: "Try again",
+      abandonAgain: "Abandon again",
+      /** Send again's confirm: `{charge}` is the replay's grant cap. */
+      resendConfirm: "Send the same spend again. It's the same transaction, so it costs at most {charge}, once.",
+      /** Try again's and Abandon again's confirm adds this to `abandon.question`. */
+      again: "This is a new spend of the same coins and pays the {charge} network fee again.",
+    },
     importPanel: {
       received: "You pasted message {code}. Ask the sender to read their code: it should be {code}.",
       dismiss: "Dismiss",

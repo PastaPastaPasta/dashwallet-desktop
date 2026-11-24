@@ -41,6 +41,8 @@ import {
   sharedErrorText,
   signedOutText,
   sliceFor,
+  spendBackAction,
+  spendBackLine,
   stageStep,
   termsDiff,
   unreadableInProgress,
@@ -293,7 +295,7 @@ function DiscardUnreadable({ wallet, network, session, onDone }: { wallet: Walle
 
 /** Abandon's confirm (§9.3, MG-10 §2.3.3): the exact fee, "can't be undone" ticked, the
  * passphrase, then one call. The grant's cap is that fee, so the call can charge nothing more. */
-function AbandonSheet({ wallet, network, code, charge, testId, abandon, onDone }: { wallet: WalletSummary; network: NetworkInfo; code: string; charge: number; testId: string; abandon: (grant: string) => Promise<unknown>; onDone: () => void }) {
+function AbandonSheet({ wallet, network, code, charge, again = false, testId, abandon, onDone }: { wallet: WalletSummary; network: NetworkInfo; code: string; charge: number; again?: boolean; testId: string; abandon: (grant: string) => Promise<unknown>; onDone: () => void }) {
   const t = useT();
   const { dash, networkName } = useSharedText(network);
   const refresh = useMasternodesRefresh();
@@ -331,6 +333,7 @@ function AbandonSheet({ wallet, network, code, charge, testId, abandon, onDone }
         }}
       >
         <p data-testid={`${testId}-text`}>{t(`${P}.abandon.question`, { charge: dash(charge) })}</p>
+        {again && <p data-testid={`${testId}-again`}>{t(`${P}.spendBack.again`, { charge: dash(charge) })}</p>}
         <p className="mg-muted">{t(`${P}.abandon.after`)}</p>
         <label className="mg-choice">
           <input type="checkbox" data-testid={`${testId}-understand`} checked={understood} disabled={busy} onChange={(e) => setUnderstood(e.target.checked)} />
@@ -352,6 +355,58 @@ function AbandonSheet({ wallet, network, code, charge, testId, abandon, onDone }
             </DashButton>
             <DashButton type="submit" variant="plainRed" size="medium" data-testid={`${testId}-abandon`} disabled={busy || !understood || !credential.ready || wallet.watchOnly}>
               {t(`${P}.session.abandon`)}
+            </DashButton>
+          </span>
+        </footer>
+      </form>
+    </Sheet>
+  );
+}
+
+/** D50's Send again: the latest spend back's saved bytes once more, under a grant of exactly its charge. */
+function ResendAbandonSheet({ wallet, network, code, charge, resend, onDone }: { wallet: WalletSummary; network: NetworkInfo; code: string; charge: number; resend: (grant: string) => Promise<unknown>; onDone: () => void }) {
+  const t = useT();
+  const { dash, networkName } = useSharedText(network);
+  const refresh = useMasternodesRefresh();
+  const credential = useCredential(wallet.walletId, t(`${P}.abandon.ask`), null);
+  const [busy, setBusy] = useState(false);
+  const acting = useRef(false);
+  const testId = "sh-resend-abandon";
+  const run = async () => {
+    if (acting.current || !credential.ready) return;
+    acting.current = true;
+    setBusy(true);
+    try {
+      const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: charge });
+      if (!grant) return;
+      await resend(grant.id);
+      onDone();
+    } catch (e) {
+      credential.setError(sharedErrorText(e, { network: networkName, dash }));
+    } finally {
+      acting.current = false;
+      setBusy(false);
+      void refresh();
+    }
+  };
+  return (
+    <Sheet title={t(`${P}.session.title`, { code })} width="small" testId={testId} closable={!busy} onClose={onDone}>
+      <form
+        className="mg-sheet-body mg-step"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run();
+        }}
+      >
+        <p data-testid={`${testId}-text`}>{t(`${P}.spendBack.resendConfirm`, { charge: dash(charge) })}</p>
+        <CredentialField c={credential} busy={busy} testId={testId} />
+        <footer className="mg-sheet-footer">
+          <span className="mg-actions">
+            <DashButton variant="tintedGray" size="medium" data-testid={`${testId}-cancel`} data-autofocus disabled={busy} onClick={onDone}>
+              {t(`${P}.close.cancel`)}
+            </DashButton>
+            <DashButton type="submit" variant="filledBlue" size="medium" data-testid={`${testId}-send`} disabled={busy || !credential.ready || wallet.watchOnly}>
+              {t(`${P}.spendBack.sendAgain`)}
             </DashButton>
           </span>
         </footer>
@@ -399,7 +454,8 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const [closing, setClosing] = useState(false);
   const [feeOpen, setFeeOpen] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
-  const [abandoning, setAbandoning] = useState(false);
+  const [abandoning, setAbandoning] = useState<false | "first" | "again">(false);
+  const [resendingAbandon, setResendingAbandon] = useState(false);
   const [pickedShare, setPickedShare] = useState<number | null>(null);
   const [confirming, setConfirming] = useState<SendAction | null>(null);
   const [wayOut, setWayOut] = useState<boolean | null>(null);
@@ -443,7 +499,9 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const mainnetOff = mainnetHoldsBack(s, network);
   const showWayOut = wayOutShown(s, v.row);
   const wayOutOpen = wayOut ?? showWayOut === "expanded";
-  const handoff = handoffLine(s, (code) => sendErrorText({ code, message: "", data: null }, chainOf(network))?.text ?? null);
+  const refusedSentence = (code: string) => sendErrorText({ code, message: "", data: null }, chainOf(network))?.text ?? null;
+  const handoff = handoffLine(s, refusedSentence);
+  const spendBack = v.row === "abandoning" ? spendBackAction(s) : null;
   const openShares = s.rows.filter((r) => !r.ownerAddress);
   const joinShare = openShares.length === 1 ? openShares[0]!.index : pickedShare;
   const joinRow = s.rows.find((r) => r.index === joinShare) ?? null;
@@ -507,7 +565,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const sessionWarnings = s.warnings.map((w) => warningText(w, s)).filter((x): x is string => !!x);
   const importWarnings = imported ? imported.warnings.map((w) => warningText(w, s)).filter((x): x is string => !!x) : [];
   const counts = { joined: s.rows.filter((r) => r.contributed).length, approved: s.rows.filter((r) => r.approved).length, signed: s.rows.filter((r) => r.fundingSigned).length, total: s.rows.length };
-  const rowText = rowCopy(v.row, s, { coordinator: coordinatorLabel, dash, funding, counts, t });
+  const rowText = v.row === "abandoning" ? (spendBackLine(s, refusedSentence) ?? "") : rowCopy(v.row, s, { coordinator: coordinatorLabel, dash, funding, counts, t });
   const moreItems = [
     ...(s.role === "coordinator" && s.stage.kind === "draft" && s.rows.slice(1).every((r) => !r.contributed) ? [{ id: "fee", title: t(`${P}.session.changeFee`), onSelect: () => setFeeOpen(true) }] : []),
     ...(s.role === "coordinator" && s.stage.kind === "signing" ? [{ id: "unlock", title: t(`${P}.session.unlock`), onSelect: () => setUnlocking(true) }] : []),
@@ -592,9 +650,21 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
         network={network}
         code={s.code}
         charge={s.abandonCharge ?? 0}
+        again={abandoning === "again"}
         testId="sh-abandon"
         abandon={async (grant) => setLatest(await b.mnSharedAbandon(wallet.walletId, s.id, grant))}
         onDone={() => setAbandoning(false)}
+      />
+    );
+  if (resendingAbandon)
+    return (
+      <ResendAbandonSheet
+        wallet={wallet}
+        network={network}
+        code={s.code}
+        charge={s.resendAbandonCharge ?? 0}
+        resend={async (grant) => setLatest(await b.mnSharedResendAbandon(wallet.walletId, s.id, grant))}
+        onDone={() => setResendingAbandon(false)}
       />
     );
 
@@ -684,6 +754,19 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
         <p className="sh-row-copy" aria-live="polite" data-testid={`sh-row-${v.row}`}>
           {rowText}
         </p>
+        {spendBack && (
+          <span className="mg-actions">
+            {spendBack === "resend" ? (
+              <DashButton variant="tintedGray" size="small" data-testid="sh-spend-back-resend" disabled={busy || wallet.watchOnly} onClick={() => setResendingAbandon(true)}>
+                {t(`${P}.spendBack.sendAgain`)}
+              </DashButton>
+            ) : (
+              <DashButton variant="plainRed" size="small" data-testid={`sh-spend-back-${spendBack}`} disabled={busy || wallet.watchOnly} onClick={() => setAbandoning("again")}>
+                {t(`${P}.spendBack.${spendBack}`)}
+              </DashButton>
+            )}
+          </span>
+        )}
         {v.row === "join" && openShares.length > 1 && (
           <div className="mg-choices" role="radiogroup" aria-label={t(`${P}.session.pickShare`)} data-testid="sh-join-pick">
             <p className="mg-muted mg-small">{t(`${P}.session.pickShare`)}</p>
@@ -726,7 +809,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
                   {t(`${P}.abandon.openActivity`)}
                 </DashButton>
                 {canAbandon(s) && (
-                  <DashButton variant="plainRed" size="small" data-testid="sh-way-out-abandon" disabled={busy || wallet.watchOnly} onClick={() => setAbandoning(true)}>
+                  <DashButton variant="plainRed" size="small" data-testid="sh-way-out-abandon" disabled={busy || wallet.watchOnly} onClick={() => setAbandoning("first")}>
                     {t(`${P}.session.abandon`)}
                   </DashButton>
                 )}
@@ -779,8 +862,8 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
               {t(`${P}.session.close`)}
             </DashButton>
             {moreItems.length > 0 && <MoreMenu testId="sh-more" items={moreItems} />}
-            {canAbandon(s) && (
-              <DashButton variant="plainRed" size="medium" data-testid="sh-abandon-button" disabled={busy || wallet.watchOnly} onClick={() => setAbandoning(true)}>
+            {canAbandon(s) && v.row !== "abandoning" && (
+              <DashButton variant="plainRed" size="medium" data-testid="sh-abandon-button" disabled={busy || wallet.watchOnly} onClick={() => setAbandoning("first")}>
                 {t(`${P}.session.abandon`)}
               </DashButton>
             )}

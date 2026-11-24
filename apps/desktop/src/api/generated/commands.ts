@@ -3136,6 +3136,15 @@ export function mnSharedAbandon(walletId: string, session: string, grant: string
 }
 
 /**
+ * The latest abandon spend's saved bytes handed off again, while the
+ * spend may be out (`SharedSession.resendAbandonCharge`). Takes a
+ * `masternodeOp` grant of exactly that charge. Every network.
+ */
+export function mnSharedResendAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
+  return invoke<SharedSession>("mn_shared_resend_abandon", { walletId, session, grant });
+}
+
+/**
  * The same for a session whose stored record no longer reads
  * (`UnreadableSession.abandonCharge`).
  */
@@ -3687,6 +3696,7 @@ export type CommandArgs = {
   mn_shared_unlock: { walletId: string; session: string };
   mn_shared_approve: { walletId: string; session: string; consentHash: string; grant: string };
   mn_shared_abandon: { walletId: string; session: string; grant: string };
+  mn_shared_resend_abandon: { walletId: string; session: string; grant: string };
   mn_shared_abandon_unreadable: { walletId: string; session: string; grant: string };
   mn_shared_sign: { walletId: string; session: string; grant: string };
   mn_shared_send: { walletId: string; session: string; grant: string };
@@ -4062,6 +4072,7 @@ export type CommandResults = {
   mn_shared_unlock: SharedOutcome;
   mn_shared_approve: SharedOutcome;
   mn_shared_abandon: SharedSession;
+  mn_shared_resend_abandon: SharedSession;
   mn_shared_abandon_unreadable: UnreadableSession;
   mn_shared_sign: SharedOutcome;
   mn_shared_send: SharedOutcome;
@@ -4439,6 +4450,7 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_shared_unlock: "masternodes",
   mn_shared_approve: "masternodes",
   mn_shared_abandon: "masternodes",
+  mn_shared_resend_abandon: "masternodes",
   mn_shared_abandon_unreadable: "masternodes",
   mn_shared_sign: "masternodes",
   mn_shared_send: "masternodes",

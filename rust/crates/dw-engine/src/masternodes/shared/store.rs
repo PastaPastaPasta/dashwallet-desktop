@@ -746,6 +746,29 @@ fn next_of(l: &Loaded, stage: SharedStage) -> SharedNext {
     }
 }
 
+/// `next` once this wallet signed an abandon spend of the session: nothing
+/// that hands its message or transaction on, so the registration doesn't
+/// compete with the cancellation. A confirmed session keeps its own.
+pub(crate) fn after_abandon(row: &SharedSessionRow, next: SharedNext) -> SharedNext {
+    match (row.abandon_txid.is_some(), next) {
+        (true, SharedNext::Copy | SharedNext::Send | SharedNext::Sign | SharedNext::Wait) => {
+            SharedNext::Nothing
+        }
+        (_, next) => next,
+    }
+}
+
+/// `shared_message`'s refusal once this wallet signed an abandon spend of
+/// the session: `shared_stage{stage: "abandoning"}`.
+pub(crate) fn check_no_abandon(row: &SharedSessionRow) -> Result<(), MasternodesError> {
+    match row.abandon_txid {
+        Some(_) => Err(MasternodesError::SharedStage {
+            stage: "abandoning".into(),
+        }),
+        None => Ok(()),
+    }
+}
+
 /// The record of a stored session, its stage derived now.
 pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
     let s = &l.session;
@@ -796,7 +819,7 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
             .iter()
             .map(super::super::outpoint_string)
             .collect(),
-        next: next_of(l, stage),
+        next: after_abandon(&l.row, next_of(l, stage)),
         discardable: may_discard(&l.row),
         abandonable: l.out()
             && !matches!(
