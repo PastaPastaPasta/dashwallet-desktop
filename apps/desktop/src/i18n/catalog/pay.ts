@@ -307,8 +307,8 @@ export const pay = {
       shielded: "Shielded balance",
       platform: "Platform balance",
       notOffered: "Not available on this network yet.",
-      empty: "Nothing to pay with here.",
-      acceptsToo: "Accept and pay uses your Dash wallet.",
+      empty: "No balance to pay with.",
+      acceptsToo: "Accept and pay can only use your Dash wallet balance.",
       /** `name` the payee, `amount` and `received` with their unit, `source` a row's label. */
       confirm: "Pay {name} {amount} from your {source}. They receive about {received}. Network fee {fee}.",
       sent: "Payment sent. It arrives in {name}’s wallet once the Dash network processes it. This can take a while.",

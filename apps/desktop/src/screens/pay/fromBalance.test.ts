@@ -20,7 +20,7 @@ describe("the From step (C-funding P16)", () => {
   it("lists a source that cannot pay with its reason, never hides it", () => {
     const rows = fromRows({ ...base, platform: "absent" });
     expect(rows.find((r) => r.source === "shielded")?.reason).toBe("Not available on this network yet.");
-    expect(rows.find((r) => r.source === "platform")?.reason).toBe("Nothing to pay with here.");
+    expect(rows.find((r) => r.source === "platform")?.reason).toBe("No balance to pay with.");
     expect(rows.find((r) => r.source === "core")?.reason).toBeNull();
     expect(rows).toHaveLength(3);
   });
@@ -33,7 +33,12 @@ describe("the From step (C-funding P16)", () => {
   });
 
   it("leaves Accept and pay to the Dash wallet", () => {
-    expect(fromRows({ ...base, acceptsToo: true }).find((r) => r.source === "platform")?.reason).toBe("Accept and pay uses your Dash wallet.");
+    expect(fromRows({ ...base, acceptsToo: true }).find((r) => r.source === "platform")?.reason).toBe("Accept and pay can only use your Dash wallet balance.");
+  });
+
+  it("says an empty balance has nothing to pay with, in MG's words", () => {
+    expect(fromRows({ ...base, platform: 0 }).find((r) => r.source === "platform")?.reason).toBe("No balance to pay with.");
+    expect(fromRows({ ...base, platform: 0, acceptsToo: true }).find((r) => r.source === "platform")?.reason).toBe("Accept and pay can only use your Dash wallet balance.");
   });
 
   it("shows no balance in discreet mode or while unread", () => {

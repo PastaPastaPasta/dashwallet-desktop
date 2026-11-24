@@ -138,6 +138,12 @@ describe("shielded activity rows", () => {
     expect(rowSource(received)).toBe("shielded");
   });
 
+  it("titles a contact payment by its source: Paid from Platform", () => {
+    const row = platformRow(act("cp", { kind: "contactPayment", state: "done", to: "yXcontact", contact: { identity: "bob", contact: "me" } as never }));
+    expect([sourceRowTitle(row), row.amount < 0]).toEqual(["Paid from Platform", true]);
+    expect(sourceRowTitle(shieldedRow(shield("sp", { kind: "spend", direction: "out" })))).toBe("Paid from Shielded");
+  });
+
   it("maps the status", () => {
     expect(shieldedRow(shield("p", { status: "pending" })).status.kind).toBe("unconfirmed");
     expect(shieldedRow(shield("u", { status: "unknown" })).status.kind).toBe("unconfirmed");
