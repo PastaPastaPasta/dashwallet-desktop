@@ -14,7 +14,7 @@ import { canPay, FROM_PLATFORM_COPY, fromPlatformErrorText, liveOutcome, maxMask
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
-const addresses = (movable: string, duffs: number): PlatformAddressBalance => ({ credits: movable, movableCredits: movable, duffs, addresses: [], syncedAt: null, syncing: false });
+const addresses = (movable: string, duffs: number): PlatformAddressBalance => ({ credits: movable, movableCredits: movable, duffs, addresses: [], syncedAt: null, syncing: false, sendsActive: true });
 
 const inputs = (patch: Partial<SourceInputs> = {}): SourceInputs => ({
   coreDuffs: 150_000_000,
@@ -64,6 +64,8 @@ describe("Pay with (C3-8)", () => {
   it("Platform is disabled with its reason: no address funds here, mainnet, nothing a top-up can take, or a hold", () => {
     expect(reasons(inputs({ platform: null })).platform).toBe(SOURCE_COPY.notOffered);
     expect(reasons(inputs({ mainnet: true })).platform).toBe(SOURCE_COPY.notOffered);
+    expect(reasons(inputs({ platform: { ...addresses("40000000000", 40_000_000), sendsActive: false } })).platform).toBe(SOURCE_COPY.notOffered);
+    expect(canPay(topUpSources(inputs({ platform: { ...addresses("40000000000", 40_000_000), sendsActive: false } })), "platform")).toBe(false);
     expect(reasons(inputs({ platform: undefined })).platform).toBe(SOURCE_COPY.loading);
     expect(reasons(inputs({ platform: addresses("0", 0) })).platform).toBe(SOURCE_COPY.nothing);
     expect(reasons(inputs({ hold: { state: "pending", topUp: true } })).platform).toBe(FROM_PLATFORM_COPY.pending.text);

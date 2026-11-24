@@ -142,6 +142,7 @@ import type { PendingPlatformFund } from "./PendingPlatformFund";
 import type { PendingTopUp } from "./PendingTopUp";
 import type { PlatformActivity } from "./PlatformActivity";
 import type { PlatformAddressBalance } from "./PlatformAddressBalance";
+import type { PlatformAddressRow } from "./PlatformAddressRow";
 import type { PlatformFundOutcome } from "./PlatformFundOutcome";
 import type { PlatformFundQuote } from "./PlatformFundQuote";
 import type { PlatformPacing } from "./PlatformPacing";
@@ -1913,10 +1914,11 @@ export function creditsTopUpFromPlatformQuote(walletId: string, identity: string
 
 /**
  * Tops the identity up with `amount` of the Platform addresses'
- * credits under `grant`.
+ * credits under `grant`. `fee_input`: the quote's input 0; a plan
+ * with another fee source or claim is `credits.quote_changed`.
  */
-export function creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome> {
-  return invoke<TopUpFromPlatformOutcome>("credits_top_up_from_platform", { walletId, identity, amount, grant });
+export function creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, feeInput: PlatformAddressRow | null, grant: string): Promise<TopUpFromPlatformOutcome> {
+  return invoke<TopUpFromPlatformOutcome>("credits_top_up_from_platform", { walletId, identity, amount, feeInput, grant });
 }
 
 /**
@@ -3586,7 +3588,7 @@ export type CommandArgs = {
   credits_withdraw_to_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw_to_platform: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_top_up_from_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
-  credits_top_up_from_platform: { walletId: string; identity: string; amount: WithdrawAmount; grant: string };
+  credits_top_up_from_platform: { walletId: string; identity: string; amount: WithdrawAmount; feeInput: PlatformAddressRow | null; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
   platform_addresses: { walletId: string };
   platform_activity: { walletId: string };

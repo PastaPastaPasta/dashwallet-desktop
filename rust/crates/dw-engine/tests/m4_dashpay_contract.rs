@@ -1648,7 +1648,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.top_up_from_platform_quote(s(), WithdrawAmount::All)
                 .await
                 .map(drop),
-            dp.top_up_from_platform(s(), WithdrawAmount::All, s())
+            dp.top_up_from_platform(s(), WithdrawAmount::All, None, s())
                 .await
                 .map(drop),
         ] {
