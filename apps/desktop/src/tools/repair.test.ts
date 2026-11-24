@@ -45,6 +45,7 @@ const QUOTE: RegistrationQuote = {
   availableDuffs: 10e8,
   grant: { maxDuffs: 3_002_261, maxCredits: "2000000000" },
   readiness: null,
+  platform: null,
 };
 
 function setup(lock = {}) {
