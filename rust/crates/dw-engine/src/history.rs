@@ -458,8 +458,28 @@ pub(crate) fn unmined_own_spends(
                 .is_some_and(|v| v.iter().any(|(w, we)| *w != t && beats(we, e)))
         })
     };
+    // A beaten payment's descendants out of a block can never confirm either
+    // (#170 case 4), as `spent_outpoints` treats them; an InstantSend-locked
+    // one stays live, since only a ChainLocked block can beat it.
+    let unmined = |e: &TxEntry| e.context.block_info().is_none() && !e.is_abandoned();
+    let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
+    for (t, e) in txs.iter().filter(|(_, e)| unmined(e) && !instant_locked(e)) {
+        for i in &e.tx.input {
+            children.entry(i.previous_output.txid).or_default().push(*t);
+        }
+    }
+    let mut todo: Vec<Txid> = (txs.iter())
+        .filter(|(t, e)| unmined(e) && beaten(t, e))
+        .map(|(t, _)| *t)
+        .collect();
+    let mut dead = HashSet::new();
+    while let Some(t) = todo.pop() {
+        if dead.insert(t) {
+            todo.extend(children.get(&t).into_iter().flatten());
+        }
+    }
     (candidates.into_iter())
-        .filter(|(t, _, e)| !beaten(t, e))
+        .filter(|(t, _, _)| !dead.contains(*t))
         .flat_map(|(t, coins, e)| {
             (e.tx.input.iter())
                 .map(|i| i.previous_output)
@@ -2841,6 +2861,56 @@ mod tests {
             .map(|r| r.amount)
             .collect();
         assert_eq!(amounts, vec![50, 20, -70]);
+    }
+
+    /// #170 case 4: a payment that spends the change of a beaten payment can
+    /// never confirm either, so it claims nothing: its other coins are free
+    /// or the winner's. A child that is InstantSend-locked keeps its claims,
+    /// as only a ChainLocked block can beat it.
+    #[test]
+    fn unmined_own_spends_give_a_beaten_payments_children_no_claim() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let mark = |coins: &[OutPoint]| crate::tx_actions::SentMark {
+            inputs: Default::default(),
+            coins: coins.iter().copied().collect(),
+            tx: None,
+            kept: false,
+        };
+        let spend = |n: u8, coins: &[OutPoint], context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(n.into(), &hash_addr(9))],
+                ),
+                context,
+            )
+        };
+        let mut txs = HashMap::new();
+        let mut sent = crate::tx_actions::Sent::new();
+        let parent = spend(1, &[coin(20)], TransactionContext::Mempool);
+        let p = parent.tx.txid();
+        txs.insert(p, parent);
+        sent.insert(p, mark(&[coin(20)]));
+        let winner = spend(2, &[coin(20)], in_block(10, 0));
+        txs.insert(winner.tx.txid(), winner);
+        let change = OutPoint::new(p, 0);
+        let child = spend(3, &[change, coin(21)], TransactionContext::Mempool);
+        let c = child.tx.txid();
+        txs.insert(c, child);
+        sent.insert(c, mark(&[change, coin(21)]));
+        let grandchild = spend(4, &[OutPoint::new(c, 0), coin(22)], TransactionContext::Mempool);
+        let g = grandchild.tx.txid();
+        txs.insert(g, grandchild);
+        sent.insert(g, mark(&[OutPoint::new(c, 0), coin(22)]));
+        let mut locked = spend(5, &[OutPoint::new(p, 1), coin(23)], TransactionContext::Mempool);
+        locked.instant_locked = true;
+        let l = locked.tx.txid();
+        txs.insert(l, locked);
+        sent.insert(l, mark(&[coin(23)]));
+
+        let mut claims = unmined_own_spends(&txs, &sent, None);
+        claims.sort();
+        assert_eq!(claims, vec![(coin(23), l)], "only the locked child claims");
     }
 
     /// #88: the claims restored at load are the inputs of each payment this
