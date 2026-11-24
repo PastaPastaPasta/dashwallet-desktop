@@ -51,6 +51,7 @@ use self::store::{
 };
 use super::protx::build::{Context, invalid, shared_voting};
 use super::protx::ops::InFlight;
+use super::protx::require_protx_sending;
 use super::protx_records::{OperatorChoice, ProTxOperation, VotingChoice};
 use super::shared_records::{
     Activation, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyChangeRequest,
@@ -296,6 +297,7 @@ impl Masternodes {
         wallet: WalletId,
         request: StartSharedRequest,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         build::check_slots(request.shares.len())?;
         let service = coordinator_services(&request.terms.service);
         if service == Err(ServiceProblem::Invalid) {
@@ -396,6 +398,7 @@ impl Masternodes {
         session: String,
         fee: u64,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         build::check_fee(fee)?;
         self.protx_op(move |s| async move {
@@ -529,6 +532,7 @@ impl Masternodes {
         session: String,
         request: JoinSharedRequest,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         self.protx_op(move |s| async move {
             let network = s.network.core_network();
@@ -625,6 +629,7 @@ impl Masternodes {
         revision: u32,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
@@ -706,6 +711,7 @@ impl Masternodes {
         consent_hash: String,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         // The record's `consent_hash`: 64 hex, compared ignoring case.
         if consent_hash.len() != 64 || !consent_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -755,6 +761,7 @@ impl Masternodes {
         session: String,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         let sending = self.require_sending();
         self.protx_op(move |s| async move {
@@ -803,6 +810,7 @@ impl Masternodes {
         session: String,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         let sending = self.require_sending();
         self.protx_op(move |s| async move {
@@ -982,6 +990,7 @@ impl Masternodes {
         request: UpdateShareRequest,
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         let hash = parse_pro_tx_hash(&request.pro_tx_hash)?;
         let sending = self.require_sending();
         self.protx_op(move |s| async move {
@@ -1196,6 +1205,7 @@ impl Masternodes {
         request: KeyChangeRequest,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         let hash = parse_pro_tx_hash(&request.pro_tx_hash)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
@@ -1227,6 +1237,7 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             sending?;
             if s.is_key_change(wallet, &session).await? {
+                require_protx_sending(&s)?;
                 return s.approve_key_change(wallet, &session, &grant).await;
             }
             s.approve_together(wallet, &session, &grant, accept_actor_fee)
@@ -1254,6 +1265,7 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             sending?;
             if s.is_key_change(wallet, &session).await? {
+                require_protx_sending(&s)?;
                 return s.send_key_change(wallet, &session, &grant).await;
             }
             let operation = s.send_together(wallet, &session, &grant).await?;
