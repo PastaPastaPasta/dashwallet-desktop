@@ -172,6 +172,30 @@ fn unshield_to_platform_is_off_on_mainnet() {
     assert!(lib.spent().is_empty(), "no key left the vault");
 }
 
+/// Off on mainnet through the facade, first: a mainnet session refuses
+/// `platform.feature_off` before the wallet or its shielded store is
+/// opened, so a wallet that cannot be opened (here one the session never
+/// had) still reads `feature_off`, not `wallet_not_found`.
+#[test]
+fn the_facade_refuses_unshield_to_platform_on_mainnet_before_opening_the_pool() {
+    use super::super::journal_tests::{Recorder, engine};
+    use super::super::topup_tests::options;
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine(dir.path(), Arc::new(Recorder::default()));
+    let s = engine
+        .block_on(engine.open_network(DashNetwork::Mainnet, options()))
+        .unwrap();
+    let dashpay = s.dashpay(crate::WalletId([0x5c; 32]));
+    let quote = engine.block_on(dashpay.unshield_to_platform_quote(NOTE, None));
+    assert_eq!(code(quote), "platform.feature_off");
+    let call = engine.block_on(dashpay.unshield_to_platform(NOTE, None, "grant".into(), true));
+    assert_eq!(code(call), "platform.feature_off");
+    assert!(
+        !s.data_dir().join(pool::SHIELDED_DB_FILE).exists(),
+        "no shielded store was opened"
+    );
+}
+
 /// Without the dispatch hook nothing is quoted, read or signed: never the
 /// seed path, which the library would send unhooked.
 #[test]
