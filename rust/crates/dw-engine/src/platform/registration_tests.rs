@@ -439,6 +439,23 @@ enum FundScript {
     OverInputCap,
 }
 
+/// How a scripted Platform funding pass ends.
+type PlatformFundEnd = Result<super::platform_moves::RegisterOutcome, super::errors::CreditsError>;
+
+/// The plan a scripted pass writes: one input at nonce 1 claiming the
+/// row's funding, and the identity [`platform_identity`].
+fn platform_plan_of(funding: u64) -> super::registration_rows::PlatformPlan {
+    super::registration_rows::PlatformPlan {
+        inputs: vec![("tdashevo1plan".into(), 1, funding)],
+        identity: platform_identity(),
+    }
+}
+
+/// The identity a scripted Platform plan creates.
+fn platform_identity() -> String {
+    flow::b58(&dpp::prelude::Identifier::from([0x51u8; 32]))
+}
+
 #[derive(Default)]
 struct World {
     /// What a Shielded-funded registration reads.
@@ -447,6 +464,12 @@ struct World {
     /// address's first byte), and a move that holds them.
     platform: BTreeMap<dpp::address_funds::PlatformAddress, u64>,
     platform_held: Option<String>,
+    /// How each funding pass of a Platform-funded row ends: whether it
+    /// writes a plan first (one with none), then its outcome; an empty
+    /// script is `Unknown`.
+    platform_fund: std::collections::VecDeque<(bool, PlatformFundEnd)>,
+    /// Each pass's ask, and the plan it found the row with.
+    platform_asks: Vec<super::platform_moves::RegisterAsk>,
     /// The session's network reads as mainnet.
     mainnet: bool,
     /// Name lookups fail as DAPI unreachable would.
@@ -1203,6 +1226,27 @@ impl RegistrationLib for Fake {
             keys,
             version,
         )?)
+    }
+
+    fn platform_fund<'a>(
+        &'a self,
+        ask: super::platform_moves::RegisterAsk,
+        _lease: Option<&'a Lease>,
+        write_plan: super::platform_moves::PlanWriter<'a>,
+    ) -> super::platform_moves::PlanFund<'a> {
+        Box::pin(async move {
+            let (writes, end) = {
+                let mut w = self.w();
+                w.platform_asks.push(ask.clone());
+                w.platform_fund
+                    .pop_front()
+                    .unwrap_or((false, Ok(super::platform_moves::RegisterOutcome::Unknown)))
+            };
+            if writes && ask.plan.is_none() {
+                write_plan(platform_plan_of(ask.funding_credits)).await?;
+            }
+            end
+        })
     }
 
     async fn request_inviter(

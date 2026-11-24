@@ -76,7 +76,10 @@ pub(crate) type HeldKey = (DerivationPath, Vec<u8>);
 
 /// §4.1 step 2 on the blocking pool: checks every grant before consuming
 /// any, redeems them, moves an own key into one `KeyHold`, issues every
-/// signer the purposes need, and drops the tokens. With `keys`, the
+/// signer the purposes need, and drops the tokens. With `platform_address`,
+/// a `Registration` lease with credits also carries the Platform-address
+/// signer (a registration paid from the Platform addresses, C-funding F5).
+/// With `keys`, the
 /// `PlatformOp` grant is redeemed only while the vault holds one of them
 /// (dw-vault `redeem_grant_holding_key`), else `KeysNotHeld` with every
 /// grant unused (none given included).
@@ -86,6 +89,7 @@ pub(crate) fn issue(
     flow: FlowKind,
     grants: &[String],
     keys: Option<&[HeldKey]>,
+    platform_address: bool,
 ) -> Result<Issued, LeaseError> {
     let epoch_before = vault.epoch();
     let allowed = kinds_for(flow);
@@ -192,6 +196,10 @@ pub(crate) fn issue(
                 } else if max_credits > 0 {
                     out.signers.identity =
                         Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
+                    if platform_address && flow == FlowKind::Registration {
+                        out.signers.platform_address =
+                            Some(scoped(SignerScope::PlatformAddress).map_err(issuing)?);
+                    }
                 }
                 out.signers.crypto = Some(scoped(SignerScope::DashPayCrypto).map_err(issuing)?);
             }
@@ -275,7 +283,19 @@ impl NetworkSession {
         flow: FlowKind,
         grants: &[String],
     ) -> Result<Lease, LeaseError> {
-        self.begin_issuing(wallet, flow, grants, None).await
+        self.begin_issuing(wallet, flow, grants, None, false).await
+    }
+
+    /// A `Registration` lease; `from_platform`: it also carries the
+    /// Platform-address signer (C-funding F5).
+    pub(crate) async fn begin_registration_lease(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        grants: &[String],
+        from_platform: bool,
+    ) -> Result<Lease, LeaseError> {
+        self.begin_issuing(wallet, FlowKind::Registration, grants, None, from_platform)
+            .await
     }
 
     /// [`Self::begin_lease`] for a write that signs with one of `keys`:
@@ -288,7 +308,8 @@ impl NetworkSession {
         grants: &[String],
         keys: Vec<HeldKey>,
     ) -> Result<Lease, LeaseError> {
-        self.begin_issuing(wallet, flow, grants, Some(keys)).await
+        self.begin_issuing(wallet, flow, grants, Some(keys), false)
+            .await
     }
 
     async fn begin_issuing(
@@ -297,6 +318,7 @@ impl NetworkSession {
         flow: FlowKind,
         grants: &[String],
         keys: Option<Vec<HeldKey>>,
+        platform_address: bool,
     ) -> Result<Lease, LeaseError> {
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
@@ -305,7 +327,10 @@ impl NetworkSession {
             .begin(
                 wallet,
                 flow,
-                move || issue(&vault, &wallet, flow, &grants, keys.as_deref()),
+                move || {
+                    let keys = keys.as_deref();
+                    issue(&vault, &wallet, flow, &grants, keys, platform_address)
+                },
                 move || epoch_vault.epoch(),
             )
             .await
@@ -313,12 +338,22 @@ impl NetworkSession {
 
     /// §4.3's rebind of a lease in `NeedsGrant` with fresh grants.
     pub async fn rebind_lease(&self, lease: &Lease, grants: &[String]) -> Result<(), LeaseError> {
+        self.rebind_lease_scoped(lease, grants, false).await
+    }
+
+    /// [`Self::rebind_lease`]; `platform_address` as [`issue`] takes it.
+    pub(crate) async fn rebind_lease_scoped(
+        &self,
+        lease: &Lease,
+        grants: &[String],
+        platform_address: bool,
+    ) -> Result<(), LeaseError> {
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
         let (wallet, flow, grants) = (lease.wallet, lease.flow, grants.to_vec());
         lease
             .rebind(
-                move || issue(&vault, &wallet, flow, &grants, None),
+                move || issue(&vault, &wallet, flow, &grants, None, platform_address),
                 move || epoch_vault.epoch(),
             )
             .await

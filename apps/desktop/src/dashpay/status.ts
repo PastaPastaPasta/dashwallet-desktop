@@ -186,6 +186,12 @@ export const WAITS = {
   get authorize() {
     return t("dashpay.wait.authorize");
   },
+  get paymentUnknown() {
+    return t("dashpay.wait.paymentUnknown");
+  },
+  get paymentHeld() {
+    return t("dashpay.wait.paymentHeld");
+  },
   // These two have their own card (S14).
   fundingUnknown: null,
   needsFinish: null,
