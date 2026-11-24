@@ -9,14 +9,21 @@
 #     --unsigned-dir <dir> \
 #     --sigs-dir <dir> \
 #     --out-dir <dir> \
-#     [--signed-dmg <path>] \
+#     --signed-dmg <path> \
 #     [--repo PastaPastaPasta/dashwallet-desktop] \
 #     [--tauri-conf rust/crates/dw-app/tauri.conf.json] \
-#     [--pgp-pubkey <path>] \
+#     [--identities-file docs/release/signing-identities.json] \
+#     [--pgp-pubkey docs/release/release-key.asc] \
 #     [--pgp-fingerprint <40-hex>] \
+#     [--apple-team-id <10-alnum>] \
+#     [--win-leaf-hash <sha256:64-hex>] \
 #     [--win-ca-file <path>] \
-#     [--win-leaf-hash <sha256:HEX>] \
 #     [--skip-win-chain-verify]
+#
+# Pinned signer identities (PGP public key + primary fingerprint, Apple Team ID, Windows leaf
+# cert SHA-256) are loaded from the main repository at the tag (docs/release/signing-identities.json
+# and docs/release/release-key.asc) and NEVER from --sigs-dir. All three identities fail closed
+# until populated.
 #
 # Layout expected in --sigs-dir (mirroring dashpay/dash-detached-sigs):
 #   unsigned.SHA256SUMS                                    # binds sigs to the exact unsigned CI build
@@ -26,6 +33,7 @@
 #   SHA256SUMS                                             # final hashes of all 9 release files
 #   SHA256SUMS.asc                                         # detached armored PGP signature over SHA256SUMS
 set -euo pipefail
+umask 022
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$here/../.." && pwd)
@@ -37,8 +45,10 @@ out_dir=
 signed_dmg=
 repo=PastaPastaPasta/dashwallet-desktop
 tauri_conf="$repo_root/rust/crates/dw-app/tauri.conf.json"
-pgp_pubkey=
+identities_file="$repo_root/docs/release/signing-identities.json"
+pgp_pubkey="$repo_root/docs/release/release-key.asc"
 pgp_fingerprint=
+apple_team_id=
 win_ca_file=
 win_leaf_hash=
 skip_win_chain_verify=0
@@ -52,8 +62,10 @@ while (($#)); do
     --signed-dmg) signed_dmg=${2:?}; shift 2 ;;
     --repo) repo=${2:?}; shift 2 ;;
     --tauri-conf) tauri_conf=${2:?}; shift 2 ;;
+    --identities-file) identities_file=${2:?}; shift 2 ;;
     --pgp-pubkey) pgp_pubkey=${2:?}; shift 2 ;;
     --pgp-fingerprint) pgp_fingerprint=${2:?}; shift 2 ;;
+    --apple-team-id) apple_team_id=${2:?}; shift 2 ;;
     --win-ca-file) win_ca_file=${2:?}; shift 2 ;;
     --win-leaf-hash) win_leaf_hash=${2:?}; shift 2 ;;
     --skip-win-chain-verify) skip_win_chain_verify=1; shift ;;
@@ -64,9 +76,53 @@ done
 die() { echo "release-attach: $*" >&2; exit 1; }
 
 [[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--version must be a stable X.Y.Z"
-[[ -d "$unsigned_dir" ]] || die "--unsigned-dir $unsigned_dir does not exist"
-[[ -d "$sigs_dir" ]] || die "--sigs-dir $sigs_dir does not exist"
+[[ -d "$unsigned_dir" && ! -L "$unsigned_dir" ]] || die "--unsigned-dir $unsigned_dir does not exist"
+[[ -d "$sigs_dir" && ! -L "$sigs_dir" ]] || die "--sigs-dir $sigs_dir does not exist"
 [[ -n "$out_dir" ]] || die "--out-dir is required"
+[[ -n "$signed_dmg" && -f "$signed_dmg" && ! -L "$signed_dmg" ]] || die "missing signed macOS .dmg (pass --signed-dmg <path>)"
+
+# H1: Refuse any symlink anywhere inside --sigs-dir (or --unsigned-dir) before reading any file.
+if find "$sigs_dir" -type l -print -quit | grep -q .; then
+  die "refusing sigs directory containing symlinks ($sigs_dir)"
+fi
+if find "$unsigned_dir" -type l -print -quit | grep -q .; then
+  die "refusing unsigned directory containing symlinks ($unsigned_dir)"
+fi
+
+# H2 / M4 / Decision 5: Load pinned signer identities from the main repo at the tag and fail closed.
+if [[ -f "$identities_file" ]]; then
+  [[ ! -L "$identities_file" ]] || die "refusing symlink identities file $identities_file"
+  [[ -n "$pgp_fingerprint" ]] || pgp_fingerprint=$(jq -r '.pgp_fingerprint // empty' "$identities_file")
+  [[ -n "$apple_team_id" ]] || apple_team_id=$(jq -r '.apple_team_id // empty' "$identities_file")
+  [[ -n "$win_leaf_hash" ]] || win_leaf_hash=$(jq -r '.windows_leaf_sha256 // empty' "$identities_file")
+fi
+
+want_fpr=$(printf '%s' "$pgp_fingerprint" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+[[ "$want_fpr" =~ ^[0-9A-F]{40}$ ]] ||
+  die "pinned PGP primary fingerprint must be 40 hex chars (got '${pgp_fingerprint:-<empty>}'; populate docs/release/signing-identities.json)"
+
+[[ "$apple_team_id" =~ ^[A-Z0-9]{10}$ ]] ||
+  die "pinned Apple Team ID must be 10 uppercase alphanumerics (got '${apple_team_id:-<empty>}'; populate docs/release/signing-identities.json)"
+
+win_leaf_hash=$(printf '%s' "$win_leaf_hash" | tr '[:upper:]' '[:lower:]')
+[[ "$win_leaf_hash" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+  die "pinned Windows leaf cert hash must be sha256:<64-hex> (got '${win_leaf_hash:-<empty>}'; populate docs/release/signing-identities.json)"
+
+[[ -n "$pgp_pubkey" && -f "$pgp_pubkey" && ! -L "$pgp_pubkey" ]] ||
+  die "pinned PGP public key file not found: ${pgp_pubkey:-<empty>} (populate docs/release/release-key.asc)"
+
+# Never allow the PGP public key to come from inside --sigs-dir.
+python3 - "$pgp_pubkey" "$sigs_dir" <<'PY' || die "refusing PGP public key loaded from inside --sigs-dir ($pgp_pubkey)"
+import os, sys
+from pathlib import Path
+pub = Path(os.path.realpath(sys.argv[1]))
+sigs = Path(os.path.realpath(sys.argv[2]))
+try:
+    pub.relative_to(sigs)
+    sys.exit(1)
+except ValueError:
+    sys.exit(0)
+PY
 
 sha256_check() {
   local sums=$1 dir=$2
@@ -116,7 +172,7 @@ for suffix in linux-x86_64.AppImage linux-amd64.deb linux-x86_64.flatpak sbom-ru
   cp "$src" "$dist_out/"
 done
 
-# 3. Windows: attach detached PEM Authenticode signature and verify.
+# 3. Windows: attach detached PEM Authenticode signature and verify against pinned leaf hash.
 win_name="dash-wallet-$version-windows-x64-setup.exe"
 win_unsigned="$unsigned_dir/$win_name"
 win_sig="$sigs_dir/win/$win_name.pem"
@@ -125,23 +181,27 @@ win_signed="$dist_out/$win_name"
 [[ -s "$win_sig" ]] || die "missing detached Windows signature $win_sig"
 command -v osslsigncode >/dev/null 2>&1 || die "osslsigncode is required to attach/verify Windows signatures"
 
+attach_help=$(osslsigncode attach-signature --help 2>&1 || true)
+verify_help=$(osslsigncode verify --help 2>&1 || true)
+
 attach_args=(attach-signature -in "$win_unsigned" -sigin "$win_sig" -out "$win_signed")
-verify_args=(verify -in "$win_signed")
+verify_args=(verify -in "$win_signed" -require-leaf-hash "$win_leaf_hash")
 if [[ -n "$win_ca_file" ]]; then
-  attach_args+=(-CAfile "$win_ca_file")
+  # osslsigncode <= 2.13 verifies the cert chain inside attach-signature and requires -CAfile there;
+  # >= 2.14 does digest-only attach and accepts -CAfile/-require-leaf-hash on verify only.
+  [[ "$attach_help" == *"-CAfile"* ]] && attach_args+=(-CAfile "$win_ca_file")
   verify_args+=(-CAfile "$win_ca_file")
 fi
-if [[ -n "$win_leaf_hash" ]]; then
-  attach_args+=(-require-leaf-hash "$win_leaf_hash")
-  verify_args+=(-require-leaf-hash "$win_leaf_hash")
-fi
+[[ "$attach_help" == *"-require-leaf-hash"* ]] && attach_args+=(-require-leaf-hash "$win_leaf_hash")
 if ((skip_win_chain_verify)); then
-  verify_args+=(-ignore-timestamp -ignore-crl)
+  verify_args+=(-ignore-timestamp)
+  # -ignore-crl was added in osslsigncode 2.9 (Ubuntu 24.04 ships 2.8-2).
+  [[ "$verify_help" == *"-ignore-crl"* ]] && verify_args+=(-ignore-crl)
 fi
 
 echo "release-attach: attaching detached Authenticode signature to $win_name"
 osslsigncode "${attach_args[@]}"
-echo "release-attach: verifying signed $win_name"
+echo "release-attach: verifying signed $win_name (pinned leaf $win_leaf_hash)"
 osslsigncode "${verify_args[@]}"
 
 # 4. macOS .app: extract unsigned .app, attach detached signatures, verify, pack deterministic .app.tar.gz.
@@ -158,9 +218,10 @@ echo "release-attach: applying detached macOS signatures to Dash Wallet.app"
 python3 "$here/macos-detached-sig.py" apply "$work/mac-unsigned/Dash Wallet.app" "$mac_sigs" "$work/mac-signed/Dash Wallet.app"
 python3 "$here/macos-detached-sig.py" verify-signed "$work/mac-signed/Dash Wallet.app"
 
+apple_req="anchor apple generic and certificate leaf[subject.OU] = \"$apple_team_id\""
 if [[ "$(uname -s)" == Darwin ]]; then
-  echo "release-attach: verifying macOS codesign, Gatekeeper (spctl), and notarization staple"
-  codesign --verify --deep --strict --verbose=2 "$work/mac-signed/Dash Wallet.app"
+  echo "release-attach: verifying macOS codesign (Team ID $apple_team_id), Gatekeeper (spctl), and notarization staple"
+  codesign --verify --deep --strict --verbose=2 -R="$apple_req" "$work/mac-signed/Dash Wallet.app"
   spctl --assess --type execute -vv "$work/mac-signed/Dash Wallet.app"
   xcrun stapler validate "$work/mac-signed/Dash Wallet.app"
 fi
@@ -168,29 +229,23 @@ fi
 mac_app_tar="$feed_out/dash-wallet-$version-macos-universal.app.tar.gz"
 python3 "$here/macos-detached-sig.py" pack-app "$work/mac-signed/Dash Wallet.app" "$mac_app_tar"
 
-# 5. macOS .dmg: verify signed .dmg contains the exact attached Dash Wallet.app, and stage it.
+# 5. macOS .dmg: verify signed .dmg Team ID, staple, exact top-level layout, and interior Dash Wallet.app.
 dmg_name="dash-wallet-$version-macos-universal.dmg"
-if [[ -z "$signed_dmg" && -f "$sigs_dir/$dmg_name" ]]; then
-  signed_dmg="$sigs_dir/$dmg_name"
-fi
-[[ -n "$signed_dmg" && -f "$signed_dmg" ]] || die "missing signed macOS .dmg (pass --signed-dmg <path>)"
-
 if [[ "$(uname -s)" == Darwin ]]; then
-  echo "release-attach: verifying $dmg_name signature, staple, and interior Dash Wallet.app byte-identity"
-  codesign --verify --verbose=2 "$signed_dmg"
+  echo "release-attach: verifying $dmg_name signature (Team ID $apple_team_id), staple, top-level layout, and interior .app"
+  codesign --verify --verbose=2 -R="$apple_req" "$signed_dmg"
   xcrun stapler validate "$signed_dmg"
   dmg_mnt="$work/dmg-mnt"
   mkdir -p "$dmg_mnt"
   hdiutil attach "$signed_dmg" -mountpoint "$dmg_mnt" -nobrowse -readonly >/dev/null
-  [[ -d "$dmg_mnt/Dash Wallet.app" ]] || die "$signed_dmg does not contain Dash Wallet.app"
-  diff -qr "$work/mac-signed/Dash Wallet.app" "$dmg_mnt/Dash Wallet.app" ||
-    die "Dash Wallet.app inside $signed_dmg differs from CI unsigned build + detached signatures"
+  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$dmg_mnt" "$work/mac-signed/Dash Wallet.app"
+  codesign --verify --deep --strict --verbose=2 -R="$apple_req" "$dmg_mnt/Dash Wallet.app"
   hdiutil detach "$dmg_mnt" >/dev/null
   dmg_mnt=
 fi
 cp "$signed_dmg" "$dist_out/$dmg_name"
 
-# 6. Updater feed: verify all 4 minisign signatures against tauri.conf.json pubkey and version.
+# 6. Updater feed: verify all 4 exact URLs and minisign signatures against tauri.conf.json pubkey and version.
 latest_src="$sigs_dir/updater/latest.json"
 [[ -s "$latest_src" ]] || die "missing $latest_src"
 cp "$latest_src" "$feed_out/latest.json"
@@ -203,7 +258,7 @@ python3 "$here/verify-minisign.py" \
   --files-dir "$feed_out" \
   --repo "$repo"
 
-# 7. Final SHA256SUMS + SHA256SUMS.asc verification.
+# 7. Final SHA256SUMS + mandatory pinned PGP SHA256SUMS.asc verification (rejecting revoked/expired keys).
 final_sums="$sigs_dir/SHA256SUMS"
 final_asc="$sigs_dir/SHA256SUMS.asc"
 [[ -s "$final_sums" ]] || die "missing $final_sums"
@@ -211,8 +266,6 @@ final_asc="$sigs_dir/SHA256SUMS.asc"
 cp "$final_sums" "$dist_out/SHA256SUMS"
 cp "$final_asc" "$dist_out/SHA256SUMS.asc"
 
-# Verify SHA256SUMS lists exactly the 9 expected files (5 bundles + 2 SBOMs + latest.json + .app.tar.gz)
-# and every file's actual hash matches.
 expected_names=(
   "dash-wallet-$version-linux-amd64.deb"
   "dash-wallet-$version-linux-x86_64.AppImage"
@@ -245,37 +298,76 @@ while read -r want_hash fname; do
 done < "$dist_out/SHA256SUMS"
 echo "release-attach: all 9 final release files match SHA256SUMS"
 
-# Verify PGP signature when a public key or fingerprint is supplied (or gpg keyring is configured).
-if [[ -n "$pgp_pubkey" || -n "$pgp_fingerprint" ]]; then
-  command -v gpg >/dev/null 2>&1 || die "gpg is required to verify SHA256SUMS.asc"
-  gpg_args=(--batch --status-fd 1)
-  if [[ -n "$pgp_pubkey" ]]; then
-    gpg_tmp="$work/gnupg"
-    (umask 077 && mkdir -p "$gpg_tmp")
-    chmod 700 "$gpg_tmp"
-    GNUPGHOME=$gpg_tmp gpg --batch --quiet --import "$pgp_pubkey"
-    verify_out=$(GNUPGHOME=$gpg_tmp gpg "${gpg_args[@]}" --verify "$dist_out/SHA256SUMS.asc" "$dist_out/SHA256SUMS")
-  else
-    verify_out=$(gpg "${gpg_args[@]}" --verify "$dist_out/SHA256SUMS.asc" "$dist_out/SHA256SUMS")
-  fi
-  sig_primary=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print toupper($12); exit }' <<<"$verify_out")
-  [[ -n "$sig_primary" ]] || die "PGP verification failed for SHA256SUMS.asc"
-  if [[ -n "$pgp_fingerprint" ]]; then
-    want_fpr=$(printf '%s' "$pgp_fingerprint" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
-    [[ "$sig_primary" == "$want_fpr" ]] ||
-      die "SHA256SUMS.asc signed by primary key $sig_primary, expected $want_fpr"
-  fi
-  echo "release-attach: verified PGP signature SHA256SUMS.asc (primary key $sig_primary)"
+command -v gpg >/dev/null 2>&1 || die "gpg is required to verify SHA256SUMS.asc"
+gpg_tmp="$work/gnupg"
+(umask 077 && mkdir -p "$gpg_tmp")
+chmod 700 "$gpg_tmp"
+GNUPGHOME=$gpg_tmp gpg --batch --quiet --import "$pgp_pubkey" ||
+  die "failed to import pinned PGP public key from $pgp_pubkey"
+
+gpg_rc=0
+verify_out=$(GNUPGHOME=$gpg_tmp gpg --batch --status-fd 1 --verify "$dist_out/SHA256SUMS.asc" "$dist_out/SHA256SUMS" 2>&1) || gpg_rc=$?
+if ((gpg_rc != 0)); then
+  printf '%s\n' "$verify_out" >&2
+  die "gpg --verify failed for SHA256SUMS.asc (exit $gpg_rc)"
 fi
 
-jq -n \
-  --arg version "$version" \
-  --arg windows_sha256 "$(sha256_of "$win_signed")" \
-  --arg dmg_sha256 "$(sha256_of "$dist_out/$dmg_name")" \
-  --arg app_tar_sha256 "$(sha256_of "$mac_app_tar")" \
-  --arg sums_sha256 "$(sha256_of "$dist_out/SHA256SUMS")" \
-  --arg asc_sha256 "$(sha256_of "$dist_out/SHA256SUMS.asc")" \
-  '{schema: 1, version: $version, windows_sha256: $windows_sha256, dmg_sha256: $dmg_sha256, app_tar_sha256: $app_tar_sha256, sums_sha256: $sums_sha256, asc_sha256: $asc_sha256}' \
-  > "$out_dir/signed-manifest.json"
+# L1: Reject revoked or expired keys/signatures explicitly, and require GOODSIG + pinned primary VALIDSIG.
+if grep -qE '^\[GNUPG:\] (REVKEYSIG|KEYREVOKED|EXPKEYSIG|EXPSIG|BADSIG|ERRSIG)\b' <<<"$verify_out"; then
+  printf '%s\n' "$verify_out" >&2
+  die "PGP signature on SHA256SUMS.asc rejected (revoked, expired, or bad key/signature)"
+fi
+grep -qE '^\[GNUPG:\] GOODSIG\b' <<<"$verify_out" || {
+  printf '%s\n' "$verify_out" >&2
+  die "PGP verification for SHA256SUMS.asc did not emit GOODSIG"
+}
+sig_primary=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print toupper($12); exit }' <<<"$verify_out")
+[[ -n "$sig_primary" ]] || die "PGP verification failed for SHA256SUMS.asc (missing VALIDSIG)"
+[[ "$sig_primary" == "$want_fpr" ]] ||
+  die "SHA256SUMS.asc signed by primary key $sig_primary, expected $want_fpr"
+echo "release-attach: verified PGP signature SHA256SUMS.asc (GOODSIG + pinned primary key $sig_primary)"
+
+# L4 / H2: Record pinned identities and SHA-256 of ALL 11 published files in signed-manifest.json.
+python3 - "$version" "$sig_primary" "$apple_team_id" "$win_leaf_hash" "$dist_out" "$feed_out" "$out_dir/signed-manifest.json" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+
+version, pgp_fpr, apple_team_id, win_leaf, dist_dir, feed_dir, out_path = sys.argv[1:]
+expected = [
+    f"dash-wallet-{version}-linux-amd64.deb",
+    f"dash-wallet-{version}-linux-x86_64.AppImage",
+    f"dash-wallet-{version}-linux-x86_64.flatpak",
+    f"dash-wallet-{version}-macos-universal.app.tar.gz",
+    f"dash-wallet-{version}-macos-universal.dmg",
+    f"dash-wallet-{version}-sbom-npm.cdx.json",
+    f"dash-wallet-{version}-sbom-rust.cdx.json",
+    f"dash-wallet-{version}-windows-x64-setup.exe",
+    "latest.json",
+    "SHA256SUMS",
+    "SHA256SUMS.asc",
+]
+files = {}
+for name in sorted(expected):
+    p = Path(dist_dir) / name
+    if not p.is_file():
+        p = Path(feed_dir) / name
+    if not p.is_file():
+        raise SystemExit(f"signed-manifest: missing {name}")
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    files[name] = h.hexdigest()
+
+manifest = {
+    "schema": 1,
+    "version": version,
+    "pgp_fpr": pgp_fpr,
+    "apple_team_id": apple_team_id,
+    "windows_leaf_sha256": win_leaf,
+    "files": files,
+}
+Path(out_path).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+PY
 
 echo "release-attach: ready to publish from DIST=$dist_out FEED=$feed_out"

@@ -27,10 +27,11 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import struct
 import sys
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 FAT_MAGIC = 0xCAFEBABE
 FAT_CIGAM = 0xBEBAFECA
@@ -236,6 +237,43 @@ def patch_thin_slice(unsigned_slice: bytes, sig_meta: dict, cs_blob: bytes) -> b
     return bytes(out)
 
 
+def safe_subpath(root: Path, rel: str) -> Path:
+    """Resolve a manifest-supplied relative POSIX path strictly inside `root` with no symlinks."""
+    if not isinstance(rel, str) or not rel or "\x00" in rel or "\\" in rel or rel.startswith("/"):
+        raise ValueError(f"unsafe relative path: {rel!r}")
+    posix = PurePosixPath(rel)
+    if posix.is_absolute() or not posix.parts:
+        raise ValueError(f"unsafe relative path: {rel!r}")
+    for part in posix.parts:
+        if part in ("", ".", ".."):
+            raise ValueError(f"path traversal component in {rel!r}")
+
+    root_resolved = root.resolve()
+    cur = root
+    for part in posix.parts:
+        cur = cur / part
+        if cur.is_symlink():
+            raise ValueError(f"refusing symlink in path: {cur}")
+
+    resolved = cur.resolve(strict=False)
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError(f"path escapes {root}: {rel!r} -> {resolved}") from exc
+    return cur
+
+
+def assert_no_symlinks(root: Path) -> None:
+    if root.is_symlink():
+        raise SystemExit(f"apply: refusing symlink root {root}")
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        base = Path(dirpath)
+        for name in dirnames + filenames:
+            p = base / name
+            if p.is_symlink():
+                raise SystemExit(f"apply: refusing symlink inside sigs directory: {p}")
+
+
 def patch_macho(unsigned_bytes: bytes, meta: dict, sig_dir: Path) -> bytes:
     parsed = parse_macho(unsigned_bytes)
     if parsed["format"] != meta["format"]:
@@ -245,7 +283,19 @@ def patch_macho(unsigned_bytes: bytes, meta: dict, sig_dir: Path) -> bytes:
 
     patched_slices = []
     for u_slice, s_meta in zip(parsed["slices"], meta["slices"]):
-        cs_blob = (sig_dir / s_meta["cs_file"]).read_bytes()
+        if s_meta.get("arch") != u_slice["arch"]:
+            raise ValueError(
+                f"Mach-O slice arch mismatch: {s_meta.get('arch')!r} != {u_slice['arch']!r}"
+            )
+        expected_cs = f"{meta['path']}.{u_slice['arch']}.cs"
+        if s_meta.get("cs_file") != expected_cs:
+            raise ValueError(
+                f"Untrusted cs_file {s_meta.get('cs_file')!r}; expected {expected_cs!r}"
+            )
+        cs_path = safe_subpath(sig_dir, s_meta["cs_file"])
+        if not cs_path.is_file() or cs_path.is_symlink():
+            raise ValueError(f"Missing or non-regular detached signature blob {cs_path}")
+        cs_blob = cs_path.read_bytes()
         if parsed["format"] == "thin":
             u_raw = unsigned_bytes
         else:
@@ -415,7 +465,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
     sigs_dir = Path(args.sigs_dir)
     out_app = Path(args.out_app)
 
-    manifest_path = sigs_dir / "manifest.json"
+    assert_no_symlinks(sigs_dir)
+    manifest_path = safe_subpath(sigs_dir, "manifest.json")
     if not manifest_path.is_file():
         raise SystemExit(f"apply: missing {manifest_path}")
     manifest = json.loads(manifest_path.read_text())
@@ -424,10 +475,21 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
     u_files = walk_bundle(unsigned_app)
     expected_unchanged = manifest["unchanged_files"]
-    expected_macho = {m["path"]: m for m in manifest["macho_binaries"]}
+    expected_macho: dict[str, dict] = {}
+    for m in manifest["macho_binaries"]:
+        rel = m.get("path")
+        try:
+            safe_subpath(unsigned_app, rel)
+        except ValueError as e:
+            raise SystemExit(f"apply: invalid macho_binaries path: {e}") from None
+        expected_macho[rel] = m
 
     # Verify every regular non-signature file in unsigned_app matches the manifest.
     for rel, want_sha in expected_unchanged.items():
+        try:
+            safe_subpath(unsigned_app, rel)
+        except ValueError as e:
+            raise SystemExit(f"apply: invalid unchanged_files path: {e}") from None
         if rel not in u_files:
             raise SystemExit(f"apply: unsigned .app is missing expected file {rel}")
         got_sha = sha256_file(u_files[rel])
@@ -437,6 +499,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
     for rel, m in expected_macho.items():
         if rel not in u_files:
             raise SystemExit(f"apply: unsigned .app is missing expected Mach-O binary {rel}")
+        if u_files[rel].is_symlink():
+            raise SystemExit(f"apply: refusing symlink Mach-O target {rel}")
         got_sha = sha256_file(u_files[rel])
         if got_sha != m["unsigned_sha256"]:
             raise SystemExit(
@@ -450,28 +514,39 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
     # Remove any ad-hoc _CodeSignature before installing signed files.
     for rel in SKIP_BUNDLE_FILES:
-        p = out_app / rel
-        if p.exists():
+        p = safe_subpath(out_app, rel)
+        if p.exists() or p.is_symlink():
             p.unlink()
 
     for rel, m in expected_macho.items():
-        target = out_app / rel
+        target = safe_subpath(out_app, rel)
         mode = target.stat().st_mode
-        patched = patch_macho(target.read_bytes(), m, sigs_dir)
+        try:
+            patched = patch_macho(target.read_bytes(), m, sigs_dir)
+        except ValueError as e:
+            raise SystemExit(f"apply: {rel}: {e}") from None
         target.write_bytes(patched)
         os.chmod(target, mode)
 
     for entry in manifest["bundle_sig_files"]:
-        rel = entry["path"]
-        src = sigs_dir / rel
-        if not src.is_file():
-            raise SystemExit(f"apply: missing detached bundle signature file {src}")
+        rel = entry.get("path")
+        if rel not in SKIP_BUNDLE_FILES:
+            raise SystemExit(
+                f"apply: refusing bundle_sig_files path {rel!r} outside allowlist {sorted(SKIP_BUNDLE_FILES)}"
+            )
+        try:
+            src = safe_subpath(sigs_dir, rel)
+            dst = safe_subpath(out_app, rel)
+        except ValueError as e:
+            raise SystemExit(f"apply: invalid bundle_sig_files path: {e}") from None
+        if not src.is_file() or src.is_symlink():
+            raise SystemExit(f"apply: missing or non-regular detached bundle signature file {src}")
         got_sha = sha256_file(src)
         if got_sha != entry["sha256"]:
             raise SystemExit(f"apply: detached signature file {rel} corrupted ({got_sha} != {entry['sha256']})")
-        dst = out_app / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        shutil.copyfile(src, dst)
+        os.chmod(dst, 0o644)
 
     print(f"macos-detached-sig: applied detached signatures to {out_app} (hashes verified)")
 
@@ -514,6 +589,12 @@ def cmd_pack_app(args: argparse.Namespace) -> None:
         ti.uname = ""
         ti.gname = ""
         ti.mtime = 0
+        if ti.isdir():
+            ti.mode = 0o755
+        elif ti.issym():
+            ti.mode = 0o777
+        else:
+            ti.mode = 0o755 if (ti.mode & 0o111) else 0o644
         return ti
 
     entries = [app] + sorted(app.rglob("*"), key=lambda p: p.relative_to(app).as_posix())
@@ -529,6 +610,83 @@ def cmd_pack_app(args: argparse.Namespace) -> None:
                 else:
                     tf.addfile(ti)
     print(f"macos-detached-sig: packed deterministic {out} ({sha256_file(out)})")
+
+
+ALLOWED_DMG_DOTFILES = {
+    ".DS_Store",
+    ".Trashes",
+    ".VolumeIcon.icns",
+    ".background",
+    ".fseventsd",
+}
+
+
+def _snapshot_tree(root: Path) -> dict[str, tuple[str, int, str]]:
+    """Return {rel_posix: (kind, norm_mode, digest_or_target)} for every entry in root."""
+    out: dict[str, tuple[str, int, str]] = {}
+    for p in sorted(root.rglob("*"), key=lambda x: x.relative_to(root).as_posix()):
+        rel = p.relative_to(root).as_posix()
+        st = p.lstat()
+        mode = stat.S_IMODE(st.st_mode)
+        if stat.S_ISLNK(st.st_mode):
+            out[rel] = ("link", 0o777, os.readlink(p))
+        elif stat.S_ISDIR(st.st_mode):
+            out[rel] = ("dir", 0o755, "")
+        elif stat.S_ISREG(st.st_mode):
+            norm_mode = 0o755 if (mode & 0o111) else 0o644
+            out[rel] = ("file", norm_mode, sha256_file(p))
+        else:
+            raise SystemExit(f"verify-dmg-layout: unsupported special file {rel}")
+    return out
+
+
+def cmd_verify_dmg_layout(args: argparse.Namespace) -> None:
+    """Verify mounted .dmg top-level is exactly {Dash Wallet.app, Applications -> /Applications}
+    and its Dash Wallet.app matches expected_app in paths, types, executable modes, and bytes."""
+    mnt = Path(args.dmg_mount)
+    expected_app = Path(args.expected_app)
+    if not mnt.is_dir():
+        raise SystemExit(f"verify-dmg-layout: {mnt} is not a directory")
+    if not expected_app.is_dir():
+        raise SystemExit(f"verify-dmg-layout: {expected_app} is not a directory")
+
+    visible: set[str] = set()
+    for child in sorted(mnt.iterdir(), key=lambda p: p.name):
+        name = child.name
+        if name.startswith("."):
+            if name in ALLOWED_DMG_DOTFILES or name.startswith(".HFS+ Private Directory Data"):
+                continue
+            raise SystemExit(f"verify-dmg-layout: unexpected hidden top-level entry in .dmg: {name!r}")
+        visible.add(name)
+
+    want_visible = {"Applications", "Dash Wallet.app"}
+    if visible != want_visible:
+        raise SystemExit(
+            f"verify-dmg-layout: top-level .dmg entries {sorted(visible)} != expected {sorted(want_visible)}"
+        )
+
+    apps_link = mnt / "Applications"
+    if not apps_link.is_symlink() or os.readlink(apps_link) != "/Applications":
+        target = os.readlink(apps_link) if apps_link.is_symlink() else "<not a symlink>"
+        raise SystemExit(
+            f"verify-dmg-layout: Applications must be a symlink to /Applications (got {target!r})"
+        )
+
+    dmg_app = mnt / "Dash Wallet.app"
+    if dmg_app.is_symlink() or not dmg_app.is_dir():
+        raise SystemExit("verify-dmg-layout: Dash Wallet.app in .dmg must be a real directory")
+
+    got_tree = _snapshot_tree(dmg_app)
+    want_tree = _snapshot_tree(expected_app)
+    if got_tree != want_tree:
+        missing = sorted(set(want_tree) - set(got_tree))
+        extra = sorted(set(got_tree) - set(want_tree))
+        changed = sorted(k for k in (set(want_tree) & set(got_tree)) if want_tree[k] != got_tree[k])
+        raise SystemExit(
+            f"verify-dmg-layout: Dash Wallet.app in .dmg differs from CI unsigned build + detached signatures "
+            f"(missing={missing[:5]}, extra={extra[:5]}, changed={changed[:5]})"
+        )
+    print(f"macos-detached-sig: verified .dmg layout and {len(got_tree)} app entries (types, modes, bytes)")
 
 
 def main() -> None:
@@ -558,6 +716,11 @@ def main() -> None:
     p_pack.add_argument("app_dir")
     p_pack.add_argument("out_tar_gz")
     p_pack.set_defaults(func=cmd_pack_app)
+
+    p_dmg = sub.add_parser("verify-dmg-layout", help="Verify mounted .dmg top-level entries and interior .app")
+    p_dmg.add_argument("dmg_mount")
+    p_dmg.add_argument("expected_app")
+    p_dmg.set_defaults(func=cmd_verify_dmg_layout)
 
     args = parser.parse_args()
     args.func(args)

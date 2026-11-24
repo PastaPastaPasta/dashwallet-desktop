@@ -71,10 +71,11 @@ What is checked (`rust/crates/dw-app/src/updates.rs`):
 - A signed stable release gains `latest.json` and `dash-wallet-X.Y.Z-macos-universal.app.tar.gz` (plus
   `SHA256SUMS.asc`), and `latest.json` + `.app.tar.gz` are listed in `SHA256SUMS`. The AppImage and the Windows
   installer are their own updates, so their minisign signatures live only in `latest.json`.
-- Setting repository variable `DW_SIGNING_REQUIRED=1` (replacing `DW_UPDATER_REQUIRED`) holds back unsigned stable
-  tag publishing in `release.yml` and makes `release-publish.sh` refuse any final `vX.Y.Z` release missing
-  verified attached signatures (`SHA256SUMS.asc`, `latest.json` + `.app.tar.gz`, and `signed-manifest.json`).
-  Release candidates (`vX.Y.Z-rc.N`) never require signing and never publish `latest.json`.
+- Final stable tags (`vX.Y.Z`) fail closed automatically: `release.yml` holds back unsigned binaries and
+  `release-publish.sh` refuses any final `vX.Y.Z` release missing verified attached signatures (`SHA256SUMS.asc`,
+  `latest.json` + `.app.tar.gz`, and `signed-manifest.json` with all 11 hashes and pinned identities) unless
+  `DW_ALLOW_UNSIGNED_STABLE=1` is explicitly set. Release candidates (`vX.Y.Z-rc.N`) never require signing and
+  never publish `latest.json`.
 
 Copies installed before the first signed release have no updater: their users install that release by hand once.
 

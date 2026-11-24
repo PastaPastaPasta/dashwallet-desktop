@@ -239,8 +239,8 @@ tag_bundles() { # the seven files under version $1, alone in their own dist
   for f in "$dist"/dash-wallet-"$ver"-*; do cp "$f" "$work/tagdist/$(basename "${f/$ver/$1}")"; done
   (cd "$work/tagdist" && sha256sum dash-wallet-* > SHA256SUMS); }
 tag_bundles 0.1.0; fs_reset
-DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
-check "tag v0.1.0: a full release, not a prerelease, Latest left to GitHub" \
+DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 (DW_ALLOW_UNSIGNED_STABLE=1): a full release, not a prerelease, Latest left to GitHub" \
   '[[ $status -eq 0 ]] && log_has "release create v0.1.0 " && ! log_has "--prerelease" && ! log_has "--latest"'
 tag_bundles 0.1.0-rc.1; fs_reset
 DIST=$work/tagdist run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
@@ -371,14 +371,20 @@ feed_of 0.1.0 "${ALL_UPDATER[@]}"
 check "feed: latest.json with the AppImage, NSIS and macOS app entries, on the tag's download URLs" \
   '[[ $fs -eq 0 ]] && jq -e ".version == \"0.1.0\" and (.platforms | keys) == [\"darwin-aarch64-app\",\"darwin-x86_64-app\",\"linux-x86_64-appimage\",\"windows-x86_64-nsis\"] and .platforms[\"linux-x86_64-appimage\"].url == \"https://github.com/o/r/releases/download/v0.1.0/dash-wallet-0.1.0-linux-x86_64.AppImage\" and .platforms[\"windows-x86_64-nsis\"].signature == \"c2lnbmF0dXJlIG9mICVz\"" "$work/fout/latest.json" > /dev/null && [[ $(ls "$work/fout" | wc -l) -eq 2 ]]'
 tag_bundles 0.1.0; fs_reset
-FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+FEED=$work/fout DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
 check "tag v0.1.0 with the feed: latest.json and the macOS archive are attested and published with the release" \
   '[[ $status -eq 0 && -f "$OUT/attest/latest.json" && -f "$OUT/attest/dash-wallet-0.1.0-macos-universal.app.tar.gz" ]] && log_has "release create v0.1.0 " && log_has "/latest.json" && ! log_has "--prerelease"'
-FEED=$work/fout DIST=$work/tagdist FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=10 run push refs/tags/v0.1.0 "$c2" 0.1.0
+FEED=$work/fout DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=10 run push refs/tags/v0.1.0 "$c2" 0.1.0
 check "tag v0.1.0 with the feed, rerun: the complete release (10 assets) is left as it is" '[[ $status -eq 0 ]] && ! log_has "release create"'
 fs_reset
-FEED=$work/empty-feed DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
-check "tag v0.1.0 without a feed: the release as before" '[[ $status -eq 0 && ! -f "$OUT/attest/latest.json" ]] && ! log_has "latest.json"'
+FEED=$work/empty-feed DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 without a feed (DW_ALLOW_UNSIGNED_STABLE=1): the release as before" '[[ $status -eq 0 && ! -f "$OUT/attest/latest.json" ]] && ! log_has "latest.json"'
+# L6: misrouted updater URL (darwin pointing to .exe or ../) is refused by release-publish.sh
+cp -R "$work/fout" "$work/fout-badurl"
+jq '.platforms["darwin-aarch64-app"].url = "https://github.com/o/r/releases/download/v0.1.0/dash-wallet-0.1.0-windows-x64-setup.exe"' "$work/fout/latest.json" > "$work/fout-badurl/latest.json"
+fs_reset
+FEED=$work/fout-badurl DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
+refused "L6: updater feed with wrong platform filename in URL is refused"
 feed_of 0.1.0-rc.1 "${ALL_UPDATER[@]}"
 check "feed: a release candidate gets none" '[[ $fs -eq 0 && ! -e "$work/fout" ]]'
 feed_of 0.1.0
@@ -395,64 +401,92 @@ FEED=$work/fout run push refs/heads/main "$c2" "$ver";                          
 feed_of 0.0.9 "${ALL_UPDATER[@]}"
 mv "$work/fout/dash-wallet-0.0.9-macos-universal.app.tar.gz" "$work/fout/dash-wallet-0.1.0-macos-universal.app.tar.gz"
 tag_bundles 0.1.0; fs_reset
-FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0;         refused "another version's feed is refused"
+FEED=$work/fout DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 run push refs/tags/v0.1.0 "$c2" 0.1.0; refused "another version's feed is refused"
 
-# --- Detached signing & DW_SIGNING_REQUIRED=1 (checks attached signatures, NEVER CI secrets; keyless RC unchanged)
+# --- Detached signing, fail-closed default (Decision 1), pinned manifest (H2/L4), keyless RC unchanged
 write_manifest() { # write_manifest VERSION DIST FEED OUT_MANIFEST
-  local v=$1 d=$2 f=$3 m=$4
-  jq -n \
-    --arg version "$v" \
-    --arg win "$(sha256sum "$d/dash-wallet-$v-windows-x64-setup.exe" | awk '{print $1}')" \
-    --arg dmg "$(sha256sum "$d/dash-wallet-$v-macos-universal.dmg" | awk '{print $1}')" \
-    --arg app "$(sha256sum "$f/dash-wallet-$v-macos-universal.app.tar.gz" | awk '{print $1}')" \
-    --arg sums "$(sha256sum "$d/SHA256SUMS" | awk '{print $1}')" \
-    --arg asc "$(sha256sum "$d/SHA256SUMS.asc" | awk '{print $1}')" \
-    '{schema: 1, version: $version, windows_sha256: $win, dmg_sha256: $dmg, app_tar_sha256: $app, sums_sha256: $sums, asc_sha256: $asc}' \
-    > "$m"
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+v, d, f, m = sys.argv[1:]
+names = [
+    "SHA256SUMS", "SHA256SUMS.asc", "latest.json",
+    f"dash-wallet-{v}-linux-amd64.deb",
+    f"dash-wallet-{v}-linux-x86_64.AppImage",
+    f"dash-wallet-{v}-linux-x86_64.flatpak",
+    f"dash-wallet-{v}-macos-universal.app.tar.gz",
+    f"dash-wallet-{v}-macos-universal.dmg",
+    f"dash-wallet-{v}-sbom-npm.cdx.json",
+    f"dash-wallet-{v}-sbom-rust.cdx.json",
+    f"dash-wallet-{v}-windows-x64-setup.exe",
+]
+files = {}
+for n in sorted(names):
+    p = Path(d) / n
+    if not p.is_file():
+        p = Path(f) / n
+    files[n] = hashlib.sha256(p.read_bytes()).hexdigest()
+Path(m).write_text(json.dumps({
+    "schema": 1,
+    "version": v,
+    "pgp_fpr": "A" * 40,
+    "apple_team_id": "TESTTEAM01",
+    "windows_leaf_sha256": "sha256:" + "b" * 64,
+    "files": files,
+}, indent=2, sort_keys=True) + "\n")
+PY
 }
 
 tag_bundles 0.1.0; printf -- '-----BEGIN PGP SIGNATURE-----\ntest\n-----END PGP SIGNATURE-----\n' > "$work/tagdist/SHA256SUMS.asc"; fs_reset
-DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
-check "tag v0.1.0 with SHA256SUMS.asc: attested and published (9 assets)" \
+DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 with SHA256SUMS.asc (DW_ALLOW_UNSIGNED_STABLE=1): attested and published (9 assets)" \
   '[[ $status -eq 0 && -f "$OUT/attest/SHA256SUMS.asc" ]] && log_has "release create v0.1.0 " && log_has "/SHA256SUMS.asc"'
-DIST=$work/tagdist FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=9 run push refs/tags/v0.1.0 "$c2" 0.1.0
+DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=9 run push refs/tags/v0.1.0 "$c2" 0.1.0
 check "tag v0.1.0 with SHA256SUMS.asc, rerun: complete release (9 assets) is left as it is" \
   '[[ $status -eq 0 ]] && ! log_has "release create"'
 feed_of 0.1.0 "${ALL_UPDATER[@]}"
 write_manifest 0.1.0 "$work/tagdist" "$work/fout" "$work/signed-manifest.json"
 fs_reset
-SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist DW_SIGNING_REQUIRED=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
-check "DW_SIGNING_REQUIRED=1: final tag with attached signatures (SHA256SUMS.asc, feed, matching manifest) publishes all 11 assets" \
-  '[[ $status -eq 0 && -f "$OUT/attest/SHA256SUMS.asc" && -f "$OUT/attest/latest.json" ]] && log_has "/SHA256SUMS.asc" && log_has "/latest.json"'
-SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist DW_SIGNING_REQUIRED=1 FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=11 run push refs/tags/v0.1.0 "$c2" 0.1.0
-check "DW_SIGNING_REQUIRED=1: rerun of complete 11-asset signed release is left as it is" \
+SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "stable tag (fail-closed default): with attached signatures (SHA256SUMS.asc, feed, 11-file manifest) publishes all 11 attested assets" \
+  '[[ $status -eq 0 && -f "$OUT/attest/SHA256SUMS.asc" && -f "$OUT/attest/latest.json" ]] && log_has "/attest/SHA256SUMS.asc" && log_has "/attest/latest.json"'
+SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=11 run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "stable tag: rerun of complete 11-asset signed release is left as it is" \
   '[[ $status -eq 0 ]] && ! log_has "release create"'
-# Missing signed-manifest.json (even with .asc and feed) is refused under DW_SIGNING_REQUIRED=1
+# H2: signed-manifest.json missing pgp_fpr is refused
+jq 'del(.pgp_fpr)' "$work/signed-manifest.json" > "$work/signed-manifest-nofpr.json"
 fs_reset
-SIGNED_MANIFEST=$work/no-such-manifest.json FEED=$work/fout DIST=$work/tagdist DW_SIGNING_REQUIRED=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
-refused "DW_SIGNING_REQUIRED=1: final tag without signed-manifest.json is refused"
-check "DW_SIGNING_REQUIRED=1: missing-manifest refusal names attached signatures, not CI secrets" \
+SIGNED_MANIFEST=$work/signed-manifest-nofpr.json FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+refused "H2: signed-manifest.json without pgp_fpr is refused"
+# Missing signed-manifest.json (even with .asc and feed) is refused by default
+fs_reset
+SIGNED_MANIFEST=$work/no-such-manifest.json FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+refused "stable tag: final tag without signed-manifest.json fails closed by default"
+check "stable tag: missing-manifest refusal names attached signatures, not CI secrets" \
   'grep -qF "signed-manifest.json" "$work/prep.out" && ! grep -qF "PRIVATE_KEY" "$work/prep.out"'
-# Tampered binary after release-attach.sh (manifest hash mismatch) is refused
-echo "tampered" >> "$work/tagdist/dash-wallet-0.1.0-windows-x64-setup.exe"
+# L4: Tampering ANY of the 11 files (e.g., linux .deb, not just .exe) is refused
+echo "tampered" >> "$work/tagdist/dash-wallet-0.1.0-linux-amd64.deb"
 fs_reset
-SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist DW_SIGNING_REQUIRED=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
-refused "DW_SIGNING_REQUIRED=1: final tag with tampered binary (manifest mismatch) is refused"
-# Unsigned final tag (no .asc, no feed, no manifest): succeeds without DW_SIGNING_REQUIRED, refused with it
+SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+refused "L4: final tag with tampered Linux .deb (11-file manifest mismatch) is refused"
+# Decision 1: Unsigned final tag fails closed by default; DW_ALLOW_UNSIGNED_STABLE=1 allows it; DW_SIGNING_REQUIRED=1 overrides escape hatch
 rm -f "$work/signed-manifest.json"
 tag_bundles 0.1.0; fs_reset
 DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
-check "tag v0.1.0 without attached signatures: succeeds when DW_SIGNING_REQUIRED is unset" \
+refused "Decision 1: unsigned final tag fails closed by default (no env vars set)"
+check "Decision 1: unsigned final tag refusal names SHA256SUMS.asc, updater feed, and signed-manifest.json" \
+  'grep -qF "SHA256SUMS.asc" "$work/prep.out" && grep -qF "updater feed" "$work/prep.out" && grep -qF "signed-manifest.json" "$work/prep.out" && ! grep -qF "PRIVATE_KEY" "$work/prep.out"'
+fs_reset
+DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "Decision 1: unsigned final tag succeeds only with explicit DW_ALLOW_UNSIGNED_STABLE=1" \
   '[[ $status -eq 0 && ! -f "$OUT/attest/SHA256SUMS.asc" ]] && ! log_has "SHA256SUMS.asc"'
 fs_reset
-DIST=$work/tagdist DW_SIGNING_REQUIRED=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
-refused "DW_SIGNING_REQUIRED=1: final tag without attached signatures is refused"
-check "DW_SIGNING_REQUIRED=1: unsigned final tag refusal names SHA256SUMS.asc, updater feed, and signed-manifest.json" \
-  'grep -qF "SHA256SUMS.asc" "$work/prep.out" && grep -qF "updater feed" "$work/prep.out" && grep -qF "signed-manifest.json" "$work/prep.out" && ! grep -qF "PRIVATE_KEY" "$work/prep.out"'
+DIST=$work/tagdist DW_ALLOW_UNSIGNED_STABLE=1 DW_SIGNING_REQUIRED=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
+refused "Decision 1: DW_SIGNING_REQUIRED=1 overrides DW_ALLOW_UNSIGNED_STABLE=1"
 # Keyless RC stays unchanged even when DW_SIGNING_REQUIRED=1 (8 assets, no .asc, nothing required)
 tag_bundles 0.1.0-rc.1; fs_reset
 DIST=$work/tagdist DW_SIGNING_REQUIRED=1 run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
-check "DW_SIGNING_REQUIRED=1: keyless release candidate publishes 8 assets unchanged (no .asc, no feed)" \
+check "keyless release candidate publishes 8 assets unchanged (no .asc, no feed, no override needed)" \
   '[[ $status -eq 0 && $(ls "$OUT/attest" | wc -l) -eq 8 ]] && log_has "release create v0.1.0-rc.1 " && log_has "--prerelease" && ! log_has "SHA256SUMS.asc" && ! log_has "latest.json"'
 rm -rf "$work/maindist"; cp -R "$dist" "$work/maindist"
 printf -- '-----BEGIN PGP SIGNATURE-----\nmain\n-----END PGP SIGNATURE-----\n' > "$work/maindist/SHA256SUMS.asc"; fs_reset; unset FAKE_CONT_RELEASE
@@ -515,7 +549,18 @@ check "decide: a pull request with no known base builds" '[[ $(decide pull_reque
 check "decide: a docs-only change on a tag still builds" '[[ $(decide push refs/tags/v0.1.0 "$newer" "$c2") == "false true" ]]'
 
 # --- End-to-end detached-sigs pipeline: macos-detached-sig.py, verify-minisign.py, osslsigncode, gpg, release-attach.sh -> release-publish.sh
-if command -v python3 >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 && command -v gpg >/dev/null 2>&1 && command -v osslsigncode >/dev/null 2>&1; then
+missing_e2e_tools=()
+for tool in python3 openssl gpg osslsigncode; do
+  command -v "$tool" >/dev/null 2>&1 || missing_e2e_tools+=("$tool")
+done
+if ((${#missing_e2e_tools[@]})); then
+  if [[ -n "${CI:-}" ]]; then
+    echo "FAIL release-attach e2e: missing required tools in CI: ${missing_e2e_tools[*]}"
+    fail=1
+  else
+    echo "SKIP release-attach e2e: missing tools: ${missing_e2e_tools[*]}"
+  fi
+else
   e2e=$work/detached-e2e
   mkdir -p "$e2e/unsigned" "$e2e/sigs" "$e2e/work" "$e2e/attached"
   python3 - "$e2e" "$here" <<'PY'
@@ -679,6 +724,54 @@ latest = {
 }
 latest_path.write_text(json.dumps(latest, indent=2) + "\n")
 
+# Compute real Windows leaf cert SHA-256 for M4 pinning test + sign a different PE32+ for wrong-.pem test
+win_fp_out = subprocess.check_output(["openssl", "x509", "-in", str(wk / "win.crt"), "-noout", "-fingerprint", "-sha256"], text=True)
+win_leaf_sha = "sha256:" + win_fp_out.split("=")[1].strip().replace(":", "").lower()
+(wk / "win.leaf").write_text(win_leaf_sha)
+
+other_pe = bytearray((unsigned / win_name).read_bytes())
+other_pe[-1] ^= 0xFF
+other_pe_path = wk / "other.exe"
+other_pe_path.write_bytes(bytes(other_pe))
+other_signed = wk / "other-signed.exe"
+subprocess.run(["osslsigncode", "sign", "-certs", str(wk / "win.crt"), "-key", str(wk / "win.key"),
+                "-h", "sha256", "-in", str(other_pe_path), "-out", str(other_signed)], check=True, capture_output=True)
+subprocess.run(["osslsigncode", "extract-signature", "-pem", "-in", str(other_signed),
+                "-out", str(wk / "other.exe.pem")], check=True, capture_output=True)
+
+# Wrong-version and wrong-key minisign latest.json fixtures
+latest_badver = json.loads(latest_path.read_text())
+latest_badver["platforms"]["linux-x86_64-appimage"]["signature"] = minisign_file(unsigned / f"dash-wallet-{ver}-linux-x86_64.AppImage", "0.0.9")
+(wk / "latest-badver.json").write_text(json.dumps(latest_badver, indent=2) + "\n")
+
+ms2_priv = wk / "ms2.key"; ms2_pub = wk / "ms2.pub"
+subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(ms2_priv)], check=True, capture_output=True)
+subprocess.run(["openssl", "pkey", "-in", str(ms2_priv), "-pubout", "-outform", "DER", "-out", str(ms2_pub)], check=True, capture_output=True)
+def minisign_with_key(priv: Path, kid: bytes, p: Path, version: str) -> str:
+    digest = hashlib.blake2b(p.read_bytes(), digest_size=64).digest()
+    df = wk / "d2.bin"; sf = wk / "s2.bin"; gf = wk / "g2.bin"; gsf = wk / "gs2.bin"
+    df.write_bytes(digest)
+    subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", str(priv), "-rawin", "-in", str(df), "-out", str(sf)], check=True)
+    art_sig = sf.read_bytes()
+    tc = f"timestamp:1700000000\tfile:{p.name}\tversion:{version}"
+    gf.write_bytes(art_sig + tc.encode())
+    subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", str(priv), "-rawin", "-in", str(gf), "-out", str(gsf)], check=True)
+    box = (
+        "untrusted comment: signature from wrong key\n"
+        + base64.b64encode(b"ED" + kid + art_sig).decode() + "\n"
+        + f"trusted comment: {tc}\n"
+        + base64.b64encode(gsf.read_bytes()).decode() + "\n"
+    )
+    return base64.b64encode(box.encode()).decode()
+
+latest_badkey = json.loads(latest_path.read_text())
+latest_badkey["platforms"]["linux-x86_64-appimage"]["signature"] = minisign_with_key(ms2_priv, key_id, unsigned / f"dash-wallet-{ver}-linux-x86_64.AppImage", ver)
+(wk / "latest-badkey.json").write_text(json.dumps(latest_badkey, indent=2) + "\n")
+
+latest_badurl = json.loads(latest_path.read_text())
+latest_badurl["platforms"]["darwin-aarch64-app"]["url"] = f"{base_url}/{win_name}"
+(wk / "latest-badurl.json").write_text(json.dumps(latest_badurl, indent=2) + "\n")
+
 # 5. Write final SHA256SUMS over all 9 files and PGP-sign with throwaway key
 final_entries = [
     unsigned / f"dash-wallet-{ver}-linux-amd64.deb",
@@ -704,66 +797,245 @@ primary_fpr = [line.split(":")[9] for line in fpr.splitlines() if line.startswit
 subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "release-key.asc"), "--export", primary_fpr], check=True, env=env, capture_output=True)
 subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", primary_fpr,
                 "--output", str(sigs / "SHA256SUMS.asc"), str(sigs / "SHA256SUMS")], check=True, env=env, capture_output=True)
+
+# Write valid signing-identities.json for the test
+(wk / "identities.json").write_text(json.dumps({
+    "schema": 1,
+    "pgp_fingerprint": primary_fpr,
+    "apple_team_id": "TESTTEAM01",
+    "windows_leaf_sha256": win_leaf_sha,
+}, indent=2) + "\n")
+
+# Create a tampered SHA256SUMS (still validly PGP-signed) to verify SHA256SUMS mismatch detection
+bad_sums = (sigs / "SHA256SUMS").read_text().replace(sha256_file(unsigned / f"dash-wallet-{ver}-linux-amd64.deb"), "0" * 64)
+(wk / "SHA256SUMS.bad").write_text(bad_sums)
+subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", primary_fpr,
+                "--output", str(wk / "SHA256SUMS.bad.asc"), str(wk / "SHA256SUMS.bad")], check=True, env=env, capture_output=True)
 subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=env, capture_output=True)
+
+# L1: Create a revoked PGP key, sign SHA256SUMS with it, revoke it, and export revoked pubkey
+rev_home = wk / "gnupg-rev"
+rev_home.mkdir(mode=0o700)
+rev_env = {**os.environ, "GNUPGHOME": str(rev_home)}
+subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key", "Revoked E2E <rev@example.com>", "ed25519", "sign", "never"], check=True, env=rev_env, capture_output=True)
+rev_out = subprocess.check_output(["gpg", "--batch", "--with-colons", "--list-secret-keys"], env=rev_env, text=True)
+rev_fpr = [line.split(":")[9] for line in rev_out.splitlines() if line.startswith("fpr:")][0]
+(wk / "rev.fpr").write_text(rev_fpr)
+subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", rev_fpr,
+                "--output", str(wk / "SHA256SUMS.rev.asc"), str(sigs / "SHA256SUMS")], check=True, env=rev_env, capture_output=True)
+rev_cert = rev_home / "openpgp-revocs.d" / f"{rev_fpr}.rev"
+# Strip leading ':' gpg adds before -----BEGIN in auto-generated revoc certs
+rev_text = rev_cert.read_text().replace("\n:-----BEGIN", "\n-----BEGIN")
+if rev_text.startswith(":-----BEGIN"):
+    rev_text = rev_text[1:]
+rev_cert.write_text(rev_text)
+subprocess.run(["gpg", "--batch", "--import", str(rev_cert)], check=True, env=rev_env, capture_output=True)
+subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "revoked-key.asc"), "--export", rev_fpr], check=True, env=rev_env, capture_output=True)
+subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=rev_env, capture_output=True)
+
+# H2: Create an attacker PGP key (simulating a key supplied inside sigs_repo)
+atk_home = wk / "gnupg-atk"
+atk_home.mkdir(mode=0o700)
+atk_env = {**os.environ, "GNUPGHOME": str(atk_home)}
+subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key", "Attacker <atk@example.com>", "ed25519", "sign", "never"], check=True, env=atk_env, capture_output=True)
+atk_out = subprocess.check_output(["gpg", "--batch", "--with-colons", "--list-secret-keys"], env=atk_env, text=True)
+atk_fpr = [line.split(":")[9] for line in atk_out.splitlines() if line.startswith("fpr:")][0]
+(wk / "atk.fpr").write_text(atk_fpr)
+subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "atk-key.asc"), "--export", atk_fpr], check=True, env=atk_env, capture_output=True)
+subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", atk_fpr,
+                "--output", str(wk / "SHA256SUMS.atk.asc"), str(sigs / "SHA256SUMS")], check=True, env=atk_env, capture_output=True)
+subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=atk_env, capture_output=True)
 PY
 
   e2e_fpr=$(cat "$e2e/work/pgp.fpr")
+  e2e_rev_fpr=$(cat "$e2e/work/rev.fpr")
+  e2e_atk_fpr=$(cat "$e2e/work/atk.fpr")
+  e2e_leaf=$(cat "$e2e/work/win.leaf")
+  attach_base=(
+    --version 0.1.0
+    --unsigned-dir "$e2e/unsigned"
+    --sigs-dir "$e2e/sigs"
+    --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg"
+    --repo o/r
+    --tauri-conf "$e2e/work/tauri.conf.json"
+    --identities-file "$e2e/work/identities.json"
+    --pgp-pubkey "$e2e/work/release-key.asc"
+    --win-ca-file "$e2e/work/win.crt"
+    --skip-win-chain-verify
+  )
+
   attach_rc=0
-  "$here/release-attach.sh" \
-    --version 0.1.0 \
-    --unsigned-dir "$e2e/unsigned" \
-    --sigs-dir "$e2e/sigs" \
-    --out-dir "$e2e/attached" \
-    --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg" \
-    --repo o/r \
-    --tauri-conf "$e2e/work/tauri.conf.json" \
-    --pgp-pubkey "$e2e/work/release-key.asc" \
-    --pgp-fingerprint "$e2e_fpr" \
-    --win-ca-file "$e2e/work/win.crt" \
-    --skip-win-chain-verify > "$e2e/attach.out" 2>&1 || attach_rc=$?
-  check "release-attach: verifies unsigned hashes, attaches Windows+macOS detached sigs, verifies minisign+PGP+SHA256SUMS" \
-    '[[ $attach_rc -eq 0 && -f "$e2e/attached/signed-manifest.json" ]]'
+  "$here/release-attach.sh" "${attach_base[@]}" --out-dir "$e2e/attached" > "$e2e/attach.out" 2>&1 || attach_rc=$?
+  check "release-attach: verifies unsigned hashes, attaches Windows+macOS detached sigs, verifies pinned leaf+minisign+PGP+SHA256SUMS" \
+    '[[ $attach_rc -eq 0 && -f "$e2e/attached/signed-manifest.json" ]] && jq -e --arg fpr "$e2e_fpr" --arg leaf "$e2e_leaf" ".pgp_fpr == \$fpr and .apple_team_id == \"TESTTEAM01\" and .windows_leaf_sha256 == \$leaf and (.files | length) == 11" "$e2e/attached/signed-manifest.json" >/dev/null'
+  if [[ $attach_rc -ne 0 || ! -f "$e2e/attached/signed-manifest.json" ]]; then
+    echo "--- release-attach.sh output (rc=$attach_rc) ---" >&2
+    cat "$e2e/attach.out" >&2 || true
+    echo "--- end release-attach.sh output ---" >&2
+  fi
 
-  # Feed release-attach.sh's output directly into release-publish.sh with DW_SIGNING_REQUIRED=1
+  # Feed release-attach.sh's output directly into release-publish.sh (fail-closed default, no override!)
   fs_reset
-  SIGNED_MANIFEST=$e2e/attached/signed-manifest.json FEED=$e2e/attached/feed DIST=$e2e/attached/dist DW_SIGNING_REQUIRED=1 \
+  SIGNED_MANIFEST=$e2e/attached/signed-manifest.json FEED=$e2e/attached/feed DIST=$e2e/attached/dist \
     run push refs/tags/v0.1.0 "$c2" 0.1.0
-  check "release-attach -> release-publish (DW_SIGNING_REQUIRED=1): publishes all 11 verified signed assets" \
-    '[[ $status -eq 0 && $(ls "$OUT/attest" | wc -l) -eq 11 ]] && log_has "release create v0.1.0 " && log_has "/SHA256SUMS.asc" && log_has "/latest.json"'
+  check "release-attach -> release-publish (fail-closed default): publishes all 11 verified attested assets" \
+    '[[ $status -eq 0 && $(ls "$OUT/attest" | wc -l) -eq 11 ]] && log_has "release create v0.1.0 " && log_has "/attest/SHA256SUMS.asc" && log_has "/attest/latest.json"'
+  if [[ $status -ne 0 ]]; then
+    echo "--- release-publish.sh output (status=$status) ---" >&2
+    cat "$work/prep.out" "$work/pub.out" >&2 || true
+    echo "--- end release-publish.sh output ---" >&2
+  fi
 
-  # Mutating an unsigned input breaks unsigned.SHA256SUMS verification in release-attach.sh
+  # Helper for negative release-attach.sh checks
+  expect_attach_fail() {
+    local label=$1 pattern=$2 log=$3; shift 3
+    local rc=0
+    "$here/release-attach.sh" "$@" > "$log" 2>&1 || rc=$?
+    check "$label" "[[ $rc -ne 0 ]] && grep -qE \"$pattern\" \"$log\""
+    if [[ $rc -eq 0 ]] || ! grep -qE "$pattern" "$log"; then
+      echo "--- $label (rc=$rc) ---" >&2
+      cat "$log" >&2 || true
+    fi
+  }
+
+  # Unsigned input tampering
   cp -R "$e2e/unsigned" "$e2e/unsigned-bad"
   echo "mutated" >> "$e2e/unsigned-bad/dash-wallet-0.1.0-linux-amd64.deb"
-  bad_attach_rc=0
-  "$here/release-attach.sh" \
-    --version 0.1.0 \
-    --unsigned-dir "$e2e/unsigned-bad" \
-    --sigs-dir "$e2e/sigs" \
-    --out-dir "$e2e/attached-bad" \
-    --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg" \
-    --repo o/r \
-    --tauri-conf "$e2e/work/tauri.conf.json" \
-    --win-ca-file "$e2e/work/win.crt" \
-    --skip-win-chain-verify > "$e2e/attach-bad.out" 2>&1 || bad_attach_rc=$?
-  check "release-attach: refuses to attach signatures when unsigned CI build does not match unsigned.SHA256SUMS" \
-    '[[ $bad_attach_rc -ne 0 ]]'
+  expect_attach_fail \
+    "release-attach: refuses to attach signatures when unsigned CI build does not match unsigned.SHA256SUMS" \
+    "FAILED|unsigned\.SHA256SUMS" "$e2e/attach-bad.out" \
+    "${attach_base[@]}" --unsigned-dir "$e2e/unsigned-bad" --out-dir "$e2e/attached-bad"
 
-  # Wrong PGP fingerprint is refused by release-attach.sh
-  bad_pgp_rc=0
-  "$here/release-attach.sh" \
-    --version 0.1.0 \
-    --unsigned-dir "$e2e/unsigned" \
-    --sigs-dir "$e2e/sigs" \
-    --out-dir "$e2e/attached-bad-pgp" \
-    --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg" \
-    --repo o/r \
-    --tauri-conf "$e2e/work/tauri.conf.json" \
-    --pgp-pubkey "$e2e/work/release-key.asc" \
-    --pgp-fingerprint 0000000000000000000000000000000000000000 \
-    --win-ca-file "$e2e/work/win.crt" \
-    --skip-win-chain-verify > "$e2e/attach-bad-pgp.out" 2>&1 || bad_pgp_rc=$?
-  check "release-attach: refuses SHA256SUMS.asc signed by a non-matching PGP primary fingerprint" \
-    '[[ $bad_pgp_rc -ne 0 ]]'
+  # Wrong PGP fingerprint
+  expect_attach_fail \
+    "release-attach: refuses SHA256SUMS.asc signed by a non-matching PGP primary fingerprint" \
+    "expected 0000000000000000000000000000000000000000" "$e2e/attach-bad-pgp.out" \
+    "${attach_base[@]}" --pgp-fingerprint 0000000000000000000000000000000000000000 --out-dir "$e2e/attached-bad-pgp"
+
+  # H2 / Decision 5: default repo placeholder signing-identities.json fails closed (no fingerprint)
+  expect_attach_fail \
+    "H2/Decision 5: release-attach fails closed on placeholder repo signing-identities.json (no fingerprint)" \
+    "pinned PGP primary fingerprint" "$e2e/attach-nofpr.out" \
+    --version 0.1.0 --unsigned-dir "$e2e/unsigned" --sigs-dir "$e2e/sigs" \
+    --out-dir "$e2e/attached-nofpr" --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg"
+
+  # H2: missing SHA256SUMS.asc at attach time
+  cp -R "$e2e/sigs" "$e2e/sigs-noasc"
+  rm -f "$e2e/sigs-noasc/SHA256SUMS.asc"
+  expect_attach_fail \
+    "H2: release-attach refuses missing SHA256SUMS.asc" \
+    "missing .*SHA256SUMS\.asc" "$e2e/attach-noasc.out" \
+    "${attach_base[@]}" --sigs-dir "$e2e/sigs-noasc" --out-dir "$e2e/attached-noasc"
+
+  # H2: SHA256SUMS.asc signed by attacker key supplied inside sigs repo is refused (both path check and key check)
+  cp -R "$e2e/sigs" "$e2e/sigs-atk"
+  cp "$e2e/work/atk-key.asc" "$e2e/sigs-atk/release-key.asc"
+  cp "$e2e/work/SHA256SUMS.atk.asc" "$e2e/sigs-atk/SHA256SUMS.asc"
+  expect_attach_fail \
+    "H2: release-attach refuses PGP public key loaded from inside --sigs-dir" \
+    "refusing PGP public key loaded from inside --sigs-dir" "$e2e/attach-atk-path.out" \
+    "${attach_base[@]}" --sigs-dir "$e2e/sigs-atk" --pgp-pubkey "$e2e/sigs-atk/release-key.asc" \
+    --pgp-fingerprint "$e2e_atk_fpr" --out-dir "$e2e/attached-atk-path"
+  expect_attach_fail \
+    "H2: release-attach refuses SHA256SUMS.asc signed by attacker key when pinned to repo key" \
+    "gpg --verify failed|expected" "$e2e/attach-atk-key.out" \
+    "${attach_base[@]}" --sigs-dir "$e2e/sigs-atk" --out-dir "$e2e/attached-atk-key"
+
+  # L1: revoked PGP key is refused even though gpg exits 0 with VALIDSIG
+  cp -R "$e2e/sigs" "$e2e/sigs-rev"
+  cp "$e2e/work/SHA256SUMS.rev.asc" "$e2e/sigs-rev/SHA256SUMS.asc"
+  expect_attach_fail \
+    "L1: release-attach refuses SHA256SUMS.asc signed by a revoked PGP key" \
+    "revoked, expired, or bad" "$e2e/attach-rev.out" \
+    "${attach_base[@]}" --sigs-dir "$e2e/sigs-rev" --pgp-pubkey "$e2e/work/revoked-key.asc" \
+    --pgp-fingerprint "$e2e_rev_fpr" --out-dir "$e2e/attached-rev"
+
+  # H1: symlink inside sigs dir refused by release-attach.sh AND macos-detached-sig.py apply
+  cp -R "$e2e/sigs" "$e2e/sigs-sym"
+  ln -s /etc/hosts "$e2e/sigs-sym/osx/Dash Wallet.app/Contents/evil-link"
+  expect_attach_fail \
+    "H1: release-attach refuses sigs directory containing symlinks" \
+    "refusing sigs directory containing symlinks" "$e2e/attach-sym.out" \
+    "${attach_base[@]}" --sigs-dir "$e2e/sigs-sym" --out-dir "$e2e/attached-sym"
+
+  sym_py_rc=0
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
+    "$e2e/sigs-sym/osx/Dash Wallet.app" "$e2e/work/out-sym.app" > "$e2e/sym-py.out" 2>&1 || sym_py_rc=$?
+  check "H1: macos-detached-sig.py apply refuses symlinks in sigs directory" \
+    '[[ $sym_py_rc -ne 0 ]] && grep -qF "refusing symlink" "$e2e/sym-py.out"'
+
+  # H1: path traversal in bundle_sig_files[].path AND L2 untrusted cs_file refused by macos-detached-sig.py apply
+  cp -R "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/sigs-trav"
+  jq '.bundle_sig_files[0].path = "Contents/L/../../escaped-victim.py"' "$e2e/sigs/osx/Dash Wallet.app/manifest.json" > "$e2e/work/sigs-trav/manifest.json"
+  trav_rc=0
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
+    "$e2e/work/sigs-trav" "$e2e/work/out-trav.app" > "$e2e/trav.out" 2>&1 || trav_rc=$?
+  check "H1: macos-detached-sig.py apply refuses bundle_sig_files path traversal outside allowlist" \
+    '[[ $trav_rc -ne 0 && ! -e "$e2e/work/escaped-victim.py" ]] && grep -qF "outside allowlist" "$e2e/trav.out"'
+
+  cp -R "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/sigs-cs"
+  jq '.macho_binaries[0].slices[0].cs_file = "../evil.cs"' "$e2e/sigs/osx/Dash Wallet.app/manifest.json" > "$e2e/work/sigs-cs/manifest.json"
+  cs_rc=0
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
+    "$e2e/work/sigs-cs" "$e2e/work/out-cs.app" > "$e2e/cs.out" 2>&1 || cs_rc=$?
+  check "H1/L2: macos-detached-sig.py apply refuses non-canonical cs_file path" \
+    '[[ $cs_rc -ne 0 ]] && grep -qF "Untrusted cs_file" "$e2e/cs.out"'
+
+  # H2/M4: verify-dmg-layout accepts exact {Dash Wallet.app, Applications -> /Applications} and refuses extras/mode tamper
+  mkdir -p "$e2e/work/dmg-ok"
+  cp -R "$e2e/work/signed-app/Dash Wallet.app" "$e2e/work/dmg-ok/"
+  ln -s /Applications "$e2e/work/dmg-ok/Applications"
+  dmg_ok_rc=0
+  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$e2e/work/dmg-ok" "$e2e/work/signed-app/Dash Wallet.app" > "$e2e/dmg-ok.out" 2>&1 || dmg_ok_rc=$?
+  check "H2/M4: verify-dmg-layout accepts exact {Dash Wallet.app, Applications -> /Applications}" \
+    '[[ $dmg_ok_rc -eq 0 ]]'
+  touch "$e2e/work/dmg-ok/evil.command"
+  dmg_extra_rc=0
+  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$e2e/work/dmg-ok" "$e2e/work/signed-app/Dash Wallet.app" > "$e2e/dmg-extra.out" 2>&1 || dmg_extra_rc=$?
+  check "H2: verify-dmg-layout refuses extra top-level file in .dmg" \
+    '[[ $dmg_extra_rc -ne 0 ]] && grep -qF "evil.command" "$e2e/dmg-extra.out"'
+  rm -f "$e2e/work/dmg-ok/evil.command" "$e2e/work/dmg-ok/Applications"
+  ln -s /tmp "$e2e/work/dmg-ok/Applications"
+  dmg_link_rc=0
+  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$e2e/work/dmg-ok" "$e2e/work/signed-app/Dash Wallet.app" > "$e2e/dmg-link.out" 2>&1 || dmg_link_rc=$?
+  check "H2: verify-dmg-layout refuses Applications symlink not pointing to /Applications" \
+    '[[ $dmg_link_rc -ne 0 ]] && grep -qF "/Applications" "$e2e/dmg-link.out"'
+
+  # M4: wrong Windows leaf hash AND Windows .pem taken from a different executable
+  expect_attach_fail \
+    "M4: release-attach refuses Windows binary whose leaf cert does not match pinned windows_leaf_sha256" \
+    "Failed|leaf|hash|mismatch" "$e2e/attach-badleaf.out" \
+    "${attach_base[@]}" --win-leaf-hash "sha256:0000000000000000000000000000000000000000000000000000000000000000" --out-dir "$e2e/attached-badleaf"
+
+  cp -R "$e2e/sigs" "$e2e/sigs-otherwin"
+  cp "$e2e/work/other.exe.pem" "$e2e/sigs-otherwin/win/dash-wallet-0.1.0-windows-x64-setup.exe.pem"
+  expect_attach_fail \
+    "M4: release-attach refuses Windows .pem detached signature taken from another executable" \
+    "Failed|mismatch|digest|invalid" "$e2e/attach-otherwin.out" \
+    "${attach_base[@]}" --sigs-dir "$e2e/sigs-otherwin" --out-dir "$e2e/attached-otherwin"
+
+  # Minisign negative tests (wrong key, wrong version in trusted comment, L6 wrong platform URL)
+  for case_spec in \
+    "badkey:latest-badkey.json:verification failed|key ID" \
+    "badver:latest-badver.json:trusted comment version" \
+    "badurl:latest-badurl.json:!= expected"; do
+    IFS=: read -r cname cfile cpat <<<"$case_spec"
+    cp -R "$e2e/sigs" "$e2e/sigs-$cname"
+    cp "$e2e/work/$cfile" "$e2e/sigs-$cname/updater/latest.json"
+    expect_attach_fail \
+      "verify-minisign ($cname): release-attach refuses invalid updater feed" \
+      "$cpat" "$e2e/attach-$cname.out" \
+      "${attach_base[@]}" --sigs-dir "$e2e/sigs-$cname" --out-dir "$e2e/attached-$cname"
+  done
+
+  # SHA256SUMS mismatch at attach (validly PGP-signed SHA256SUMS with a tampered asset hash)
+  cp -R "$e2e/sigs" "$e2e/sigs-badsums"
+  cp "$e2e/work/SHA256SUMS.bad" "$e2e/sigs-badsums/SHA256SUMS"
+  cp "$e2e/work/SHA256SUMS.bad.asc" "$e2e/sigs-badsums/SHA256SUMS.asc"
+  expect_attach_fail \
+    "release-attach: refuses SHA256SUMS mismatch for a final asset" \
+    "SHA-256 mismatch" "$e2e/attach-badsums.out" \
+    "${attach_base[@]}" --sigs-dir "$e2e/sigs-badsums" --out-dir "$e2e/attached-badsums"
 fi
 
 # --- release-version.sh

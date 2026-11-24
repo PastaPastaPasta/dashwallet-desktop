@@ -99,7 +99,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Install osslsigncode for detached-signature tests
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends osslsigncode
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends osslsigncode
+          osslsigncode --version
       - run: ci/github/release-publish-test.sh
       - run: ci/github/linux-host-deps-test.sh
 
@@ -555,16 +558,17 @@ jobs:
         with:
           name: unsigned-signing-inputs-v${{ env.VERSION }}
           path: ${{ runner.temp }}/unsigned-macos
-      # When DW_SIGNING_REQUIRED=1 on a final stable tag vX.Y.Z, do NOT publish unsigned binaries:
-      # attest the unsigned build inputs (so the local signer can verify them with gh attestation
-      # verify before signing) and wait for detached signatures + release-publish-signed.yml.
+      # Decision 1 (fail closed): final stable tags vX.Y.Z always attest unsigned build inputs and
+      # wait for detached signatures unless repository variable DW_ALLOW_UNSIGNED_STABLE=1 is
+      # explicitly set (and DW_SIGNING_REQUIRED=1 is not set). Keyless candidates (-rc.N) and main
+      # pushes have stable_tag=false and publish directly as before.
       - name: Check whether this stable tag waits for detached signatures
-        if: ${{ needs.decide.outputs.stable_tag == 'true' && vars.DW_SIGNING_REQUIRED == '1' }}
+        if: ${{ needs.decide.outputs.stable_tag == 'true' && (vars.DW_ALLOW_UNSIGNED_STABLE != '1' || vars.DW_SIGNING_REQUIRED == '1') }}
         run: |
           mkdir -p "$RUNNER_TEMP/unsigned-attest"
           cp "$RUNNER_TEMP/release"/* "$RUNNER_TEMP/unsigned-macos"/* "$RUNNER_TEMP/unsigned-attest/"
           echo "WAIT_FOR_SIGS=1" >> "$GITHUB_ENV"
-          echo "::notice::DW_SIGNING_REQUIRED=1 on v$VERSION: unsigned artifacts attested and held back. Sign locally and run release-publish-signed.yml (docs/release/SIGNING.md)."
+          echo "::notice::Stable tag v$VERSION holds unsigned binaries until detached signatures are attached (fail closed). Sign locally and run release-publish-signed.yml (docs/release/SIGNING.md), or set DW_ALLOW_UNSIGNED_STABLE=1 only for an explicit unsigned override."
       - name: Attest unsigned build inputs (for local verification before signing)
         if: ${{ env.WAIT_FOR_SIGS == '1' }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -575,6 +579,7 @@ jobs:
         if: ${{ env.WAIT_FOR_SIGS != '1' }}
         env:
           DIST: ${{ runner.temp }}/release
+          DW_ALLOW_UNSIGNED_STABLE: ${{ vars.DW_ALLOW_UNSIGNED_STABLE }}
           DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
         run: |
           rc=0
@@ -589,6 +594,7 @@ jobs:
         if: ${{ env.WAIT_FOR_SIGS != '1' && env.SKIP != '1' }}
         env:
           DIST: ${{ runner.temp }}/release
+          DW_ALLOW_UNSIGNED_STABLE: ${{ vars.DW_ALLOW_UNSIGNED_STABLE }}
           DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
           GH_TOKEN: ${{ github.token }}
         run: ci/github/release-publish.sh publish

@@ -143,42 +143,43 @@ The Release run on the tag (`.github/workflows/release.yml`, zero signing secret
        `dash-wallet-X.Y.Z-rc.N-linux-x86_64.flatpak`;
      - `dash-wallet-X.Y.Z-rc.N-sbom-rust.cdx.json`, `dash-wallet-X.Y.Z-rc.N-sbom-npm.cdx.json` (CycloneDX JSON);
      - `SHA256SUMS`.
-   - **On final `vX.Y.Z` without `DW_SIGNING_REQUIRED=1`:** attests and publishes those same 8 unsigned assets as a
-     full release.
-   - **On final `vX.Y.Z` with `DW_SIGNING_REQUIRED=1` (1.0+):** attests the unsigned build inputs (so the signer can
-     `gh attestation verify` them locally) and holds back publishing until detached signatures are attached.
+   - **On final `vX.Y.Z` (fail-closed default):** attests the unsigned build inputs (so the signer and
+     `release-publish-signed.yml` can `gh attestation verify` them) and holds back publishing until detached
+     signatures are attached. An explicit `DW_ALLOW_UNSIGNED_STABLE=1` repository variable overrides this only
+     when an unsigned pre-1.0 stable tag is explicitly intended.
 3. A tag does not touch `continuous` or the per-build releases of `main`.
 4. **Signed stable release publishing ([`SIGNING.md`](SIGNING.md)):** no Apple, Windows, PGP, or stable updater
-   private keys live in GitHub Actions. On stable `vX.Y.Z` tags, CI embeds only the public updater feed URL
-   (`DW_ENABLE_UPDATER=1`, `tauri.conf.json` already holds the public key). The release signer signs locally on macOS
-   (Dash Core Developer ID + `notarytool`/`stapler`, YubiKey Authenticode via `osslsigncode`, local stable updater
-   key, and real PGP key), stores the detached signatures in `dashwallet-detached-sigs`, and runs
-   `.github/workflows/release-publish-signed.yml` (or `ci/github/release-attach.sh` + `release-publish.sh`). That
-   attaches and verifies every signature against the exact unsigned build and publishes all **11** final assets (all
-   attested):
+   private keys live in GitHub Actions. Pinned signer identities (`docs/release/signing-identities.json` and
+   `docs/release/release-key.asc`) live in this repository at the tag and fail closed until populated. On stable
+   `vX.Y.Z` tags, CI embeds only the public updater feed URL (`DW_ENABLE_UPDATER=1`, `tauri.conf.json` already
+   holds the public key). The release signer signs locally on macOS (Dash Core Developer ID + `notarytool`/`stapler`,
+   YubiKey Authenticode via `osslsigncode`, local stable updater key, and real PGP key), stores the detached
+   signatures in `dashwallet-detached-sigs`, and runs `.github/workflows/release-publish-signed.yml` (on
+   `--ref vX.Y.Z` in the secret-less `release` environment). That attaches and verifies every signature against
+   the exact attested unsigned build and publishes all **11** final assets (all attested):
    - the 8 base assets above (with signed/notarized macOS `.dmg` and signed Windows `.exe`);
    - `SHA256SUMS.asc` (conditional ninth asset: detached armored PGP signature over the final `SHA256SUMS`);
    - `latest.json` and `dash-wallet-X.Y.Z-macos-universal.app.tar.gz` (the signed updater feed and signed macOS app
      archive, both listed in `SHA256SUMS`).
 
-### Repository variables for stable signing (zero CI secrets)
+### Pinned identities & configuration for stable signing (zero CI secrets)
 
-| Name | Kind | Used by | Purpose | Without it |
+| Location | Kind | Used by | Purpose | Without it |
 |---|---|---|---|---|
-| `DW_SIGNING_REQUIRED` | repo variable | `release.yml`, `release-publish.sh` | Set to `1` before 1.0: holds back unsigned `vX.Y.Z` tag publishing and makes `release-publish.sh` refuse any final tag missing verified attached signatures (`SHA256SUMS.asc`, updater feed, and `signed-manifest.json`). Candidates (`-rc.N`) never require signing. | Final tags publish the 8 unsigned assets immediately |
-| `RELEASE_PGP_FINGERPRINT` | repo variable | `release-publish-signed.yml`, `release-attach.sh` | 40-hex primary key fingerprint pinned against `SHA256SUMS.asc` (`VALIDSIG`) | PGP signature is verified only when `--pgp-fingerprint` is passed manually |
-| `RELEASE_WIN_LEAF_HASH` | repo variable | `release-publish-signed.yml`, `release-attach.sh` | Optional `sha256:<HEX>` leaf certificate pin for `osslsigncode -require-leaf-hash` | `osslsigncode` verifies chain trust without pinning a specific leaf cert |
+| `docs/release/signing-identities.json` | repo file (at tag) | `release-attach.sh`, `release-publish-signed.yml` | Pins 40-hex `pgp_fingerprint`, 10-char `apple_team_id`, and `windows_leaf_sha256` (`sha256:<64-hex>`) via reviewed PR | Fails closed (placeholders rejected) |
+| `docs/release/release-key.asc` | repo file (at tag) | `release-attach.sh`, `release-publish-signed.yml` | Pinned armored PGP release public key (never loaded from the detached-sigs repo) | Fails closed |
+| `environment: release` | GitHub environment (0 secrets) | `release-publish-signed.yml` | Restricts signed-publish runs to `v*` tags + required reviewers | Manual workflow protection only |
+| `DW_ALLOW_UNSIGNED_STABLE` | repo variable (escape hatch) | `release.yml`, `release-publish.sh` | Set to `1` only when intentionally publishing an unsigned pre-1.0 `vX.Y.Z` tag | Final `vX.Y.Z` tags fail closed and wait for signatures |
 
 Rollout steps before 1.0 (full commands in [`SIGNING.md`](SIGNING.md)):
 
-- [ ] **Rotate the stable updater key off CI:** remove `TAURI_SIGNING_PRIVATE_KEY` /
-      `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from GitHub Actions, generate a local-only stable updater key pair, and
-      commit its public key to `rust/crates/dw-app/tauri.conf.json`.
-- [ ] **Set up `dashwallet-detached-sigs`** (mirroring `dashpay/dash-detached-sigs`) with the public PGP key
-      `release-key.asc`, and set repository variables `RELEASE_PGP_FINGERPRINT` (and optionally
-      `RELEASE_WIN_LEAF_HASH`).
-- [ ] **Enforce signing before tagging `v1.0.0`:** set `DW_SIGNING_REQUIRED=1`
-      (`gh variable set DW_SIGNING_REQUIRED --body 1 --repo PastaPastaPasta/dashwallet-desktop`).
+- [ ] **Rotate the stable updater key off CI (1.0 BLOCKER):** delete `TAURI_SIGNING_*` and all #769 secrets from
+      the GitHub `release` environment (`ED322B963B527B21` must never sign a stable feed), generate a local-only
+      stable updater key pair, and commit its public key to `rust/crates/dw-app/tauri.conf.json`.
+- [ ] **Populate pinned identities in the main repo (1.0 BLOCKER):** commit the real values in
+      `docs/release/signing-identities.json` and `docs/release/release-key.asc` via a reviewed PR.
+- [ ] **Set up `dashwallet-detached-sigs`** (mirroring `dashpay/dash-detached-sigs`) and add required reviewers
+      on the secret-less `release` environment.
 - [ ] **Keyless release candidates:** ordinary `-rc.N` tags continue to ship the 8 keyless assets with the keyless
       Install notes (ad-hoc macOS Gatekeeper right-click ▸ Open, unsigned Windows SmartScreen More info ▸ Run anyway).
 

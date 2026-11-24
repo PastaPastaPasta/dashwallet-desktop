@@ -15,8 +15,8 @@ publishes the 8 unsigned assets with GitHub Sigstore build provenance attestatio
 
 > **Nightly track:** automated nightly signing (separate macOS Developer ID cert + revocable API key in CI,
 > unsigned Windows, separate CI updater key, separate bundle ID and app name `"Dash Wallet Nightly"` for
-> side-by-side install, plus cross-channel key-rejection tests) is split into a follow-up PR after the RC so
-> this PR stays focused on the stable release path.
+> side-by-side install, plus cross-channel key-rejection tests) is tracked in issue #781 as a follow-up PR
+> after the RC so this PR stays focused on the stable release path.
 
 ---
 
@@ -121,33 +121,46 @@ export WIN_PKCS11_KEY="pkcs11:id=%02;type=private"
 Before the first signed 1.0 release, Pasta provides or confirms:
 
 1. **Detached-sigs repository:** create (or name) `PastaPastaPasta/dashwallet-detached-sigs` (public, mirroring
-   `dashpay/dash-detached-sigs`) and commit the public PGP release key as `release-key.asc` at its root.
-2. **macOS Developer ID Application identity & Apple Team ID:** exact string from
-   `security find-identity -v -p codesigning` (e.g. `"Developer ID Application: Dash Core Group, Inc. (XXXXXXXXXX)"`).
-3. **Apple notarization credentials on his Mac:** either a `notarytool` Keychain profile
-   (`xcrun notarytool store-credentials dash-notary ...`) or a local App Store Connect `.p8` key + Key ID +
-   Issuer ID.
+   `dashpay/dash-detached-sigs`).
+2. **Pinned signer identities in the main repo (1.0 BLOCKER):** commit the real identities in a reviewed PR
+   before tagging 1.0 (they are read strictly from the main repo at the tag, never from `dashwallet-detached-sigs`
+   and never from mutable repository variables — placeholders fail closed):
+   - `docs/release/signing-identities.json`:
+     - `pgp_fingerprint`: 40-hex primary PGP key fingerprint;
+     - `apple_team_id`: 10-character Apple Team ID (from `security find-identity -v -p codesigning`);
+     - `windows_leaf_sha256`: `sha256:<64-hex>` of Dash Core's Windows code-signing leaf cert (from
+       `yubico-piv-tool -s 9c -a read-certificate | openssl x509 -noout -fingerprint -sha256`).
+   - `docs/release/release-key.asc`: armored PGP public key exported with
+     `gpg --armor --export <PRIMARY_PGP_FINGERPRINT> > docs/release/release-key.asc`.
+3. **macOS Developer ID Application identity & Apple notarization credentials on his Mac:** exact string from
+   `security find-identity -v -p codesigning` (e.g. `"Developer ID Application: Dash Core Group, Inc. (XXXXXXXXXX)"`)
+   and either a `notarytool` Keychain profile (`xcrun notarytool store-credentials dash-notary ...`) or a local
+   App Store Connect `.p8` key + Key ID + Issuer ID.
 4. **Windows YubiKey details:** PIV slot (`9c` or `9a`), exact PKCS#11 URI, CA intermediate chain PEM
-   (`--chain`), RFC 3161 TSA URL matching the CA, and optionally the leaf cert SHA-256 for repository variable
-   `RELEASE_WIN_LEAF_HASH` (`sha256:<HEX>`). Also decide whether single-pass NSIS installer signing (matching
-   Dash Core) is sufficient for 1.0 or if a 2-pass Windows NSIS repack for inner `dash-wallet.exe` (Smart App
-   Control) is needed later.
-5. **Real PGP release key:** primary key fingerprint set as repository variable `RELEASE_PGP_FINGERPRINT`
-   (40 hex characters) and matching `release-key.asc` published in the detached-sigs repo and release notes.
-6. **Stable updater key rotation:** the earlier updater key (`ED322B963B527B21`) was placed in the `release`
-   environment during PK-03 setup. Because stable updater signing now lives **only** on Pasta's Mac and never
-   in CI, remove `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from the `release`
-   environment, generate a fresh local-only stable updater key pair
-   (`pnpm --dir apps/desktop tauri signer generate -w ~/.config/dashwallet-release/stable-updater.key`),
-   and commit its public key into `rust/crates/dw-app/tauri.conf.json` (`plugins.updater.pubkey`) before 1.0.
-7. **Enforcement switch:** set repository variable `DW_SIGNING_REQUIRED=1` once ready so a final `vX.Y.Z` tag
-   cannot publish unsigned.
+   (`--chain`), and RFC 3161 TSA URL matching the CA. Also decide whether single-pass NSIS installer signing
+   (matching Dash Core) is sufficient for 1.0 or if a 2-pass Windows NSIS repack for inner `dash-wallet.exe`
+   (Smart App Control) is needed later.
+5. **GitHub `release` environment (zero secrets, required reviewers):** keep the `release` environment restricted
+   to `v*` deployment tags and add Pasta as a required reviewer (for `.github/workflows/release-publish-signed.yml`).
+   The environment must hold **zero secrets**.
+6. **Stable updater key rotation & GitHub secret cleanup (1.0 BLOCKER):** the earlier updater key
+   (`ED322B963B527B21`) was placed in the GitHub `release` environment during PK-03 setup. **`ED322B963B527B21`
+   must never sign a stable feed.** Because no workflow or agent can remove GitHub environment secrets, Pasta
+   must manually delete `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and any other #769
+   signing secrets (`APPLE_*`, `AZURE_*`, `RELEASE_PGP_*`) from the `release` environment in GitHub repository
+   settings, generate a fresh local-only stable updater key pair
+   (`pnpm --dir apps/desktop tauri signer generate -w ~/.config/dashwallet-release/stable-updater.key`), and
+   commit its public key into `rust/crates/dw-app/tauri.conf.json` (`plugins.updater.pubkey`) (and update
+   `RELEASE_KEY_ID` in `rust/crates/dw-app/src/updates_tests.rs`) before tagging 1.0.
+7. **Fail-closed default:** final stable tags (`vX.Y.Z`) fail closed automatically and wait for detached
+   signatures — no repo variable is required to enforce signing. (`DW_ALLOW_UNSIGNED_STABLE=1` is an explicit
+   escape hatch only if an unsigned pre-1.0 stable tag is ever needed.)
 
 ---
 
 ## Step-by-step release signing runbook
 
-### Step 0 — One-time Mac setup
+### Step 0 — One-time Mac & repository setup
 
 ```sh
 # Install signing tools
@@ -176,11 +189,17 @@ chmod 600 ~/.config/dashwallet-release/stable-updater.key
 # Put the contents of stable-updater.key.pub into rust/crates/dw-app/tauri.conf.json -> plugins.updater.pubkey
 # and update RELEASE_KEY_ID in rust/crates/dw-app/src/updates_tests.rs before tagging 1.0.
 
-# Enable enforcement (checks for attached signatures, never CI secrets) and pin PGP / Windows certs
-gh variable set DW_SIGNING_REQUIRED --body 1 --repo PastaPastaPasta/dashwallet-desktop
-gh variable set RELEASE_PGP_FINGERPRINT --body "<40_HEX_PRIMARY_FPR>" --repo PastaPastaPasta/dashwallet-desktop
-# Optional: pin Windows leaf cert SHA-256 (from `yubico-piv-tool -s 9c -a read-certificate | openssl x509 -noout -fingerprint -sha256`)
-gh variable set RELEASE_WIN_LEAF_HASH --body "sha256:<64_HEX>" --repo PastaPastaPasta/dashwallet-desktop
+# Populate pinned signer identities in the main repo (via a reviewed PR before tagging 1.0):
+gpg --armor --export "<40_HEX_PRIMARY_FPR>" > docs/release/release-key.asc
+# Edit docs/release/signing-identities.json with:
+#   pgp_fingerprint     = "<40_HEX_PRIMARY_FPR>"
+#   apple_team_id       = "<10_CHAR_TEAM_ID>"
+#   windows_leaf_sha256 = "sha256:<64_HEX_FROM_YUBIKEY_CERT>"
+
+# In GitHub Settings -> Environments -> release:
+#   1. Delete ALL secrets (TAURI_SIGNING_*, APPLE_*, AZURE_*, RELEASE_PGP_*).
+#   2. Keep deployment branch/tag rule limited to v* tags.
+#   3. Add yourself as Required Reviewer for release-publish-signed.yml.
 ```
 
 ---
@@ -380,11 +399,11 @@ git -C "$SIGS_REPO_DIR" checkout -B "$TAG" origin/main
 rm -rf "${SIGS_REPO_DIR:?}/${TAG}"
 mkdir -p "$SIGS_REPO_DIR/$TAG"
 cp -R "$SIGS/"* "$SIGS_REPO_DIR/$TAG/"
-# Ensure the public PGP key is present at repo root for zero-secret CI verification:
-gpg --armor --export "$PGP_FPR" > "$SIGS_REPO_DIR/release-key.asc"
-git -C "$SIGS_REPO_DIR" add "$TAG" release-key.asc
+git -C "$SIGS_REPO_DIR" add "$TAG"
 git -C "$SIGS_REPO_DIR" commit -m "Add detached signatures for ${TAG}"
 git -C "$SIGS_REPO_DIR" push origin "$TAG"
+export SIGS_COMMIT=$(git -C "$SIGS_REPO_DIR" rev-parse HEAD)
+echo "SIGS_COMMIT=$SIGS_COMMIT"
 ```
 
 ---
@@ -393,16 +412,17 @@ git -C "$SIGS_REPO_DIR" push origin "$TAG"
 
 #### Option A (recommended): Publish via `.github/workflows/release-publish-signed.yml` (mints Sigstore attestations on every final signed asset)
 
-1. Stage the signed, notarized `.dmg` in a temporary draft release on `$TAG` (GitHub Actions will verify its
-   `codesign`, `stapler`, and interior `Dash Wallet.app` byte-identity against `apply(unsigned, osx/)`, then
-   delete the staging draft before publishing the complete 11-asset release):
+1. Stage the signed, notarized `.dmg` in a temporary draft release on `staging-dmg-${TAG}` (using a separate
+   draft tag means it is deleted only **after** the final `$TAG` release publishes successfully, so a failed
+   publish does not lose the staged `.dmg`):
 
    ```sh
-   gh release create "$TAG" "$OUT/dist/dash-wallet-${VERSION}-macos-universal.dmg" \
-     --repo "$REPO" --verify-tag --draft --title "Staging signed dmg for ${TAG}"
+   gh release create "staging-dmg-${TAG}" "$OUT/dist/dash-wallet-${VERSION}-macos-universal.dmg" \
+     --repo "$REPO" --draft --title "Staging signed dmg for ${TAG}"
    ```
 
-2. Dispatch `release-publish-signed.yml` (zero secrets in CI):
+2. Dispatch `release-publish-signed.yml` on `--ref "$TAG"` (zero secrets in CI; approve the `release`
+   environment review prompt in GitHub Actions if required reviewers are enabled):
 
    ```sh
    gh workflow run release-publish-signed.yml \
@@ -411,17 +431,20 @@ git -C "$SIGS_REPO_DIR" push origin "$TAG"
      -f tag="$TAG" \
      -f release_run_id="$RUN_ID" \
      -f sigs_repo="PastaPastaPasta/dashwallet-detached-sigs" \
-     -f sigs_ref="$TAG"
+     -f sigs_ref="$SIGS_COMMIT"
    ```
 
-   The workflow runs on `macos-latest`, downloads the exact unsigned artifacts from `$RUN_ID`, clones
-   `dashwallet-detached-sigs` at `$TAG`, runs `ci/github/release-attach.sh` (verifying `unsigned.SHA256SUMS`,
-   attaching Windows `.pem` + `osslsigncode verify`, attaching macOS `osx/` + `codesign`/`spctl`/`stapler`,
-   verifying the staged `.dmg`'s interior `.app` matches byte-for-byte, verifying `latest.json` via
-   `verify-minisign.py`, verifying all 9 hashes in `SHA256SUMS`, and verifying `SHA256SUMS.asc` against
-   `RELEASE_PGP_FINGERPRINT`), attests all 11 final assets with `actions/attest-build-provenance`, removes the
-   staging draft, and publishes the final release via `ci/github/release-publish.sh` with
-   `DW_SIGNING_REQUIRED=1`.
+   The workflow runs on `macos-15` in the secret-less `release` environment, verifies `github.ref == refs/tags/$TAG`,
+   verifies every downloaded unsigned artifact from `$RUN_ID` with `gh attestation verify` against `release.yml`,
+   fetches `dashwallet-detached-sigs` at `$SIGS_COMMIT`, runs `ci/github/release-attach.sh` using the pinned
+   identities from the main repo at `$TAG` (`docs/release/signing-identities.json` and
+   `docs/release/release-key.asc` — verifying `unsigned.SHA256SUMS`, attaching Windows `.pem` + `osslsigncode verify`
+   with pinned leaf hash, attaching macOS `osx/` + `codesign` Team ID/`spctl`/`stapler`, verifying the staged
+   `.dmg` Team ID, top-level `{Dash Wallet.app, Applications -> /Applications}` layout, and interior `.app`
+   modes/bytes, verifying `latest.json` exact URLs + minisign signatures, verifying all 9 hashes in `SHA256SUMS`,
+   and verifying `SHA256SUMS.asc` with `GOODSIG` + pinned primary fingerprint while rejecting revoked/expired keys),
+   attests all 11 final assets with `actions/attest-build-provenance`, publishes the exact attested copies via
+   `ci/github/release-publish.sh`, and then deletes the `staging-dmg-${TAG}` draft.
 
 #### Option B: Local attach, verify, and publish from macOS
 
@@ -436,7 +459,8 @@ ci/github/release-attach.sh \
   --out-dir "$WORK/attached" \
   --signed-dmg "$OUT/dist/dash-wallet-${VERSION}-macos-universal.dmg" \
   --repo "$REPO" \
-  --pgp-fingerprint "$PGP_FPR"
+  --identities-file docs/release/signing-identities.json \
+  --pgp-pubkey docs/release/release-key.asc
 
 TAG_SHA=$(git rev-parse "${TAG}^{commit}")
 GITHUB_EVENT_NAME=push GITHUB_REF="refs/tags/${TAG}" GITHUB_SHA="$TAG_SHA" \

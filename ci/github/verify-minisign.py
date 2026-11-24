@@ -19,12 +19,13 @@ from urllib.parse import urlparse
 
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 
-EXPECTED_PLATFORMS = (
-    "darwin-aarch64-app",
-    "darwin-x86_64-app",
-    "linux-x86_64-appimage",
-    "windows-x86_64-nsis",
-)
+EXPECTED_PLATFORM_FILES = {
+    "darwin-aarch64-app": "dash-wallet-{version}-macos-universal.app.tar.gz",
+    "darwin-x86_64-app": "dash-wallet-{version}-macos-universal.app.tar.gz",
+    "linux-x86_64-appimage": "dash-wallet-{version}-linux-x86_64.AppImage",
+    "windows-x86_64-nsis": "dash-wallet-{version}-windows-x64-setup.exe",
+}
+EXPECTED_PLATFORMS = tuple(EXPECTED_PLATFORM_FILES.keys())
 
 
 def decode_minisign_pubkey(b64_pubkey: str) -> tuple[bytes, bytes]:
@@ -186,12 +187,18 @@ def main() -> None:
         entry = platforms[plat]
         url = entry.get("url", "")
         sig = entry.get("signature", "")
-        if url_prefix and not url.startswith(url_prefix):
-            raise SystemExit(f"verify-minisign: {plat} url {url!r} does not start with {url_prefix!r}")
-        filename = Path(urlparse(url).path).name
-        if not filename:
-            raise SystemExit(f"verify-minisign: {plat} has empty filename in url {url!r}")
-        file_path = find_file(search_dirs, filename)
+        expected_filename = EXPECTED_PLATFORM_FILES[plat].format(version=args.version)
+        if url_prefix:
+            expected_url = f"{url_prefix}{expected_filename}"
+            if url != expected_url:
+                raise SystemExit(f"verify-minisign: {plat} url {url!r} != expected {expected_url!r}")
+        else:
+            parsed_url = urlparse(url)
+            if ".." in parsed_url.path.split("/") or Path(parsed_url.path).name != expected_filename:
+                raise SystemExit(
+                    f"verify-minisign: {plat} url {url!r} does not match expected filename {expected_filename!r}"
+                )
+        file_path = find_file(search_dirs, expected_filename)
         try:
             verify_file_signature(pub_key_id, pub_ed25519, file_path, sig, args.version)
         except ValueError as e:

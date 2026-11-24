@@ -14,6 +14,7 @@
 #     --identity "Developer ID Application: ..." \
 #     (--notary-profile <keychain-profile> | --api-key-path <p8> --api-key-id <id> --api-issuer <uuid>)
 set -euo pipefail
+umask 022
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 gh_dir=$(cd "$here/../github" && pwd)

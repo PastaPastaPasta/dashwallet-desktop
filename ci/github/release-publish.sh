@@ -155,10 +155,72 @@ if ((${#feed[@]})); then
   [[ ${#feed[@]} -eq 2 && -f "$FEED/latest.json" && -f "$FEED/dash-wallet-$VERSION-macos-universal.app.tar.gz" ]] ||
     die "the feed must be latest.json and dash-wallet-$VERSION-macos-universal.app.tar.gz"
   jq -e --arg v "$VERSION" --arg p "https://github.com/$repo/releases/download/$tag/" \
-    '.version == $v and (.platforms | length) == 4 and ([.platforms[].url | startswith($p)] | all)' "$FEED/latest.json" > /dev/null ||
-    die "$FEED/latest.json is not the feed of $tag"
+    '.version == $v
+     and (.platforms | keys | sort) == ["darwin-aarch64-app","darwin-x86_64-app","linux-x86_64-appimage","windows-x86_64-nsis"]
+     and .platforms["linux-x86_64-appimage"].url == ($p + "dash-wallet-" + $v + "-linux-x86_64.AppImage")
+     and .platforms["windows-x86_64-nsis"].url == ($p + "dash-wallet-" + $v + "-windows-x64-setup.exe")
+     and .platforms["darwin-aarch64-app"].url == ($p + "dash-wallet-" + $v + "-macos-universal.app.tar.gz")
+     and .platforms["darwin-x86_64-app"].url == ($p + "dash-wallet-" + $v + "-macos-universal.app.tar.gz")' \
+    "$FEED/latest.json" > /dev/null ||
+    die "$FEED/latest.json does not pin exact release URLs for $tag"
 fi
-if [[ "${DW_SIGNING_REQUIRED:-}" == 1 && "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+# Decision 1: Final stable tags vX.Y.Z fail closed and always require verified attached signatures
+# unless DW_ALLOW_UNSIGNED_STABLE=1 is explicitly set (and DW_SIGNING_REQUIRED=1 is not set).
+# Release candidates (-rc.N) and main/continuous are never required to be signed.
+require_signed=0
+if [[ "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  if [[ "${DW_ALLOW_UNSIGNED_STABLE:-}" != 1 || "${DW_SIGNING_REQUIRED:-}" == 1 ]]; then
+    require_signed=1
+  fi
+fi
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+verify_signed_manifest() {
+  local base_dir=$1 feed_dir=$2 manifest=$3
+  jq -e --arg v "$VERSION" \
+    '.schema == 1
+     and .version == $v
+     and (.pgp_fpr | type == "string" and test("^[0-9A-Fa-f]{40}$"))
+     and (.apple_team_id | type == "string" and test("^[A-Z0-9]{10}$"))
+     and (.windows_leaf_sha256 | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+     and (.files | type == "object" and length == 11)' \
+    "$manifest" >/dev/null ||
+    die "$tag: signed-manifest.json is missing required pinned identities (pgp_fpr/apple_team_id/windows_leaf_sha256) or 11 file hashes"
+  local expected_all=(
+    "SHA256SUMS"
+    "SHA256SUMS.asc"
+    "dash-wallet-$VERSION-linux-amd64.deb"
+    "dash-wallet-$VERSION-linux-x86_64.AppImage"
+    "dash-wallet-$VERSION-linux-x86_64.flatpak"
+    "dash-wallet-$VERSION-macos-universal.app.tar.gz"
+    "dash-wallet-$VERSION-macos-universal.dmg"
+    "dash-wallet-$VERSION-sbom-npm.cdx.json"
+    "dash-wallet-$VERSION-sbom-rust.cdx.json"
+    "dash-wallet-$VERSION-windows-x64-setup.exe"
+    "latest.json"
+  )
+  local fname want_h src got_h
+  for fname in "${expected_all[@]}"; do
+    want_h=$(jq -r --arg k "$fname" '.files[$k] // empty' "$manifest")
+    [[ "$want_h" =~ ^[0-9a-f]{64}$ ]] || die "$tag: signed-manifest.json missing valid sha256 for $fname"
+    if [[ -f "$base_dir/$fname" ]]; then
+      src="$base_dir/$fname"
+    elif [[ -n "$feed_dir" && -f "$feed_dir/$fname" ]]; then
+      src="$feed_dir/$fname"
+    else
+      die "$tag: missing file $fname listed in signed-manifest.json"
+    fi
+    got_h=$(sha256_of "$src")
+    [[ "$got_h" == "$want_h" ]] ||
+      die "$tag: signed-manifest.json hash mismatch for $fname (got $got_h, expected $want_h; re-run ci/github/release-attach.sh)"
+  done
+}
+if ((require_signed)); then
   missing_sigs=()
   ((${#asc[@]})) || missing_sigs+=("SHA256SUMS.asc")
   ((${#feed[@]})) || missing_sigs+=("updater feed (latest.json + macos-universal.app.tar.gz)")
@@ -166,21 +228,9 @@ if [[ "${DW_SIGNING_REQUIRED:-}" == 1 && "$kind" == tag && "$tag" =~ ^v[0-9]+\.[
   [[ -f "$manifest" ]] || missing_sigs+=("attached macOS/Windows signatures (signed-manifest.json from release-attach.sh)")
   if ((${#missing_sigs[@]})); then
     missing_str=$(IFS=', '; echo "${missing_sigs[*]}")
-    die "$tag has DW_SIGNING_REQUIRED=1, but attached signatures are missing: $missing_str (sign locally and run ci/github/release-attach.sh; see docs/release/SIGNING.md)"
+    die "$tag requires attached signatures (stable tags fail closed; set DW_ALLOW_UNSIGNED_STABLE=1 only for an explicit unsigned override), missing: $missing_str (sign locally and run ci/github/release-attach.sh; see docs/release/SIGNING.md)"
   fi
-  sha256_of() {
-    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
-  }
-  jq -e \
-    --arg v "$VERSION" \
-    --arg win "$(sha256_of "$DIST/dash-wallet-$VERSION-windows-x64-setup.exe")" \
-    --arg dmg "$(sha256_of "$DIST/dash-wallet-$VERSION-macos-universal.dmg")" \
-    --arg app "$(sha256_of "$FEED/dash-wallet-$VERSION-macos-universal.app.tar.gz")" \
-    --arg sums "$(sha256_of "$DIST/SHA256SUMS")" \
-    --arg asc "$(sha256_of "$DIST/SHA256SUMS.asc")" \
-    '.schema == 1 and .version == $v and .windows_sha256 == $win and .dmg_sha256 == $dmg and .app_tar_sha256 == $app and .sums_sha256 == $sums and .asc_sha256 == $asc' \
-    "$manifest" >/dev/null ||
-    die "$tag: signed-manifest.json does not match the files in $DIST and $FEED (re-run ci/github/release-attach.sh)"
+  verify_signed_manifest "$DIST" "$FEED" "$manifest"
 fi
 run_url=${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/${GITHUB_RUN_ID:-0}
 
@@ -218,9 +268,19 @@ publish)
     else
       # The tag exists (it triggered this run). A version (vX.Y.Z) is a full release, and GitHub picks
       # Latest by version; a release candidate (-rc.N) is a prerelease, never Latest.
+      # L4: Upload the exact attested copies from $out/attest/ (re-verified against signed-manifest.json
+      # when require_signed=1) so no TOCTOU change between prepare/attest and publish can slip through.
+      if ((require_signed)); then
+        verify_signed_manifest "$out/attest" "" "$manifest"
+      fi
+      attest_files=()
+      while IFS= read -r f; do attest_files+=("$f"); done < <(find "$out/attest" -maxdepth 1 -type f | LC_ALL=C sort)
+      want_n=$((8 + ${#asc[@]} + ${#feed[@]}))
+      [[ ${#attest_files[@]} -eq $want_n ]] ||
+        die "$tag: expected $want_n attested files in $out/attest, found ${#attest_files[@]}"
       flavour=()
       [[ "$version" != *-rc.* ]] || flavour=(--prerelease --latest=false)
-      w gh release create "$tag" "${files[@]}" "$DIST/SHA256SUMS" "${asc[@]}" "${feed[@]}" --repo "$repo" --verify-tag \
+      w gh release create "$tag" "${attest_files[@]}" --repo "$repo" --verify-tag \
         "${flavour[@]}" --title "Dash Wallet Desktop $version" "${notes[@]}"
     fi
     exit 0
