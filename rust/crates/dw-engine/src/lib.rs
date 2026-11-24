@@ -33,7 +33,7 @@ mod held_writes;
 pub mod history;
 mod history_ops;
 mod keys;
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod kill9;
 mod labels;
 pub mod masternode_keys;
@@ -123,8 +123,8 @@ pub use send::{
 pub use session::{CreatedWallet, NetworkSession, SessionOptions, WalletBalances, WalletId};
 pub use sync::{PeerInfo, RescanFrom, SyncPhase, SyncPhaseProgress, SyncSnapshot};
 pub use tools::{
-    ChainLockInfo, ENGINE_VERSION, EngineWarning, MasternodeCount, NodeInfo, RescanProgress,
-    USER_AGENT, WarningCode,
+    ChainLockInfo, ENGINE_VERSION, EngineWarning, HistoryGap, MasternodeCount, NodeInfo,
+    RescanProgress, USER_AGENT, WarningCode,
 };
 pub use tx_actions::{TxActionRefusal, TxDetailExtras, TxNotice, is_coinjoin_internal};
 pub use wallets::{MAX_WALLET_NAME, WalletInfo};

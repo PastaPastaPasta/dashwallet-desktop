@@ -33,6 +33,8 @@ import type { UsernameRuleName } from "../api/generated/UsernameRuleName";
 import { IDENTITY, type DashPayWorld } from "./dashpay";
 import type { Ctx, Handlers } from "./handlers";
 import { finishRestored, reportOf } from "./recovery";
+import { isHeldOp } from "../platform/move";
+import type { PlatformWorld } from "./pending";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import type { ShieldedWorld } from "./shielded";
 import { FIXTURE_NOW, secs } from "./wallet";
@@ -255,6 +257,39 @@ export function shieldedQuote(label: string, s: ShieldedWorld | null | undefined
     availableDuffs: 0,
     grant: { maxDuffs: 0, maxCredits: String(credits + denomination) },
     readiness,
+    platform: null,
+  };
+}
+
+/** dpp's fee for an identity created from one address with six keys (2,000,000 + 500,000 +
+ * 6 × 6,500,000), and the least such an identity receives. */
+const REGISTER_FEE_CREDITS = 41_500_000n;
+const MIN_IDENTITY_FUNDING = 200_000n;
+
+/** A Platform-funded quote (registration_platform.rs `register_quote`): the identity receives the
+ * name's credits, at least dpp's minimum; the first address keeps three fees. The fixture plans one
+ * input, so the address must hold both. Off on mainnet (registration_platform.rs `FEATURE`). */
+export function platformQuote(label: string, p: PlatformWorld | null, mainnet: boolean): RegistrationQuote {
+  if (mainnet) throw fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
+  if (p === null) throw fail("platform.feature_off", "platform", { kind: "feature", feature: "platform" });
+  const held = p.activity.find(isHeldOp);
+  if (held) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: held.id });
+  const { contested, credits } = costs(label);
+  const funding = credits > MIN_IDENTITY_FUNDING ? credits : MIN_IDENTITY_FUNDING;
+  const reserve = 3n * REGISTER_FEE_CREDITS;
+  const debit = funding + reserve;
+  const best = p.addresses.map((a) => BigInt(a.credits)).reduce((n, c) => (c > n ? c : n), 0n);
+  if (best < debit) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(debit), available: String(best) });
+  return {
+    contested,
+    lockDuffs: 0,
+    feeDuffs: 0,
+    totalDuffs: 0,
+    remainingCredits: String(funding - credits),
+    availableDuffs: 0,
+    grant: { maxDuffs: 0, maxCredits: String(debit + credits) },
+    readiness: null,
+    platform: { fundingCredits: String(funding), feeCredits: String(REGISTER_FEE_CREDITS), feeReserveCredits: String(reserve), debitCredits: String(debit) },
   };
 }
 
@@ -297,6 +332,12 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     if (request.funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     if (request.funding.kind === "shielded") throw shieldedOff();
     validLabel(request.label);
+    if (request.funding.kind === "platformAddresses") {
+      const { fundingCredits, feeReserveCredits } = platformQuote(request.label, world.pending.platform, world.launch.network.kind === "mainnet").platform!;
+      if (fundingCredits !== request.funding.fundingCredits || feeReserveCredits !== request.funding.feeReserveCredits)
+        throw fail("registration.quote_changed", "the quote changed");
+      throw fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
+    }
     const blocker = dp.registrations.find((r) => blocks(r) && !(past.includes(r.draft) && reported(world, walletId, dp, r).waiting === "fundingUnknown"));
     if (blocker) throw fail("registration.in_progress", "a registration is in progress", { kind: "draft", draft: blocker.draft });
     const { totalDuffs, credits } = costs(request.label);

@@ -95,12 +95,52 @@ for (const theme of THEMES) {
   });
 }
 
-test("remove an added voting key: it leaves Keys you added and Vote turns off", async ({ page }) => {
+test("remove an added voting key: it asks first, then it leaves Keys you added and Vote turns off", async ({ page }) => {
   const errors = await open(page, "mn-track-voting");
   await expect(page.getByTestId("mn-vote")).toBeEnabled();
+  await expect(page.getByTestId("mn-key-remove-voting")).toHaveText("Remove voting key");
+  const detaches = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_detach_key").length);
   await page.getByTestId("mn-key-remove-voting").click();
+  const confirm = page.getByTestId("mn-remove-key-sheet");
+  await expect(confirm).toContainText("Remove the voting key?");
+  await expect(confirm).toContainText("This deletes it from Dash Wallet on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.");
+  // Nothing is deleted before Confirm, and Cancel keeps the key.
+  expect(await detaches()).toBe(0);
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toHaveCount(0);
+  expect(await detaches()).toBe(0);
+  await expect(page.getByTestId("mn-key-added-voting")).toBeVisible();
+  await page.getByTestId("mn-key-remove-voting").click();
+  await page.getByTestId("mn-remove-key-confirm").click();
+  await expect.poll(detaches).toBe(1);
   await expect(page.getByTestId("mn-keys-added")).toHaveCount(0);
   await expect(page.getByTestId("mn-vote")).toBeDisabled();
+  expect(errors).toEqual([]);
+});
+
+test("an attach onto a role that got a key meanwhile is refused, and the key there stays", async ({ page }) => {
+  const errors = await open(page, "mn-track");
+  await page.getByTestId("mn-more").click();
+  await page.getByTestId("mn-more-add-keys").click();
+  // Another window adds a voting key while this sheet is open.
+  await page.evaluate((club) => {
+    const m = window.__dwFixture!.world.masternodes;
+    m.attached[club] = [{ role: "voting", keyId: m.expected[club].voting!, check: "matched" }];
+  }, CLUB);
+  await addKey(page, KEY_OTHER);
+  await expect(page.getByTestId("mn-add-key-error")).toHaveText("A voting key is already added for this masternode on this computer. Remove it first.");
+  await page.getByTestId("mn-add-key-sheet").getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByTestId("mn-key-added-voting")).toContainText("Voting key · matches");
+  expect(errors).toEqual([]);
+});
+
+test("Stop tracking warns that any added keys go while they can't be read", async ({ page }) => {
+  const errors = await open(page, "mn-track-voting-locked");
+  await page.getByTestId("mn-more").click();
+  await page.getByTestId("mn-more-untrack").click();
+  await expect(page.getByTestId("mn-untrack-keys")).toHaveText(
+    "Any keys you added for it are deleted from Dash Wallet on this computer, for every wallet. They aren't in your backups, so keep your own copy if you'll need them again.",
+  );
   expect(errors).toEqual([]);
 });
 
@@ -150,6 +190,7 @@ test("the vote sheet lists a key once it's added and drops it once it's removed,
   await page.getByTestId("masternodes-tabs-myMasternodes").click();
   await page.getByTestId(`mn-row-${CLUB}`).click();
   await page.getByTestId("mn-key-remove-voting").click();
+  await page.getByTestId("mn-remove-key-confirm").click();
   await expect(page.getByTestId("mn-key-added-voting")).toHaveCount(0);
   await voteSheet();
   await expect(page.getByTestId("vote-node-c1c1c1c1")).toHaveCount(0);

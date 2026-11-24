@@ -56,9 +56,11 @@ use super::shielded::{
 use super::shielded_pool::{
     self as pool, Applied, Ledger, MAX_LOCK_INPUTS, ShieldedLib, SpendError, SyncState, on_pool,
 };
+use super::unfinished_locks::SpentRead;
 use super::withdrawal::{Rules, expected_duffs};
 use crate::{DashNetwork, ImportOptions, NetworkSession};
 
+mod to_platform;
 mod unfinished;
 
 const LATEST: u32 = 15;
@@ -77,6 +79,15 @@ fn payee() -> OrchardAddress {
 
 fn payee_text() -> String {
     payee().to_bech32m_string(Network::Regtest)
+}
+
+/// The `n`th address of the wallet's Platform payment account.
+fn own_platform(n: u8) -> PlatformAddress {
+    PlatformAddress::P2pkh([n.wrapping_add(0x50); 20])
+}
+
+fn platform_text(address: PlatformAddress) -> String {
+    address.to_bech32m_string(Network::Regtest)
 }
 
 fn core_address(n: u8) -> Address {
@@ -240,6 +251,10 @@ struct FakeShielded {
     /// The coins a funding may select.
     coins: Vec<u64>,
     receive: String,
+    /// The wallet's Platform payment account; its pool read fails when
+    /// `None`.
+    platform: Mutex<Option<pool::PlatformPool>>,
+    network: Network,
     /// The next spend's failure, after the keys are out.
     fails: Mutex<Option<PlatformWalletError>>,
     spent: Mutex<Vec<Spent>>,
@@ -283,6 +298,8 @@ struct FakeShielded {
     /// consumed" (`PlatformWalletError::AssetLockAlreadyConsumed`), after
     /// its transition was signed.
     consumed: AtomicBool,
+    /// Platform's proved spent read of each outpoint; unread when unset.
+    pub(super) spent_reads: Mutex<std::collections::HashMap<OutPoint, SpentRead>>,
     /// The next applies end with these library errors, in order, after
     /// their transitions were signed, mapped as `PwShielded::apply` maps
     /// them.
@@ -431,6 +448,11 @@ impl Default for FakeShielded {
             },
             coins: vec![10_000_000_000],
             receive: core_address(9).to_string(),
+            platform: Mutex::new(Some(pool::PlatformPool {
+                receive: own_platform(0),
+                addresses: (0..3).map(own_platform).collect(),
+            })),
+            network: Network::Regtest,
             fails: Mutex::new(None),
             spent: Mutex::new(Vec::new()),
             unresolved: Mutex::default(),
@@ -464,6 +486,7 @@ impl Default for FakeShielded {
             fund_end: Mutex::default(),
             rest: Mutex::new(Some(pool::RestClock::default())),
             drops_rest: AtomicBool::new(false),
+            spent_reads: Mutex::default(),
         }
     }
 }
@@ -655,7 +678,7 @@ fn unresolved(n: u8) -> UnresolvedSpend {
 
 impl ShieldedLib for FakeShielded {
     fn network(&self) -> Network {
-        Network::Regtest
+        self.network
     }
 
     fn protocol_version(&self) -> u32 {
@@ -744,6 +767,21 @@ impl ShieldedLib for FakeShielded {
         Ok(self.receive.clone())
     }
 
+    async fn unshield(
+        &self,
+        permit: &CallPermit,
+        to: &PlatformAddress,
+        credits: u64,
+    ) -> Result<(), SpendError> {
+        self.spend(permit, "unshield", platform_text(*to), credits, &[])
+    }
+
+    async fn platform_pool(&self) -> Result<pool::PlatformPool, PlatformError> {
+        (self.platform.lock().unwrap().clone()).ok_or(PlatformError::Storage {
+            detail: "the payment account could not be read".into(),
+        })
+    }
+
     async fn shield_locks(&self) -> Vec<LockInfo> {
         if self.real_rows {
             return self.real().await.shield_locks().await;
@@ -799,6 +837,10 @@ impl ShieldedLib for FakeShielded {
             return self.real().await.settled_locks().await;
         }
         self.settled.lock().unwrap().clone()
+    }
+
+    async fn spent(&self, outpoint: OutPoint) -> SpentRead {
+        (self.spent_reads.lock().unwrap().get(&outpoint)).map_or(SpentRead::Unread, |r| *r)
     }
 
     async fn settle(&self, txid: Txid) -> Result<(), PlatformError> {
@@ -1950,6 +1992,13 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
         .unwrap();
         assert_eq!(out.state, ShieldedSpendState::Pending);
         assert_eq!(out.unresolved, Some(unresolved(n)));
+        let kind = if unshield {
+            ShieldedFeeKind::Withdrawal
+        } else {
+            ShieldedFeeKind::Base
+        };
+        // The balance it leaves, not the notes less those it holds.
+        assert_eq!(out.balance, 2 * NOTE - credits - fee_of(credits, kind));
         assert_eq!(
             lib.probed.lock().unwrap().last(),
             Some(&true),
@@ -1960,11 +2009,6 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
             "and let go"
         );
         // The quote stays charged; no pass ran for it.
-        let kind = if unshield {
-            ShieldedFeeKind::Withdrawal
-        } else {
-            ShieldedFeeKind::Base
-        };
         assert_eq!(fx.credits_spent(&lease), credits + fee_of(credits, kind));
         assert_eq!(lib.syncs.load(Ordering::SeqCst), syncs);
         assert_eq!(status().unresolved_spends, [unresolved(n)]);
@@ -2208,6 +2252,8 @@ fn a_spend_the_library_kept_no_record_of_is_marked_and_gates_the_next_spends() {
         (out.state, out.unresolved),
         (ShieldedSpendState::Pending, None)
     );
+    let fee = fee_of(credits, ShieldedFeeKind::Base);
+    assert_eq!(out.balance, 2 * NOTE - credits - fee);
     let markers = fx
         .engine
         .block_on(fx.s.leases.unrecorded_spends(wallet))
@@ -2740,6 +2786,48 @@ fn a_note_seen_after_the_first_scan_rests_three_hours_and_the_first_scans_at_onc
     let end = first + SHIELDED_REST_SECS;
     assert_eq!(rested(&later, end - 1), (false, Some(end)));
     assert_eq!(rested(&later, end), (true, None));
+}
+
+/// A payment another wallet sent, found by a pass after the wallet's first
+/// scan, is dated when the engine first saw it, before and after the rest
+/// clock records it; one restored in the first scan stays undated, and so
+/// does a row a scan derived that is not incoming.
+#[test]
+fn a_shielded_payment_received_after_the_first_scan_is_dated_when_first_seen() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        activity: vec![row(1, Direction::In, 0)],
+        ..FakeShielded::default()
+    });
+    let observe = |lib: &Arc<FakeShielded>| {
+        run(&fx, lib, |_, lib| async move {
+            pool::observe_rest(&*lib, true, crate::events::unix_now())
+                .await
+                .unwrap()
+        })
+    };
+    let dates = |lib: &Arc<FakeShielded>| {
+        run(&fx, lib, |_, lib| async move {
+            (pool::history(&*lib, 0, 10).await.unwrap().into_iter())
+                .map(|a| (a.id, a.created_at))
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+    };
+    let id = |n: u32| hex::encode(row(n, Direction::In, 0).id);
+    assert_eq!(dates(&lib)[&id(1)], None, "before the first scan");
+    observe(&lib);
+    assert_eq!(dates(&lib)[&id(1)], None, "restored");
+
+    let before = crate::events::unix_now();
+    lib.rows.lock().unwrap().push(row(2, Direction::In, 0));
+    lib.rows.lock().unwrap().push(row(3, Direction::Out, 0));
+    let unrecorded = dates(&lib)[&id(2)].expect("dated before the clock records it");
+    assert!(unrecorded >= before);
+    let recorded = observe(&lib).flatten().unwrap();
+    let shown = dates(&lib);
+    assert_eq!(shown[&id(2)], Some(recorded));
+    assert_eq!(shown[&hex::encode(row(3, Direction::Out, 0).id)], None);
+    assert_eq!(shown[&id(1)], None);
 }
 
 /// Ruling M9: a note the clock's write dropped (a removed wallet's insert
@@ -4252,6 +4340,12 @@ fn a_failed_send_is_an_error_only_when_the_library_holds_nothing_of_it() {
             (out.state, out.unresolved),
             (ShieldedSpendState::Pending, None)
         );
+        let kind = if unshield {
+            ShieldedFeeKind::Withdrawal
+        } else {
+            ShieldedFeeKind::Base
+        };
+        assert_eq!(out.balance, 2 * NOTE - credits - fee_of(credits, kind));
     }
     let markers = fx
         .engine

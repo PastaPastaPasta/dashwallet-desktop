@@ -14,6 +14,7 @@ import { compact } from "../format/amount";
 import { nodeName, voteRows } from "../governance/model";
 import {
   activityChip,
+  addKeyWaitText,
   attachedLines,
   bannedCount,
   formatCredits,
@@ -39,6 +40,7 @@ import {
   statusChip,
   summary,
   trackErrorText,
+  untrackKeysText,
   voteBlocked,
 } from "./model";
 
@@ -160,7 +162,21 @@ describe("pane", () => {
     expect(registrarLine(detail({ kind: "shared" }))).toBeNull();
     expect(registrarLine(detail({ kind: "no_owner_key" }))).toEqual({ text: "This wallet doesn't hold this masternode's owner key.", unlock: false });
     expect(registrarLine(detail({ kind: "vault_locked" }))).toEqual({ text: "Unlock to check the keys you added.", unlock: true });
-    expect(registrarLine(detail({ kind: "registration_unavailable" }))?.text).toMatch(/^Changing keys needs this masternode's registration/);
+    const unavailable = (row: MasternodeRow) => registrarLine({ registrar: { kind: "registration_unavailable" }, row } as MasternodeDetail)?.text;
+    const short = "Changing keys needs this masternode's registration, which this wallet doesn't hold.";
+    const club = rowOf(CLUB);
+    const added = (role: "owner" | "payout" | "voting", check: "matched" | "unchecked" | "key_mismatch" = "matched") => ({ ...club, roles: { ...club.roles, attached: [{ role, keyId: null, check }] } });
+    // A regular masternode has no credits, and the app adds no owner or payout key: one sentence.
+    expect(unavailable({ ...added("owner"), kind: "regular" })).toBe(short);
+    expect(unavailable({ ...club, roles: { ...club.roles, attached: [] } })).toBe(short);
+    expect(unavailable({ ...club, roles: { ...club.roles, attached: null } })).toBe(short);
+    expect(unavailable(added("voting"))).toBe(short);
+    // An added owner or payout key that doesn't match can't authorize a withdrawal.
+    expect(unavailable(added("owner", "unchecked"))).toBe(short);
+    expect(unavailable(added("payout", "key_mismatch"))).toBe(short);
+    // An evonode with a matching owner or payout key a dwcli import left can still withdraw its credits.
+    expect(unavailable(added("owner"))).toBe(`${short} You can still withdraw evonode credits with an added owner or payout key.`);
+    expect(unavailable(added("payout"))).toBe(`${short} You can still withdraw evonode credits with an added owner or payout key.`);
   });
 
   it("splits 30 days of payouts into attributed and flagged, each with its txids", () => {
@@ -253,12 +269,50 @@ describe("track and keys (MG-10 §1.3, §1.4; MG-00 D13 amended for 1.0)", () =>
 
   it("lists every added key, voting included, or nothing while locked", () => {
     const club = rowOf(CLUB);
-    const keys = { ...club, roles: { ...club.roles, attached: [{ role: "voting" as const, keyId: null, check: "matched" as const }, { role: "owner" as const, keyId: null, check: "unchecked" as const }] } };
-    expect(attachedLines(keys)?.map((l) => [l.text, l.removeLabel])).toEqual([
-      ["Voting key · matches", "Remove Voting key"],
-      ["Owner key · not checked", "Remove Owner key"],
+    const keys = {
+      ...club,
+      roles: {
+        ...club.roles,
+        attached: [
+          { role: "voting" as const, keyId: null, check: "matched" as const },
+          { role: "payout" as const, keyId: null, check: "unchecked" as const },
+        ],
+      },
+    };
+    // Each is named as a key, never "Payout address": Remove deletes a private key, and always asks first.
+    expect(attachedLines(keys)?.map((l) => [l.text, l.remove, l.confirmTitle])).toEqual([
+      ["Voting key · matches", "Remove voting key", "Remove the voting key?"],
+      ["Payout key · not checked", "Remove payout key", "Remove the payout key?"],
     ]);
+    expect(t("masternodes.myMasternodes.keys.removeText")).toBe(
+      "This deletes it from Dash Wallet on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.",
+    );
     expect(attachedLines({ ...club, roles: { ...club.roles, attached: null } })).toBeNull();
+  });
+
+  it("refuses an occupied role in so many words, and waits for the roles before offering a key", () => {
+    const e = { code: "masternodes.key_exists", message: "a key is already attached", data: { kind: "masternodeKey" as const, role: "voting" as const } };
+    expect(keyErrorText(e)).toBe("A voting key is already added for this masternode on this computer. Remove it first.");
+    const club = rowOf(CLUB);
+    // Unread (locked or not re-read yet): no key field until the attached keys are known.
+    expect(keyRoles({ ...club, roles: { ...club.roles, attached: null } })).toEqual([]);
+    // An open sheet the vault could write says why it has no field: still reading, or a voting key came meanwhile.
+    expect(addKeyWaitText({ roles: { ...club.roles, attached: null } })).toBe("Loading keys…");
+    const voting = { role: "voting" as const, keyId: null, check: "matched" as const };
+    expect(addKeyWaitText({ roles: { ...club.roles, attached: [voting] } })).toBe(
+      "A voting key is already added for this masternode on this computer. Remove it first.",
+    );
+    expect(addKeyWaitText({ roles: { ...club.roles, attached: [] } })).toBeNull();
+  });
+
+  it("warns that Stop tracking deletes any added keys while their count isn't known", () => {
+    const club = rowOf(CLUB);
+    const key = { role: "voting" as const, keyId: null, check: "matched" as const };
+    expect(untrackKeysText({ roles: { ...club.roles, attached: null } })).toBe(
+      "Any keys you added for it are deleted from Dash Wallet on this computer, for every wallet. They aren't in your backups, so keep your own copy if you'll need them again.",
+    );
+    expect(untrackKeysText({ roles: { ...club.roles, attached: [] } })).toBeNull();
+    expect(untrackKeysText({ roles: { ...club.roles, attached: [key, { ...key, role: "payout" as const }] } })).toMatch(/^The 2 keys you added for it are deleted/);
   });
 
   it("lets a tracked masternode vote once its added voting key holds the role", () => {

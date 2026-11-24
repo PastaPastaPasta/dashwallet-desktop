@@ -21,7 +21,13 @@ fn hash(byte: &str) -> String {
 fn demo_with_wallet() -> (Demo, String) {
     let demo = Demo::new();
     demo.open();
-    demo.ok("create_vault", json!({ "passphrase": PW }));
+    with_wallet(demo, json!(PW))
+}
+
+/// `demo`, opened, with a vault of `passphrase` (`null`: unencrypted) and
+/// one seed wallet.
+fn with_wallet(demo: Demo, passphrase: Value) -> (Demo, String) {
+    demo.ok("create_vault", json!({ "passphrase": passphrase }));
     let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"]
         .as_str()
         .unwrap()
@@ -543,5 +549,122 @@ fn an_attached_key_is_in_no_read_and_no_event() {
             !events.contains(form.as_str()),
             "an event holds an attached key"
         );
+    }
+}
+
+/// An open demo on `network` with an unencrypted vault (mainnet and testnet
+/// refuse the tests' weak KDF) and one seed wallet. Its session opens with
+/// unreachable local endpoints (the test seam mainnet and testnet need) and
+/// no SPV.
+fn demo_on(network: dw_engine::DashNetwork) -> (Demo, String) {
+    let demo = Demo::launched(|launch, _| {
+        launch.network = network;
+        launch.sync = Some(false);
+    });
+    *demo.state().test_endpoints.lock().unwrap() = Some(crate::api::network::SessionSettings {
+        dapi_addresses: vec!["https://127.0.0.1:1".into()],
+        quorum_url: Some("https://127.0.0.1:1".into()),
+        spv_peers: vec!["127.0.0.1:1".into()],
+        no_platform: true,
+        ..Default::default()
+    });
+    demo.ok("open_network", json!({}));
+    with_wallet(demo, Value::Null)
+}
+
+/// A `masternodeOp` grant of `max` on [`demo_on`]'s unencrypted vault.
+fn op_grant(demo: &Demo, wallet: &str, max: u64) -> String {
+    demo.ok(
+        "authorize",
+        json!({
+            "purpose": { "kind": "masternodeOp", "maxDuffs": max },
+            "walletId": wallet,
+            "credential": { "kind": "unencrypted" },
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Abandon is the way out of a session that may be out, so no network gates
+/// it: on mainnet as on the test networks both commands reach the engine,
+/// which answers for the session itself.
+#[test]
+fn abandon_reaches_the_engine_on_every_network() {
+    for network in [
+        dw_engine::DashNetwork::Mainnet,
+        dw_engine::DashNetwork::Testnet,
+        dw_engine::DashNetwork::Regtest,
+    ] {
+        let (demo, wallet) = demo_on(network);
+        let grant = op_grant(&demo, &wallet, dw_engine::masternodes::shared_abandon_fee());
+        for cmd in ["mn_shared_abandon", "mn_shared_abandon_unreadable"] {
+            demo.err(
+                cmd,
+                json!({ "walletId": wallet, "session": hash("cd"), "grant": grant }),
+                "masternodes.shared_session_not_found",
+            );
+        }
+    }
+}
+
+/// `mn_shared_sign` and `mn_shared_send` with their arguments.
+fn registration_sends(wallet: &str, grant: &str) -> [(&'static str, Value); 2] {
+    let args = json!({ "walletId": wallet, "session": hash("cd"), "grant": grant });
+    [("mn_shared_sign", args.clone()), ("mn_shared_send", args)]
+}
+
+/// Redeems `grant` in the vault directly, as the engine would.
+fn redeem(demo: &Demo, wallet: &str, grant: &str) -> Result<(), dw_vault::VaultError> {
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let wallet = crate::state::parse_wallet_id(wallet).unwrap();
+    session
+        .vault()
+        .redeem_grant(grant, dw_vault::GrantKind::MasternodeOp, Some(&wallet.0))
+        .map(drop)
+}
+
+/// MG's ruling: on mainnet the binding refuses signing and sending a shared
+/// registration before the engine, with the network named, and before
+/// anything redeems the grant: the same grant still redeems afterwards.
+#[test]
+fn registration_sends_are_refused_on_mainnet_before_the_grant() {
+    let (demo, wallet) = demo_on(dw_engine::DashNetwork::Mainnet);
+    for cmd in ["mn_shared_sign", "mn_shared_send"] {
+        let grant = op_grant(&demo, &wallet, 300 * 100_000_000);
+        let args = json!({ "walletId": wallet, "session": hash("cd"), "grant": grant });
+        let e = demo.err(cmd, args, "app.shared_send_off");
+        assert_eq!(
+            e["data"],
+            json!({ "kind": "sharedSendNetwork", "network": "mainnet" }),
+            "{cmd}"
+        );
+        redeem(&demo, &wallet, &grant).unwrap_or_else(|e| panic!("{cmd} used the grant: {e}"));
+        assert!(
+            redeem(&demo, &wallet, &grant).is_err(),
+            "a grant redeems once"
+        );
+    }
+}
+
+/// Off mainnet the gate lets both calls through to the engine, which
+/// refuses them for its own reasons (no masternode list offline, no such
+/// session).
+#[test]
+fn registration_sends_reach_the_engine_off_mainnet() {
+    for network in [
+        dw_engine::DashNetwork::Testnet,
+        dw_engine::DashNetwork::Regtest,
+    ] {
+        let (demo, wallet) = demo_on(network.clone());
+        let grant = op_grant(&demo, &wallet, 0);
+        for (cmd, args) in registration_sends(&wallet, &grant) {
+            let e = demo.call(cmd, args).expect_err(cmd);
+            assert!(
+                !e["code"].as_str().unwrap().starts_with("app."),
+                "{cmd} on {network:?}: {e}"
+            );
+        }
     }
 }

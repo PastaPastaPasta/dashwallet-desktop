@@ -4,6 +4,7 @@ import {
   DUP_SERVICE,
   EXTERNAL_ADDRESS,
   EXTERNAL_OUTPOINT,
+  EXTERNAL_SIGNATURE,
   HOME,
   keyInfo,
   OP_CONFIRMED,
@@ -28,10 +29,10 @@ import { fixtureUrl, fontsReady, trackPageErrors } from "./helpers";
 // ExistingUtxo and External), the D5 re-read, field errors and refusals by step, the In progress
 // group's states, and Release collateral / Lock it again, on the fixture.
 
-async function open(page: Page, scenario: string, theme: "light" | "dark" = "light", network?: "mainnet") {
+async function open(page: Page, scenario: string, theme: "light" | "dark" = "light", network?: "mainnet", extra = "") {
   const errors = trackPageErrors(page);
   await page.clock.setFixedTime(FIXTURE_NOW);
-  await page.goto(fixtureUrl(scenario, theme, network ? `&network=${network}` : ""));
+  await page.goto(fixtureUrl(scenario, theme, (network ? `&network=${network}` : "") + extra));
   await page.getByTestId("toolbar").waitFor();
   await page.getByTestId("sidebar-masternodes").click();
   await expect(page.getByTestId("page-masternodes")).toBeVisible();
@@ -180,6 +181,13 @@ test("self-run evonode: the wallet's operator key and Platform node, to Review",
   await expect(review).toContainText(`${keyInfo("platform_node", 0).platformNodeId!.slice(0, 8)} · 36656 / 22001`);
   await expect(page.getByTestId("reg-review-fee")).toContainText("0.00000567");
   await expectRegister(page);
+  // Sent names both secrets, and Open Masternode keys opens on the operator role.
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-register").click();
+  await expect(page.getByTestId("reg-done-body")).toContainText("Copy the operator secret and the Platform node secret from Masternode keys");
+  await page.getByTestId("reg-open-keys").click();
+  await expect(page.getByTestId("mn-keys")).toBeVisible();
+  await expect(page.getByTestId("mn-keys-role-operator")).toHaveAttribute("aria-pressed", "true");
   expect(errors).toEqual([]);
 });
 
@@ -205,6 +213,36 @@ test("ExistingUtxo: a locked coin can't be picked, Continue needs a pick, the re
   await expectRegister(page);
   expect(errors).toEqual([]);
 });
+
+for (const theme of ["light", "dark"] as const)
+  test(`ExistingUtxo ${theme}: while Register waits for the network, the wizard stays on Review (issue 595)`, async ({ page }, info) => {
+    const errors = await open(page, "reg", theme);
+    await setUp(page);
+    await next(page);
+    await page.getByTestId("reg-collateral-existing").click();
+    await page.getByTestId(`reg-coin-${REG_COIN}`).click();
+    await next(page);
+    await page.getByTestId("reg-operator-key").fill(OPERATOR_KEY);
+    await page.getByTestId("reg-service").fill(SERVICE);
+    await next(page);
+    await toReview(page);
+    await page.getByTestId("reg-passphrase").fill("demo");
+    // The send is handed to the network but its answer is late: our own operation already holds the coin.
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_register"));
+    await page.getByTestId("reg-register").click();
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_register").length)).toBe(1);
+    await page.waitForTimeout(500);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-sending-${theme}.png`) });
+    await expect(step(page, "collateral")).toHaveCount(0);
+    await expect(page.getByTestId("reg-error-outpoint")).toHaveCount(0);
+    await expect(step(page, "review")).toBeVisible();
+    await expect(page.getByTestId("reg-preview-loading")).toHaveCount(0);
+    await expect(page.getByTestId("reg-review-total")).toBeVisible();
+    await release.evaluate((r) => r());
+    await expect(page.getByTestId("reg-done-body")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
 
 test("External: Review names the other wallet's coin; Continue saves it and opens Prove", async ({ page }) => {
   const errors = await open(page, "reg");
@@ -245,14 +283,65 @@ test("D5: Review shows the first figures, then Register's re-read, then sends", 
   await expect(page.getByTestId("reg-review-total")).toContainText("0.00000453");
   await expect(page.getByTestId("reg-changed")).toHaveCount(0);
   await expectRegister(page);
+  // On a window too short for the whole Review, the passphrase and Register are in view without
+  // scrolling the step (#650).
+  await page.setViewportSize({ width: 1280, height: 640 });
+  await expect(page.getByTestId("reg-passphrase")).toBeInViewport();
+  await expect(page.getByTestId("reg-register")).toBeInViewport();
+  await page.getByTestId("reg-sheet").locator(".sheet-body").evaluate((el) => (el.scrollTop = 0));
   await page.getByTestId("reg-passphrase").fill("demo");
   await expect(page.getByTestId("reg-register")).toBeEnabled();
   await page.getByTestId("reg-register").click();
   await expect(page.getByTestId("reg-changed")).toHaveText("The figures changed. Check them again.");
+  // So is the notice that the figures changed: a second Register would send at them.
+  await expect(page.getByTestId("reg-changed")).toBeInViewport();
   await expect(page.getByTestId("reg-review-fee")).toContainText("0.00000573");
   await page.getByTestId("reg-passphrase").fill("demo");
   await page.getByTestId("reg-register").click();
   await expect(page.getByTestId("reg-done-body")).toBeVisible();
+  // A hosted masternode's secret is the operator's: no link to this wallet's keys.
+  await expect(page.getByTestId("reg-open-keys")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("self-run, Sent: Masternode keys… opens the keys on the operator role to copy the secret", async ({ page }) => {
+  const errors = await open(page, "reg");
+  await setUp(page);
+  await page.getByTestId("reg-runner-self").click();
+  await next(page);
+  await expect(step(page, "collateral")).toBeVisible();
+  await next(page);
+  await expect(step(page, "operator")).toBeVisible();
+  await page.getByTestId("reg-service").fill(SERVICE);
+  await next(page);
+  await expect(page.getByTestId("reg-owner")).toBeVisible();
+  await toReview(page);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-register").click();
+  await expect(page.getByTestId("reg-done-body")).toContainText("Copy the operator secret from Masternode keys");
+  await page.getByTestId("reg-open-keys").click();
+  await expect(sheet(page)).toHaveCount(0);
+  await expect(page.getByTestId("mn-keys")).toBeVisible();
+  await expect(page.getByTestId("mn-keys-role-operator")).toHaveAttribute("aria-pressed", "true");
+  expect(errors).toEqual([]);
+});
+
+test("self-run with an operator key entered by hand: Sent offers no Masternode keys button", async ({ page }) => {
+  const errors = await open(page, "reg");
+  await setUp(page);
+  await page.getByTestId("reg-runner-self").click();
+  await next(page);
+  await next(page);
+  await page.getByTestId("reg-operator-enter").click();
+  await page.getByTestId("reg-operator-key").fill(OPERATOR_KEY);
+  await page.getByTestId("reg-service").fill(SERVICE);
+  await next(page);
+  await expect(page.getByTestId("reg-owner")).toBeVisible();
+  await toReview(page);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-register").click();
+  await expect(page.getByTestId("reg-done-body")).toBeVisible();
+  await expect(page.getByTestId("reg-open-keys")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -334,8 +423,17 @@ test("closing after Type asks to discard; Keep editing stays", async ({ page }) 
   await next(page);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("reg-discard")).toContainText("Discard this registration? Nothing was sent.");
+  await expect(page.getByTestId("reg-keep")).toBeFocused();
+  await expect(page.getByTestId("reg-keep")).toHaveAccessibleDescription("Discard this registration? Nothing was sent.");
   await page.getByTestId("reg-keep").click();
   await expect(step(page, "collateral")).toBeVisible();
+  // On a step with an autofocused field, the prompt still takes the focus, and Keep editing gives it back.
+  await next(page);
+  await expect(step(page, "operator")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("reg-keep")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("reg-operator-key")).toBeFocused();
   await page.keyboard.press("Escape");
   await page.getByTestId("reg-discard-confirm").click();
   await expect(sheet(page)).toHaveCount(0);
@@ -359,7 +457,9 @@ test("In progress: each state's row and action; nothing on a conflicted one", as
   // Discard stays wherever the state allows it.
   await expect(page.getByTestId(`mn-op-continue-${OP_NEEDS_SIGNATURE}`)).toBeVisible();
   await expect(page.getByTestId(`mn-op-refresh-${OP_INPUTS_SPENT}`)).toBeVisible();
-  for (const id of [OP_SIGNED, OP_NOT_SENT, OP_SENT, OP_SENT_OVERDUE, OP_UPDATE]) await expect(page.getByTestId(`mn-op-resend-${id}`)).toBeVisible();
+  for (const id of [OP_SIGNED, OP_NOT_SENT, OP_SENT_OVERDUE]) await expect(page.getByTestId(`mn-op-resend-${id}`)).toBeVisible();
+  // Sent and still waiting for its block: no Send again until it's overdue.
+  for (const id of [OP_SENT, OP_UPDATE]) await expect(page.getByTestId(`mn-op-resend-${id}`)).toHaveCount(0);
   for (const id of [OP_NEEDS_SIGNATURE, OP_INPUTS_SPENT, OP_SIGNED, OP_NOT_SENT]) await expect(page.getByTestId(`mn-op-more-${id}`)).toBeVisible();
   // Sent: never Discard.
   await expect(page.getByTestId(`mn-op-status-${OP_SENT}`)).toHaveText("Registration · waiting for 1 confirmation");
@@ -408,6 +508,250 @@ test("a saved registration offers Continue, and Prove can submit; Discard still 
   expect(errors).toEqual([]);
 });
 
+const revokes = (page: Page) => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "revoke_grant").length);
+/** The cap of the last masternode grant the wallet issued. */
+const lastCap = (page: Page) =>
+  page.evaluate(() => {
+    const p = window.__dwFixture!.world.grants.map((g) => g.grant.purpose).filter((x) => x.kind === "masternodeOp").at(-1);
+    return p && "maxDuffs" in p ? Number(p.maxDuffs) : null;
+  });
+/** Grants issued and neither redeemed nor revoked: a refusal must leave none. */
+const liveGrants = (page: Page) => page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).map((g) => g.grant.id));
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: a saved registration whose fee coins were spent offers a new message from Prove, then submits (issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "reg-prepared-spent", theme);
+    await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("The coins for the fee were spent");
+    await page.getByTestId(`mn-op-refresh-${OP_PREPARED}`).click();
+    await expect(step(page, "prove")).toBeVisible();
+    await page.waitForTimeout(300);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-prove-spent-${theme}.png`) });
+    // The engine sends no sign request for a spent row: Prove offers the new message, not an empty step.
+    await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
+    await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+    // No message yet, so no "sign this message": the notice carries the step (issue 641).
+    await expect(sheet(page)).not.toContainText("sign this message");
+    await expect(page.getByTestId("reg-submit")).toBeDisabled();
+    await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000453");
+    await page.getByTestId("reg-new-message").click();
+    await expect(page.getByTestId("reg-sign-request")).toBeVisible();
+    await expect(page.getByTestId("reg-inputs-spent")).toHaveCount(0);
+    await expect(page.getByTestId("reg-prove-text")).toContainText("sign this message");
+    // The new message comes with new fee inputs: Prove shows the replanned fee, and the grant is capped at it.
+    await expect(page.getByTestId("reg-prove-fee")).toContainText("0.00000573");
+    await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000573");
+    await page.getByTestId("reg-signature").fill(EXTERNAL_SIGNATURE);
+    await page.getByTestId("reg-passphrase").fill("demo");
+    await page.getByTestId("reg-submit").click();
+    await expect(page.getByTestId("reg-done-body")).toBeVisible();
+    expect(await lastCap(page)).toBe(573);
+    expect(errors).toEqual([]);
+  });
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: Prove names the fee and what leaves this wallet (issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "reg-prepared", theme);
+    await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
+    await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
+    await expect(step(page, "prove")).toBeVisible();
+    await page.waitForTimeout(300);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-prove-${theme}.png`) });
+    await expect(page.getByTestId("reg-prove-fee")).toContainText("0.00000453");
+    await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000453");
+    expect(errors).toEqual([]);
+  });
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: External Review asks no passphrase, since Continue signs nothing (issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "reg", theme);
+    await setUp(page);
+    await next(page);
+    await page.getByTestId("reg-collateral-external").click();
+    await page.getByTestId("reg-external-outpoint").fill(EXTERNAL_OUTPOINT);
+    await page.getByTestId("reg-external-address").fill(EXTERNAL_ADDRESS);
+    await next(page);
+    await page.getByTestId("reg-operator-key").fill(OPERATOR_KEY);
+    await page.getByTestId("reg-service").fill(SERVICE);
+    await next(page);
+    await toReview(page);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-external-review-${theme}.png`) });
+    await expect(page.getByTestId("reg-passphrase")).toHaveCount(0);
+    await expect(page.getByTestId("reg-continue")).toBeEnabled();
+    await page.getByTestId("reg-continue").click();
+    await expect(step(page, "prove")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+test("a mistyped signature is refused before any signing, and its grant is revoked (issue 460)", async ({ page }) => {
+  const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
+  await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
+  await expect(step(page, "prove")).toBeVisible();
+  const before = await revokes(page);
+  await page.getByTestId("reg-signature").fill(`H${"B".repeat(86)}=`);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-submit").click();
+  await expect.poll(() => revokes(page)).toBe(before + 1);
+  // The refused submit's grant is gone: none is left to redeem.
+  expect(await liveGrants(page)).toEqual([]);
+  await expect(step(page, "prove")).toBeVisible();
+  await expect(page.getByTestId("reg-done-body")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: a failed In progress read says so instead of reading as nothing in progress (issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "reg-prepared", theme);
+    await expect(page.getByTestId(`mn-op-${OP_PREPARED}`)).toBeVisible();
+    await page.evaluate(() => window.__dwFixture!.fail("mn_operations", "rpc"));
+    await page.evaluate(() => window.__dwFixture!.emit({ kind: "masternodes", network: window.__dwFixture!.world.launch.network.dirName }));
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_operations").length)).toBeGreaterThan(1);
+    await page.waitForTimeout(500);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`mn-ops-failed-${theme}.png`) });
+    await expect(page.getByTestId("mn-ops-failed")).toBeVisible();
+    // What the last read found stays shown beside the failure.
+    await expect(page.getByTestId(`mn-op-${OP_PREPARED}`)).toBeVisible();
+    await page.evaluate(() => window.__dwFixture!.fail("mn_operations", null));
+    await page.getByTestId("mn-ops-retry").click();
+    await expect(page.getByTestId("mn-ops-failed")).toHaveCount(0);
+    expect(errors.filter((e) => !e.includes("mn_operations"))).toEqual([]);
+  });
+
+test("fee coins spent while Prove is open: the refusal hides the old message and offers a new one (issue 460)", async ({ page }) => {
+  const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
+  await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
+  await expect(page.getByTestId("reg-sign-request")).toBeVisible();
+  await page.evaluate(() => {
+    window.__dwFixture!.world.masternodes.spendInputs = true;
+  });
+  const before = await revokes(page);
+  // The list's re-read stays out, so the row below reads spent from the refusal alone.
+  const releaseOps = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_operations"));
+  await page.getByTestId("reg-signature").fill(EXTERNAL_SIGNATURE);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-submit").click();
+  await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
+  await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+  await expect(sheet(page)).not.toContainText("sign this message");
+  await expect.poll(() => revokes(page)).toBe(before + 1);
+  expect(await liveGrants(page)).toEqual([]);
+  // Closed and resumed with no further read: the saved row reads spent too, and Prove asks for a new message.
+  await page.getByTestId("reg-cancel").click();
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("The coins for the fee were spent");
+  await expect(page.getByTestId(`mn-op-continue-${OP_PREPARED}`)).toHaveCount(0);
+  await releaseOps.evaluate((release) => release());
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_operations").length)).toBeGreaterThan(1);
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("The coins for the fee were spent");
+  await page.getByTestId(`mn-op-refresh-${OP_PREPARED}`).click();
+  await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
+  await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+  // The new message, then closed to sign it elsewhere while the list can't be read again (each read
+  // fails, so none brings the new row): In progress reopens the row the engine returned, with that
+  // message and the signature field.
+  await page.evaluate(() => window.__dwFixture!.fail("mn_operations", "rpc"));
+  await page.getByTestId("reg-new-message").click();
+  await expect(page.getByTestId("reg-sign-request")).toBeVisible();
+  const message = await page.getByTestId("reg-sign-message").textContent();
+  await page.getByTestId("reg-cancel").click();
+  await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
+  await expect(page.getByTestId("reg-sign-message")).toHaveText(message!);
+  await expect(page.getByTestId("reg-signature")).toBeVisible();
+  await expect(page.getByTestId("reg-inputs-spent")).toHaveCount(0);
+  await page.evaluate(() => window.__dwFixture!.fail("mn_operations", null));
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
+test("a refused Send again from In progress revokes its grant (issue 460)", async ({ page }) => {
+  const errors = await open(page, "mn-ops");
+  await page.getByTestId(`mn-op-resend-${OP_SIGNED}`).click();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_resend_operation", "rpc"));
+  const before = await revokes(page);
+  await page.getByTestId("mn-op-resend-passphrase").fill("demo");
+  await page.getByTestId("mn-op-resend-confirm").click();
+  await expect.poll(() => revokes(page)).toBe(before + 1);
+  expect(await liveGrants(page)).toEqual([]);
+  await expect(page.getByTestId("mn-op-resend-sheet")).toBeVisible();
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
+test("a failed masternode list read still shows the work in progress (issue 460)", async ({ page }) => {
+  const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-${OP_PREPARED}`)).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_list", "rpc"));
+  await page.evaluate(() => window.__dwFixture!.emit({ kind: "masternodes", network: window.__dwFixture!.world.launch.network.dirName }));
+  await expect(page.getByTestId("mn-list-failed")).toBeVisible();
+  await expect(page.getByTestId(`mn-op-continue-${OP_PREPARED}`)).toBeVisible();
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
+test("a failed new message, then one that works, leaves no stale error (review of issue 460)", async ({ page }) => {
+  const errors = await open(page, "reg-prepared-spent");
+  await page.getByTestId(`mn-op-refresh-${OP_PREPARED}`).click();
+  await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_refresh_external_registration", "rpc"));
+  await page.getByTestId("reg-new-message").click();
+  await expect(page.getByTestId("reg-general")).not.toBeEmpty();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_refresh_external_registration", null));
+  await page.getByTestId("reg-new-message").click();
+  await expect(page.getByTestId("reg-sign-request")).toBeVisible();
+  await expect(page.getByTestId("reg-general")).toBeEmpty();
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
+test("a Discard opened from More returns focus to More, not to the row's Send again (review of issue 460)", async ({ page }) => {
+  const errors = await open(page, "mn-ops");
+  await expect(page.getByTestId(`mn-op-resend-${OP_NOT_SENT}`)).toBeVisible();
+  await page.getByTestId(`mn-op-more-${OP_NOT_SENT}`).click();
+  await page.getByTestId(`mn-op-more-${OP_NOT_SENT}-discard`).click();
+  await expect(page.getByTestId("mn-op-discard-sheet")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("mn-op-discard-sheet")).toHaveCount(0);
+  await expect(page.getByTestId(`mn-op-more-${OP_NOT_SENT}`)).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: In progress shows its loading state while its read is out (review of issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "reg-prepared", theme, undefined, "&hold=mn_operations");
+    await expect(page.getByTestId("mn-empty")).toBeVisible();
+    await page.waitForTimeout(300);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`mn-ops-loading-${theme}.png`) });
+    await expect(page.getByTestId("mn-ops-loading")).toBeVisible();
+    await page.evaluate(() => window.__dwFixture!.release("mn_operations"));
+    await expect(page.getByTestId(`mn-op-${OP_PREPARED}`)).toBeVisible();
+    await expect(page.getByTestId("mn-ops-loading")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: a list read that recovers keeps an open Send again and its passphrase (review of issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "mn-ops", theme, undefined, "&fail=mn_list:rpc");
+    await expect(page.getByTestId("mn-list-failed")).toBeVisible();
+    await page.waitForTimeout(300);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`mn-list-failed-${theme}.png`) });
+    await expect(page.getByTestId(`mn-op-resend-${OP_SIGNED}`)).toBeVisible();
+    await page.getByTestId(`mn-op-resend-${OP_SIGNED}`).click();
+    await page.getByTestId("mn-op-resend-passphrase").fill("demo");
+    // The list comes back while the confirmation is open: it stays, with what was typed.
+    await page.evaluate(() => window.__dwFixture!.fail("mn_list", null));
+    await page.evaluate(() => window.__dwFixture!.emit({ kind: "masternodes", network: window.__dwFixture!.world.launch.network.dirName }));
+    await expect(page.getByTestId("mn-summary")).toBeVisible();
+    await expect(page.getByTestId("mn-op-resend-sheet")).toBeVisible();
+    await expect(page.getByTestId("mn-op-resend-passphrase")).toHaveValue("demo");
+    // Closed, focus goes back to the row's Send again, not to the button the list read replaced.
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("mn-op-resend-sheet")).toHaveCount(0);
+    await expect(page.getByTestId(`mn-op-resend-${OP_SIGNED}`)).toBeFocused();
+    expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+  });
+
 test("a released collateral offers Lock it again on testnet", async ({ page }) => {
   const errors = await open(page, "mn-released");
   await page.getByTestId(`mn-row-${HOME}`).click();
@@ -419,6 +763,47 @@ test("a released collateral offers Lock it again on testnet", async ({ page }) =
   await page.getByTestId("mn-lock-again").click();
   await expect(page.getByTestId("mn-released")).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+/** All a held wizard reads, from opening to Review. The list comes from the page's own read; the
+ * page's governance polls run on their own timers, which the sheet doesn't own. */
+const HELD_READS = ["mn_preview_registration", "mn_registration_keys"];
+const PAGE_POLLS = ["governance_contested_names", "governance_info", "governance_my_proposals", "governance_upcoming_superblocks"];
+
+for (const theme of ["light", "dark"] as const)
+  test(`mainnet ${theme}: the held wizard reads only keys and the preview (issue 635)`, async ({ page }, info) => {
+    const errors = await open(page, "reg", theme, "mainnet");
+    await expect(page.getByTestId("mn-set-up")).toBeVisible();
+    // The page's own polls have started, so a late first one isn't taken for the sheet's.
+    await expect
+      .poll(() => page.evaluate(() => ["governance_info", "governance_my_proposals"].every((c) => window.__dwFixture!.calls.includes(c))))
+      .toBe(true);
+    const opened = await page.evaluate(() => [...window.__dwFixture!.calls]);
+    const from = opened.length;
+    // A poll counts as the page's only if the page made it before the sheet opened.
+    const pagePoll = (c: string) => PAGE_POLLS.includes(c) && opened.includes(c);
+    await setUp(page);
+    await hostedToKeys(page, "203.0.113.20:9999");
+    await toReview(page);
+    await expectSendOff(page);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-held-review-${theme}.png`) });
+    const made = await page.evaluate((n) => window.__dwFixture!.calls.slice(n), from);
+    expect([...new Set(made.filter((c) => !pagePoll(c)))].sort()).toEqual(HELD_READS);
+    await expect(page.getByTestId("reg-passphrase")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+test("mainnet: opening Set up after a failed list read doesn't read the list again (issue 635)", async ({ page }) => {
+  const errors = await open(page, "reg", "light", "mainnet", "&fail=mn_list:rpc");
+  await expect(page.getByTestId("mn-list-failed")).toBeVisible();
+  const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_list").length);
+  const before = await reads();
+  await page.getByTestId("mn-set-up").click();
+  await expect(sheet(page)).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(await reads()).toBe(before);
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
 });
 
 test("mainnet: Review ends with the send-off line and sends nothing", async ({ page }) => {

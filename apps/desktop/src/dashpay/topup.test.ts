@@ -3,7 +3,9 @@
 // arrived").
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TopUpFromPlatformOutcome } from "../api/generated/TopUpFromPlatformOutcome";
 import type { TopUpOutcome } from "../api/generated/TopUpOutcome";
+import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { amountCanChange, FINISH_GRANT, minTopUp, onTopUpSettled, outcomeText, resetTopUps, routesToRepair, topUpCredits, topUpErrorText, topUpFor, TopUpFlow } from "./topup";
@@ -28,6 +30,10 @@ function setup(lock = { encrypted: false }) {
       return { txid, state: { kind: "applied", creditsAdded: "5", balance: "10" } };
     }),
     creditsResolveTopUp: vi.fn(async (_walletId: string, txid: string) => (calls.push(`resolve ${txid}`), null)),
+    creditsTopUpFromPlatform: vi.fn(async (_walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome> => {
+      calls.push(`fromPlatform ${identity} ${JSON.stringify(amount)} ${grant}`);
+      return { id: "ti-1", credits: amount.kind === "all" ? "9" : amount.credits, feeCredits: "1000000", state: "done", mayLand: false, balance: "10" };
+    }),
   };
   const flow = new TopUpFlow(api, WALLET_A);
   return { flow, api, vault, calls, finishTopUp: (o: TopUpOutcome) => resolveTopUp!(o) };
@@ -230,5 +236,61 @@ describe("pending top-ups (IOS-069, D15)", () => {
     await flow.creditsArrived(pending);
     expect(flow.rowResult).toMatchObject({ txid: "bb", outcome: null });
     expect(flow.rowRunning).toBeNull();
+  });
+});
+
+describe("the top-up from Platform (C-routes D-C3, C3-8)", () => {
+  it("Pay with is the Dash wallet every time the sheet opens; Max is Platform's alone", () => {
+    const { flow } = setup();
+    flow.begin("A");
+    expect(flow.source).toBe("core");
+    flow.chooseSource("platform");
+    flow.choose({ kind: "max" });
+    flow.chooseSource("core");
+    expect(flow.choice).toEqual({ kind: "preset", duffs: 5_000_000 });
+    flow.chooseSource("platform");
+    flow.close();
+    flow.begin("A");
+    expect(flow.source).toBe("core");
+  });
+
+  it("pays from Platform under the quote's grant, the quoted credits, Max included", async () => {
+    const { flow, vault, calls } = setup();
+    flow.begin("A");
+    flow.chooseSource("platform");
+    flow.next(5_000_000);
+    await flow.payFromPlatform({ credits: "5000000000", grant: { maxDuffs: 0, maxCredits: "5003000000" } });
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "5003000000" } });
+    expect(calls).toEqual(['fromPlatform A {"kind":"credits","credits":"5000000000"} grant-1']);
+    expect([flow.step, flow.platformOutcome?.state, flow.outcome]).toEqual(["done", "done", null]);
+    flow.close();
+    flow.begin("A");
+    flow.chooseSource("platform");
+    flow.next(null);
+    // Max: what Confirm showed, never "everything" read again after the click.
+    await flow.payFromPlatform({ credits: "39997000000", grant: { maxDuffs: 0, maxCredits: "40000000000" } });
+    expect(calls[1]).toBe('fromPlatform A {"kind":"credits","credits":"39997000000"} grant-2');
+  });
+
+  it("Confirm & pay of the Dash wallet never pays from Platform, nor the reverse", async () => {
+    const { flow, calls } = setup();
+    flow.begin("A");
+    flow.chooseSource("platform");
+    flow.next(5_000_000);
+    await flow.pay({ maxDuffs: 5_002_260, maxCredits: "0" });
+    flow.chooseSource("core");
+    await flow.payFromPlatform({ credits: "5000000000", grant: { maxDuffs: 0, maxCredits: "1" } });
+    expect(calls).toEqual([]);
+  });
+
+  it("a refusal from Platform is the sheet's refused step, with the grant asked once", async () => {
+    const { flow, api } = setup();
+    api.creditsTopUpFromPlatform.mockRejectedValueOnce(appError("credits.move_pending", { kind: "artifact", artifact: "ti-1" }));
+    flow.begin("A");
+    flow.chooseSource("platform");
+    flow.next(5_000_000);
+    await flow.payFromPlatform({ credits: "5000000000", grant: { maxDuffs: 0, maxCredits: "1" } });
+    expect(flow.step).toBe("refused");
+    expect(api.creditsTopUpFromPlatform).toHaveBeenCalledTimes(1);
   });
 });

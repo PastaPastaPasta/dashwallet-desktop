@@ -67,6 +67,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
         keys.coinsAll(event.walletId),
         keys.contactsAll(event.walletId),
         mnKeys.payoutsAll(event.walletId),
+        // A shared session reads its stage and `abandonable` from the wallet's history (an abandon in Activity).
+        mnKeys.sharedSessions(event.walletId),
+        mnKeys.sharedSessionAll(event.walletId),
+        mnKeys.sharedUnreadable(event.walletId),
       ];
     // A registration parks for an unlock or an authorization without writing its row, so
     // without a Platform signal (DP1-08 D19).

@@ -8,7 +8,7 @@
 
 use dw_engine::platform::{DashPayStartup, PlatformCadence};
 use dw_engine::{
-    ChainLockInfo, EngineWarning, MasternodeCount, NodeInfo, PeerInfo, PlatformStatus,
+    ChainLockInfo, EngineWarning, HistoryGap, MasternodeCount, NodeInfo, PeerInfo, PlatformStatus,
     RescanFrom, RescanProgress, SpvState, WarningCode,
 };
 use serde::{Deserialize, Serialize};
@@ -235,6 +235,31 @@ impl From<EngineWarning> for NodeWarning {
     }
 }
 
+/// Open wallets whose history starts before this install's block data:
+/// their earlier payments are not shown until "Reset chain data and
+/// resync".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletHistoryGap {
+    /// The height the stored block data starts at.
+    pub start_height: u32,
+    /// The wallets whose history starts below it.
+    pub wallet_ids: Vec<String>,
+}
+
+impl From<HistoryGap> for WalletHistoryGap {
+    fn from(g: HistoryGap) -> Self {
+        let HistoryGap {
+            start_height,
+            wallets,
+        } = g;
+        WalletHistoryGap {
+            start_height,
+            wallet_ids: wallets.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
 /// The running rescan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -245,6 +270,10 @@ pub struct RescanStatus {
     pub target_height: Option<u32>,
     /// UNIX seconds.
     pub started_at: u64,
+    /// Lower-case hex ids of the wallets still rescanning because an older
+    /// version scanned them: the first open after an update replays each
+    /// once from its birth.
+    pub upgrade_wallets: Vec<String>,
 }
 
 impl From<RescanProgress> for RescanStatus {
@@ -254,12 +283,14 @@ impl From<RescanProgress> for RescanStatus {
             current_height,
             target_height,
             started_at,
+            upgrade_wallets,
         } = p;
         RescanStatus {
             from_height,
             current_height,
             target_height,
             started_at,
+            upgrade_wallets: upgrade_wallets.iter().map(ToString::to_string).collect(),
         }
     }
 }
@@ -446,6 +477,13 @@ commands! {
     fn warnings(state) -> Vec<NodeWarning> {
         let warnings = state.session().await?.warnings()?;
         Ok(warnings.into_iter().map(Into::into).collect())
+    }
+
+    /// The open wallets whose history starts before this install's block
+    /// data, for the notice on Home; `null` when there are none.
+    #[facade("NetworkSession::history_gap")]
+    fn history_gap(state) -> Option<WalletHistoryGap> {
+        Ok(state.session().await?.history_gap().await?.map(Into::into))
     }
 
     /// "Rebuild index": deletes the SPV chain data and keeps wallets, vault

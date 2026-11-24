@@ -453,7 +453,8 @@ impl Masternodes {
     }
 
     /// Attaches the private key of `role` to a tracked masternode, checked
-    /// as far as the wallet can (MG-03 §4): a voting key against the list,
+    /// as far as the wallet can (MG-03 §4), never over a key already
+    /// attached for `role` (`key_exists`): a voting key against the list,
     /// an owner key or payout key against a ProRegTx a loaded wallet holds.
     /// Its public key's hash160 is recorded in app.sqlite first, so every
     /// read compares it again (D24). Needs the vault's full-scope data key.
@@ -475,6 +476,15 @@ impl Masternodes {
             dw_vault::LockState::Locked | dw_vault::LockState::UnlockedMixingOnly
         ) {
             return Err(EngineError::from(dw_vault::VaultError::Locked).into());
+        }
+        // Never replace an attached key: one could be lost without a copy.
+        // Checked under the mutation, so no attach can slip in between.
+        let held = self
+            .session
+            .vault_op(move |v| v.masternode_key_roles(&hash))
+            .await?;
+        if held.iter().any(|r| r == role.vault_name()) {
+            return Err(MasternodesError::KeyExists { role });
         }
         // The id is cleared, durably (D34), before the vault write and
         // recorded only after it succeeded, so an interruption leaves a key
@@ -745,6 +755,77 @@ mod tests {
             ))
         }
 
+        /// An attach onto a role that already has a key is refused
+        /// (`key_exists`), so no key is ever overwritten and lost: the first
+        /// key stays in the vault with its recorded id. Removing it frees the
+        /// role.
+        #[test]
+        fn an_attach_onto_a_held_role_is_refused_and_keeps_the_key() {
+            let (a, b) = ([7u8; 32], [9u8; 32]);
+            let dir = dw_testutil::private_tempdir();
+            let store = Arc::new(MemoryOsStore::new());
+            let engine = new_engine(dir.path(), &store);
+            let s = open(&engine);
+            engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+            let wallet = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+            let service = s.manager().unwrap().tracked_masternodes_service();
+            service.track_blocking(HASH, None).unwrap();
+            drop(service);
+            assert_eq!(attach(&engine, &s, a).unwrap(), KeyCheck::Unchecked);
+            // The record's bytes as the vault holds them, read under a
+            // RevealSecret grant (the only read path, which nothing in the
+            // app calls).
+            let stored = || {
+                let w = wallet.0;
+                engine
+                    .block_on(s.vault_op(move |v| {
+                        let grant = v.authorize(
+                            dw_vault::GrantPurpose::RevealSecret,
+                            Some(&w),
+                            dw_vault::Credential::None,
+                        )?;
+                        v.masternode_key(&w, &grant.id, &HASH, "owner")
+                    }))
+                    .unwrap()
+                    .map(|k| k.to_vec())
+            };
+            let before = stored();
+            assert_eq!(before.as_deref(), Some(&a[..]));
+
+            let e = attach(&engine, &s, b).unwrap_err();
+            assert!(
+                matches!(
+                    e,
+                    MasternodesError::KeyExists {
+                        role: AttachedKeyRole::Owner
+                    }
+                ),
+                "{e:?}"
+            );
+            assert_eq!(e.code(), "masternodes.key_exists");
+            assert_eq!(
+                stored(),
+                before,
+                "the refused attach left the key byte for byte"
+            );
+            let key = owner_key(&engine, &s, wallet);
+            assert_eq!(key.key_id, Some(id_of(a)));
+            assert!(key.holds());
+
+            assert!(
+                engine
+                    .block_on(
+                        s.masternodes()
+                            .detach_key(display_hex(&HASH), AttachedKeyRole::Owner)
+                    )
+                    .unwrap()
+            );
+            assert_eq!(attach(&engine, &s, b).unwrap(), KeyCheck::Unchecked);
+            assert_eq!(owner_key(&engine, &s, wallet).key_id, Some(id_of(b)));
+            drop(s);
+            engine.block_on(engine.shutdown()).unwrap();
+        }
+
         /// Astra r1 (5): an attach the vault would refuse, locked or unlocked
         /// for mixing only, is refused before the recorded id of the key
         /// already attached is cleared, so that key keeps its role. Unlocked
@@ -825,13 +906,38 @@ mod tests {
             assert_eq!(key.key_id, Some(id_of(a)));
             assert!(key.holds());
 
+            // An attach never replaces a key: A goes first.
+            assert!(
+                engine
+                    .block_on(
+                        s.masternodes()
+                            .detach_key(display_hex(&HASH), AttachedKeyRole::Owner)
+                    )
+                    .unwrap()
+            );
             arm(&s.data_dir().join(VAULT_DIR), fault);
             assert!(attach(&engine, &s, b).is_err(), "the injected failure");
             for _ in 0..2 {
-                let key = owner_key(&engine, &s, wallet);
-                assert_eq!(key.key_id, None, "no id after an ambiguous write");
-                assert_eq!(key.check, KeyCheck::Unchecked);
-                assert!(!key.holds());
+                // The vault's memory may hold B or, with A removed first,
+                // nothing yet; either way no id is recorded and no role held.
+                let overview = engine.block_on(s.masternodes().list(wallet)).unwrap();
+                let row = (overview.masternodes.iter())
+                    .find(|r| r.pro_tx_hash == display_hex(&HASH))
+                    .expect("the tracked row");
+                let notes = engine.block_on(s.appdb_op(load_notes)).unwrap();
+                assert!(
+                    !notes
+                        .key_ids
+                        .contains_key(&(display_hex(&HASH), AttachedKeyRole::Owner)),
+                    "no id recorded after an ambiguous write"
+                );
+                let attached = row.roles.attached.clone().expect("an unlocked vault");
+                assert!(attached.len() <= 1);
+                for key in attached {
+                    assert_eq!(key.key_id, None, "no id after an ambiguous write");
+                    assert_eq!(key.check, KeyCheck::Unchecked);
+                    assert!(!key.holds());
+                }
             }
 
             drop(s);
@@ -846,8 +952,8 @@ mod tests {
             engine.block_on(engine.shutdown()).unwrap();
         }
 
-        /// The owner key's id and whether it holds after attaching B over A
-        /// and a power loss once the vault made B durable, before app.sqlite
+        /// The owner key's id and whether it holds after removing A, attaching
+        /// B and a power loss once the vault made B durable, before app.sqlite
         /// synced (MG-03 D34). `skip_barrier` skips the sync of the attach's
         /// clearing of A's id; `!verify` skips the session's comparison of
         /// the recorded ids with the vault's keys.
@@ -878,6 +984,15 @@ mod tests {
             arm(&appdb, skip_barrier);
             let engine = new_engine(dir.path(), &store);
             let s = session(&engine);
+            // An attach never replaces a key: A goes first.
+            assert!(
+                engine
+                    .block_on(
+                        s.masternodes()
+                            .detach_key(display_hex(&HASH), AttachedKeyRole::Owner)
+                    )
+                    .unwrap()
+            );
             attach(&engine, &s, [9; 32]).unwrap();
             drop(s);
             engine.block_on(engine.shutdown()).unwrap();

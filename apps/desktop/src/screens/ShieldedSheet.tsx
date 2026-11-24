@@ -26,11 +26,12 @@ import { GrantSheet } from "./tools/common";
 
 const MEMO_BYTES = 36;
 
-/** Formats for the sheet: Dash in the display unit, masked in discreet mode. */
-export function useFormats(network: NetworkInfo) {
+/** Formats for the sheet: Dash in the display unit with its full decimals (UX-SPEC §5.2, as Pay's sheets), masked in
+ * discreet mode. Home's card passes `compact`. */
+export function useFormats(network: NetworkInfo, style: "full" | "compact" = "full") {
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
-  const duffs = (d: number) => (discreet ? shown.masked() : `${shown.compact(d)} ${shown.name}`);
+  const duffs = (d: number) => (discreet ? shown.masked() : `${shown[style](d)} ${shown.name}`);
   return { shown, duffs, credits: (c: string) => duffs(creditsToDuffs(c)) };
 }
 
@@ -185,11 +186,12 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   );
 }
 
-function Row({ label, value, testId, total }: { label: string; value: string; testId: string; total?: boolean }) {
+/** A confirm row; an amount reads right-aligned in tabular digits, so the decimals line up; an `address` does not. */
+function Row({ label, value, testId, total, address }: { label: string; value: string; testId: string; total?: boolean; address?: boolean }) {
   return (
     <div className={`detail-row ${total ? "topup-total" : ""}`}>
       <dt className="detail-label">{label}</dt>
-      <dd className="detail-value" data-testid={testId}>
+      <dd className={`detail-value ${address ? "" : "detail-amount"}`} data-testid={testId}>
         <bdi dir="ltr">{value}</bdi>
       </dd>
     </div>
@@ -234,7 +236,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
               <Row label={C.confirm.fee} value={credits(q.quote.feeCredits)} testId="shielded-quote-fee" />
               <Row label={C.confirm.total} value={credits(q.quote.totalCredits)} testId="shielded-quote-total" total />
               {q.quote.expectedDuffs !== null && <Row label={C.confirm.receive} value={duffs(q.quote.expectedDuffs)} testId="shielded-quote-receive" />}
-              {flow.request?.kind === "send" && <Row label={C.confirm.to} value={flow.request.to} testId="shielded-quote-to" />}
+              {flow.request?.kind === "send" && <Row label={C.confirm.to} value={flow.request.to} testId="shielded-quote-to" address />}
             </>
           )}
         </dl>

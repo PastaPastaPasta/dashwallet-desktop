@@ -35,6 +35,7 @@ import { EditProfileSheet } from "./EditProfileSheet";
 import { VotingInfoSheet } from "./AboutDashPay";
 import { DashPayCard, defaultCardAction } from "./DashPayCard";
 import { TopUpSheet } from "./TopUpSheet";
+import { FROM_PLATFORM_COPY } from "../../dashpay/topupSource";
 import { ShareSheet } from "./ShareSheet";
 import { RecentWithdrawals, WithdrawButton, WithdrawSheet } from "./WithdrawSheet";
 
@@ -359,7 +360,7 @@ function Ready({ walletId, network, main, contest, inputs }: { walletId: string;
         }}
       />
       <Outcomes walletId={walletId} identity={main.identity} date={inputs.date} />
-      <TopUpSheet flow={flow} walletId={walletId} network={network} costs={costs.data} />
+      <TopUpSheet flow={flow} walletId={walletId} network={network} costs={costs.data} name={main.mainName ? `@${main.mainName}` : FROM_PLATFORM_COPY.you} />
       <WithdrawSheet flow={withdraw} walletId={walletId} network={network} costs={costs.data} />
       <EditProfileSheet model={editor} letters={headerModel(main, contest?.label ?? null).initials} username={main.mainName} />
     </>
