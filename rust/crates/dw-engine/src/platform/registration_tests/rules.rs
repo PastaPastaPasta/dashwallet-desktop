@@ -73,6 +73,10 @@ impl RegistrationLib for Hooked {
         self.fake.claim_hold()
     }
 
+    fn network(&self) -> DashNetwork {
+        self.fake.network()
+    }
+
     async fn invitation(
         &self,
         link_id: &str,
@@ -108,6 +112,16 @@ impl RegistrationLib for Hooked {
         &self,
     ) -> Result<crate::platform::registration::ShieldedFacts, PlatformError> {
         self.fake.shielded_facts().await
+    }
+
+    async fn platform_plan(
+        &self,
+        funding: u64,
+    ) -> Result<
+        crate::platform::registration_platform::RegisterPlan,
+        crate::platform::errors::CreditsError,
+    > {
+        self.fake.platform_plan(funding).await
     }
 
     async fn funding_permit(

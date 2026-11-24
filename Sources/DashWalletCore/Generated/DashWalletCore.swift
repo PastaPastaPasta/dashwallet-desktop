@@ -2146,7 +2146,13 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * and a rescan give that evidence.
      * Any transaction is refused (`InstantLocked`, or `Confirmed`) when
      * abandoning it would also take one the history holds as InstantSend-
-     * locked (or in a block).
+     * locked (or in a block). One that is not InstantSend-locked itself is
+     * refused (`SettledDescendant`) when a later transaction spending from
+     * it is InstantSend-locked, in a block or finalized, unless a ChainLocked
+     * spend of one of its inputs beat it and those are only locked (#446).
+     * One not under the ChainLock exception is refused (`RecordUnreadable`)
+     * while a saved transaction of any loaded wallet didn't read at its
+     * load (#611).
      * Emits `HistoryChanged` and `Balances`.
      */
     func abandonTransaction(walletId: String, txid: String) async throws 
@@ -2159,7 +2165,10 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * releases only the inputs proven unspent. Then it rescans once, from
      * the lowest funding height of the coins they all spent. One the
      * exception refuses (`InstantLocked` or `RescanFirst`, as
-     * `abandon_transaction` says) is skipped. Needs a running SPV client.
+     * `abandon_transaction` says), or that a settled later transaction
+     * holds (`SettledDescendant`), is skipped. One refused as
+     * `RecordUnreadable` is kept too, and the call then fails with that
+     * refusal. Needs a running SPV client.
      * Returns how many transactions were dropped.
      */
     func dropUnconfirmed(walletId: String?) async throws  -> UInt32
@@ -3756,7 +3765,13 @@ open func warnings()throws  -> [EngineWarning]  {
      * and a rescan give that evidence.
      * Any transaction is refused (`InstantLocked`, or `Confirmed`) when
      * abandoning it would also take one the history holds as InstantSend-
-     * locked (or in a block).
+     * locked (or in a block). One that is not InstantSend-locked itself is
+     * refused (`SettledDescendant`) when a later transaction spending from
+     * it is InstantSend-locked, in a block or finalized, unless a ChainLocked
+     * spend of one of its inputs beat it and those are only locked (#446).
+     * One not under the ChainLock exception is refused (`RecordUnreadable`)
+     * while a saved transaction of any loaded wallet didn't read at its
+     * load (#611).
      * Emits `HistoryChanged` and `Balances`.
      */
 open func abandonTransaction(walletId: String, txid: String)async throws   {
@@ -3783,7 +3798,10 @@ open func abandonTransaction(walletId: String, txid: String)async throws   {
      * releases only the inputs proven unspent. Then it rescans once, from
      * the lowest funding height of the coins they all spent. One the
      * exception refuses (`InstantLocked` or `RescanFirst`, as
-     * `abandon_transaction` says) is skipped. Needs a running SPV client.
+     * `abandon_transaction` says), or that a settled later transaction
+     * holds (`SettledDescendant`), is skipped. One refused as
+     * `RecordUnreadable` is kept too, and the call then fails with that
+     * refusal. Needs a running SPV client.
      * Returns how many transactions were dropped.
      */
 open func dropUnconfirmed(walletId: String?)async throws  -> UInt32  {
@@ -11537,8 +11555,10 @@ public struct TxDetailExtras: Equatable, Hashable {
      * dash-qt "Abandon transaction" enablement (§4.5 item 8): not abandoned,
      * unconfirmed, not coinbase, and no InstantSend lock unless the
      * ChainLock exception `abandon_transaction` describes holds and its
-     * plan would not refuse as `InstantLocked`. One whose plan refuses with
-     * `RescanFirst` stays enabled: that refusal says what to do.
+     * plan would not refuse as `InstantLocked`, and no settled later
+     * transaction spends from it (`SettledDescendant`). One whose plan
+     * refuses with `RescanFirst` or `RecordUnreadable` stays enabled: that
+     * refusal says what to do.
      */
     public let canAbandon: Bool
     /**
@@ -11585,8 +11605,10 @@ public struct TxDetailExtras: Equatable, Hashable {
          * dash-qt "Abandon transaction" enablement (§4.5 item 8): not abandoned,
          * unconfirmed, not coinbase, and no InstantSend lock unless the
          * ChainLock exception `abandon_transaction` describes holds and its
-         * plan would not refuse as `InstantLocked`. One whose plan refuses with
-         * `RescanFirst` stays enabled: that refusal says what to do.
+         * plan would not refuse as `InstantLocked`, and no settled later
+         * transaction spends from it (`SettledDescendant`). One whose plan
+         * refuses with `RescanFirst` or `RecordUnreadable` stays enabled: that
+         * refusal says what to do.
          */canAbandon: Bool, 
         /**
          * dash-qt "Resend transaction" enablement (§4.5 item 9): unconfirmed,
@@ -20153,6 +20175,17 @@ public enum TxActionRefusal: Equatable, Hashable {
      * wallet's birth.
      */
     case rescanFirst
+    /**
+     * A later transaction that spends from it is already locked or
+     * confirmed, so this one will confirm too.
+     */
+    case settledDescendant
+    /**
+     * A saved transaction of a loaded wallet didn't read at its load, so
+     * what descends from this one is unknown: removing and restoring that
+     * wallet clears it.
+     */
+    case recordUnreadable
 
 
 
@@ -20188,6 +20221,10 @@ public struct FfiConverterTypeTxActionRefusal: FfiConverterRustBuffer {
         
         case 7: return .rescanFirst
         
+        case 8: return .settledDescendant
+        
+        case 9: return .recordUnreadable
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -20222,6 +20259,14 @@ public struct FfiConverterTypeTxActionRefusal: FfiConverterRustBuffer {
         
         case .rescanFirst:
             writeInt(&buf, Int32(7))
+        
+        
+        case .settledDescendant:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .recordUnreadable:
+            writeInt(&buf, Int32(9))
         
         }
     }
@@ -24394,10 +24439,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_warnings() != 33150) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 38946) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 43021) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_drop_unconfirmed() != 40118) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_drop_unconfirmed() != 64773) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_export_history_csv() != 61293) {

@@ -17,22 +17,24 @@
 //!   install's, or another device's of the same seed. The journal outlives
 //!   a wallet's removal, so a wallet imported again on the same install
 //!   reads its own locks back as its own.
-//! - **What cannot be told.** For these funding types nothing the wallet
-//!   can read says whether Platform already took a lock: the library keeps
-//!   a restored one "consumption unknown" (`asset_lock/tracked.rs`,
-//!   `RecoveredFromChain`), and Platform answers no query of its spent
-//!   outpoints. So a lock is unfinished until an apply is tried, and one
-//!   read back from the chain reads Checking until then: it may already be
-//!   in the balance. Its Check again, and Finish transfers, try it. Trying is
-//!   safe: Platform executes at most one apply of an outpoint (every
-//!   asset-lock transition's proof validation refuses a consumed one,
-//!   rs-drive-abci `common/asset_lock/proof/verify_is_not_spent/v0/mod.rs`).
+//! - **What is known before an apply.** The library keeps a restored lock
+//!   "consumption unknown" (`asset_lock/tracked.rs`, `RecoveredFromChain`),
+//!   so a lock is unfinished until an apply is tried, and one read back
+//!   from the chain reads Checking until then: it may already be in the
+//!   balance. Its Check again, and Finish transfers, try it. Trying is safe:
+//!   Platform executes at most one apply of an outpoint (every asset-lock
+//!   transition's proof validation refuses a consumed one, rs-drive-abci
+//!   `common/asset_lock/proof/verify_is_not_spent/v0/mod.rs`). Platform's
+//!   spent outpoints can be read with a proof ([`proved_spent`], its
+//!   `SpentAssetLockTransactions` tree); the runner reads it when an apply
+//!   is answered "already consumed".
 //! - **Outcomes.** Only Platform's proved execution finishes a lock. Its
 //!   "already consumed" for the exact outpoint
 //!   (`PlatformWalletError::AssetLockAlreadyConsumed`, the library's typed
 //!   form of `IdentityAssetLockTransactionOutPointAlreadyConsumedError`
 //!   matched to the outpoint, `error.rs` `is_asset_lock_already_consumed`)
-//!   is unauthenticated: any node can say it. Any other failure after the
+//!   is unauthenticated: any node can say it, so it counts only when the
+//!   proved read says consumed. Any other failure after the
 //!   lock's credit key signed may have executed. Neither settles a lock or
 //!   changes a balance; balances come only from proved reads.
 //! - **Evidence by outpoint.** One lock transaction can carry several
@@ -165,6 +167,104 @@ pub(crate) fn reply_from(
     }
 }
 
+/// How long [`proved_spent`] waits for Platform's proved answer.
+pub(crate) const SPENT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What Platform's proved state says of an asset lock's outpoint: drive's
+/// `SpentAssetLockTransactions` tree, keyed by the 36-byte outpoint,
+/// holds an empty item once the lock is used up and the remaining value
+/// otherwise (`add_asset_lock_outpoint_operations/v0`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpentRead {
+    /// No element: not consumed as of the proof's block.
+    Unspent,
+    /// An empty item: consumed, for good.
+    Consumed,
+    /// Any other item: a remaining value. Its bytes are not read.
+    Remaining,
+    /// No proved answer: an error, no proof, a timeout, or an element of
+    /// another sort.
+    Unread,
+}
+
+/// The tree's key of `outpoint`: its consensus bytes, as drive-abci keys it.
+pub(crate) fn spent_key(outpoint: OutPoint) -> Vec<u8> {
+    <[u8; 36]>::from(outpoint).to_vec()
+}
+
+/// [`SpentRead`] of a verified read of `key`: `None` is the SDK's answer
+/// when nothing at all came back.
+pub(crate) fn read_spent(
+    elements: Option<&dash_sdk::query_types::Elements>,
+    key: &[u8],
+) -> SpentRead {
+    use drive::grovedb::Element;
+    let Some(elements) = elements else {
+        return SpentRead::Unread;
+    };
+    match elements.get(key) {
+        None => SpentRead::Unread,
+        Some(None) => SpentRead::Unspent,
+        Some(Some(Element::Item(bytes, _))) if bytes.is_empty() => SpentRead::Consumed,
+        Some(Some(Element::Item(..))) => SpentRead::Remaining,
+        Some(Some(_)) => SpentRead::Unread,
+    }
+}
+
+/// The path of drive's spent asset-lock tree, built as drive builds it
+/// (`RootTree`'s `&[u8; 1]`, `drive/asset_lock/mod.rs`).
+pub(crate) fn spent_path() -> Vec<Vec<u8>> {
+    let byte: &'static [u8; 1] = drive::drive::RootTree::SpentAssetLockTransactions.into();
+    vec![byte.to_vec()]
+}
+
+/// Platform's proved answer for the lock at `outpoint`
+/// ([`SPENT_READ_TIMEOUT`]); [`SpentRead::Unread`] on any failure, and
+/// from an SDK that does not ask for proofs.
+pub(crate) async fn proved_spent(sdk: &dash_sdk::Sdk, outpoint: OutPoint) -> SpentRead {
+    use dash_sdk::platform::FetchMany;
+    use dash_sdk::query_types::KeysInPath;
+    use drive::grovedb::Element;
+    let key = spent_key(outpoint);
+    let query = KeysInPath {
+        path: spent_path(),
+        keys: vec![key.clone()],
+    };
+    let fetch = || Element::fetch_many(sdk, query);
+    read_fetched(sdk.prove(), outpoint, &key, SPENT_READ_TIMEOUT, fetch).await
+}
+
+/// [`proved_spent`] around its `fetch`: not made without proofs, bounded
+/// by `limit`, and any error or timeout is [`SpentRead::Unread`].
+pub(crate) async fn read_fetched<F, Fut, E>(
+    prove: bool,
+    outpoint: OutPoint,
+    key: &[u8],
+    limit: std::time::Duration,
+    fetch: F,
+) -> SpentRead
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<dash_sdk::query_types::Elements, E>>,
+    E: std::fmt::Display,
+{
+    if !prove {
+        tracing::warn!(%outpoint, "the SDK does not ask for proofs: a lock's spent read is not made");
+        return SpentRead::Unread;
+    }
+    match tokio::time::timeout(limit, fetch()).await {
+        Ok(Ok(elements)) => read_spent(Some(&elements), key),
+        Ok(Err(e)) => {
+            tracing::warn!(%outpoint, error = %e, "a lock's spent read failed");
+            SpentRead::Unread
+        }
+        Err(_) => {
+            tracing::warn!(%outpoint, "a lock's spent read timed out");
+            SpentRead::Unread
+        }
+    }
+}
+
 /// Whether a kind's lock can be applied now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Readiness {
@@ -250,17 +350,19 @@ pub(crate) enum Mark {
     Settled,
     /// An apply that may have executed, unproved.
     Unknown,
-    /// Platform's "already consumed" for the exact outpoint, unproved, by a
-    /// kind that takes it as finished elsewhere
-    /// ([`LockKind::reported_locks`]); neither proved nor settled.
-    Reported,
+    /// Platform's proof that the outpoint is consumed ([`SpentRead::Consumed`]),
+    /// kept by a kind that takes it as finished elsewhere
+    /// ([`LockKind::reported_locks`]); not settled. Earlier versions kept
+    /// an unproved "already consumed" under `reported`, which is no longer
+    /// read: such a lock lists again until a proved read settles it.
+    Used,
 }
 
 fn mark_prefix(kind: LockKindId, mark: Mark) -> String {
     let sort = match mark {
         Mark::Settled => "settled",
         Mark::Unknown => "unknown",
-        Mark::Reported => "reported",
+        Mark::Used => "used",
     };
     format!("recovery.{}.{sort}.", kind.label())
 }

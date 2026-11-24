@@ -93,6 +93,8 @@ export interface MasternodesWorld {
   listState: MasternodeListState;
   /** `mn_list` fails (the list-failed notice). */
   listFails: boolean;
+  /** `mn_masternode` fails (a detail refresh that fails after a cached read). */
+  detailFails?: boolean;
   /** The synced list's entries. */
   listed: Listed[];
   /** The main wallet's masternodes and the tracked ones (tracking is network-wide). */
@@ -115,6 +117,11 @@ export interface MasternodesWorld {
   trackedAt: Record<string, number>;
   /** The keychain owner key index of each own masternode with the owner role; other held registrations get their own fake owner address. */
   ownerKeys: Record<string, number>;
+  /** Wallets whose seed is gone but whose provider accounts stay (Forgot Passphrase): `mn_keys`
+   * lists their public keys, `mn_reveal_key` still refuses. */
+  keysWithoutSeed?: string[];
+  /** `mn_keys` fails for pages after the first (a keychain read that fails mid-list). */
+  keyPagesFail?: boolean;
   /** A held registration's operator reward in hundredths of a percent; absent: 0. */
   operatorRewards: Record<string, number>;
   /** The wallet's ProTx operations, newest first (mn-engine §2.3). */
@@ -461,7 +468,12 @@ const opsFor = (m: MasternodesWorld, walletId: string) => (walletId === FIXTURE_
 
 /** The state read now: a prepared row whose fee inputs went reads `inputs_spent`. */
 const readState = (m: MasternodesWorld, o: ProTxOperation): ProTxOperation["state"] => (m.spendInputs && o.state.kind === "needs_signature" ? { kind: "inputs_spent" } : o.state);
-const readOp = (m: MasternodesWorld, o: ProTxOperation): ProTxOperation => ({ ...copy(o), state: readState(m, o) });
+/** As the engine reads a row: the sign request only while it still needs a signature. */
+const readOp = (m: MasternodesWorld, o: ProTxOperation): ProTxOperation => {
+  const c = copy(o);
+  const state = readState(m, o);
+  return { ...c, state, signRequest: state.kind === "needs_signature" ? c.signRequest : null };
+};
 
 /** wallet → id → not found, as the engine reads an operation. */
 function opOf(world: World, walletId: string, id: string): ProTxOperation {
@@ -769,7 +781,8 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
       const o = opOf(world, walletId, operation);
       const state = readState(m, o).kind;
       if (state !== "needs_signature" && state !== "inputs_spent") throw stateError(state);
-      if (state === "inputs_spent") m.spendInputs = false;
+      // New fee inputs: the engine replans, so the fee and what leaves the wallet move (REG_FEE_DRIFT).
+      if (state === "inputs_spent") Object.assign(m, { spendInputs: false }), Object.assign(o, { fee: o.fee + REG_FEE_DRIFT, debit: o.debit + REG_FEE_DRIFT });
       Object.assign(o, { state: { kind: "needs_signature" }, signRequest: { address: o.terms.collateralAddress!, message: signMessage(m, o.terms) } });
       changed(ctx);
       return readOp(m, o);
@@ -861,6 +874,7 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
     mn_masternode: ({ walletId, proTxHash: given }, { world }) => {
       const proTxHash = checkHash(given);
       wallet(world, walletId);
+      if (world.masternodes.detailFails) throw fail("internal", "fixture: the masternode detail read failed");
       const r = withAttached(world, rowOf(world, walletId, proTxHash));
       const m = world.masternodes;
       const held = m.registrations.includes(proTxHash);
@@ -986,7 +1000,9 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
     },
     mn_keys: ({ walletId, role, start, count }, { world }) => {
       if (count > 100) throw fail("invalid_argument", "count above 100");
-      if (wallet(world, walletId).summary.watchOnly) throw fail("masternode.watch_only", "fixture: a watch-only wallet has no provider account");
+      if (wallet(world, walletId).summary.watchOnly && !world.masternodes.keysWithoutSeed?.includes(walletId))
+        throw fail("masternode.watch_only", "fixture: a watch-only wallet has no provider account");
+      if (start > 0 && world.masternodes.keyPagesFail) throw fail("internal", "fixture: the keychain read failed");
       const end = Math.min(start + count, POOL[role]);
       return Array.from({ length: Math.max(0, end - start) }, (_, i) => keyInfo(role, start + i));
     },
@@ -1189,7 +1205,7 @@ function ops(m: MasternodesWorld) {
   const dissolve = (n: number, debit: number) => ({ kind: "dissolve" as const, proTxHash: h("5d"), debit, terms: scenarioTerms(n, { collateral: null, collateralOutpoint: null, collateralAddress: null }) });
   m.operations = [
     scenarioOp(OP_NEEDS_SIGNATURE, 1, { kind: "needs_signature" }, { terms: external(1), signRequest: signRequest(1) }),
-    scenarioOp(OP_INPUTS_SPENT, 2, { kind: "inputs_spent" }, { terms: external(2), signRequest: signRequest(2) }),
+    scenarioOp(OP_INPUTS_SPENT, 2, { kind: "inputs_spent" }, { terms: external(2), signRequest: null }),
     scenarioOp(OP_SIGNED, 3, { kind: "signed" }),
     scenarioOp(OP_NOT_SENT, 4, { kind: "not_sent" }, { lastError: "send.no_peers" }),
     scenarioOp(OP_SENT, 5, { kind: "sent" }),
@@ -1287,6 +1303,13 @@ export function masternodesScenarios(base: Base) {
     "reg-prepared-spent": (t: ThemeName | null) => mnBase(base, t, (m, w) => (reg(m, w), prepared(m, { kind: "inputs_spent" }))),
     /** The `mn-list` board with an operation in every state and of every kind. */
     "mn-ops": (t: ThemeName | null) => mnBase(base, t, ops),
+    /** Show Masternodes on Auto: no masternode and no collateral-sized coin, only a sent registration. */
+    "mn-registration-only": (t: ThemeName | null) =>
+      mnBase(base, t, (m, w) => {
+        Object.assign(m, { rows: [], payouts: {}, attached: {}, collateralCoins: [] });
+        m.operations = [scenarioOp(OP_SENT, 5, { kind: "sent" })];
+        w.settings.ui = { ...w.settings.ui, masternodesItem: "auto" };
+      }),
     /** The `mn-list` board, Home node's collateral released. */
     "mn-released": (t: ThemeName | null) => mnBase(base, t, (m) => (byHash(m, HOME).collateralReleased = true)),
   };

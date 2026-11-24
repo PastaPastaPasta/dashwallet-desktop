@@ -23,7 +23,7 @@ import type { AppError, AppEvent } from "../api/generated/commands";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { coinJoinAccount, DRAIN_STEP, selfSpendFee } from "./coinjoin";
-import { classifyAddress, owns } from "./send";
+import { classifyAddress, owns, refused } from "./send";
 import { SHIELD_STEP } from "./shielded";
 import { FIXTURE_DATA_DIR } from "./settings";
 import { FIXTURE_NOW, makeIds, prng, secs, TIP } from "./wallet";
@@ -37,6 +37,8 @@ export interface FilesWorld {
   open: OpenedFile | null;
   /** The folder a save dialog picks (the suggested name is kept); `null`: the user cancels. */
   saveDir: string | null;
+  /** The next dialog fails to open (`app.file_dialog`), once. */
+  dialogFails?: boolean;
   /** Every dialog shown, in order. */
   dialogs: { purpose: FilePurpose; save: boolean; suggestedName: string | null }[];
   /** Every file written, in order (data base64). */
@@ -311,7 +313,7 @@ function syncChanged({ world, emit }: Ctx) {
 }
 
 function startRescan(world: World, fromHeight: number) {
-  world.tools.rescan = { fromHeight, currentHeight: fromHeight, targetHeight: world.sync.tipHeight ?? TIP, startedAt: secs(FIXTURE_NOW) };
+  world.tools.rescan = { fromHeight, currentHeight: fromHeight, targetHeight: world.sync.tipHeight ?? TIP, startedAt: secs(FIXTURE_NOW), upgradeWallets: [] };
 }
 
 const book = (world: World, walletId: string) => (world.tools.addressBook[walletId] ??= []);
@@ -474,6 +476,7 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
     },
     // Counts the unconfirmed coins that are not InstantSend-locked; they stay listed (not modelled).
     drop_unconfirmed: ({ walletId }, { world }) => {
+      if (world.send.recordUnreadable.length) throw refused("recordUnreadable", world.wallets[0].summary.walletId);
       const ws = walletId === null ? world.wallets : [wallet(world, walletId)];
       const dropped = ws.flatMap((w) => w.coins).filter((u) => u.confirmations === 0 && !u.instantLocked).length;
       if (dropped && world.sync.running && !world.tools.rescan) startRescan(world, Math.min(...ws.map((w) => w.summary.birthHeight ?? 0)));
@@ -612,6 +615,10 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
     choose_file_path: ({ purpose, save, suggestedName }, { world }) => {
       const { files } = world.tools;
       files.dialogs.push({ purpose, save, suggestedName });
+      if (files.dialogFails) {
+        files.dialogFails = false;
+        throw fail("app.file_dialog", "fixture: the dialog failed");
+      }
       return save ? savePath(files, suggestedName) : files.open && `${files.saveDir ?? "/home/user"}/${files.open.name}`;
     },
   };

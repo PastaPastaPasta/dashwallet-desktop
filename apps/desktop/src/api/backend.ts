@@ -42,6 +42,9 @@ import type { RatesSettings } from "./generated/RatesSettings";
 import type { RatesView } from "./generated/RatesView";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
+import type { ContactPayArgs } from "./generated/ContactPayArgs";
+import type { ContactPayOutcomeInfo } from "./generated/ContactPayOutcomeInfo";
+import type { ContactPayQuoteInfo } from "./generated/ContactPayQuoteInfo";
 import type { ContactQueryArgs } from "./generated/ContactQueryArgs";
 import type { CredentialSpec } from "./generated/CredentialSpec";
 import type { DashPayStatus } from "./generated/DashPayStatus";
@@ -143,6 +146,14 @@ import type { MasternodeListState } from "./generated/MasternodeListState";
 import type { MasternodeOverview } from "./generated/MasternodeOverview";
 import type { MasternodePayout } from "./generated/MasternodePayout";
 import type { RevealedMasternodeKey } from "./generated/RevealedMasternodeKey";
+import type { JoinSharedRequest } from "./generated/JoinSharedRequest";
+import type { SharedCapability } from "./generated/SharedCapability";
+import type { SharedImport } from "./generated/SharedImport";
+import type { SharedMessage } from "./generated/SharedMessage";
+import type { SharedOutcome } from "./generated/SharedOutcome";
+import type { SharedSession } from "./generated/SharedSession";
+import type { UnreadableSession } from "./generated/UnreadableSession";
+import type { StartSharedRequest } from "./generated/StartSharedRequest";
 import type { MnRegistrationPreview } from "./generated/MnRegistrationPreview";
 import type { MnRegistrationRequest } from "./generated/MnRegistrationRequest";
 import type { MasternodeTypeName } from "./generated/MasternodeTypeName";
@@ -194,6 +205,8 @@ import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import type { Withdrawal } from "./generated/Withdrawal";
 import type { WithdrawOutcome } from "./generated/WithdrawOutcome";
 import type { WithdrawQuote } from "./generated/WithdrawQuote";
+import type { TopUpFromPlatformOutcome } from "./generated/TopUpFromPlatformOutcome";
+import type { TopUpFromPlatformQuote } from "./generated/TopUpFromPlatformQuote";
 import type { WithdrawToPlatformOutcome } from "./generated/WithdrawToPlatformOutcome";
 import type { WithdrawToPlatformQuote } from "./generated/WithdrawToPlatformQuote";
 import type { DashPayEventPage } from "./generated/DashPayEventPage";
@@ -204,6 +217,7 @@ import type { PublishStateName } from "./generated/PublishStateName";
 import type { FoundIdentity } from "./generated/FoundIdentity";
 import type { IdentityDetail } from "./generated/IdentityDetail";
 import type { IdentityRefresh } from "./generated/IdentityRefresh";
+import type { ProjectLinkName } from "./generated/ProjectLinkName";
 import type { ProtocolCompatibility } from "./generated/ProtocolCompatibility";
 import type { RecentNotice } from "./generated/RecentNotice";
 
@@ -330,6 +344,8 @@ export interface Backend {
   openTxInExplorer(txid: string): Promise<null>;
   /** Opens the GitHub releases page in the system browser. */
   openReleasesPage(): Promise<null>;
+  /** Opens a project page from Settings ▸ About; the URL is fixed in Rust. */
+  openProjectLink(link: ProjectLinkName): Promise<null>;
   /** The network's observed Platform protocol version and the version this build supports. */
   protocolCompatibility(): Promise<ProtocolCompatibility>;
   // Receive (U-03 D11).
@@ -417,6 +433,8 @@ export interface Backend {
   /** Wallets whose latest automatic backup failed, and when. */
   automaticBackupFailures(): Promise<AutomaticBackupFailure[]>;
   backupDirectory(): Promise<string>;
+  /** Shows the automatic-backup folder in the system file manager. */
+  openBackupDirectory(): Promise<null>;
   backupPolicy(): Promise<BackupPolicyInfo>;
   setBackupPolicy(keep: number): Promise<BackupPolicyInfo>;
   readBackupHeader(path: string): Promise<BackupFileHeader>;
@@ -481,6 +499,10 @@ export interface Backend {
   frequentContacts(walletId: string, identity: string, limit: number): Promise<ContactSummaryInfo[]>;
   /** Looks for the locked payment's outcome; `sent` and `notSent` clear the lock (DP3-01). */
   resolveContactPaymentLock(walletId: string, identity: string, contact: string): Promise<LockResolutionName>;
+  /** What paying `credits` from the Shielded or Platform balance takes and pays (C-funding D-C5). */
+  contactPayQuote(walletId: string, identity: string, contact: string, credits: string, source: PaymentSourceName): Promise<ContactPayQuoteInfo>;
+  /** Pays from that balance under a `platformOp` grant the quote sized. */
+  contactPay(walletId: string, identity: string, contact: string, payment: ContactPayArgs, grant: string): Promise<ContactPayOutcomeInfo>;
   /** The caps of the `platformOp` grant a DashPay write needs. */
   grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest>;
   creditsCostTable(walletId: string): Promise<CostTable>;
@@ -607,6 +629,10 @@ export interface Backend {
   creditsWithdrawToPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawToPlatformQuote>;
   /** Moves credits to `to`, one of the wallet's own Platform addresses, under the quote's `platformOp` grant. */
   creditsWithdrawToPlatform(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawToPlatformOutcome>;
+  /** C-routes D-C3: what a top-up of `identity` from the Platform addresses gives, its fee and grant; `all` keeps the fee band on the first input. */
+  creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote>;
+  /** Tops up `identity` from the Platform addresses under the quote's `platformOp` grant. */
+  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome>;
   /** The identity's withdrawals on Platform, newest first. */
   creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
@@ -694,6 +720,36 @@ export interface Backend {
   mnResendOperation(walletId: string, operation: string, grant: string): Promise<ProTxOperation>;
   /** Deletes an operation that was never handed to the network. */
   mnDiscardOperation(walletId: string, operation: string): Promise<null>;
+  // Shared masternodes (MG-10b S5 over mn-engine §2.4): sessions up to approval.
+  mnSharedCapability(walletId: string): Promise<SharedCapability>;
+  mnSharedSessions(walletId: string): Promise<SharedSession[]>;
+  /** Sessions whose stored record no longer reads; Discard frees one while `discardable`. */
+  mnSharedUnreadable(walletId: string): Promise<UnreadableSession[]>;
+  mnSharedSession(walletId: string, session: string): Promise<SharedSession>;
+  /** Reserves the coordinator's share and the fee; signs nothing. */
+  mnSharedStart(walletId: string, request: StartSharedRequest): Promise<SharedOutcome>;
+  mnSharedSetFee(walletId: string, session: string, fee: number): Promise<SharedOutcome>;
+  /** Reserves exactly the share; signs nothing. */
+  mnSharedJoin(walletId: string, session: string, request: JoinSharedRequest): Promise<SharedOutcome>;
+  mnSharedMessage(walletId: string, session: string): Promise<SharedMessage>;
+  /** Consumes a `masternodeOp` grant of 0. */
+  mnSharedLock(walletId: string, session: string, revision: number, grant: string): Promise<SharedOutcome>;
+  mnSharedUnlock(walletId: string, session: string): Promise<SharedOutcome>;
+  /** Consumes a `masternodeOp` grant of 0. */
+  mnSharedApprove(walletId: string, session: string, consentHash: string, grant: string): Promise<SharedOutcome>;
+  /** Only while `discardable`; releases the reserved coins. */
+  mnSharedDiscard(walletId: string, session: string): Promise<null>;
+  /** Only while `abandonable`: spends one reserved coin back to the wallet under a `masternodeOp`
+   * grant covering `SHARED_ABANDON_FEE`. */
+  mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession>;
+  /** The same for a session this wallet can no longer read. */
+  mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession>;
+  /** Refused on mainnet (`app.shared_send_off`) before the engine. Grant: `masternodeOp{session.debit}`. */
+  mnSharedSign(walletId: string, session: string, grant: string): Promise<SharedOutcome>;
+  mnSharedSend(walletId: string, session: string, grant: string): Promise<SharedOutcome>;
+  mnSharedImport(walletId: string, text: string, target: string | null): Promise<SharedImport>;
+  /** The open dialog runs in dw-app; the file's text never reaches the renderer. `null` on cancel. */
+  mnSharedImportFile(walletId: string, target: string | null): Promise<SharedImport[] | null>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */

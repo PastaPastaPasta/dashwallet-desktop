@@ -168,6 +168,8 @@ export interface Pools {
   /** `null`: this dw-app has no Platform addresses; `undefined`: still being read. `duffs`: what a
    * move of everything would take. */
   platform: { duffs: number | null; dust: boolean; dustText: string; block: MoveBlock | null; waitingText: string } | null | undefined;
+  /** The wallet's Core sync is running and not caught up: a shield's funding waits for it. */
+  coreSyncing?: boolean;
 }
 
 /** The pools the picker lists: the Dash wallet always, the others while this dw-app has them. */
@@ -245,7 +247,7 @@ export function routeWhy(route: RouteId, pools: Pools, flows: Flows): string | n
       const s = pools.shielded;
       if (s === undefined) return TRANSFER_COPY.loading;
       if (!s?.active) return SHIELDED_COPY.card.inactive;
-      if (s.syncing) return SHIELDED_SYNC_COPY.syncing;
+      if (s.syncing || (route === "coreToShielded" && pools.coreSyncing)) return SHIELDED_SYNC_COPY.syncing;
       const f = flows.shielded;
       // The flow is shared: another of its moves is running, or its result waits to be seen.
       if (f.running) return SHIELDED_COPY.card.why.busy;

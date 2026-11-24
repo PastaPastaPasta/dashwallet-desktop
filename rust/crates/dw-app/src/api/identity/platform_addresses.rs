@@ -76,7 +76,10 @@ impl From<engine::PlatformAddressRow> for PlatformAddressRow {
 /// `moveToCore`: a "Move to Dash wallet" of this wallet; `send`: a send of
 /// this wallet to a Platform address (`to`); `fromCore`: an "Add from Dash
 /// wallet" of this wallet to its Platform address (`address`), pending
-/// until Platform proves it applied.
+/// until Platform proves it applied; `toIdentity`: a top-up of one of this
+/// wallet's identities (`to`, base58) from its Platform addresses;
+/// `contactPayment`: a payment to a DashPay contact (`contact`) from the
+/// Platform balance, to its Core address (`to`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityKind {
@@ -85,10 +88,12 @@ pub enum PlatformActivityKind {
     MoveToCore,
     Send,
     FromCore,
+    ToIdentity,
+    ContactPayment,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore, Send, FromCore
+    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, ContactPayment
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);
@@ -131,6 +136,10 @@ pub struct PlatformActivity {
     pub may_land: bool,
     /// A done send whose debit counts the fee estimate.
     pub estimated: bool,
+    /// A `contactPayment`'s contact; absent for every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub contact: Option<crate::dto::history::TxCounterparty>,
 }
 
 impl From<engine::PlatformActivity> for PlatformActivity {
@@ -147,6 +156,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             at,
             may_land,
             estimated,
+            contact,
         } = a;
         PlatformActivity {
             id,
@@ -160,6 +170,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             at,
             may_land,
             estimated,
+            contact: contact.map(Into::into),
         }
     }
 }

@@ -264,6 +264,44 @@ pub(super) fn known_mn(hash: [u8; 32], height: u32, p: &ProRegTxV3) -> SharedMn<
     }
 }
 
+/// What `together_discard` does with a parsed session (D17), and what
+/// `SharedSession.discardable` reads.
+enum Discard {
+    /// Nothing of it is out: delete it.
+    Unsent,
+    /// Out, never handed off: delete it with the txid it is marked out with.
+    Out(String),
+    /// `shared_too_early`: the dissolution that removed the masternode may be
+    /// this session's own.
+    TooEarly,
+    /// Out and handed off: an operation holds its txid.
+    HandedOff,
+    /// Out with no txid recorded.
+    Unmarked,
+}
+
+impl Discard {
+    fn allowed(&self) -> bool {
+        matches!(self, Discard::Unsent | Discard::Out(_))
+    }
+}
+
+fn discard_rule(t: &Together, mn: Option<&SharedMn>, v: &TogetherView) -> Discard {
+    if mn.is_some_and(|mn| v.list_gone(t, mn) && !v.scanned_to_list()) {
+        return Discard::TooEarly;
+    }
+    if t.row.out_at.is_none() {
+        return Discard::Unsent;
+    }
+    if handed_off(t, v).is_some() {
+        return Discard::HandedOff;
+    }
+    match t.row.txid.clone() {
+        Some(txid) => Discard::Out(txid),
+        None => Discard::Unmarked,
+    }
+}
+
 /// The operation the session was handed off as: the one whose signed bytes
 /// carry its `txid`.
 fn handed_off<'a>(t: &Together, v: &'a TogetherView) -> Option<&'a MasternodeOpRow> {
@@ -438,7 +476,15 @@ impl NetworkSession {
             None => None,
         };
         let stage = derive_stage(t, mn.as_ref(), v, op_state);
-        Ok(view(t, mn.as_ref(), v, stage, self.network.core_network()))
+        let discardable = discard_rule(t, mn.as_ref(), v).allowed();
+        Ok(view(
+            t,
+            mn.as_ref(),
+            v,
+            stage,
+            discardable,
+            self.network.core_network(),
+        ))
     }
 
     /// Whether `row`, a dissolve-together session, may be discarded (D17):
@@ -467,19 +513,15 @@ impl NetworkSession {
         let mn = known
             .as_ref()
             .map(|(height, p)| known_mn(t.hash, *height, p));
-        if mn.is_some_and(|mn| v.list_gone(&t, &mn) && !v.scanned_to_list()) {
-            return Err(MasternodesError::SharedTooEarly);
-        }
-        if !out {
-            return Ok(None);
-        }
-        if handed_off(&t, &v).is_some() {
-            let stage = self.together_session(wallet, &t, &v).await?.stage;
-            return Err(stage_refusal(stage));
-        }
-        match t.row.txid.clone() {
-            Some(txid) => Ok(Some(txid)),
-            None => Err(stage_refusal(SharedStage::Sent)),
+        match discard_rule(&t, mn.as_ref(), &v) {
+            Discard::Unsent => Ok(None),
+            Discard::Out(txid) => Ok(Some(txid)),
+            Discard::TooEarly => Err(MasternodesError::SharedTooEarly),
+            Discard::HandedOff => {
+                let stage = self.together_session(wallet, &t, &v).await?.stage;
+                Err(stage_refusal(stage))
+            }
+            Discard::Unmarked => Err(stage_refusal(SharedStage::Sent)),
         }
     }
 
@@ -1082,6 +1124,7 @@ fn view(
     mn: Option<&SharedMn>,
     v: &TogetherView,
     stage: SharedStage,
+    discardable: bool,
     network: dashcore::Network,
 ) -> SharedSession {
     let checked = mn.and_then(|mn| together::check(&t.request, mn).ok());
@@ -1166,6 +1209,8 @@ fn view(
         txid: t.row.txid.clone().or(complete),
         reserved: Vec::new(),
         next,
+        discardable,
+        abandonable: false,
         warnings,
         approved_terms: None,
         base_keys: None,

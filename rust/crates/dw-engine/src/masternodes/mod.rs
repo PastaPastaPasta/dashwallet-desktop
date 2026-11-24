@@ -20,7 +20,7 @@ mod protx_records;
 mod reads;
 mod records;
 mod shared;
-pub use shared::standby_file_transactions;
+pub use shared::{shared_abandon_fee, standby_file_transactions};
 mod shared_records;
 mod tracking;
 pub(crate) mod withdrawal;
@@ -52,7 +52,7 @@ pub use shared_records::{
     ShareTerms, ShareTermsView, SharedCapability, SharedEligibility, SharedImport, SharedKind,
     SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedShares, SharedStage,
     SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource, StandbyVariant,
-    StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
+    StartSharedRequest, UnreadableSession, UpdateSharePreview, UpdateShareRequest,
 };
 pub use tracking::MAX_MASTERNODE_LABEL;
 pub use withdrawal_records::{

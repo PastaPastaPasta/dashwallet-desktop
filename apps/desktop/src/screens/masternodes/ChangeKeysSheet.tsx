@@ -26,7 +26,7 @@ import {
   keepsRecordedPayout,
   pinToPreview,
   recordedPayout,
-  REGISTRAR_UPDATE_SENDS,
+  registrarUpdateSends,
   reviewLines,
   signerLine,
   unsentUpdate,
@@ -65,6 +65,7 @@ export function ChangeKeysSheet({
 }) {
   const t = useT();
   const b = useBackend();
+  const sends = registrarUpdateSends(network);
   const shown = useDisplay(network);
   const refresh = useMasternodesRefresh();
   const ops = useMasternodeOperations(wallet.walletId);
@@ -112,7 +113,7 @@ export function ChangeKeysSheet({
 
   const sending = useRef(false);
   const send = async () => {
-    if (!REGISTRAR_UPDATE_SENDS || sending.current || busy || !request || !current || !signable || !credential.ready) return;
+    if (!sends || sending.current || busy || !request || !current || !signable || !credential.ready) return;
     sending.current = true;
     setBusy(true);
     try {
@@ -161,6 +162,7 @@ export function ChangeKeysSheet({
           op={stuck}
           busy={busy}
           setBusy={setBusy}
+          sends={sends}
           onSent={(op) => finish(op, null)}
           onDiscarded={() => {
             setUnsent(null);
@@ -178,32 +180,33 @@ export function ChangeKeysSheet({
         className="mg-sheet-body mg-change-keys"
         onSubmit={(e) => {
           e.preventDefault();
-          if (REGISTRAR_UPDATE_SENDS) void send();
+          if (sends) void send();
         }}
       >
         <p className="mg-muted mg-small mg-flush">{t(`${P}.intro`)}</p>
-        <fieldset className="mg-choices" disabled={busy} data-testid="mn-change-operator">
-          <legend className="mg-section-title">{t(`${P}.operator.legend`)}</legend>
-          <Choice name="operator" value="keep" checked={form.operator === "keep"} onPick={() => set({ operator: "keep" })} title={t(`${P}.operator.keep`)} note={listOperator ? t(`${P}.operator.keepValue`, { key: listOperator.slice(0, 16) }) : undefined} mono />
-          <Choice name="operator" value="keychain" checked={form.operator === "keychain"} onPick={() => set({ operator: "keychain" })} title={t(`${P}.operator.keychain`)} note={t(`${P}.operator.keychainNote`)} />
-          <Choice name="operator" value="given" checked={form.operator === "given"} onPick={() => set({ operator: "given" })} title={t(`${P}.operator.given`)} />
+        <div className="mg-choices" role="radiogroup" aria-labelledby="mn-change-operator-title" data-testid="mn-change-operator">
+          <span id="mn-change-operator-title" className="mg-section-title">{t(`${P}.operator.legend`)}</span>
+          <Choice disabled={busy} name="operator" value="keep" checked={form.operator === "keep"} onPick={() => set({ operator: "keep" })} title={t(`${P}.operator.keep`)} note={listOperator ? t(`${P}.operator.keepValue`, { key: listOperator.slice(0, 16) }) : undefined} mono />
+          <Choice disabled={busy} name="operator" value="keychain" checked={form.operator === "keychain"} onPick={() => set({ operator: "keychain" })} title={t(`${P}.operator.keychain`)} note={t(`${P}.operator.keychainNote`)} />
+          <Choice disabled={busy} name="operator" value="given" checked={form.operator === "given"} onPick={() => set({ operator: "given" })} title={t(`${P}.operator.given`)} />
           {form.operator === "given" && (
-            <TextField testId="mn-change-operator-key" label={t(`${P}.operator.given`)} help={t(`${P}.operator.givenHelp`)} value={form.operatorKey} error={errors.operatorKey} onChange={(v) => set({ operatorKey: v })} />
+            <TextField disabled={busy} testId="mn-change-operator-key" label={t(`${P}.operator.given`)} help={t(`${P}.operator.givenHelp`)} value={form.operatorKey} error={errors.operatorKey} onChange={(v) => set({ operatorKey: v })} />
           )}
-        </fieldset>
-        <fieldset className="mg-choices" disabled={busy} data-testid="mn-change-voting">
-          <legend className="mg-section-title">{t(`${P}.voting.legend`)}</legend>
-          <Choice name="voting" value="keep" checked={form.voting === "keep"} onPick={() => set({ voting: "keep" })} title={t(`${P}.voting.keep`)} note={detail.list?.votingAddress} mono />
-          <Choice name="voting" value="keychain" checked={form.voting === "keychain"} onPick={() => set({ voting: "keychain" })} title={t(`${P}.voting.keychain`)} />
-          <Choice name="voting" value="address" checked={form.voting === "address"} onPick={() => set({ voting: "address" })} title={t(`${P}.voting.address`)} />
+        </div>
+        <div className="mg-choices" role="radiogroup" aria-labelledby="mn-change-voting-title" data-testid="mn-change-voting">
+          <span id="mn-change-voting-title" className="mg-section-title">{t(`${P}.voting.legend`)}</span>
+          <Choice disabled={busy} name="voting" value="keep" checked={form.voting === "keep"} onPick={() => set({ voting: "keep" })} title={t(`${P}.voting.keep`)} note={detail.list?.votingAddress} mono />
+          <Choice disabled={busy} name="voting" value="keychain" checked={form.voting === "keychain"} onPick={() => set({ voting: "keychain" })} title={t(`${P}.voting.keychain`)} />
+          <Choice disabled={busy} name="voting" value="address" checked={form.voting === "address"} onPick={() => set({ voting: "address" })} title={t(`${P}.voting.address`)} />
           {form.voting === "address" && (
-            <TextField testId="mn-change-voting-input" label={t(`${P}.voting.address`)} help={t(`${P}.voting.addressHelp`)} value={form.votingAddress} error={errors.votingAddress} onChange={(v) => set({ votingAddress: v })} />
+            <TextField disabled={busy} testId="mn-change-voting-input" label={t(`${P}.voting.address`)} help={t(`${P}.voting.addressHelp`)} value={form.votingAddress} error={errors.votingAddress} onChange={(v) => set({ votingAddress: v })} />
           )}
-        </fieldset>
-        <fieldset className="mg-choices" disabled={busy} data-testid="mn-change-payout">
-          <legend className="mg-section-title">{t(`${P}.payout.legend`)}</legend>
+        </div>
+        <div className="mg-choices" role="radiogroup" aria-labelledby="mn-change-payout-title" data-testid="mn-change-payout">
+          <span id="mn-change-payout-title" className="mg-section-title">{t(`${P}.payout.legend`)}</span>
           {recorded ? (
             <Choice
+              disabled={busy}
               name="payout"
               value="recorded"
               checked={form.payout === "recorded"}
@@ -216,12 +219,12 @@ export function ChangeKeysSheet({
               {t(`${P}.payout.none`)}
             </p>
           )}
-          <Choice name="payout" value="new" checked={form.payout === "new"} onPick={() => pickPayout({ payout: "new" })} title={t(`${P}.payout.newAddress`)} />
-          <Choice name="payout" value="address" checked={form.payout === "address"} onPick={() => pickPayout({ payout: "address" })} title={t(`${P}.payout.address`)} />
+          <Choice disabled={busy} name="payout" value="new" checked={form.payout === "new"} onPick={() => pickPayout({ payout: "new" })} title={t(`${P}.payout.newAddress`)} />
+          <Choice disabled={busy} name="payout" value="address" checked={form.payout === "address"} onPick={() => pickPayout({ payout: "address" })} title={t(`${P}.payout.address`)} />
           {form.payout === "address" && (
-            <TextField testId="mn-change-payout-input" label={t(`${P}.payout.address`)} help={t(`${P}.payout.addressHelp`)} value={form.payoutAddress} error={errors.payoutAddress} onChange={(v) => set({ payoutAddress: v })} />
+            <TextField disabled={busy} testId="mn-change-payout-input" label={t(`${P}.payout.address`)} help={t(`${P}.payout.addressHelp`)} value={form.payoutAddress} error={errors.payoutAddress} onChange={(v) => set({ payoutAddress: v })} />
           )}
-        </fieldset>
+        </div>
         <section className="card-l1 mg-change-review" data-testid="mn-change-review" aria-live="polite">
           <h3 className="mg-section-title">{t(`${P}.review.title`)}</h3>
           {preview.isError && request !== null && debounced === live ? (
@@ -260,14 +263,14 @@ export function ChangeKeysSheet({
             <p className="mg-muted mg-small mg-flush">{t(`${P}.review.checking`)}</p>
           ) : null}
         </section>
-        {REGISTRAR_UPDATE_SENDS ? <CredentialField c={credential} busy={busy} testId="mn-change" /> : <HeldLine />}
+        {sends ? <CredentialField c={credential} busy={busy} testId="mn-change" /> : <HeldLine />}
         <footer className="mg-sheet-footer">
           <span />
           <span className="mg-actions">
             <DashButton variant="tintedGray" size="medium" data-testid="mn-change-cancel" disabled={busy} onClick={onClose}>
               {t("common.cancel")}
             </DashButton>
-            {REGISTRAR_UPDATE_SENDS && (
+            {sends && (
               <DashButton type="submit" variant="filledBlue" size="medium" data-testid="mn-change-send" disabled={busy || !signable || !credential.ready}>
                 {busy ? t(`${P}.sending`) : t(`${P}.send`)}
               </DashButton>
@@ -283,6 +286,7 @@ export function ChangeKeysSheet({
 function UnsentUpdate({
   wallet,
   op,
+  sends,
   busy,
   setBusy,
   onSent,
@@ -291,6 +295,7 @@ function UnsentUpdate({
 }: {
   wallet: WalletSummary;
   op: ProTxOperation;
+  sends: boolean;
   busy: boolean;
   setBusy: (b: boolean) => void;
   onSent: (op: ProTxOperation) => void;
@@ -302,9 +307,10 @@ function UnsentUpdate({
   const credential = useCredential(wallet.walletId, t(`${P}.notSent.ask`), null);
   const acting = useRef(false);
   const act = async (what: "resend" | "discard") => {
-    if (acting.current || busy || (what === "resend" && (!REGISTRAR_UPDATE_SENDS || !credential.ready))) return;
+    if (acting.current || busy || (what === "resend" && (!sends || !credential.ready))) return;
     acting.current = true;
     setBusy(true);
+    let granted: string | null = null;
     try {
       if (what === "discard") {
         await b.mnDiscardOperation(wallet.walletId, op.id);
@@ -313,8 +319,11 @@ function UnsentUpdate({
       }
       const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: op.debit });
       if (!grant) return;
+      granted = grant.id;
       onSent(await b.mnResendOperation(wallet.walletId, op.id, grant.id));
     } catch (e) {
+      // A refusal before the lease leaves the grant unused.
+      if (granted) void b.revokeGrant(granted).catch(() => null);
       credential.setError(changeKeysErrorText(e));
     } finally {
       acting.current = false;
@@ -327,14 +336,14 @@ function UnsentUpdate({
       data-testid="mn-change-unsent"
       onSubmit={(e) => {
         e.preventDefault();
-        if (REGISTRAR_UPDATE_SENDS) void act("resend");
+        if (sends) void act("resend");
       }}
     >
       <p className="mg-notice mg-notice-warning">
         <strong>{t(`${P}.notSent.title`)}</strong> {t(`${P}.notSent.text`)}
       </p>
       {op.lastError === "send.no_peers" && <p className="mg-muted mg-small mg-flush">{t(`${P}.notSent.noPeers`)}</p>}
-      {REGISTRAR_UPDATE_SENDS ? (
+      {sends ? (
         <CredentialField c={credential} busy={busy} testId="mn-change-unsent" />
       ) : (
         <>
@@ -354,7 +363,7 @@ function UnsentUpdate({
           <DashButton variant="tintedGray" size="medium" disabled={busy} onClick={onClose}>
             {t("common.cancel")}
           </DashButton>
-          {REGISTRAR_UPDATE_SENDS && (
+          {sends && (
             <DashButton type="submit" variant="filledBlue" size="medium" data-testid="mn-change-unsent-resend" disabled={busy || !credential.ready}>
               {busy ? t(`${P}.notSent.resending`) : t(`${P}.notSent.resend`)}
             </DashButton>
@@ -374,10 +383,10 @@ function HeldLine() {
   );
 }
 
-function Choice({ name, value, checked, onPick, title, note, mono }: { name: string; value: string; checked: boolean; onPick: () => void; title: string; note?: string; mono?: boolean }) {
+function Choice({ name, value, checked, onPick, title, note, mono, disabled }: { name: string; value: string; checked: boolean; onPick: () => void; title: string; note?: string; mono?: boolean; disabled?: boolean }) {
   return (
     <label className="mg-choice" data-testid={`mn-change-${name}-${value}`}>
-      <input type="radio" name={`mn-change-${name}`} value={value} checked={checked} onChange={onPick} />
+      <input type="radio" name={`mn-change-${name}`} value={value} checked={checked} disabled={disabled} onChange={onPick} />
       <span className="mg-choice-text">
         <span>{title}</span>
         {note && <span className={`mg-muted mg-small${mono ? " mono" : ""}`}>{note}</span>}
@@ -386,11 +395,11 @@ function Choice({ name, value, checked, onPick, title, note, mono }: { name: str
   );
 }
 
-function TextField({ testId, label, help, value, error, onChange }: { testId: string; label: string; help: string; value: string; error?: string; onChange: (v: string) => void }) {
+function TextField({ testId, label, help, value, error, onChange, disabled }: { testId: string; label: string; help: string; value: string; error?: string; onChange: (v: string) => void; disabled?: boolean }) {
   return (
     <label className={`mg-field ${error ? "has-error" : ""}`}>
       <span className="sr-only">{label}</span>
-      <input className="mono" data-testid={testId} value={value} autoComplete="off" spellCheck={false} aria-invalid={!!error} data-autofocus onChange={(e) => onChange(e.target.value)} />
+      <input className="mono" data-testid={testId} value={value} disabled={disabled} autoComplete="off" spellCheck={false} aria-invalid={!!error} data-autofocus onChange={(e) => onChange(e.target.value)} />
       <span className="mg-field-help">{help}</span>
       {error && (
         <span className="mg-field-error" role="alert" data-testid={`${testId}-error`}>

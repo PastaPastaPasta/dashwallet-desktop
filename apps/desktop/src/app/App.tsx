@@ -22,6 +22,7 @@ import { Overview } from "../screens/Overview";
 import { PreReleaseNotice } from "../screens/PreReleaseNotice";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
+import { MasternodeKeysSheet } from "../screens/masternodes/KeysSheet";
 import { CoinJoinPage } from "../screens/coinjoin/CoinJoinPage";
 import { MasternodesPage } from "../screens/masternodes/MasternodesPage";
 import { GovernanceStatusItem } from "../screens/masternodes/StatusItem";
@@ -38,6 +39,8 @@ import { SyncSheet } from "../screens/SyncSheet";
 import { SavedLinksSheet } from "../screens/SavedLinks";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
+import { SourceDetailSheet } from "../screens/SourceDetailSheet";
+import { rowSource } from "../history/sourceRows";
 import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
 import { useDisplay } from "../format/display";
 import { SecurityText } from "../settings/security";
@@ -56,7 +59,7 @@ import { UpdateRestartNotice } from "../screens/settings/Updates";
 import { useModel } from "../onboarding/model";
 import { navigate, ui, useUi } from "./ui";
 
-const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null });
+const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null, mnKeysRole: null });
 const closeOnboarding = () => ui.set({ onboarding: false });
 const closeForgot = () => ui.set({ forgotPassphrase: false });
 
@@ -242,7 +245,12 @@ function WalletChrome({
       </div>
       {/* Sheets opened inside the shell (Pay, Receive): above it, below onboarding, which covers it (U-02 D31). */}
       <div className="sheet-layer" ref={setLayer} inert={layerInert} />
-      {sheet && <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />}
+      {sheet &&
+        (rowSource({ txid: detail! }) ? (
+          <SourceDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />
+        ) : (
+          <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />
+        ))}
     </>
   );
 }
@@ -256,6 +264,7 @@ function Shell() {
   const detail = useUi((s) => s.detail);
   const dialog = useUi((s) => s.dialog);
   const recoveryWallet = useUi((s) => s.recoveryWallet);
+  const mnKeysRole = useUi((s) => s.mnKeysRole);
   const walletId = useUi((s) => s.walletId);
   const discreet = useUi((s) => s.discreet);
   const addWallet = useUi((s) => s.onboarding);
@@ -385,6 +394,7 @@ function Shell() {
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
+      {shown === "mnKeys" && wallet && <MasternodeKeysSheet key={wallet.walletId} walletId={wallet.walletId} watchOnly={wallet.watchOnly} role={mnKeysRole} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
       {shown === "sync" && <SyncSheet onClose={closeDialog} />}
       {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}

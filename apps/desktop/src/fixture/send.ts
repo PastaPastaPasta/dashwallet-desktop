@@ -92,6 +92,16 @@ export interface SendWorld {
   /** InstantSend-locked payments a ChainLocked spend beat: Abandon is offered, and refused until
    * the wallet restarts and rescans (the engine's `rescanFirst`). */
   rescanFirst: string[];
+  /** Payments a later payment spends from, which locked while the detail was open: Abandon is
+   * offered, and refused (the engine's `settledDescendant`). */
+  settledChild: string[];
+  /** Payments a later payment spends from that is already locked or confirmed: the detail doesn't
+   * offer Abandon (the engine's `settledDescendant`), and an Abandon is refused. */
+  settledChildHidden: string[];
+  /** Payments whose Abandon is refused because a saved transaction of an open wallet doesn't read
+   * (the engine's `recordUnreadable`): offered, then refused. Remove Unconfirmed is refused too while
+   * any is listed. */
+  recordUnreadable: string[];
   /** Payments of this wallet seen by their change before the coins they spent are known: the
    * engine reports their debit as unknown (`totalDebit: null`). */
   debitUnknown: string[];
@@ -107,6 +117,9 @@ export const newSendWorld = (): SendWorld => ({
   contactIndex: {},
   lockEvidence: null,
   rescanFirst: [],
+  settledChild: [],
+  settledChildHidden: [],
+  recordUnreadable: [],
   debitUnknown: [],
 });
 
@@ -377,8 +390,10 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   let change: number | null = sum - pay - (subtract ? 0 : base);
   let rest = 0;
   // Change at or below dust is not made (as plan.rs: change only when the rest is above dust): the
-  // transaction is smaller and the rest goes to the fee.
-  if (change <= DUST) {
+  // transaction is smaller and the rest goes to the fee. A fully mixed spend makes none at all, so
+  // its rest pays the fee first and a subtract-fee recipient pays only what it leaves (plan.rs
+  // `plan_with`, no_change).
+  if (change <= DUST || d.source.kind === "fullyMixedOnly") {
     base = feeWith(inputs.length, false);
     rest = sum - pay - (subtract ? 0 : base);
     if (rest < 0) {
@@ -429,13 +444,17 @@ function rowOf(wallet: FixtureWallet, txid: string): TxRow {
   return row;
 }
 
-/** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`); the rescanFirst steps
- * are marked as the fixture's, so only the renderer's catalog text can show them unmarked. */
+/** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`); the rescanFirst and
+ * recordUnreadable steps are marked as the fixture's, so only the renderer's catalog text can show
+ * them unmarked. */
 const refusalMessage = (refusal: TxActionRefusalName) =>
   refusal === "rescanFirst"
     ? "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
-    : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
-const refused = (refusal: TxActionRefusalName) => fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal });
+    : refusal === "recordUnreadable"
+      ? "[fixture engine] A saved transaction of an open wallet can't be read."
+      : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
+export const refused = (refusal: TxActionRefusalName, walletId: string | null = null) =>
+  fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal, walletId });
 
 // ---------------------------------------------------------------- the handlers
 
@@ -448,7 +467,7 @@ export interface SendDeps {
   /** DP3-01's contact checks of `r` (D2 for a draft, D4 for `prepare`), in the engine's order;
    * throws its refusal. `amount`: a draft's amount checks, which the engine makes after the ids
    * and before the payee (`validate_recipients`). */
-  checkContact(w: World, walletId: string, r: ContactRecipient, stage: "draft" | "prepare", amount?: () => void): void;
+  checkContact(w: World, walletId: string, r: Pair, stage: "draft" | "prepare", amount?: () => void): void;
   /** For a `begin_flow` lease id: charges `outflow` to the lease's Spend budget, or throws the
    * engine's refusal; `false` when `id` is not a lease id (a vault grant). */
   chargeLease(ctx: Ctx, walletId: string, id: string, outflow: number): boolean;
@@ -840,7 +859,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         maturesIn: row.status.maturesIn,
         inMempool: null,
         abandoned: row.status.kind === "abandoned",
-        canAbandon: abandonRefusal(row) === null || world.send.rescanFirst.includes(txid),
+        canAbandon: (abandonRefusal(row) === null && !world.send.settledChildHidden.includes(txid)) || world.send.rescanFirst.includes(txid),
         canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
         lastAnnouncedAt: world.send.announced[txid] ?? null,
@@ -851,6 +870,8 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
       if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
+      if (ctx.world.send.recordUnreadable.includes(txid)) throw refused("recordUnreadable", walletId);
+      if (ctx.world.send.settledChild.includes(txid) || ctx.world.send.settledChildHidden.includes(txid)) throw refused("settledDescendant");
       const refusal = abandonRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
@@ -864,6 +885,8 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         w.coins = w.coins.filter((u) => u.outpoint.txid !== txid);
         moveBalance(w, -row.amount, row.status.instantLocked || row.status.confirmations > 0 ? "confirmed" : "unconfirmed");
       }
+      // The wallet's own registration abandoned: the shared session's reserved coins are spendable again.
+      for (const sh of ctx.world.shared.sessions) if (sh.txid === txid && sh.stage.kind === "sent" && sh.reserved.length > 0) sh.abandonable = true;
       changed(ctx, w, [txid]);
       return null;
     },

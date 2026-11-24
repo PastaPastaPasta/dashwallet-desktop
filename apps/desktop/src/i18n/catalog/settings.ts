@@ -31,7 +31,7 @@ export const settings = {
     languageUnavailable: "{tag} (not available, using System default)",
     languageHint: "The language of Dash Wallet's own screens. Messages that come from the network stay in English.",
     showMasternodes: "Show Masternodes",
-    showMasternodesHint: "Shows Masternodes in the sidebar, where you follow masternodes and vote on proposals and usernames. Auto shows it while this wallet holds a masternode or one of its keys, tracks a masternode, holds a coin of exactly 1,000 or 4,000 Dash, or has a proposal in progress.",
+    showMasternodesHint: "Shows Masternodes in the sidebar, where you set up and follow masternodes and vote on proposals and usernames. Auto shows it while this wallet holds a masternode or one of its keys, tracks a masternode, holds a coin of exactly 1,000 or 4,000 Dash, has a registration in progress, or has a proposal in progress.",
     masternodesAuto: "Auto",
     masternodesOn: "On",
     masternodesOff: "Off",
@@ -131,6 +131,15 @@ export const settings = {
   },
   backups: {
     backUp: "Back up wallet…",
+    /** Shows the automatic-backup folder in the system file manager. */
+    showFolder: "Show Folder",
+    /** Show Folder before any automatic backup made the folder. */
+    noFolderYet: "There's no backup folder yet. Dash Wallet creates it with the first automatic backup.",
+    /** The folder exists but no file manager opened it; its path is on the same card with a copy button. */
+    showFolderFailed: "The backup folder couldn't be opened. Copy its path and open it in your file manager.",
+    /** Import a wallet file: the system's open dialog fills the path. */
+    browse: "Choose File…",
+    pathHint: "Choose the file, or paste its full path.",
     automaticFailed: {
       title: "The latest automatic backup failed",
       body: "Dash Wallet could not write an automatic backup of {wallet} on {date}. Your funds are not affected, and your recovery phrase still restores them. Make a backup now with Back up wallet…, and check that the backup folder has free space and that Dash Wallet can write to it.",
@@ -292,8 +301,16 @@ export const settings = {
     more: "More",
     commandLine: "Command-line options",
     commandLineWhy: "These options are not available here yet.",
-    support: "Support, source code and log export",
-    supportWhy: "Support and log export are coming soon.",
+    /** Pages About opens in the browser. */
+    links: {
+      title: "Help and source",
+      issues: "Report a problem",
+      issuesHint: "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.",
+      sourceCode: "Source code",
+      website: "Dash website",
+      /** `{url}` follows as selectable text with a copy button. */
+      failed: "The browser couldn't be opened. Copy the link instead: {url}",
+    },
     license: {
       title: "License",
       intro: "Dash Wallet is free software, released under the MIT License.",
@@ -354,6 +371,10 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
     /** A spending limit: `amount` is a number of DASH. */
     dash: "{amount} DASH",
     duffs: "{amount} duffs",
+    /** The engine reports the sealed spending limit as unreadable (issue 173, item 10). MG's words. */
+    spendLimitUnreadable:
+      "Dash Wallet couldn't read your saved spending limit, so it asks for your passphrase for every payment, and quick unlock is off. Set the limit again to turn quick unlock back on. Setting up quick unlock again won't fix this.",
+    spendLimitSetAgain: "Set limit again…",
     spendLimitChange:
       "Change the limit from {from} to {to}. Payments during the 5 minutes after you unlock can add up to {to}. A total over that still asks for the passphrase.",
     encryptFirst: "Encrypt the wallet first.",

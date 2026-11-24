@@ -87,8 +87,10 @@ export function pinToPreview(r: UpdateRegistrarRequest, p: UpdateRegistrarPrevie
   return { ...r, operator, voting };
 }
 
-/** Off until a sent update whose transaction never confirms releases its fee coins: preview and discard only. */
-export const REGISTRAR_UPDATE_SENDS = false;
+/** A registrar update may be sent on testnet, regtest and devnet. Mainnet stays off until a sent
+ * update whose transaction never confirms releases its fee coins. Still loading: off. */
+export const registrarUpdateSends = (network: { kind: string } | null | undefined): boolean =>
+  network != null && network.kind !== "mainnet";
 
 /** A registrar update of this masternode that is signed but didn't go out: resend or discard it. */
 export const unsentUpdate = (ops: ProTxOperation[] | undefined, proTxHash: string) =>

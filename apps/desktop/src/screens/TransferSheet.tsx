@@ -8,13 +8,14 @@ import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs } from "../api/pending";
-import { keys, shieldedDuffs, useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote, usePoolBalances, useShieldedStatus, useUtxos } from "../api/queries";
+import { keys, shieldedDuffs, useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote, usePoolBalances, useShieldedStatus, useSyncStatus, useUtxos } from "../api/queries";
 import { navigate, useUi } from "../app/ui";
 import { DashButton, Icon, VisuallyHidden } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { useT } from "../i18n";
 import { known } from "../format/homeBalance";
+import { isSyncing } from "../format/sync";
 import { useModel } from "../onboarding/model";
 import { FUND_COPY, fundErrorText, fundRowView } from "../platform/fund";
 import { MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
@@ -55,6 +56,7 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   const pools = usePoolBalances(walletId);
   const hold = usePlatformHold(walletId, transferFor(b, walletId).flows.move);
   const fmt = useAmount(network);
+  const sync = useSyncStatus().data;
   const core = spendable.data ?? null;
   const reserved = coins.data?.filter((c) => c.reserved && c.coinjoinDenominated).reduce((n, c) => n + c.amount, 0) ?? 0;
   return {
@@ -67,14 +69,15 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
           ? undefined
           : null
         : { duffs: pools.platform, dust: BigInt(pools.platformDust) > 0n, dustText: MOVE_COPY.card.dust(fmt(creditsToDuffs(pools.platformDust))), block: hold.block, waitingText: hold.waitingText },
+    coreSyncing: sync !== undefined && isSyncing(sync),
   };
 }
 
-/** An amount in the display unit, masked in discreet mode. */
+/** An amount in the display unit with its full decimals, masked in discreet mode. */
 function useAmount(network: NetworkInfo) {
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
-  return (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
+  return (duffs: number) => (discreet ? shown.masked() : `${shown.full(duffs)} ${shown.name}`);
 }
 
 const balanceOf = (pool: Pool, pools: Pools): number | null => (pool === "core" ? pools.core : pool === "shielded" ? (pools.shielded?.duffs ?? null) : (pools.platform?.duffs ?? null));

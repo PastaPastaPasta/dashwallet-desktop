@@ -2,6 +2,7 @@
 
 /**
  * One contender of a contested name, with its weighted votes (`null`:
- * Platform gave no tally).
+ * Platform gave no tally) and its own spelling of the name (`null`: its
+ * DPNS document was missing or did not decode).
  */
-export type NameContender = { identity: string, votes: number | null, };
+export type NameContender = { identity: string, votes: number | null, name: string | null, };

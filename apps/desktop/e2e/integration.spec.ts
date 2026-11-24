@@ -113,7 +113,7 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
     await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("The network fee was 0.00002 tDASH.");
+    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("The network fee was 0.00002000 tDASH.");
   });
 });
 
@@ -179,7 +179,7 @@ test.describe("item 9: a lock that may already be applied is 'Checking'", () => 
     await open(page, "shielded-checking");
     const row = page.getByTestId("shielded-checking");
     await expect(row).toContainText("Checking");
-    await expect(row).toContainText("This amount may already be in your shielded balance; we can't confirm it yet.");
+    await expect(row).toContainText("This amount may already be in your shielded balance. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.");
     await expect(page.getByTestId("shielded-finish")).toHaveText("Check again");
     await expect(page.getByTestId("shielded-unfinished")).toHaveCount(0);
     // It blocks no new shield.

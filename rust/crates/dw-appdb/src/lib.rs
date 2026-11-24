@@ -1551,9 +1551,19 @@ impl AppDb {
     /// transaction, durable as [`Self::set_setting_durable`] when it returns
     /// `Ok`: all of them or none.
     pub fn set_settings_durable(&self, scope: &str, writes: &[(&str, Option<&str>)]) -> Result<()> {
+        let writes: Vec<_> = writes
+            .iter()
+            .map(|(key, value)| (scope, *key, *value))
+            .collect();
+        self.set_scoped_settings_durable(&writes)
+    }
+
+    /// [`Self::set_settings_durable`] across scopes: each `(scope, key,
+    /// value)` in one transaction, all of them or none.
+    pub fn set_scoped_settings_durable(&self, writes: &[(&str, &str, Option<&str>)]) -> Result<()> {
         self.durably(|conn| {
             let tx = conn.unchecked_transaction()?;
-            for (key, value) in writes {
+            for (scope, key, value) in writes {
                 Self::put_setting(&tx, scope, key, *value)?;
             }
             tx.commit()?;
@@ -2484,6 +2494,38 @@ mod tests {
         assert!(refused.is_err());
         assert_eq!(db.setting("g", "a").unwrap().as_deref(), Some("1"));
         assert_eq!(db.setting("g", "bad").unwrap(), None);
+    }
+
+    /// Settings of two scopes commit together or not at all, durably.
+    #[test]
+    fn settings_of_several_scopes_commit_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(APP_DB_FILE);
+        drop(AppDb::open(&path).unwrap());
+        let value =
+            |scope: &str, key: &str| AppDb::open(&path).unwrap().setting(scope, key).unwrap();
+
+        durability_sim::arm(&path, false);
+        let db = AppDb::open(&path).unwrap();
+        db.set_scoped_settings_durable(&[("w", "a", Some("1")), ("local:w", "b", Some("2"))])
+            .unwrap();
+        drop(db);
+        durability_sim::power_loss(&path);
+        assert_eq!(value("w", "a").as_deref(), Some("1"));
+        assert_eq!(value("local:w", "b").as_deref(), Some("2"));
+
+        let db = AppDb::open(&path).unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER no_bad BEFORE UPDATE ON settings_kv WHEN NEW.scope = 'local:w'
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        let refused =
+            db.set_scoped_settings_durable(&[("w", "a", Some("9")), ("local:w", "b", Some("8"))]);
+        assert!(refused.is_err());
+        assert_eq!(db.setting("w", "a").unwrap().as_deref(), Some("1"));
+        assert_eq!(db.setting("local:w", "b").unwrap().as_deref(), Some("2"));
     }
 
     /// D27: the durable write commits under `synchronous=FULL` (a trigger

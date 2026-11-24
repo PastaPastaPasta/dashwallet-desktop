@@ -104,6 +104,14 @@ fn check(doc: &Value) -> Result<(), String> {
         }
         same(json.write(0), bytes(&case["write0"])?, "write()", &input)?;
         same(json.write(2), bytes(&case["write2"])?, "write(2)", &input)?;
+        for pretty in [0, 2] {
+            same(
+                json.written_len(pretty),
+                json.write(pretty).len(),
+                "written_len",
+                &input,
+            )?;
+        }
         same(
             without_fingerprint(&json).write(2),
             bytes(&case["without_fp"])?,

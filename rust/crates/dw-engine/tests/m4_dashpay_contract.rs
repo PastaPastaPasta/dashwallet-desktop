@@ -141,6 +141,9 @@ const IMPLEMENTED: &[&str] = &[
     // C-routes C6a-1: credits to an own Platform address.
     "DashPay.withdraw_to_platform_quote",
     "DashPay.withdraw_to_platform",
+    // C-routes C3a: the top-up from the Platform addresses.
+    "DashPay.top_up_from_platform_quote",
+    "DashPay.top_up_from_platform",
     // Release 0.1 (lane E2): the Platform addresses.
     "DashPay.platform_addresses",
     "DashPay.platform_activity",
@@ -244,6 +247,7 @@ const NOT_FACADE: &[&str] = &[
     "banner_tests.rs",
     "bringup.rs",
     "contact_names.rs",
+    "contact_payout.rs",
     "contacts_model.rs",
     "contacts_perf_tests.rs",
     "contacts_tests",
@@ -287,7 +291,9 @@ const NOT_FACADE: &[&str] = &[
     "platform_fund_tests.rs",
     "platform_moves.rs",
     "platform_moves_tests.rs",
+    "platform_register_tests.rs",
     "platform_shield_tests.rs",
+    "platform_top_up_tests.rs",
     "protocol.rs",
     "provenance.rs",
     "recovery.rs",
@@ -300,6 +306,8 @@ const NOT_FACADE: &[&str] = &[
     "names_tests.rs",
     "registration_flow.rs",
     "registration_ledger.rs",
+    "registration_platform.rs",
+    "registration_platform_tests.rs",
     "registration_rows.rs",
     "registration_tests",
     "registration_tests.rs",
@@ -884,7 +892,11 @@ fn contract_row(name: &str) -> Vec<String> {
 fn is_wrapper(v: &syn::Variant) -> bool {
     match &v.fields {
         syn::Fields::Unnamed(u) if u.unnamed.len() == 1 => {
-            tidy(&u.unnamed[0].ty).ends_with("Error")
+            let ty = tidy(&u.unnamed[0].ty);
+            ty.strip_prefix("Box<")
+                .and_then(|t| t.strip_suffix('>'))
+                .unwrap_or(&ty)
+                .ends_with("Error")
         }
         _ => false,
     }
@@ -1625,6 +1637,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await
                 .map(drop),
             dp.withdraw_to_platform(s(), s(), WithdrawAmount::All, s())
+                .await
+                .map(drop),
+            // C3a's.
+            dp.top_up_from_platform_quote(s(), WithdrawAmount::All)
+                .await
+                .map(drop),
+            dp.top_up_from_platform(s(), WithdrawAmount::All, s())
                 .await
                 .map(drop),
         ] {

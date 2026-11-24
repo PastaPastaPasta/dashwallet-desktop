@@ -15,7 +15,7 @@ import type { VotingMasternode } from "../../api/generated/VotingMasternode";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useBackend } from "../../api/queries";
 import { useLaunch } from "../../app/App";
-import { useUi } from "../../app/ui";
+import { ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton, Icon } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
@@ -53,6 +53,7 @@ import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import { NamesTab } from "./NamesTab";
 import { NumbersSheet } from "./NumbersSheet";
 import { ProposalPane } from "./ProposalPane";
+import { SharedSessionSheet, SharedStartSheet, type OpenSession } from "./Shared";
 import { VoteSheet } from "./VoteSheet";
 
 const SEARCH_DEBOUNCE_MS = 200;
@@ -82,6 +83,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   const [register, setRegister] = useState<{ resume?: ProTxOperation } | null>(null);
   /** The proposal the vote sheet is open on, as it was when Vote was pressed. */
   const [voteOn, setVoteOn] = useState<ProposalRow | null>(null);
+  const [shared, setShared] = useState<OpenSession | "start" | null>(null);
   const walletId = wallet.walletId;
   const sync = useGovernanceSyncState();
   const info = useGovernanceInfo();
@@ -164,6 +166,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           <h1 className="top-intro-title">{GovText.title}</h1>
           {tab === "myMasternodes" && (
             <span className="mg-header-actions" data-testid="mn-actions">
+              <MoreMenu testId="mn-page-more" items={[{ id: "keys", title: t("masternodes.keys.open"), onSelect: () => ui.set({ dialog: "mnKeys", mnKeysRole: null }) }]} />
               <DashButton
                 variant="filledBlue"
                 size="small"
@@ -195,6 +198,13 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
                 onClick={() => setSheet("create")}
               >
                 {GovText.create}
+              </DashButton>
+            </span>
+          )}
+          {tab === "myMasternodes" && !wallet.watchOnly && (
+            <span className="mg-header-actions" data-testid="mn-actions">
+              <DashButton variant="tintedBlue" size="small" data-testid="mn-shared" onClick={() => setShared("start")}>
+                {t("masternodes.shared.headerButton")}
               </DashButton>
             </span>
           )}
@@ -241,6 +251,8 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
       )}
       {register && <RegisterSheet wallet={wallet} network={network} resume={register.resume} onClose={() => setRegister(null)} />}
       {voteOn && <VoteSheet row={voteOn} wallet={wallet} network={network} onClose={() => setVoteOn(null)} />}
+      {shared === "start" && <SharedStartSheet wallet={wallet} network={network} onClose={() => setShared(null)} onOpen={setShared} />}
+      {shared && shared !== "start" && <SharedSessionSheet key={shared.id} wallet={wallet} network={network} open={shared} onClose={() => setShared(null)} />}
     </main>
   );
 }

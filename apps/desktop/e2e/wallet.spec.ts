@@ -841,6 +841,29 @@ test.describe("Activity", () => {
     expect(errors).toEqual([]);
   });
 
+  test("Abandon isn't offered for a payment a settled later payment spends from", async ({ page }) => {
+    const errors = await open(page, "abandon-settled-child-hidden");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5d".repeat(32)}"]`).first().click();
+    await expect(page.getByTestId("tx-detail")).toContainText("Waiting for confirmation");
+    await expect(page.getByTestId("tx-resend")).toBeVisible();
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("a settledDescendant refusal says why the payment can't be abandoned", async ({ page }) => {
+    const errors = await open(page, "abandon-settled-child");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5c".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText(
+      "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
+    );
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
   test("a rescanFirst refusal shows the catalog's steps", async ({ page }) => {
     const errors = await open(page, "abandon-rescan-first");
     await page.getByTestId("sidebar-activity").click();
@@ -848,6 +871,19 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-action-note")).toHaveText("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
+  test("a recordUnreadable refusal says a saved transaction doesn't read, and what to do", async ({ page }) => {
+    const errors = await open(page, "abandon-record-unreadable-two-wallets");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5f".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText(
+      "Dash Wallet can't read one of the transaction records in Main, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Main and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Main and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
+    );
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);
   });

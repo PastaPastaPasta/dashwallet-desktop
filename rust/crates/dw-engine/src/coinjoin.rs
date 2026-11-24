@@ -322,6 +322,12 @@ pub(crate) fn salt_setting(salt: &[u8; 32]) -> (&'static str, String) {
 
 /// The restore lookahead a recovery scan raises the accounts to.
 pub const RECOVERY_LOOKAHEAD: u32 = 1_000;
+
+/// Tests: data dirs whose next recovery scan stops right after its write,
+/// as a quit there would.
+#[cfg(test)]
+pub(crate) static QUIT_AFTER_RECOVERY_WRITE_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
 /// How long inputs of a successful session stay locked waiting for the
 /// final transaction (`COINJOIN_PENDING_OBSERVATION_TIMEOUT`, coinjoin.h:56).
 const PENDING_OBSERVATION_SECS: u64 = 60 * 60;
@@ -2574,8 +2580,9 @@ impl NetworkSession {
     /// [`RECOVERY_LOOKAHEAD`], re-placing the coins the load left outside
     /// their account (the rescan with the larger gap would credit them
     /// again), then the hub reads the wallet, even on an error: a partial
-    /// raise may already have moved coins. The lookahead is stored, for
-    /// later sessions as a restore's is, only once all of it succeeded.
+    /// raise may already have moved coins. The scan stores the lookahead
+    /// before it, with the replay it owes: when the raise fails, both stay,
+    /// and the next open replays with the wider range.
     pub(crate) async fn raise_for_recovery(
         &self,
         manager: &crate::session::Manager,
@@ -2586,10 +2593,7 @@ impl NetworkSession {
         if let Err(e) = &raised {
             tracing::warn!(%wallet_id, error = %e, "the recovery scan could not raise the lookahead");
         }
-        raised?;
-        // Stored, or the recovery is refused: a restart during its replay
-        // scans with the lookahead it needs.
-        self.write_lookahead(wallet_id, RECOVERY_LOOKAHEAD).await
+        raised
     }
 
     /// IOS-057 recovery scan: raises the CoinJoin account's and the BIP44
@@ -2621,12 +2625,18 @@ impl NetworkSession {
                     (wm.get_wallet_info(&wallet_id.0)).map(|info| info.core_wallet.birth_height())
                 };
                 let birth = birth.ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
-                // The replay from the birth is owed, durably, before the
-                // larger lookahead is stored: a crash in between replays it
-                // at the next open.
+                // The replay from the birth and the larger lookahead are
+                // stored in one durable write, before the range is raised in
+                // memory: a quit after it replays with that lookahead at the
+                // next open, one before it leaves nothing owed.
                 let marked = this.wide_scan(wallet_id).await?;
-                (this.require_replay_from(&manager, wallet_id, Some(birth.saturating_sub(1))))
+                let owed = (this.replay_owed(&manager, wallet_id, Some(birth.saturating_sub(1))))
                     .await?;
+                (this.mark_pending_with_lookahead(wallet_id, owed, RECOVERY_LOOKAHEAD)).await?;
+                #[cfg(test)]
+                if crate::keys::take_test_failure(&QUIT_AFTER_RECOVERY_WRITE_IN, this.data_dir()) {
+                    return Err(EngineError::Internal("test: quit after the write".into()));
+                }
                 this.raise_for_recovery(&manager, wallet_id).await?;
                 (this.hub.history.snapshot(&wallet_id).len(), birth, marked)
             };
@@ -4040,6 +4050,26 @@ struct EngineMixingWallet {
 }
 
 impl EngineMixingWallet {
+    /// Whether any of `outpoints` was locked by the user, left the wallet,
+    /// or is claimed by another owner, read under `fence`. This session's
+    /// own reservation is not a claim against it.
+    async fn withdrawn_under(
+        &self,
+        s: &Arc<NetworkSession>,
+        fence: &CoinFence,
+        outpoints: &[OutPoint],
+    ) -> Result<bool, WalletError> {
+        let view = (s.pass_view(fence).await)
+            .map_err(|e| WalletError(e.to_string()))?
+            .ok_or_else(|| WalletError("the wallet's coins are not readable".into()))?;
+        // Another owner's claim (a payment, a move) is a spend in progress.
+        Ok(s.spends
+            .held_by_other(&self.wallet_id, self.owner, outpoints)
+            || outpoints.iter().any(|o| {
+                !(view.coins.iter()).any(|c| c.coin.utxo.outpoint == *o && !c.coin.user_locked)
+            }))
+    }
+
     fn session(&self) -> Result<Arc<NetworkSession>, WalletError> {
         self.session
             .upgrade()
@@ -4115,16 +4145,7 @@ impl MixingWallet for EngineMixingWallet {
     async fn any_withdrawn(&self, outpoints: &[OutPoint]) -> Result<bool, WalletError> {
         let s = self.session()?;
         let fence = (s.coin_fence(self.wallet_id).await).map_err(|e| WalletError(e.to_string()))?;
-        let view = (s.pass_view(&fence).await)
-            .map_err(|e| WalletError(e.to_string()))?
-            .ok_or_else(|| WalletError("the wallet's coins are not readable".into()))?;
-        // Another owner's claim (a payment, a move) is a spend in progress;
-        // this session's own reservation is not.
-        Ok(s.spends
-            .held_by_other(&self.wallet_id, self.owner, outpoints)
-            || outpoints.iter().any(|o| {
-                !(view.coins.iter()).any(|c| c.coin.utxo.outpoint == *o && !c.coin.user_locked)
-            }))
+        self.withdrawn_under(&s, &fence, outpoints).await
     }
 
     async fn reserve_scripts(&self, count: usize) -> Result<Vec<ScriptBuf>, WalletError> {
@@ -4192,12 +4213,23 @@ impl MixingWallet for EngineMixingWallet {
         // unresolved, is not signed (review P2b r7 O-2): read under the
         // coin fence, which a funding call keeps until its lock is
         // recorded, and kept through the signing.
-        let _fence = s
+        let fence = s
             .coin_fence(self.wallet_id)
             .await
             .map_err(|e| WalletError(e.to_string()))?;
         if !s.leases.journal_ready() {
             return Err(WalletError("the dispatch journal is not read".into()));
+        }
+        // A coin the user locked, or another owner claimed, since the
+        // session's last check is not signed: checked under this fence,
+        // which a "Lock unspent" waiting on it cannot pass.
+        let ours: Vec<OutPoint> = (inputs.iter())
+            .map(|(i, _)| tx.input[*i].previous_output)
+            .collect();
+        if self.withdrawn_under(&s, &fence, &ours).await? {
+            return Err(WalletError(
+                "an input was locked, left the wallet or is claimed by another payment".into(),
+            ));
         }
         let held = s.leases.unresolved_lock_inputs(self.wallet_id);
         if let Some(o) = (inputs.iter())

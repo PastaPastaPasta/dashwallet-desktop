@@ -30,7 +30,7 @@ use key_wallet::{DerivationPath, Signer, Utxo};
 
 use super::super::MasternodesError;
 use super::super::protx::build::invalid;
-use super::store::{envelope_refusal, funding_refusal, merge_refusal};
+use super::store::{envelope_refusal, funding_refusal, merge_refusal, message_refusal};
 use crate::EngineError;
 use crate::send::SendFailure;
 
@@ -274,13 +274,22 @@ pub(crate) fn freeze(session: &mut Session) -> Result<(), MasternodesError> {
 
 /// Back to `draft` (`unfreeze`, `mnsharesession.cpp:925-935`): the frozen
 /// registration and every approval dropped, `revision` + 1.
-pub(crate) fn unfreeze(session: &mut Session) {
+pub(crate) fn unfreeze(session: &mut Session) -> Result<(), MasternodesError> {
+    session.revision = next_revision(session)?;
     session.protx.clear();
     session.consent_hash.clear();
     session.collateral_index = -1;
     session.sigs.clear();
     session.stage = Stage::Draft;
-    session.revision += 1;
+    Ok(())
+}
+
+/// The revision a change moves `session` to. At `i32::MAX` there is none:
+/// `shared_message{parse}`, before a key is issued or a coin reserved.
+pub(crate) fn next_revision(session: &Session) -> Result<i32, MasternodesError> {
+    session
+        .next_revision()
+        .ok_or_else(|| message_refusal("parse"))
 }
 
 /// The coordinator's combine once every share approved (§3.1 step 4,

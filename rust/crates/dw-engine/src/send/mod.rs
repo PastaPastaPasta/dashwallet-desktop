@@ -691,6 +691,11 @@ pub(crate) trait TestBroadcaster: Send + Sync {
     /// A wait before the library is entered (the manager guard, the SPV
     /// configuration); the permit's deadline bounds it.
     fn before_entry(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+    /// A wait after a contact payment's lock row (if any) is stored, before
+    /// the sent mark is written.
+    fn after_record(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async {})
+    }
     /// The library's hand-off of `tx`, entered: its result.
     fn broadcast(
         &self,
@@ -1064,8 +1069,8 @@ impl TxDraft {
             CoinSource::Outpoints(_) => InputChoice::UseAll(&coins),
             _ => InputChoice::Select(&coins),
         };
-        let plan =
-            plan::plan(choice, &outputs, state.fee, change_len, height).map_err(|e| match e {
+        let plan = plan::plan_with(choice, &outputs, state.fee, change_len, height, coinjoin)
+            .map_err(|e| match e {
                 // The CoinJoin page's own message (dash-qt "Insufficient
                 // mixed funds").
                 PlanError::AmountExceedsBalance { available }
@@ -1610,6 +1615,13 @@ impl TxDraft {
         };
         if first {
             self.record_contact(&prepared).await?;
+        }
+        #[cfg(test)]
+        {
+            let seam = self.broadcaster.lock().unwrap().clone();
+            if let Some(seam) = seam {
+                seam.after_record().await;
+            }
         }
         // The evidence a later process restores this payment's spend
         // claims from (#88), stored before it can leave; again for a send

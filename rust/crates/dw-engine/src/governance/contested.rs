@@ -463,6 +463,7 @@ async fn open_contests(net: &impl NameVoteNet) -> Result<Vec<ContestedName>, Gov
                 .map(|(id, votes)| NameContender {
                     identity: id.to_string(Encoding::Base58),
                     votes: *votes,
+                    name: poll.labels.get(id).cloned(),
                 })
                 .collect(),
             label,

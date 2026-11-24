@@ -36,6 +36,11 @@ commands! {
     /// cannot be read.
     #[facade()]
     fn open_file(state, purpose: FilePurpose) -> Option<OpenedFile> {
+        if purpose == FilePurpose::SharedMasternodeMessage {
+            return Err(AppError::invalid_argument(
+                "a shared-masternode file is read by mn_shared_import_file, never handed to the renderer",
+            ));
+        }
         open(&state, purpose).await
     }
 

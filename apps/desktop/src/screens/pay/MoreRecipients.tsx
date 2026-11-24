@@ -33,6 +33,7 @@ export function MoreRecipient({
   number,
   network,
   shown,
+  shieldedRoute,
   fieldError,
   onChange,
   onSubtractFee,
@@ -43,6 +44,8 @@ export function MoreRecipient({
   number: number;
   network: NetworkInfo;
   shown: Shown;
+  /** The wallet can send from Shielded: a Shielded address is pointed there. */
+  shieldedRoute: boolean;
   fieldError: (f: "address" | "amount") => string | null;
   onChange: (recipient: Recipient | null, amount: number | null, settled: boolean) => void;
   onSubtractFee: (on: boolean) => void;
@@ -62,7 +65,14 @@ export function MoreRecipient({
     staleTime: Infinity,
   });
   // A Platform address is not paid in a Core transaction: only the first recipient can be one.
-  const addrError = checked !== "" && cls.data ? (cls.data.kind === "platform" ? t("pay.more.platform") : addressProblem(cls.data)) : null;
+  const addrError =
+    checked !== "" && cls.data
+      ? cls.data.kind === "platform"
+        ? t("pay.more.platform")
+        : cls.data.kind === "shielded" && shieldedRoute
+          ? t("pay.more.shielded")
+          : addressProblem(cls.data)
+      : null;
   const { duffs } = amount;
   const recipient =
     checked === addr && amount.settled && !amount.fiat.error && cls.data?.kind === "core" && typeof duffs === "number" && duffs > 0

@@ -8,6 +8,7 @@ import type { CoreExportFormatName } from "../../api/generated/CoreExportFormatN
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { keys, useAutomaticBackupFailures, useAutomaticBackups, useBackend, useBackupDirectory, useBackupPolicy, useLockStatus, useWallets } from "../../api/queries";
 import { useLaunch } from "../../app/App";
+import { chooseFilePath, fileErrorText } from "../../app/files";
 import { keptAcrossLock, useAcrossLock } from "../../app/acrossLock";
 import { useSecretScreen } from "../../app/ui";
 import { DashButton } from "../../components/basics";
@@ -18,9 +19,9 @@ import { Sheet } from "../../components/sheet";
 import { detailDate } from "../../format/tx";
 import { useT } from "../../i18n";
 import { failureText, useModel } from "../../onboarding/model";
-import { BackupModel, deletedByKeep, ExportModel, FilesText, ImportFileModel, ImportKeysModel, keepAsks, KEY_KINDS, type ImportDone, type KeyKind } from "../../settings/files";
+import { BackupModel, deletedByKeep, ExportModel, FilesText, folderErrorText, ImportFileModel, ImportKeysModel, keepAsks, KEY_KINDS, type ImportDone, type KeyKind } from "../../settings/files";
 import { useLockTimer } from "../LockScreen";
-import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
+import { Done, Hint, pendingText, Problem, SettingsCard } from "./parts";
 
 type BackupsSheet = { kind: "backup" | "export"; wallet: WalletSummary } | { kind: "importFile" | "importKeys" } | null;
 
@@ -98,6 +99,16 @@ function AutomaticBackupsCard({ names, own, onBackUp }: { names: Map<string, str
   const directory = useBackupDirectory();
   const backups = useAutomaticBackups();
   const [problem, setProblem] = useState<string | null>(null);
+  const t = useT();
+  const [folderProblem, setFolderProblem] = useState<string | null>(null);
+  const showFolder = async () => {
+    setFolderProblem(null);
+    try {
+      await backend.openBackupDirectory();
+    } catch (e) {
+      setFolderProblem(folderErrorText(e));
+    }
+  };
   /** A lower count waiting for its confirmation: it deletes files at once (D30). */
   const [asking, setAsking] = useState<{ keep: number; deleted: number | null } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -163,7 +174,12 @@ function AutomaticBackupsCard({ names, own, onBackUp }: { names: Map<string, str
           {directory.data ? <CopyValue value={directory.data} label="backup folder" mono /> : pendingText(directory)}
         </DetailRow>
       </dl>
-      <NotYetRow testId="settings-show-folder" title="Show folder" why="Dash Wallet cannot open folders yet. Copy the path instead." />
+      <div className="settings-row">
+        <DashButton variant="plainBlue" data-testid="settings-show-folder" onClick={() => void showFolder()}>
+          {t("settings.backups.showFolder")}
+        </DashButton>
+      </div>
+      <Problem text={folderProblem} testId="settings-show-folder-error" />
       {backups.data && backups.data.length === 0 && <Hint>No automatic backup yet.</Hint>}
       {backups.data && backups.data.length > 0 && (
         <ul className="settings-backup-list" data-testid="settings-backup-list">
@@ -283,6 +299,19 @@ function ImportFileSheet({ onClose }: { onClose: () => void }) {
   const id = useId();
   const plan = model.plan;
   const working = model.step === "inspecting" || model.step === "working";
+  const t = useT();
+  // The system's open dialog fills the path; a cancel leaves it as it was.
+  const browse = async () => {
+    setBrowseProblem(null);
+    model.clearError();
+    try {
+      const chosen = await chooseFilePath(backend, "walletFile", false, null);
+      if (chosen) setPath(chosen);
+    } catch (e) {
+      setBrowseProblem(fileErrorText(e));
+    }
+  };
+  const [browseProblem, setBrowseProblem] = useState<string | null>(null);
   return (
     <Sheet title="Import a wallet file" width="medium" testId="settings-import-file-sheet" focusKey={model.step} closable={!working} onClose={onClose}>
       {(model.step === "path" || model.step === "inspecting") && (
@@ -290,15 +319,21 @@ function ImportFileSheet({ onClose }: { onClose: () => void }) {
           className="secret-form"
           onSubmit={(e) => {
             e.preventDefault();
+            setBrowseProblem(null);
             void model.inspect(path);
           }}
         >
           <div className="form-field">
             <label htmlFor={`${id}-path`}>The file's full path</label>
-            <input id={`${id}-path`} className="mono" data-testid="settings-import-path" data-autofocus autoComplete="off" spellCheck={false} value={path} onChange={(e) => setPath(e.target.value)} />
+            <span className="amount-entry">
+              <input id={`${id}-path`} className="mono" data-testid="settings-import-path" data-autofocus autoComplete="off" spellCheck={false} value={path} onChange={(e) => setPath(e.target.value)} />
+              <DashButton variant="tintedBlue" size="small" data-testid="settings-import-browse" disabled={working} onClick={() => void browse()}>
+                {t("settings.backups.browse")}
+              </DashButton>
+            </span>
           </div>
-          <Hint>Paste the path: Dash Wallet cannot browse for files yet.</Hint>
-          <Problem text={model.error} testId="settings-import-error" />
+          <Hint>{t("settings.backups.pathHint")}</Hint>
+          <Problem text={browseProblem ?? model.error} testId="settings-import-error" />
           <DashButton type="submit" variant="filledBlue" size="large" fill data-testid="settings-import-inspect" disabled={working}>
             Continue
           </DashButton>

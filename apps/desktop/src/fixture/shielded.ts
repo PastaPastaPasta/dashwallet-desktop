@@ -365,6 +365,8 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     if (g?.grant.purpose.kind !== "platformOp") return raise("platform.grant_invalid", "grant invalid");
     if (g.grant.purpose.maxDuffs < q.totalDuffs) raise("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "duffs", needed: String(q.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
     useGrant(ctx.world, grant);
+    // The engine's funding gate: a shield's asset lock waits while Core sync is not caught up.
+    if (ctx.world.sync.running && !ctx.world.sync.caughtUp) raise(SHIELDED_CODES.notSynced, "Core sync is not caught up", { kind: "reason", reason: "core" });
     if (s.next === "refused") raise("platform.unavailable", "the fixture refuses the shield");
     return shieldEnd(s, `lock${(s.activity.length + 1).toString(16).padStart(8, "0")}`, duffs);
   },

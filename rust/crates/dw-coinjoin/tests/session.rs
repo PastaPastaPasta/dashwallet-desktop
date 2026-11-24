@@ -525,9 +525,9 @@ async fn a_coin_locked_mid_session_is_not_signed() {
         conn.send("dsf", &FinalTx { session_id: 42, tx }.encode())
             .await
             .unwrap();
-        conn
+        (conn, entry)
     };
-    let (_conn, outcome) = tokio::join!(server, run_session(&wallet, p, |_| {}, stop));
+    let ((_conn, entry), outcome) = tokio::join!(server, run_session(&wallet, p, |_| {}, stop));
     assert_eq!(
         outcome,
         SessionOutcome::Failed(SessionFailure::BadFinalTx(
@@ -536,6 +536,7 @@ async fn a_coin_locked_mid_session_is_not_signed() {
     );
     assert_eq!(*wallet.signs.lock().unwrap(), 0);
     assert!(wallet.locked.lock().unwrap().is_empty());
+    assert_eq!(wallet.released.lock().unwrap().len(), entry.outputs.len());
 }
 
 /// A masternode that says no after our signatures went out may still

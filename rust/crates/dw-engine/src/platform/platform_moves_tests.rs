@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use dpp::identity::signer::Signer;
 
@@ -404,7 +404,7 @@ fn only_a_stateless_refusal_is_final() {
 
 /// What the next `withdraw` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Act {
+pub(crate) enum Act {
     /// Executes and answers.
     Executes,
     /// Answers with the addresses unchanged: no execution.
@@ -427,6 +427,8 @@ enum Act {
     /// The transition sent `n`-th (from 0) executes instead of this one,
     /// which is answered with the addresses' snapshot.
     EarlierExecutes(usize),
+    /// Signed and broadcast; a node answers with a signature error.
+    SignatureRefused,
     /// The signer refuses every input: the transition, short of its
     /// witnesses, is refused as Platform's checks refuse a malformed one
     /// (an error `never_valid` reads as definitive), with nothing signed.
@@ -447,7 +449,7 @@ pub(crate) struct FakeMoves {
     unverified: AtomicBool,
     /// Where the moves are stored, to see one recorded before signing.
     store: Mutex<Option<(Arc<dw_appdb::AppDb>, String)>>,
-    recorded_before_signing: Mutex<Vec<bool>>,
+    pub(crate) recorded_before_signing: Mutex<Vec<bool>>,
     /// Each sent transition's fee source (`None`: its output pays it).
     sources: Mutex<Vec<Option<PlatformAddress>>>,
     /// Each sent transition's output, a transfer's.
@@ -459,12 +461,26 @@ pub(crate) struct FakeMoves {
     sets_latch: Mutex<Option<Arc<super::super::provenance::Provenance>>>,
     /// The next read waits, once it is in, for `read_release`.
     block_read: AtomicBool,
+    /// What each sent transition does besides moving its inputs.
+    effects: Mutex<Vec<Effect>>,
+    /// The withdrawal documents executed withdrawals created.
+    documents: Mutex<BTreeSet<Identifier>>,
+    /// Reads of a withdrawal document fail.
+    documents_down: AtomicBool,
+    /// What executed top-ups added to the identity.
+    topped_up: AtomicU64,
     pub(crate) read_entered: tokio::sync::Notify,
     pub(crate) read_release: tokio::sync::Notify,
+    /// How far below the address proofs' height a document read's proof is.
+    pub(crate) document_lag: AtomicU64,
+    /// Each signing's count of `pending` contact payout rows on disk.
+    pub(crate) payout_rows_at_signing: Mutex<Vec<usize>>,
+    /// The withdrawal document reads made so far.
+    withdrawal_reads: AtomicUsize,
 }
 
 impl FakeMoves {
-    fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::default(),
             height: AtomicU64::new(100),
@@ -481,9 +497,50 @@ impl FakeMoves {
             stop_in_read: AtomicBool::new(false),
             sets_latch: Mutex::default(),
             block_read: AtomicBool::new(false),
+            effects: Mutex::default(),
+            documents: Mutex::default(),
+            documents_down: AtomicBool::new(false),
+            topped_up: AtomicU64::new(0),
             read_entered: tokio::sync::Notify::new(),
             read_release: tokio::sync::Notify::new(),
+            document_lag: AtomicU64::new(0),
+            payout_rows_at_signing: Mutex::default(),
+            withdrawal_reads: AtomicUsize::new(0),
         })
+    }
+
+    /// The withdrawal document reads made so far: none without a payout.
+    pub(crate) fn withdrawal_reads(&self) -> usize {
+        self.withdrawal_reads.load(Ordering::SeqCst)
+    }
+
+    /// The executed withdrawal documents.
+    pub(crate) fn documents(&self) -> usize {
+        self.documents.lock().unwrap().len()
+    }
+
+    /// Another device takes `address`'s next nonce, spending nothing.
+    pub(crate) fn take_nonce(&self, address: PlatformAddress) {
+        self.state.lock().unwrap().get_mut(&address).unwrap().0 += 1;
+        self.tick();
+    }
+
+    /// A lagging node: reads prove `address` one nonce behind (`true`), or
+    /// current again (`false`).
+    pub(crate) fn lag(&self, address: PlatformAddress, behind: bool) {
+        let mut state = self.state.lock().unwrap();
+        let nonce = &mut state.get_mut(&address).unwrap().0;
+        *nonce = if behind { *nonce - 1 } else { *nonce + 1 };
+    }
+
+    /// Platform's metered fee from now on.
+    pub(crate) fn set_fee(&self, fee: u64) {
+        self.fee.store(fee, Ordering::SeqCst);
+    }
+
+    /// The transitions sent so far.
+    pub(crate) fn sent(&self) -> Vec<BTreeMap<PlatformAddress, (u32, u64)>> {
+        self.sent.lock().unwrap().clone()
     }
 
     /// The next read waits for `read_release` once it is in (and says so
@@ -492,25 +549,33 @@ impl FakeMoves {
         self.block_read.store(true, Ordering::SeqCst);
     }
 
+    /// Watches `session`'s moves of `wallet`, to see each recorded before
+    /// it is signed.
+    pub(crate) fn watch(&self, session: &NetworkSession, wallet: WalletId) {
+        let live = session.live().unwrap();
+        *self.store.lock().unwrap() =
+            Some((live.appdb, dw_appdb::local_scope(&wallet.to_string())));
+    }
+
     pub(crate) fn fund(&self, address: PlatformAddress, credits: u64) {
         let mut state = self.state.lock().unwrap();
         state.entry(address).or_insert((0, 0)).1 += credits;
         self.tick();
     }
 
-    fn tick(&self) {
+    pub(crate) fn tick(&self) {
         self.height.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn then(&self, act: Act) {
+    pub(crate) fn then(&self, act: Act) {
         self.acts.lock().unwrap().push_back(act);
     }
 
-    fn credits(&self, address: PlatformAddress) -> u64 {
+    pub(crate) fn credits(&self, address: PlatformAddress) -> u64 {
         self.state.lock().unwrap().get(&address).map_or(0, |s| s.1)
     }
 
-    fn fee(&self) -> u64 {
+    pub(crate) fn fee(&self) -> u64 {
         self.fee.load(Ordering::SeqCst)
     }
 
@@ -523,10 +588,24 @@ impl FakeMoves {
         inputs: &BTreeMap<PlatformAddress, (u32, u64)>,
         source: Option<PlatformAddress>,
         output: Option<(PlatformAddress, u64)>,
-    ) {
+    ) -> bool {
+        self.execute_as(inputs, source, output, &Effect::Moves)
+    }
+
+    /// [`Self::execute`], and what the transition does besides: a
+    /// withdrawal creates its document (its id from the first input's
+    /// nonce and address and the payout script, as Drive derives it), a
+    /// top-up adds its claims to the identity.
+    fn execute_as(
+        &self,
+        inputs: &BTreeMap<PlatformAddress, (u32, u64)>,
+        source: Option<PlatformAddress>,
+        output: Option<(PlatformAddress, u64)>,
+        effect: &Effect,
+    ) -> bool {
         let mut state = self.state.lock().unwrap();
         if !(inputs.iter()).all(|(a, (n, _))| state.get(a).is_some_and(|s| s.0 + 1 == *n)) {
-            return;
+            return false;
         }
         let fee = self.fee();
         let covered = match (source, output) {
@@ -535,7 +614,7 @@ impl FakeMoves {
             (None, None) => true,
         };
         if !covered {
-            return;
+            return false;
         }
         for (a, (n, c)) in inputs {
             let s = state.get_mut(a).unwrap();
@@ -547,7 +626,41 @@ impl FakeMoves {
             state.entry(to).or_insert((0, 0)).1 += paid;
         }
         drop(state);
+        match effect {
+            Effect::Moves => {}
+            Effect::Withdrawal(script) => {
+                use dpp::document::Document;
+                use dpp::system_data_contracts::withdrawals_contract;
+                let (first, (nonce, _)) = inputs.first_key_value().unwrap();
+                let mut entropy = nonce.to_be_bytes().to_vec();
+                entropy.extend_from_slice(&first.to_bytes());
+                entropy.extend_from_slice(script);
+                self.documents
+                    .lock()
+                    .unwrap()
+                    .insert(Document::generate_document_id_v0(
+                        &withdrawals_contract::ID,
+                        &withdrawals_contract::OWNER_ID,
+                        "withdrawal",
+                        &entropy,
+                    ));
+            }
+            Effect::TopUp => {
+                let claims: u64 = inputs.values().map(|(_, c)| *c).sum();
+                self.topped_up.fetch_add(claims, Ordering::SeqCst);
+            }
+        }
         self.tick();
+        true
+    }
+
+    /// Executes the `n`-th sent transition (from 0) as Drive would.
+    pub(crate) fn execute_sent(&self, n: usize) -> bool {
+        let inputs = self.sent.lock().unwrap()[n].clone();
+        let source = self.sources.lock().unwrap()[n];
+        let output = self.outputs.lock().unwrap()[n];
+        let effect = self.effects.lock().unwrap()[n].clone();
+        self.execute_as(&inputs, source, output, &effect)
     }
 
     /// The scripted broadcast of a withdrawal (`output` `None`) or a
@@ -556,7 +669,7 @@ impl FakeMoves {
         &self,
         inputs: BTreeMap<PlatformAddress, (u32, u64)>,
         output: Option<(PlatformAddress, u64)>,
-        fee_strategy: AddressFundsFeeStrategy,
+        (fee_strategy, effect): (AddressFundsFeeStrategy, Effect),
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), Box<PlatformWalletError>> {
         let recorded = self
@@ -571,6 +684,13 @@ impl FakeMoves {
                 })
             });
         self.recorded_before_signing.lock().unwrap().push(recorded);
+        let payouts = (self.store.lock().unwrap().as_ref()).map_or(0, |(db, scope)| {
+            let wallet = scope.trim_start_matches("local:");
+            (db.dp_contact_payouts(wallet).unwrap().iter())
+                .filter(|r| r.state == "pending")
+                .count()
+        });
+        self.payout_rows_at_signing.lock().unwrap().push(payouts);
         let act = self.acts.lock().unwrap().pop_front();
         let act = act.unwrap_or(Act::Executes);
         if act == Act::StopsBeforeSigning {
@@ -595,6 +715,7 @@ impl FakeMoves {
         self.sent.lock().unwrap().push(inputs.clone());
         self.sources.lock().unwrap().push(source);
         self.outputs.lock().unwrap().push(output);
+        self.effects.lock().unwrap().push(effect.clone());
         let lost = || {
             PlatformWalletError::Sdk(dash_sdk::Error::TimeoutReached(
                 Duration::from_secs(1),
@@ -603,12 +724,12 @@ impl FakeMoves {
         };
         let result = match act {
             Act::Executes => {
-                self.execute(&inputs, source, output);
+                self.execute_as(&inputs, source, output, &effect);
                 Ok(())
             }
             Act::AnswersOnly => Ok(()),
             Act::ExecutesUnanswered => {
-                self.execute(&inputs, source, output);
+                self.execute_as(&inputs, source, output, &effect);
                 Err(lost())
             }
             Act::Lost => Err(lost()),
@@ -618,22 +739,26 @@ impl FakeMoves {
                     TransitionNoInputsError::new().into(),
                 ))
             }
+            Act::SignatureRefused => {
+                use dpp::consensus::signature::InvalidStateTransitionSignatureError;
+                Err(PlatformWalletError::Sdk(
+                    ConsensusError::from(InvalidStateTransitionSignatureError::new("node".into()))
+                        .into(),
+                ))
+            }
             Act::StopsBeforeSigning | Act::StopsAfterSigning => panic!("the process stops"),
             Act::Unsigned => unreachable!("returned before signing"),
             Act::StopsAfterBroadcast => {
-                self.execute(&inputs, source, output);
+                self.execute_as(&inputs, source, output, &effect);
                 panic!("the process stops")
             }
             Act::StopsBeforeOutcome => {
-                self.execute(&inputs, source, output);
+                self.execute_as(&inputs, source, output, &effect);
                 self.stop_in_read.store(true, Ordering::SeqCst);
                 Ok(())
             }
             Act::EarlierExecutes(n) => {
-                let earlier = self.sent.lock().unwrap()[n].clone();
-                let source = self.sources.lock().unwrap()[n];
-                let output = self.outputs.lock().unwrap()[n];
-                self.execute(&earlier, source, output);
+                self.execute_sent(n);
                 Ok(())
             }
         };
@@ -671,11 +796,24 @@ impl MoveNet for FakeMoves {
     async fn withdraw(
         &self,
         inputs: BTreeMap<PlatformAddress, (u32, u64)>,
-        _script: CoreScript,
+        script: CoreScript,
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
-        (self.broadcast(inputs, None, fee_strategy, signer).await).map_err(|e| *e)
+        let effect = Effect::Withdrawal(script.as_bytes().to_vec());
+        (self
+            .broadcast(inputs, None, (fee_strategy, effect), signer)
+            .await)
+            .map_err(|e| *e)
+    }
+
+    async fn withdrawal(&self, id: dpp::prelude::Identifier) -> Result<(bool, u64), PlatformError> {
+        self.withdrawal_reads.fetch_add(1, Ordering::SeqCst);
+        trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
+        let height = self.height.load(Ordering::SeqCst);
+        let lag = self.document_lag.load(Ordering::SeqCst);
+        let present = self.documents.lock().unwrap().contains(&id);
+        Ok((present, height.saturating_sub(lag)))
     }
 
     async fn transfer(
@@ -685,14 +823,52 @@ impl MoveNet for FakeMoves {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
-        (self.broadcast(inputs, Some(to), fee_strategy, signer).await).map_err(|e| *e)
+        (self
+            .broadcast(inputs, Some(to), (fee_strategy, Effect::Moves), signer)
+            .await)
+            .map_err(|e| *e)
+    }
+
+    async fn top_up(
+        &self,
+        _identity: &Identity,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        signer: &VaultPlatformAddressSigner,
+    ) -> Result<u64, PlatformWalletError> {
+        // dpp's constructor fixes the fee on input 0.
+        let strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
+        (self
+            .broadcast(inputs, None, (strategy, Effect::TopUp), signer)
+            .await)
+            .map_err(|e| *e)?;
+        Ok(self.topped_up.load(Ordering::SeqCst))
+    }
+
+    async fn withdrawal_document(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        if self.documents_down.load(Ordering::SeqCst) {
+            return Err(PlatformError::Unavailable);
+        }
+        trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
+        let present = self.documents.lock().unwrap().contains(&id);
+        Ok((present, self.height.load(Ordering::SeqCst)))
     }
 }
 
+/// What a sent transition does besides moving its inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Effect {
+    /// A transfer's output, or nothing more.
+    Moves,
+    /// A withdrawal to the payout script.
+    Withdrawal(Vec<u8>),
+    /// A top-up of the identity by its claims.
+    TopUp,
+}
+
 /// A session with a wallet, its Platform payment addresses and `net`.
-pub(crate) struct World {
-    pub(crate) f: Fixture,
-    pub(crate) net: Arc<FakeMoves>,
+pub(in crate::platform) struct World {
+    pub(in crate::platform) f: Fixture,
+    pub(in crate::platform) net: Arc<FakeMoves>,
     pool: Vec<PlatformAddress>,
     to: String,
 }
@@ -871,6 +1047,8 @@ fn an_unknown_move_holds_its_inputs_until_settled() {
         .filter(|r| r.kind == PlatformActivityKind::Outgoing)
         .count();
     assert_eq!(outgoing, 0);
+    // Without a contact payout, settling reads no withdrawal document.
+    assert_eq!(w.net.withdrawal_reads(), 0);
 }
 
 /// A move that executed but whose answer was lost is done on its nonce.
@@ -1714,6 +1892,8 @@ fn a_send_pays_the_recipient_and_shows_as_a_send() {
             .iter()
             .any(|r| r.kind == PlatformActivityKind::Outgoing)
     );
+    // Without a contact payout, settling reads no withdrawal document.
+    assert_eq!(w.net.withdrawal_reads(), 0);
 }
 
 /// A send that may still land holds its inputs' nonces against a move to
@@ -2549,6 +2729,31 @@ fn a_send_takes_a_fresh_grant_and_no_lease() {
     w.move_to(one, &w.to, &lease).unwrap();
 }
 
+/// A `ContactPayFromBalance` lease pays a contact only (C-funding P15): a
+/// move to the wallet's Core address and a send refuse it as any other
+/// flow's lease, and nothing is signed.
+#[test]
+fn a_contact_payment_lease_neither_moves_nor_sends() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (_, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let lease = || {
+        let grants = vec![w.f.grant(20 * DASH)];
+        let flow = FlowKind::ContactPayFromBalance;
+        let source = Some(crate::platform::PaymentSource::Platform);
+        (w.f.engine)
+            .block_on(w.f.s.begin_flow(w.f.wallet, flow, grants, source))
+            .unwrap()
+    };
+    let moved = w.move_to(one, &w.to, &lease());
+    assert_eq!(moved.unwrap_err().code(), "platform.grant_invalid");
+    let quote = w.send_quote(one, &to).unwrap();
+    let sent = w.confirm(&quote.operation, &lease());
+    assert_eq!(sent.unwrap_err().code(), "platform.grant_invalid");
+    assert!(w.net.sent.lock().unwrap().is_empty());
+}
+
 /// The own-address refusal covers the derived pool only: an address of
 /// this wallet's payment account beyond it is accepted as a recipient.
 #[test]
@@ -2776,5 +2981,94 @@ fn only_a_rise_beyond_an_applied_fund_is_incoming() {
     assert_eq!(arriving["a"], 0, "spent");
 }
 
+/// #533: a send planned on a read behind a done move would sign the nonce
+/// the move took, and the next current read would show it "reached" though
+/// nothing was paid. A done move from A, then a send drawing on A and B on
+/// a read behind on A, though quoted on a current one: refused before
+/// anything is signed or recorded, also when submitted again after a
+/// restart. Once the read is current, the same send goes through, signed
+/// once.
+#[test]
+fn a_send_on_a_read_behind_a_done_move_is_refused() {
+    let w = World::new();
+    let (a, b) = (w.address(0), w.address(1));
+    w.net.fee.store(1, Ordering::SeqCst);
+    w.net.fund(a, 5 * DASH);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let moved = w.move_to(one, &w.to.clone(), &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!(moved.state, PlatformActivityState::Done);
+    w.net.fund(b, 5 * DASH);
+    let sent = || w.net.sent.lock().unwrap().len();
+    let before = sent();
+    let (_, to) = w.theirs(9);
+    let seven = WithdrawAmount::Credits { credits: 7 * DASH };
+    let lag = |behind: bool| {
+        let mut state = w.net.state.lock().unwrap();
+        let nonce = &mut state.get_mut(&a).unwrap().0;
+        *nonce = if behind { *nonce - 1 } else { *nonce + 1 };
+    };
+    let records = || {
+        (w.moves().into_iter())
+            .map(|m| (m.id, m.state))
+            .collect::<Vec<_>>()
+    };
+    let recorded = records();
+    // Quoted on a current read, then submitted on a lagging node's proof
+    // that shows A before the move; twice, with a restart between.
+    for _ in 0..2 {
+        let quote = w.send_quote(seven, &to).unwrap();
+        lag(true);
+        let grant = w.f.grant(10 * DASH);
+        assert_eq!(
+            w.confirm(&quote.operation, &grant).unwrap_err().code(),
+            "platform.unavailable"
+        );
+        assert_eq!(sent(), before, "nothing signed");
+        assert!(w.f.unused(&grant));
+        assert_eq!(records(), recorded, "nothing recorded");
+        lag(false);
+        w.f.s.platform.send_ops.reset();
+    }
+    let paid = w.send(seven, &to, &w.f.grant(10 * DASH)).unwrap();
+    assert_eq!(paid.state, PlatformActivityState::Done);
+    assert_eq!(sent(), before + 1, "signed once");
+    let last = w.net.sent.lock().unwrap().last().unwrap().clone();
+    assert!(last.contains_key(&a) && last.contains_key(&b), "{last:?}");
+    assert_eq!(last[&a].0, 2, "the nonce after the move's");
+}
+
+/// A named retry of a send that landed answers that send's outcome on a read
+/// behind it too: it signs nothing, so the stale-read refusal does not apply.
+#[test]
+fn a_retry_of_a_landed_send_on_a_read_behind_it_pays_nothing() {
+    let w = World::new();
+    let a = w.address(0);
+    w.net.fund(a, 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let first = w.held_send(one, &to);
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_eq!(quote.retry_of.as_deref(), Some(first.id.as_str()));
+    w.lands(0);
+    w.activity();
+    assert_eq!(w.moves()[0].state, PlatformActivityState::Done);
+    w.net.state.lock().unwrap().get_mut(&a).unwrap().0 -= 1;
+    let grant = w.f.grant(quote.credits);
+    let out = w.confirm(&quote.operation, &grant).unwrap();
+    assert_eq!(
+        (out.id.as_str(), out.state),
+        (first.id.as_str(), PlatformActivityState::Done)
+    );
+    assert!(w.f.unused(&grant), "nothing redeemed");
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
+    assert_eq!(w.net.credits(them), DASH, "paid once");
+}
+
 #[path = "platform_shield_tests.rs"]
 mod shield;
+
+#[path = "platform_top_up_tests.rs"]
+mod top_up;
+
+#[path = "platform_register_tests.rs"]
+mod register;

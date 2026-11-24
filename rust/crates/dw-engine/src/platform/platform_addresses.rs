@@ -66,6 +66,13 @@ pub enum PlatformActivityKind {
     /// wallet applied to its Platform address (`address`); `Pending` until
     /// a proved apply, then `Done` with the credits it added.
     FromCore,
+    /// A top-up of one of this wallet's identities from its Platform
+    /// addresses (1.0 C3a): `to` is the identity (base58). Settled as a
+    /// move, by its inputs' proved nonces.
+    ToIdentity,
+    /// A payment to a DashPay contact (`contact`) from the Platform balance
+    /// (C-funding P10): a withdrawal to the contact's Core address (`to`).
+    ContactPayment,
 }
 
 /// Where an activity row stands.
@@ -123,6 +130,9 @@ pub struct PlatformActivity {
     /// dpp's estimate for it.
     #[serde(default)]
     pub estimated: bool,
+    /// A `ContactPayment`'s contact, from its payout row (C-funding P10).
+    #[serde(default)]
+    pub contact: Option<super::payments::Counterparty>,
 }
 
 /// What "Move to Dash wallet" takes and pays out, at the network's

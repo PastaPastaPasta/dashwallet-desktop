@@ -310,6 +310,7 @@ fn names() -> Names {
         contenders: vec![(ID1.into(), Some(3)), (ID2.into(), Some(1))],
         lock_votes: Some(1),
         abstain_votes: Some(0),
+        labels: BTreeMap::from([(ID1.into(), "C0nTest".to_owned())]),
     };
     lock(&net.polls).extend([
         (LABEL.to_owned(), open.clone()),
@@ -402,10 +403,12 @@ fn contested_names_lists_open_contests_and_the_wallets_voters() {
                     NameContender {
                         identity: b58(ID1),
                         votes: Some(3),
+                        name: Some("C0nTest".into()),
                     },
                     NameContender {
                         identity: b58(ID2),
                         votes: Some(1),
+                        name: None,
                     },
                 ],
                 lock_votes: Some(1),
@@ -418,6 +421,7 @@ fn contested_names_lists_open_contests_and_the_wallets_voters() {
                 contenders: vec![NameContender {
                     identity: b58(ID2),
                     votes: None,
+                    name: None,
                 }],
                 lock_votes: None,
                 abstain_votes: None,

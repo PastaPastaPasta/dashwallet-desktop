@@ -8,7 +8,7 @@
 //! the moment they arrive and never logged.
 
 mod credits;
-mod flows;
+pub(crate) mod flows;
 mod invitations;
 mod keys;
 mod names;
@@ -21,7 +21,8 @@ mod unfinished;
 use dw_engine::platform::{BearerSecret, FlowKind};
 
 use self::credits::{
-    CostTable, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, WithdrawAmount,
+    CostTable, PendingTopUp, StuckTopUpFunding, TopUpFromPlatformOutcome, TopUpFromPlatformQuote,
+    TopUpOutcome, TopUpQuote, WithdrawAmount,
     WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal,
 };
 use self::flows::{GrantAction, GrantRequest};
@@ -449,6 +450,40 @@ commands! {
         let dashpay = state.dashpay(&wallet_id).await?;
         let out = dashpay
             .withdraw_to_platform(identity, to, amount.into(), grant)
+            .await?;
+        Ok(out.into())
+    }
+
+    /// What topping the identity up with `amount` of the Platform
+    /// addresses' credits takes.
+    #[facade("DashPay::top_up_from_platform_quote")]
+    fn credits_top_up_from_platform_quote(
+        state,
+        wallet_id: String,
+        identity: String,
+        amount: WithdrawAmount,
+    ) -> TopUpFromPlatformQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay
+            .top_up_from_platform_quote(identity, amount.into())
+            .await?
+            .into())
+    }
+
+    /// Tops the identity up with `amount` of the Platform addresses'
+    /// credits under `grant`.
+    #[facade("DashPay::top_up_from_platform")]
+    fn credits_top_up_from_platform(
+        state,
+        wallet_id: String,
+        identity: String,
+        amount: WithdrawAmount,
+        grant: String,
+    ) -> TopUpFromPlatformOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let _in_flight = state.broadcasting();
+        let out = dashpay
+            .top_up_from_platform(identity, amount.into(), grant)
             .await?;
         Ok(out.into())
     }

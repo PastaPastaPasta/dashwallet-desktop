@@ -613,4 +613,9 @@ pub struct QuickUnlockPolicy {
     pub passphrase_max_age_secs: u64,
     /// Last successful passphrase check (UNIX seconds), if known.
     pub last_passphrase_at: Option<u64>,
+    /// While unlocked: the sealed limit no longer authenticates (its
+    /// manifest does), so it counts as none: `spend_limit_duffs` is 0, every
+    /// payment asks and quick unlock pays nothing until the limit is set
+    /// again (#173 item 10). Re-enrolling quick unlock does not repair it.
+    pub limit_unreadable: bool,
 }

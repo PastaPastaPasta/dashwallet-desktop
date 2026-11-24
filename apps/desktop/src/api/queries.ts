@@ -67,6 +67,7 @@ export const keys = {
   platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
+  rescanProgress: ["rescanProgress"] as const,
   scanHeightAll: ["scanHeight"] as const,
   scanHeight: (walletId: string) => ["scanHeight", walletId] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
@@ -139,9 +140,9 @@ export function useOpenNetwork() {
   });
 }
 
-export function useLockStatus() {
+export function useLockStatus(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(() => b.lockStatus()) });
+  return useQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(() => b.lockStatus()), enabled });
 }
 
 export function useWallets(enabled = true) {
@@ -514,9 +515,9 @@ export function useFeePolicy() {
 }
 
 /** "Ask for my passphrase for every payment"; read again each time the confirm sheet opens. */
-export function usePaymentAuthentication() {
+export function usePaymentAuthentication(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), staleTime: 0, gcTime: 0, retry: false });
+  return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), enabled, staleTime: 0, gcTime: 0, retry: false });
 }
 
 /** The spend limit and the post-unlock signing window. Read again with the confirm sheet. */
@@ -645,6 +646,12 @@ export function useDustProtection() {
 export function useNodeInfo() {
   const b = useBackend();
   return useQuery({ queryKey: keys.nodeInfo, queryFn: () => b.nodeInfo(), staleTime: 0 });
+}
+
+/** The running rescan, re-read every few seconds: an in-memory read the engine answers at once. */
+export function useRescanProgress() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.rescanProgress, queryFn: () => b.rescanProgress(), refetchInterval: 5_000 });
 }
 
 export function useProtocolCompatibility() {

@@ -40,8 +40,8 @@ import {
 import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh, useMasternodeOperations } from "../../masternodes/queries";
 import { conflicted, inProgress } from "../../masternodes/operations";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
-import { InProgressGroup } from "./InProgress";
-import { REGISTRATION_SENDS, registrationCalls } from "../../masternodes/registration";
+import { InProgressGroup, useInProgressActions, type InProgressActions } from "./InProgress";
+import { registrationCalls, registrationSends } from "../../masternodes/registration";
 import { collateralErrorText, ReleaseSheet } from "./ReleaseSheet";
 import { useT } from "../../i18n";
 import { ChangeKeysSheet, OperatorSheet } from "./ChangeKeysSheet";
@@ -51,17 +51,26 @@ const DAY = 86_400;
 /** mn-engine's `MAX_MASTERNODE_LABEL`. */
 const MAX_LABEL = 64;
 
-export function MyMasternodes({
-  wallet,
-  network,
-  onVote,
-  onContinue,
-}: {
+interface MyMasternodesProps {
   wallet: WalletSummary;
   network: NetworkInfo;
   onVote: () => void;
   onContinue: (op: ProTxOperation) => void;
-}) {
+}
+
+/** In progress's open sheet lives here, beside the list's layouts: a list read that switches them
+ * (failed to loaded, or back) keeps it open. */
+export function MyMasternodes(props: MyMasternodesProps) {
+  const actions = useInProgressActions(props.wallet, props.network, props.onContinue);
+  return (
+    <>
+      <MyMasternodesBody {...props} actions={actions} />
+      {actions.sheets}
+    </>
+  );
+}
+
+function MyMasternodesBody({ wallet, network, onVote, actions }: MyMasternodesProps & { actions: InProgressActions }) {
   const list = useMasternodes(wallet.walletId);
   const ops = useMasternodeOperations(wallet.walletId);
   const refresh = useMasternodesRefresh();
@@ -70,20 +79,43 @@ export function MyMasternodes({
   const [selected, setSelected] = useState<string | null>(null);
   const [retiredOpen, setRetiredOpen] = useState(false);
 
+  const work = ops.data ?? [];
+  // A failed or pending read is not an empty one: saved work stays named until the read answers.
+  const progress = (
+    <>
+      {ops.isError && (
+        <Notice
+          tone="warning"
+          testId="mn-ops-failed"
+          action={
+            <DashButton variant="filledBlue" size="small" data-testid="mn-ops-retry" onClick={() => void ops.refetch()}>
+              {MnText.tryAgain}
+            </DashButton>
+          }
+        >
+          <strong>{MnText.opsFailed}</strong> {mnErrorText(ops.error)}
+        </Notice>
+      )}
+      {ops.isPending ? <LoadingState testId="mn-ops-loading" text={MnText.opsLoading} /> : <InProgressGroup ops={work} wallet={wallet} network={network} actions={actions} />}
+    </>
+  );
   if (list.isPending) return <LoadingState testId="mn-loading" text={MnText.loading} />;
   if (list.isError)
     return (
-      <Notice
-        tone="warning"
-        testId="mn-list-failed"
-        action={
-          <DashButton variant="filledBlue" size="small" data-testid="mn-retry" onClick={() => void refresh()}>
-            {MnText.tryAgain}
-          </DashButton>
-        }
-      >
-        <strong>{MnText.failed}</strong> {mnErrorText(list.error)}
-      </Notice>
+      <>
+        <Notice
+          tone="warning"
+          testId="mn-list-failed"
+          action={
+            <DashButton variant="filledBlue" size="small" data-testid="mn-retry" onClick={() => void refresh()}>
+              {MnText.tryAgain}
+            </DashButton>
+          }
+        >
+          <strong>{MnText.failed}</strong> {mnErrorText(list.error)}
+        </Notice>
+        {progress}
+      </>
     );
   const o = list.data;
   const watchNotice = wallet.watchOnly && (
@@ -91,12 +123,11 @@ export function MyMasternodes({
       <strong>{MnText.watchOnly}</strong> {MnText.watchOnlyText}
     </Notice>
   );
-  const work = ops.data ?? [];
-  const progress = <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />;
   if (isEmpty(o) && inProgress(work).length === 0 && conflicted(work).length === 0)
     return (
       <>
         {watchNotice}
+        {!ops.isSuccess && progress}
         <section className="mg-empty card-l1" data-testid="mn-empty">
           <h2>{MnText.emptyTitle}</h2>
           <p>{MnText.emptyText}</p>
@@ -202,11 +233,12 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
   const [renaming, setRenaming] = useState(false);
   const [releasing, setReleasing] = useState(false);
   const [lockError, setLockError] = useState<string | null>(null);
+  const sends = registrationSends(network);
   const holdsCollateral = row.mine && row.roles.collateral && row.status !== "removed" && !wallet.watchOnly;
   const lockAgain = async () => {
     setLockError(null);
     try {
-      await registrationCalls(backend).mnLockCollateral(wallet.walletId, row.proTxHash);
+      await registrationCalls(backend, sends).mnLockCollateral(wallet.walletId, row.proTxHash);
     } catch (e) {
       setLockError(collateralErrorText(e, t));
     }
@@ -241,7 +273,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
         {holdsCollateral && row.collateralReleased && (
           <p className="mg-notice mg-notice-warning mg-notice-row" data-testid="mn-released">
             <span>{t("masternodes.release.released")}</span>
-            {REGISTRATION_SENDS && (
+            {sends && (
               <DashButton variant="tintedBlue" size="small" data-testid="mn-lock-again" onClick={() => void lockAgain()}>
                 {t("masternodes.release.lockAgain")}
               </DashButton>
@@ -294,7 +326,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
               { id: "rename", title: MnText.rename, onSelect: () => setRenaming(true) },
               { id: "copy-hash", title: MnText.copyHash, onSelect: () => void copyWithToast(row.proTxHash) },
               ...(outpoint ? [{ id: "copy-outpoint", title: MnText.copyOutpoint, onSelect: () => void copyWithToast(outpoint) }] : []),
-              ...(holdsCollateral && REGISTRATION_SENDS
+              ...(holdsCollateral && sends
                 ? [
                     row.collateralReleased
                       ? { id: "lock-again", title: t("masternodes.release.lockAgain"), onSelect: () => void lockAgain() }
@@ -307,7 +339,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
         </div>
       </section>
       {renaming && <RenameSheet row={row} onClose={() => setRenaming(false)} />}
-      {releasing && <ReleaseSheet row={row} wallet={wallet} onClose={() => setReleasing(false)} />}
+      {releasing && <ReleaseSheet row={row} wallet={wallet} network={network} onClose={() => setReleasing(false)} />}
       {sheet === "change-keys" && d && canChange && <ChangeKeysSheet wallet={wallet} network={network} row={row} detail={d} onClose={() => setSheet(null)} />}
       {sheet === "operator" && <OperatorSheet row={row} detail={d} onChangeKeys={canChange ? () => setSheet("change-keys") : null} onClose={() => setSheet(null)} />}
     </aside>

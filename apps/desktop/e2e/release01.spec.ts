@@ -878,7 +878,7 @@ test.describe("Move to Dash wallet", () => {
 });
 
 test.describe("Platform activity in Activity", () => {
-  test("mixes Platform rows into the list with a tag, and they open nothing", async ({ page }) => {
+  test("mixes Platform rows into the list with a tag, and each opens its details", async ({ page }) => {
     const errors = await open(page, "funded");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
@@ -886,7 +886,7 @@ test.describe("Platform activity in Activity", () => {
     await expect(rows).toHaveCount(2);
     await expect(rows.first()).toContainText("Received on Platform");
     await expect(rows.first()).toContainText("Platform");
-    await expect(page.locator('button[data-txid^="platform:"]')).toHaveCount(0);
+    await expect(page.locator('button[data-txid^="platform:"]')).toHaveCount(2);
     await shot(page, "light-activity-platform");
     expect(await seriousAxeViolations(page)).toEqual([]);
     // Only under "All": a type filter is the Core engine's.
@@ -1016,8 +1016,8 @@ test.describe("Shielded", () => {
     await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("shielded-quote")).toBeVisible();
     // The quote's own pool fee, not a constant.
-    await expect(page.getByTestId("shielded-quote-pool-fee")).toHaveText("0.0001 tDASH");
-    await expect(page.getByTestId("shielded-pool-fee-note")).toHaveText("The Platform pool fee is fixed at about 0.0001 tDASH, whatever you add.");
+    await expect(page.getByTestId("shielded-quote-pool-fee")).toHaveText("0.00010000 tDASH");
+    await expect(page.getByTestId("shielded-pool-fee-note")).toHaveText("The Platform pool fee is fixed at about 0.00010000 tDASH, whatever you add.");
     await expect(page.getByTestId("shielded-fee-warning")).toHaveText("Most of this goes to fees.");
     await shot(page, "light-shielded-fee-warning");
     await page.getByTestId("shielded-back").click();
@@ -1112,7 +1112,8 @@ test.describe("Shielded", () => {
     const row = page.locator('[data-txid^="shielded:withdrawal:"]').first();
     await expect(row).toContainText("Pending");
     await expect(row).not.toContainText("Not accepted");
-    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(0);
+    await row.click();
+    await expect(page.getByTestId("source-detail-status")).toHaveText("Pending");
   });
 
   test("leaves an unavailable Shielded balance off Home, with no Home card", async ({ page }) => {
@@ -1131,7 +1132,7 @@ test.describe("Shielded", () => {
     await expect(page.getByTestId("shielded-card")).toHaveCount(0);
   });
 
-  test("Activity lists the shielded rows with a Shielded tag, that open nothing", async ({ page }) => {
+  test("Activity lists the shielded rows with a Shielded tag, each opening its details", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
@@ -1139,7 +1140,7 @@ test.describe("Shielded", () => {
     await expect(rows).toHaveCount(3);
     await expect(page.locator('[data-txid^="shielded:received:"]')).toContainText("Received in Shielded");
     await expect(page.locator('[data-txid^="shielded:shieldFromCore:"]')).toContainText("Added to Shielded");
-    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(0);
+    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(3);
   });
 });
 
