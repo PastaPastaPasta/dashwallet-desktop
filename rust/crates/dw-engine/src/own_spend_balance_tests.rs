@@ -3220,9 +3220,9 @@ fn a_payment_on_a_claim_the_store_dropped_is_not_taken_as_orphaned() {
     assert_kept_with_b(&engine, &session, id, &s, b, "restarted");
 }
 
-/// C dropped with its winner unknown, so D is held through a note; then a
-/// `dropped:` key for C is written empty, as #739's load walk writes its
-/// own marks. PR A's notes are its own: D stays held after a restart and a
+/// C dropped with its winner unknown, so D is held through a note; then
+/// the claim rule records C as dropped through its own writer, as a sweep
+/// does. PR A's notes are its own: D stays held after a restart and a
 /// rescan of its block.
 #[test]
 fn an_empty_dropped_key_does_not_erase_a_drops_holds() {
@@ -3242,10 +3242,8 @@ fn an_empty_dropped_key_does_not_erase_a_drops_holds() {
         });
     reconciled(&engine, &session, id);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
-    let key = format!("dropped:{}", c.txid());
-    (session.live().unwrap().appdb)
-        .set_settings_durable(&id.to_string(), &[(key.as_str(), Some(""))])
-        .unwrap();
+    let dead = BTreeSet::from([c.txid()]);
+    crate::tx_actions::forget_swept(&session.live().unwrap().appdb, id, &[], &dead, &[]).unwrap();
 
     let session = reopen(&engine, session);
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);
