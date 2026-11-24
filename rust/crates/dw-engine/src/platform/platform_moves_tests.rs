@@ -1180,6 +1180,36 @@ fn a_move_record_keeps_its_outcome_rule() {
     assert_eq!(w.moves()[0].rule, HOLD_RULE, "written and read back");
 }
 
+/// #471: the rule is set when a record is made, never later. A record
+/// stored before the field existed keeps rule 0 through the move that
+/// rewrites every record and through a restart; the new move's record
+/// carries [`HOLD_RULE`].
+#[test]
+fn a_record_stored_before_the_rule_keeps_rule_0() {
+    let mut w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    w.net.fund(w.address(1), 3 * DASH);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let first = w.move_to(one, &w.to.clone(), &w.f.grant(3 * DASH)).unwrap();
+    assert_eq!(first.state, PlatformActivityState::Done);
+    let (db, scope) = w.net.store.lock().unwrap().clone().unwrap();
+    let key = format!("{MOVE_PREFIX}{}", first.id);
+    let mut stored: serde_json::Value =
+        serde_json::from_str(&db.setting(&scope, &key).unwrap().unwrap()).unwrap();
+    stored.as_object_mut().unwrap().remove("rule");
+    db.set_setting_durable(&scope, &key, Some(&stored.to_string()))
+        .unwrap();
+    w.reopen();
+
+    let second = w.move_to(one, &w.to.clone(), &w.f.grant(3 * DASH)).unwrap();
+    assert_eq!(second.state, PlatformActivityState::Done);
+    w.reopen();
+    let moves = w.moves();
+    let rule = |id: &str| moves.iter().find(|m| m.id == id).unwrap().rule;
+    assert_eq!(rule(&first.id), 0, "stored before the rule");
+    assert_eq!(rule(&second.id), HOLD_RULE, "made now");
+}
+
 /// #471: once proof shows the refused move's nonces taken (it executed
 /// through another node), the hold is released and a send goes out.
 #[test]
