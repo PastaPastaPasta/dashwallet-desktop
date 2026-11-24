@@ -3716,6 +3716,52 @@ fn test_a_discard_after_a_fee_change_frees_every_fee_coin() {
     assert_eq!(f.locked(0), HashSet::from([share, extra]));
 }
 
+/// The unreadable abandon spends every reserved coin, two here, at the
+/// coin test's charge for both. While that spend's outcome is unknown the
+/// listing offers no second abandon, and the call refuses `abandoning`
+/// before anything is signed.
+#[test]
+fn test_an_unreadable_two_coin_abandon_spends_both_and_never_spends_them_twice() {
+    let f = fx(3, true);
+    f.credit(1, 7, 200 * COIN);
+    f.credit(1, 8, 100 * COIN + 50_000);
+    let id = three_approved_after_b(&f, COIN, RewardChoice::Refund, 1);
+    f.imported(1, &f.message(0, &id));
+    f.sign(1, &id, 301 * COIN).unwrap();
+    let reserved = f.locked(1);
+    assert_eq!(reserved.len(), 2);
+    f.rewrite(1, &id, |u| u.envelope = "{\"not\": \"an envelope\"".into());
+    let list = || {
+        f.run(f.mn().unreadable_shared_sessions(f.wallets[1]))
+            .unwrap()
+    };
+    let fee = list()[0].abandon_charge.expect("abandonable");
+    assert_eq!(fee, super::recovery::spend_fee(2));
+    let abandon = || {
+        f.run(
+            f.mn()
+                .abandon_unreadable_shared_session(f.wallets[1], id.clone(), f.grant(1, fee)),
+        )
+    };
+    f.net.unconfirm_next();
+    abandon().unwrap();
+    let row = f.row(1, &id);
+    let spend: Transaction =
+        dashcore::consensus::deserialize(row.abandon_tx.as_deref().unwrap()).unwrap();
+    let spent: HashSet<_> = spend.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(spent, reserved);
+    let listed = list();
+    assert!(!listed[0].abandonable, "the first spend may be out");
+    assert_eq!(listed[0].abandon_charge, None);
+    assert_stage(abandon().unwrap_err(), "abandoning");
+    assert!(f.net.sent().is_empty());
+    assert_eq!(
+        abandon_log(&f.row(1, &id)).len(),
+        1,
+        "no second spend signed"
+    );
+}
+
 /// F2: an unreadable registration whose funding signature went out.
 /// `abandon_shared_session` refuses it before spending (it used to spend,
 /// then fail to read the record back); `abandon_unreadable_shared_session`

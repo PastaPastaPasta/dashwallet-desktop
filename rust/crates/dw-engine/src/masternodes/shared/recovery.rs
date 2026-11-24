@@ -128,6 +128,22 @@ pub(super) fn spend_state(
     })
 }
 
+/// Whether the latest spend back may still be on its way (`Uncertain` or
+/// `InHistory`): no second spend of the same coins while it is.
+pub(super) fn spend_back_pending(
+    row: &SharedSessionRow,
+    history: &HashMap<Txid, TxEntry>,
+) -> Result<bool, MasternodesError> {
+    if row.abandon_txid.is_none() {
+        return Ok(false);
+    }
+    let log = abandon_log(row)?;
+    Ok(matches!(
+        spend_state(row, latest(row, &log), history),
+        Some(AbandonSpendState::Uncertain | AbandonSpendState::InHistory)
+    ))
+}
+
 /// What the coin test says a new abandon spend may take (§4.4 change 2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum AbandonCoins {
@@ -316,6 +332,9 @@ impl NetworkSession {
         chain: &ChainView,
     ) -> UnreadableSession {
         let mut view = unreadable_view(row, chain);
+        if view.abandonable && spend_back_pending(row, &chain.history).unwrap_or(true) {
+            view.abandonable = false;
+        }
         if view.abandonable {
             view.abandon_charge = match self.coin_facts(wallet, row, chain).await {
                 Ok(facts) => match facts.test(&chain.history) {
@@ -380,14 +399,11 @@ impl NetworkSession {
             return Ok(());
         }
         let chain = self.shared_chain(wallet).await?;
-        let log = abandon_log(row)?;
-        match spend_state(row, latest(row, &log), &chain.history) {
-            Some(AbandonSpendState::Uncertain | AbandonSpendState::InHistory) => {
-                Err(MasternodesError::SharedStage {
-                    stage: "abandoning".into(),
-                })
-            }
-            _ => Ok(()),
+        match spend_back_pending(row, &chain.history)? {
+            true => Err(MasternodesError::SharedStage {
+                stage: "abandoning".into(),
+            }),
+            false => Ok(()),
         }
     }
 

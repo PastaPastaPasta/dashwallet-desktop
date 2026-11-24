@@ -1034,6 +1034,7 @@ impl Masternodes {
             if let Some(stage) = settled_by_columns(&row, &s.shared_chain(wallet).await?) {
                 return Err(stage_refusal(stage));
             }
+            s.check_not_abandoning(wallet, &row).await?;
             let fence = s.coin_fence(wallet).await?;
             s.abandon_session(wallet, &grant, &row, fence).await?;
             let row = s
