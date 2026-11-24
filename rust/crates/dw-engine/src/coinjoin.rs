@@ -231,7 +231,10 @@ pub struct CoinJoinStatus {
 pub struct RecoveryReport {
     pub coinjoin_addresses_scanned: u32,
     pub bip44_addresses_scanned: u32,
+    /// Every coin of the CoinJoin account, mixed or not.
     pub coinjoin_balance: u64,
+    /// The fully mixed amount, as the CoinJoin status reports it.
+    pub fully_mixed: u64,
     pub new_transactions: u32,
 }
 
@@ -2610,14 +2613,16 @@ impl NetworkSession {
                 if !manager.spv().is_started() {
                     return Err(CoinJoinFailure::SpvNotRunning.into());
                 }
-                if this.hub.rescan().is_some() {
+                // Loaded, its birth read and its replay stored under the
+                // lifecycle lock: nothing is stored for a wallet not open.
+                let _lifecycle = this.wallet_lifecycle.hold().await;
+                // A rescan that finished with nobody reading its progress
+                // is no rescan running.
+                if this.rescan_running() {
                     return Err(EngineError::InvalidArgument(
                         "another rescan is running".into(),
                     ));
                 }
-                // Loaded, its birth read and its replay stored under the
-                // lifecycle lock: nothing is stored for a wallet not open.
-                let _lifecycle = this.wallet_lifecycle.hold().await;
                 let birth = {
                     use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
                     let wm = manager.wallet_manager_arc();
@@ -2640,6 +2645,9 @@ impl NetworkSession {
                 this.raise_for_recovery(&manager, wallet_id).await?;
                 (this.hub.history.snapshot(&wallet_id).len(), birth, marked)
             };
+            // A cancel from here on is of this rescan, or of one after it.
+            let cancels = || (this.hub.rescan_cancels).load(std::sync::atomic::Ordering::SeqCst);
+            let cancels_before = cancels();
             this.rescan(crate::sync::RescanFrom::Height(birth)).await?;
             // The rescan's replay record holds the obligation now; done again
             // only with every range applied and the pools wide.
@@ -2651,34 +2659,55 @@ impl NetworkSession {
                     this.set_wide_scan(wallet_id, marked).await;
                 }
             }
-            // Wait for the rescan to finish (it reports through the hub); a
-            // stopped SPV client or a closed session ends it unfinished.
+            // Waits until the wallet's replay has ended as sends see it: a
+            // cancel still setting its hold reads as in progress. A
+            // cancelled replay (sends held until a rescan from the birth),
+            // a stopped SPV client and a closed session end it unfinished,
+            // with nothing to report, as does a cancel that a rescan started
+            // since has replaced.
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                if this.hub.rescan().is_none() {
-                    break;
+                if !this.rescan_running() {
+                    match this.replay_guard(wallet_id, 0).await {
+                        Ok(_) if cancels() != cancels_before => {
+                            return Err(EngineError::RescanInterrupted);
+                        }
+                        Ok(_) => break,
+                        Err(EngineError::RescanInProgress) => {}
+                        Err(e) => return Err(e),
+                    }
                 }
                 let running = this.manager().is_ok_and(|m| m.spv().is_started());
                 if !running {
                     return Err(CoinJoinFailure::SpvNotRunning.into());
                 }
             }
-            let view = this.read_mix_view(wallet_id).await?;
-            let coinjoin_balance = view
-                .coins
-                .iter()
-                .filter(|c| c.coin.coinjoin_account)
-                .map(MixViewCoin::value)
-                .sum();
             let known_after = this.hub.history.snapshot(&wallet_id).len();
-            Ok(RecoveryReport {
-                coinjoin_addresses_scanned: RECOVERY_LOOKAHEAD * 2,
-                bip44_addresses_scanned: RECOVERY_LOOKAHEAD * 2,
-                coinjoin_balance,
-                new_transactions: known_after.saturating_sub(known_before) as u32,
-            })
+            let found = known_after.saturating_sub(known_before) as u32;
+            this.recovery_report(wallet_id, found).await
         })
         .await
+    }
+
+    /// CoinJoin Recovery's report on wallet `wallet_id`, read from the mix
+    /// view the CoinJoin status reads.
+    pub(crate) async fn recovery_report(
+        &self,
+        wallet_id: WalletId,
+        new_transactions: u32,
+    ) -> Result<RecoveryReport, EngineError> {
+        let view = self.read_mix_view(wallet_id).await?;
+        let coinjoin_balance = (view.coins.iter())
+            .filter(|c| c.coin.coinjoin_account)
+            .map(MixViewCoin::value)
+            .sum();
+        Ok(RecoveryReport {
+            coinjoin_addresses_scanned: RECOVERY_LOOKAHEAD * 2,
+            bip44_addresses_scanned: RECOVERY_LOOKAHEAD * 2,
+            coinjoin_balance,
+            fully_mixed: view.balances.fully_mixed,
+            new_transactions,
+        })
     }
 
     /// The CoinJoin account's coins a sweep to `target` takes, in its
