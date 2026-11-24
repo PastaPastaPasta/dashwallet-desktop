@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use dpp::consensus::ConsensusError;
 use dpp::identity::signer::Signer;
 
 use super::super::money_gate_tests::{FakePlatform, Proof, gate_session};
@@ -418,6 +419,9 @@ pub(crate) enum Act {
     EarlierExecutes(usize),
     /// Signed and broadcast; a node answers with a signature error.
     SignatureRefused,
+    /// The protocol version rises after the pre-check, then a node answers
+    /// the signed call with a structure error.
+    VersionRisesThenInvalid,
     /// The signer refuses every input: the transition, short of its
     /// witnesses, is refused as Platform's checks refuse a malformed one
     /// (it fails for good: not every input was signed), with nothing signed.
@@ -724,6 +728,13 @@ impl FakeMoves {
             Act::Lost => Err(lost()),
             Act::Invalid => {
                 use dpp::consensus::basic::state_transition::TransitionNoInputsError;
+                Err(PlatformWalletError::Sdk(
+                    TransitionNoInputsError::new().into(),
+                ))
+            }
+            Act::VersionRisesThenInvalid => {
+                use dpp::consensus::basic::state_transition::TransitionNoInputsError;
+                *self.version.lock().unwrap() = raised();
                 Err(PlatformWalletError::Sdk(
                     TransitionNoInputsError::new().into(),
                 ))
@@ -2600,6 +2611,112 @@ fn a_consensus_error_to_a_sends_retry_keeps_its_hold() {
             assert!(w.moves().iter().all(|m| !m.holds()), "{act:?} {version:?}");
         }
     }
+}
+
+/// A fixture version whose structure check refuses every fee strategy,
+/// which no plan reads: every plan is one Platform would refuse.
+pub(crate) fn no_fee_steps() -> &'static PlatformVersion {
+    let mut v = PlatformVersion::latest().clone();
+    v.dpp.state_transitions.max_address_fee_strategies = 0;
+    Box::leak(Box::new(v))
+}
+
+/// The latest version, one protocol version higher.
+fn raised() -> &'static PlatformVersion {
+    let mut v = PlatformVersion::latest().clone();
+    v.protocol_version += 1;
+    Box::leak(Box::new(v))
+}
+
+/// #471 T1: a move to Core and a send whose plan Platform's structure check
+/// refuses are refused before anything is signed, recorded or redeemed, and
+/// hold nothing: at the real version both go through.
+#[test]
+fn a_plan_the_structure_check_refuses_signs_nothing() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    *w.net.version.lock().unwrap() = no_fee_steps();
+    let (move_grant, send_grant) = (w.f.grant(3 * DASH), w.f.grant(20 * DASH));
+    let refused = |r: Result<(), CreditsError>| {
+        let code = r.unwrap_err().code();
+        assert_ne!(code, "credits.move_pending");
+    };
+    refused(w.move_to(one, &w.to.clone(), &move_grant).map(drop));
+    refused(w.send(one, &to, &send_grant).map(drop));
+    assert!(w.net.sent.lock().unwrap().is_empty(), "nothing signed");
+    assert!(w.moves().is_empty(), "nothing recorded");
+    assert!(
+        w.f.unused(&move_grant) && w.f.unused(&send_grant),
+        "nothing redeemed"
+    );
+    *w.net.version.lock().unwrap() = PlatformVersion::latest();
+    let out = w.send(one, &to, &w.f.grant(20 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_eq!(w.net.credits(them), DASH);
+    let out = w.move_to(one, &w.to.clone(), &w.f.grant(3 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+}
+
+/// #471 T3: the version rises between the pre-check and the signed call,
+/// and a node answers with a structure error: the move and the send hold,
+/// and nothing but proof releases them.
+#[test]
+fn a_version_rise_after_the_pre_check_releases_nothing() {
+    let one = WithdrawAmount::Credits { credits: DASH };
+    for send in [false, true] {
+        let w = World::new();
+        w.net.fund(w.address(0), 5 * DASH);
+        let (_, to) = w.theirs(9);
+        w.net.then(Act::VersionRisesThenInvalid);
+        if send {
+            w.send(one, &to, &w.f.grant(20 * DASH)).unwrap();
+        } else {
+            w.move_to(one, &w.to.clone(), &w.f.grant(3 * DASH)).unwrap();
+        }
+        assert_eq!(w.net.version().protocol_version, raised().protocol_version);
+        for _ in 0..3 {
+            w.net.tick();
+            w.activity();
+            assert!(w.moves()[0].holds(), "send {send}");
+        }
+        w.lands(0);
+        w.activity();
+        assert_eq!(
+            w.moves()[0].state,
+            PlatformActivityState::Done,
+            "send {send}"
+        );
+    }
+}
+
+/// #471: the pre-check refusing a held send's exact retry releases nothing.
+/// Nothing is signed, recorded or redeemed, and the send keeps its hold
+/// until proof; at the real version its retry goes out and settles it.
+#[test]
+fn a_retry_the_structure_check_refuses_signs_nothing() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let held = w.held_send(one, &to);
+    *w.net.version.lock().unwrap() = no_fee_steps();
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_eq!(quote.retry_of.as_deref(), Some(held.id.as_str()));
+    let grant = w.f.grant(20 * DASH);
+    let refused = w.confirm(&quote.operation, &grant).unwrap_err();
+    assert_ne!(refused.code(), "credits.move_pending");
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
+    assert!(w.f.unused(&grant), "nothing redeemed");
+    assert_eq!(w.moves().len(), 1, "nothing recorded");
+    assert!(w.moves()[0].holds());
+    *w.net.version.lock().unwrap() = PlatformVersion::latest();
+    let quote = w.send_quote(one, &to).unwrap();
+    let out = w.confirm(&quote.operation, &w.f.grant(20 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_same_transition(&w, 0, 1);
+    assert_eq!(w.net.credits(them), DASH, "paid once");
 }
 
 /// A payment that arrives at the fee source while a send settles hides

@@ -100,7 +100,6 @@ use dash_sdk::query_types::AddressInfo;
 use dashcore::OutPoint;
 use dpp::address_funds::{AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, PlatformAddress};
 use dpp::balances::credits::CREDITS_PER_DUFF;
-use dpp::consensus::ConsensusError;
 use dpp::dashcore::Network;
 use dpp::identity::Identity;
 use dpp::identity::accessors::IdentityGettersV0;
@@ -2178,15 +2177,101 @@ pub(crate) fn movable(balances: &BTreeMap<PlatformAddress, u64>, limits: &Limits
     plan(balances, WithdrawAmount::All, limits).map_or(0, |p| p.credits())
 }
 
-/// A transition the SDK's structure check refused (consensus basic
-/// errors, raised before the broadcast or by every node).
-fn structure_refused(e: &PlatformWalletError) -> bool {
-    match e {
-        PlatformWalletError::Sdk(dash_sdk::Error::Protocol(
-            dpp::ProtocolError::ConsensusError(ce),
-        )) => matches!(**ce, ConsensusError::BasicError(_)),
-        _ => false,
+/// The witnesses of a move's pre-check: one per input, never a signature.
+/// Platform's structure check counts them and never reads them.
+#[derive(Debug)]
+struct Placeholder;
+
+#[async_trait::async_trait]
+impl dpp::identity::signer::Signer<PlatformAddress> for Placeholder {
+    async fn sign(
+        &self,
+        _: &PlatformAddress,
+        _: &[u8],
+    ) -> Result<dpp::platform_value::BinaryData, dpp::ProtocolError> {
+        Ok(dpp::platform_value::BinaryData::new(vec![0; 65]))
     }
+
+    async fn sign_create_witness(
+        &self,
+        _: &PlatformAddress,
+        _: &[u8],
+    ) -> Result<dpp::address_funds::AddressWitness, dpp::ProtocolError> {
+        Ok(dpp::address_funds::AddressWitness::P2pkh {
+            signature: dpp::platform_value::BinaryData::new(vec![0; 65]),
+        })
+    }
+
+    fn can_sign_with(&self, _: &PlatformAddress) -> bool {
+        true
+    }
+}
+
+/// The SDK's own structure check of the transition a move will sign, built
+/// by the SDK's builder at the version it signs at, with placeholder
+/// witnesses, before anything is signed. The SDK runs the same check after
+/// signing, before the broadcast, and its error reads exactly as a node's
+/// would; refused here, nothing is signed, and a structure error after the
+/// signature is a node's answer, which settles nothing (#471).
+async fn pre_check(
+    target: Target<'_>,
+    inputs: &BTreeMap<PlatformAddress, (u32, u64)>,
+    (script, credits): (Option<&CoreScript>, u64),
+    fee_strategy: AddressFundsFeeStrategy,
+    version: &PlatformVersion,
+) -> Result<(), PlatformError> {
+    use dash_sdk::dash_platform_queries::transition::validation::ensure_valid_state_transition_structure;
+    use dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
+    use dpp::state_transition::address_credit_withdrawal_transition::methods::AddressCreditWithdrawalTransitionMethodsV0;
+    use dpp::state_transition::address_funds_transfer_transition::AddressFundsTransferTransition;
+    use dpp::state_transition::address_funds_transfer_transition::methods::AddressFundsTransferTransitionMethodsV0;
+    use dpp::state_transition::identity_topup_from_addresses_transition::IdentityTopUpFromAddressesTransition;
+    use dpp::state_transition::identity_topup_from_addresses_transition::methods::IdentityTopUpFromAddressesTransitionMethodsV0;
+    let sdk = |e: dash_sdk::Error| PlatformError::from(PlatformWalletError::Sdk(e));
+    let inputs = inputs.clone();
+    let built = match (target, script) {
+        (Target::Platform(to), _) => {
+            AddressFundsTransferTransition::try_from_inputs_with_signer(
+                inputs,
+                [(to, credits)].into(),
+                fee_strategy,
+                &Placeholder,
+                0,
+                version,
+            )
+            .await
+        }
+        (Target::Core(_), Some(script)) => {
+            AddressCreditWithdrawalTransition::try_from_inputs_with_signer(
+                inputs,
+                None,
+                fee_strategy,
+                CORE_FEE_PER_BYTE,
+                dpp::withdrawal::Pooling::Never,
+                script.clone(),
+                &Placeholder,
+                0,
+                version,
+            )
+            .await
+        }
+        (Target::Identity(identity), _) => {
+            IdentityTopUpFromAddressesTransition::try_from_inputs_with_signer(
+                identity,
+                inputs,
+                &Placeholder,
+                0,
+                version,
+                None,
+            )
+            .await
+        }
+        // A payout's script is claimed later, and it has its own way out
+        // (C-funding P8).
+        (Target::Core(_), None) | (Target::Contact, _) => return Ok(()),
+    };
+    let transition = built.map_err(|e| sdk(e.into()))?;
+    ensure_valid_state_transition_structure(&transition, version).map_err(|e| sdk(e.into()))
 }
 
 /// address → `(nonce, credits)` (`None`: unknown to Platform), and the
@@ -3877,6 +3962,8 @@ pub(crate) async fn run(
         Target::Core(to) => Some(own_core_destination(session, wallet_id, network, to).await?),
         Target::Platform(_) | Target::Contact | Target::Identity(_) => None,
     };
+    let output = (script.as_ref(), planned.credits());
+    pre_check(target, &inputs, output, planned.fee_strategy(), version).await?;
     // The authority before anything is redeemed: a refusal keeps the grant.
     // A send pays someone else: only a fresh grant, redeemed into a lease
     // for this send alone, never a lease another action holds.
@@ -3989,16 +4076,9 @@ pub(crate) async fn run(
     record.answered = call.is_ok();
     // Signed bytes may have reached a node, and a consensus error can be one
     // node's unproven answer: only evidence settles a signed move (P7, P8,
-    // #471), never the call's error. Its exact re-send stays open.
-    let definitive = |e: &PlatformWalletError| match target {
-        // A top-up signs no identity key: only the SDK's structure check,
-        // before the broadcast, says it never executes. A signature error
-        // can come back from a node and proves nothing.
-        Target::Identity(_) => structure_refused(e),
-        Target::Core(_) | Target::Platform(_) | Target::Contact => false,
-    };
-    let cannot_land =
-        released < record.inputs.len() as u64 || call.as_ref().err().is_some_and(definitive);
+    // #471), never the call's error, whatever the version did since its
+    // pre-check. Its exact re-send stays open.
+    let cannot_land = released < record.inputs.len() as u64;
     if let Err(e) = &call {
         tracing::info!(id = %record.id, cannot_land, "a move's call failed: {e}");
     }

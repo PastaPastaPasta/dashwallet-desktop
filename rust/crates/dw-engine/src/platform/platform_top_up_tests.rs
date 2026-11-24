@@ -528,33 +528,43 @@ fn an_undecided_exit_and_top_up_both_hold() {
     );
 }
 
-/// A node's signature error proves nothing about a top-up (it signs no
-/// identity key, and the SDK checked its witnesses): it stays pending and
-/// able to land. Only the SDK's structure check releases it.
+/// #471 T4: a node's structure or signature error after a top-up signed
+/// proves nothing: it stays pending and holding, and the next top-up is
+/// refused until proof. Only the pre-check, before anything is signed,
+/// refuses a top-up for good: nothing recorded or redeemed, nothing held.
 #[test]
-fn a_node_signature_error_holds_the_top_up() {
+fn a_node_error_holds_the_top_up_and_only_the_pre_check_refuses_it() {
+    for act in [Act::SignatureRefused, Act::Invalid] {
+        let w = World::new();
+        w.net.fund(w.address(0), 5 * DASH);
+        w.net.then(act);
+        let out = w.top_up(credits(DASH)).unwrap();
+        assert_eq!(
+            (out.state, out.may_land),
+            (PlatformActivityState::Pending, true),
+            "{act:?}"
+        );
+        assert_eq!(
+            w.top_up(credits(DASH)).unwrap_err().code(),
+            "credits.move_pending",
+            "{act:?}"
+        );
+        w.net.tick();
+        w.activity();
+        assert!(w.moves()[0].holds(), "{act:?}");
+    }
     let w = World::new();
     w.net.fund(w.address(0), 5 * DASH);
-    w.net.then(Act::SignatureRefused);
+    *w.net.version.lock().unwrap() = super::no_fee_steps();
+    let grant = w.f.grant(10 * DASH);
+    let refused = w.top_up_as(&me(), credits(DASH), &grant).unwrap_err();
+    assert_ne!(refused.code(), "credits.move_pending");
+    assert_eq!(w.sent(), 0, "nothing signed");
+    assert!(w.moves().is_empty(), "nothing recorded");
+    assert!(w.f.unused(&grant), "nothing redeemed");
+    *w.net.version.lock().unwrap() = PlatformVersion::latest();
     let out = w.top_up(credits(DASH)).unwrap();
-    assert_eq!(
-        (out.state, out.may_land),
-        (PlatformActivityState::Pending, true)
-    );
-    assert_eq!(
-        w.top_up(credits(DASH)).unwrap_err().code(),
-        "credits.move_pending"
-    );
-    let w = World::new();
-    w.net.fund(w.address(0), 5 * DASH);
-    w.net.then(Act::Invalid);
-    assert!(w.top_up(credits(DASH)).is_err());
-    let moves = w.moves();
-    assert_eq!(
-        (moves[0].state, moves[0].can_land),
-        (PlatformActivityState::Failed, false)
-    );
-    w.top_up_quote(&me(), credits(DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
 }
 
 /// A top-up whose inputs could not pay their own "Move to Dash wallet"
