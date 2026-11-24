@@ -1898,6 +1898,14 @@ input[type="radio"]:disabled {
   user-select: text;
 }
 
+/* Amounts in a confirm list: tabular digits, aligned on their last digit, so the decimals line up. An amount reads
+ * left to right in any language, so its cell does too, and its end is the right in a right-to-left window as well. */
+.detail-amount {
+  direction: ltr;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
 .detail-note {
   color: var(--dw-role-text-secondary);
 }
@@ -5328,6 +5336,20 @@ button.bell-row-open:focus-visible {
 
 .topup-choice:has(input:checked) {
   border-color: var(--dw-role-text-link);
+}
+
+/* "Pay with": a source that cannot pay says why under it. */
+.topup-choice[data-disabled] {
+  cursor: default;
+}
+
+.topup-sources {
+  margin-bottom: var(--dw-space-s);
+}
+
+/* A top-up from Platform names the address its fee is taken from: a long run that wraps. */
+.topup-platform-message {
+  overflow-wrap: anywhere;
 }
 
 .topup-choice-amount {

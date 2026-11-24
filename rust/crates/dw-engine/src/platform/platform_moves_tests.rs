@@ -2884,8 +2884,48 @@ fn only_a_rise_beyond_an_applied_fund_is_incoming() {
     assert_eq!(arriving["a"], 0, "spent");
 }
 
+/// #533: a send planned on a read behind a done move would sign the nonce
+/// the move took, and the next current read would show it "reached" though
+/// nothing was paid. A done move from A, then a send drawing on A and B on
+/// a read behind on A: refused before anything is signed. Once the read is
+/// current, the same send goes through.
+#[test]
+fn a_send_on_a_read_behind_a_done_move_is_refused() {
+    let w = World::new();
+    let (a, b) = (w.address(0), w.address(1));
+    w.net.fee.store(1, Ordering::SeqCst);
+    w.net.fund(a, 5 * DASH);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let moved = w.move_to(one, &w.to.clone(), &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!(moved.state, PlatformActivityState::Done);
+    w.net.fund(b, 5 * DASH);
+    let sent = || w.net.sent.lock().unwrap().len();
+    let before = sent();
+    // A lagging node: its proof shows A before the move.
+    w.net.state.lock().unwrap().get_mut(&a).unwrap().0 -= 1;
+    let (_, to) = w.theirs(9);
+    let seven = WithdrawAmount::Credits { credits: 7 * DASH };
+    let grant = w.f.grant(10 * DASH);
+    assert_eq!(
+        w.send(seven, &to, &grant).unwrap_err().code(),
+        "platform.unavailable"
+    );
+    assert_eq!(sent(), before, "nothing signed");
+    assert!(w.f.unused(&grant));
+
+    w.net.state.lock().unwrap().get_mut(&a).unwrap().0 += 1;
+    let paid = w.send(seven, &to, &w.f.grant(10 * DASH)).unwrap();
+    assert_eq!(paid.state, PlatformActivityState::Done);
+    let last = w.net.sent.lock().unwrap().last().unwrap().clone();
+    assert!(last.contains_key(&a) && last.contains_key(&b), "{last:?}");
+    assert_eq!(last[&a].0, 2, "the nonce after the move's");
+}
+
 #[path = "platform_shield_tests.rs"]
 mod shield;
 
 #[path = "platform_top_up_tests.rs"]
 mod top_up;
+
+#[path = "platform_register_tests.rs"]
+mod register;

@@ -38,19 +38,19 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
         <dl className="detail-list topup-quote" data-testid="platform-move-quote">
           <div className="detail-row">
             <dt className="detail-label">{C.rows.taken}</dt>
-            <dd className="detail-value" data-testid="platform-move-quote-credits">
+            <dd className="detail-value detail-amount" data-testid="platform-move-quote-credits">
               <bdi dir="ltr">{credits(plannedWithdrawalCredits(q))}</bdi>
             </dd>
           </div>
           <div className="detail-row">
             <dt className="detail-label">{C.rows.fee}</dt>
-            <dd className="detail-value" data-testid="platform-move-quote-fee">
+            <dd className="detail-value detail-amount" data-testid="platform-move-quote-fee">
               <bdi dir="ltr">{credits(q.feeCredits)}</bdi>
             </dd>
           </div>
           <div className="detail-row topup-total">
             <dt className="detail-label">{C.rows.receive}</dt>
-            <dd className="detail-value" data-testid="platform-move-quote-duffs">
+            <dd className="detail-value detail-amount" data-testid="platform-move-quote-duffs">
               <bdi dir="ltr">{amount(q.expectedDuffs)}</bdi>
             </dd>
           </div>
@@ -99,7 +99,7 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   const activity = usePlatformActivity(walletId);
-  const amount = (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
+  const amount = (duffs: number) => (discreet ? shown.masked() : `${shown.full(duffs)} ${shown.name}`);
   const credits = (c: string) => amount(creditsToDuffs(c));
   const { step, outcome } = flow;
   return (
