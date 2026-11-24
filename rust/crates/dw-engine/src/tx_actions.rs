@@ -474,9 +474,20 @@ pub(crate) fn swept_claims(
 /// built on one ([`DROPPED_PREFIX`]), and whether they read.
 pub(crate) fn load_dropped(appdb: &AppDb, wallet: WalletId) -> (BTreeSet<Txid>, bool) {
     match appdb.settings_with_prefix_lossy(&wallet.to_string(), DROPPED_PREFIX) {
+        // A record whose key names no transaction is left out, as a damaged
+        // abandoned mark is: it can't be dropped, and an incomplete read
+        // would refuse every Abandon for good.
         Ok(rows) => {
             let dropped = (rows.into_iter())
-                .filter_map(|(key, _)| Txid::from_str(&key[DROPPED_PREFIX.len()..]).ok())
+                .filter_map(
+                    |(key, _)| match Txid::from_str(&key[DROPPED_PREFIX.len()..]) {
+                        Ok(txid) => Some(txid),
+                        Err(_) => {
+                            tracing::warn!(%wallet, %key, "a dropped record names no transaction");
+                            None
+                        }
+                    },
+                )
                 .collect();
             (dropped, true)
         }

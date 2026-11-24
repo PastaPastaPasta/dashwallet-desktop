@@ -49,11 +49,10 @@ fn assert_payment_dropped(
         row.as_ref().is_none_or(|r| r.1 == TxStatusKind::Abandoned),
         "the payment is dropped: {row:?}"
     );
-    assert_eq!(
-        balances(session, id).total,
-        PAID,
-        "nothing the payment made counts"
-    );
+    // The balance is published after the history marks the drop.
+    super::own_spend_disk_tests::eventually("only the coin counts", || {
+        balances(session, id).total == PAID
+    });
     let change = change_of(payment, &own_scripts(engine, session, id));
     assert!(
         !spendable(engine, session, id, change),
@@ -744,7 +743,9 @@ fn dropped_records(
     session: &Arc<NetworkSession>,
     id: WalletId,
 ) -> std::collections::BTreeSet<Txid> {
-    crate::tx_actions::load_dropped(&session.live().unwrap().appdb, id).0
+    let (dropped, read) = crate::tx_actions::load_dropped(&session.live().unwrap().appdb, id);
+    assert!(read, "the dropped records read");
+    dropped
 }
 
 /// Path (b) with b: after a restart a peer relays the claim, key-wallet
@@ -933,4 +934,22 @@ fn a_failed_read_of_the_dropped_records_leaves_the_load_incomplete() {
     (session.hub.fail_dropped_read).store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(load(&session), "incomplete while the records don't read");
     assert!(!load(&session), "complete once they read");
+}
+
+/// A `dropped:` record whose key names no transaction is left out, and the
+/// load stays complete: nothing deletes such a row, and an incomplete load
+/// would refuse every Abandon for good.
+#[test]
+fn a_dropped_record_that_names_no_transaction_is_skipped() {
+    let (_dir, engine, session, id) = engine_wallet();
+    (session.live().unwrap().appdb)
+        .set_setting(&id.to_string(), "dropped:not-a-txid", Some(""))
+        .unwrap();
+    let s = Arc::clone(&session);
+    engine
+        .block_on(session.on_runtime(async move { s.load_history_for(vec![id]).await }))
+        .unwrap();
+    assert!(!(session.hub.history).read_wallet(&id, |h| h.load_incomplete));
+    let (dropped, read) = crate::tx_actions::load_dropped(&session.live().unwrap().appdb, id);
+    assert!(read && dropped.is_empty(), "{dropped:?}");
 }
