@@ -310,9 +310,10 @@ export class TopUpFlow extends Model {
     }
   }
 
-  /** Confirm & pay from Platform: the quote's grant, then `top_up_from_platform`. */
-  async payFromPlatform(grant: GrantRequest): Promise<void> {
-    const { identity, duffs } = this;
+  /** Confirm & pay from Platform: the quote's grant, then `top_up_from_platform` of the quoted
+   * credits, Max included, so the engine credits what Confirm showed or refuses. */
+  async payFromPlatform({ credits, grant }: { credits: string; grant: GrantRequest }): Promise<void> {
+    const { identity } = this;
     if (this.running || this.rowRunning !== null || identity === null || this.source !== "platform") return;
     let ran = false;
     this.running = true;
@@ -324,7 +325,7 @@ export class TopUpFlow extends Model {
         ran = true;
         this.step = "running";
         this.changed();
-        return this.api.creditsTopUpFromPlatform(this.walletId, identity, platformAmount(duffs), g.id);
+        return this.api.creditsTopUpFromPlatform(this.walletId, identity, { kind: "credits", credits }, g.id);
       });
       if (got) {
         this.platformOutcome = got.value;

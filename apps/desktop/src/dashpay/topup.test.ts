@@ -254,12 +254,12 @@ describe("the top-up from Platform (C-routes D-C3, C3-8)", () => {
     expect(flow.source).toBe("core");
   });
 
-  it("pays from Platform under the quote's grant, in credits, or everything for Max", async () => {
+  it("pays from Platform under the quote's grant, the quoted credits, Max included", async () => {
     const { flow, vault, calls } = setup();
     flow.begin("A");
     flow.chooseSource("platform");
     flow.next(5_000_000);
-    await flow.payFromPlatform({ maxDuffs: 0, maxCredits: "5003000000" });
+    await flow.payFromPlatform({ credits: "5000000000", grant: { maxDuffs: 0, maxCredits: "5003000000" } });
     expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "5003000000" } });
     expect(calls).toEqual(['fromPlatform A {"kind":"credits","credits":"5000000000"} grant-1']);
     expect([flow.step, flow.platformOutcome?.state, flow.outcome]).toEqual(["done", "done", null]);
@@ -267,8 +267,9 @@ describe("the top-up from Platform (C-routes D-C3, C3-8)", () => {
     flow.begin("A");
     flow.chooseSource("platform");
     flow.next(null);
-    await flow.payFromPlatform({ maxDuffs: 0, maxCredits: "9" });
-    expect(calls[1]).toBe('fromPlatform A {"kind":"all"} grant-2');
+    // Max: what Confirm showed, never "everything" read again after the click.
+    await flow.payFromPlatform({ credits: "39997000000", grant: { maxDuffs: 0, maxCredits: "40000000000" } });
+    expect(calls[1]).toBe('fromPlatform A {"kind":"credits","credits":"39997000000"} grant-2');
   });
 
   it("Confirm & pay of the Dash wallet never pays from Platform, nor the reverse", async () => {
@@ -278,7 +279,7 @@ describe("the top-up from Platform (C-routes D-C3, C3-8)", () => {
     flow.next(5_000_000);
     await flow.pay({ maxDuffs: 5_002_260, maxCredits: "0" });
     flow.chooseSource("core");
-    await flow.payFromPlatform({ maxDuffs: 0, maxCredits: "1" });
+    await flow.payFromPlatform({ credits: "5000000000", grant: { maxDuffs: 0, maxCredits: "1" } });
     expect(calls).toEqual([]);
   });
 
@@ -288,7 +289,7 @@ describe("the top-up from Platform (C-routes D-C3, C3-8)", () => {
     flow.begin("A");
     flow.chooseSource("platform");
     flow.next(5_000_000);
-    await flow.payFromPlatform({ maxDuffs: 0, maxCredits: "1" });
+    await flow.payFromPlatform({ credits: "5000000000", grant: { maxDuffs: 0, maxCredits: "1" } });
     expect(flow.step).toBe("refused");
     expect(api.creditsTopUpFromPlatform).toHaveBeenCalledTimes(1);
   });
