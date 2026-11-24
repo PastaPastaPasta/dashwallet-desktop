@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
+import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { hasPendingMove, hasUnansweredOp, heldExitOp, heldExitOps, sendHolds, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveFor, moveOutcomeCopy, MOVE_COPY, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
@@ -11,6 +12,8 @@ import { hasPendingMove, hasUnansweredOp, heldExitOp, heldExitOps, sendHolds, in
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done", feeCredits: "2000000" };
 const GRANT = { maxDuffs: 0, maxCredits: "40000000000" };
+const QUOTE = { grant: GRANT, to: TO, exitOf: null, credits: "40000000000", feeCredits: "2000000" };
+const EXIT = { ...QUOTE, exitOf: "move-7-0" };
 const credits = (c: string) => `${Number(BigInt(c) / 1000n) / 1e8} tDASH`;
 
 function setup(lock = { encrypted: false }) {
@@ -20,9 +23,9 @@ function setup(lock = { encrypted: false }) {
   const api = {
     ...vault.api,
     platformMoveToCore: vi.fn(
-      (_walletId: string, amount: { kind: string }, to: string, grant: string) =>
+      (_walletId: string, amount: WithdrawAmount, to: string, exitOf: string | null, grant: string) =>
         new Promise<MoveToCoreOutcome>((resolve) => {
-          calls.push(`move ${amount.kind} ${to} ${grant}`);
+          calls.push(`move ${amount.kind === "all" ? "all" : amount.credits} ${to}${exitOf === null ? "" : ` exit of ${exitOf}`} ${grant}`);
           answer = resolve;
         }),
     ),
@@ -40,11 +43,11 @@ describe("Move to Dash wallet", () => {
     const stop = onMoveSettled(settled);
     flow.begin();
     expect([flow.open, flow.step]).toEqual([true, "confirm"]);
-    const going = flow.move(GRANT, TO);
+    const going = flow.move(QUOTE);
     await vi.waitFor(() => expect(flow.step).toBe("running"));
     expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "40000000000" }, walletId: WALLET_A });
     // One call at a time.
-    await flow.move(GRANT, TO);
+    await flow.move(QUOTE);
     expect(calls).toEqual([`move all ${TO} grant-1`]);
     flow.close();
     expect(flow.unseen).toBe(false);
@@ -65,7 +68,7 @@ describe("Move to Dash wallet", () => {
     const { flow, answer } = setup();
     const row = (state: PlatformActivity["state"]): PlatformActivity => ({ id: OUTCOME.id, kind: "moveToCore", state, credits: OUTCOME.credits, address: null, to: TO, expectedDuffs: OUTCOME.expectedDuffs, feeCredits: null, at: 1, mayLand: state === "pending", estimated: false });
     flow.begin();
-    const going = flow.move(GRANT, TO);
+    const going = flow.move(QUOTE);
     await vi.waitFor(() => expect(flow.step).toBe("running"));
     answer({ ...OUTCOME, state: "pending" });
     await going;
@@ -161,7 +164,7 @@ describe("Move to Dash wallet", () => {
     const settled = vi.fn();
     const stop = onMoveSettled(settled);
     flow.begin();
-    const going = flow.move(GRANT, TO);
+    const going = flow.move(QUOTE);
     await vi.waitFor(() => expect(flow.grants.pending).not.toBeNull());
     flow.grants.cancel();
     await going;
@@ -170,16 +173,33 @@ describe("Move to Dash wallet", () => {
     stop();
   });
 
+  it("passes the quote's exitOf back with its planned withdrawal, and a refusal for a changed quote offers Back", async () => {
+    const { flow, api, calls, answer } = setup();
+    flow.begin();
+    const going = flow.move(EXIT);
+    await vi.waitFor(() => expect(flow.step).toBe("running"));
+    expect(calls).toEqual([`move 39998000000 ${TO} exit of move-7-0 grant-1`]);
+    answer(OUTCOME);
+    await going;
+    api.platformMoveToCore.mockRejectedValueOnce(appError("credits.quote_changed"));
+    flow.back();
+    flow.close();
+    flow.begin();
+    await flow.move(EXIT);
+    expect([flow.step, moveCanRetry(flow.error)]).toEqual(["refused", true]);
+    expect(moveErrorText(flow.error, credits)).toBe("What you can move from your Platform addresses changed since you reviewed this move. Review it again.");
+  });
+
   it("a refusal keeps its error; Back only when a new quote may pass", async () => {
     const { flow, api } = setup();
     api.platformMoveToCore.mockRejectedValueOnce(appError("platform.grant_exceeded"));
     flow.begin();
-    await flow.move(GRANT, TO);
+    await flow.move(QUOTE);
     expect([flow.step, moveCanRetry(flow.error)]).toEqual(["refused", true]);
     flow.back();
     expect([flow.step, flow.error]).toEqual(["confirm", null]);
     api.platformMoveToCore.mockRejectedValueOnce(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "x" }));
-    await flow.move(GRANT, TO);
+    await flow.move(QUOTE);
     // An unknown outcome is never offered again from here: the move could happen twice.
     expect([flow.step, moveCanRetry(flow.error)]).toEqual(["refused", false]);
   });
@@ -203,17 +223,18 @@ describe("the move's result sheet", () => {
   const credits = (c: string) => `${c} credits`;
   const amount = (d: number) => `${d} duffs`;
   it("says a group's debit left for this move or another when nothing names the winner", () => {
-    expect(moveOutcomeCopy({ ...OUTCOME, expectedDuffs: null, feeCredits: null, winnerKnown: false }, credits, amount)).toEqual({
+    expect(moveOutcomeCopy({ ...OUTCOME, expectedDuffs: null, feeCredits: null, winnerKnown: false }, false, credits, amount)).toEqual({
       title: "Settled with another payment or move",
       text: "40000000000 credits left your Platform addresses, for this move or another payment or move from the same addresses. Dash Wallet can't tell which. If it was this move, it arrives in your Dash wallet and shows in Activity.",
     });
-    expect(moveOutcomeCopy({ ...OUTCOME, state: "replaced", winnerKnown: false }, credits, amount)).toEqual({ title: "Settled with another payment or move", text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again." });
+    expect(moveOutcomeCopy({ ...OUTCOME, state: "replaced", winnerKnown: false }, false, credits, amount)).toEqual({ title: "Settled with another payment or move", text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again." });
   });
 
   it("keeps the debit-only and replaced lines when the group names its winner", () => {
-    expect(moveOutcomeCopy({ ...OUTCOME, expectedDuffs: null }, credits, amount)).toEqual({ title: "Moved", text: "40000000000 credits left your Platform addresses. Activity shows what arrives in your Dash wallet." });
-    expect(moveOutcomeCopy({ ...OUTCOME, state: "replaced" }, credits, amount)).toEqual({ title: MOVE_COPY.replaced.title, text: MOVE_COPY.replaced.text });
-    expect(moveOutcomeCopy(OUTCOME, credits, amount).title).toBe("Moved");
+    expect(moveOutcomeCopy({ ...OUTCOME, expectedDuffs: null }, false, credits, amount)).toEqual({ title: "Moved", text: "40000000000 credits left your Platform addresses. Activity shows what arrives in your Dash wallet." });
+    expect(moveOutcomeCopy({ ...OUTCOME, state: "replaced" }, false, credits, amount)).toEqual({ title: MOVE_COPY.replaced.title, text: MOVE_COPY.replaced.text });
+    expect(moveOutcomeCopy(OUTCOME, false, credits, amount).title).toBe("Moved");
+    expect(moveOutcomeCopy({ ...OUTCOME, state: "failed" }, true, credits, amount)).toEqual({ title: MOVE_COPY.failed.title, text: MOVE_COPY.failed.text });
   });
 });
 

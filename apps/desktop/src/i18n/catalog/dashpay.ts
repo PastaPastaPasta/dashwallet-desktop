@@ -542,6 +542,10 @@ export const dashpay = {
       nothing: "Your Platform addresses don't hold enough for a top-up and its fee.",
       max: "Max",
     },
+    /** Why a "Pay with" source cannot pay, where it differs from the other sheets' reasons. */
+    source: {
+      shieldedNotOffered: "Paying from Shielded isn't available here yet.",
+    },
     /** As `transfer.status`, for a top-up from the Platform addresses. */
     status: {
       settledUnknown: {

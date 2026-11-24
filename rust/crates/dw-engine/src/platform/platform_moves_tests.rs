@@ -430,6 +430,9 @@ pub(crate) enum Act {
     EarlierExecutes(usize),
     /// Signed and broadcast; a node answers with a signature error.
     SignatureRefused,
+    /// Signed and broadcast; Platform answers that an input's balance is
+    /// short (a state error: nothing proves it never executes).
+    NotEnoughFunds,
     /// The signer refuses every input: the transition, short of its
     /// witnesses, is refused as Platform's checks refuse a malformed one
     /// (an error `never_valid` reads as definitive), with nothing signed.
@@ -755,6 +758,15 @@ impl FakeMoves {
                         .into(),
                 ))
             }
+            Act::NotEnoughFunds => {
+                use dpp::consensus::state::address_funds::AddressNotEnoughFundsError;
+                use dpp::consensus::state::state_error::StateError;
+                let (address, (_, credits)) = inputs.first_key_value().unwrap();
+                let short = AddressNotEnoughFundsError::new(*address, 0, *credits);
+                Err(PlatformWalletError::Sdk(
+                    ConsensusError::from(StateError::AddressNotEnoughFundsError(short)).into(),
+                ))
+            }
             Act::StopsBeforeSigning | Act::StopsAfterSigning => panic!("the process stops"),
             Act::Unsigned => unreachable!("returned before signing"),
             Act::StopsAfterBroadcast => {
@@ -947,7 +959,7 @@ impl World {
     ) -> Result<MoveToCoreOutcome, CreditsError> {
         let (to, grant) = (to.to_owned(), grant.to_owned());
         self.call(move |net, s, w, id| async move {
-            move_to_core(&*net, &s, &w, id, (amount, &to), &grant).await
+            move_to_core(&*net, &s, &w, id, (amount, &to, None), &grant).await
         })
     }
 

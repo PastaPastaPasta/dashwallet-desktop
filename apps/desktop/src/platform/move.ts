@@ -8,9 +8,10 @@
 import type { Backend } from "../api/backend";
 import { hasCode, isAppError } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
-import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
+import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
+import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
@@ -90,6 +91,15 @@ export const MOVE_COPY = {
     text: (amount: string) => t("transfer.move.pending.text", { amount }),
     debitOnly: (taken: string) => t("transfer.move.pending.debitOnly", { taken }),
   },
+  /** A move that cannot execute: the top-up it exits, or an earlier exit, took its credits. */
+  failed: {
+    get title() {
+      return t("transfer.move.failed.title");
+    },
+    get text() {
+      return t("transfer.move.failed.text");
+    },
+  },
   /** A move the engine superseded with a retry: not a loss, and nothing to wait for. */
   replaced: {
     get title() {
@@ -141,18 +151,15 @@ export const MOVE_COPY = {
   },
 };
 
-/** What the result sheet says of a move's outcome. `credits` and `amount` format credits and duffs. */
-export function moveOutcomeCopy(outcome: MoveToCoreOutcome, credits: (c: string) => string, amount: (duffs: number) => string): { title: string; text: string } {
+/** What the result sheet says of a move's outcome. `failed`: it failed and can no longer land.
+ * `credits` and `amount` format credits and duffs. */
+export function moveOutcomeCopy(outcome: MoveToCoreOutcome, failed: boolean, credits: (c: string) => string, amount: (duffs: number) => string): { title: string; text: string } {
   const C = MOVE_COPY;
   if (outcome.winnerKnown === false) return outcome.state === "done" ? { title: C.settledUnknown.title, text: C.done.debitUnknown(credits(outcome.credits)) } : C.settledUnknown;
-  switch (outcome.state) {
-    case "replaced":
-      return C.replaced;
-    case "done":
-      return { title: C.done.title, text: outcome.expectedDuffs === null ? C.done.debitOnly(credits(outcome.credits)) : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits)) };
-    default:
-      return { title: C.pending.title, text: outcome.expectedDuffs === null ? C.pending.debitOnly(credits(outcome.credits)) : C.pending.text(amount(outcome.expectedDuffs)) };
-  }
+  if (outcome.state === "replaced") return C.replaced;
+  if (failed) return C.failed;
+  if (outcome.state === "done") return { title: C.done.title, text: outcome.expectedDuffs === null ? C.done.debitOnly(credits(outcome.credits)) : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits)) };
+  return { title: C.pending.title, text: outcome.expectedDuffs === null ? C.pending.debitOnly(credits(outcome.credits)) : C.pending.text(amount(outcome.expectedDuffs)) };
 }
 
 /** What holds Move back: the Activity read has not answered (`checking`) or failed (`failed`), or it names
@@ -201,6 +208,8 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return t("transfer.move.error.signerUnavailable");
     case "platform.grant_exceeded":
       return t("transfer.move.error.grantExceeded");
+    case "credits.quote_changed":
+      return t("transfer.move.error.quoteChanged");
     case "platform.feature_off":
       return isAddressSendsOff(e) ? MAINNET_OFF_COPY.refused : t("transfer.move.error.featureOff");
     case "invalid_argument":
@@ -211,7 +220,7 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
 }
 
 /** Back is offered when a new quote may pass. */
-export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits");
+export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits") || hasCode(e, "credits.quote_changed");
 
 /** A move, send, contact payment or top-up from Platform that Platform has not answered (`pending`) or
  * that may still execute (`mayLand`: also a `failed` one by height). They share one hold on the wallet's
@@ -330,9 +339,11 @@ export class PlatformMoveFlow extends Model {
     this.changed();
   }
 
-  /** Confirm & move: the quote's grant, then `platformMoveToCore` for everything to the quote's `to`, one
-   * of the wallet's own receiving addresses (one call at a time). */
-  async move(grant: GrantRequest, to: string): Promise<void> {
+  /** Confirm & move: the quote's grant, then `platformMoveToCore` to the quote's `to`, one of the
+   * wallet's own receiving addresses (one call at a time). Everything, or as the exit of the quote's
+   * `exitOf` exactly its planned withdrawal, so the engine moves what Confirm showed or refuses. */
+  async move({ grant, to, exitOf, credits, feeCredits }: Pick<MoveToCoreQuote, "grant" | "to" | "exitOf" | "credits" | "feeCredits">): Promise<void> {
+    const amount: WithdrawAmount = exitOf === null ? { kind: "all" } : { kind: "credits", credits: plannedWithdrawalCredits({ credits, feeCredits }) };
     if (this.running) return;
     let ran = false;
     this.running = true;
@@ -343,7 +354,7 @@ export class PlatformMoveFlow extends Model {
         ran = true;
         this.step = "running";
         this.changed();
-        return this.api.platformMoveToCore(this.walletId, { kind: "all" }, to, g.id);
+        return this.api.platformMoveToCore(this.walletId, amount, to, exitOf, g.id);
       });
       if (got) {
         this.outcome = got.value;

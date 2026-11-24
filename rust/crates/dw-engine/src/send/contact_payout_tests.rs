@@ -151,7 +151,7 @@ impl Fixture {
         let (net, id, grant) = (Arc::clone(net), self.wallet, grant.to_owned());
         self.on_platform(move |s, w| async move {
             let to = s.current_receiving_address(id).await.unwrap().to_string();
-            let ask = (WithdrawAmount::All, to.as_str());
+            let ask = (WithdrawAmount::All, to.as_str(), None);
             platform_moves::move_to_core(&*net, &s, &w, id, ask, &grant).await
         })
         .unwrap()
@@ -165,7 +165,7 @@ impl Fixture {
     ) -> Result<crate::platform::MoveToCoreOutcome, crate::platform::CreditsError> {
         let (net, id, grant) = (Arc::clone(net), self.wallet, grant.to_owned());
         self.on_platform(move |s, w| async move {
-            let ask = (WithdrawAmount::All, to.as_str());
+            let ask = (WithdrawAmount::All, to.as_str(), None);
             platform_moves::move_to_core(&*net, &s, &w, id, ask, &grant).await
         })
         .unwrap()
