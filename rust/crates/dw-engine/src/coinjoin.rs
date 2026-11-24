@@ -783,9 +783,13 @@ impl MixView {
     /// client.cpp:1308-1365). Those without enough inputs are left out.
     pub(crate) fn rebalance_plan(
         &self,
+        network: &crate::DashNetwork,
         goal: u32,
         v24_active: bool,
     ) -> Vec<(Rebalance, Vec<MixCoin>)> {
+        if !conversions_allowed(network) {
+            return Vec::new();
+        }
         let mut coins: Vec<MixCoin> = self
             .coins
             .iter()
@@ -2146,7 +2150,7 @@ impl NetworkSession {
             && !rebalance::opportunities(&view.rebalance_counts(), settings.denoms_goal, true)
                 .is_empty();
         let v24_active = wanted && self.v24_known_active().await;
-        let rebalances = view.rebalance_plan(settings.denoms_goal, v24_active);
+        let rebalances = view.rebalance_plan(&self.network, settings.denoms_goal, v24_active);
         if needs < 0 && rebalances.is_empty() {
             self.set_mix_status(wallet_id, StatusCode::Idle);
             return Ok(());
@@ -4114,9 +4118,13 @@ impl MixingWallet for EngineMixingWallet {
         let view = (s.pass_view(&fence).await)
             .map_err(|e| WalletError(e.to_string()))?
             .ok_or_else(|| WalletError("the wallet's coins are not readable".into()))?;
-        Ok(outpoints.iter().any(|o| {
-            !(view.coins.iter()).any(|c| c.coin.utxo.outpoint == *o && !c.coin.user_locked)
-        }))
+        // Another owner's claim (a payment, a move) is a spend in progress;
+        // this session's own reservation is not.
+        Ok(s.spends
+            .held_by_other(&self.wallet_id, self.owner, outpoints)
+            || outpoints.iter().any(|o| {
+                !(view.coins.iter()).any(|c| c.coin.utxo.outpoint == *o && !c.coin.user_locked)
+            }))
     }
 
     async fn reserve_scripts(&self, count: usize) -> Result<Vec<ScriptBuf>, WalletError> {
@@ -4355,6 +4363,22 @@ mod tests {
         assert!(!conversions_allowed(&crate::DashNetwork::Mainnet));
         assert!(conversions_allowed(&crate::DashNetwork::Testnet));
         assert!(conversions_allowed(&crate::DashNetwork::Regtest));
+        // The mixing loop's plan: ten free fully mixed coins and V24 active
+        // give a promotion on testnet and nothing on mainnet.
+        let small = DENOMINATIONS[3];
+        let mut coins: Vec<MixViewCoin> =
+            (1..=10).map(|n| coin(n, small, true, 4, true, C)).collect();
+        coins.extend((11..=20).map(|n| coin(n, DENOMINATIONS[4], true, 1, false, C)));
+        let view = view_of(coins);
+        assert_eq!(
+            view.rebalance_plan(&crate::DashNetwork::Testnet, 10, true)
+                .len(),
+            1
+        );
+        assert!(
+            view.rebalance_plan(&crate::DashNetwork::Mainnet, 10, true)
+                .is_empty()
+        );
     }
 
     /// A conversion never enters a coin another owner holds: the session
@@ -4408,6 +4432,13 @@ mod tests {
             Some(entry()),
         );
         assert_eq!(refused, Err(vec![addr.clone()]));
+        // What a session asks before it submits or signs a coin: another
+        // owner's claim counts, its own does not.
+        let mine = SpendOwner::mixing_session();
+        s.spends.reserve(f.wallet, mine, [coin(1).outpoint]);
+        assert!(s.spends.held_by_other(&f.wallet, mine, &[coin(0).outpoint]));
+        assert!(!s.spends.held_by_other(&f.wallet, mine, &[coin(1).outpoint]));
+        s.spends.release_some(&f.wallet, mine, [coin(1).outpoint]);
         assert!(s.coinjoin.mixers()[&f.wallet].sessions.is_empty());
         let third = SpendOwner::mixing_session();
         assert!(
@@ -4775,7 +4806,16 @@ mod tests {
         assert_eq!(ready[0].rounds, 2);
     }
 
-    fn view_of(coins: Vec<MixViewCoin>) -> MixView {
+    /// Each coin pays its own script, as a wallet's coins do: a conversion
+    /// takes one coin per script (Dash Core refuses repeats).
+    fn view_of(mut coins: Vec<MixViewCoin>) -> MixView {
+        for c in &mut coins {
+            let n = c.coin.utxo.outpoint.txid.to_byte_array()[0];
+            let mut script = vec![0x76, 0xa9, 0x14];
+            script.extend_from_slice(&[n; 20]);
+            script.extend_from_slice(&[0x88, 0xac]);
+            c.coin.utxo.txout.script_pubkey = ScriptBuf::from_bytes(script);
+        }
         MixView {
             height: 200,
             coins,
@@ -4795,8 +4835,11 @@ mod tests {
             (1..=10).map(|n| coin(n, small, true, 4, true, C)).collect();
         coins.extend((11..=20).map(|n| coin(n, DENOMINATIONS[4], true, 1, false, C)));
         let view = view_of(coins);
-        assert!(view.rebalance_plan(10, false).is_empty());
-        let plan = view.rebalance_plan(10, true);
+        assert!(
+            view.rebalance_plan(&crate::DashNetwork::Testnet, 10, false)
+                .is_empty()
+        );
+        let plan = view.rebalance_plan(&crate::DashNetwork::Testnet, 10, true);
         assert_eq!(plan.len(), 1);
         let (r, inputs) = &plan[0];
         assert_eq!(
@@ -4817,10 +4860,18 @@ mod tests {
 
         let mut locked = view.clone();
         locked.coins[0].coin.reserved = true;
-        assert!(locked.rebalance_plan(10, true).is_empty());
+        assert!(
+            locked
+                .rebalance_plan(&crate::DashNetwork::Testnet, 10, true)
+                .is_empty()
+        );
         let mut one_short = view.clone();
         one_short.coins[0].fully_mixed = false;
-        assert!(one_short.rebalance_plan(10, true).is_empty());
+        assert!(
+            one_short
+                .rebalance_plan(&crate::DashNetwork::Testnet, 10, true)
+                .is_empty()
+        );
     }
 
     /// Six 1 DASH coins (deficit 4) and no 0.1 (deficit 10 > 4 + 5): the
@@ -4832,8 +4883,11 @@ mod tests {
             (1..=5).map(|n| coin(n, large, true, 1, false, C)).collect();
         coins.push(coin(6, large, true, 4, true, C));
         let view = view_of(coins);
-        assert!(view.rebalance_plan(10, false).is_empty());
-        let plan = view.rebalance_plan(10, true);
+        assert!(
+            view.rebalance_plan(&crate::DashNetwork::Testnet, 10, false)
+                .is_empty()
+        );
+        let plan = view.rebalance_plan(&crate::DashNetwork::Testnet, 10, true);
         assert_eq!(plan.len(), 1);
         let (r, inputs) = &plan[0];
         assert_eq!(r.kind, rebalance::RebalanceKind::Demotion);
@@ -4843,7 +4897,11 @@ mod tests {
 
         let mut unconfirmed = view.clone();
         unconfirmed.coins[5].coin.utxo.is_confirmed = false;
-        assert!(unconfirmed.rebalance_plan(10, true).is_empty());
+        assert!(
+            unconfirmed
+                .rebalance_plan(&crate::DashNetwork::Testnet, 10, true)
+                .is_empty()
+        );
     }
 
     /// Ten free, confirmed, fully mixed 0.01 coins on the CoinJoin account,
@@ -4881,7 +4939,7 @@ mod tests {
         assert_eq!(counts.total[3], 30);
         assert_eq!(counts.fully_mixed[3], 20);
 
-        let plan = view.rebalance_plan(10, true);
+        let plan = view.rebalance_plan(&crate::DashNetwork::Testnet, 10, true);
         assert!(plan.iter().any(|(r, inputs)| r.denom == 8
             && r.kind == rebalance::RebalanceKind::Promotion
             && inputs.len() == 10));

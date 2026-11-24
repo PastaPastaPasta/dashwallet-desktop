@@ -173,24 +173,31 @@ pub fn opportunities(counts: &DenomCounts, goal: u32, v24_active: bool) -> Vec<R
 pub fn select_inputs(rebalance: &Rebalance, coins: &[MixCoin]) -> Option<Vec<MixCoin>> {
     let amount = rebalance.input_amount()?;
     let want = rebalance.kind.input_count();
-    let mut seen = HashSet::new();
+    let mut txids = HashSet::new();
+    // Dash Core refuses an entry whose inputs pay one script twice, and can
+    // take the collateral for it (`IsValidInOuts`): a script counts as used
+    // only once a coin paying it is picked.
     let mut scripts = HashSet::new();
     let mut picked = Vec::new();
     let mut siblings = Vec::new();
-    // Dash Core refuses an entry whose inputs pay one script twice, and can
-    // take the collateral for it (`IsValidInOuts`): one coin per script.
-    for c in coins
-        .iter()
-        .filter(|c| c.value == amount && scripts.insert(c.script_pubkey.clone()))
-    {
-        if seen.insert(c.outpoint.txid) {
+    for c in coins.iter().filter(|c| c.value == amount) {
+        if !txids.contains(&c.outpoint.txid) && !scripts.contains(&c.script_pubkey) {
+            txids.insert(c.outpoint.txid);
+            scripts.insert(c.script_pubkey.clone());
             picked.push(c.clone());
         } else {
-            siblings.push(c.clone());
+            siblings.push(c);
         }
     }
     if rebalance.kind == RebalanceKind::Promotion {
-        picked.extend(siblings);
+        for c in siblings {
+            if picked.len() == want {
+                break;
+            }
+            if scripts.insert(c.script_pubkey.clone()) {
+                picked.push(c.clone());
+            }
+        }
     }
     picked.truncate(want);
     (picked.len() == want).then_some(picked)
@@ -375,6 +382,31 @@ mod tests {
             script_pubkey: ScriptBuf::from_bytes(vec![tx, vout as u8]),
             rounds: 4,
         }
+    }
+
+    /// A sibling's script is not claimed before the sibling is picked: a
+    /// coin of a distinct transaction paying it still comes first.
+    #[test]
+    fn a_skipped_sibling_does_not_take_a_distinct_transactions_script() {
+        let p = Rebalance {
+            denom: 4,
+            kind: RebalanceKind::Promotion,
+        };
+        let a = DENOMINATIONS[2];
+        let with = |tx: u8, vout: u32, script: u8| {
+            let mut c = coin(tx, vout, a);
+            c.script_pubkey = ScriptBuf::from_bytes(vec![script]);
+            c
+        };
+        // Transaction 1 pays X and Y, transaction 2 pays Y, eight more pay
+        // their own: ten distinct transactions, ten distinct scripts.
+        let mut coins = vec![with(1, 0, 100), with(1, 1, 101), with(2, 0, 101)];
+        coins.extend((3..=10).map(|t| with(t, 0, t)));
+        let picked = select_inputs(&p, &coins).unwrap();
+        let txids: HashSet<_> = picked.iter().map(|c| c.outpoint.txid).collect();
+        assert_eq!(txids.len(), 10);
+        let scripts: HashSet<_> = picked.iter().map(|c| &c.script_pubkey).collect();
+        assert_eq!(scripts.len(), 10);
     }
 
     /// Dash Core refuses inputs that pay one script twice: a coin whose
