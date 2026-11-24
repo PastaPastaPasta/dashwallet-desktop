@@ -1698,12 +1698,8 @@ impl NetworkSession {
     }
 
     /// Reads again what wallet `wallet`'s drops hold (the coins their notes
-    /// list, which the drops claim for good), summed from the outputs that
-    /// made them, and publishes it with the balances when it changed. A
-    /// coin a block or a mined transaction of the history spent since is
-    /// settled, not held. One whose transaction the history does not hold
-    /// is counted apart, its value unknown; so is an output no address of
-    /// the wallet's own receives.
+    /// list, which the drops claim for good), [`crate::history::held_total`],
+    /// and publishes it with the balances when it changed.
     pub(crate) async fn refresh_held(&self, manager: &Manager, wallet: WalletId) {
         if self.hub.wallet_state(&wallet).is_none() {
             return;
@@ -1719,26 +1715,9 @@ impl NetworkSession {
                 };
                 let observed = info.core_wallet.observed_spent_outpoints();
                 let owned = crate::history_ops::owned_scripts(info);
+                let owns = |s: &dashcore::ScriptBuf| owned.contains_key(s);
                 (self.hub.history).read(&wallet, |txs| {
-                    let spent_in_block = |o: &OutPoint| {
-                        observed.contains_key(o)
-                            || (txs.values()).any(|e| {
-                                e.context.block_info().is_some()
-                                    && e.tx.input.iter().any(|i| i.previous_output == *o)
-                            })
-                    };
-                    let (mut sum, mut unvalued) = (0u64, 0u32);
-                    for o in holds.iter().filter(|o| !spent_in_block(o)) {
-                        let output =
-                            (txs.get(&o.txid)).and_then(|e| e.tx.output.get(o.vout as usize));
-                        match output {
-                            Some(out) if owned.contains_key(&out.script_pubkey) => {
-                                sum = sum.saturating_add(out.value)
-                            }
-                            _ => unvalued += 1,
-                        }
-                    }
-                    (sum, unvalued)
+                    crate::history::held_total(&holds, txs, observed, owns)
                 })
             }
         };

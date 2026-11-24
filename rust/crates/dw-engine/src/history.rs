@@ -638,6 +638,49 @@ pub(crate) fn orphaned_unmined(
         .collect()
 }
 
+/// What the coins the drops hold (`holds`) add up to, as the wallet's
+/// balances report them (#749): the sum of those whose value it knows, and
+/// how many are held whose value it does not. A coin a processed block
+/// (`observed`) or a mined transaction of the history spent is settled, not
+/// held. A coin's value comes from the output that made it when the
+/// history holds that transaction and the wallet owns the output (`owns`),
+/// else from a held payment's record of its own inputs; an output the
+/// wallet does not own is not its coin. One known neither way is counted
+/// as of unknown value, never guessed.
+pub(crate) fn held_total(
+    holds: &BTreeSet<OutPoint>,
+    txs: &HashMap<Txid, TxEntry>,
+    observed: &BTreeMap<OutPoint, u32>,
+    owns: impl Fn(&ScriptBuf) -> bool,
+) -> (u64, u32) {
+    let mut spent = HashSet::new();
+    let mut own_inputs: HashMap<OutPoint, u64> = HashMap::new();
+    for e in txs.values() {
+        if e.context.block_info().is_some() {
+            spent.extend(e.tx.input.iter().map(|i| i.previous_output));
+        }
+        for (index, (value, _)) in &e.own_inputs {
+            if let Some(i) = e.tx.input.get(*index as usize) {
+                own_inputs.insert(i.previous_output, *value);
+            }
+        }
+    }
+    let (mut sum, mut unvalued) = (0u64, 0u32);
+    for o in holds
+        .iter()
+        .filter(|o| !observed.contains_key(*o) && !spent.contains(*o))
+    {
+        let output = (txs.get(&o.txid)).and_then(|e| e.tx.output.get(o.vout as usize));
+        match (output, own_inputs.get(o)) {
+            (Some(out), _) if owns(&out.script_pubkey) => sum = sum.saturating_add(out.value),
+            (Some(_), _) => {}
+            (None, Some(value)) => sum = sum.saturating_add(*value),
+            (None, None) => unvalued += 1,
+        }
+    }
+    (sum, unvalued)
+}
+
 /// Whether the history knows an InstantSend lock of `e`: its flag or its
 /// context.
 pub(crate) fn instant_locked(e: &TxEntry) -> bool {
@@ -3191,6 +3234,67 @@ mod tests {
         add(spend(&[(Txid::from_byte_array([2; 32]), 0)], 7));
 
         assert_eq!(unmined_children(&txs, &[p]), BTreeSet::from([c, g]));
+    }
+
+    /// #749: the held total sums the held coins whose value the wallet
+    /// knows (from the output that made them, or a held payment's record
+    /// of its own inputs) and counts apart the one it doesn't; a coin a
+    /// block spent since, and an output the wallet doesn't own, are left.
+    #[test]
+    fn held_total_sums_the_valued_coins_and_counts_the_unvalued() {
+        let mut txs = HashMap::new();
+        let mut add = |e: TxEntry| {
+            let t = e.tx.txid();
+            txs.insert(t, e);
+            t
+        };
+        let funding = add(entry(
+            tx(
+                vec![foreign_input(1)],
+                vec![
+                    out(700, &hash_addr(1)),
+                    out(900, &hash_addr(3)),
+                    out(50, &hash_addr(1)),
+                ],
+            ),
+            in_block(10, 0),
+        ));
+        let (valued, foreign, settled) = (
+            OutPoint::new(funding, 0),
+            OutPoint::new(funding, 1),
+            OutPoint::new(funding, 2),
+        );
+        add(entry(
+            tx(vec![input(funding, 2)], vec![out(40, &hash_addr(3))]),
+            in_block(11, 0),
+        ));
+        let unknown = OutPoint::new(Txid::from_byte_array([8; 32]), 0);
+        let recorded = OutPoint::new(Txid::from_byte_array([9; 32]), 1);
+        let mut held = entry(
+            tx(
+                vec![input(unknown.txid, 0), input(recorded.txid, 1)],
+                vec![out(10, &hash_addr(3))],
+            ),
+            TransactionContext::Mempool,
+        );
+        held.own_inputs.insert(1, (300, hash_addr(2)));
+        add(held);
+        let observed_coin = OutPoint::new(Txid::from_byte_array([7; 32]), 0);
+        let owned: HashSet<ScriptBuf> = [1, 2].map(|n| hash_addr(n).script_pubkey()).into();
+        let holds = BTreeSet::from([valued, foreign, settled, unknown, recorded, observed_coin]);
+        let observed = BTreeMap::from([(observed_coin, 12)]);
+
+        assert_eq!(
+            held_total(&holds, &txs, &observed, |s| owned.contains(s)),
+            (700 + 300, 1)
+        );
+        assert_eq!(
+            held_total(&BTreeSet::from([valued, unknown]), &txs, &observed, |s| {
+                owned.contains(s)
+            }),
+            (700, 1),
+            "one valued and one unvalued"
+        );
     }
 
     /// #170 case 4 at load: a stored payment out of a block whose own coin's

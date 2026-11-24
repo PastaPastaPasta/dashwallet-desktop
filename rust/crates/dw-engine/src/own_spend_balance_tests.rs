@@ -3325,3 +3325,104 @@ fn removing_and_restoring_the_wallet_drops_its_holds() {
             .is_empty()
     );
 }
+
+/// #749 (MG): a watch-only wallet holding a coin through a drop is removed
+/// and imported again from its xpub with no birth height (the app passes
+/// none; the engine scans from 0): its hold is gone, and the coin, which
+/// nothing mined spends, comes back once its block is scanned again.
+#[test]
+fn removing_and_reimporting_a_watch_only_wallet_drops_its_holds() {
+    use key_wallet::wallet::initialization::WalletAccountCreationOptions;
+    let (_dir, engine, session, _) = engine_wallet();
+    let xpub = {
+        let device = key_wallet::Wallet::from_mnemonic(
+            key_wallet::Mnemonic::from_phrase(ELSEWHERE_PHRASE).unwrap(),
+            key_wallet::Network::Regtest,
+            WalletAccountCreationOptions::Default,
+        )
+        .unwrap();
+        let account = device.accounts.standard_bip44_accounts.get(&0).unwrap();
+        account.account_xpub.to_string()
+    };
+    let options = crate::WatchOnlyOptions {
+        birth_height: Some(super::BIRTH),
+        ..Default::default()
+    };
+    let id = engine
+        .block_on(session.import_watch_only(xpub.clone(), options))
+        .unwrap();
+    let to = fresh_address(&engine, &session, id);
+    let paid = funding(7, std::slice::from_ref(&to), COIN);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(
+        &engine,
+        &session,
+        id,
+        TIP,
+        vec![super::own_spend_disk_tests::foreign()],
+    );
+    let a = OutPoint::new(paid.txid(), 0);
+    let change = fresh_address(&engine, &session, id);
+    let p = super::signed_by_phrase_each(
+        &engine,
+        &session,
+        id,
+        ELSEWHERE_PHRASE,
+        std::slice::from_ref(&to),
+        super::spend_of(
+            a,
+            vec![
+                (super::elsewhere(), COIN / 2),
+                (change.script_pubkey(), COIN / 2 - 1_000),
+            ],
+        ),
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    let session = reopen(&engine, session);
+    let back = fresh_address(&engine, &session, id);
+    let rival = super::signed_by_phrase_each(
+        &engine,
+        &session,
+        id,
+        ELSEWHERE_PHRASE,
+        std::slice::from_ref(&to),
+        super::spend_of(a, vec![(back.script_pubkey(), COIN - 2_000)]),
+    );
+    mempool(&engine, &session, id, &rival);
+    instant_lock(&engine, &session, id, &rival);
+    reconciled(&engine, &session, id);
+    assert!(session.hub.dropped_holds(id).contains(&a), "A is held");
+
+    let wipe = (session.vault())
+        .authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&id.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    engine.block_on(session.remove_wallet(id, wipe)).unwrap();
+    let appdb = session.live().unwrap().appdb;
+    assert!(
+        crate::tx_actions::dropped_holds(&appdb, id)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(session.hub.dropped_holds(id).is_empty(), "held in memory");
+    let again = engine
+        .block_on(session.import_watch_only(xpub, crate::WatchOnlyOptions::default()))
+        .unwrap();
+    assert_eq!(again, id, "the same wallet");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    mined(
+        &engine,
+        &session,
+        id,
+        TIP,
+        vec![super::own_spend_disk_tests::foreign()],
+    );
+    assert!(held(&engine, &session, id).contains(&a), "A is credited");
+    let b = balances(&session, id);
+    assert_eq!((b.held_unfinished, b.held_unvalued), (0, 0), "{b:?}");
+}
