@@ -141,6 +141,9 @@ const IMPLEMENTED: &[&str] = &[
     // C-routes C6a-1: credits to an own Platform address.
     "DashPay.withdraw_to_platform_quote",
     "DashPay.withdraw_to_platform",
+    // C-routes C3a: the top-up from the Platform addresses.
+    "DashPay.top_up_from_platform_quote",
+    "DashPay.top_up_from_platform",
     // Release 0.1 (lane E2): the Platform addresses.
     "DashPay.platform_addresses",
     "DashPay.platform_activity",
@@ -286,6 +289,7 @@ const NOT_FACADE: &[&str] = &[
     "platform_moves.rs",
     "platform_moves_tests.rs",
     "platform_shield_tests.rs",
+    "platform_top_up_tests.rs",
     "protocol.rs",
     "provenance.rs",
     "recovery.rs",
@@ -1624,6 +1628,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await
                 .map(drop),
             dp.withdraw_to_platform(s(), s(), WithdrawAmount::All, s())
+                .await
+                .map(drop),
+            // C3a's.
+            dp.top_up_from_platform_quote(s(), WithdrawAmount::All)
+                .await
+                .map(drop),
+            dp.top_up_from_platform(s(), WithdrawAmount::All, s())
                 .await
                 .map(drop),
         ] {

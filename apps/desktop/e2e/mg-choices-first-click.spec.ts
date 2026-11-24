@@ -3,11 +3,12 @@ import { HOME } from "../src/fixture/masternodes";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { fixtureUrl, trackPageErrors } from "./helpers";
 
-// The registration wizard and Change keys draw their choices as `.mg-choices` fieldsets with a
-// legend in a centred sheet, the shape of issue 108 (WebKitGTK sized the legend twice, and the first
-// click's blur moved the sheet under the pointer). One click on a choice selects it, and the sheet
-// keeps its place when the focused control loses focus. Tall enough that the sheet isn't at its
-// height limit, so a doubled legend would show as movement.
+// The registration wizard and Change keys draw their choices as `.mg-choices` radio groups in a
+// centred sheet. As fieldsets with a legend they had the shape of issue 108 (WebKitGTK sized the
+// legend twice, and the first click's blur moved the sheet under the pointer), so they have no
+// fieldset or legend. One click on a choice selects it, and the sheet keeps its place when the
+// focused control loses focus. Tall enough that the sheet isn't at its height limit, so a doubled
+// legend would show as movement.
 test.use({ viewport: { width: 1280, height: 1200 } });
 
 async function open(page: Page, scenario: string) {
@@ -33,6 +34,7 @@ test("the wizard's Type step: the sheet stays put on blur, and one click picks a
   await page.getByTestId("mn-set-up").click();
   const sheet = page.getByTestId("reg-sheet");
   await expect(page.getByTestId("reg-step-type")).toBeVisible();
+  await expect(sheet.locator("fieldset, legend")).toHaveCount(0);
   await steady(page, sheet);
   await page.getByTestId("reg-kind-evonode").click({ position: { x: 60, y: 10 } });
   await expect(page.getByTestId("reg-kind-evonode").locator("input")).toBeChecked();
@@ -45,6 +47,7 @@ test("Change keys: the sheet stays put on blur, and one click picks a choice", a
   await page.getByTestId("mn-change-keys").click();
   const sheet = page.getByTestId("mn-change-keys-sheet");
   await expect(sheet).toBeVisible();
+  await expect(sheet.locator("fieldset, legend")).toHaveCount(0);
   await steady(page, sheet);
   await page.getByTestId("mn-change-operator-keychain").click({ position: { x: 60, y: 10 } });
   await expect(page.getByTestId("mn-change-operator-keychain").locator("input")).toBeChecked();

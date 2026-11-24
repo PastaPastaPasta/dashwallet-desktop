@@ -511,7 +511,7 @@ test.describe("Home", () => {
     await open(page, "paddr-fund-checking");
     const row = page.getByTestId("platform-fund-checking");
     await expect(row).toContainText("Checking.");
-    await expect(row).toContainText("This amount may already be on your Platform addresses; we can't confirm it yet.");
+    await expect(row).toContainText("This amount may already be on your Platform addresses. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.");
     await expect(page.getByTestId("platform-fund-finish")).toHaveText("Check again");
     await page.getByTestId("platform-fund-finish").click();
     await authorize(page);
