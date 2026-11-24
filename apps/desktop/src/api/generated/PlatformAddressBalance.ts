@@ -23,7 +23,7 @@ addresses: Array<PlatformAddressRow>,
 /**
  * Unix seconds of this session's last sync pass; `null` before one.
  */
-syncedAt: number | null, syncing: boolean, 
+syncedAt: number | null, syncing: boolean,
 /**
  * The network has address funds transitions: below protocol version 11
  * a top-up or send from these addresses is refused.
