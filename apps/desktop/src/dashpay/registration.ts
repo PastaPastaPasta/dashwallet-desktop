@@ -7,6 +7,7 @@
 
 import { hasCode, isAppError } from "../api/backend";
 import { FLOW_NAME } from "../api/lockReport";
+import { creditsToDuffsUp } from "../api/pending";
 import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { FinishReport } from "../api/generated/FinishReport";
 import type { LockKind } from "../api/generated/LockKind";
@@ -18,6 +19,7 @@ import type { UsernameRuleName } from "../api/generated/UsernameRuleName";
 import { waitText } from "../onboarding/model";
 import { formatLocale, messageTable, t } from "../i18n";
 import { listed } from "../network/choice";
+import { PAY_WITH_COPY } from "./payWith";
 import { awaitsContinue, COPY, failureText, heldWithBoth, stepOf, WAITS, withTable, type CardStep } from "./status";
 
 /** The engine's cap (`check_username`'s `maxLength`); the field takes no more. */
@@ -61,6 +63,7 @@ export const REG_COPY = {
     message: (label: string) => t("dashpay.registration.confirm.message", username(label)),
     shortfall: (amount: string) => t("dashpay.registration.confirm.shortfall", { amount }),
     fromCredits: (credits: string) => t("dashpay.registration.confirm.fromCredits", { credits: new Intl.NumberFormat(formatLocale(undefined)).format(BigInt(credits)) }),
+    fromPlatform: (total: string, funding: string, fee: string) => t("dashpay.registration.confirm.fromPlatform", { total, funding, fee }),
   }),
   progress: withTable(reg("progress", ["title", "close", "home", "readFailed", "finish"]), {
     message: (label: string) => t("dashpay.registration.progress.message", username(label)),
@@ -82,7 +85,7 @@ export const REG_COPY = {
   get recovery() {
     return t("dashpay.registration.recovery");
   },
-  failed: reg("failed", ["title", "another"]),
+  failed: reg("failed", ["title", "another", "startNew", "reviewCost"]),
   stopped: reg("stopped", ["title"]),
   done: withTable(reg("done", ["message", "next", "action", "requestSent", "requestRefused"]), {
     title: (label: string) => t("dashpay.registration.done.title", username(label)),
@@ -152,13 +155,18 @@ export interface ConfirmModel {
   shortfall: string | null;
 }
 
+/** The quote's cost: from the Dash wallet, its total and what the funding can spend; from the
+ * Platform balance (C-funding F9), what leaves it, the identity's funding and the fee. A Platform
+ * quote has no shortfall: one the balance cannot pay is refused. */
 export function confirmModel(quote: RegistrationQuote, amount: (duffs: number) => string): ConfirmModel {
-  const lines: string[] = [REG_COPY.confirm.credits];
+  const p = quote.platform;
+  const cost = amount(p ? creditsToDuffsUp(BigInt(p.fundingCredits) + BigInt(p.feeCredits)) : quote.totalDuffs);
+  const lines = [p ? REG_COPY.confirm.fromPlatform(cost, amount(creditsToDuffsUp(p.fundingCredits)), amount(creditsToDuffsUp(p.feeCredits))) : REG_COPY.confirm.credits];
   if (quote.contested) lines.push(REG_COPY.confirm.contested);
   return {
-    cost: amount(quote.totalDuffs),
+    cost,
     lines,
-    shortfall: quote.availableDuffs < quote.totalDuffs ? REG_COPY.confirm.shortfall(amount(quote.totalDuffs)) : null,
+    shortfall: !p && quote.availableDuffs < quote.totalDuffs ? REG_COPY.confirm.shortfall(amount(quote.totalDuffs)) : null,
   };
 }
 
@@ -190,7 +198,7 @@ export type ScreenKind =
   /** A Platform payment that may still go through: Continue or Move to Dash wallet. */
   | "held";
 
-export type ScreenActionKind = "home" | "continue" | "moveToCore" | "unlock" | "finish" | "repair" | "another" | "done" | "wallet" | "votingInfo" | Exclude<WelcomeStepKind, "share">;
+export type ScreenActionKind = "home" | "continue" | "moveToCore" | "unlock" | "finish" | "repair" | "another" | "reconfirm" | "done" | "wallet" | "votingInfo" | Exclude<WelcomeStepKind, "share">;
 
 /** R9's next steps (PRODUCT #4). */
 export type WelcomeStepKind = "editProfile" | "findFriends" | "share";
@@ -288,7 +296,7 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
 
   const f = row.failure;
   if (f) {
-    const why = failureText(f, i.amount, i.discreet);
+    const why = failureText(f, i.amount, i.discreet, row.fromPlatform);
     const recovery = row.fundsCommitted ? [REG_COPY.recovery] : [];
     if (f.retryable) {
       // D7: a funded row is never discarded from here.
@@ -300,7 +308,12 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
     // a refusal shows this row again (`registration.in_progress`).
     if (row.fundsCommitted)
       return base("stopped", REG_COPY.stopped.title, [why, REG_COPY.recovery], [act("repair", REG_COPY.progress.repair), act("another", REG_COPY.failed.another)]);
-    return base("failed", REG_COPY.failed.title, [why], [act("another", REG_COPY.failed.another)], { step: null });
+    // F22: a run whose plan changed goes back to Confirm with a new quote.
+    if (row.fromPlatform && f.code === "registration.quote_changed")
+      return base("failed", REG_COPY.failed.title, [why], [act("reconfirm", REG_COPY.failed.reviewCost)], { step: null });
+    // The attempt's keys failed, not the name: the same name may be chosen again.
+    const another = row.fromPlatform && f.code === "registration.refunded" ? REG_COPY.failed.startNew : REG_COPY.failed.another;
+    return base("failed", REG_COPY.failed.title, [why], [act("another", another)], { step: null });
   }
 
   if (row.waiting === "paymentHeld")
@@ -368,8 +381,21 @@ export function isRunning(row: RegistrationStatus | undefined): boolean {
 // ---------------------------------------------------------------------------------------------
 // Refusals of a start, a resume and a name
 
-/** Why a start, resume or name registration was refused, as the wizard says it. */
-export function startErrorText(e: unknown, amount: (duffs: number) => string, discreet = false): string {
+/** A refusal of a quote or start from the Platform balance (C-funding F4, F9), as Confirm says it;
+ * `null` for one not about that balance. */
+export function platformRefusalText(e: unknown, amount: (duffs: number) => string): string | null {
+  if (hasCode(e, "platform.insufficient_credits") && e.data?.kind === "credits") return REG_COPY.confirm.shortfall(amount(creditsToDuffsUp(e.data.needed)));
+  if (hasCode(e, "credits.move_pending")) return PAY_WITH_COPY.movePending;
+  if (hasCode(e, "platform.feature_off")) return PAY_WITH_COPY.notOffered;
+  if (hasCode(e, "registration.quote_changed")) return t("dashpay.registration.startError.quoteChanged");
+  return null;
+}
+
+/** Why a start, resume or name registration was refused, as the wizard says it; `fromPlatform`: it
+ * was paid from the Platform balance, whose refusals say so first. */
+export function startErrorText(e: unknown, amount: (duffs: number) => string, discreet = false, fromPlatform = false): string {
+  const platform = fromPlatform ? platformRefusalText(e, amount) : null;
+  if (platform !== null) return platform;
   if (hasCode(e, "registration.funding_insufficient") && e.data?.kind === "duffs") {
     const { needed, available } = e.data;
     if (needed === null) return t("dashpay.failure.fundingShort");
