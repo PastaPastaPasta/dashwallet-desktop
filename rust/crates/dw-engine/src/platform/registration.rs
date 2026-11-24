@@ -925,6 +925,7 @@ pub(crate) async fn resume_grant<L: RegistrationLib>(
                 plan,
             },
         )) => {
+            registration_platform::refuse_on_mainnet(&lib.network())?;
             if plan
                 .as_ref()
                 .is_some_and(|p| !plan_as_made(p, funding_credits))
@@ -966,15 +967,14 @@ pub(crate) async fn resume_grant<L: RegistrationLib>(
 }
 
 /// A stored plan as the funding step makes one: distinct addresses, each
-/// at a nonce past 0 and claiming something, the claims at least the
+/// at a nonce past 0 and claiming something, the claims exactly the
 /// funding the row stored.
 fn plan_as_made(plan: &PlatformPlan, funding_credits: u64) -> bool {
     let addresses: BTreeSet<&str> = plan.inputs.iter().map(|(a, _, _)| a.as_str()).collect();
     let claims = (plan.inputs.iter()).try_fold(0u64, |sum, (_, _, c)| sum.checked_add(*c));
-    !plan.inputs.is_empty()
-        && addresses.len() == plan.inputs.len()
+    addresses.len() == plan.inputs.len()
         && plan.inputs.iter().all(|&(_, n, c)| n > 0 && c > 0)
-        && claims.is_some_and(|sum| sum >= funding_credits)
+        && claims == Some(funding_credits)
 }
 
 /// The wallet's registration ledger (DP1-02 §5), for the gates.

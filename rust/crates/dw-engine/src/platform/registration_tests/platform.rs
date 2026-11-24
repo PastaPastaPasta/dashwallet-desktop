@@ -553,6 +553,10 @@ fn a_platform_rows_resume_grant_is_its_own() {
         Ok((0, FUNDING + RESERVE + later))
     );
     assert_eq!(grant(core_row(PLAIN)), Err("invalid_argument"));
+    let platform = f.insert(platform_row(Some(platform_plan_of(FUNDING))));
+    let core = f.insert(core_row(PLAIN));
+    assert!(f.status(&lib, platform).from_platform);
+    assert!(!f.status(&lib, core).from_platform);
 }
 
 /// F22 (#685): Continue on a held create: the resume takes the grant its
@@ -668,14 +672,18 @@ fn an_edited_or_missing_platform_funding_sizes_no_grant() {
             format!("[{}]", one("a", 1, FUNDING - 1)),
             "claims below the funding",
         ),
+        (
+            format!("[{}]", one("a", 1, FUNDING + 1)),
+            "claims above the funding",
+        ),
         ("[]".to_owned(), "no inputs"),
     ] {
         assert_eq!(grant(planned(&inputs)), Err("invalid_argument"), "{why}");
     }
 }
 
-/// F5 (#685), mainnet off: a held row's own resume grant is refused before
-/// it is redeemed, and nothing runs.
+/// F5 (#685), mainnet off: a held row's resume grant is not sized, and a
+/// grant of that size is refused before it is redeemed; nothing runs.
 #[test]
 fn mainnet_refuses_a_platform_resume_before_redeeming_its_grant() {
     let f = fixture(false);
@@ -690,6 +698,13 @@ fn mainnet_refuses_a_platform_resume_before_redeeming_its_grant() {
         ))
         .unwrap();
     lib.w().mainnet = true;
+    let refused = (f.engine).block_on(registration::resume_grant(
+        &f.session,
+        f.wallet,
+        &*lib,
+        &draft.to_string(),
+    ));
+    assert_eq!(refused.unwrap_err().code(), "platform.feature_off");
     let before = f.row(draft);
     let grant = f.grant(request.max_duffs, request.max_credits, Credential::None);
     let e = (f.engine)

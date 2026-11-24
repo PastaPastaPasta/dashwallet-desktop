@@ -4745,8 +4745,9 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     while the identity is not created its stored `funding_credits` plus `fee_reserve_credits`, then the names'
     credits and a pending profile's, with no other headroom. A row whose stored funding misses a field, whose plan
     is half stored, or whose plan is not one the funding step makes (an address twice, nonce 0, a zero claim, the
-    claims below the stored funding) is `invalid_argument`, sized from no default. `resume_registration` is
-    unchanged: on mainnet it is `platform.feature_off` before the grant is redeemed, a grant with duffs is
+    claims other than the stored funding) is `invalid_argument`, sized from no default. On mainnet it is
+    `platform.feature_off`, sized not at all. `resume_registration` is unchanged: on mainnet it is
+    `platform.feature_off` before the grant is redeemed, a grant with duffs is
     `platform.grant_invalid`, and a held row signs only its stored plan, once more. A grant is not bound to the
     row it was sized for: like every `PlatformOp` grant it caps what any one redemption may take, which the user
     approves.
