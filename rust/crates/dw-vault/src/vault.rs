@@ -1443,8 +1443,16 @@ impl Vault {
             let had_failures = f.throttle != Throttle::default();
             // With slot B enrolled the passphrase time is enforced from the
             // file, so it is persisted (sealed) on every successful check.
+            // A sealed policy that no longer authenticates (the manifest did,
+            // just above) is left as it is: it counts as none, the passphrase
+            // time is kept in memory, and the setter replaces the policy
+            // (#173 item 10). Refusing here would refuse the passphrase too.
             let policy = if f.slot_b.is_some() && inner.policy_floor != Some(UNREAD) {
-                Some(open_policy(f, &dek, inner.policy_floor)?.unwrap_or_default())
+                match open_policy(f, &dek, inner.policy_floor) {
+                    Ok(policy) => Some(policy.unwrap_or_default()),
+                    Err(VaultError::Corrupt(_)) => None,
+                    Err(e) => return Err(e),
+                }
             } else {
                 None
             };
