@@ -42,6 +42,9 @@ test.describe("Unfinished transfers", () => {
     await page.getByTestId("recover-confirm-ok").click();
     await authorize(page);
     await expect(card).toHaveCount(0);
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    await expect(page.getByText("Recovered from an unfinished transfer").first()).toBeVisible();
     expect(errors).toEqual([]);
   });
 

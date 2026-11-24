@@ -352,9 +352,8 @@ fn a_recover_is_behind_the_shield_flows_network_gate() {
 
 /// Off on mainnet, first: a quote and a recover are refused
 /// `platform.feature_off` before any Platform read, lock, record or grant.
-/// The wallet's recovery and activity rows stay byte-equal, the grant is
-/// still redeemable, and the shield side still keeps the lock out of the
-/// pending shields there.
+/// The wallet's recovery and activity rows stay byte-equal, and the grant
+/// is still redeemable.
 #[test]
 fn a_recover_is_off_on_mainnet_before_anything_is_read() {
     let fx = Fixture::new(0);
