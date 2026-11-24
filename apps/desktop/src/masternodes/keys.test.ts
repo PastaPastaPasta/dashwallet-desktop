@@ -200,11 +200,34 @@ describe("revealing a masternode key when something goes wrong", () => {
     await expect.poll(() => w.reveals.length).toBe(2);
     releases[0]();
     await first;
+    expect(m.secret).toBeNull();
+    expect(m.step).toBe("working");
     m.dispose();
     expect(w.revoked).toEqual([w.reveals[0].grant, w.reveals[1].grant]);
     releases[1]();
     await second;
     expect(m.secret).toBeNull();
+  });
+
+  it("leaves a newer reveal running when an older one's authorization fails after Hide", async () => {
+    const w = world(false);
+    const answers: ((ok: boolean) => void)[] = [];
+    const authorize = w.authorize.bind(w);
+    w.authorize = (...args: Parameters<typeof authorize>) =>
+      new Promise((resolve, reject) => answers.push((ok) => (ok ? resolve(authorize(...args)) : reject(appError("vault.grant_invalid")))));
+    const m = new KeyRevealModel(w, WALLET_A, "owner", 0);
+    await m.load();
+    const first = m.reveal("");
+    m.hide();
+    const second = m.reveal("");
+    expect(m.step).toBe("working");
+    answers[0](false);
+    await first;
+    expect(m.step).toBe("working");
+    expect(m.error).toBeNull();
+    answers[1](true);
+    await second;
+    expect(m.step).toBe("shown");
   });
 
   it("revokes the grant of a reveal still running when the panel closes", async () => {

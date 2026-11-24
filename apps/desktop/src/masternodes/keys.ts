@@ -122,11 +122,12 @@ export class KeyRevealModel extends Model {
       authorized = await authorize("").then(
         () => true,
         (e) => {
-          this.error = keysErrorText(e);
+          // A reveal that Hide dropped leaves a newer one's state alone.
+          if (epoch === this.#epoch) this.error = keysErrorText(e);
           return false;
         },
       );
-      if (!authorized) this.#go("hidden");
+      if (!authorized && epoch === this.#epoch) this.#go("hidden");
     }
     if (!authorized || !grant) return this.changed();
     if (epoch !== this.#epoch) return this.#revoke(grant);
