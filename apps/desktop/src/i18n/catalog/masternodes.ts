@@ -1172,6 +1172,9 @@ export const masternodes = {
     /** The withdrawal refused over that change: first, wait for it. */
     payoutUnconfirmedWait:
       "This evonode's payout is changing, and the change hasn't confirmed yet. Withdraw once it confirms, so the credits go to the new payout address.",
+    /** The owner key's destination while the evonode's payout is a P2SH address. */
+    ownerPayoutP2sh:
+      "Owner-key withdrawals don't work with this evonode's payout address, because it's a P2SH address: Platform would send the credits to an address nobody can spend. To withdraw with the owner key, change the payout to a regular address first. You can withdraw once that change confirms.",
     /** Then when abandoning it is safe, and when it is not. */
     payoutUnconfirmedAbandon:
       "If the change will never confirm, because it was replaced or dropped from the network, you can abandon it in History and withdraw then. Don't abandon a change that may still be on the network: if it confirms after you withdraw, the credits can go to the old payout address.",
