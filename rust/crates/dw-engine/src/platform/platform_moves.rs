@@ -3006,15 +3006,14 @@ async fn run(
     {
         return Ok((settled.clone(), None));
     }
-    // Every spend that may sign, before anything is planned (#533).
-    behind(&moves, &seen)?;
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
     // only its exact retry.
     let retry_of = named.filter(|_| matches!(target, Target::Platform(_)));
     let exit_of = named.filter(|_| matches!(target, Target::Core(_)));
     // The exit's quote was planned beside that record: once it no longer
-    // holds, this is not the move Confirm showed, whatever else holds now.
+    // holds, this is not the move Confirm showed, whatever else holds now,
+    // and a lagging read does not hide that.
     let exited = match exit_of {
         Some(id) => Some(
             (moves.iter())
@@ -3023,6 +3022,8 @@ async fn run(
         ),
         None => None,
     };
+    // Every spend that may sign, before anything is planned (#533).
+    behind(&moves, &seen)?;
     let (held, planned) = match (target, named) {
         (Target::Platform(_), Some(id)) => {
             let held = (moves.iter()).find(|m| m.id == id);

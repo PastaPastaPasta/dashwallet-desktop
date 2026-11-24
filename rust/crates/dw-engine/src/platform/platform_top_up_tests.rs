@@ -669,6 +669,39 @@ fn an_exit_after_its_top_up_landed_is_refused_and_keeps_the_grant() {
     assert_eq!(w.sent(), 3);
 }
 
+/// An exit whose top-up Activity settled is answered as changed even on a
+/// read behind that top-up, so Confirm offers Back; a move on that read
+/// still signs nothing.
+#[test]
+fn an_exit_on_a_read_behind_its_landed_top_up_is_answered_changed() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.exit_of, Some(w.moves()[0].id.clone()));
+    w.net.execute_sent(0);
+    w.activity();
+    assert_eq!(w.moves()[0].state, PlatformActivityState::Done);
+    w.net.state.lock().unwrap().get_mut(&a).unwrap().0 -= 1;
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&q, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.sent(), 1, "nothing signed");
+    assert_eq!(w.moves().len(), 1, "nothing recorded");
+
+    let again = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(again.exit_of, None);
+    assert_eq!(
+        w.exit(&again, &w.f.grant(again.credits))
+            .unwrap_err()
+            .code(),
+        "platform.unavailable"
+    );
+    assert_eq!(w.sent(), 1, "nothing signed on the lagging read");
+}
+
 /// An exit with nothing changed since its quote moves exactly the quoted
 /// withdrawal: the quote and the move plan the same inputs, fee and
 /// amount, so it neither loops on `credits.quote_changed` nor moves more.
