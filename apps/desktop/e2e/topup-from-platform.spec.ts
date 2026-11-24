@@ -149,7 +149,7 @@ for (const theme of THEMES) {
     await topUpLands(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-refusal")).toHaveText("Your Platform addresses changed since you reviewed this move. Review it again.");
+    await expect(page.getByTestId("platform-move-refusal")).toHaveText("The balance on your Platform addresses changed since you reviewed this move. Review it again.");
     await expect(page.getByTestId("platform-move-refused-back")).toBeVisible();
     expect(await page.evaluate(() => window.__dwFixture!.world.pending.platform!.activity.some((a) => a.kind === "moveToCore"))).toBe(false);
     await moveShot(page, theme, "exit-quote-changed");
@@ -169,7 +169,7 @@ for (const theme of THEMES) {
     await topUpLands(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-refusal")).toHaveText("Your Platform addresses changed since you reviewed this move. Review it again.");
+    await expect(page.getByTestId("platform-move-refusal")).toHaveText("The balance on your Platform addresses changed since you reviewed this move. Review it again.");
     expect(errors).toEqual([]);
   });
 

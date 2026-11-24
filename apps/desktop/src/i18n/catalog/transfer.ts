@@ -92,7 +92,7 @@ export const transfer = {
       unavailable: "Dash Platform did not answer. Try again.",
       signerUnavailable: "Unlock the wallet fully and try again.",
       grantExceeded: "The cost went above what you approved. Try again.",
-      quoteChanged: "Your Platform addresses changed since you reviewed this move. Review it again.",
+      quoteChanged: "The balance on your Platform addresses changed since you reviewed this move. Review it again.",
       featureOff: "Platform addresses are turned off.",
       /** `code` is the engine's error code. */
       stopped: "It stopped with {code}.",

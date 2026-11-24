@@ -168,7 +168,7 @@ describe("Move to Dash wallet", () => {
     flow.begin();
     await flow.move(GRANT, TO, "move-7-0");
     expect([flow.step, moveCanRetry(flow.error)]).toEqual(["refused", true]);
-    expect(moveErrorText(flow.error, credits)).toBe("Your Platform addresses changed since you reviewed this move. Review it again.");
+    expect(moveErrorText(flow.error, credits)).toBe("The balance on your Platform addresses changed since you reviewed this move. Review it again.");
   });
 
   it("a refusal keeps its error; Back only when a new quote may pass", async () => {
