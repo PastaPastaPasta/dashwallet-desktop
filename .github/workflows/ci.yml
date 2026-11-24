@@ -218,6 +218,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: ./.github/actions/pinned-sources
       - run: cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-gnu -- -D warnings
+      - run: cargo clippy -p dw-app --all-targets --features selftest --locked --target x86_64-pc-windows-gnu -- -D warnings
 
   rust-linux:
     name: Rust tests (Linux)
