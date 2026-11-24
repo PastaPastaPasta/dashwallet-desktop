@@ -451,8 +451,12 @@ pub enum ErrorData {
     /// syncing (`account`, `tree`, `journal`, `core`, `startup`; m4 §2.13);
     /// `credits.recipient_invalid`: why the address cannot be paid (m4 §2.12).
     Reason { reason: String },
-    /// `tx_action_refused`: why the abandon or resend was refused.
-    TxAction { refusal: TxActionRefusalName },
+    /// `tx_action_refused`: why the abandon or resend was refused, and for
+    /// `recordUnreadable` the wallet whose saved transaction didn't read.
+    TxAction {
+        refusal: TxActionRefusalName,
+        wallet_id: Option<String>,
+    },
     /// `request_not_found`, `height_out_of_range`, `backup.unsupported_version`,
     /// `psbt.too_large` (bytes), `shielded.too_many_inputs` (the coins the
     /// shield would spend; at most 50 fit): the number named.
@@ -565,12 +569,27 @@ pub enum TxActionRefusalName {
     /// A later transaction that spends from it is already locked or
     /// confirmed, so this one will confirm too.
     SettledDescendant,
+    /// A saved transaction of the loaded wallet `walletId` names didn't
+    /// read at its load, so what descends from this one is unknown.
+    RecordUnreadable,
 }
 
-crate::dto::mirror_enum!(dw_engine::TxActionRefusal => TxActionRefusalName {
-    Confirmed, InstantLocked, AlreadyAbandoned, Coinbase, InMempool, NotSentByWallet, RescanFirst,
-    SettledDescendant
-});
+impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
+    fn from(r: dw_engine::TxActionRefusal) -> Self {
+        use dw_engine::TxActionRefusal as R;
+        match r {
+            R::Confirmed => Self::Confirmed,
+            R::InstantLocked => Self::InstantLocked,
+            R::AlreadyAbandoned => Self::AlreadyAbandoned,
+            R::Coinbase => Self::Coinbase,
+            R::InMempool => Self::InMempool,
+            R::NotSentByWallet => Self::NotSentByWallet,
+            R::RescanFirst => Self::RescanFirst,
+            R::SettledDescendant => Self::SettledDescendant,
+            R::RecordUnreadable(_) => Self::RecordUnreadable,
+        }
+    }
+}
 
 impl AppError {
     pub fn new(code: impl Into<ErrorCode>, message: impl Into<String>) -> Self {

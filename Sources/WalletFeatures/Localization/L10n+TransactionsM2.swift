@@ -41,6 +41,8 @@ extension L10n {
                 "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
             case .settledDescendant:
                 "This transaction can't be abandoned. A later transaction that spends from it is already locked or confirmed, so this one will confirm too."
+            case .recordUnreadable:
+                "A saved transaction in one of your open wallets can't be read, so Dash Wallet can't tell whether this one is still needed. Restart Dash Wallet. If that doesn't help, remove that wallet and restore it from its recovery phrase."
             }
         }
 

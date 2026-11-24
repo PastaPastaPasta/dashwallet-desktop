@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import { abandonQuestion, actionProblem, confirmationDetail, statusText } from "./TxDetailSheet";
+import { summary, WALLET_A } from "../onboarding/testWorld";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -88,6 +89,17 @@ describe("a refused abandon", () => {
   it("says why a payment with a locked or confirmed later payment can't be abandoned, from the catalog", () => {
     expect(actionProblem(refused("settledDescendant", "engine text"))).toBe(
       "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
+    );
+  });
+
+  it("names the wallet whose saved transaction doesn't read, and what to do, from the catalog", () => {
+    const unreadable = { ...refused("recordUnreadable", "engine text"), data: { kind: "txAction", refusal: "recordUnreadable", walletId: WALLET_A } };
+    const savings = summary(WALLET_A, "Savings");
+    expect(actionProblem(unreadable, [savings, summary("b2".repeat(32), "Spending")])).toBe(
+      "Dash Wallet can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Savings and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
+    );
+    expect(actionProblem(unreadable, [savings])).toBe(
+      "Dash Wallet can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet: add another wallet (a new one is fine), remove Savings, and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed. You can remove the extra wallet afterwards.",
     );
   });
 

@@ -178,6 +178,9 @@ commands! {
     /// refused (`settledDescendant`) when a later transaction spending from
     /// it is InstantSend-locked, in a block or finalized, unless a ChainLocked
     /// spend of one of its inputs beat it and those are only locked (#446).
+    /// One not under the ChainLock exception is refused (`recordUnreadable`)
+    /// while a saved transaction of any loaded wallet didn't read at its
+    /// load (#611).
     #[facade("NetworkSession::abandon_transaction")]
     fn abandon_transaction(state, wallet_id: String, txid: String) -> () {
         let id = parse_wallet_id(&wallet_id)?;
@@ -203,7 +206,8 @@ commands! {
     /// rescans once, from the lowest funding height of them all. One the
     /// exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
     /// or that a settled later transaction holds (`settledDescendant`), is
-    /// skipped.
+    /// skipped. One refused as `recordUnreadable` is kept too, and the call
+    /// then fails with that refusal.
     /// Needs a running SPV client. Returns how many were dropped.
     #[facade("NetworkSession::drop_unconfirmed")]
     fn drop_unconfirmed(state, wallet_id: Option<String>) -> u32 {
