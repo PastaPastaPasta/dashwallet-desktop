@@ -13,7 +13,7 @@ test.describe.configure({ timeout: 60_000 });
 const sheet = (page: Page) => page.getByTestId("topup-body");
 const shots = process.env.DW_SHOTS_DIR;
 
-async function openTopUp(page: Page, theme: Theme, nextTopUp?: "held" | "pending") {
+async function openTopUp(page: Page, theme: Theme, nextTopUp?: "held" | "pending" | "failed") {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl("dashpay-registered", theme));
   await page.getByTestId("toolbar").waitFor();
@@ -127,6 +127,61 @@ for (const theme of THEMES) {
     expect(await seriousAxeViolations(page)).toEqual([]);
     await page.getByTestId("topup-source-move-to-core").click();
     await expect(page.getByTestId("transfer-sheet")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`Max from Platform pays the amount Confirm showed (${theme})`, async ({ page }) => {
+    const errors = await openTopUp(page, theme);
+    await page.getByTestId("topup-source-platform").click();
+    await page.getByTestId("topup-max").click();
+    await page.getByTestId("topup-next").click();
+    await expect(page.getByTestId("topup-quote")).toBeVisible();
+    await page.getByTestId("topup-pay").click();
+    await authorize(page);
+    await expect(sheet(page)).toHaveAttribute("data-outcome", "done");
+    await expect(page.getByTestId("topup-outcome-title")).toHaveText("Credits added");
+    expect(errors).toEqual([]);
+  });
+
+  test(`in discreet mode Max from Platform shows no amount on Confirm (${theme})`, async ({ page }) => {
+    const errors = await openTopUp(page, theme);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "toggleDiscreet" }));
+    await page.getByTestId("topup-source-platform").click();
+    await page.getByTestId("topup-max").click();
+    await page.getByTestId("topup-next").click();
+    await expect(page.getByTestId("topup-quote")).toBeVisible();
+    await shot(page, theme, "platform-confirm-max-discreet");
+    const amountRow = page.getByTestId("topup-quote").locator(".detail-row").first().locator(".detail-value");
+    expect((await amountRow.textContent())!.replace(/\D/g, "")).toBe("");
+    // Masked amounts; only the fee address keeps its digits.
+    await expect(page.getByTestId("topup-platform-message")).toContainText("with #.## from your Platform addresses? About #.## leaves them");
+    expect(errors).toEqual([]);
+  });
+
+  test(`a failed top-up from Platform says nothing left, and History shows the top-up row (${theme})`, async ({ page }) => {
+    const errors = await openTopUp(page, theme, "failed");
+    await page.getByTestId("topup-source-platform").click();
+    await page.getByTestId("topup-next").click();
+    await page.getByTestId("topup-pay").click();
+    await authorize(page);
+    await expect(page.getByTestId("topup-outcome-text")).toHaveText("Nothing left your Platform addresses.");
+    await expect(page.getByTestId("topup-move-to-core")).toHaveCount(0);
+    await shot(page, theme, "platform-failed");
+    await page.getByTestId("topup-done").click();
+    await page.getByTestId("profile-top-up").click();
+    await page.getByTestId("topup-source-platform").click();
+    await page.getByTestId("topup-next").click();
+    await page.getByTestId("topup-pay").click();
+    await authorize(page);
+    await expect(sheet(page)).toHaveAttribute("data-outcome", "done");
+    await page.getByTestId("topup-done").click();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "activity" }));
+    const row = page.locator('[data-txid^="platform:toIdentity:"]', { hasText: "Credit top-up from Platform" }).first();
+    await expect(row).toBeVisible();
+    if (shots) {
+      await fontsReady(page);
+      await row.screenshot({ path: `${shots}/${process.env.DW_SHOTS_TAG ?? "after"}-${theme}-history-top-up-row.png` });
+    }
     expect(errors).toEqual([]);
   });
 

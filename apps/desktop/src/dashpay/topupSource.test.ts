@@ -10,7 +10,7 @@ import { platformActivityRefetchMs, PENDING_MOVE_REFETCH_MS } from "../api/queri
 import { isMayLandRow, platformRow, sourceRowTitle, SourceRowText } from "../history/sourceRows";
 import { appError } from "../onboarding/testWorld";
 import { hasPendingMove, hasUnansweredOp } from "../platform/move";
-import { canPay, FROM_PLATFORM_COPY, fromPlatformErrorText, liveOutcome, offersMove, platformHold, platformOutcomeText, SOURCE_COPY, topUpSources, type SourceInputs } from "./topupSource";
+import { canPay, FROM_PLATFORM_COPY, fromPlatformErrorText, liveOutcome, maxMasked, offersMove, platformHold, platformOutcomeText, SOURCE_COPY, topUpSources, type SourceInputs } from "./topupSource";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -71,6 +71,12 @@ describe("Pay with (C3-8)", () => {
     expect(canPay(topUpSources(inputs({ mainnet: true })), "platform")).toBe(false);
   });
 
+  it("addresses or Activity that could not be read say so, not that Platform is unavailable", () => {
+    expect(reasons(inputs({ platform: "unread" })).platform).toBe(SOURCE_COPY.unread);
+    expect(SOURCE_COPY.unread).not.toBe(SOURCE_COPY.notOffered);
+    expect(topUpSources(inputs({ platform: "unread" }))[1].balance).toBeNull();
+  });
+
   it("a send or move holding the addresses says so, not a top-up's copy", () => {
     expect(reasons(inputs({ hold: { state: "pending", topUp: false } })).platform).toBe(SOURCE_COPY.heldByOther);
     expect(reasons(inputs({ hold: { state: "held", topUp: false } })).platform).toBe(SOURCE_COPY.heldByOther);
@@ -101,6 +107,16 @@ describe("a top-up from Platform's outcome", () => {
     const o = platformOutcomeText(outcome({}), balance);
     expect(o.move).toBe(false);
     expect(o.text).toContain("9000000000 credits");
+  });
+
+  it("discreet mode masks a Max top-up's credits on the outcome", () => {
+    const masked = maxMasked(true, true, "***");
+    expect(masked).toBe("***");
+    expect(maxMasked(true, false, "***")).toBeNull();
+    expect(maxMasked(false, true, "***")).toBeNull();
+    const o = platformOutcomeText(outcome({ balance: null }), balance, masked);
+    expect(o.text).toContain("***");
+    expect(o.text.replace(/\D/g, "")).toBe("");
   });
 
   it("pending: may still go through, no action", () => {
