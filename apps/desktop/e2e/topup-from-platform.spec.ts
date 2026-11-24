@@ -204,7 +204,7 @@ for (const theme of THEMES) {
     await topUpLands(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-refusal")).toHaveText("The balance on your Platform addresses changed since you reviewed this move. Review it again.");
+    await expect(page.getByTestId("platform-move-refusal")).toHaveText("What you can move from your Platform addresses changed since you reviewed this move. Review it again.");
     await expect(page.getByTestId("platform-move-refused-back")).toBeVisible();
     expect(await page.evaluate(() => window.__dwFixture!.world.pending.platform!.activity.some((a) => a.kind === "moveToCore"))).toBe(false);
     await moveShot(page, theme, "exit-quote-changed");
@@ -224,7 +224,7 @@ for (const theme of THEMES) {
     await topUpLands(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-refusal")).toHaveText("The balance on your Platform addresses changed since you reviewed this move. Review it again.");
+    await expect(page.getByTestId("platform-move-refusal")).toHaveText("What you can move from your Platform addresses changed since you reviewed this move. Review it again.");
     expect(errors).toEqual([]);
   });
 
@@ -254,7 +254,7 @@ for (const theme of THEMES) {
     });
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-refusal")).toHaveText("The balance on your Platform addresses changed since you reviewed this move. Review it again.");
+    await expect(page.getByTestId("platform-move-refusal")).toHaveText("What you can move from your Platform addresses changed since you reviewed this move. Review it again.");
     expect(errors).toEqual([]);
   });
 
@@ -266,7 +266,7 @@ for (const theme of THEMES) {
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("The move did not go through");
-    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("These credits were already used: either the top-up went through, or an earlier move to your Dash wallet took them. Activity shows which.");
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("These credits were already used: either the top-up or registration they were held for went through, or an earlier move to your Dash wallet took them. Activity shows which.");
     await moveShot(page, theme, "exit-lost");
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);

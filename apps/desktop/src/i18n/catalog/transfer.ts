@@ -67,7 +67,7 @@ export const transfer = {
       debitOnly: "Dash Platform has not said whether the move of {taken} went through. Activity shows it when it does. Do not move again until it does.",
     },
     replaced: { title: "Replaced by a retry", text: "This move was replaced by a retry. Activity shows the retry." },
-    failed: { title: "The move did not go through", text: "These credits were already used: either the top-up went through, or an earlier move to your Dash wallet took them. Activity shows which." },
+    failed: { title: "The move did not go through", text: "These credits were already used: either the top-up or registration they were held for went through, or an earlier move to your Dash wallet took them. Activity shows which." },
     unseen: "Your move has an update.",
     waiting: {
       text: "A move to your Dash wallet is not confirmed yet. Do not move again until Activity shows that it went through.",
@@ -92,7 +92,7 @@ export const transfer = {
       unavailable: "Dash Platform did not answer. Try again.",
       signerUnavailable: "Unlock the wallet fully and try again.",
       grantExceeded: "The cost went above what you approved. Try again.",
-      quoteChanged: "The balance on your Platform addresses changed since you reviewed this move. Review it again.",
+      quoteChanged: "What you can move from your Platform addresses changed since you reviewed this move. Review it again.",
       featureOff: "Platform addresses are turned off.",
       /** `code` is the engine's error code. */
       stopped: "It stopped with {code}.",
