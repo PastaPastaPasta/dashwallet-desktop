@@ -174,7 +174,7 @@ export const masternodes = {
       keychain: "key in this wallet · voting key {index}",
       added: "key you added",
       eligibleShared: {
-        one: "{custody} · {count} masternode uses this key",
+        one: "{custody} · 1 masternode uses this key",
         other: "{custody} · {count} masternodes use this key",
       },
     },
@@ -638,44 +638,26 @@ export const masternodes = {
       votingAddress: "voting address {address}",
       alreadyTracked: "Already tracked",
       label: "Name (optional)",
-      labelHelp: "Only this wallet sees it.",
+      /** A tracked masternode's name is the tracked registry's, which every wallet on this network reads. */
+      labelHelp: "Only Dash Wallet on this computer sees it.",
       submit: "Track",
       invalid: "Enter an IP address and port, or a 64-character ProTx hash.",
       none: "No masternode with this address or ProTx hash is in the masternode list.",
       already: "Already tracked as {name}.",
       list_unavailable: "The masternode list is still loading. Try again in a moment.",
     },
-    /** Add keys and Keys you added (MG-10 §1.4; MG-00 D13, amended for 1.0: voting keys too). */
+    /** Add keys and Keys you added (MG-10 §1.4; MG-00 D13, amended for 1.0: the voting key only). */
     keys: {
       menu: "Add keys…",
       title: "Add a key",
-      role: "Key",
-      roles: {
-        voting: { title: "Voting key", help: "Lets this wallet vote on proposals and usernames with this masternode." },
-        owner: {
-          title: "Owner key",
-          evonode:
-            "Lets you withdraw this evonode's credits. Changing its keys from here also needs its registration, which this wallet has only when a wallet loaded here holds it.",
-          regular: "Lets you change its keys from here once a wallet loaded here holds its registration.",
-        },
-        payout: { title: "Payout key", help: "Lets you withdraw this evonode's credits to any address." },
-      },
+      votingHelp: "Lets this wallet vote on proposals and usernames with this masternode.",
       input: "Private key",
-      inputHelp: "WIF or 64 hex characters. The wallet keeps it encrypted and never shows it again.",
+      inputHelp:
+        "WIF or 64 hex characters. The wallet keeps it encrypted and never shows it again. Backups don't include keys you add here. Keep your own copy.",
       submit: "Add key",
       done: "Done",
-      matched: {
-        owner: "Matches this masternode's owner key.",
-        payout: "Matches this masternode's payout address.",
-        voting: "Matches this masternode's voting key.",
-      },
-      unchecked: {
-        ownerEvonode:
-          "Saved. No wallet loaded here holds this masternode's registration, so it can't be checked here. Platform checks it when you withdraw.",
-        ownerRegular: "Saved. No wallet loaded here holds this masternode's registration, so it can't be checked or used to change keys yet.",
-        payout: "Saved. Platform checks it when you withdraw.",
-        voting: "Saved. This masternode isn't in the masternode list now, so the key can't be checked. It votes once the key matches.",
-      },
+      matched: "Matches this masternode's voting key.",
+      unchecked: "Saved. This masternode isn't in the masternode list now, so the key can't be checked. It can vote once the key matches.",
       mismatch: "This key doesn't belong to this masternode.",
       invalid: "Enter the private key as a compressed WIF for this network, or as 64 hex characters.",
       locked: "Unlock to add a key.",
@@ -691,7 +673,10 @@ export const masternodes = {
       menu: "Stop tracking",
       title: "Stop tracking",
       text: "{name} leaves My masternodes.",
-      keys: { one: "The {count} key you added for it is deleted from this wallet.", other: "The {count} keys you added for it are deleted from this wallet." },
+      keys: {
+        one: "The key you added for it is deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need it again.",
+        other: "The {count} keys you added for it are deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need them again.",
+      },
       submit: "Stop tracking",
     },
     errors: {

@@ -26,7 +26,13 @@ import type { VoteTally } from "../api/generated/VoteTally";
 import type { VotingMasternode } from "../api/generated/VotingMasternode";
 import type { WeightRange } from "../api/generated/WeightRange";
 import type { Ctx, Handlers } from "./handlers";
+import type { ListFacts } from "../api/generated/ListFacts";
 import type { MasternodesWorld } from "./masternodes";
+
+/** masternodes.ts's `addedVoters` and `staleAddedVoter`, passed in by handlers.ts (a value import would close a
+ * module cycle through scenarios.ts). */
+type AddedVoters = (m: MasternodesWorld) => { proTxHash: string; facts: ListFacts }[];
+type StaleAddedVoter = (m: MasternodesWorld, hash: string) => boolean;
 import { nameHandlers, nameScenarios, newNamesWorld, type NamesWorld } from "./names";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
@@ -67,6 +73,8 @@ export interface GovernanceWorld {
   masternodes: Omit<VotingMasternode, "currentVote" | "voteTime" | "keyLastVote" | "keyLastVoteTime">[];
   /** Votes seen, by proposal then ProTx hash. */
   votes: Record<string, Record<string, FixtureVote>>;
+  /** Tracked masternodes whose collateral outpoint isn't resolved yet (MG-02 D80): listed, refused at vote. */
+  collateralUnresolved: string[];
   /** `vote` refuses these masternodes with the reason (a store refusal, mg-engine §2.4). */
   refuse: Record<string, string>;
   /** `governance.list_unavailable` while SPV has no masternode list. */
@@ -149,9 +157,9 @@ export const MN_B = h("b2");
 export const MN_C = h("c3");
 
 const FIXTURE_MASTERNODES: GovernanceWorld["masternodes"] = [
-  { proTxHash: MN_A, kind: "regular", weight: 1, valid: true, key: { kind: "keychain", index: 0 }, keyHolders: 1 },
-  { proTxHash: MN_B, kind: "evonode", weight: 4, valid: true, key: { kind: "keychain", index: 1 }, keyHolders: 1 },
-  { proTxHash: MN_C, kind: "regular", weight: 1, valid: false, key: { kind: "keychain", index: 2 }, keyHolders: 1 },
+  { proTxHash: MN_A, kind: "regular", weight: 1, valid: true, key: { kind: "keychain", index: 0 }, collateralResolved: true, keyHolders: 1 },
+  { proTxHash: MN_B, kind: "evonode", weight: 4, valid: true, key: { kind: "keychain", index: 1 }, collateralResolved: true, keyHolders: 1 },
+  { proTxHash: MN_C, kind: "regular", weight: 1, valid: false, key: { kind: "keychain", index: 2 }, collateralResolved: true, keyHolders: 1 },
 ];
 
 const synced = (): GovernanceSyncState => ({
@@ -179,6 +187,7 @@ export const newGovernanceWorld = (): GovernanceWorld => ({
   masternodes: structuredClone(FIXTURE_MASTERNODES),
   votes: { [h("1")]: { [MN_A]: { outcome: "yes", time: NOW - 40 * 60 } }, [h("2")]: { [MN_A]: { outcome: "yes", time: NOW - 3 * 86_400 }, [MN_B]: { outcome: "yes", time: NOW - 3 * 86_400 } } },
   refuse: {},
+  collateralUnresolved: [],
   listUnavailable: false,
   names: newNamesWorld(),
   mine: {},
@@ -260,27 +269,26 @@ export function governanceInfo(w: GovernanceWorld): GovernanceInfo {
   };
 }
 
-/** Tracked masternodes of the synced list whose attached voting key matches it, by ProTx hash. The record ids live in
- * app.sqlite, so a locked vault still lists them (voting.rs `voting_masternodes`). */
-function attachedVoters(m: MasternodesWorld): GovernanceWorld["masternodes"] {
-  if (!m.listState.synced) return [];
-  const matched = (hash: string) => m.attached[hash]?.some((k) => k.role === "voting" && k.check === "matched");
-  return m.rows
-    .filter((r) => r.tracked && matched(r.proTxHash))
-    .flatMap((r) => m.listed.filter((l) => l.proTxHash === r.proTxHash))
-    .sort((a, b) => a.proTxHash.localeCompare(b.proTxHash))
-    .map((l) => ({ proTxHash: l.proTxHash, kind: l.facts.kind, weight: l.facts.kind === "evonode" ? 4 : 1, valid: l.facts.valid, key: { kind: "attached" }, keyHolders: 1 }));
-}
-
-/** The keychain's voting masternodes, then the tracked ones whose added voting key matches. */
-function voters(world: World): GovernanceWorld["masternodes"] {
+/** The keychain's voting masternodes, then the tracked ones whose added voting key matches (`added`). */
+function voters(world: World, added: AddedVoters): GovernanceWorld["masternodes"] {
   const own = world.governance.masternodes;
-  return [...own, ...attachedVoters(world.masternodes).filter((a) => !own.some((m) => m.proTxHash === a.proTxHash))];
+  const attached = added(world.masternodes)
+    .filter((l) => !own.some((m) => m.proTxHash === l.proTxHash))
+    .map((l) => ({
+      proTxHash: l.proTxHash,
+      kind: l.facts.kind,
+      weight: l.facts.kind === "evonode" ? 4 : 1,
+      valid: l.facts.valid,
+      key: { kind: "attached" as const },
+      collateralResolved: !world.governance.collateralUnresolved.includes(l.proTxHash),
+      keyHolders: 1,
+    }));
+  return [...own, ...attached];
 }
 
-function votingFor(world: World, proposal: string): VotingMasternode[] {
+function votingFor(world: World, proposal: string, added: AddedVoters): VotingMasternode[] {
   const seen = world.governance.votes[proposal] ?? {};
-  return voters(world).map((m) => ({
+  return voters(world, added).map((m) => ({
     ...m,
     currentVote: seen[m.proTxHash]?.outcome ?? null,
     voteTime: seen[m.proTxHash]?.time ?? null,
@@ -331,10 +339,14 @@ export function governanceHandlers({
   wallet,
   grant,
   useGrant,
+  addedVoters,
+  staleAddedVoter,
 }: {
   wallet: (w: World, walletId: string) => FixtureWallet;
   grant: (w: World, id: string, walletId: string, kinds: ("spend" | "governance")[]) => FixtureGrant | null;
   useGrant: (w: World, id: string) => void;
+  addedVoters: AddedVoters;
+  staleAddedVoter: StaleAddedVoter;
 }): Handlers {
   return {
     ...nameHandlers({ wallet, grant, useGrant }),
@@ -380,7 +392,7 @@ export function governanceHandlers({
       wallet(world, walletId);
       if (!HEX64.test(proposal)) throw fail("invalid_argument", "not a 64-character hex hash");
       if (world.governance.listUnavailable) throw fail("governance.list_unavailable", "masternode list unavailable");
-      return votingFor(world, proposal);
+      return votingFor(world, proposal, addedVoters);
     },
     governance_vote: ({ walletId, proposal, outcome, masternodes, grant: grantId }, ctx) => {
       const { world } = ctx;
@@ -395,9 +407,12 @@ export function governanceHandlers({
       useGrant(world, grantId);
       const seen = (g.votes[proposal] ??= {});
       const casts: VoteCast[] = masternodes.map((proTxHash) => {
-        const m = voters(world).find((x) => x.proTxHash === proTxHash);
+        const m = voters(world, addedVoters).find((x) => x.proTxHash === proTxHash);
         const refused = (rejected: string): VoteCast => ({ proTxHash, hash: null, peers: 0, rejected });
+        // The engine checks an attached key against the listed voting key when it signs (voting.rs `choose_key`).
+        if (staleAddedVoter(world.masternodes, proTxHash)) return refused("no_voting_key");
         if (!m) return refused("unknown_masternode");
+        if (!m.collateralResolved) return refused("collateral_unresolved");
         if (g.refuse[proTxHash]) return refused(g.refuse[proTxHash]);
         if (!m.valid) return refused(BANNED_REJECTION);
         const before = seen[proTxHash];
@@ -595,7 +610,7 @@ export function governanceScenarios(base: Base) {
     "governance-added-key": (t: ThemeName | null) => {
       const w = governanceBase(base, t);
       const club = w.masternodes.rows.find((r) => r.tracked)!.proTxHash;
-      w.masternodes.attached[club] = [{ role: "voting", secret: w.masternodes.expected[club].voting!, check: "matched" }];
+      w.masternodes.attached[club] = [{ role: "voting", keyId: w.masternodes.expected[club].voting!, check: "matched" }];
       return w;
     },
     /** Masternodes whose voting keys are here but none can vote (banned). */

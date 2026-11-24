@@ -297,6 +297,9 @@ pub struct VotingMasternode {
     pub valid: bool,
     /// The key it votes with: the keychain's, else its attached one.
     pub key: NameVotingKey,
+    /// Its collateral outpoint is resolved, which a vote names (MG-02 D80);
+    /// until it is, `vote` refuses it `collateral_unresolved`.
+    pub collateral_resolved: bool,
     /// This masternode's own current vote on the proposal: a vote under its
     /// key whose collateral is resolved to it, or any vote under a key no
     /// other masternode of the list holds (MG-02 D49).

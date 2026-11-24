@@ -468,6 +468,14 @@ impl Masternodes {
         drop(key);
         let _mutation = self.session.masternodes.mutation().await;
         self.require_tracked(&hash)?;
+        // A vault without its full-scope key refuses the write below: refuse
+        // first, so the recorded id of a key already attached is kept.
+        if matches!(
+            self.session.vault.lock_state(),
+            dw_vault::LockState::Locked | dw_vault::LockState::UnlockedMixingOnly
+        ) {
+            return Err(EngineError::from(dw_vault::VaultError::Locked).into());
+        }
         // The id is cleared, durably (D34), before the vault write and
         // recorded only after it succeeded, so an interruption leaves a key
         // without an id, which holds no role, never an id that names a key
@@ -735,6 +743,65 @@ mod tests {
                 AttachedKeyRole::Owner,
                 Zeroizing::new(hex::encode(secret)),
             ))
+        }
+
+        /// Astra r1 (5): an attach the vault would refuse, locked or unlocked
+        /// for mixing only, is refused before the recorded id of the key
+        /// already attached is cleared, so that key keeps its role. Unlocked
+        /// for mixing only, the overview still lists the row, with its
+        /// attached keys unread.
+        #[test]
+        fn a_locked_attach_keeps_the_attached_keys_id() {
+            let (a, b) = ([7u8; 32], [9u8; 32]);
+            let dir = dw_testutil::private_tempdir();
+            let store = Arc::new(MemoryOsStore::new());
+            let engine = new_engine(dir.path(), &store);
+            let s = open(&engine);
+            engine
+                .block_on(s.vault_op(|v| v.create(Some(b"pw"))))
+                .unwrap();
+            let wallet = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+            let service = s.manager().unwrap().tracked_masternodes_service();
+            service.track_blocking(HASH, None).unwrap();
+            drop(service);
+            assert_eq!(attach(&engine, &s, a).unwrap(), KeyCheck::Unchecked);
+
+            let recorded = || {
+                let notes = engine.block_on(s.appdb_op(load_notes)).unwrap();
+                notes
+                    .key_ids
+                    .get(&(display_hex(&HASH), AttachedKeyRole::Owner))
+                    .map(hex::encode)
+            };
+            assert_eq!(recorded(), Some(id_of(a)));
+            for scope in [None, Some(dw_vault::UnlockScope::MixingOnly)] {
+                engine.block_on(s.vault_op(|v| Ok(v.lock()))).unwrap();
+                if let Some(scope) = scope {
+                    engine
+                        .block_on(s.vault_op(move |v| v.unlock(b"pw", scope)))
+                        .unwrap();
+                    let overview = engine.block_on(s.masternodes().list(wallet)).unwrap();
+                    let row = (overview.masternodes.iter())
+                        .find(|r| r.pro_tx_hash == display_hex(&HASH))
+                        .expect("the tracked row, unlocked for mixing only");
+                    assert_eq!(row.roles.attached, None);
+                }
+                let e = attach(&engine, &s, b).unwrap_err();
+                assert!(
+                    matches!(
+                        e,
+                        MasternodesError::Engine(EngineError::Vault(dw_vault::VaultError::Locked))
+                    ),
+                    "{scope:?}: {e:?}"
+                );
+                assert_eq!(recorded(), Some(id_of(a)), "{scope:?}");
+            }
+            engine
+                .block_on(s.vault_op(|v| v.unlock(b"pw", dw_vault::UnlockScope::Full)))
+                .unwrap();
+            assert_eq!(owner_key(&engine, &s, wallet).key_id, Some(id_of(a)));
+            drop(s);
+            engine.block_on(engine.shutdown()).unwrap();
         }
 
         /// MG-03 D31: a vault write that fails after its rename (B stored on

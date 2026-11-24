@@ -27,6 +27,7 @@ import {
   lastPayoutTitle,
   MnText,
   mnErrorText,
+  offersAddKey,
   operatorShare,
   payoutGroups,
   registrarLine,
@@ -381,12 +382,8 @@ function Pane({
                   ]
                 : []),
               ...(row.status !== "removed" ? [{ id: "operator", title: t("masternodes.myMasternodes.operatorSheet.menu"), onSelect: () => setSheet("operator") }] : []),
-              ...(row.tracked
-                ? [
-                    { id: "add-keys", title: t("masternodes.myMasternodes.keys.menu"), onSelect: onAddKey },
-                    { id: "untrack", title: t("masternodes.myMasternodes.untrack.menu"), onSelect: () => setSheet("untrack") },
-                  ]
-                : []),
+              ...(offersAddKey(row) ? [{ id: "add-keys", title: t("masternodes.myMasternodes.keys.menu"), onSelect: onAddKey }] : []),
+              ...(row.tracked ? [{ id: "untrack", title: t("masternodes.myMasternodes.untrack.menu"), onSelect: () => setSheet("untrack") }] : []),
             ]}
           />
         </div>

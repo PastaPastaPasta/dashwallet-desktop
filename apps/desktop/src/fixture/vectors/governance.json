@@ -434,6 +434,7 @@
           "kind": "keychain",
           "index": 0
         },
+        "collateralResolved": true,
         "currentVote": "yes",
         "voteTime": 1789000000,
         "keyHolders": 1,
@@ -448,6 +449,7 @@
         "key": {
           "kind": "attached"
         },
+        "collateralResolved": false,
         "currentVote": null,
         "voteTime": null,
         "keyHolders": 2,

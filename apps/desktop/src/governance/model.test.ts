@@ -73,6 +73,7 @@ const node = (patch: Partial<VotingMasternode> = {}): VotingMasternode => ({
   weight: 1,
   valid: true,
   key: { kind: "keychain", index: 0 },
+  collateralResolved: true,
   currentVote: null,
   voteTime: null,
   keyHolders: 1,
@@ -266,6 +267,16 @@ describe("the vote sheet", () => {
     expect(rows[5].sub).toBe("key you added · 2 masternodes use this key");
     expect(selectionNote([rows[0], rows[3]])).toBe("2 masternodes · weight 5 · no fee");
     expect(selectionNote([rows[0]])).toBe("1 masternode · weight 1 · no fee");
+  });
+
+  it("shows a masternode whose collateral isn't resolved with its reason, off and uncounted (MG-02 D80)", () => {
+    const nodes = [node({ proTxHash: "a".repeat(64) }), node({ proTxHash: "c".repeat(64), key: { kind: "attached" }, weight: 4, kind: "evonode", collateralResolved: false, currentVote: "no" })];
+    const rows = voteRows(nodes, NOW, L);
+    expect(rows.map((r) => r.eligible)).toEqual([true, false]);
+    expect(rows[1].sub).toBe("Its collateral isn't found yet, so it can't vote from this wallet yet.");
+    expect(selectionNote(rows.filter((r) => r.eligible))).toBe("1 masternode · weight 1 · no fee");
+    // Its vote seen doesn't preset the outcome either.
+    expect(presetOutcome(nodes)).toBeNull();
   });
 
   it("presets the outcome only when every valid masternode saw the same one", () => {

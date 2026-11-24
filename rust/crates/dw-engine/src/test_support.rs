@@ -219,3 +219,14 @@ pub fn sent_marks(session: &NetworkSession, wallet: crate::WalletId) -> Vec<Stri
         .map(|(key, _)| key[prefix.len()..].to_string())
         .collect()
 }
+
+/// Tracks `pro_tx_hash` with no masternode list, as the engine's own
+/// tracking tests do, so another crate can attach keys to it.
+pub fn track_unlisted(session: &NetworkSession, pro_tx_hash: [u8; 32]) {
+    let service = (session.manager())
+        .expect("a live session")
+        .tracked_masternodes_service();
+    service
+        .track_blocking(pro_tx_hash, None)
+        .expect("track the masternode");
+}

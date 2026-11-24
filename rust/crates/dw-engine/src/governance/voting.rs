@@ -97,6 +97,7 @@ impl Governance {
                     weight: ListSnapshot::weight(e),
                     valid: e.is_valid,
                     key: voting_key,
+                    collateral_resolved: store.resolved_collateral(&e.pro_tx_hash).is_some(),
                     current_vote: vote.map(|v| VoteOutcome::from(v.outcome)),
                     vote_time: vote.map(|v| v.time),
                     key_holders,

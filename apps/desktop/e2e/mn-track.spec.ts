@@ -20,9 +20,14 @@ async function open(page: Page, scenario: string, theme: "light" | "dark" = "lig
 
 const pane = (page: Page) => page.getByTestId("mn-pane");
 
-async function addKey(page: Page, role: string, key: string) {
+/** Which of `secrets` any cached query result or mutation variable holds (fixture builds' `__dwCachedText`). */
+async function cachedSecrets(page: Page, secrets: string[]) {
+  const text = (await page.evaluate(() => window.__dwCachedText!())).toLowerCase();
+  return secrets.filter((s) => text.includes(s.toLowerCase()));
+}
+
+async function addKey(page: Page, key: string) {
   const sheet = page.getByTestId("mn-add-key-sheet");
-  await sheet.getByTestId(`mn-add-key-role-${role}`).click();
   await sheet.getByTestId("mn-add-key-input").fill(key);
   await sheet.getByTestId("mn-add-key-submit").click();
 }
@@ -37,22 +42,37 @@ for (const theme of THEMES) {
     await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash", "Service update or revoke…", "Add keys…", "Stop tracking"]);
     await page.getByTestId("mn-more-add-keys").click();
     const sheet = page.getByTestId("mn-add-key-sheet");
-    await expect(sheet.getByTestId("mn-add-key-roles")).toContainText("Voting key");
-    await expect(sheet.getByTestId("mn-add-key-roles")).toContainText("Payout key");
+    // The voting key only (MG ruling 11-24): no role picker, no owner or payout key.
+    await expect(sheet.getByTestId("mn-add-key-role")).toContainText("Voting key");
+    await expect(sheet.getByRole("radio")).toHaveCount(0);
+    await expect(sheet).not.toContainText("Owner key");
+    await expect(sheet).not.toContainText("Payout key");
     await fontsReady(page);
     expect(await seriousAxeViolations(page)).toEqual([]);
 
-    await addKey(page, "voting", KEY_OTHER);
+    // A key typed and cancelled is gone when the sheet opens again, and no cache holds it.
+    await sheet.getByTestId("mn-add-key-input").fill(KEY_VOTING);
+    await sheet.getByRole("button", { name: "Cancel" }).click();
+    await page.getByTestId("mn-more").click();
+    await page.getByTestId("mn-more-add-keys").click();
+    await expect(sheet.getByTestId("mn-add-key-input")).toHaveValue("");
+
+    await addKey(page, KEY_OTHER);
     await expect(sheet.getByTestId("mn-add-key-error")).toHaveText("This key doesn't belong to this masternode.");
     await expect(sheet.getByTestId("mn-add-key-input")).toHaveValue("");
     await expect(sheet).not.toContainText(KEY_OTHER);
-    await addKey(page, "voting", KEY_VOTING);
+    await addKey(page, KEY_VOTING);
     await expect(sheet.getByTestId("mn-add-key-result")).toHaveText("Matches this masternode's voting key.");
     await sheet.getByTestId("mn-add-key-done").click();
     await expect(sheet).toHaveCount(0);
+    expect(await cachedSecrets(page, [KEY_OTHER, KEY_VOTING])).toEqual([]);
 
     await expect(page.getByTestId("mn-key-added-voting")).toContainText("Voting key · matches");
     await expect(page.getByTestId("mn-vote")).toBeEnabled();
+    // Add key never replaces a key: Remove comes first (Astra r1 1).
+    await page.getByTestId("mn-more").click();
+    await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash", "Service update or revoke…", "Stop tracking"]);
+    await page.keyboard.press("Escape");
     await fontsReady(page);
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
@@ -84,23 +104,55 @@ test("remove an added voting key: it leaves Keys you added and Vote turns off", 
   expect(errors).toEqual([]);
 });
 
-test("locked: Keys you added asks to unlock, and adding a key says so", async ({ page }) => {
+test("locked: Keys you added and Add key ask for the full unlock before any key field", async ({ page }) => {
   const errors = await open(page, "mn-track-voting-locked");
   await expect(page.getByTestId("mn-keys-added-locked")).toContainText("Keys you added: unlock to see");
   await page.getByTestId("mn-more").click();
   await page.getByTestId("mn-more-add-keys").click();
-  await addKey(page, "voting", KEY_VOTING);
-  await expect(page.getByTestId("mn-add-key-error")).toHaveText("Unlock to add a key.");
-  await page.getByTestId("mn-add-key-unlock").click();
-  await expect(page.getByTestId("mn-add-key-sheet")).toHaveCount(0);
+  const sheet = page.getByTestId("mn-add-key-sheet");
+  await expect(sheet.getByTestId("mn-add-key-unlock-first")).toContainText("Unlock to add a key.");
+  await expect(sheet.getByTestId("mn-add-key-input")).toHaveCount(0);
+  await sheet.getByTestId("mn-add-key-unlock").click();
+  await expect(sheet).toHaveCount(0);
   await page.getByTestId("unlock-sheet-field").fill("demo");
   await page.getByTestId("unlock-sheet-submit").click();
   await expect(page.getByTestId("unlock-sheet")).toHaveCount(0);
+  // Unlocked: the key attached before is read again, so Add key isn't offered.
   await expect(page.getByTestId("mn-key-added-voting")).toContainText("Voting key · matches");
   await page.getByTestId("mn-more").click();
+  await expect(page.getByTestId("mn-more-add-keys")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("the vote sheet lists a key once it's added and drops it once it's removed, without a reload (Astra r1 3)", async ({ page }) => {
+  const errors = await open(page, "governance");
+  const voteSheet = async () => {
+    await page.getByTestId("masternodes-tabs-governance").click();
+    await page.getByTestId("proposal-vote").click();
+    await expect(page.getByTestId("vote-sheet")).toBeVisible();
+  };
+  const closeVote = async () => {
+    await page.getByTestId("vote-cancel").click();
+    await expect(page.getByTestId("vote-sheet")).toHaveCount(0);
+  };
+  await voteSheet();
+  await expect(page.getByTestId("vote-node-c1c1c1c1")).toHaveCount(0);
+  await closeVote();
+  await page.getByTestId("masternodes-tabs-myMasternodes").click();
+  await page.getByTestId(`mn-row-${CLUB}`).click();
+  await page.getByTestId("mn-more").click();
   await page.getByTestId("mn-more-add-keys").click();
-  await addKey(page, "voting", KEY_VOTING);
-  await expect(page.getByTestId("mn-add-key-result")).toHaveText("Matches this masternode's voting key.");
+  await addKey(page, KEY_VOTING);
+  await page.getByTestId("mn-add-key-done").click();
+  await voteSheet();
+  await expect(page.getByTestId("vote-node-c1c1c1c1")).toContainText("key you added");
+  await closeVote();
+  await page.getByTestId("masternodes-tabs-myMasternodes").click();
+  await page.getByTestId(`mn-row-${CLUB}`).click();
+  await page.getByTestId("mn-key-remove-voting").click();
+  await expect(page.getByTestId("mn-key-added-voting")).toHaveCount(0);
+  await voteSheet();
+  await expect(page.getByTestId("vote-node-c1c1c1c1")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

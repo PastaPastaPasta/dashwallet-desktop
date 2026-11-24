@@ -114,6 +114,22 @@ describe("fixture governance", () => {
     expect((await offered()).map(([h]) => h)).toEqual([MN_A, MN_B, MN_C]);
   });
 
+  it("checks an added key at vote time: an unresolved collateral is listed but refused, a rotated-away key isn't offered (Astra r1 4, 7)", async () => {
+    const f = install("governance-added-key");
+    const hash = await hashOf("dashcon-2027-venue");
+    const vote = async () => (await cmd.governanceVote(W, hash, "yes", [CLUB], (await cmd.authorize({ kind: "governance" }, W, PASS)).id))[0].rejected;
+    const club = async () => (await cmd.governanceVotingMasternodes(W, hash)).find((n) => n.proTxHash === CLUB);
+    f.world.governance.collateralUnresolved.push(CLUB);
+    expect((await club())?.collateralResolved).toBe(false);
+    expect(await vote()).toBe("collateral_unresolved");
+    f.world.governance.collateralUnresolved = [];
+    // The masternode's owner changed its voting key: the key added here no longer matches the list.
+    f.world.masternodes.expected[CLUB] = { ...f.world.masternodes.expected[CLUB], voting: "rotated" };
+    expect(await club()).toBeUndefined();
+    expect(await vote()).toBe("no_voting_key");
+    expect((await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)?.roles).toMatchObject({ voting: false, attached: [{ role: "voting", check: "key_mismatch" }] });
+  });
+
   it("refuses a vote whose voting key changed (governance-vote-refused)", async () => {
     install("governance-vote-refused");
     const hash = await hashOf("dashcon-2027-venue");

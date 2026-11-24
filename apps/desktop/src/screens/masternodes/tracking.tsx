@@ -8,7 +8,7 @@ import type { AttachedKeyRoleName } from "../../api/generated/AttachedKeyRoleNam
 import type { KeyCheckName } from "../../api/generated/KeyCheckName";
 import type { ListedMasternode } from "../../api/generated/ListedMasternode";
 import type { MasternodeRow } from "../../api/generated/MasternodeRow";
-import { useBackend } from "../../api/queries";
+import { useBackend, useLockStatus } from "../../api/queries";
 import { ui } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
@@ -16,22 +16,24 @@ import { shortAddress } from "../../governance/model";
 import { useT } from "../../i18n";
 import {
   attachedLines,
+  canAttach,
   isVaultLocked,
   keyErrorText,
   keyResultText,
   keyRoles,
   kindText,
+  type KeyRoleView,
   MnText,
   mnErrorText,
   rowName,
   trackErrorText,
 } from "../../masternodes/model";
-import { useMasternodesRefresh } from "../../masternodes/queries";
+import { useKeysChanged, useMasternodesRefresh } from "../../masternodes/queries";
 
 /** mn-engine's `MAX_MASTERNODE_LABEL`. */
 export const MAX_LABEL = 64;
 
-export function SheetFooter({ onCancel, children }: { onCancel: () => void; children: React.ReactNode }) {
+export function SheetFooter({ onCancel, children }: { onCancel: () => void; children?: React.ReactNode }) {
   const t = useT();
   return (
     <footer className="mg-sheet-footer">
@@ -163,24 +165,25 @@ export function TrackSheet({ rows, onClose, onTracked }: { rows: MasternodeRow[]
 export function AddKeySheet({ row, onClose, onUnlock }: { row: MasternodeRow; onClose: () => void; onUnlock: () => void }) {
   const t = useT();
   const backend = useBackend();
-  const refresh = useMasternodesRefresh();
+  const refresh = useKeysChanged();
   const id = useId();
-  const roles = keyRoles(row);
-  const [role, setRole] = useState<AttachedKeyRoleName>(roles[0].role);
+  const lock = useLockStatus();
+  const offered = keyRoles(row).at(0);
+  const writable = lock.isSuccess && canAttach(lock.data.state);
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ text: string; unlock: boolean } | null>(null);
-  const [result, setResult] = useState<{ role: AttachedKeyRoleName; check: KeyCheckName } | null>(null);
-  const add = async () => {
+  const [result, setResult] = useState<KeyCheckName | null>(null);
+  const add = async (view: KeyRoleView) => {
     if (key.trim() === "") return setError({ text: t("masternodes.myMasternodes.keys.invalid"), unlock: false });
     setBusy(true);
     setError(null);
     const given = key;
     setKey("");
     try {
-      const check = await backend.mnAttachKey(row.proTxHash, role, given);
+      const check = await backend.mnAttachKey(row.proTxHash, view.role, given);
       await refresh();
-      setResult({ role, check });
+      setResult(check);
     } catch (e) {
       setError({ text: keyErrorText(e), unlock: isVaultLocked(e) });
     } finally {
@@ -189,10 +192,10 @@ export function AddKeySheet({ row, onClose, onUnlock }: { row: MasternodeRow; on
   };
   return (
     <Sheet title={t("masternodes.myMasternodes.keys.title")} width="small" testId="mn-add-key-sheet" onClose={onClose}>
-      {result ? (
+      {result !== null ? (
         <div className="mg-sheet-body">
           <p className="mg-notice mg-notice-info" role="status" data-testid="mn-add-key-result">
-            {keyResultText(result.role, result.check, row.kind)}
+            {keyResultText(result)}
           </p>
           <footer className="mg-sheet-footer">
             <span />
@@ -201,27 +204,19 @@ export function AddKeySheet({ row, onClose, onUnlock }: { row: MasternodeRow; on
             </DashButton>
           </footer>
         </div>
-      ) : (
+      ) : writable && offered ? (
         <form
           className="mg-sheet-body"
           onSubmit={(e) => {
             e.preventDefault();
-            void add();
+            void add(offered);
           }}
         >
           <p className="mg-muted mg-small mg-flush">{rowName(row)}</p>
-          <fieldset className="mg-choices" disabled={busy} data-testid="mn-add-key-roles">
-            <legend className="mg-section-title">{t("masternodes.myMasternodes.keys.role")}</legend>
-            {roles.map((r) => (
-              <label key={r.role} className="mg-choice" data-testid={`mn-add-key-role-${r.role}`}>
-                <input type="radio" name="mn-add-key-role" checked={role === r.role} onChange={() => setRole(r.role)} />
-                <span className="mg-choice-text">
-                  <span>{r.title}</span>
-                  <span className="mg-muted mg-small">{r.help}</span>
-                </span>
-              </label>
-            ))}
-          </fieldset>
+          <div data-testid="mn-add-key-role">
+            <h3 className="mg-section-title">{offered.title}</h3>
+            <p className="mg-muted mg-small mg-flush">{offered.help}</p>
+          </div>
           <label className={`mg-field ${error ? "has-error" : ""}`}>
             {t("masternodes.myMasternodes.keys.input")}
             <input
@@ -259,6 +254,18 @@ export function AddKeySheet({ row, onClose, onUnlock }: { row: MasternodeRow; on
             </DashButton>
           </SheetFooter>
         </form>
+      ) : (
+        <div className="mg-sheet-body" data-testid="mn-add-key-unlock-first">
+          {lock.isSuccess && !writable && (
+            <p className="mg-small mg-notice-row">
+              <span>{t("masternodes.myMasternodes.keys.locked")}</span>
+              <DashButton variant="tintedBlue" size="small" data-testid="mn-add-key-unlock" data-autofocus onClick={onUnlock}>
+                {MnText.unlock}
+              </DashButton>
+            </p>
+          )}
+          <SheetFooter onCancel={onClose} />
+        </div>
       )}
     </Sheet>
   );
@@ -268,7 +275,7 @@ export function AddKeySheet({ row, onClose, onUnlock }: { row: MasternodeRow; on
 export function KeysYouAdded({ row }: { row: MasternodeRow }) {
   const t = useT();
   const backend = useBackend();
-  const refresh = useMasternodesRefresh();
+  const refresh = useKeysChanged();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lines = attachedLines(row);
@@ -319,7 +326,7 @@ export function KeysYouAdded({ row }: { row: MasternodeRow }) {
 export function UntrackSheet({ row, onClose }: { row: MasternodeRow; onClose: () => void }) {
   const t = useT();
   const backend = useBackend();
-  const refresh = useMasternodesRefresh();
+  const refresh = useKeysChanged();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const keys = row.roles.attached?.length ?? 0;

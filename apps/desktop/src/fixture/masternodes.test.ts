@@ -49,6 +49,7 @@ import {
   REG_FEE_DRIFT,
   SPARE,
   TEST_VECTOR_WIF,
+  keyId,
   keyInfo,
 } from "./masternodes";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "./scenarios";
@@ -310,6 +311,31 @@ describe("fixture masternodes: track and keys", () => {
     expect(club.roles).toMatchObject({ voting: true, attached: [{ role: "voting", check: "matched" }] });
     expect(await cmd.mnDetachKey(CLUB, "voting")).toBe(true);
     expect((await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!.roles.voting).toBe(false);
+  });
+
+  it("refuses an attach while locked or unlocked for mixing only before checking it, keeping the key attached", async () => {
+    const f = install("mn-track-voting-locked");
+    await expect(cmd.mnAttachKey(CLUB, "voting", KEY_OTHER)).rejects.toMatchObject({ code: "vault.locked" });
+    expect(f.world.masternodes.attached[CLUB]).toEqual([{ role: "voting", keyId: keyId(KEY_VOTING), check: "matched" }]);
+    // The world holds key ids only: no attached secret is kept, here or across a relaunch.
+    expect(JSON.stringify(f.world.masternodes).toLowerCase()).not.toContain(KEY_VOTING);
+  });
+
+  it("gives an attached voting key back through no read: list, detail, find, vote and username voters", async () => {
+    install("mn-track");
+    expect(await cmd.mnAttachKey(CLUB, "voting", KEY_VOTING.toUpperCase())).toBe("matched");
+    const reads = await Promise.all(
+      [
+        () => cmd.mnList(W),
+        () => cmd.mnMasternode(W, CLUB),
+        () => cmd.mnFind("198.51.100.21"),
+        () => cmd.governanceVotingMasternodes(W, "ab".repeat(32)),
+        () => cmd.governanceContestedNames(W),
+      ].map((read) => read().catch((e: unknown) => e)),
+    );
+    const text = JSON.stringify(reads).toLowerCase();
+    expect(text).toContain(CLUB);
+    expect(text).not.toContain(KEY_VOTING);
   });
 
   it("matches an owner key only where a loaded wallet holds the registration", async () => {

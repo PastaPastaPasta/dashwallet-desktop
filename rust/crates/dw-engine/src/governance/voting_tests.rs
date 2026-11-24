@@ -259,7 +259,8 @@ fn vote_signs_and_stores_one_vote_per_masternode() {
 /// whose attached voting key is the list's (C), each saying which key it
 /// votes with. A masternode whose attached key is not the list's (H), or
 /// whose key is someone else's (D, G), is not offered; E is, though its
-/// collateral is unresolved, and its vote says so. Removing C's key drops
+/// collateral is unresolved, which the row says and its vote refuses.
+/// Removing C's key drops
 /// it.
 #[test]
 fn voting_masternodes_offers_keychain_then_attached_voting_keys() {
@@ -270,16 +271,16 @@ fn voting_masternodes_offers_keychain_then_attached_voting_keys() {
                 .block_on(v.gov.voting_masternodes(v.f.wallet, v.proposal.clone()))
                 .unwrap();
         mns.into_iter()
-            .map(|m| (m.pro_tx_hash, m.key))
+            .map(|m| (m.pro_tx_hash, m.key, m.collateral_resolved))
             .collect::<Vec<_>>()
     };
     assert_eq!(
         offered(&v),
         vec![
-            (display_hex(&A), NameVotingKey::Keychain { index: 0 }),
-            (display_hex(&B), NameVotingKey::Keychain { index: 3 }),
-            (display_hex(&E), NameVotingKey::Keychain { index: 5 }),
-            (display_hex(&C), NameVotingKey::Attached),
+            (display_hex(&A), NameVotingKey::Keychain { index: 0 }, true),
+            (display_hex(&B), NameVotingKey::Keychain { index: 3 }, true),
+            (display_hex(&E), NameVotingKey::Keychain { index: 5 }, false),
+            (display_hex(&C), NameVotingKey::Attached, true),
         ]
     );
     let cast = v.vote(VoteOutcome::No, &[C, E], v.grant()).unwrap();
@@ -295,7 +296,7 @@ fn voting_masternodes_offers_keychain_then_attached_voting_keys() {
     set_key_id(&appdb, &display_hex(&C), AttachedKeyRole::Voting, None).unwrap();
     assert_eq!(
         offered(&v).last(),
-        Some(&(display_hex(&E), NameVotingKey::Keychain { index: 5 }))
+        Some(&(display_hex(&E), NameVotingKey::Keychain { index: 5 }, false))
     );
 }
 

@@ -505,6 +505,9 @@ pub struct VotingMasternode {
     pub valid: bool,
     /// The key it votes with: the keychain's, else its attached one.
     pub key: NameVotingKey,
+    /// Its collateral outpoint is resolved; until it is, `governance_vote`
+    /// refuses it `collateral_unresolved` (MG-02 D80).
+    pub collateral_resolved: bool,
     /// This masternode's own current vote on the proposal (MG-02 D49).
     pub current_vote: Option<VoteOutcomeName>,
     pub vote_time: Option<i64>,
@@ -524,6 +527,7 @@ impl From<engine::VotingMasternode> for VotingMasternode {
             weight,
             valid,
             key,
+            collateral_resolved,
             current_vote,
             vote_time,
             key_holders,
@@ -536,6 +540,7 @@ impl From<engine::VotingMasternode> for VotingMasternode {
             weight,
             valid,
             key: key.into(),
+            collateral_resolved,
             current_vote: current_vote.map(Into::into),
             vote_time,
             key_holders,

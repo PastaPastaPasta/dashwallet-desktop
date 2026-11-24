@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invalidationsFor } from "../api/events";
 import { keys } from "../api/queries";
 import { IpcBackend } from "../api/tauri";
-import { mnKeys } from "./queries";
+import { contestedNamesKey } from "../governance/queries";
+import { invalidateAfterKeyChange, mnKeys } from "./queries";
 
 const W = "a1".repeat(32);
 const H = "4e".repeat(32);
@@ -65,6 +66,16 @@ describe("masternode wrappers", () => {
     expect(stale).toEqual([keys.masternodesAll]);
     await client.invalidateQueries({ queryKey: keys.masternodesAll });
     for (const k of engine) expect(client.getQueryState(k)?.isInvalidated, String(k)).toBe(true);
+    expect(client.getQueryState(mnKeys.credits(H))?.isInvalidated).toBe(false);
+  });
+
+  it("re-read the proposal and username voters after an attached key changes (Astra r1 3)", async () => {
+    const client = new QueryClient();
+    const voting = [...keys.governanceAll, "voting", W, H];
+    const read = [mnKeys.list(W), mnKeys.detail(W, H), voting, contestedNamesKey(W)];
+    for (const k of [...read, mnKeys.credits(H)]) client.setQueryData(k, 1);
+    await invalidateAfterKeyChange(client);
+    for (const k of read) expect(client.getQueryState(k)?.isInvalidated, String(k)).toBe(true);
     expect(client.getQueryState(mnKeys.credits(H))?.isInvalidated).toBe(false);
   });
 

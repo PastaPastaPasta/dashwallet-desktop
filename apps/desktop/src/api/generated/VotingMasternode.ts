@@ -19,6 +19,11 @@ valid: boolean,
  */
 key: NameVotingKey,
 /**
+ * Its collateral outpoint is resolved; until it is, `governance_vote`
+ * refuses it `collateral_unresolved` (MG-02 D80).
+ */
+collateralResolved: boolean,
+/**
  * This masternode's own current vote on the proposal (MG-02 D49).
  */
 currentVote: VoteOutcomeName | null, voteTime: number | null,

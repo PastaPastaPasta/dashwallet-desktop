@@ -18,6 +18,7 @@ import {
   bannedCount,
   formatCredits,
   groups,
+  canAttach,
   heldRoles,
   keyErrorText,
   keyResultText,
@@ -26,6 +27,7 @@ import {
   MnText,
   mnErrorText,
   nodeNames,
+  offersAddKey,
   operatorShare,
   payoutGroups,
   registrarLine,
@@ -187,24 +189,42 @@ describe("pane", () => {
 });
 
 describe("track and keys (MG-10 §1.3, §1.4; MG-00 D13 amended for 1.0)", () => {
-  it("offers a voting key and an owner key, and an evonode's payout key", () => {
-    expect(keyRoles({ kind: "regular" }).map((r) => r.title)).toEqual(["Voting key", "Owner key"]);
-    const evonode = keyRoles({ kind: "evonode" });
-    expect(evonode.map((r) => r.role)).toEqual(["voting", "owner", "payout"]);
-    expect(evonode[0].help).toBe("Lets this wallet vote on proposals and usernames with this masternode.");
-    expect(evonode[1].help).toMatch(/^Lets you withdraw this evonode's credits\./);
-    expect(keyRoles({ kind: "regular" })[1].help).toBe("Lets you change its keys from here once a wallet loaded here holds its registration.");
+  it("offers the voting key only: owner, operator and payout keys stay out of the app (MG ruling 11-24)", () => {
+    const plain = rowOf(CLUB);
+    // Even with an owner key already attached (a dwcli import), only the voting key is offered.
+    const club = { ...plain, roles: { ...plain.roles, attached: [{ role: "owner" as const, keyId: null, check: "unchecked" as const }] } };
+    expect(keyRoles(club).map((r) => r.role)).toEqual(["voting"]);
+    expect(keyRoles(club)[0]).toEqual({ role: "voting", title: "Voting key", help: "Lets this wallet vote on proposals and usernames with this masternode." });
+  });
+
+  it("never offers a second voting key: Remove comes first (Astra r1 1)", () => {
+    const club = rowOf(CLUB);
+    const withVoting = { ...club, roles: { ...club.roles, attached: [{ role: "voting" as const, keyId: null, check: "matched" as const }] } };
+    expect(keyRoles(withVoting)).toEqual([]);
+    expect(offersAddKey(withVoting)).toBe(false);
+    expect(offersAddKey(club)).toBe(true);
+    // Locked, the attached keys are unread: Add keys stays, and the sheet asks for the unlock first.
+    expect(offersAddKey({ ...club, roles: { ...club.roles, attached: null } })).toBe(true);
+    expect(offersAddKey(rowOf(HOME))).toBe(false);
+    expect([canAttach("unlocked"), canAttach("unencrypted"), canAttach("locked"), canAttach("unlockedMixingOnly")]).toEqual([true, true, false, false]);
+  });
+
+  it("says Stop tracking deletes the added keys from every wallet here, and that a name is shared", () => {
+    expect(t("masternodes.myMasternodes.untrack.keys", { count: 1 })).toBe(
+      "The key you added for it is deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need it again.",
+    );
+    expect(t("masternodes.myMasternodes.untrack.keys", { count: 2 })).toBe(
+      "The 2 keys you added for it are deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need them again.",
+    );
+    // A tracked masternode's name is the tracked registry's (tracking.rs `set_label`), which every wallet on
+    // this network reads, not this wallet's alone.
+    expect(t("masternodes.myMasternodes.track.labelHelp")).toBe("Only Dash Wallet on this computer sees it.");
   });
 
   it("says what each attach answered", () => {
-    expect(keyResultText("voting", "matched", "evonode")).toBe("Matches this masternode's voting key.");
-    expect(keyResultText("owner", "matched", "regular")).toBe("Matches this masternode's owner key.");
-    expect(keyResultText("payout", "matched", "evonode")).toBe("Matches this masternode's payout address.");
-    expect(keyResultText("payout", "unchecked", "evonode")).toBe("Saved. Platform checks it when you withdraw.");
-    expect(keyResultText("owner", "unchecked", "evonode")).toMatch(/Platform checks it when you withdraw\.$/);
-    expect(keyResultText("owner", "unchecked", "regular")).toMatch(/can't be checked or used to change keys yet\.$/);
-    expect(keyResultText("voting", "unchecked", "regular")).toMatch(/^Saved\. This masternode isn't in the masternode list now/);
-    expect(keyResultText("voting", "key_mismatch", "regular")).toBe("This key doesn't belong to this masternode.");
+    expect(keyResultText("matched")).toBe("Matches this masternode's voting key.");
+    expect(keyResultText("unchecked")).toBe("Saved. This masternode isn't in the masternode list now, so the key can't be checked. It can vote once the key matches.");
+    expect(keyResultText("key_mismatch")).toBe("This key doesn't belong to this masternode.");
   });
 
   it("turns attach and track refusals into sentences, never echoing the key", () => {
@@ -263,7 +283,7 @@ describe("governance vote rows (MG-09 F3)", () => {
     expect(nodeName(home, unlabelled)).toBe(`${rowName({ ...rowOf(HOME), label: null, typeIndex: 2 })} · 203.0.113.7:19999`);
     expect(nodeName(home, unlabelled)).toBe("Masternode 2 · 203.0.113.7:19999");
     expect(nodeName(home)).toBe(`Masternode ${HOME.slice(0, 8)}`);
-    const rows = voteRows([{ proTxHash: HOME, kind: "regular", weight: 1, valid: true, key: { kind: "keychain", index: 0 }, currentVote: null, voteTime: null, keyHolders: 1, keyLastVote: null, keyLastVoteTime: null }], 0, "en-US", names);
+    const rows = voteRows([{ proTxHash: HOME, kind: "regular", weight: 1, valid: true, key: { kind: "keychain", index: 0 }, collateralResolved: true, currentVote: null, voteTime: null, keyHolders: 1, keyLastVote: null, keyLastVoteTime: null }], 0, "en-US", names);
     expect(rows[0].name).toBe("Home node · 203.0.113.7:19999");
   });
 });

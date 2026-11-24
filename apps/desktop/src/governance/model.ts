@@ -444,6 +444,8 @@ export function voteRows(nodes: VotingMasternode[], now: number, locale?: string
     const v = seenVote(n);
     const base = { proTxHash: n.proTxHash, name: nodeName(n, names), weight: n.weight, lastSeen: v ? outcomeText(v.outcome) : t("masternodes.governance.node.none") };
     if (!n.valid) return { ...base, sub: t("masternodes.governance.node.banned"), eligible: false, lastSeen: "—" };
+    // `vote` refuses it `collateral_unresolved` until the collateral is found (MG-02 D80).
+    if (!n.collateralResolved) return { ...base, sub: t("masternodes.governance.rejected.collateral_unresolved"), eligible: false };
     if (v && !v.shared && v.time !== null && now - v.time < VOTE_CHANGE_SECS) {
       const after = formatDate(v.time + VOTE_CHANGE_SECS, locale, HOUR_MINUTE);
       return { ...base, sub: t("masternodes.governance.node.recent", { outcome: outcomeText(v.outcome), ago: ago(v.time, now, locale), time: after }), eligible: false };
@@ -454,10 +456,10 @@ export function voteRows(nodes: VotingMasternode[], now: number, locale?: string
   });
 }
 
-/** The outcome a sheet starts with: the last vote seen when every eligible row saw the same one
+/** The outcome a sheet starts with: the last vote seen when every row that can vote saw the same one
  * (§4.25.4), else none. */
 export function presetOutcome(nodes: VotingMasternode[]): VoteOutcomeName | null {
-  const seen = new Set(nodes.filter((n) => n.valid).map((n) => seenVote(n)?.outcome ?? null));
+  const seen = new Set(nodes.filter((n) => n.valid && n.collateralResolved).map((n) => seenVote(n)?.outcome ?? null));
   return seen.size === 1 ? [...seen][0] : null;
 }
 

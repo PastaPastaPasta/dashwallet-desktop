@@ -4,6 +4,7 @@
 import { isAppError } from "../api/backend";
 import type { AttachedKeyRoleName } from "../api/generated/AttachedKeyRoleName";
 import type { KeyCheckName } from "../api/generated/KeyCheckName";
+import type { LockStateName } from "../api/generated/LockStateName";
 import type { MasternodeDetail } from "../api/generated/MasternodeDetail";
 import type { MasternodeOverview } from "../api/generated/MasternodeOverview";
 import type { MasternodePayout } from "../api/generated/MasternodePayout";
@@ -173,7 +174,8 @@ export function voteBlocked(r: MasternodeRow, watchOnly: boolean): string | null
 
 const K = `${P}.keys`;
 
-const roleTitle = (role: AttachedKeyRoleName) => t(`${K}.roles.${role}.title`);
+/** "Owner key", "Voting key", "Payout address": the names "In this wallet" uses. */
+const roleTitle = (role: AttachedKeyRoleName) => t(`${P}.role.${role}`);
 
 export interface KeyRoleView {
   role: AttachedKeyRoleName;
@@ -181,23 +183,26 @@ export interface KeyRoleView {
   help: string;
 }
 
-/** The keys Add keys offers: voting (MG-00 D13, amended for 1.0), owner, and for an evonode payout. */
-export function keyRoles(r: Pick<MasternodeRow, "kind">): KeyRoleView[] {
-  const evonode = r.kind === "evonode";
-  const roles: KeyRoleView[] = [
-    { role: "voting", title: roleTitle("voting"), help: t(`${K}.roles.voting.help`) },
-    { role: "owner", title: roleTitle("owner"), help: t(evonode ? `${K}.roles.owner.evonode` : `${K}.roles.owner.regular`) },
-  ];
-  if (evonode) roles.push({ role: "payout", title: roleTitle("payout"), help: t(`${K}.roles.payout.help`) });
-  return roles;
+/** The keys Add keys offers: the voting key only (MG-00 D13, amended for 1.0 by MG's ruling of 11-24), and not
+ * while one is attached: Add key never replaces a key; the pane's Remove comes first. Owner, operator and
+ * payout keys are never imported here. While the vault is locked the attached keys are unread: the sheet
+ * asks for the unlock first. */
+export function keyRoles(r: Pick<MasternodeRow, "roles">): KeyRoleView[] {
+  if (r.roles.attached?.some((k) => k.role === "voting")) return [];
+  return [{ role: "voting", title: roleTitle("voting"), help: t(`${K}.votingHelp`) }];
 }
 
-/** What `mn_attach_key` answered, as §1.4's result line. */
-export function keyResultText(role: AttachedKeyRoleName, check: KeyCheckName, kind: MasternodeTypeName | null): string {
-  if (check === "matched") return t(`${K}.matched.${role}`);
+/** More ▸ Add keys… on a tracked row: while a key can be added, or the vault must be unlocked to tell. */
+export const offersAddKey = (r: MasternodeRow) => r.tracked && (r.roles.attached === null || keyRoles(r).length > 0);
+
+/** The vault holds its full-scope key: an attach can be written (tracking.rs refuses `locked` and mixing-only). */
+export const canAttach = (state: LockStateName | undefined) => state !== "locked" && state !== "unlockedMixingOnly";
+
+/** What `mn_attach_key` answered for a voting key, as §1.4's result line. */
+export function keyResultText(check: KeyCheckName): string {
+  if (check === "matched") return t(`${K}.matched`);
   if (check === "key_mismatch") return t(`${K}.mismatch`);
-  if (role === "owner") return t(kind === "evonode" ? `${K}.unchecked.ownerEvonode` : `${K}.unchecked.ownerRegular`);
-  return t(`${K}.unchecked.${role}`);
+  return t(`${K}.unchecked`);
 }
 
 /** An attach refusal as a sentence: a key that isn't this masternode's, a malformed key, a locked vault. */
