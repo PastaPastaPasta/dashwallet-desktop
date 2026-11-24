@@ -425,6 +425,7 @@ test("a saved registration offers Continue, and Prove can submit; Discard still 
   const errors = await open(page, "reg-prepared");
   await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
   await expect(page.getByTestId(`mn-op-continue-${OP_PREPARED}`)).toBeVisible();
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
   await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
   await expect(step(page, "prove")).toBeVisible();
   await expect(page.getByTestId("reg-submit")).toBeVisible();
@@ -470,6 +471,7 @@ for (const theme of ["light", "dark"] as const)
 for (const theme of ["light", "dark"] as const)
   test(`${theme}: Prove names the fee and what leaves this wallet (issue 460)`, async ({ page }, info) => {
     const errors = await open(page, "reg-prepared", theme);
+    await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
     await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
     await expect(step(page, "prove")).toBeVisible();
     await page.waitForTimeout(300);
@@ -504,6 +506,7 @@ for (const theme of ["light", "dark"] as const)
 
 test("a mistyped signature is refused before any signing, and its grant is revoked (issue 460)", async ({ page }) => {
   const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
   await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
   await expect(step(page, "prove")).toBeVisible();
   const before = await revokes(page);
@@ -539,6 +542,7 @@ for (const theme of ["light", "dark"] as const)
 
 test("fee coins spent while Prove is open: the refusal hides the old message and offers a new one (issue 460)", async ({ page }) => {
   const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
   await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
   await expect(page.getByTestId("reg-sign-request")).toBeVisible();
   await page.evaluate(() => {
