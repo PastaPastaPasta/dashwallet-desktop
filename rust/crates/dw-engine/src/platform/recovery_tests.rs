@@ -2747,30 +2747,35 @@ fn restore_other(engine: &Engine, s: &Arc<NetworkSession>) -> WalletId {
 
 /// #585 (Q63 C1): the rerun answers after the press read its hold and
 /// before it waits for a change; the press goes on at once, not at its
-/// deadline.
+/// deadline. The rerun is held until the press is at its wait, then
+/// answers, then the press waits.
 #[test]
 fn a_rerun_answering_before_the_press_waits_still_lets_it_go_on() {
     let dir = dw_testutil::private_tempdir();
     let (engine, s, id, platform) = skipped_at_restart(dir.path());
     *guard(&s.platform.bring_up_waits) = Some((Duration::from_secs(120), Duration::from_secs(120)));
-    let pause = test_pause();
-    *guard(&s.platform.pause_bring_up_wait) = Some(Arc::clone(&pause));
+    let rerun = test_pause();
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&rerun));
+    let waiter = test_pause();
+    *guard(&s.platform.pause_bring_up_wait) = Some(Arc::clone(&waiter));
     let started = Instant::now();
     let funded = engine.block_on(async {
         let answer = async {
-            while !pause.reached.load(Ordering::SeqCst) {
+            while !waiter.reached.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
+            rerun.release.notify_one();
             while startup(&s, id) != StartupStatus::NoIdentity || s.platform.bring_up_pending(&id) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            pause.release.notify_one();
+            waiter.release.notify_one();
         };
         let both = async { tokio::join!(fund_once(&s, id), answer).0 };
         tokio::time::timeout(Duration::from_secs(60), both).await
     });
     let funded = funded.expect("the press and the answer end");
     past_the_hold(&funded);
+    assert!(rerun.reached.load(Ordering::SeqCst), "the rerun was held");
     assert!(
         started.elapsed() < Duration::from_secs(20),
         "{:?}",
