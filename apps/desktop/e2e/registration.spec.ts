@@ -296,6 +296,10 @@ async function holdPlatformPayment(page: Page, draft: string) {
   }, draft);
 }
 
+/** The held line names both actions, so it shows only beside both (MG). */
+const HELD_LINE =
+  "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.";
+
 const calls = (page: Page, name: string) => page.evaluate((n) => window.__dwFixture!.calls.filter((c) => c === n).length, name);
 
 test("#685: a held Platform payment offers Continue and Move to Dash wallet on the progress screen and the Home card", async ({ page }) => {
@@ -306,7 +310,7 @@ test("#685: a held Platform payment offers Continue and Move to Dash wallet on t
 
   // The progress screen: the line names both, and both are offered.
   await expect(screen(page)).toHaveAttribute("data-kind", "held");
-  await expect(screen(page)).toContainText("Choosing Continue tries the same payment again");
+  await expect(page.getByTestId("registration-lines")).toContainText(HELD_LINE);
   await expect(page.getByTestId("registration-continue")).toHaveText("Continue");
   await expect(page.getByTestId("registration-moveToCore")).toHaveText("Move to Dash wallet");
   await page.getByTestId("registration-moveToCore").click();
@@ -317,6 +321,7 @@ test("#685: a held Platform payment offers Continue and Move to Dash wallet on t
 
   // The Home card: the same two.
   await expect(card(page)).toHaveAttribute("data-state", "creatingHeld");
+  await expect(card(page)).toContainText(HELD_LINE);
   await expect(card(page).getByTestId("dashpay-card-action")).toHaveText("Continue");
   await expect(card(page).getByTestId("dashpay-card-secondary")).toHaveText("Move to Dash wallet");
   await card(page).getByTestId("dashpay-card-secondary").click();
