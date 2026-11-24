@@ -1,8 +1,9 @@
 // Masternodes ▸ My masternodes (MG-10 §1.2): the summary, the groups with In progress (S2), the
 // pane with Release collateral / Lock it again (S2), Change keys or payout (S3) and the operator
-// explanation sheet, and the page's states. Tracking, keys and withdraw come with other slices.
+// explanation sheet, Track, Add keys, Keys you added and Stop tracking (tracking.tsx), and the
+// page's states. Withdraw comes with another slice.
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { MasternodeDetail } from "../../api/generated/MasternodeDetail";
 import type { MasternodeRow } from "../../api/generated/MasternodeRow";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -26,6 +27,7 @@ import {
   lastPayoutTitle,
   MnText,
   mnErrorText,
+  offersAddKey,
   operatorShare,
   payoutGroups,
   registrarLine,
@@ -46,37 +48,85 @@ import { collateralErrorText, ReleaseSheet } from "./ReleaseSheet";
 import { useT } from "../../i18n";
 import { ChangeKeysSheet, OperatorSheet } from "./ChangeKeysSheet";
 import { MoreMenu, Notice, StatusChip } from "./common";
+import { AddKeySheet, KeysYouAdded, MAX_LABEL, SheetFooter, TrackSheet, UntrackSheet } from "./tracking";
 
 const DAY = 86_400;
-/** mn-engine's `MAX_MASTERNODE_LABEL`. */
-const MAX_LABEL = 64;
 
 interface MyMasternodesProps {
   wallet: WalletSummary;
   network: NetworkInfo;
   onVote: () => void;
   onContinue: (op: ProTxOperation) => void;
+  /** Track a masternode… was chosen in the page's header. */
+  tracking: boolean;
+  onTrackClose: () => void;
 }
 
 /** In progress's open sheet lives here, beside the list's layouts: a list read that switches them
- * (failed to loaded, or back) keeps it open. */
+ * (failed to loaded, or back) keeps it open. So do Track and Add key. */
 export function MyMasternodes(props: MyMasternodesProps) {
+  const { wallet, tracking, onTrackClose } = props;
   const actions = useInProgressActions(props.wallet, props.network, props.onContinue);
+  const list = useMasternodes(wallet.walletId);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [addingKey, setAddingKey] = useState<string | null>(null);
+  const rows = list.data?.masternodes ?? [];
+  const keyRow = rows.find((r) => r.proTxHash === addingKey && r.tracked);
+  // After the Add key sheet has released its layer: a dialog asked for behind a sheet is dropped (App).
+  const [unlockNext, setUnlockNext] = useState(false);
+  useEffect(() => {
+    if (!unlockNext) return;
+    setUnlockNext(false);
+    ui.set({ dialog: "unlock" });
+  }, [unlockNext]);
   return (
     <>
-      <MyMasternodesBody {...props} actions={actions} />
+      <MyMasternodesBody {...props} actions={actions} selected={selected} setSelected={setSelected} onAddKey={setAddingKey} />
       {actions.sheets}
+      {tracking && (
+        <TrackSheet
+          rows={rows}
+          onClose={onTrackClose}
+          onTracked={(hash) => {
+            onTrackClose();
+            setSelected(hash);
+            setAddingKey(hash);
+          }}
+        />
+      )}
+      {keyRow && (
+        <AddKeySheet
+          row={keyRow}
+          onClose={() => setAddingKey(null)}
+          onUnlock={() => {
+            setAddingKey(null);
+            setUnlockNext(true);
+          }}
+        />
+      )}
     </>
   );
 }
 
-function MyMasternodesBody({ wallet, network, onVote, actions }: MyMasternodesProps & { actions: InProgressActions }) {
+function MyMasternodesBody({
+  wallet,
+  network,
+  onVote,
+  actions,
+  selected,
+  setSelected,
+  onAddKey,
+}: MyMasternodesProps & {
+  actions: InProgressActions;
+  selected: string | null;
+  setSelected: (hash: string) => void;
+  onAddKey: (hash: string) => void;
+}) {
   const list = useMasternodes(wallet.walletId);
   const ops = useMasternodeOperations(wallet.walletId);
   const refresh = useMasternodesRefresh();
   const t = useT();
   const shown = useDisplay(network);
-  const [selected, setSelected] = useState<string | null>(null);
   const [retiredOpen, setRetiredOpen] = useState(false);
 
   const work = ops.data ?? [];
@@ -219,13 +269,29 @@ function MyMasternodesBody({ wallet, network, onVote, actions }: MyMasternodesPr
           ])}
           {all.every((g) => g.id === "attention") && progress}
         </div>
-        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} network={network} shown={shown} onVote={onVote} />}
+        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} network={network} shown={shown} onVote={onVote} onAddKey={() => onAddKey(current.proTxHash)} />}
       </div>
     </>
   );
 }
 
-function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRow; rows: MasternodeRow[]; wallet: WalletSummary; network: NetworkInfo; shown: Display; onVote: () => void }) {
+function Pane({
+  row,
+  rows,
+  wallet,
+  network,
+  shown,
+  onVote,
+  onAddKey,
+}: {
+  row: MasternodeRow;
+  rows: MasternodeRow[];
+  wallet: WalletSummary;
+  network: NetworkInfo;
+  shown: Display;
+  onVote: () => void;
+  onAddKey: () => void;
+}) {
   const t = useT();
   const detail = useMasternode(wallet.walletId, row.proTxHash);
   const backend = useBackend();
@@ -246,7 +312,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
     }
     void refresh();
   };
-  const [sheet, setSheet] = useState<"change-keys" | "operator" | null>(null);
+  const [sheet, setSheet] = useState<"change-keys" | "operator" | "untrack" | null>(null);
   const d = detail.isError ? undefined : detail.data;
   const name = rowName(row);
   const blocked = voteBlocked(row, wallet.watchOnly);
@@ -268,7 +334,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
         </div>
         <div className="mg-pane-actions">
           <div className="mg-actions">
-            {row.mine && (
+            {(row.mine || row.tracked) && (
               <DashButton variant="tintedBlue" size="small" data-testid="mn-vote" disabled={blocked !== null} why={blocked} onClick={onVote}>
                 {MnText.vote}
               </DashButton>
@@ -299,6 +365,8 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
                   ]
                 : []),
               ...(row.status !== "removed" ? [{ id: "operator", title: t("masternodes.myMasternodes.operatorSheet.menu"), onSelect: () => setSheet("operator") }] : []),
+              ...(offersAddKey(row) ? [{ id: "add-keys", title: t("masternodes.myMasternodes.keys.menu"), onSelect: onAddKey }] : []),
+              ...(row.tracked ? [{ id: "untrack", title: t("masternodes.myMasternodes.untrack.menu"), onSelect: () => setSheet("untrack") }] : []),
             ]}
           />
         </div>
@@ -338,6 +406,8 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
             ))}
           </ul>
         </div>
+        {/* The registrar line's Unlock covers a locked vault's keys too. */}
+        {row.tracked && !line?.unlock && <KeysYouAdded row={row} />}
         {line && (
           <p className="mg-small mg-muted mg-notice-row" data-testid="mn-registrar-line">
             <span>{line.text}</span>
@@ -353,6 +423,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
       {releasing && <ReleaseSheet row={row} wallet={wallet} network={network} onClose={() => setReleasing(false)} />}
       {sheet === "change-keys" && d && canChange && <ChangeKeysSheet wallet={wallet} network={network} row={row} detail={d} onClose={() => setSheet(null)} />}
       {sheet === "operator" && <OperatorSheet row={row} detail={d} onChangeKeys={canChange ? () => setSheet("change-keys") : null} onClose={() => setSheet(null)} />}
+      {sheet === "untrack" && <UntrackSheet row={row} onClose={() => setSheet(null)} />}
     </aside>
   );
 }
@@ -486,17 +557,11 @@ function RenameSheet({ row, onClose }: { row: MasternodeRow; onClose: () => void
             </span>
           )}
         </label>
-        <footer className="mg-sheet-footer">
-          <span />
-          <span className="mg-actions">
-            <DashButton type="button" variant="tintedGray" size="medium" onClick={onClose}>
-              {t("masternodes.myMasternodes.cancel")}
-            </DashButton>
-            <DashButton type="submit" variant="filledBlue" size="medium" data-testid="mn-rename-save" disabled={busy}>
-              {t("masternodes.myMasternodes.save")}
-            </DashButton>
-          </span>
-        </footer>
+        <SheetFooter onCancel={onClose}>
+          <DashButton type="submit" variant="filledBlue" size="medium" data-testid="mn-rename-save" disabled={busy}>
+            {t("masternodes.myMasternodes.save")}
+          </DashButton>
+        </SheetFooter>
       </form>
     </Sheet>
   );

@@ -17,11 +17,13 @@ use dw_vault::{FundingOutcome, FundingVote, SignerError, VoteSigner, VotingKey};
 
 use super::reads::{is_proposal, now, parse_hash};
 use super::records::{
-    MasternodeType, RawVote, VoteCast, VoteOutcome, VoteRelayed, VotingMasternode,
+    MasternodeType, NameVotingKey, RawVote, VoteCast, VoteOutcome, VoteRelayed, VotingMasternode,
 };
 use super::sync::ListSnapshot;
 use super::{Governance, GovernanceError};
 use crate::masternode_keys::MasternodeKeyRole;
+use crate::masternodes::AttachedKeyRole;
+use crate::masternodes::follow::load_notes;
 use crate::platform::lease::{
     AdmitRequest, ArtifactId, ArtifactKind, DispatchScope, Lease, Outcome, Verdict,
 };
@@ -33,9 +35,11 @@ use crate::{EngineError, WalletId};
 pub const VOTING_KEY_INDEXES: u32 = 20;
 
 impl Governance {
-    /// The masternodes of the tip list whose voting key the wallet derives
-    /// (indexes 0–19), with each one's own vote seen on `proposal` and, for
-    /// a shared key, the key's latest (D49).
+    /// The masternodes of the tip list the wallet votes for: those whose
+    /// voting key the wallet derives (indexes 0–19), then tracked ones whose
+    /// attached `voting` key has the list's key id (D20), each with its own
+    /// vote seen on `proposal` and, for a shared key, the key's latest
+    /// (D49).
     pub async fn voting_masternodes(
         &self,
         wallet: WalletId,
@@ -54,6 +58,7 @@ impl Governance {
                 Some((hash160::Hash::hash(&pk).to_byte_array(), k.index))
             })
             .collect();
+        let notes = self.session.appdb_op(load_notes).await?;
         let rt = self.runtime()?;
         let list = rt.list();
         if list.entries.is_empty() {
@@ -68,14 +73,22 @@ impl Governance {
             .entries
             .iter()
             .filter_map(|e| {
-                let key_index = *indexes.get(&e.voting_key_id)?;
+                let pro_tx_hash = display_hex(&e.pro_tx_hash);
+                let voting_key = match indexes.get(&e.voting_key_id) {
+                    Some(&index) => NameVotingKey::Keychain { index },
+                    None => {
+                        let attached =
+                            (notes.key_ids).get(&(pro_tx_hash.clone(), AttachedKeyRole::Voting));
+                        (attached == Some(&e.voting_key_id)).then_some(NameVotingKey::Attached)?
+                    }
+                };
                 let key_holders = holders[&e.voting_key_id];
                 let vote = own_vote(&store, &key, &e.pro_tx_hash, &e.voting_key_id, key_holders);
                 let key_last = (key_holders > 1)
                     .then(|| latest_under(&store, &key, &e.voting_key_id))
                     .flatten();
                 Some(VotingMasternode {
-                    pro_tx_hash: display_hex(&e.pro_tx_hash),
+                    pro_tx_hash,
                     kind: if e.is_evonode {
                         MasternodeType::Evonode
                     } else {
@@ -83,7 +96,8 @@ impl Governance {
                     },
                     weight: ListSnapshot::weight(e),
                     valid: e.is_valid,
-                    key_index,
+                    key: voting_key,
+                    collateral_resolved: store.resolved_collateral(&e.pro_tx_hash).is_some(),
                     current_vote: vote.map(|v| VoteOutcome::from(v.outcome)),
                     vote_time: vote.map(|v| v.time),
                     key_holders,
@@ -92,10 +106,14 @@ impl Governance {
                 })
             })
             .collect();
+        let custody = |m: &VotingMasternode| match m.key {
+            NameVotingKey::Keychain { index } => (0, index),
+            NameVotingKey::Attached => (1, 0),
+        };
         out.sort_by(|a, b| {
-            a.key_index
-                .cmp(&b.key_index)
-                .then(a.pro_tx_hash.cmp(&b.pro_tx_hash))
+            custody(a)
+                .cmp(&custody(b))
+                .then_with(|| a.pro_tx_hash.cmp(&b.pro_tx_hash))
         });
         Ok(out)
     }

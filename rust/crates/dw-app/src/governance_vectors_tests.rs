@@ -16,9 +16,9 @@ use dw_engine::EngineError;
 use dw_engine::governance::{
     ContestedNames, CurrentVoteRow, GovernanceClock, GovernanceError, GovernanceInfo,
     GovernanceSyncPhase, GovernanceSyncState, MasternodeType, MyProposal, MyProposalState,
-    NameVoteCast, ProposalCounts, ProposalDetail, ProposalField, ProposalPreview, ProposalRow,
-    ProposalStatus, SignalTallies, SubmitRefusal, SubmitWait, SuperblockDate, VoteCast,
-    VoteOutcome, VoteSignal, VoteTally, VotingMasternode, WeightRange,
+    NameVoteCast, NameVotingKey, ProposalCounts, ProposalDetail, ProposalField, ProposalPreview,
+    ProposalRow, ProposalStatus, SignalTallies, SubmitRefusal, SubmitWait, SuperblockDate,
+    VoteCast, VoteOutcome, VoteSignal, VoteTally, VotingMasternode, WeightRange,
 };
 use serde_json::{Value, json};
 
@@ -164,7 +164,8 @@ fn build() -> Value {
             kind: MasternodeType::Regular,
             weight: 1,
             valid: true,
-            key_index: 0,
+            key: NameVotingKey::Keychain { index: 0 },
+            collateral_resolved: true,
             current_vote: Some(VoteOutcome::Yes),
             vote_time: Some(1_789_000_000),
             key_holders: 1,
@@ -176,7 +177,8 @@ fn build() -> Value {
             kind: MasternodeType::Evonode,
             weight: 4,
             valid: false,
-            key_index: 3,
+            key: NameVotingKey::Attached,
+            collateral_resolved: false,
             current_vote: None,
             vote_time: None,
             key_holders: 2,

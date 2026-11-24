@@ -16,6 +16,8 @@ codes! {
         NotTracked = "masternodes.not_tracked",
         /// `data` gives the role.
         KeyMismatch = "masternodes.key_mismatch",
+        /// `data` gives the role.
+        KeyExists = "masternodes.key_exists",
         NotEvonode = "masternodes.not_evonode",
         NoIdentity = "masternodes.no_identity",
         PlatformUnavailable = "masternodes.platform_unavailable",
@@ -66,6 +68,10 @@ impl From<MasternodesError> for AppError {
             M::Platform(e) => return e.into(),
             M::KeyMismatch { role } => (
                 C::KeyMismatch,
+                Some(ErrorData::MasternodeKey { role: role.into() }),
+            ),
+            M::KeyExists { role } => (
+                C::KeyExists,
                 Some(ErrorData::MasternodeKey { role: role.into() }),
             ),
             M::Unsupported { feature, field } => (
@@ -151,6 +157,9 @@ mod tests {
             M::NotTracked,
             M::KeyMismatch {
                 role: AttachedKeyRole::Owner,
+            },
+            M::KeyExists {
+                role: AttachedKeyRole::Voting,
             },
             M::NotEvonode,
             M::NoIdentity,

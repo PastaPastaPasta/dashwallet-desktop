@@ -107,9 +107,10 @@ export interface MasternodesWorld {
   payouts: Record<string, MasternodePayout[]>;
   collateralCoins: CollateralCoin[];
   unattributed30d: number;
-  /** Attached keys by ProTx hash: the secret given and its check. */
-  attached: Record<string, { role: AttachedKeyRoleName; secret: string; check: KeyCheckName }[]>;
-  /** The keys that match, by ProTx hash and role. */
+  /** Attached keys by ProTx hash: the key's id and its check at attach, never the secret (the world is kept in
+   * sessionStorage across a relaunch). */
+  attached: Record<string, { role: AttachedKeyRoleName; keyId: string; check: KeyCheckName }[]>;
+  /** The ids of the keys that match, by ProTx hash and role (the voting one is the listed voting key now). */
   expected: Record<string, Partial<Record<AttachedKeyRoleName, string>>>;
   /** An evonode's claimable credits (a decimal string); absent: no identity. */
   credits: Record<string, string>;
@@ -242,8 +243,8 @@ export function newMasternodesWorld(): MasternodesWorld {
     payouts: { [HOME]: homePayouts, [OFFICE]: officePayouts },
     collateralCoins: [],
     unattributed30d: 0,
-    attached: { [CLUB]: [{ role: "owner", secret: KEY_OTHER, check: "unchecked" }] },
-    expected: { [CLUB]: { owner: KEY_OWNER, payout: KEY_PAYOUT, voting: KEY_VOTING } },
+    attached: { [CLUB]: [{ role: "owner", keyId: keyId(KEY_OTHER), check: "unchecked" }] },
+    expected: { [CLUB]: { owner: keyId(KEY_OWNER), payout: keyId(KEY_PAYOUT), voting: keyId(KEY_VOTING) } },
     credits: { [CLUB]: "42000000000" },
     platformDown: false,
     trackedAt: { [CLUB]: NOW - 12 * DAY },
@@ -261,14 +262,51 @@ export function newMasternodesWorld(): MasternodesWorld {
   };
 }
 
-const keyId = (secret: string) => fake(HEX64.test(secret) ? `${secret.slice(0, 2)}9` : "c0", 40);
+/** A fake key id: the engine records the hash160 of the key's public key. */
+export const keyId = (secret: string) => fake(HEX64.test(secret) ? `${secret.slice(0, 16).toLowerCase()}9` : "c0", 40);
+
+type Attached = MasternodesWorld["attached"][string][number];
+
+/** A key's check as every read makes it again (D24): a voting key against the listed voting key now, so a
+ * key the masternode rotated away from no longer matches. */
+function liveCheck(m: MasternodesWorld, hash: string, k: Attached): KeyCheckName {
+  if (k.role !== "voting") return k.check;
+  // No list entry now: nothing to check against (tracking.rs `KeyReferences::check`).
+  if (!listedOf(m, hash)) return "unchecked";
+  return k.keyId === m.expected[hash]?.voting ? "matched" : "key_mismatch";
+}
+
+function votingKey(m: MasternodesWorld, hash: string) {
+  return m.attached[hash]?.find((k) => k.role === "voting");
+}
+
+/** Tracked masternodes of the synced list whose attached voting key matches it now, by ProTx hash:
+ * `voting_masternodes` offers them after the keychain's (voting.rs). */
+export function addedVoters(m: MasternodesWorld): Listed[] {
+  return m.rows
+    .filter((r) => r.tracked)
+    .flatMap((r) => {
+      const k = votingKey(m, r.proTxHash);
+      const l = listedOf(m, r.proTxHash);
+      return k && l && liveCheck(m, r.proTxHash, k) === "matched" ? [l] : [];
+    })
+    .sort((a, b) => a.proTxHash.localeCompare(b.proTxHash));
+}
+
+/** A tracked masternode whose attached voting key no longer matches the list: `vote` refuses it `no_voting_key`. */
+export function staleAddedVoter(m: MasternodesWorld, hash: string): boolean {
+  const k = votingKey(m, hash);
+  return !!k && m.rows.some((r) => r.tracked && r.proTxHash === hash) && liveCheck(m, hash, k) !== "matched";
+}
 
 const locked = (world: World) => world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly" || world.lock.state === "noVault";
 
 function withAttached(world: World, r: MasternodeRow): MasternodeRow {
   const keys = world.masternodes.attached[r.proTxHash] ?? [];
-  const attached: AttachedKey[] | null = locked(world) ? null : keys.map((k) => ({ role: k.role, keyId: keyId(k.secret), check: k.check }));
-  return { ...copy(r), roles: { ...r.roles, attached } };
+  const attached: AttachedKey[] | null = locked(world) ? null : keys.map((k) => ({ role: k.role, keyId: k.keyId, check: liveCheck(world.masternodes, r.proTxHash, k) }));
+  // An attached voting key holds the role only when it matches the list (reads.rs `roles`, records.rs `holds`).
+  const voting = r.roles.voting || (attached?.some((k) => k.role === "voting" && k.check === "matched") ?? false);
+  return { ...copy(r), roles: { ...r.roles, voting, attached } };
 }
 
 /** The engine's order: shared → registration unavailable → keychain → vault locked → matched attached → no owner key. */
@@ -318,12 +356,12 @@ function tracked(m: MasternodesWorld, proTxHash: string): MasternodeRow {
 function checkKey(world: World, r: MasternodeRow, role: AttachedKeyRoleName, key: string): KeyCheckName {
   const m = world.masternodes;
   const want = m.expected[r.proTxHash]?.[role];
-  if (role === "payout") return key === want ? "matched" : "unchecked";
+  if (role === "payout") return keyId(key) === want ? "matched" : "unchecked";
   if (role === "voting") {
     if (!m.listState.synced) throw fail("masternodes.list_unavailable", "the masternode list is not synced");
     if (!listedOf(m, r.proTxHash)) return "unchecked";
   } else if (!m.registrations.includes(r.proTxHash)) return "unchecked";
-  if (key !== want) throw fail("masternodes.key_mismatch", `the key is not this masternode's ${role} key`, { kind: "masternodeKey", role });
+  if (keyId(key) !== want) throw fail("masternodes.key_mismatch", `the key is not this masternode's ${role} key`, { kind: "masternodeKey", role });
   return "matched";
 }
 
@@ -989,10 +1027,13 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
       const key = HEX64.test(given) ? given.toLowerCase() : given;
       if (!HEX64.test(key) && !TEST_WIF.test(key)) throw fail("invalid_argument", "not a compressed test-network WIF or 64 hex digits");
       const r = tracked(world.masternodes, proTxHash);
-      const check = checkKey(world, r, role, key);
+      // tracking.rs refuses a vault without its full-scope key before the check, so a refusal keeps an attached key's id.
       if (locked(world)) throw fail("vault.locked", "vault locked");
       const keys = world.masternodes.attached[r.proTxHash] ?? [];
-      world.masternodes.attached[r.proTxHash] = [...keys.filter((k) => k.role !== role), { role, secret: key, check }];
+      // tracking.rs never replaces an attached key: Remove comes first.
+      if (keys.some((k) => k.role === role)) throw fail("masternodes.key_exists", `a ${role} key is already attached`, { kind: "masternodeKey", role });
+      const check = checkKey(world, r, role, key);
+      world.masternodes.attached[r.proTxHash] = [...keys, { role, keyId: keyId(key), check }];
       changed(ctx);
       return check;
     },
@@ -1281,6 +1322,19 @@ export function masternodesScenarios(base: Base) {
         trackOnly(m);
         m.registrations.push(CLUB);
         w.lock = { ...w.lock, state: "locked" };
+      }),
+    /** Track with Club's voting key added (MG-00 D13, amended for 1.0): listed under Keys you added, and Club votes. */
+    "mn-track-voting": (t: ThemeName | null) =>
+      mnBase(base, t, (m) => {
+        trackOnly(m);
+        m.attached[CLUB] = [{ role: "voting", keyId: keyId(KEY_VOTING), check: "matched" }];
+      }),
+    /** `mn-track-voting` unlocked for mixing only: Keys you added asks to unlock, and so does adding a key. */
+    "mn-track-voting-locked": (t: ThemeName | null) =>
+      mnBase(base, t, (m, w) => {
+        trackOnly(m);
+        m.attached[CLUB] = [{ role: "voting", keyId: keyId(KEY_VOTING), check: "matched" }];
+        w.lock = { ...w.lock, state: "unlockedMixingOnly" };
       }),
     /** `mn-track` locked: Club still reads `registration_unavailable`. */
     "mn-track-locked": (t: ThemeName | null) =>
