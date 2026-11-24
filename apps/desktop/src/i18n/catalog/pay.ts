@@ -96,6 +96,16 @@ export const pay = {
     enterRate: "Enter a custom fee rate.",
     enterChangeAddress: "Enter the custom change address.",
   },
+  /** Added recipients (QT-052): one payment to several addresses. */
+  more: {
+    add: "Add recipient",
+    /** `number`: its place in the payment, 2 for the first added one. */
+    recipient: "Recipient {number}",
+    remove: "Remove",
+    platform: "A Dash Platform address can't be added to a payment. Pay it on its own.",
+    /** Shown under Add recipient while the feature is testnet-only. */
+    testnetOnly: "Paying several recipients at once is available on test networks only in this version.",
+  },
   toAddress: {
     form: "Pay to an address",
     linkUsername: "The link names the payee {username}. The name is not verified.",
@@ -177,6 +187,11 @@ export const pay = {
     changeTo: "Change to",
     total: "Total",
     subtractNote: "The fee is subtracted from the amount: the payee receives the amount above.",
+    /** A payment to several recipients: one of them may pay the fee from its amount. */
+    /** `amount`: what was taken from that recipient's entered amount. */
+    subtractNoteMany: "{amount} of the fee is subtracted from {address}'s amount: each recipient receives the amount shown.",
+    /** The row of each recipient in a payment to several. */
+    recipients: { one: "{count} recipient", other: "{count} recipients" },
     changeNote: "The total includes the change: the custom change address may not belong to this wallet.",
     unmixed: "This payment uses coins that aren't mixed, so it can be traced back to where they came from. To pay privately, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).",
     checkingPolicy: "Checking the payment settings",
