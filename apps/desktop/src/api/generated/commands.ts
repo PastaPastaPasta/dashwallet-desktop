@@ -36,6 +36,9 @@ import type { ConsoleOutput } from "./ConsoleOutput";
 import type { ContactActivityPage } from "./ContactActivityPage";
 import type { ContactDetailInfo } from "./ContactDetailInfo";
 import type { ContactList } from "./ContactList";
+import type { ContactPayArgs } from "./ContactPayArgs";
+import type { ContactPayOutcomeInfo } from "./ContactPayOutcomeInfo";
+import type { ContactPayQuoteInfo } from "./ContactPayQuoteInfo";
 import type { ContactQueryArgs } from "./ContactQueryArgs";
 import type { ContactRecipient } from "./ContactRecipient";
 import type { ContactRequestOutcome } from "./ContactRequestOutcome";
@@ -2367,6 +2370,23 @@ export function resolveContactPaymentLock(walletId: string, identity: string, co
 }
 
 /**
+ * What paying `credits` to `contact` from the Shielded or Platform
+ * balance takes and pays; `core` is a send draft's.
+ */
+export function contactPayQuote(walletId: string, identity: string, contact: string, credits: string, source: PaymentSourceName): Promise<ContactPayQuoteInfo> {
+  return invoke<ContactPayQuoteInfo>("contact_pay_quote", { walletId, identity, contact, credits, source });
+}
+
+/**
+ * Pays `credits` to `contact` from the Shielded or Platform balance
+ * under `grant`, a `platformOp` grant or a `contactPayFromBalance`
+ * lease; `note` stays in this wallet.
+ */
+export function contactPay(walletId: string, identity: string, contact: string, payment: ContactPayArgs, grant: string): Promise<ContactPayOutcomeInfo> {
+  return invoke<ContactPayOutcomeInfo>("contact_pay", { walletId, identity, contact, payment, grant });
+}
+
+/**
  * The payments with `contact`, newest first; `cursor` is the previous
  * page's `nextCursor`.
  */
@@ -3421,6 +3441,8 @@ export type CommandArgs = {
   dashpay_verify_scanned: { walletId: string; text: string };
   contact_payment_lock: { walletId: string; identity: string; contact: string };
   resolve_contact_payment_lock: { walletId: string; identity: string; contact: string };
+  contact_pay_quote: { walletId: string; identity: string; contact: string; credits: string; source: PaymentSourceName };
+  contact_pay: { walletId: string; identity: string; contact: string; payment: ContactPayArgs; grant: string };
   contact_activity: { walletId: string; identity: string; contact: string; cursor: string | null; filter: ActivityFilterName };
   frequent_contacts: { walletId: string; identity: string; limit: number };
   dashpay_events: { walletId: string; identity: string; cursor: number | null; limit: number };
@@ -3776,6 +3798,8 @@ export type CommandResults = {
   dashpay_verify_scanned: ScannedContactInfo;
   contact_payment_lock: PaymentLockInfo | null;
   resolve_contact_payment_lock: LockResolutionName;
+  contact_pay_quote: ContactPayQuoteInfo;
+  contact_pay: ContactPayOutcomeInfo;
   contact_activity: ContactActivityPage;
   frequent_contacts: Array<ContactSummaryInfo>;
   dashpay_events: DashPayEventPage;
@@ -4133,6 +4157,8 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_verify_scanned: "social",
   contact_payment_lock: "social",
   resolve_contact_payment_lock: "social",
+  contact_pay_quote: "social",
+  contact_pay: "social",
   contact_activity: "social",
   frequent_contacts: "social",
   dashpay_events: "social",

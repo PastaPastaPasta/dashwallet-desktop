@@ -252,6 +252,8 @@ impl NetworkSession {
         self.require_wallet(&wallet_id).map_err(engine)?;
         match (flow, source) {
             (FlowKind::AcceptAndPay, None | Some(PaymentSource::Core)) => {}
+            (FlowKind::ContactPayFromBalance, Some(PaymentSource::Platform))
+                if super::contact_payout::refuse_on_mainnet(self).is_ok() => {}
             (FlowKind::AcceptAndPay | FlowKind::ContactPayFromBalance, Some(source)) => {
                 return Err(payout_source(source));
             }
