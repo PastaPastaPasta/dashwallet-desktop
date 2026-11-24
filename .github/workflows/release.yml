@@ -1,11 +1,11 @@
-# Release artifacts and continuous delivery (0.1: RELEASE-PLAN §1, PK-01/PK-02, DEC-1058).
+# Release artifacts and continuous delivery (0.1: RELEASE-PLAN §1, PK-01/PK-02, DEC-1058;
+# 1.0 detached-sigs model: docs/release/SIGNING.md).
 #
-# Every trigger but a pull request builds the Tauri app in release mode, without the `selftest` feature, one
-# job per OS:
-#   macos    a universal .dmg (aarch64 + x86_64): Developer ID signed and notarized when Apple signing
-#            secrets are set in the `release` environment, ad-hoc signed ("-") otherwise;
-#   windows  an NSIS .exe installer: Authenticode signed via Azure Artifact Signing when Azure signing
-#            secrets are set in the `release` environment, unsigned otherwise;
+# Zero signing secrets live in this workflow. Every trigger but a pull request builds the unsigned
+# Tauri app in release mode, without the `selftest` feature, one job per OS:
+#   macos    a universal .dmg (aarch64 + x86_64), ad-hoc signed ("-"); on stable vX.Y.Z tags also
+#            packs dash-wallet-<version>-macos-unsigned.tar.gz for local detached signing;
+#   windows  an unsigned NSIS .exe installer;
 #   linux    an x86_64 AppImage and .deb;
 #   flatpak  a Flatpak bundle (GNOME runtime) repackaging the linux job's .deb.
 # Each job then launches the built app for 30 s and uploads a screenshot (`launch-<os>`). The
@@ -20,44 +20,39 @@
 # time.
 #
 # Bundles are staged under stable names, dash-wallet-<version>-<os-arch>.<ext>, and uploaded as
-# `dist-<os>` (the Flatpak as `dist-flatpak`). The `sbom` job writes two CycloneDX JSON SBOMs, dash-wallet-<version>-sbom-rust.cdx.json
-# (the app crate's dependencies, every target) and -sbom-npm.cdx.json (the renderer's production
-# dependencies), uploaded as `dist-sbom` (ci/github/release-sbom.sh). The `checksums` job gathers all
-# seven files, writes SHA256SUMS (sha256sum format, file names only) and uploads one artifact,
-# `release-v<version>`.
+# `dist-<os>` (the Flatpak as `dist-flatpak`). The `sbom` job writes two CycloneDX JSON SBOMs,
+# dash-wallet-<version>-sbom-rust.cdx.json (the app crate's dependencies, every target) and
+# -sbom-npm.cdx.json (the renderer's production dependencies), uploaded as `dist-sbom`
+# (ci/github/release-sbom.sh). The `checksums` job gathers all seven files, writes SHA256SUMS
+# (sha256sum format, file names only) and uploads one artifact, `release-v<version>`.
 #
 # What publishes, by trigger (ci/github/release-publish.sh has the logic and refuses anything else;
 # ci/github/release-publish-test.sh tests it on every run):
-#   push to main          an immutable prerelease v<version>-dev.<run>+<short sha> and the rolling
-#                         prerelease `continuous` (stable asset names, replaced in place);
-#   push of a tag vX.Y.Z[-rc.N]  that tag's release: full for vX.Y.Z, a prerelease for -rc.N;
-#   anything else         builds and uploads CI artifacts only: the schedule and workflow_dispatch.
-#                         Pull requests (forks included) build nothing. None reaches the publish job.
-# Update feed (PK-03): docs/release/updater.md. Its latest.json and macOS archive are listed in SHA256SUMS too.
-# Every published file (bundles, SBOMs, SHA256SUMS, and SHA256SUMS.asc when signed) is attested with
-# actions/attest-build-provenance (`gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop`,
-# docs/release/verifying.md). When RELEASE_PGP_PRIVATE_KEY is set in the `release` environment, `checksums`
-# also produces a detached armored SHA256SUMS.asc verified against RELEASE_PGP_FINGERPRINT.
+#   push to main              an immutable prerelease v<version>-dev.<run>+<short sha> and the rolling
+#                             prerelease `continuous` (stable asset names, replaced in place);
+#   push of a tag vX.Y.Z-rc.N that candidate's keyless prerelease (8 assets, never Latest, no .asc);
+#   push of a tag vX.Y.Z      when DW_SIGNING_REQUIRED=1 is set: attests the unsigned build artifacts
+#                             and waits for local detached signing + release-publish-signed.yml
+#                             (docs/release/SIGNING.md); otherwise publishes the 8 unsigned assets;
+#   anything else             builds and uploads CI artifacts only: the schedule and workflow_dispatch.
+#                             Pull requests (forks included) build nothing. None reaches the publish job.
+#
+# On stable vX.Y.Z tags only, the build jobs pass DW_ENABLE_UPDATER=1 to ci/github/tauri-build.sh so
+# the compiled app embeds the stable updater feed URL (public config only; no private keys in CI).
+# The stable updater feed (latest.json), macOS Developer ID + notarization, Windows Authenticode,
+# and PGP SHA256SUMS.asc are all signed locally by the release signer and re-attached via
+# ci/github/release-attach.sh / .github/workflows/release-publish-signed.yml.
 #
 # Permissions: the workflow has `contents: read`. Only the `publish` job has write permissions
 # (contents, id-token, attestations). It runs only when a read-only `decide` job says so (a push to
 # main, or a release tag vX.Y.Z[-rc.N], in this repository, on a commit that is an ancestor of a
-# freshly fetched origin/main) and the event is a push; the script checks again. A release tag on a
-# commit outside main therefore never starts the job that holds write tokens. (The check is code of
-# the pushed commit, so it cannot stop a tag whose workflow file was itself edited; that needs an
-# environment deployment policy or a tag ruleset in the repository settings.) Dry-run tags
+# freshly fetched origin/main) and the event is a push; the script checks again. Dry-run tags
 # (v0.0.0-rel<N>) build only and never start the publish job.
-# `decide` also skips the build jobs for a branch push or pull request that changes only docs
-# and files no bundle is built from; a new push cancels that ref's running build (never main or tags).
-# Pull requests run script-tests and decide only: the bundles and SBOMs build on pushes to main, tags, the
-# 02:47 UTC schedule (on main; builds only, never publishes) and dispatches (`gh workflow run release.yml --ref <branch>` builds them for a branch).
 # Repository setting: "Immutable releases" must stay off (`continuous` renames assets, moves its tag).
 name: Release
 
 on:
   push:
-    # Other branches build through their pull request: a push trigger for them as well built
-    # every bundle twice, and the hosted macOS runners are the scarce ones.
     branches: [main]
     # A dev tag is made by the publish job itself (with GITHUB_TOKEN, which starts no run); this keeps a
     # hand-pushed one from starting one either.
@@ -67,6 +62,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - .github/workflows/release-publish-signed.yml
       - ci/**
       - packaging/**
       - rust/crates/dw-app/tauri.conf.json
@@ -81,8 +77,7 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its branch's running build; main and tags are never cancelled. Main builds one at a
-# time: a newer main run replaces a pending one, so a burst of merges builds and publishes the newest commit.
+# A new push cancels its branch's running build; main and tags are never cancelled.
 concurrency:
   group: release-build-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
@@ -103,6 +98,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install osslsigncode for detached-signature tests
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends osslsigncode
       - run: ci/github/release-publish-test.sh
       - run: ci/github/linux-host-deps-test.sh
 
@@ -115,7 +112,7 @@ jobs:
     outputs:
       build: ${{ steps.kind.outputs.build }}
       publish: ${{ steps.kind.outputs.publish }}
-      signing: ${{ steps.kind.outputs.signing }}
+      stable_tag: ${{ steps.kind.outputs.stable_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -124,7 +121,6 @@ jobs:
       - id: kind
         env:
           DECIDE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          DW_SIGN_CANDIDATES: ${{ vars.DW_SIGN_CANDIDATES }}
         run: ci/github/release-decide.sh
 
   macos:
@@ -133,26 +129,11 @@ jobs:
     needs: decide
     if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 120
-    # Signing and updater keys live in this environment: a stable tag on main (or an rc when
-    # DW_SIGN_CANDIDATES=1) only (decide, docs/release/CHECKLIST.md).
-    environment: ${{ needs.decide.outputs.signing == 'true' && 'release' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: ci/github/release-version.sh
-      - name: Check macOS signing configuration
-        env:
-          DW_SIGNING_ENABLED: ${{ needs.decide.outputs.signing }}
-          DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
-          APPLE_CERTIFICATE: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_API_ISSUER: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_API_ISSUER || '' }}
-          APPLE_API_KEY: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_API_KEY || '' }}
-          APPLE_API_KEY_P8: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_API_KEY_P8 || '' }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-        run: ci/github/release-signing-check.sh macos
       - name: Rust toolchain (rust-toolchain.toml) and both macOS targets
         working-directory: rust
         run: |
@@ -176,62 +157,21 @@ jobs:
       - name: pnpm install
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
-      - name: Prepare macOS signing credentials
-        if: ${{ env.MACOS_SIGN == '1' }}
-        env:
-          APPLE_API_KEY_P8: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_API_KEY_P8 || '' }}
-        run: ci/github/macos-signing-setup.sh
-      # Without Apple signing secrets, tauri.conf.json's signingIdentity "-" produces an ad-hoc build.
-      # With Apple signing secrets, Tauri imports APPLE_CERTIFICATE into a temporary keychain, signs with
-      # APPLE_SIGNING_IDENTITY, and notarizes the .app via App Store Connect API credentials.
-      # With the updater key (stable tags only), the .app is bundled too for the macOS update archive.
+      # signingIdentity "-" in tauri.conf.json: ad-hoc signed, no notarization (no secrets in CI).
+      # Stable vX.Y.Z tags embed the public updater feed URL (DW_ENABLE_UPDATER=1); signing happens locally.
       - name: pnpm tauri build (universal-apple-darwin, dmg)
         working-directory: apps/desktop
         env:
           DW_BUILD_VERSION: ${{ env.VERSION }}
-          # Updater key: a stable tag on main only, never rc (even when DW_SIGN_CANDIDATES=1).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.decide.outputs.signing == 'true' && !contains(github.ref, '-rc.') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.decide.outputs.signing == 'true' && !contains(github.ref, '-rc.') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
-          APPLE_CERTIFICATE: ${{ env.MACOS_SIGN == '1' && needs.decide.outputs.signing == 'true' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ env.MACOS_SIGN == '1' && needs.decide.outputs.signing == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ env.MACOS_SIGN == '1' && needs.decide.outputs.signing == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_API_ISSUER: ${{ env.MACOS_SIGN == '1' && needs.decide.outputs.signing == 'true' && secrets.APPLE_API_ISSUER || '' }}
-          APPLE_API_KEY: ${{ env.MACOS_SIGN == '1' && needs.decide.outputs.signing == 'true' && secrets.APPLE_API_KEY || '' }}
-          APPLE_TEAM_ID: ${{ env.MACOS_SIGN == '1' && vars.APPLE_TEAM_ID || '' }}
-        run: ../../ci/github/tauri-build.sh --target universal-apple-darwin --bundles "dmg${TAURI_SIGNING_PRIVATE_KEY:+,app}"
+          DW_ENABLE_UPDATER: ${{ needs.decide.outputs.stable_tag == 'true' && '1' || '0' }}
+        run: ../../ci/github/tauri-build.sh --target universal-apple-darwin --bundles dmg
       - name: Stage the dmg
         run: |
           dmg=$(ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" macos-universal.dmg 'universal-apple-darwin/release/bundle/dmg/*.dmg')
           echo "DMG=$dmg" >> "$GITHUB_ENV"
-      - name: Notarize and staple the dmg
-        if: ${{ env.MACOS_SIGN == '1' }}
-        env:
-          APPLE_API_ISSUER: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_API_ISSUER || '' }}
-          APPLE_API_KEY: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_API_KEY || '' }}
-        run: |
-          xcrun notarytool submit "$DMG" \
-            --key "$APPLE_API_KEY_PATH" \
-            --key-id "$APPLE_API_KEY" \
-            --issuer "$APPLE_API_ISSUER" \
-            --wait
-          xcrun stapler staple "$DMG"
-          xcrun stapler validate "$DMG"
-          codesign --verify --verbose=2 "$DMG"
-      - name: Stage the updater archive
-        if: ${{ env.UPDATER == '1' }}
-        run: ci/github/release-feed.sh stage "$RUNNER_TEMP/updater" "$VERSION" macos
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ env.UPDATER == '1' }}
-        with:
-          name: updater-macos
-          path: ${{ runner.temp }}/updater/
-          if-no-files-found: error
-      # Tauri deletes the .app once the dmg is made, so the launch check uses the app out of the
-      # staged dmg, as a user gets it.
+      # Tauri deletes the .app once the dmg is made, so the launch check (and unsigned app archive)
+      # uses the app out of the staged dmg, as a user gets it.
       - name: Open the staged dmg
-        env:
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           mnt="$RUNNER_TEMP/dmg-mnt"
           mkdir -p "$mnt" "$RUNNER_TEMP/app"
@@ -241,18 +181,19 @@ jobs:
           app="$RUNNER_TEMP/app/Dash Wallet.app"
           echo "APP=$app" >> "$GITHUB_ENV"
           lipo -archs "$app/Contents/MacOS/dash-wallet"
-          codesign -dv "$app" 2>&1 | grep -E "Signature|Identifier|TeamIdentifier"
-          if [[ "${MACOS_SIGN:-0}" == 1 ]]; then
-            codesign --verify --deep --strict --verbose=2 "$app"
-            spctl --assess --type execute -vv "$app"
-            xcrun stapler validate "$app"
-            if [[ -n "${APPLE_TEAM_ID:-}" ]]; then
-              codesign -dv "$app" 2>&1 | grep -qx "TeamIdentifier=$APPLE_TEAM_ID" || {
-                echo "::error::signed app TeamIdentifier does not match APPLE_TEAM_ID ($APPLE_TEAM_ID)" >&2
-                exit 1
-              }
-            fi
-          fi
+          codesign -dv "$app" 2>&1 | grep -E "Signature|Identifier"
+      - name: Pack unsigned .app archive for local detached signing (stable tags)
+        if: ${{ needs.decide.outputs.stable_tag == 'true' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/unsigned-macos"
+          python3 ci/github/macos-detached-sig.py pack-app "$APP" \
+            "$RUNNER_TEMP/unsigned-macos/dash-wallet-$VERSION-macos-unsigned.tar.gz"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ needs.decide.outputs.stable_tag == 'true' }}
+        with:
+          name: unsigned-macos-v${{ env.VERSION }}
+          path: ${{ runner.temp }}/unsigned-macos/
+          if-no-files-found: error
       - name: Launch the built app and take a screenshot
         env:
           DWD_SHOT_SETTLE: "15"
@@ -260,9 +201,6 @@ jobs:
           data=$(mktemp -d)
           read -ra args <<<"$LAUNCH_ARGS"
           ci/github/macos-launch-screenshot.sh launch-macos "$RUNNER_TEMP/launch" 30 "$APP" --datadir "$data" "${args[@]}"
-      - name: Clean up macOS signing material
-        if: always()
-        run: ci/github/macos-signing-cleanup.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-macos
@@ -281,9 +219,6 @@ jobs:
     needs: decide
     if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 120
-    # Signing and updater keys live in this environment: a stable tag on main (or an rc when
-    # DW_SIGN_CANDIDATES=1) only (decide, docs/release/CHECKLIST.md).
-    environment: ${{ needs.decide.outputs.signing == 'true' && 'release' || '' }}
     env:
       # rs-x11-hash includes <unistd.h>, which MSVC lacks (ci/windows/unistd-shim/unistd.h).
       CFLAGS_x86_64_pc_windows_msvc: -I${{ github.workspace }}/ci/windows/unistd-shim
@@ -296,17 +231,6 @@ jobs:
         with:
           persist-credentials: false
       - run: ci/github/release-version.sh
-      - name: Check Windows signing configuration
-        env:
-          DW_SIGNING_ENABLED: ${{ needs.decide.outputs.signing }}
-          DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
-          AZURE_TENANT_ID: ${{ needs.decide.outputs.signing == 'true' && secrets.AZURE_TENANT_ID || '' }}
-          AZURE_CLIENT_ID: ${{ needs.decide.outputs.signing == 'true' && secrets.AZURE_CLIENT_ID || '' }}
-          AZURE_CLIENT_SECRET: ${{ needs.decide.outputs.signing == 'true' && secrets.AZURE_CLIENT_SECRET || '' }}
-          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
-        run: ci/github/release-signing-check.sh windows
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
@@ -327,55 +251,16 @@ jobs:
       - name: pnpm install
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
-      - name: Prepare Azure Artifact Signing
-        if: ${{ env.WINDOWS_SIGN == '1' }}
-        env:
-          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
-        run: ci/github/windows-signing-setup.sh
       - name: pnpm tauri build (nsis)
         working-directory: apps/desktop
         env:
           DW_BUILD_VERSION: ${{ env.VERSION }}
-          # Updater key: a stable tag on main only, never rc (even when DW_SIGN_CANDIDATES=1).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.decide.outputs.signing == 'true' && !contains(github.ref, '-rc.') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.decide.outputs.signing == 'true' && !contains(github.ref, '-rc.') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
-          AZURE_TENANT_ID: ${{ env.WINDOWS_SIGN == '1' && needs.decide.outputs.signing == 'true' && secrets.AZURE_TENANT_ID || '' }}
-          AZURE_CLIENT_ID: ${{ env.WINDOWS_SIGN == '1' && needs.decide.outputs.signing == 'true' && secrets.AZURE_CLIENT_ID || '' }}
-          AZURE_CLIENT_SECRET: ${{ env.WINDOWS_SIGN == '1' && needs.decide.outputs.signing == 'true' && secrets.AZURE_CLIENT_SECRET || '' }}
-        run: |
-          args=(--bundles nsis)
-          if [[ -n "${WINDOWS_SIGN_CONFIG:-}" ]]; then
-            args+=(--config "$WINDOWS_SIGN_CONFIG")
-          fi
-          ../../ci/github/tauri-build.sh "${args[@]}"
+          DW_ENABLE_UPDATER: ${{ needs.decide.outputs.stable_tag == 'true' && '1' || '0' }}
+        run: ../../ci/github/tauri-build.sh --bundles nsis
       - name: Stage the installer
         run: |
           setup=$(ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" windows-x64-setup.exe 'release/bundle/nsis/*-setup.exe')
           echo "SETUP=$setup" >> "$GITHUB_ENV"
-      - name: Verify installer Authenticode signature
-        if: ${{ env.WINDOWS_SIGN == '1' }}
-        shell: pwsh
-        run: |
-          & signtool.exe verify /pa /v $env:SETUP
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $sig = Get-AuthenticodeSignature -LiteralPath $env:SETUP
-          if ($sig.Status -ne 'Valid') {
-            Write-Error "Installer Authenticode signature is $($sig.Status): $($sig.StatusMessage)"
-            exit 1
-          }
-          Write-Host "Verified installer signature: $($sig.SignerCertificate.Subject)"
-      - name: Stage the installer's updater signature
-        if: ${{ env.UPDATER == '1' }}
-        run: ci/github/release-feed.sh stage "$RUNNER_TEMP/updater" "$VERSION" windows
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ env.UPDATER == '1' }}
-        with:
-          name: updater-windows
-          path: ${{ runner.temp }}/updater/
-          if-no-files-found: error
       # The NSIS installer, per user and silent, into a private directory (/D= must come last and
       # unquoted); the launch is of the installed app, not of the build output. Tauri's installer
       # starts the app when it finishes, even when silent, and that child holds the step's output
@@ -395,27 +280,12 @@ jobs:
           sleep 3
           echo "INSTALLED_EXE=$dest\\dash-wallet.exe" >> "$GITHUB_ENV"
           echo "LAUNCH_DATA=$RUNNER_TEMP\\dw-launch-data" >> "$GITHUB_ENV"
-      - name: Verify installed app Authenticode signature
-        if: ${{ env.WINDOWS_SIGN == '1' }}
-        shell: pwsh
-        run: |
-          & signtool.exe verify /pa /v $env:INSTALLED_EXE
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $sig = Get-AuthenticodeSignature -LiteralPath $env:INSTALLED_EXE
-          if ($sig.Status -ne 'Valid') {
-            Write-Error "Installed app Authenticode signature is $($sig.Status): $($sig.StatusMessage)"
-            exit 1
-          }
-          Write-Host "Verified installed app signature: $($sig.SignerCertificate.Subject)"
       - name: Launch the installed app and take a screenshot
         shell: pwsh
         run: |
           $appArgs = @('--datadir', $env:LAUNCH_DATA) + @(-split $env:LAUNCH_ARGS)
           ci/github/windows-launch-screenshot.ps1 -Name launch-windows -OutDir "$env:RUNNER_TEMP\launch" -Seconds 30 `
             -Exe $env:INSTALLED_EXE -ArgumentList $appArgs
-      - name: Clean up Windows signing files
-        if: always()
-        run: rm -rf "$RUNNER_TEMP/azure-signing"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-windows
@@ -434,9 +304,6 @@ jobs:
     needs: decide
     if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 90
-    # The updater signing key lives in this environment: a stable tag on main only, never rc (even when
-    # DW_SIGN_CANDIDATES=1).
-    environment: ${{ needs.decide.outputs.signing == 'true' && !contains(github.ref, '-rc.') && 'release' || '' }}
     env:
       # The runner has no FUSE: the AppImage tools (linuxdeploy) run extracted.
       APPIMAGE_EXTRACT_AND_RUN: "1"
@@ -478,10 +345,7 @@ jobs:
         working-directory: apps/desktop
         env:
           DW_BUILD_VERSION: ${{ env.VERSION }}
-          # A stable tag on main only: never rc (even when DW_SIGN_CANDIDATES=1), a dry run, main, a schedule or a dispatch.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.decide.outputs.signing == 'true' && !contains(github.ref, '-rc.') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.decide.outputs.signing == 'true' && !contains(github.ref, '-rc.') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
+          DW_ENABLE_UPDATER: ${{ needs.decide.outputs.stable_tag == 'true' && '1' || '0' }}
         run: ../../ci/github/tauri-build.sh --bundles appimage,deb
       # The engine reads DW_BUILD_VERSION at compile time to decide the test-build warning; a lost
       # stamp would make every release warn. A dev or rc VERSION is unique to the run, so this
@@ -503,15 +367,6 @@ jobs:
           ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" linux-amd64.deb 'release/bundle/deb/*.deb'
           chmod +x "$appimage"
           echo "APPIMAGE=$appimage" >> "$GITHUB_ENV"
-      - name: Stage the AppImage's updater signature
-        if: ${{ env.UPDATER == '1' }}
-        run: ci/github/release-feed.sh stage "$RUNNER_TEMP/updater" "$VERSION" linux
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ env.UPDATER == '1' }}
-        with:
-          name: updater-linux
-          path: ${{ runner.temp }}/updater/
-          if-no-files-found: error
       - name: Launch the AppImage under Xvfb and take a screenshot
         run: |
           read -ra args <<<"$LAUNCH_ARGS"
@@ -626,38 +481,21 @@ jobs:
     needs: [decide, macos, windows, linux, flatpak, sbom]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # The release PGP signing subkey lives in this environment: a stable tag on main (or an rc when
-    # DW_SIGN_CANDIDATES=1) only (decide, docs/release/CHECKLIST.md).
-    environment: ${{ needs.decide.outputs.signing == 'true' && 'release' || '' }}
-    outputs:
-      feed: ${{ steps.feed.outputs.feed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: ci/github/release-version.sh
-      - name: Check PGP signing configuration
-        env:
-          DW_SIGNING_ENABLED: ${{ needs.decide.outputs.signing }}
-          DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
-          RELEASE_PGP_PRIVATE_KEY: ${{ needs.decide.outputs.signing == 'true' && secrets.RELEASE_PGP_PRIVATE_KEY || '' }}
-          RELEASE_PGP_PASSPHRASE: ${{ needs.decide.outputs.signing == 'true' && secrets.RELEASE_PGP_PASSPHRASE || '' }}
-          RELEASE_PGP_FINGERPRINT: ${{ vars.RELEASE_PGP_FINGERPRINT }}
-        run: ci/github/release-signing-check.sh pgp
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           path: ${{ runner.temp }}/release
           merge-multiple: true
-      # Only a build with the updater key uploads updater-<os>; a pattern that matches nothing downloads nothing.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ needs.decide.outputs.stable_tag == 'true' }}
         with:
-          pattern: updater-*
-          path: ${{ runner.temp }}/updater
-          merge-multiple: true
-      - name: Update feed (latest.json, stable tags only)
-        id: feed
-        run: ci/github/release-feed.sh feed "$RUNNER_TEMP/updater" "$RUNNER_TEMP/feed" "$VERSION" "$GITHUB_REPOSITORY"
+          name: unsigned-macos-v${{ env.VERSION }}
+          path: ${{ runner.temp }}/unsigned-macos
       - name: SHA256SUMS (file names only)
         working-directory: ${{ runner.temp }}/release
         run: |
@@ -667,34 +505,24 @@ jobs:
           [[ ${#files[@]} -eq 7 ]] || { echo "::error::expected 7 files (dmg, exe, AppImage, deb, flatpak, two SBOMs)"; exit 1; }
           sha256sum "${files[@]}" > SHA256SUMS
           sha256sum -c SHA256SUMS
-          if [[ -d "$RUNNER_TEMP/feed" ]]; then
-            (
-              cd "$RUNNER_TEMP/feed"
-              mapfile -t feed_files < <(find . -maxdepth 1 -mindepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
-              sha256sum "${feed_files[@]}"
-            ) >> SHA256SUMS
-          fi
           cat SHA256SUMS
-      - name: Sign SHA256SUMS (PGP)
-        if: ${{ env.PGP_SIGN == '1' }}
-        env:
-          RELEASE_PGP_PRIVATE_KEY: ${{ needs.decide.outputs.signing == 'true' && secrets.RELEASE_PGP_PRIVATE_KEY || '' }}
-          RELEASE_PGP_PASSPHRASE: ${{ needs.decide.outputs.signing == 'true' && secrets.RELEASE_PGP_PASSPHRASE || '' }}
-          RELEASE_PGP_FINGERPRINT: ${{ vars.RELEASE_PGP_FINGERPRINT }}
-        run: ci/github/release-pgp-sign.sh "$RUNNER_TEMP/release/SHA256SUMS"
-      - name: Clean up PGP signing homedir
-        if: always()
-        run: rm -rf "$RUNNER_TEMP/gnupg-release"
+      - name: Record unsigned.SHA256SUMS (stable tags, includes macos-unsigned.tar.gz)
+        if: ${{ needs.decide.outputs.stable_tag == 'true' }}
+        run: |
+          cp "$RUNNER_TEMP/release/SHA256SUMS" "$RUNNER_TEMP/unsigned-macos/unsigned.SHA256SUMS"
+          (cd "$RUNNER_TEMP/unsigned-macos" && sha256sum "dash-wallet-$VERSION-macos-unsigned.tar.gz") >> "$RUNNER_TEMP/unsigned-macos/unsigned.SHA256SUMS"
+          LC_ALL=C sort -k2 "$RUNNER_TEMP/unsigned-macos/unsigned.SHA256SUMS" -o "$RUNNER_TEMP/unsigned-macos/unsigned.SHA256SUMS"
+          cat "$RUNNER_TEMP/unsigned-macos/unsigned.SHA256SUMS"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-v${{ env.VERSION }}
           path: ${{ runner.temp }}/release/
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ steps.feed.outputs.feed == '1' }}
+        if: ${{ needs.decide.outputs.stable_tag == 'true' }}
         with:
-          name: feed-v${{ env.VERSION }}
-          path: ${{ runner.temp }}/feed/
+          name: unsigned-signing-inputs-v${{ env.VERSION }}
+          path: ${{ runner.temp }}/unsigned-macos/
           if-no-files-found: error
 
   # The only job with write permissions. Reached by a push to main or to a v* tag only.
@@ -709,9 +537,6 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-    # One publish at a time on main, never cancelled by a newer one (GitHub still drops a pending run
-    # when another arrives; see release-publish.sh). Each tag has its own group, so a main push can
-    # never displace a tag's release.
     concurrency:
       group: release-publish-${{ github.ref == 'refs/heads/main' && 'main' || github.ref }}
       cancel-in-progress: false
@@ -726,32 +551,44 @@ jobs:
           name: release-v${{ env.VERSION }}
           path: ${{ runner.temp }}/release
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: ${{ needs.checksums.outputs.feed == '1' }}
+        if: ${{ needs.decide.outputs.stable_tag == 'true' }}
         with:
-          name: feed-v${{ env.VERSION }}
-          path: ${{ runner.temp }}/feed
+          name: unsigned-signing-inputs-v${{ env.VERSION }}
+          path: ${{ runner.temp }}/unsigned-macos
+      # When DW_SIGNING_REQUIRED=1 on a final stable tag vX.Y.Z, do NOT publish unsigned binaries:
+      # attest the unsigned build inputs (so the local signer can verify them with gh attestation
+      # verify before signing) and wait for detached signatures + release-publish-signed.yml.
+      - name: Check whether this stable tag waits for detached signatures
+        if: ${{ needs.decide.outputs.stable_tag == 'true' && vars.DW_SIGNING_REQUIRED == '1' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/unsigned-attest"
+          cp "$RUNNER_TEMP/release"/* "$RUNNER_TEMP/unsigned-macos"/* "$RUNNER_TEMP/unsigned-attest/"
+          echo "WAIT_FOR_SIGS=1" >> "$GITHUB_ENV"
+          echo "::notice::DW_SIGNING_REQUIRED=1 on v$VERSION: unsigned artifacts attested and held back. Sign locally and run release-publish-signed.yml (docs/release/SIGNING.md)."
+      - name: Attest unsigned build inputs (for local verification before signing)
+        if: ${{ env.WAIT_FOR_SIGS == '1' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/unsigned-attest/*
       # Exit 3: a tag that is not a release tag (a dry run); the rest of the job is skipped.
       - name: Decide and stage what is published
+        if: ${{ env.WAIT_FOR_SIGS != '1' }}
         env:
           DIST: ${{ runner.temp }}/release
-          FEED: ${{ runner.temp }}/feed
-          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
           DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
         run: |
           rc=0
           ci/github/release-publish.sh prepare || rc=$?
           if [[ $rc -eq 3 ]]; then echo "SKIP=1" >> "$GITHUB_ENV"; elif [[ $rc -ne 0 ]]; then exit "$rc"; fi
       - name: Attest every published file and both SHA256SUMS
-        if: ${{ env.SKIP != '1' }}
+        if: ${{ env.WAIT_FOR_SIGS != '1' && env.SKIP != '1' }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ runner.temp }}/publish/attest/*
       - name: Create and update the releases
-        if: ${{ env.SKIP != '1' }}
+        if: ${{ env.WAIT_FOR_SIGS != '1' && env.SKIP != '1' }}
         env:
           DIST: ${{ runner.temp }}/release
-          FEED: ${{ runner.temp }}/feed
-          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
           DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
           GH_TOKEN: ${{ github.token }}
         run: ci/github/release-publish.sh publish

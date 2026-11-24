@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-# release.yml: `pnpm tauri build "$@"`, with the update feed when the updater key is set (docs/release/updater.md).
+# release.yml: `pnpm tauri build "$@"`, optionally embedding the stable updater endpoint.
+#
+# Stable signing keys never live in CI (docs/release/SIGNING.md):
+#   - DW_ENABLE_UPDATER=1 (set on stable vX.Y.Z tags): merges tauri.updater.conf.json (the stable
+#     feed URL; the public key is already in tauri.conf.json) with createUpdaterArtifacts=false so
+#     CI builds the unsigned app with the updater enabled and zero private keys.
+#   - TAURI_SIGNING_PRIVATE_KEY (local developer builds only, docs/release/updater.md): merges
+#     tauri.updater.conf.json with createUpdaterArtifacts=true and sets UPDATER=1.
+#   - Otherwise (main, -rc.N, dry runs, dispatches): plain build without the updater endpoint.
 set -euo pipefail
 
-# Tauri's bundler checks std::env::var_os("APPLE_*"), which treats "" as set rather than absent.
-# Unset empty Apple signing/notarization variables so tauri.conf.json's ad-hoc "-" identity keeps working.
-for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
-  APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_PATH APPLE_TEAM_ID; do
-  [[ -n "${!v:-}" ]] || unset "$v"
-done
-
 if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
-  echo "tauri-build: the updater signing key is set: a build with the update feed"
+  echo "tauri-build: local updater signing key is set: building with updater artifacts"
   [[ -z "${GITHUB_ENV:-}" ]] || echo "UPDATER=1" >> "$GITHUB_ENV"
   exec pnpm tauri build "$@" --config ../../rust/crates/dw-app/tauri.updater.conf.json
 fi
-if [[ "${GITHUB_EVENT_NAME:-}" == push && "${GITHUB_REF:-}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  if [[ "${DW_UPDATER_REQUIRED:-}" == 1 ]]; then
-    echo "::error::tauri-build: no updater signing key on ${GITHUB_REF#refs/tags/}, and DW_UPDATER_REQUIRED=1: installed copies would get no update. Check the release environment's secrets." >&2
-    exit 1
-  fi
-  echo "::warning::tauri-build: no updater signing key on ${GITHUB_REF#refs/tags/}: this release has no updater and publishes no update feed."
+
+if [[ "${DW_ENABLE_UPDATER:-}" == 1 ]]; then
+  echo "tauri-build: DW_ENABLE_UPDATER=1: embedding stable updater endpoint (unsigned; signed locally)"
+  exec pnpm tauri build "$@" \
+    --config ../../rust/crates/dw-app/tauri.updater.conf.json \
+    --config '{"bundle":{"createUpdaterArtifacts":false}}'
 fi
-echo "tauri-build: no updater signing key: a build without the updater"
+
+echo "tauri-build: plain build without updater endpoint"
 exec pnpm tauri build "$@"

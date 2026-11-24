@@ -1,0 +1,204 @@
+# Attach detached signatures to an unsigned CI release build, verify every signature, attest the
+# final signed assets, and publish the GitHub Release (docs/release/SIGNING.md).
+#
+# Zero signing secrets live in this workflow: all signatures are created locally by the release
+# signer and stored in the detached-sigs repository (mirroring dashpay/dash-detached-sigs).
+name: Publish signed release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable release tag to publish (e.g. v1.0.0)"
+        required: true
+        type: string
+      release_run_id:
+        description: "Actions run ID of the Release workflow run that built the unsigned artifacts"
+        required: true
+        type: string
+      sigs_repo:
+        description: "Detached-signatures repository (owner/name)"
+        required: true
+        default: PastaPastaPasta/dashwallet-detached-sigs
+        type: string
+      sigs_ref:
+        description: "Branch, tag, or commit in sigs_repo holding the detached signatures (defaults to tag)"
+        required: false
+        default: ""
+        type: string
+      dmg_draft_tag:
+        description: "Optional draft release tag holding the signed macOS .dmg (defaults to tag)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  attach-and-publish:
+    name: Verify, attach detached signatures, attest, and publish
+    runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    concurrency:
+      group: release-publish-refs/tags/${{ inputs.tag }}
+      cancel-in-progress: false
+    steps:
+      - name: Validate inputs
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_RUN_ID: ${{ inputs.release_run_id }}
+          INPUT_SIGS_REPO: ${{ inputs.sigs_repo }}
+          INPUT_SIGS_REF: ${{ inputs.sigs_ref }}
+          INPUT_DMG_TAG: ${{ inputs.dmg_draft_tag }}
+        run: |
+          [[ "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::tag must be a final stable tag vX.Y.Z (got '$INPUT_TAG')" >&2
+            exit 1
+          }
+          [[ "$INPUT_RUN_ID" =~ ^[0-9]+$ ]] || {
+            echo "::error::release_run_id must be numeric (got '$INPUT_RUN_ID')" >&2
+            exit 1
+          }
+          [[ "$INPUT_SIGS_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+            echo "::error::invalid sigs_repo '$INPUT_SIGS_REPO'" >&2
+            exit 1
+          }
+          {
+            echo "TAG=$INPUT_TAG"
+            echo "VERSION=${INPUT_TAG#v}"
+            echo "SIGS_REF=${INPUT_SIGS_REF:-$INPUT_TAG}"
+            echo "DMG_TAG=${INPUT_DMG_TAG:-$INPUT_TAG}"
+          } >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tag commit is on origin/main
+        run: |
+          git fetch --quiet --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          sha=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$sha" refs/remotes/origin/main || {
+            echo "::error::$TAG ($sha) is not an ancestor of origin/main; refusing to publish" >&2
+            exit 1
+          }
+          echo "TAG_SHA=$sha" >> "$GITHUB_ENV"
+      - name: Install osslsigncode and gnupg
+        run: brew install osslsigncode gnupg
+      - name: Download unsigned CI artifacts from the Release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.release_run_id }}
+        run: |
+          run_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha)
+          run_workflow=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .path)
+          [[ "$run_workflow" == ".github/workflows/release.yml" ]] || {
+            echo "::error::run $RUN_ID is '$run_workflow', expected .github/workflows/release.yml" >&2
+            exit 1
+          }
+          [[ "$run_sha" == "$TAG_SHA" ]] || {
+            echo "::error::run $RUN_ID built commit $run_sha, but $TAG is $TAG_SHA" >&2
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/unsigned"
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            -n "release-v$VERSION" -D "$RUNNER_TEMP/unsigned"
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            -n "unsigned-signing-inputs-v$VERSION" -D "$RUNNER_TEMP/unsigned"
+          ls -la "$RUNNER_TEMP/unsigned"
+      - name: Fetch detached signatures repository
+        env:
+          SIGS_REPO: ${{ inputs.sigs_repo }}
+        run: |
+          git clone --depth 1 --branch "$SIGS_REF" "https://github.com/$SIGS_REPO.git" "$RUNNER_TEMP/sigs-repo"
+          if [[ -d "$RUNNER_TEMP/sigs-repo/$TAG" ]]; then
+            echo "SIGS_DIR=$RUNNER_TEMP/sigs-repo/$TAG" >> "$GITHUB_ENV"
+          else
+            echo "SIGS_DIR=$RUNNER_TEMP/sigs-repo" >> "$GITHUB_ENV"
+          fi
+      - name: Fetch staged signed macOS .dmg from draft release (if not in sigs dir)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dmg_name="dash-wallet-$VERSION-macos-universal.dmg"
+          if [[ -f "$SIGS_DIR/$dmg_name" ]]; then
+            echo "SIGNED_DMG=$SIGS_DIR/$dmg_name" >> "$GITHUB_ENV"
+          else
+            mkdir -p "$RUNNER_TEMP/dmg-stage"
+            gh release download "$DMG_TAG" --repo "$GITHUB_REPOSITORY" \
+              -p "$dmg_name" -D "$RUNNER_TEMP/dmg-stage"
+            echo "SIGNED_DMG=$RUNNER_TEMP/dmg-stage/$dmg_name" >> "$GITHUB_ENV"
+          fi
+      - name: Attach and verify all detached signatures
+        env:
+          RELEASE_PGP_FINGERPRINT: ${{ vars.RELEASE_PGP_FINGERPRINT }}
+          RELEASE_WIN_LEAF_HASH: ${{ vars.RELEASE_WIN_LEAF_HASH }}
+        run: |
+          args=(
+            --version "$VERSION"
+            --unsigned-dir "$RUNNER_TEMP/unsigned"
+            --sigs-dir "$SIGS_DIR"
+            --out-dir "$RUNNER_TEMP/attached"
+            --signed-dmg "$SIGNED_DMG"
+            --repo "$GITHUB_REPOSITORY"
+          )
+          if [[ -f "$SIGS_DIR/release-key.asc" ]]; then
+            args+=(--pgp-pubkey "$SIGS_DIR/release-key.asc")
+          elif [[ -f "$RUNNER_TEMP/sigs-repo/release-key.asc" ]]; then
+            args+=(--pgp-pubkey "$RUNNER_TEMP/sigs-repo/release-key.asc")
+          fi
+          if [[ -n "${RELEASE_PGP_FINGERPRINT:-}" ]]; then
+            args+=(--pgp-fingerprint "$RELEASE_PGP_FINGERPRINT")
+          fi
+          if [[ -n "${RELEASE_WIN_LEAF_HASH:-}" ]]; then
+            args+=(--win-leaf-hash "$RELEASE_WIN_LEAF_HASH")
+          fi
+          ci/github/release-attach.sh "${args[@]}"
+      - name: Prepare final signed release assets for attestation
+        env:
+          GITHUB_EVENT_NAME: push
+          GITHUB_REF: refs/tags/${{ inputs.tag }}
+          GITHUB_SHA: ${{ env.TAG_SHA }}
+          DIST: ${{ runner.temp }}/attached/dist
+          FEED: ${{ runner.temp }}/attached/feed
+          SIGNED_MANIFEST: ${{ runner.temp }}/attached/signed-manifest.json
+          OUT: ${{ runner.temp }}/publish
+          DW_SIGNING_REQUIRED: "1"
+        run: ci/github/release-publish.sh prepare
+      - name: Attest every final signed release asset
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/publish/attest/*
+      - name: Remove staging draft release if it holds only the staged .dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dmg_name="dash-wallet-$VERSION-macos-universal.dmg"
+          draft_id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true and (.assets | length) == 1 and .assets[0].name == \"$dmg_name\") | .id" | head -n 1 || true)
+          if [[ -n "$draft_id" ]]; then
+            echo "Deleting staging draft release $draft_id for $TAG before publishing final release"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id" --silent
+          fi
+      - name: Publish the signed GitHub Release
+        env:
+          GITHUB_EVENT_NAME: push
+          GITHUB_REF: refs/tags/${{ inputs.tag }}
+          GITHUB_SHA: ${{ env.TAG_SHA }}
+          DIST: ${{ runner.temp }}/attached/dist
+          FEED: ${{ runner.temp }}/attached/feed
+          SIGNED_MANIFEST: ${{ runner.temp }}/attached/signed-manifest.json
+          OUT: ${{ runner.temp }}/publish
+          DW_SIGNING_REQUIRED: "1"
+          GH_TOKEN: ${{ github.token }}
+        run: ci/github/release-publish.sh publish

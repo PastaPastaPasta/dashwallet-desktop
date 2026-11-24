@@ -9,11 +9,12 @@
 # SHA256SUMS.asc on signed tag builds), VERSION (release-version.sh), GITHUB_EVENT_NAME, GITHUB_REF,
 # GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_RUN_NUMBER, GITHUB_RUN_ID, GITHUB_SERVER_URL, GH_TOKEN, and a
 # checkout whose `origin/main` is fetched with full history.
-# FEED (optional) is the update feed the checksums job made (release-feed.sh): latest.json and the macOS
-# app archive. Only a stable release tag vX.Y.Z publishes one; a feed on any other trigger is refused.
-# With DW_UPDATER_REQUIRED=1 (a repository variable, docs/release/updater.md) a stable tag without one is.
-# With DW_SIGNING_REQUIRED=1 (a repository variable, docs/release/CHECKLIST.md) a stable tag without
-# SHA256SUMS.asc is refused; release candidates (-rc.N) never require signing.
+# FEED (optional) is the update feed (latest.json and the macOS app archive). Only a stable release
+# tag vX.Y.Z publishes one; a feed on any other trigger is refused.
+# With DW_SIGNING_REQUIRED=1 (a repository variable, docs/release/SIGNING.md) a final vX.Y.Z tag is
+# refused unless attached signatures are present and verified (SHA256SUMS.asc, signed-manifest.json
+# from release-attach.sh matching the Windows .exe / macOS .dmg / .app.tar.gz / SHA256SUMS hashes,
+# and the signed updater feed latest.json). Release candidates (-rc.N) never require signing.
 # OUT defaults to $DIST/../publish. DRY_RUN=1 runs the reads (release and tag lookups) and prints each
 # write instead of doing it, so the logic can be run by hand against the real repository.
 #
@@ -145,9 +146,6 @@ if [[ -f "$DIST/SHA256SUMS.asc" ]]; then
   [[ "$kind" == tag ]] || die "SHA256SUMS.asc on $ref: only a release tag publishes a PGP signature"
   asc=("$DIST/SHA256SUMS.asc")
 fi
-if [[ "${DW_SIGNING_REQUIRED:-}" == 1 && "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && ((${#asc[@]} == 0)); then
-  die "$tag has no SHA256SUMS.asc and DW_SIGNING_REQUIRED=1: a final release must carry a PGP signature (missing RELEASE_PGP_PRIVATE_KEY, RELEASE_PGP_PASSPHRASE, or RELEASE_PGP_FINGERPRINT)"
-fi
 feed=()
 if [[ -n "${FEED:-}" && -d "$FEED" ]]; then
   while IFS= read -r f; do feed+=("$f"); done < <(find "$FEED" -maxdepth 1 -type f | LC_ALL=C sort)
@@ -160,8 +158,29 @@ if ((${#feed[@]})); then
     '.version == $v and (.platforms | length) == 4 and ([.platforms[].url | startswith($p)] | all)' "$FEED/latest.json" > /dev/null ||
     die "$FEED/latest.json is not the feed of $tag"
 fi
-if [[ "${DW_UPDATER_REQUIRED:-}" == 1 && "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && ((${#feed[@]} == 0)); then
-  die "$tag has no update feed and DW_UPDATER_REQUIRED=1: as Latest it would leave every installed copy without updates"
+if [[ "${DW_SIGNING_REQUIRED:-}" == 1 && "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  missing_sigs=()
+  ((${#asc[@]})) || missing_sigs+=("SHA256SUMS.asc")
+  ((${#feed[@]})) || missing_sigs+=("updater feed (latest.json + macos-universal.app.tar.gz)")
+  manifest=${SIGNED_MANIFEST:-$DIST/../signed-manifest.json}
+  [[ -f "$manifest" ]] || missing_sigs+=("attached macOS/Windows signatures (signed-manifest.json from release-attach.sh)")
+  if ((${#missing_sigs[@]})); then
+    missing_str=$(IFS=', '; echo "${missing_sigs[*]}")
+    die "$tag has DW_SIGNING_REQUIRED=1, but attached signatures are missing: $missing_str (sign locally and run ci/github/release-attach.sh; see docs/release/SIGNING.md)"
+  fi
+  sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
+  }
+  jq -e \
+    --arg v "$VERSION" \
+    --arg win "$(sha256_of "$DIST/dash-wallet-$VERSION-windows-x64-setup.exe")" \
+    --arg dmg "$(sha256_of "$DIST/dash-wallet-$VERSION-macos-universal.dmg")" \
+    --arg app "$(sha256_of "$FEED/dash-wallet-$VERSION-macos-universal.app.tar.gz")" \
+    --arg sums "$(sha256_of "$DIST/SHA256SUMS")" \
+    --arg asc "$(sha256_of "$DIST/SHA256SUMS.asc")" \
+    '.schema == 1 and .version == $v and .windows_sha256 == $win and .dmg_sha256 == $dmg and .app_tar_sha256 == $app and .sums_sha256 == $sums and .asc_sha256 == $asc' \
+    "$manifest" >/dev/null ||
+    die "$tag: signed-manifest.json does not match the files in $DIST and $FEED (re-run ci/github/release-attach.sh)"
 fi
 run_url=${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/${GITHUB_RUN_ID:-0}
 
