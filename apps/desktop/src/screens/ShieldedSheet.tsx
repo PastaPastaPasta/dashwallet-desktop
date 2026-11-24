@@ -464,8 +464,7 @@ export function ShieldedSendLink({ walletId, network }: { walletId: string; netw
   const status = useShieldedStatus(walletId, flow.open).data ?? null;
   const sheet = <ShieldedSheet flow={flow} walletId={walletId} network={network} status={status} />;
   if (!status?.active) return sheet;
-  const syncing = shieldedSyncing(status);
-  const why = syncing ? SHIELDED_SYNC_COPY.syncing : flow.running ? C.card.why.busy : !shieldedDuffs(status) ? C.card.why.empty : null;
+  const why = sendWhy(flow, status);
   return (
     <>
       <p className="pay-shielded" data-testid="pay-shielded">
@@ -475,5 +474,23 @@ export function ShieldedSendLink({ walletId, network }: { walletId: string; netw
       </p>
       {sheet}
     </>
+  );
+}
+
+/** Why Send from Shielded waits: syncing, a call running, or nothing to send; `null` when it can open. */
+function sendWhy(flow: ShieldedFlow, status: ShieldedStatus): string | null {
+  return shieldedSyncing(status) ? SHIELDED_SYNC_COPY.syncing : flow.running ? C.card.why.busy : !shieldedDuffs(status) ? C.card.why.empty : null;
+}
+
+/** Pay's Shielded address: Send from Shielded, opened with the address and amount typed in Pay (the
+ * page's link holds the sheet). It waits, and says why, as the link does. */
+export function ShieldedPayButton({ walletId, status, to, text }: { walletId: string; status: ShieldedStatus; to: string; text: string }) {
+  const flow = shieldedFor(useBackend(), walletId);
+  useModel(flow);
+  const why = sendWhy(flow, status);
+  return (
+    <DashButton variant="tintedBlue" size="small" data-testid="pay-shielded-route" disabled={why !== null} why={why} onClick={() => flow.sendTo(to, text)}>
+      {C.titles.send}
+    </DashButton>
   );
 }

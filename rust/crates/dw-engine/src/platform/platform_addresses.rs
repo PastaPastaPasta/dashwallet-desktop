@@ -66,6 +66,10 @@ pub enum PlatformActivityKind {
     /// wallet applied to its Platform address (`address`); `Pending` until
     /// a proved apply, then `Done` with the credits it added.
     FromCore,
+    /// A top-up of one of this wallet's identities from its Platform
+    /// addresses (1.0 C3a): `to` is the identity (base58). Settled as a
+    /// move, by its inputs' proved nonces.
+    ToIdentity,
     /// An unshield of this wallet's to its Platform address (`address`,
     /// C-routes C1-9): `Pending` from the dispatch hook's accept until its
     /// artifact reads executed (`Done`) or not executed (`Failed`).

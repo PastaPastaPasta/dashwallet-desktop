@@ -42,7 +42,9 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("mn-vote")).toBeDisabled();
     await expect(pane(page)).toContainText("A banned masternode can't vote");
     await expect(page.getByTestId("sidebar-masternodes-badge")).toHaveText("1");
-    for (const hidden of ["Set up a masternode", "Track a masternode", "Release", "Withdraw", "In progress", "Masternode keys", "Keys you added", "Add keys"])
+    // S2 adds Set up a masternode and In progress (none here); S3 adds Change keys.
+    await expect(page.getByTestId("mn-set-up")).toHaveText("Set up a masternode");
+    for (const hidden of ["Track a masternode", "Withdraw", "In progress", "Masternode keys", "Keys you added", "Add keys"])
       await expect(page.getByText(hidden, { exact: false })).toHaveCount(0);
     await fontsReady(page);
     expect(await seriousAxeViolations(page)).toEqual([]);

@@ -47,6 +47,13 @@ test.describe("Unfinished transfers", () => {
     await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
   });
 
+  test("recovery-checking-two: the card says the plural Checking line", async ({ page }) => {
+    await open(page, "recovery-checking-two");
+    await expect(page.getByTestId("unfinished-text")).toHaveText(
+      "2 transfers may already be finished. Choose Check again to confirm them. If an amount wasn't added yet, Check again tries to add it. If any still show Checking, try again later.",
+    );
+  });
+
   test("recovery-checking: Check again reaches the backend, and the second try applies the lock", async ({ page }) => {
     await open(page, "recovery-checking");
     await expect(page.getByTestId("unfinished-text")).toContainText("1 transfer may already be finished");
@@ -58,6 +65,67 @@ test.describe("Unfinished transfers", () => {
     await authorize(page);
     await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
   });
+
+  for (const scenario of ["recovery-restored-finished", "paddr-recovery-restored-finished"]) {
+    test(`${scenario}: a restored lock Platform already took reads checking, and Check again says it was already added`, async ({ page }) => {
+      const errors = await open(page, scenario);
+      const text = page.getByTestId("unfinished-text");
+      await expect(text).toHaveText("1 transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.");
+      await expect(page.getByTestId("unfinished-card")).not.toContainText("hasn't seen");
+      await page.getByTestId("unfinished-checkAgain").click();
+      await authorize(page);
+      await expect(text).toHaveText("The network says this was already added. There's nothing left to finish.");
+      expect(await page.evaluate(() => window.__dwFixture!.world.pending.recovery.locks.length)).toBe(0);
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      await page.getByTestId("unfinished-dismiss").click();
+      await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test("recovery-restored-mixed: Check again from Details on a lock Platform already took keeps the row with the network's answer", async ({ page }) => {
+    await open(page, "recovery-restored-mixed");
+    await page.evaluate(() => {
+      const r = window.__dwFixture!.world.pending.recovery;
+      r.consumed = r.locks.filter((l) => l.state === "checking").map((l) => l.txid);
+    });
+    await page.getByTestId("unfinished-details").click();
+    await expect(page.getByTestId("unfinished-row")).toHaveCount(3);
+    await page.getByTestId("unfinished-row-checkAgain").click();
+    await authorize(page);
+    const row = page.locator('[data-testid="unfinished-row"][data-state="reportedUsed"]');
+    await expect(row.getByTestId("unfinished-row-result")).toHaveText("The network says this was already added. There's nothing left to finish.");
+    await expect(row.getByTestId("unfinished-row-checkAgain")).toHaveCount(0);
+  });
+
+  test("recovery-restored-unapplied: a restored checking lock Platform never took is added by Check again", async ({ page }) => {
+    const errors = await open(page, "recovery-restored-unapplied");
+    await expect(page.getByTestId("unfinished-text")).toHaveText("1 transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.");
+    await page.getByTestId("unfinished-checkAgain").click();
+    await authorize(page);
+    await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
+    expect(await page.evaluate(() => window.__dwFixture!.world.pending.recovery.locks.length)).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
+  for (const [scenario, outcome] of [
+    ["recovery-restored-unapplied", "1 resumed, 1 completed, 0 still pending."],
+    ["recovery-restored-finished", "1 resumed, 0 completed, 0 still pending, 1 already used."],
+  ]) {
+    test(`${scenario}: Tools ▸ Repair ▸ Finish transfers tries a restored checking lock`, async ({ page }) => {
+      await open(page, scenario);
+      await page.getByTestId("unfinished-text").waitFor();
+      await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+        window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" });
+      });
+      await expect(page.getByTestId("tools-tabs-repair")).toHaveAttribute("aria-selected", "true");
+      await page.getByTestId("repair-finish-transfers").click();
+      await authorize(page);
+      await expect(page.getByTestId("repair-outcome")).toHaveText(outcome);
+      expect(await page.evaluate(() => window.__dwFixture!.world.pending.recovery.locks.length)).toBe(0);
+    });
+  }
 
   test("paddr-recovery-restored: Home offers the Add from Dash wallet lock, and Finish adds it to the Platform address", async ({ page }) => {
     const errors = await open(page, "paddr-recovery-restored");

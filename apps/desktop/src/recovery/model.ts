@@ -161,10 +161,11 @@ export function cardView(
   return note === null ? null : { kind: "done", text: note, note: null, actions: ["dismiss"], lock: null };
 }
 
-/** The sheet's rows: the restored locks, and the ones this session applied (they have left the list). */
+/** The sheet's rows: the restored locks, and the ones this session applied or Platform reported already
+ * added (they have left the list). */
 export function sheetRows(data: UnfinishedTransfers | null | undefined, results: ReadonlyMap<string, { lock: UnfinishedLock; result: RowResult }>) {
   const rows = restoredOf(data).map((lock) => ({ lock, result: results.get(lockKey(lock))?.result ?? null }));
-  const gone = [...results.values()].filter((r) => r.result.kind === "applied" && !rows.some((x) => lockKey(x.lock) === lockKey(r.lock)));
+  const gone = [...results.values()].filter((r) => (r.result.kind === "applied" || r.result.kind === "reportedUsed") && !rows.some((x) => lockKey(x.lock) === lockKey(r.lock)));
   return [...rows, ...gone.map((r) => ({ lock: r.lock, result: r.result as RowResult | null }))];
 }
 
@@ -275,7 +276,8 @@ export class RecoveryModel extends Model {
       if (report?.value.byKind.some((k) => k.kind === "platformAddress")) touchedPlatform();
       return report ? { kind: "done", text: REG_COPY.finished(report.value) } : { kind: "idle" };
     }
-    for (const lock of action.kind === "finish" ? [action.lock] : action.locks) {
+    const locks = action.kind === "finish" ? [action.lock] : action.locks;
+    for (const lock of locks) {
       if (lock.kind === "platformAddress") touchedPlatform();
       const got = await this.grants.withGrant(
         platformOp({ maxDuffs: 1, maxCredits: "0" }),
@@ -287,7 +289,8 @@ export class RecoveryModel extends Model {
       this.results.set(lockKey(lock), { lock, result: got.value });
       if (got.value.kind === "notApplied") return { kind: "failed", error: engineError(got.value.error), retry: action };
     }
-    return { kind: "idle" };
+    const only = locks.length === 1 ? this.results.get(lockKey(locks[0]))?.result : undefined;
+    return only?.kind === "reportedUsed" ? { kind: "done", text: RECOVERY_COPY.sheet.done.reportedUsed } : { kind: "idle" };
   }
 
   #set(state: RecoveryState) {
