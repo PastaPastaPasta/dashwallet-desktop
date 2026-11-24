@@ -6269,15 +6269,19 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-text-tertiary);
 }
 
-/* A group, not a fieldset, as on Restore options (issue 108): a flex fieldset's legend could move
-   the centred sheet under the first click on WebKitGTK. */
+/* The vote sheet's group is a div, as on Restore options (issue 108): a flex fieldset's legend could
+   move the centred sheet under the first click on WebKitGTK. The registration and Change keys sheets
+   still use fieldsets, so their browser box is reset here. */
 .mg-choices {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
-.mg-choices > .mg-section-title {
+div.mg-choices > .mg-section-title {
   margin: 0;
   padding-inline: 2px;
 }

@@ -3254,15 +3254,20 @@ impl Vault {
         let file = inner.file.as_ref();
         let settings = file.and_then(|f| f.quick_unlock.as_ref());
         let shown = settings.map_or(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, |s| s.spend_limit_duffs);
+        // A sealed limit that no longer authenticates (the manifest does) is
+        // reported as such and as 0, the limit in force, not as its plain copy.
+        let (spend_limit_duffs, limit_unreadable) = match (file, inner.dek.as_ref()) {
+            (Some(f), Some(dek)) => match open_policy(f, dek, inner.policy_floor) {
+                Ok(Some(policy)) => (policy.spend_limit_duffs, false),
+                Err(VaultError::Corrupt(_)) if verify_manifest(f, dek, 0).is_ok() => (0, true),
+                _ => (shown, false),
+            },
+            _ => (shown, false),
+        };
         QuickUnlockPolicy {
             enrolled: file.is_some_and(|f| f.slot_b.is_some()),
-            spend_limit_duffs: match (file, inner.dek.as_ref()) {
-                (Some(f), Some(dek)) => match open_policy(f, dek, inner.policy_floor) {
-                    Ok(Some(policy)) => policy.spend_limit_duffs,
-                    _ => shown,
-                },
-                _ => shown,
-            },
+            spend_limit_duffs,
+            limit_unreadable,
             passphrase_max_age_secs: PASSPHRASE_MAX_AGE_SECS,
             last_passphrase_at: settings
                 .and_then(|s| s.last_passphrase_at)
