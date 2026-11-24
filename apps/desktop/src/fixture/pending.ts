@@ -108,6 +108,9 @@ export interface PlatformWorld {
   nextSend: SendResult;
   /** What the next "Add from Dash wallet" comes to. */
   nextFund: FundResult;
+  /** What the next top-up of an identity from these addresses comes to: done, unanswered
+   * (`pending`), failed by height and able to land still (`held`), or never executing (`failed`). */
+  nextTopUp: "done" | "pending" | "held" | "failed";
   /** What the next Finish of one of those adds comes to. */
   nextResume: ResumeResult;
   /** The locks of "Add from Dash wallet" not applied yet. */
@@ -156,6 +159,7 @@ export const newPlatformWorld = (): PlatformWorld => ({
   nextMove: "done",
   nextSend: "done",
   nextFund: "done",
+  nextTopUp: "done",
   nextResume: "done",
   funds: [],
   thenSend: null,
@@ -638,7 +642,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     // Of a group of moves at the same inputs at most one executes: the new one replaces the held ones.
     p.activity = [
       { id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: state === "pending", estimated: false },
-      ...p.activity.map((a) => (supersedes.includes(a.id) ? { ...a, state: "replaced" as const, mayLand: false } : a)),
+      // A held top-up and its exit: at most one executes, and the exit did (C3-9), so it can no longer.
+      ...p.activity.map((a) =>
+        supersedes.includes(a.id) ? { ...a, state: "replaced" as const, mayLand: false } : a.kind === "toIdentity" && isHeldOp(a) ? { ...a, state: "failed" as const, mayLand: false } : a,
+      ),
     ];
     // A move that is `done` has emptied the addresses it took from; a `pending` one has not been seen yet.
     if (state === "done") p.addresses = [];
