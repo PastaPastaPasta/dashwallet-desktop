@@ -32,6 +32,9 @@ pub struct PlatformAddressBalance {
     /// Unix seconds of this session's last sync pass; `null` before one.
     pub synced_at: Option<u64>,
     pub syncing: bool,
+    /// The network has address funds transitions: below protocol version 11
+    /// a top-up or send from these addresses is refused.
+    pub sends_active: bool,
 }
 
 impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
@@ -43,6 +46,7 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
             addresses,
             synced_at,
             syncing,
+            sends_active,
         } = b;
         PlatformAddressBalance {
             credits,
@@ -51,6 +55,7 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
             addresses: addresses.into_iter().map(Into::into).collect(),
             synced_at,
             syncing,
+            sends_active,
         }
     }
 }
@@ -72,11 +77,24 @@ impl From<engine::PlatformAddressRow> for PlatformAddressRow {
     }
 }
 
+impl From<PlatformAddressRow> for engine::PlatformAddressRow {
+    fn from(r: PlatformAddressRow) -> Self {
+        let PlatformAddressRow { address, credits } = r;
+        engine::PlatformAddressRow { address, credits }
+    }
+}
+
 /// `incoming` and `outgoing`: a balance change a sync pass saw;
 /// `moveToCore`: a "Move to Dash wallet" of this wallet; `send`: a send of
 /// this wallet to a Platform address (`to`); `fromCore`: an "Add from Dash
 /// wallet" of this wallet to its Platform address (`address`), pending
-/// until Platform proves it applied.
+/// until Platform proves it applied; `toIdentity`: a top-up of one of this
+/// wallet's identities (`to`, base58) from its Platform addresses;
+/// `contactPayment`: a payment to a DashPay contact (`contact`) from the
+/// Platform balance, to its Core address (`to`);
+/// `fromShielded`: an unshield of this wallet to its Platform address
+/// (`address`), pending until Platform executed it (`done`) or did not
+/// (`failed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityKind {
@@ -85,10 +103,13 @@ pub enum PlatformActivityKind {
     MoveToCore,
     Send,
     FromCore,
+    ToIdentity,
+    ContactPayment,
+    FromShielded,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore, Send, FromCore
+    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, ContactPayment, FromShielded
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);
@@ -131,6 +152,10 @@ pub struct PlatformActivity {
     pub may_land: bool,
     /// A done send whose debit counts the fee estimate.
     pub estimated: bool,
+    /// A `contactPayment`'s contact; absent for every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub contact: Option<crate::dto::history::TxCounterparty>,
 }
 
 impl From<engine::PlatformActivity> for PlatformActivity {
@@ -147,6 +172,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             at,
             may_land,
             estimated,
+            contact,
         } = a;
         PlatformActivity {
             id,
@@ -160,6 +186,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             at,
             may_land,
             estimated,
+            contact: contact.map(Into::into),
         }
     }
 }

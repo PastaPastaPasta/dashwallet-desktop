@@ -430,7 +430,11 @@
         "kind": "regular",
         "weight": 1,
         "valid": true,
-        "keyIndex": 0,
+        "key": {
+          "kind": "keychain",
+          "index": 0
+        },
+        "collateralResolved": true,
         "currentVote": "yes",
         "voteTime": 1789000000,
         "keyHolders": 1,
@@ -442,7 +446,10 @@
         "kind": "evonode",
         "weight": 4,
         "valid": false,
-        "keyIndex": 3,
+        "key": {
+          "kind": "attached"
+        },
+        "collateralResolved": false,
         "currentVote": null,
         "voteTime": null,
         "keyHolders": 2,
@@ -458,11 +465,13 @@
           "contenders": [
             {
               "identity": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P",
-              "votes": 9
+              "votes": 9,
+              "name": "Alice"
             },
             {
               "identity": "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",
-              "votes": 4
+              "votes": 4,
+              "name": null
             }
           ],
           "lockVotes": 5,
@@ -475,7 +484,8 @@
           "contenders": [
             {
               "identity": "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",
-              "votes": 0
+              "votes": 0,
+              "name": "Dash-Pay"
             }
           ],
           "lockVotes": 0,

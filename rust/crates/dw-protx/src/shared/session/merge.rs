@@ -144,7 +144,7 @@ pub fn absorb_draft_reply(
     sorted.sort_by_key(order);
     merged.contributions = sorted;
     rebuild_funding_tx(&mut merged).map_err(|_| Refusal::Conflict)?;
-    merged.revision = ours.revision + 1;
+    merged.revision = ours.next_revision().ok_or(Refusal::Conflict)?;
     Ok(Some(merged))
 }
 

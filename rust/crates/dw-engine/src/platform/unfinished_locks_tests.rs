@@ -1058,7 +1058,7 @@ impl Rig for FakeRig {
         let marks = match mark {
             Mark::Settled => &self.kind.settled,
             Mark::Unknown => &self.kind.unknown,
-            Mark::Reported => unreachable!("no record by txid of a report"),
+            Mark::Used => unreachable!("no record by txid of a proved use"),
         };
         marks.lock().unwrap().txids.insert(txid);
     }
@@ -1145,4 +1145,119 @@ fn an_error_after_the_signature_is_checking_whatever_the_kind_says() {
     assert!(rig.marks().1.outpoints.contains(&at));
     let listed = rig.list().unwrap();
     assert_eq!(listed[0].state, UnfinishedState::Checking);
+}
+
+/// BL-921: how a verified read of `SpentAssetLockTransactions` is read.
+/// No element is unspent, an empty item consumed, any other item a
+/// remaining value; nothing back, the key missing from the answer, or an
+/// element of another sort is no answer.
+#[test]
+fn a_spent_read_follows_drives_asset_lock_tree() {
+    use super::unfinished_locks::{SpentRead, read_spent, spent_key};
+    use dash_sdk::query_types::Elements;
+    use drive::grovedb::Element;
+    let at = OutPoint::new(Txid::from_byte_array([0x5A; 32]), 7);
+    let key = spent_key(at);
+    assert_eq!(key.len(), 36);
+    assert_eq!(&key[..32], &[0x5A; 32]);
+    assert_eq!(&key[32..], &7u32.to_le_bytes());
+    let answer = |element: Option<Element>| {
+        let mut elements = Elements::default();
+        elements.insert(key.clone(), element);
+        elements
+    };
+    assert_eq!(read_spent(None, &key), SpentRead::Unread);
+    assert_eq!(
+        read_spent(Some(&Elements::default()), &key),
+        SpentRead::Unread
+    );
+    assert_eq!(read_spent(Some(&answer(None)), &key), SpentRead::Unspent);
+    let used = answer(Some(Element::new_item(Vec::new())));
+    assert_eq!(read_spent(Some(&used), &key), SpentRead::Consumed);
+    let rest = answer(Some(Element::new_item(vec![0, 1, 2, 3])));
+    assert_eq!(read_spent(Some(&rest), &key), SpentRead::Remaining);
+    let tree = answer(Some(Element::empty_tree()));
+    assert_eq!(read_spent(Some(&tree), &key), SpentRead::Unread);
+    let other = spent_key(OutPoint::new(at.txid, 8));
+    assert_eq!(read_spent(Some(&answer(None)), &other), SpentRead::Unread);
+}
+
+/// The spent read asks drive's own path and key: the tree byte as drive
+/// builds it (72, `SpentAssetLockTransactions`), and the outpoint's
+/// consensus bytes, as drive-abci keys a spent lock
+/// (`Bytes36::new(out_point.into())`).
+#[test]
+fn the_spent_read_asks_drives_own_path_and_key() {
+    use super::unfinished_locks::{spent_key, spent_path};
+    assert_eq!(spent_path(), vec![vec![72u8]]);
+    let at = OutPoint::new(Txid::from_byte_array([0x11; 32]), 3);
+    let drive_key: [u8; 36] = at.into();
+    assert_eq!(spent_key(at), drive_key.to_vec());
+}
+
+/// What drive stores for a partly used lock, a serialized `AssetLockValue`,
+/// reads as a remaining value; only an empty item reads consumed.
+#[test]
+fn a_value_drive_stores_for_a_partly_used_lock_reads_remaining() {
+    use super::unfinished_locks::{SpentRead, read_spent, spent_key};
+    use dash_sdk::query_types::Elements;
+    use dpp::asset_lock::reduced_asset_lock_value::AssetLockValue;
+    use dpp::serialization::PlatformSerializable;
+    use dpp::version::PlatformVersion;
+    use drive::grovedb::Element;
+    let value = AssetLockValue::new(
+        100_000_000,
+        vec![0x76, 0xa9],
+        40_000_000,
+        Vec::new(),
+        PlatformVersion::latest(),
+    )
+    .unwrap();
+    let bytes = value.serialize_to_bytes().unwrap();
+    assert!(!bytes.is_empty());
+    let key = spent_key(OutPoint::new(Txid::from_byte_array([0x12; 32]), 0));
+    let mut elements = Elements::default();
+    elements.insert(key.clone(), Some(Element::new_item(bytes)));
+    assert_eq!(read_spent(Some(&elements), &key), SpentRead::Remaining);
+}
+
+/// A spent read that fails, hangs past its bound, or would go out without
+/// a proof is no answer; the fetch is not even made without proofs.
+#[tokio::test(start_paused = true)]
+async fn a_spent_read_that_fails_hangs_or_has_no_proof_is_unread() {
+    use super::unfinished_locks::{SpentRead, read_fetched, spent_key};
+    use dash_sdk::query_types::Elements;
+    use drive::grovedb::Element;
+    let at = OutPoint::new(Txid::from_byte_array([0x13; 32]), 0);
+    let key = spent_key(at);
+    let limit = std::time::Duration::from_secs(30);
+
+    let ran = AtomicBool::new(false);
+    let unproved = read_fetched(false, at, &key, limit, || async {
+        ran.store(true, Ordering::SeqCst);
+        Ok::<_, String>(Elements::default())
+    })
+    .await;
+    assert_eq!(unproved, SpentRead::Unread);
+    assert!(!ran.load(Ordering::SeqCst), "no fetch without proofs");
+
+    let failed = read_fetched(true, at, &key, limit, || async {
+        Err::<Elements, _>("no proof in result".to_string())
+    })
+    .await;
+    assert_eq!(failed, SpentRead::Unread);
+
+    let hung = read_fetched(true, at, &key, limit, || {
+        std::future::pending::<Result<Elements, String>>()
+    })
+    .await;
+    assert_eq!(hung, SpentRead::Unread);
+
+    let used = read_fetched(true, at, &key, limit, || async {
+        let mut elements = Elements::default();
+        elements.insert(key.clone(), Some(Element::new_item(Vec::new())));
+        Ok::<_, String>(elements)
+    })
+    .await;
+    assert_eq!(used, SpentRead::Consumed);
 }

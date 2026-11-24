@@ -262,6 +262,13 @@ export function guardWhileLocked<B extends Backend>(backend: B): B {
   });
 }
 
+/** Starts sync past the gate: a reset under way puts sync back even if the wallet locked after it
+ * stopped it. */
+export function startSpvPastLock(backend: Pick<Backend, "startSpv">): Promise<null> {
+  const unguarded = (backend as unknown as Record<symbol, Pick<Backend, "startSpv"> | undefined>)[UNGUARDED] ?? backend;
+  return unguarded.startSpv();
+}
+
 /** The wallets Forgot passphrase can name while locked: their ids and names, nothing else. */
 export async function walletNamesForRecovery(backend: Backend): Promise<{ walletId: string; name: string }[]> {
   const unguarded = ((backend as unknown as Record<symbol, Backend | undefined>)[UNGUARDED] ?? backend) as Backend;

@@ -21,7 +21,13 @@ fn hash(byte: &str) -> String {
 fn demo_with_wallet() -> (Demo, String) {
     let demo = Demo::new();
     demo.open();
-    demo.ok("create_vault", json!({ "passphrase": PW }));
+    with_wallet(demo, json!(PW))
+}
+
+/// `demo`, opened, with a vault of `passphrase` (`null`: unencrypted) and
+/// one seed wallet.
+fn with_wallet(demo: Demo, passphrase: Value) -> (Demo, String) {
+    demo.ok("create_vault", json!({ "passphrase": passphrase }));
     let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"]
         .as_str()
         .unwrap()
@@ -466,5 +472,203 @@ fn a_revealed_key_is_in_no_log_and_no_event() {
             "an event holds a revealed key"
         );
         assert!(!refusal.to_string().contains(secret.as_str()));
+    }
+}
+
+/// An attached key goes into the vault and never comes back: no read the
+/// renderer makes (the overview, the detail, the vote and username voters)
+/// and no event carries it in any form, whether or not the read answers.
+#[test]
+fn an_attached_key_is_in_no_read_and_no_event() {
+    let (demo, wallet) = demo_with_wallet();
+    let events = demo.events();
+    let h = hash("c1");
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    dw_engine::test_support::track_unlisted(&session, [0xc1; 32]);
+    drop(session);
+
+    let wif = "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy";
+    let owner_hex = "3a".repeat(32);
+    let attach = |role: &str, key: &str| {
+        demo.ok(
+            "mn_attach_key",
+            json!({ "proTxHash": h, "role": role, "key": key }),
+        )
+    };
+    // A voting key is checked against the list, which this offline demo never has
+    // (`list_unavailable`); the owner and payout keys go into the same vault records.
+    assert_eq!(attach("owner", wif), json!("unchecked"));
+    assert_eq!(attach("payout", &owner_hex), json!("unchecked"));
+
+    let wif_secret = dashcore::PrivateKey::from_wif(wif)
+        .unwrap()
+        .inner
+        .to_secret_bytes();
+    let hex_secret = hex::decode(&owner_hex).unwrap();
+    let mut forms = vec![wif.to_owned(), owner_hex.clone(), owner_hex.to_uppercase()];
+    for bytes in [&wif_secret[..], &hex_secret[..]] {
+        forms.push(hex::encode(bytes));
+        forms.push(hex::encode_upper(bytes));
+        forms.push(format!("{bytes:?}"));
+    }
+
+    let overview = demo.ok("mn_list", json!({ "walletId": wallet }));
+    let row = (overview["masternodes"].as_array().unwrap().iter())
+        .find(|r| r["proTxHash"] == json!(h))
+        .expect("the tracked row");
+    let roles: Vec<_> = (row["roles"]["attached"].as_array().unwrap().iter())
+        .map(|k| k["role"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(roles.len(), 2, "both keys are read back: {row}");
+    let reads = [
+        Ok(overview),
+        demo.call(
+            "mn_masternode",
+            json!({ "walletId": wallet, "proTxHash": h }),
+        ),
+        demo.call(
+            "governance_voting_masternodes",
+            json!({ "walletId": wallet, "proposal": hash("aa") }),
+        ),
+        demo.call("governance_contested_names", json!({ "walletId": wallet })),
+    ];
+    let events = events.lock().unwrap().join("\n");
+    for read in reads {
+        let text = match read {
+            Ok(v) | Err(v) => v.to_string(),
+        };
+        for form in &forms {
+            assert!(
+                !text.contains(form.as_str()),
+                "a read holds an attached key: {text}"
+            );
+        }
+    }
+    for form in &forms {
+        assert!(
+            !events.contains(form.as_str()),
+            "an event holds an attached key"
+        );
+    }
+}
+
+/// An open demo on `network` with an unencrypted vault (mainnet and testnet
+/// refuse the tests' weak KDF) and one seed wallet. Its session opens with
+/// unreachable local endpoints (the test seam mainnet and testnet need) and
+/// no SPV.
+fn demo_on(network: dw_engine::DashNetwork) -> (Demo, String) {
+    let demo = Demo::launched(|launch, _| {
+        launch.network = network;
+        launch.sync = Some(false);
+    });
+    *demo.state().test_endpoints.lock().unwrap() = Some(crate::api::network::SessionSettings {
+        dapi_addresses: vec!["https://127.0.0.1:1".into()],
+        quorum_url: Some("https://127.0.0.1:1".into()),
+        spv_peers: vec!["127.0.0.1:1".into()],
+        no_platform: true,
+        ..Default::default()
+    });
+    demo.ok("open_network", json!({}));
+    with_wallet(demo, Value::Null)
+}
+
+/// A `masternodeOp` grant of `max` on [`demo_on`]'s unencrypted vault.
+fn op_grant(demo: &Demo, wallet: &str, max: u64) -> String {
+    demo.ok(
+        "authorize",
+        json!({
+            "purpose": { "kind": "masternodeOp", "maxDuffs": max },
+            "walletId": wallet,
+            "credential": { "kind": "unencrypted" },
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Abandon is the way out of a session that may be out, so no network gates
+/// it: on mainnet as on the test networks every abandon command reaches the engine,
+/// which answers for the session itself.
+#[test]
+fn abandon_reaches_the_engine_on_every_network() {
+    for network in [
+        dw_engine::DashNetwork::Mainnet,
+        dw_engine::DashNetwork::Testnet,
+        dw_engine::DashNetwork::Regtest,
+    ] {
+        let (demo, wallet) = demo_on(network);
+        let grant = op_grant(&demo, &wallet, 1_000);
+        for cmd in [
+            "mn_shared_abandon",
+            "mn_shared_resend_abandon",
+            "mn_shared_abandon_unreadable",
+        ] {
+            demo.err(
+                cmd,
+                json!({ "walletId": wallet, "session": hash("cd"), "grant": grant }),
+                "masternodes.shared_session_not_found",
+            );
+        }
+    }
+}
+
+/// `mn_shared_sign` and `mn_shared_send` with their arguments.
+fn registration_sends(wallet: &str, grant: &str) -> [(&'static str, Value); 2] {
+    let args = json!({ "walletId": wallet, "session": hash("cd"), "grant": grant });
+    [("mn_shared_sign", args.clone()), ("mn_shared_send", args)]
+}
+
+/// Redeems `grant` in the vault directly, as the engine would.
+fn redeem(demo: &Demo, wallet: &str, grant: &str) -> Result<(), dw_vault::VaultError> {
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let wallet = crate::state::parse_wallet_id(wallet).unwrap();
+    session
+        .vault()
+        .redeem_grant(grant, dw_vault::GrantKind::MasternodeOp, Some(&wallet.0))
+        .map(drop)
+}
+
+/// MG's ruling: on mainnet the binding refuses signing and sending a shared
+/// registration before the engine, with the network named, and before
+/// anything redeems the grant: the same grant still redeems afterwards.
+#[test]
+fn registration_sends_are_refused_on_mainnet_before_the_grant() {
+    let (demo, wallet) = demo_on(dw_engine::DashNetwork::Mainnet);
+    for cmd in ["mn_shared_sign", "mn_shared_send"] {
+        let grant = op_grant(&demo, &wallet, 300 * 100_000_000);
+        let args = json!({ "walletId": wallet, "session": hash("cd"), "grant": grant });
+        let e = demo.err(cmd, args, "app.shared_send_off");
+        assert_eq!(
+            e["data"],
+            json!({ "kind": "sharedSendNetwork", "network": "mainnet" }),
+            "{cmd}"
+        );
+        redeem(&demo, &wallet, &grant).unwrap_or_else(|e| panic!("{cmd} used the grant: {e}"));
+        assert!(
+            redeem(&demo, &wallet, &grant).is_err(),
+            "a grant redeems once"
+        );
+    }
+}
+
+/// Off mainnet the gate lets both calls through to the engine, which
+/// refuses them for its own reasons (no masternode list offline, no such
+/// session).
+#[test]
+fn registration_sends_reach_the_engine_off_mainnet() {
+    for network in [
+        dw_engine::DashNetwork::Testnet,
+        dw_engine::DashNetwork::Regtest,
+    ] {
+        let (demo, wallet) = demo_on(network.clone());
+        let grant = op_grant(&demo, &wallet, 0);
+        for (cmd, args) in registration_sends(&wallet, &grant) {
+            let e = demo.call(cmd, args).expect_err(cmd);
+            assert!(
+                !e["code"].as_str().unwrap().starts_with("app."),
+                "{cmd} on {network:?}: {e}"
+            );
+        }
     }
 }

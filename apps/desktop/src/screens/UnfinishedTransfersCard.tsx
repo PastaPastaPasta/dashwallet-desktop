@@ -34,7 +34,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
   const model = recoveryFor(backend, walletId);
   useModel(model);
   const query = useUnfinishedTransfers(walletId);
-  const fmt = useFormats(network);
+  const fmt = useFormats(network, "compact");
   const [details, setDetails] = useState(false);
   const errorText = (e: unknown) => shieldedErrorText(e, fmt.credits, fmt.duffs);
   const status = useShieldedStatus(walletId);
@@ -65,7 +65,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
   const s = status.data ?? null;
   const shields = s?.pendingShields ?? [];
   const shieldSyncing = s !== null && shieldedSyncing(s);
-  const shieldWhy = shieldSyncing ? SHIELDED_SYNC_COPY.syncing : shielded.running ? S.card.why.busy : null;
+  const shieldWhy = shieldSyncing ? SHIELDED_SYNC_COPY.syncing : shielded.running ? S.card.why.busy : shielded.unseen ? S.unseen : null;
   // A lock this version can't finish has no action: Transfer's Add to Platform names it.
   const funds = (usePendingPlatformFunds(walletId).data ?? []).map((p) => ({ p, row: fundRowView(p, fmt.duffs) })).filter(({ row }) => row.action !== null);
   const checkFailed = platformKnown && block === "failed" && !move.running;
@@ -94,12 +94,12 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
               <p key={p.txid} className="platform-card-text" data-testid={p.consumptionUnknown ? "shielded-checking" : "shielded-unfinished"}>
                 {p.consumptionUnknown ? (
                   <>
-                    <strong>{S.done.checking.title}.</strong> {S.done.checking.text}
+                    <strong>{S.done.checking.title}.</strong> {S.done.checking.row}
                   </>
                 ) : (
                   S.card.unfinished(fmt.duffs(p.duffs))
                 )}{" "}
-                <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={shieldSyncing || shielded.running} why={shieldWhy} onClick={() => void shielded.resume(p.txid)}>
+                <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={shieldWhy !== null} why={shieldWhy} whyId={shielded.unseen && !shieldSyncing && !shielded.running ? "shielded-unseen-line" : undefined} onClick={() => void shielded.resume(p.txid)}>
                   {p.consumptionUnknown ? S.card.checkAgain : S.card.finish}
                 </DashButton>
               </p>
@@ -118,7 +118,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
               </p>
             ))}
             {shielded.unseen && (
-              <p className="platform-card-text" data-testid="shielded-unseen">
+              <p className="platform-card-text" id="shielded-unseen-line" data-testid="shielded-unseen">
                 {S.unseen}{" "}
                 <DashButton variant="plainBlue" size="small" data-testid="shielded-show" onClick={() => (showRoute === "send" ? shielded.begin("send") : transfer.start(showRoute))}>
                   {S.show}
@@ -170,7 +170,7 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
   const tr = useT();
   useModel(model);
   const query = useUnfinishedTransfers(walletId);
-  const fmt = useFormats(network);
+  const fmt = useFormats(network, "compact");
   const errorText = (e: unknown) => shieldedErrorText(e, fmt.credits, fmt.duffs);
   const status = useShieldedStatus(walletId);
   const rows = sheetRows(query.isSuccess ? withoutPendingShields(query.data, status.data?.pendingShields) : null, model.results);

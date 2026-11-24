@@ -15,7 +15,7 @@ import { showToast } from "../../components/toast";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { PassphraseText } from "../../onboarding/passphrase";
-import { AUTO_LOCK_CHOICES, ChangePassphraseModel, EncryptModel, PaymentAuthModel, SPEND_LIMITS, SecurityText, SpendLimitModel, WipeModel, spendLimitLabel } from "../../settings/security";
+import { AUTO_LOCK_CHOICES, ChangePassphraseModel, DEFAULT_SPEND_LIMIT, EncryptModel, PaymentAuthModel, SPEND_LIMITS, SecurityText, SpendLimitModel, WipeModel, spendLimitLabel } from "../../settings/security";
 import { useLockTimer } from "../LockScreen";
 import { useSavePrefs } from "./General";
 import { Done, Hint, NotYetRow, Problem, SettingsCard } from "./parts";
@@ -179,11 +179,13 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
           id={`${id}-spend-limit`}
           className="settings-select"
           data-testid="settings-spend-limit"
-          value={limit.limit === null ? "" : String(limit.limit)}
+          value={limit.limit === null || limit.unreadable ? "" : String(limit.limit)}
           disabled={!known || !encrypted || limit.limit === null || limit.busy}
           onChange={(e) => limit.ask(Number(e.target.value))}
         >
-          {limit.limit !== null && !SPEND_LIMITS.some((c) => c.duffs === limit.limit) && <option value={String(limit.limit)}>{limit.limit}</option>}
+          {/* An unreadable limit shows none as current: the one in force is 0 until it is set again. */}
+          {limit.unreadable && <option value="" disabled />}
+          {limit.limit !== null && !limit.unreadable && !SPEND_LIMITS.some((c) => c.duffs === limit.limit) && <option value={String(limit.limit)}>{limit.limit}</option>}
           {SPEND_LIMITS.map((c) => (
             <option key={c.duffs} value={String(c.duffs)}>
               {c.label}
@@ -191,7 +193,16 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
           ))}
         </select>
       </div>
-      <Hint>{SecurityText.spendLimitHint}</Hint>
+      {limit.unreadable ? (
+        <div className="settings-row" role="status" data-testid="settings-spend-limit-unreadable">
+          <span className="form-problem">{t("settings.security.spendLimitUnreadable")}</span>
+          <DashButton variant="tintedBlue" size="small" data-testid="settings-spend-limit-set-again" disabled={!known || !encrypted || limit.busy} onClick={() => limit.ask(DEFAULT_SPEND_LIMIT)}>
+            {t("settings.security.spendLimitSetAgain")}
+          </DashButton>
+        </div>
+      ) : (
+        <Hint>{SecurityText.spendLimitHint}</Hint>
+      )}
       {model.pending === null && limit.pending === null && <Problem text={model.error ?? limit.error} testId="settings-payment-auth-error" />}
       {model.pending !== null && (
         <Sheet

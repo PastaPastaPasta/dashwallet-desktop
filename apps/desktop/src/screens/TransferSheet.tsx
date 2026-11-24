@@ -8,13 +8,14 @@ import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs } from "../api/pending";
-import { keys, shieldedDuffs, useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote, usePoolBalances, useShieldedStatus, useUtxos } from "../api/queries";
+import { keys, shieldedDuffs, useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote, usePoolBalances, useShieldedStatus, useSyncStatus, useUtxos } from "../api/queries";
 import { navigate, useUi } from "../app/ui";
 import { DashButton, Icon, VisuallyHidden } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { useT } from "../i18n";
 import { known } from "../format/homeBalance";
+import { isSyncing } from "../format/sync";
 import { useModel } from "../onboarding/model";
 import { FUND_COPY, fundErrorText, fundRowView } from "../platform/fund";
 import { MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
@@ -36,6 +37,7 @@ import {
   QUOTE_ON_CONTINUE,
   type RouteId,
   type TransferModel,
+  unsupportedText,
 } from "../transfer/model";
 import { useCoinJoinView, useMixingAction } from "../coinjoin/queries";
 import { FundBody } from "./PlatformFundSheet";
@@ -54,6 +56,7 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   const pools = usePoolBalances(walletId);
   const hold = usePlatformHold(walletId, transferFor(b, walletId).flows.move);
   const fmt = useAmount(network);
+  const sync = useSyncStatus().data;
   const core = spendable.data ?? null;
   const reserved = coins.data?.filter((c) => c.reserved && c.coinjoinDenominated).reduce((n, c) => n + c.amount, 0) ?? 0;
   return {
@@ -66,14 +69,15 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
           ? undefined
           : null
         : { duffs: pools.platform, dust: BigInt(pools.platformDust) > 0n, dustText: MOVE_COPY.card.dust(fmt(creditsToDuffs(pools.platformDust))), block: hold.block, waitingText: hold.waitingText },
+    coreSyncing: sync !== undefined && isSyncing(sync),
   };
 }
 
-/** An amount in the display unit, masked in discreet mode. */
+/** An amount in the display unit with its full decimals, masked in discreet mode. */
 function useAmount(network: NetworkInfo) {
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
-  return (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
+  return (duffs: number) => (discreet ? shown.masked() : `${shown.full(duffs)} ${shown.name}`);
 }
 
 const balanceOf = (pool: Pool, pools: Pools): number | null => (pool === "core" ? pools.core : pool === "shielded" ? (pools.shielded?.duffs ?? null) : (pools.platform?.duffs ?? null));
@@ -178,6 +182,11 @@ const INTRO: Record<RouteId, { readonly text: string; testId?: string }> = {
       return SHIELDED_COPY.form.out;
     },
   },
+  shieldedToPlatform: {
+    get text() {
+      return SHIELDED_COPY.form.toPlatform;
+    },
+  },
   coreToPlatform: {
     get text() {
       return FUND_COPY.form.intro;
@@ -240,7 +249,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
         if (!ready || amount == null) return;
         if (route === "coreToPlatform") t.flows.fund.next(amount);
         else if (route === "coreToShielded") t.flows.shielded.next({ kind: "add", duffs: amount });
-        else t.flows.shielded.next({ kind: "out", credits: String(BigInt(amount) * CREDITS_PER_DUFF) });
+        else t.flows.shielded.next({ kind: route === "shieldedToPlatform" ? "toPlatform" : "out", credits: String(BigInt(amount) * CREDITS_PER_DUFF) });
       }}
     >
       <p className="sheet-text" data-testid={INTRO[route].testId}>
@@ -391,12 +400,13 @@ function useTransferReceive(t: TransferModel, route: RouteId | "unsupported" | n
   const add = useModel(t.lines.coreToShielded);
   const fund = useModel(t.lines.coreToPlatform);
   const out = useModel(t.lines.shieldedToCore);
+  const toPlatform = useModel(t.lines.shieldedToPlatform);
   const move = usePlatformMoveQuote(walletId, false);
   useModel(t.flows.shielded);
   useModel(t.flows.fund);
   const parsed = useParsed(route === "coreToPlatform" ? t.flows.fund.text : t.flows.shielded.text, network);
   if (route === "platformToCore") return move.data?.expectedDuffs ?? null;
-  const line = route === "coreToShielded" ? add : route === "coreToPlatform" ? fund : out;
+  const line = route === "coreToShielded" ? add : route === "coreToPlatform" ? fund : route === "shieldedToPlatform" ? toPlatform : out;
   if (line.state.kind !== "quoted") return parsed ?? null;
   const q = line.state.quote;
   return "expectedDuffs" in q ? q.expectedDuffs ?? creditsToDuffs(q.credits) : creditsToDuffs(q.credits);
@@ -439,7 +449,7 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
     <>
       <div className="transfer-ends">
         <End t={t} end="from" pools={pools} fmt={fmt} pickerId={pickerId} />
-        <button type="button" className="transfer-swap" data-testid="transfer-swap" aria-label={T.swap} title={T.swap} disabled={!canSwap(t.from, t.to)} onClick={() => t.swap()}>
+        <button type="button" className="transfer-swap" data-testid="transfer-swap" aria-label={T.swap} title={T.swap} disabled={!canSwap(t.from, t.to, t.mainnet)} onClick={() => t.swap()}>
           <Icon id="transfer" size={20} />
         </button>
         <End t={t} end="to" pools={pools} fmt={fmt} pickerId={pickerId} receive={receive} />
@@ -447,7 +457,7 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
       {t.picking && <Picker t={t} end={t.picking} pools={pools} fmt={fmt} id={pickerId} />}
       {route === "unsupported" ? (
         <p className="field-hint" role="status" data-testid="transfer-unavailable">
-          {T.unsupported}
+          {unsupportedText(t.from, t.to)}
         </p>
       ) : route === "platformToCore" ? (
         <WholeBalanceForm t={t} pools={pools} why={why} network={network} walletId={walletId} />
@@ -474,6 +484,7 @@ function Steps({ t, route, walletId, network, status, block }: { t: TransferMode
   switch (route) {
     case "coreToShielded":
     case "shieldedToCore":
+    case "shieldedToPlatform":
       return <ShieldedBody flow={t.flows.shielded} walletId={walletId} network={network} status={status} />;
     case "coreToPlatform":
       return <FundBody flow={t.flows.fund} walletId={walletId} network={network} />;
@@ -495,6 +506,8 @@ export function TransferSheet({ walletId, network }: { walletId: string; network
   const status = useShieldedStatus(walletId).data ?? null;
   const { block } = usePlatformHold(walletId, move);
   const defaultHere = defaultRoute(pools);
+  const mainnet = network.kind === "mainnet";
+  useEffect(() => t.setMainnet(mainnet), [t, mainnet]);
   useEffect(() => t.settleDefault(defaultHere), [t, t.awaitingDefault, defaultHere]);
   // After a pick the picked item is gone: focus goes to the amount when the route can run, else back
   // to that end's button (after the sheet's own move to its first control).

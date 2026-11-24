@@ -147,7 +147,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "Vault::shielded_spend_key",
-        "internal: reached through `DashPay::shielded_send` and `unshield_to_core`, which redeem their `ShieldedSpend` grant for one spend (m4 §2.13)",
+        "internal: reached through `DashPay::shielded_send`, `unshield_to_core` and `unshield_to_platform`, which redeem their `ShieldedSpend` grant for one spend (m4 §2.13)",
     ),
     (
         "Vault::shield_drain_signer",
@@ -678,6 +678,10 @@ pub struct QuickUnlockPolicy {
     pub signing_window_remaining_duffs: Option<u64>,
     /// How long that window lasts, in seconds.
     pub signing_window_secs: u64,
+    /// The sealed spending limit can't be read (it no longer authenticates):
+    /// `spendLimitDuffs` is 0, every payment asks and quick unlock is off
+    /// until the limit is set again. Known only while unlocked.
+    pub spend_limit_unreadable: bool,
 }
 
 impl QuickUnlockPolicy {
@@ -691,6 +695,7 @@ impl QuickUnlockPolicy {
             signing_window_open: vault.signing_window_open(),
             signing_window_remaining_duffs: vault.signing_window_remaining(),
             signing_window_secs: dw_vault::SIGNING_WINDOW_SECS,
+            spend_limit_unreadable: p.limit_unreadable,
         }
     }
 }

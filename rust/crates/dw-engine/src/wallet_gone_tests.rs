@@ -167,6 +167,58 @@ fn platform_node_keys_of_a_wallet_gone_from_the_manager_do_not_panic() {
 }
 
 #[test]
+fn owner_keys_of_a_wallet_gone_from_the_manager_do_not_panic() {
+    let d = detached();
+    let r =
+        d.engine.block_on(
+            d.session
+                .masternode_keys(d.id, crate::MasternodeKeyRole::Owner, 0, 1),
+        );
+    assert_gone(r.map_err(|e| e.code()));
+}
+
+#[test]
+fn the_masternode_view_of_a_wallet_gone_from_the_manager_does_not_panic() {
+    let d = detached();
+    let r = d.engine.block_on(d.session.masternodes().list(d.id));
+    assert_gone(r.map_err(|e| e.code()));
+}
+
+/// A derivation error still consumes the `RevealSecret` grant:
+/// `with_revealed_seed` redeems it before the derivation runs.
+#[test]
+fn revealing_a_key_of_a_wallet_gone_from_the_manager_consumes_the_grant() {
+    use dw_vault::{Credential, GrantPurpose};
+    let d = detached();
+    let id = d.id;
+    let grant = d
+        .engine
+        .block_on(d.session.vault_op(move |v| {
+            v.authorize(GrantPurpose::RevealSecret, Some(&id.0), Credential::None)
+        }))
+        .unwrap()
+        .id;
+    let r = d.engine.block_on(d.session.reveal_masternode_key(
+        d.id,
+        crate::MasternodeKeyRole::Owner,
+        0,
+        grant.clone(),
+    ));
+    assert_gone(r.map(|_| ()).map_err(|e| e.code()));
+    let again = d.engine.block_on(d.session.reveal_masternode_key(
+        d.id,
+        crate::MasternodeKeyRole::Owner,
+        0,
+        grant,
+    ));
+    match again {
+        Err(crate::EngineError::Masternode(crate::MasternodeFailure::GrantInvalid)) => {}
+        Err(e) => panic!("expected grant invalid, got {e}"),
+        Ok(_) => panic!("expected the consumed grant to be refused"),
+    }
+}
+
+#[test]
 fn the_lookahead_of_a_wallet_gone_from_the_manager_does_not_panic() {
     let d = detached();
     let r = (d.engine).block_on(crate::keys::apply_lookahead(&d.wallet, 30, false));

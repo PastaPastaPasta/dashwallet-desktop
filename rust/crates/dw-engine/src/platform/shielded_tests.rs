@@ -56,9 +56,11 @@ use super::shielded::{
 use super::shielded_pool::{
     self as pool, Applied, Ledger, MAX_LOCK_INPUTS, ShieldedLib, SpendError, SyncState, on_pool,
 };
+use super::unfinished_locks::SpentRead;
 use super::withdrawal::{Rules, expected_duffs};
 use crate::{DashNetwork, ImportOptions, NetworkSession};
 
+mod to_platform;
 mod unfinished;
 
 const LATEST: u32 = 15;
@@ -77,6 +79,15 @@ fn payee() -> OrchardAddress {
 
 fn payee_text() -> String {
     payee().to_bech32m_string(Network::Regtest)
+}
+
+/// The `n`th address of the wallet's Platform payment account.
+fn own_platform(n: u8) -> PlatformAddress {
+    PlatformAddress::P2pkh([n.wrapping_add(0x50); 20])
+}
+
+fn platform_text(address: PlatformAddress) -> String {
+    address.to_bech32m_string(Network::Regtest)
 }
 
 fn core_address(n: u8) -> Address {
@@ -190,7 +201,7 @@ enum AfterFailure {
 }
 
 /// platform-wallet's shielded side, scripted.
-struct FakeShielded {
+pub(crate) struct FakeShielded {
     version: u32,
     /// What a proved read of the version returns.
     refreshed: u32,
@@ -240,6 +251,10 @@ struct FakeShielded {
     /// The coins a funding may select.
     coins: Vec<u64>,
     receive: String,
+    /// The wallet's Platform payment account; its pool read fails when
+    /// `None`.
+    platform: Mutex<Option<pool::PlatformPool>>,
+    network: Network,
     /// The next spend's failure, after the keys are out.
     fails: Mutex<Option<PlatformWalletError>>,
     spent: Mutex<Vec<Spent>>,
@@ -283,6 +298,8 @@ struct FakeShielded {
     /// consumed" (`PlatformWalletError::AssetLockAlreadyConsumed`), after
     /// its transition was signed.
     consumed: AtomicBool,
+    /// Platform's proved spent read of each outpoint; unread when unset.
+    pub(super) spent_reads: Mutex<std::collections::HashMap<OutPoint, SpentRead>>,
     /// The next applies end with these library errors, in order, after
     /// their transitions were signed, mapped as `PwShielded::apply` maps
     /// them.
@@ -320,6 +337,11 @@ struct FakeShielded {
     rest: Mutex<Option<pool::RestClock>>,
     /// The clock's writes return `Ok` and keep nothing.
     drops_rest: AtomicBool,
+    /// A withdrawal runs the engine's hook steps in the funder's session
+    /// first, as the library's first send does: the payout's accept, then
+    /// the artifact, unless `drops_artifact`.
+    hooks: AtomicBool,
+    drops_artifact: AtomicBool,
 }
 
 /// A funding that fails after its signatures, as platform-wallet ends one
@@ -431,6 +453,11 @@ impl Default for FakeShielded {
             },
             coins: vec![10_000_000_000],
             receive: core_address(9).to_string(),
+            platform: Mutex::new(Some(pool::PlatformPool {
+                receive: own_platform(0),
+                addresses: (0..3).map(own_platform).collect(),
+            })),
+            network: Network::Regtest,
             fails: Mutex::new(None),
             spent: Mutex::new(Vec::new()),
             unresolved: Mutex::default(),
@@ -464,6 +491,9 @@ impl Default for FakeShielded {
             fund_end: Mutex::default(),
             rest: Mutex::new(Some(pool::RestClock::default())),
             drops_rest: AtomicBool::new(false),
+            hooks: AtomicBool::new(false),
+            drops_artifact: AtomicBool::new(false),
+            spent_reads: Mutex::default(),
         }
     }
 }
@@ -561,6 +591,84 @@ impl FakeShielded {
         self.track(lock, true).await;
     }
 
+    /// A library whose withdrawals pass the engine's hook steps in
+    /// `session` for `wallet` ([`Self::dispatch_withdrawal`]).
+    pub(crate) fn hooked_to(session: &Arc<NetworkSession>, wallet: crate::WalletId) -> Self {
+        let lib = Self::default();
+        *lib.funder.lock().unwrap() = Some((Arc::downgrade(session), wallet));
+        lib.hooks.store(true, Ordering::SeqCst);
+        lib
+    }
+
+    /// The transition the `n`th spend signs.
+    pub(crate) fn st_hash(n: u8) -> [u8; 32] {
+        [0xb0 + n; 32]
+    }
+
+    /// The hook's steps for the next withdrawal, as `EngineDispatch`
+    /// takes them: the payout's accept, then the artifact. A refusal is
+    /// the library's `ShieldedDispatchRefused`, nothing sent.
+    async fn dispatch_withdrawal(&self) -> Result<(), SpendError> {
+        let (session, wallet) = self.funder();
+        let n = self.spent.lock().unwrap().len() as u8;
+        let st_hash = Self::st_hash(n);
+        let kind = platform_wallet::wallet::shielded::ShieldedDispatchKind::Withdraw;
+        let refused = |reason: String| {
+            SpendError::Library(Box::new(PlatformWalletError::ShieldedDispatchRefused {
+                reason,
+            }))
+        };
+        let named = (session.accept_payout_spend(wallet, &kind, st_hash).await).map_err(refused)?;
+        if self.drops_artifact.load(Ordering::SeqCst) {
+            return Err(refused("the artifact was not written".into()));
+        }
+        let artifact = NewShieldedArtifact {
+            activity: [n; 32],
+            origin: ArtifactOrigin::Dispatched,
+            st_hash: Some(st_hash),
+            kind: Some(ArtifactKind::Withdraw),
+            anchor: Some([7; 32]),
+            identity_id: None,
+            selected: vec![[n.wrapping_add(100); 32]],
+            published: vec![[n.wrapping_add(100); 32]],
+        };
+        match session
+            .leases
+            .record_shielded_artifact(wallet, artifact)
+            .await
+        {
+            Ok(true) => (session
+                .confirm_payout_dispatch(wallet, named, st_hash)
+                .await)
+                .map_err(refused),
+            other => Err(refused(format!("the artifact was not written: {other:?}"))),
+        }
+    }
+
+    /// The next withdrawal's artifact write fails after the accept.
+    pub(crate) fn drop_artifacts(&self) {
+        self.drops_artifact.store(true, Ordering::SeqCst);
+    }
+
+    /// A failed send's notes stay held, as the pinned library leaves a
+    /// hooked spend whose broadcast failed (`Unresolved(Cancelled)`).
+    pub(crate) fn hold_failed(&self) {
+        *self.after_failure.lock().unwrap() = AfterFailure::Held;
+    }
+
+    /// The addresses the withdrawals paid, in order.
+    pub(crate) fn withdrawn_to(&self) -> Vec<String> {
+        (self.spent().into_iter())
+            .filter(|s| s.operation == "withdraw")
+            .map(|s| s.to)
+            .collect()
+    }
+
+    /// The full viewing keys of the key sets the spends were released.
+    pub(crate) fn spent_fvks(&self) -> Vec<[u8; 96]> {
+        self.spent().into_iter().map(|s| s.fvk).collect()
+    }
+
     fn at(version: u32, refreshed: u32) -> Self {
         Self {
             version,
@@ -573,19 +681,20 @@ impl FakeShielded {
         self.spent.lock().unwrap().clone()
     }
 
-    fn fail_with(&self, e: PlatformWalletError) {
+    pub(crate) fn fail_with(&self, e: PlatformWalletError) {
         *self.fails.lock().unwrap() = Some(e);
     }
 
+    /// A spend under `keys`, which the adapter releases before the library
+    /// runs (and so before its dispatch hook).
     fn spend(
         &self,
-        permit: &CallPermit,
+        keys: OrchardKeySet,
         operation: &'static str,
         to: String,
         credits: u64,
         memo: &[u8],
     ) -> Result<(), SpendError> {
-        let keys = permit.shielded_keys()?;
         if let Some(probe) = &*self.probe.lock().unwrap() {
             self.probed.lock().unwrap().push(probe());
         }
@@ -655,7 +764,7 @@ fn unresolved(n: u8) -> UnresolvedSpend {
 
 impl ShieldedLib for FakeShielded {
     fn network(&self) -> Network {
-        Network::Regtest
+        self.network
     }
 
     fn protocol_version(&self) -> u32 {
@@ -727,7 +836,7 @@ impl ShieldedLib for FakeShielded {
         memo: [u8; 36],
     ) -> Result<(), SpendError> {
         let to = to.to_bech32m_string(Network::Regtest);
-        self.spend(permit, "transfer", to, credits, &memo)
+        self.spend(permit.shielded_keys()?, "transfer", to, credits, &memo)
     }
 
     async fn withdraw(
@@ -736,12 +845,37 @@ impl ShieldedLib for FakeShielded {
         to: &Address,
         credits: u64,
     ) -> Result<(), SpendError> {
-        self.spend(permit, "withdraw", to.to_string(), credits, &[])
+        let keys = permit.shielded_keys()?;
+        if self.hooks.load(Ordering::SeqCst) {
+            self.dispatch_withdrawal().await?;
+        }
+        self.spend(keys, "withdraw", to.to_string(), credits, &[])
     }
 
     async fn receive_address(&self) -> Result<String, PlatformError> {
         self.issued.fetch_add(1, Ordering::SeqCst);
         Ok(self.receive.clone())
+    }
+
+    async fn unshield(
+        &self,
+        permit: &CallPermit,
+        to: &PlatformAddress,
+        credits: u64,
+    ) -> Result<(), SpendError> {
+        self.spend(
+            permit.shielded_keys()?,
+            "unshield",
+            platform_text(*to),
+            credits,
+            &[],
+        )
+    }
+
+    async fn platform_pool(&self) -> Result<pool::PlatformPool, PlatformError> {
+        (self.platform.lock().unwrap().clone()).ok_or(PlatformError::Storage {
+            detail: "the payment account could not be read".into(),
+        })
     }
 
     async fn shield_locks(&self) -> Vec<LockInfo> {
@@ -799,6 +933,10 @@ impl ShieldedLib for FakeShielded {
             return self.real().await.settled_locks().await;
         }
         self.settled.lock().unwrap().clone()
+    }
+
+    async fn spent(&self, outpoint: OutPoint) -> SpentRead {
+        (self.spent_reads.lock().unwrap().get(&outpoint)).map_or(SpentRead::Unread, |r| *r)
     }
 
     async fn settle(&self, txid: Txid) -> Result<(), PlatformError> {
@@ -1950,6 +2088,13 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
         .unwrap();
         assert_eq!(out.state, ShieldedSpendState::Pending);
         assert_eq!(out.unresolved, Some(unresolved(n)));
+        let kind = if unshield {
+            ShieldedFeeKind::Withdrawal
+        } else {
+            ShieldedFeeKind::Base
+        };
+        // The balance it leaves, not the notes less those it holds.
+        assert_eq!(out.balance, 2 * NOTE - credits - fee_of(credits, kind));
         assert_eq!(
             lib.probed.lock().unwrap().last(),
             Some(&true),
@@ -1960,11 +2105,6 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
             "and let go"
         );
         // The quote stays charged; no pass ran for it.
-        let kind = if unshield {
-            ShieldedFeeKind::Withdrawal
-        } else {
-            ShieldedFeeKind::Base
-        };
         assert_eq!(fx.credits_spent(&lease), credits + fee_of(credits, kind));
         assert_eq!(lib.syncs.load(Ordering::SeqCst), syncs);
         assert_eq!(status().unresolved_spends, [unresolved(n)]);
@@ -2208,6 +2348,8 @@ fn a_spend_the_library_kept_no_record_of_is_marked_and_gates_the_next_spends() {
         (out.state, out.unresolved),
         (ShieldedSpendState::Pending, None)
     );
+    let fee = fee_of(credits, ShieldedFeeKind::Base);
+    assert_eq!(out.balance, 2 * NOTE - credits - fee);
     let markers = fx
         .engine
         .block_on(fx.s.leases.unrecorded_spends(wallet))
@@ -2740,6 +2882,48 @@ fn a_note_seen_after_the_first_scan_rests_three_hours_and_the_first_scans_at_onc
     let end = first + SHIELDED_REST_SECS;
     assert_eq!(rested(&later, end - 1), (false, Some(end)));
     assert_eq!(rested(&later, end), (true, None));
+}
+
+/// A payment another wallet sent, found by a pass after the wallet's first
+/// scan, is dated when the engine first saw it, before and after the rest
+/// clock records it; one restored in the first scan stays undated, and so
+/// does a row a scan derived that is not incoming.
+#[test]
+fn a_shielded_payment_received_after_the_first_scan_is_dated_when_first_seen() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        activity: vec![row(1, Direction::In, 0)],
+        ..FakeShielded::default()
+    });
+    let observe = |lib: &Arc<FakeShielded>| {
+        run(&fx, lib, |_, lib| async move {
+            pool::observe_rest(&*lib, true, crate::events::unix_now())
+                .await
+                .unwrap()
+        })
+    };
+    let dates = |lib: &Arc<FakeShielded>| {
+        run(&fx, lib, |_, lib| async move {
+            (pool::history(&*lib, 0, 10).await.unwrap().into_iter())
+                .map(|a| (a.id, a.created_at))
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+    };
+    let id = |n: u32| hex::encode(row(n, Direction::In, 0).id);
+    assert_eq!(dates(&lib)[&id(1)], None, "before the first scan");
+    observe(&lib);
+    assert_eq!(dates(&lib)[&id(1)], None, "restored");
+
+    let before = crate::events::unix_now();
+    lib.rows.lock().unwrap().push(row(2, Direction::In, 0));
+    lib.rows.lock().unwrap().push(row(3, Direction::Out, 0));
+    let unrecorded = dates(&lib)[&id(2)].expect("dated before the clock records it");
+    assert!(unrecorded >= before);
+    let recorded = observe(&lib).flatten().unwrap();
+    let shown = dates(&lib);
+    assert_eq!(shown[&id(2)], Some(recorded));
+    assert_eq!(shown[&hex::encode(row(3, Direction::Out, 0).id)], None);
+    assert_eq!(shown[&id(1)], None);
 }
 
 /// Ruling M9: a note the clock's write dropped (a removed wallet's insert
@@ -4252,6 +4436,12 @@ fn a_failed_send_is_an_error_only_when_the_library_holds_nothing_of_it() {
             (out.state, out.unresolved),
             (ShieldedSpendState::Pending, None)
         );
+        let kind = if unshield {
+            ShieldedFeeKind::Withdrawal
+        } else {
+            ShieldedFeeKind::Base
+        };
+        assert_eq!(out.balance, 2 * NOTE - credits - fee_of(credits, kind));
     }
     let markers = fx
         .engine

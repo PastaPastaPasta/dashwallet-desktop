@@ -5165,6 +5165,8 @@ mod normal_payment_beside_mixing {
         let status = f.session.coinjoin_status(id).unwrap();
         assert_eq!(status.balances.denominated, denom_count * d);
         assert_eq!(status.balances.fully_mixed, 2 * d);
+        let report = f.engine.block_on(f.session.recovery_report(id, 0)).unwrap();
+        assert_eq!(report.fully_mixed, status.balances.fully_mixed);
         assert_eq!(status.balances.normalized_anonymized, d * 14 / 4);
         assert_eq!(status.progress.average_rounds, f64::from(14_f32 / 6_f32));
         assert_eq!(status.balances.coinjoin_account, 0);
@@ -5310,6 +5312,35 @@ mod normal_payment_beside_mixing {
         let chosen_tx = send(CoinSource::Outpoints(vec![op_partial]), d / 2);
         assert_eq!(chosen_tx.input[0].previous_output, op_partial);
         f.see_in(&chosen_tx, super::mined_at(height + 6));
+
+        // Create Unsigned of the same mixed payment (#487): no change, the
+        // remainder is fee, exactly as the signed payment below.
+        let unsigned = {
+            let draft = f.session.new_tx_draft(id).unwrap();
+            draft
+                .set_recipients(vec![Recipient {
+                    address: FOREIGN.into(),
+                    amount: 2 * d - 50_000,
+                    subtract_fee_from_amount: false,
+                    label: None,
+                    message: None,
+                }])
+                .unwrap();
+            draft.set_source(CoinSource::FullyMixedOnly).unwrap();
+            draft.set_fee(RECOMMENDED).unwrap();
+            let estimate = f.engine.block_on(draft.estimate()).unwrap();
+            let psbt = f.engine.block_on(draft.create_unsigned()).unwrap();
+            (estimate, psbt.unsigned_tx.clone())
+        };
+        let (estimate, unsigned) = unsigned;
+        assert_eq!(
+            unsigned.output.len(),
+            1,
+            "an unsigned mixed payment makes no change"
+        );
+        assert_eq!(unsigned.output[0].value, 2 * d - 50_000);
+        assert_eq!(unsigned.output[0].script_pubkey, super::script_of(FOREIGN));
+        assert_eq!(unsigned.input.len() as u32, estimate.input_count);
 
         let mixed_tx = send(CoinSource::FullyMixedOnly, 2 * d - 50_000);
         assert!(

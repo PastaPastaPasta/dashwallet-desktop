@@ -25,6 +25,7 @@ import { heroQuietEnds, heroSync, newHeroWatch, watchHero, type HeroReading, typ
 import { reconcileLockReport } from "./lockReport";
 import { isChangingUsernameInRequests } from "./username";
 import { catchUpArrival } from "../components/emptyStates";
+import { resetUnderway } from "../tools/repair";
 
 /** A history query without its paging fields. */
 export type HistoryFilter = Omit<HistoryRequest, "cursor" | "limit">;
@@ -67,6 +68,8 @@ export const keys = {
   platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
+  rescanProgress: ["rescanProgress"] as const,
+  historyGap: ["historyGap"] as const,
   scanHeightAll: ["scanHeight"] as const,
   scanHeight: (walletId: string) => ["scanHeight", walletId] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
@@ -139,9 +142,9 @@ export function useOpenNetwork() {
   });
 }
 
-export function useLockStatus() {
+export function useLockStatus(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(() => b.lockStatus()) });
+  return useQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(() => b.lockStatus()), enabled });
 }
 
 export function useWallets(enabled = true) {
@@ -285,6 +288,9 @@ export function useShieldedQuote(walletId: string, request: ShieldedRequest | nu
         }
         case "out": {
           return { kind: "spend", quote: await b.unshieldQuote(walletId, request.credits, null) };
+        }
+        case "toPlatform": {
+          return { kind: "spend", quote: await b.unshieldToPlatformQuote(walletId, request.credits, null) };
         }
         default:
           throw new Error("nothing to quote");
@@ -511,9 +517,9 @@ export function useFeePolicy() {
 }
 
 /** "Ask for my passphrase for every payment"; read again each time the confirm sheet opens. */
-export function usePaymentAuthentication() {
+export function usePaymentAuthentication(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), staleTime: 0, gcTime: 0, retry: false });
+  return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), enabled, staleTime: 0, gcTime: 0, retry: false });
 }
 
 /** The spend limit and the post-unlock signing window. Read again with the confirm sheet. */
@@ -642,6 +648,43 @@ export function useDustProtection() {
 export function useNodeInfo() {
   const b = useBackend();
   return useQuery({ queryKey: keys.nodeInfo, queryFn: () => b.nodeInfo(), staleTime: 0 });
+}
+
+/** The running rescan, re-read every few seconds: an in-memory read the engine answers at once. */
+export function useRescanProgress() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.rescanProgress, queryFn: () => b.rescanProgress(), refetchInterval: 5_000 });
+}
+
+/** When `history_gap` is read while SPV runs: at once, then while it answers `null`, since the
+ * engine's first header anchor reaches disk some seconds after the start and no event says so. */
+const HISTORY_GAP_READS_MS = [0, 6_000, 20_000, 60_000];
+
+/** Reads `history_gap` (about 1 MB of headers on disk) for the app shell: never on a sync tick.
+ * Kept until the wallet locks, so Home finds it again however long it was away. */
+const historyGapQuery = (b: Backend) => ({ queryKey: keys.historyGap, queryFn: () => b.historyGap(), gcTime: Infinity });
+
+/** `wallets` is the open wallets' ids and birth heights, joined: a new wallet or a lower birth
+ * height reads again. With sync stopped it reads once, as stored headers answer without SPV. */
+export function useHistoryGapReads(running: boolean, wallets: string) {
+  const b = useBackend();
+  const client = useQueryClient();
+  useEffect(() => {
+    if (!wallets || (!running && resetUnderway(b))) return;
+    const timers = (running ? HISTORY_GAP_READS_MS : [0]).map((ms) =>
+      setTimeout(() => {
+        if (ms > 0 && client.getQueryData(keys.historyGap) != null) return;
+        void client.fetchQuery({ ...historyGapQuery(b), staleTime: 0 }).catch(() => undefined);
+      }, ms),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [b, client, running, wallets]);
+}
+
+/** The last `history_gap` answer the shell read; this never reads itself. */
+export function useHistoryGap() {
+  const b = useBackend();
+  return useQuery({ ...historyGapQuery(b), enabled: false });
 }
 
 export function useProtocolCompatibility() {

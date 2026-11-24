@@ -411,10 +411,15 @@ impl NetworkSession {
     /// spend's saved bytes again, charged its fee, refused while it can't
     /// be out or may be replaced (`shared_stage`: `sent` / `funding_signed`
     /// with none signed, `legacy` with no bytes kept, `abandon_cancelled`
-    /// once abandoned in Activity, `abandon_refused` after a definite
-    /// refusal), then while another pending spend holds one of its inputs.
-    /// Its entry reads `maybe_sent` before the hand-off, which runs as a
-    /// replay.
+    /// once abandoned in Activity, also while that Abandon's mark is stored
+    /// before its sweep or can't be read, `abandon_refused` after a definite
+    /// refusal), `legacy` too when neither its log entry nor the wallet's
+    /// coins show its fee ([`Self::abandon_fee`]), `abandon_cancelled`
+    /// again for a mark read once the coins are fenced, then while another
+    /// pending spend holds one of its inputs. Its entry reads `maybe_sent`
+    /// before the hand-off, which runs as a replay. Activity's Abandon takes
+    /// neither the fence nor the shared claim: one that marks the spend
+    /// after that last read doesn't stop the hand-off.
     pub(super) async fn resend_abandon(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -438,12 +443,20 @@ impl NetworkSession {
                 return Err(refusal("abandon_cancelled"));
             }
             Some(AbandonSpendState::Refused) => return Err(refusal("abandon_refused")),
+            _ if self.spend_back_marked(wallet, row).await => {
+                return Err(refusal("abandon_cancelled"));
+            }
             _ => {}
         }
         let tx: Transaction = dashcore::consensus::deserialize(bytes)
             .map_err(|_| EngineError::Internal("the saved abandon spend".into()))?;
-        let fee = entry.and_then(|e| e.fee).unwrap_or(0);
+        let Some(fee) = self.abandon_fee(wallet, row, entry, &chain.history).await? else {
+            return Err(refusal("legacy"));
+        };
         let fence = self.coin_fence(wallet).await?;
+        if self.spend_back_marked(wallet, row).await {
+            return Err(refusal("abandon_cancelled"));
+        }
         self.check_resend_inputs(wallet, &tx)?;
         let lease = self.shared_lease(wallet, grant).await?;
         let result = async {

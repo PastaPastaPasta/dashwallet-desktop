@@ -214,6 +214,20 @@ pub enum ShieldedCmd {
         #[arg(long)]
         confirm_unrecorded: bool,
     },
+    /// Shielded -> Platform: unshield `--credits` to one of the wallet's
+    /// own Platform addresses, or to its Platform receive address.
+    UnshieldToPlatform {
+        #[arg(long)]
+        credits: u64,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        quote_only: bool,
+        /// Unshield even though a payment from before a restart may still
+        /// go through (`shielded.unrecorded_spend`).
+        #[arg(long)]
+        confirm_unrecorded: bool,
+    },
     /// The shielded history, pending rows first, then newest first.
     History {
         #[arg(long, default_value_t = 0)]
@@ -411,6 +425,19 @@ pub enum IdentityCmd {
         who: Who,
         #[arg(long)]
         duffs: u64,
+        /// Print the quote only.
+        #[arg(long)]
+        quote_only: bool,
+    },
+    /// Top up an identity's credits from the wallet's Platform addresses.
+    TopUpFromPlatform {
+        #[command(flatten)]
+        who: Who,
+        #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+        credits: Option<u64>,
+        /// The usable balance less what the first input keeps for the fee.
+        #[arg(long)]
+        all: bool,
         /// Print the quote only.
         #[arg(long)]
         quote_only: bool,
@@ -912,6 +939,7 @@ fn registration_params(e: &RegistrationError) -> Value {
         R::Recoverable { draft } => json!({"draft": draft}),
         R::Name(n) => name_params(n),
         R::Invitation(i) => invitation_params(i),
+        R::Credits(c) => credits_params(c),
         R::Platform(p) => platform_params(p),
     }
 }
@@ -929,7 +957,9 @@ fn contact_params(e: &ContactError) -> Value {
         | C::ScanExpired
         | C::ScanUnverified
         | C::NoUsername => json!({}),
+        C::Shielded(s) => shielded_params(s),
         C::Platform(p) => platform_params(p),
+        C::Credits(c) => credits_params(c),
     }
 }
 
@@ -1800,6 +1830,21 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
                 ctx.block_on(dp.unshield_to_core(credits, to, grant, confirm_unrecorded))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
+        ShieldedCmd::UnshieldToPlatform {
+            credits,
+            to,
+            quote_only,
+            confirm_unrecorded,
+        } => {
+            let quote = ctx.block_on(dp.unshield_to_platform_quote(credits, to.clone()))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome =
+                ctx.block_on(dp.unshield_to_platform(credits, to, grant, confirm_unrecorded))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
         ShieldedCmd::History { offset, limit } => {
             out(ctx.block_on(dp.shielded_history(offset, limit))?)
         }
@@ -1975,6 +2020,30 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
             let outcome = ctx.block_on(dp.top_up(identity, duffs, grant))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        IdentityCmd::TopUpFromPlatform {
+            who,
+            credits,
+            all: _,
+            quote_only,
+        } => {
+            let identity = who.or_main(&dp)?;
+            let amount = credits.map_or(WithdrawAmount::All, |credits| WithdrawAmount::Credits {
+                credits,
+            });
+            let quote = ctx.block_on(dp.top_up_from_platform_quote(identity.clone(), amount))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            // What Confirm showed, Max included: its credits and its fee input.
+            let amount = WithdrawAmount::Credits {
+                credits: quote.credits,
+            };
+            let fee_input = quote.inputs.first().cloned();
+            let outcome =
+                ctx.block_on(dp.top_up_from_platform(identity, amount, fee_input, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         IdentityCmd::TopUpPending => out(ctx.block_on(dp.pending_top_ups())?),
@@ -2650,7 +2719,7 @@ mod tests {
         // Release 0.1 (lane E2): the Platform addresses.
         (
             "platform-addr status",
-            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false}}"#,
+            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false,"sends_active":true}}"#,
         ),
         ("platform-addr activity", r#"{"ok":true,"result":[]}"#),
         // Offline (DAPI refuses): the pass and the plan's proved read.
@@ -2800,6 +2869,10 @@ mod tests {
             NOT_IDENTIFIER,
         ),
         ("identity withdrawals --identity I", NOT_IDENTIFIER),
+        (
+            "identity top-up-from-platform --identity I --credits 5 --quote-only",
+            NOT_IDENTIFIER,
+        ),
         ("identity top-up-stuck", r#"{"ok":true,"result":[]}"#),
         (
             "identity top-up-resume abababababababababababababababababababababababababababababababab",
@@ -2852,6 +2925,10 @@ mod tests {
         (
             "shielded unshield --credits 5 --to yA",
             r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Dash address","params":{"detail":"not a Dash address"}}}"#,
+        ),
+        (
+            "shielded unshield-to-platform --credits 5 --to yA",
+            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Platform address of this network","params":{"detail":"not a Platform address of this network"}}}"#,
         ),
         (
             "shielded history --offset 1 --limit 5",
@@ -2977,6 +3054,10 @@ mod tests {
         ),
         ("identity costs", "DashPay.cost_table"),
         ("identity withdrawals --identity I", "DashPay.withdrawals"),
+        (
+            "identity top-up-from-platform --identity I --credits 5 --quote-only",
+            "DashPay.top_up_from_platform_quote",
+        ),
         ("identity top-up-pending", "DashPay.pending_top_ups"),
         ("identity top-up-stuck", "DashPay.stuck_top_up_fundings"),
         (
@@ -3093,6 +3174,10 @@ mod tests {
         (
             "shielded unshield --credits 5 --to yA",
             "DashPay.unshield_quote",
+        ),
+        (
+            "shielded unshield-to-platform --credits 5 --to yA",
+            "DashPay.unshield_to_platform_quote",
         ),
         (
             "shielded history --offset 1 --limit 5",

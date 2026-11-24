@@ -537,6 +537,48 @@ impl From<engine::ShieldedSpendOutcome> for ShieldedSpendOutcome {
     }
 }
 
+/// What an unshield to the wallet's own Platform address did: as
+/// `ShieldedSpendOutcome`, plus `record`, the `id` of its `fromShielded`
+/// Platform activity row when the wallet recorded one. That row turns
+/// `done` only once Platform executed the unshield.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UnshieldToPlatformOutcome {
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    /// The shielded balance after.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub balance: u64,
+    /// The Platform address paid.
+    pub to: String,
+    pub state: ShieldedSpendState,
+    pub unresolved: Option<UnresolvedSpend>,
+    pub record: Option<String>,
+}
+
+impl From<engine::UnshieldToPlatformOutcome> for UnshieldToPlatformOutcome {
+    fn from(o: engine::UnshieldToPlatformOutcome) -> Self {
+        let engine::UnshieldToPlatformOutcome {
+            credits,
+            balance,
+            to,
+            state,
+            unresolved,
+            record,
+        } = o;
+        UnshieldToPlatformOutcome {
+            credits,
+            balance,
+            to,
+            state: state.into(),
+            unresolved: unresolved.map(Into::into),
+            record,
+        }
+    }
+}
+
 /// Where a spend stands when the call returns. `pending`: it went out and
 /// its result is not confirmed. It is never failed meanwhile: its history
 /// row (`unresolved.activityId`) turns `confirmed` when a scan sees it
@@ -655,6 +697,11 @@ pub struct ShieldedActivity {
     pub block_height: Option<u64>,
     pub status: ShieldedActivityStatus,
     pub created_at: Option<u64>,
+    /// The DashPay contact a withdrawal paid, when it was a contact
+    /// payment.
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<crate::dto::history::TxCounterparty>,
 }
 
 impl From<engine::ShieldedActivity> for ShieldedActivity {
@@ -670,6 +717,7 @@ impl From<engine::ShieldedActivity> for ShieldedActivity {
             block_height,
             status,
             created_at,
+            contact,
         } = a;
         ShieldedActivity {
             id,
@@ -682,6 +730,7 @@ impl From<engine::ShieldedActivity> for ShieldedActivity {
             block_height,
             status: status.into(),
             created_at,
+            contact: contact.map(Into::into),
         }
     }
 }

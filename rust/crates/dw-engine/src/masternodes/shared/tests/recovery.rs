@@ -11,7 +11,7 @@ use dashcore::{Address, PublicKey, ScriptBuf};
 use dw_protx::shared::SpecialTx;
 use key_wallet::transaction_checking::TransactionContext;
 
-use super::super::recovery::spend_fee;
+use super::super::recovery::{SIGNER_RUNS, spend_fee};
 use super::*;
 use crate::masternodes::{
     AbandonSpendState, BlockedReason, HandoffErrorOutcome, HandoffTx, RecoveryAction, SettledBy,
@@ -145,6 +145,32 @@ impl Fx {
                 rusqlite::params![
                     txid.to_string(),
                     log.to_string(),
+                    self.wallets[w].to_string(),
+                    id
+                ],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    /// The latest abandon spend's log entry as an older build wrote it (no
+    /// fee, no inputs, the legacy mark), its bytes kept: what a spend
+    /// signed again with that entry's txid leaves.
+    fn unlogged_fee(&self, w: usize, id: &str) {
+        let row = self.row(w, id);
+        let mut log: Vec<serde_json::Value> =
+            serde_json::from_str(row.abandon_log.as_deref().unwrap()).unwrap();
+        let entry = log.last_mut().unwrap();
+        entry["fee"] = serde_json::Value::Null;
+        entry["inputs"] = serde_json::json!([]);
+        entry["legacy"] = serde_json::json!(true);
+        let conn = rusqlite::Connection::open(self.session.data_dir().join(dw_appdb::APP_DB_FILE))
+            .unwrap();
+        let n = conn
+            .execute(
+                "UPDATE shared_mn_sessions SET abandon_log = ?1 WHERE wallet_id = ?2 AND id = ?3",
+                rusqlite::params![
+                    serde_json::Value::from(log).to_string(),
                     self.wallets[w].to_string(),
                     id
                 ],
@@ -329,8 +355,9 @@ fn test_an_unknown_registration_hand_off_is_in_flight_until_restart() {
 }
 
 /// T4 "abandon A unknown" and "accepted, not recorded": A `uncertain`,
-/// `resend_abandon` at A's fee, `abandon` refused `abandoning`; the replay
-/// hands the same bytes off; SPV stopped holds it back.
+/// `resend_abandon` at A's fee, `abandon` refused `abandoning` without
+/// taking its grant (D50); the replay hands the same bytes off; SPV stopped
+/// holds it back.
 #[test]
 fn test_a_spend_back_that_may_be_out_is_only_sent_again() {
     for unknown in [false, true] {
@@ -368,7 +395,7 @@ fn test_a_spend_back_that_may_be_out_is_only_sent_again() {
                 );
             }
         }
-        assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
+        no_second_abandon(&f, &id);
         f.spv(false, 0);
         let r = f.recovery(1, &id);
         assert!(r.actions.is_empty());
@@ -383,7 +410,7 @@ fn test_a_spend_back_that_may_be_out_is_only_sent_again() {
             may_be_out(&f, &id, &a, fee),
             "after a restart"
         );
-        assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
+        no_second_abandon(&f, &id);
         let before = f.net.sent().len();
         grant_exceeded(f.resend_abandon(1, &id, fee - 1));
         f.resend_abandon(1, &id, fee).unwrap();
@@ -394,6 +421,29 @@ fn test_a_spend_back_that_may_be_out_is_only_sent_again() {
         assert_eq!(log.len(), 1, "the same spend");
         assert_eq!(log[0].1.as_deref(), Some("sent"));
     }
+}
+
+/// D50, "no new spend while it may be out": a second abandon is refused
+/// `abandoning` before its lease, so nothing is sent, logged or charged,
+/// and its grant still redeems.
+fn no_second_abandon(f: &Fx, id: &str) {
+    let (sent, log) = (f.net.sent(), abandon_log(&f.row(1, id)));
+    let grant = f.grant(1, COIN);
+    let refused = f.run(
+        f.mn()
+            .abandon_shared_session(f.wallets[1], id.to_string(), grant.clone()),
+    );
+    assert_stage(refused.unwrap_err(), "abandoning");
+    assert_eq!(f.net.sent(), sent, "nothing sent");
+    assert_eq!(abandon_log(&f.row(1, id)), log, "nothing logged");
+    f.session
+        .vault()
+        .redeem_grant(
+            &grant,
+            dw_vault::GrantKind::MasternodeOp,
+            Some(&f.wallets[1].0),
+        )
+        .expect("the grant still redeems");
 }
 
 /// The actions of a spend back `a` that may be out: its replay, and once
@@ -653,6 +703,173 @@ fn test_a_spend_back_abandoned_in_activity_rescans_then_is_replaced() {
     let s = f.abandon_at(1, &id, spend_fee(1)).unwrap();
     assert_eq!(f.net.sent().last().unwrap().input[0].previous_output, coin);
     assert_eq!(s.recovery.attributed.first(), Some(&txid));
+}
+
+/// Activity's Abandon of the spend back A stores its mark, then its sweep,
+/// and flags A in the history only once the sweep is stored. A Send again
+/// asked while that Abandon is held at its sweep is refused
+/// `abandon_cancelled`; with the sweep then failed the history still holds
+/// A live, and until the sweep is stored the read says A was abandoned in
+/// Activity and lists only Activity's Abandon of A, no Send again and no
+/// new spend, and both calls are refused. That Abandon again stores the
+/// sweep, and once the coin is back a new spend (the user's, after it)
+/// replaces A. Until then nothing goes out.
+#[test]
+fn test_a_spend_back_whose_activity_abandon_failed_its_sweep_is_never_sent_again() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.abandon(1, &id).unwrap();
+    let a = f.net.sent()[0].clone();
+    let coin = a.input[0].previous_output;
+    let (value, _) = f.coin_of(1, coin);
+    f.record(1, &a);
+    f.spv(true, 1);
+    let replay = RecoveryAction::ResendAbandon {
+        charge: spend_fee(1),
+    };
+    assert!(f.recovery(1, &id).actions.contains(&replay));
+    let sent = f.net.sent().len();
+    let (wallet, txid) = (f.wallets[1], a.txid());
+    let activity_abandon = || {
+        let s = Arc::clone(&f.session);
+        f.session.rt.spawn(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, wallet, txid).await
+        })
+    };
+
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_abandon_sweep.lock().unwrap() = Some(Arc::clone(&pause));
+    let abandoning = activity_abandon();
+    assert!(pause.wait_reached(std::time::Duration::from_secs(60)));
+    let resending = {
+        let (mn, grant, id) = (f.mn(), f.grant(1, COIN), id.clone());
+        f.session
+            .rt
+            .spawn(async move { mn.resend_shared_abandon(wallet, id, grant).await })
+    };
+    (f.session.hub.fail_abandon_sweep).store(true, std::sync::atomic::Ordering::SeqCst);
+    pause.release.notify_one();
+    let swept = f.run(abandoning).unwrap();
+    assert!(
+        matches!(&swept, Err(crate::EngineError::Storage(_))),
+        "{swept:?}"
+    );
+    assert_stage(f.run(resending).unwrap().unwrap_err(), "abandon_cancelled");
+    f.history_edit(1, txid, |e| assert!(!e.abandoned, "flagged"));
+
+    let finish = RecoveryAction::AbandonWalletTx {
+        txid: txid.to_string(),
+    };
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.abandon_spend.as_ref().and_then(|s| s.state),
+        Some(AbandonSpendState::AbandonedInActivity)
+    );
+    assert_eq!(r.actions, [finish], "Activity's Abandon finishes the sweep");
+    assert_eq!(r.blocked, None);
+    assert_stage(
+        f.resend_abandon(1, &id, COIN).unwrap_err(),
+        "abandon_cancelled",
+    );
+    assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
+    assert_eq!(f.net.sent().len(), sent, "nothing went out");
+
+    f.run(activity_abandon()).unwrap().unwrap();
+    f.history_edit(1, txid, |e| assert!(e.abandoned, "not flagged"));
+    f.credit_again(1, coin.txid.to_byte_array()[0], value);
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.actions,
+        [RecoveryAction::Abandon {
+            charge: spend_fee(1),
+            spends: true,
+            replaces: Some(txid.to_string())
+        }]
+    );
+    f.abandon_at(1, &id, spend_fee(1)).unwrap();
+    assert_eq!(f.net.sent().len(), sent + 1, "the new spend went out");
+    assert_eq!(f.net.sent()[sent].input[0].previous_output, coin);
+}
+
+/// A spend back's Abandon mark that can't be read counts as stored: the
+/// read says A was abandoned in Activity and lists Activity's Abandon of
+/// it, no Send again, and the call is refused `abandon_cancelled`; with the read back, Send again is
+/// listed again.
+#[test]
+fn test_a_spend_back_whose_abandon_mark_cannot_be_read_is_not_sent_again() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.abandon(1, &id).unwrap();
+    let a = f.net.sent()[0].clone();
+    f.record(1, &a);
+    f.spv(true, 1);
+    let replay = RecoveryAction::ResendAbandon {
+        charge: spend_fee(1),
+    };
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let unreadable = || {
+        dw_appdb::fault::arm(
+            &path,
+            &format!("settings.read_abandoned:{}", a.txid()),
+            dw_appdb::fault::Stage::Before,
+        )
+    };
+    let sent = f.net.sent().len();
+
+    unreadable();
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.abandon_spend.as_ref().and_then(|s| s.state),
+        Some(AbandonSpendState::AbandonedInActivity)
+    );
+    assert_eq!(
+        r.actions,
+        [RecoveryAction::AbandonWalletTx {
+            txid: a.txid().to_string()
+        }]
+    );
+    unreadable();
+    assert_stage(
+        f.resend_abandon(1, &id, COIN).unwrap_err(),
+        "abandon_cancelled",
+    );
+    dw_appdb::fault::disarm(&path);
+    assert_eq!(f.net.sent().len(), sent, "A never went out again");
+    assert!(f.recovery(1, &id).actions.contains(&replay));
+}
+
+/// A spend back not recorded (`uncertain`, its coins still held) whose
+/// Abandon mark can't be read: no Send again, and no new spend either,
+/// which `abandon_shared_session` would refuse while A may be out.
+#[test]
+fn test_an_uncertain_spend_back_with_an_unreadable_mark_lists_no_new_spend() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.abandon(1, &id).unwrap();
+    let a = f.net.sent()[0].clone();
+    f.spv(true, 1);
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.abandon_spend.as_ref().and_then(|s| s.state),
+        Some(AbandonSpendState::Uncertain)
+    );
+    assert_eq!(
+        r.actions,
+        [RecoveryAction::ResendAbandon {
+            charge: spend_fee(1)
+        }]
+    );
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    dw_appdb::fault::arm(
+        &path,
+        &format!("settings.read_abandoned:{}", a.txid()),
+        dw_appdb::fault::Stage::Before,
+    );
+    let r = f.recovery(1, &id);
+    dw_appdb::fault::disarm(&path);
+    assert!(r.actions.is_empty(), "{r:?}");
+    assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
 }
 
 /// T4 legacy row, whole reservation unspent, before and after
@@ -956,6 +1173,55 @@ fn test_a_registration_that_wins_lists_nothing() {
     assert_stage(f.resend_abandon(0, &id, COIN).unwrap_err(), "confirmed");
 }
 
+/// #438: on mainnet `send_shared_registration` refuses, so a coordinator's
+/// `sent` session whose hand-off was refused lists no `resend` (the read on
+/// regtest lists it). The row is the regtest session's, its envelope named
+/// mainnet and read back at `draft`, whose addresses and service mainnet
+/// doesn't check; out, the row reads `sent` whatever the envelope's stage.
+#[test]
+fn test_a_mainnet_session_lists_no_resend() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    f.spv(true, 1);
+    let debit = f.session_of(0, &id).debit.unwrap();
+    let resend = RecoveryAction::Resend { charge: debit };
+    assert!(f.recovery(0, &id).actions.contains(&resend));
+    let mut row = f.row(0, &id);
+    let mut envelope = parse(&row.envelope);
+    envelope.network = dashcore::Network::Mainnet;
+    envelope.stage = Stage::Draft;
+    row.envelope = envelope.to_text();
+
+    let (out_at, signed, txid, error) = (
+        row.out_at.take().unwrap(),
+        row.signed_tx.take().unwrap(),
+        row.txid.take().unwrap(),
+        row.last_error.take(),
+    );
+
+    let m = fx_on(DashNetwork::Mainnet, 1, true);
+    let (db, w) = (m.db(), m.wallets[0].to_string());
+    db.insert_shared_session_durable(&w, &row, 1).unwrap();
+    assert!(
+        db.mark_shared_session_out_durable(&w, &id, &signed, &txid, out_at)
+            .unwrap()
+    );
+    db.record_shared_session_attempt(&w, &id, error.as_deref())
+        .unwrap();
+    m.spv(true, 1);
+    let s = m.session_of(0, &id);
+    assert_eq!(s.stage, SharedStage::Sent);
+    assert!(!s.recovery.actions.contains(&resend), "{:?}", s.recovery);
+    let e = m.send(0, &id, 400 * COIN + FEE).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::Unsupported { feature, .. } if feature == "protx_sending"),
+        "{e:?}"
+    );
+}
+
 /// The resend and abandon calls with the switch off are `unsupported`, and
 /// the read lists no call that hands bytes off.
 #[test]
@@ -1001,6 +1267,55 @@ fn test_a_spend_back_whose_input_another_spend_holds_is_not_sent_again() {
     );
 }
 
+/// A spend back whose log entry has no fee (an older build's entry, kept
+/// by a spend signed again with its txid) is never replayed uncharged: its
+/// replay is listed and charged what its bytes pay, its coin valued while
+/// held, then from its history entry; with neither, no replay is listed
+/// and the call refuses `legacy`, Activity's abandon its exit.
+#[test]
+fn test_a_spend_back_logged_without_its_fee_is_charged_what_it_pays() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.abandon(1, &id).unwrap();
+    f.spv(true, 1);
+    let (fee, spend) = (spend_fee(1), f.net.sent()[0].clone());
+    let replay = RecoveryAction::ResendAbandon { charge: fee };
+    f.unlogged_fee(1, &id);
+    assert!(f.row(1, &id).abandon_tx.is_some());
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.abandon_spend.as_ref().map(|s| (s.legacy, s.state)),
+        Some((true, Some(AbandonSpendState::Uncertain)))
+    );
+    assert_eq!(r.actions, std::slice::from_ref(&replay));
+    grant_exceeded(f.resend_abandon(1, &id, fee - 1));
+    assert_eq!(f.net.sent().len(), 1);
+    f.resend_abandon(1, &id, fee).unwrap();
+    assert_eq!(f.net.sent().len(), 2);
+
+    f.record(1, &spend);
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.abandon_spend.as_ref().and_then(|s| s.state),
+        Some(AbandonSpendState::InHistory)
+    );
+    assert!(r.actions.contains(&replay), "{r:?}");
+    grant_exceeded(f.resend_abandon(1, &id, fee - 1));
+
+    f.history_edit(1, spend.txid(), |e| e.own_inputs.clear());
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.actions,
+        [RecoveryAction::AbandonWalletTx {
+            txid: spend.txid().to_string()
+        }]
+    );
+    for cap in [0, COIN] {
+        assert_stage(f.resend_abandon(1, &id, cap).unwrap_err(), "legacy");
+    }
+    assert_eq!(f.net.sent().len(), 2, "nothing sent again");
+}
+
 /// Wallet `w`'s row of `id` written back as `before` left it (a database
 /// restored from a backup older than the signing).
 fn restore(f: &Fx, w: usize, id: &str, before: &dw_appdb::SharedSessionRow) {
@@ -1010,8 +1325,8 @@ fn restore(f: &Fx, w: usize, id: &str, before: &dw_appdb::SharedSessionRow) {
         .execute(
             "UPDATE shared_mn_sessions SET envelope = ?1, contribution = ?2,
                  approved_terms = ?3, signed_tx = ?4, txid = ?5, out_at = ?6,
-                 last_error = ?7, updated_at = ?8
-             WHERE wallet_id = ?9 AND id = ?10",
+                 last_error = ?7, updated_at = ?8, reserved = ?9
+             WHERE wallet_id = ?10 AND id = ?11",
             rusqlite::params![
                 before.envelope,
                 before.contribution,
@@ -1021,6 +1336,7 @@ fn restore(f: &Fx, w: usize, id: &str, before: &dw_appdb::SharedSessionRow) {
                 before.out_at.map(|v| v as i64),
                 before.last_error,
                 before.updated_at as i64,
+                before.reserved,
                 f.wallets[w].to_string(),
                 id
             ],
@@ -1175,6 +1491,182 @@ fn test_a_refused_copy_without_our_valid_signature_stays_discardable() {
     genuine.revision += 1;
     assert_message(f.import(1, &genuine.to_text()).unwrap_err(), "conflict");
     assert!(f.row(1, &id).out_at.is_some());
+}
+
+/// A coordinator whose database was restored from a backup of its draft
+/// taken before a fee change re-selected its coins: the draft records
+/// `{c1, c2}`, the registration sent spends `{c1, c3}`. Its Final Record,
+/// refused `older`, marks the session possibly out with the registration's
+/// bytes. The registration, its coins c1 and c3, and the held c2.
+fn restored_coordinator(f: &Fx) -> (String, Transaction, OutPoint) {
+    f.credit(1, 2, 300 * COIN + 50_000);
+    f.credit(2, 3, 350 * COIN);
+    let c1 = f.credit(0, 1, 399 * COIN + COIN / 2);
+    let c2 = f.credit(0, 4, COIN);
+    let req = request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
+    let id = start(f, 0, req).unwrap().session.id;
+    let mut drafted = vec![c1, c2];
+    drafted.sort();
+    assert_eq!(reserved_coins(f, 0, &id), drafted);
+    let before = f.row(0, &id);
+    let c3 = f.credit(0, 5, 2 * COIN);
+    f.run(f.mn().set_shared_fee(f.wallets[0], id.clone(), 2 * FEE))
+        .unwrap();
+    let mut chosen = vec![c1, c3];
+    chosen.sort();
+    assert_eq!(reserved_coins(f, 0, &id), chosen, "re-selected");
+    let invitation = f.message(0, &id);
+    for w in [1, 2] {
+        f.imported(w, &invitation);
+    }
+    for w in [1, 2] {
+        let joined = f.join(w, &id);
+        f.imported(0, &joined.message.text);
+    }
+    let locked = f.lock(0, &id).unwrap();
+    for w in [1, 2] {
+        f.imported(w, &locked.message.text);
+        let approval = f.approve(w, &id).unwrap();
+        f.imported(0, &approval.message.text);
+    }
+    f.both_signed(&id);
+    f.send(0, &id, 401 * COIN).unwrap();
+    let registration = f.net.sent()[0].clone();
+    assert!(chosen.iter().all(|c| inputs(&registration).contains(c)));
+    assert!(!inputs(&registration).contains(&c2));
+    let record = f.message(0, &id);
+    restore(f, 0, &id, &before);
+    assert_message(f.import(0, &record).unwrap_err(), "older");
+    let row = f.row(0, &id);
+    assert!(row.out_at.is_some(), "{row:?}");
+    assert_eq!(row.txid, Some(registration.txid().to_string()));
+    assert_eq!(reserved_coins(f, 0, &id), drafted);
+    f.record(0, &registration);
+    assert!(f.held_coin(0, c1).is_none() && f.held_coin(0, c2).is_some());
+    f.spv(true, 1);
+    (id, registration, c2)
+}
+
+/// [`restored_coordinator`]: the held c2 alone isn't an input of the
+/// registration, so its spend back wouldn't conflict with it; the read and
+/// the call take Activity's abandon of the registration as the exit instead.
+#[test]
+fn test_a_restored_draft_never_spends_back_beside_its_registration() {
+    let f = fx(3, true);
+    let (id, registration, _) = restored_coordinator(&f);
+    let r = f.recovery(0, &id);
+    assert_eq!(abandon_action(&r), None, "{r:?}");
+    assert!(
+        r.actions.contains(&RecoveryAction::AbandonWalletTx {
+            txid: registration.txid().to_string()
+        }),
+        "{r:?}"
+    );
+    assert_stage(f.abandon(0, &id).unwrap_err(), "sent");
+    assert_eq!(f.net.sent().len(), 1, "nothing spent back");
+}
+
+/// [`restored_coordinator`]: a spend of c2 in a block leaves the
+/// registration valid, so it settles nothing and the follower keeps the
+/// reservation.
+#[test]
+fn test_a_restored_draft_is_not_settled_by_a_coin_its_registration_never_spent() {
+    let f = fx(3, true);
+    let (id, _, c2) = restored_coordinator(&f);
+    f.mine_locked(foreign_spend(&[c2], 1), 60);
+    f.tip(60);
+    f.session.hub.tracker().set_chainlock_height(60);
+    let s = f.session_of(0, &id);
+    assert_eq!(s.stage, SharedStage::Sent);
+    assert_eq!(s.recovery.settlement, Settlement::None);
+    f.follow();
+    assert!(!reserved_coins(&f, 0, &id).is_empty(), "kept");
+}
+
+/// [`restored_coordinator`] with its envelope no longer parsing: read by
+/// its columns, a spend of c2 in a block doesn't settle it, so the follower
+/// keeps the reservation and the abandon refuses at its out stage, not
+/// `conflicted`.
+#[test]
+fn test_an_unreadable_restored_draft_is_not_settled_by_a_coin_its_registration_never_spent() {
+    let f = fx(3, true);
+    let (id, _, c2) = restored_coordinator(&f);
+    let conn =
+        rusqlite::Connection::open(f.session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.execute(
+        "UPDATE shared_mn_sessions SET envelope = '{' WHERE wallet_id = ?1 AND id = ?2",
+        rusqlite::params![f.wallets[0].to_string(), id],
+    )
+    .unwrap();
+    f.mine_locked(foreign_spend(&[c2], 1), 60);
+    f.tip(60);
+    f.session.hub.tracker().set_chainlock_height(60);
+    f.follow();
+    assert!(!reserved_coins(&f, 0, &id).is_empty(), "kept");
+    let e = f
+        .run(
+            f.mn()
+                .abandon_unreadable_shared_session(f.wallets[0], id.clone(), f.grant(0, COIN)),
+        )
+        .unwrap_err();
+    assert_stage(e, "sent");
+}
+
+/// A refused copy spending one of our own inputs fifty times, each with our
+/// scriptSig, is never ours (no valid transaction spends an outpoint
+/// twice): the session stays discardable, not out, and the import checks
+/// no more signatures than the session has own inputs, so a copy can't hold
+/// the wallet's read for long. Such a copy parses only before `combined`
+/// (no consent signature covers its inputs), so it is a `frozen` one.
+#[test]
+fn test_a_refused_copy_repeating_our_input_stays_discardable() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.imported(1, &f.message(0, &id));
+    let before = f.row(1, &id);
+    let signed = f.sign(1, &id, 301 * COIN).unwrap();
+    restore(&f, 1, &id, &before);
+    let own = reserved_coins(&f, 1, &id);
+    let mut copy = parse(&signed.message.text);
+    let frozen = decode_frozen(&copy).unwrap();
+    let mut tx = frozen.tx;
+    let index = (tx.input.iter())
+        .position(|i| own.contains(&i.previous_output))
+        .unwrap();
+    let ours = tx.input[index].clone();
+    assert!(!ours.script_sig.is_empty(), "our signature");
+    let o = ours.previous_output;
+    let listed = (copy.contributions.iter_mut())
+        .find_map(|c| {
+            let at =
+                (c.inputs.iter()).position(|i| i.txid == o.txid.to_string() && i.vout == o.vout)?;
+            Some((c, at))
+        })
+        .unwrap();
+    let (contribution, at) = listed;
+    let input = contribution.inputs[at].clone();
+    for _ in 0..49 {
+        tx.input.insert(index + 1, ours.clone());
+        contribution.inputs.insert(at + 1, input.clone());
+    }
+    copy.stage = Stage::Frozen;
+    copy.sigs.clear();
+    copy.protx = hex::encode(tx.to_bytes());
+    copy.consent_hash =
+        dw_protx::shared::ProRegTxV3::display_hash(&frozen.payload.consent_hash(&tx));
+    copy.revision += 1;
+    assert_message(f.import(1, &copy.to_text()).unwrap_err(), "conflict");
+    let runs = (SIGNER_RUNS.lock().unwrap().iter())
+        .filter(|t| **t == tx.txid())
+        .count();
+    assert!(runs <= own.len(), "{runs} signature checks");
+    let row = f.row(1, &id);
+    assert_eq!((row.out_at, row.last_error), (None, None));
+    f.spv(true, 1);
+    assert!(
+        (f.recovery(1, &id).actions.iter()).any(|a| matches!(a, RecoveryAction::Discard { .. })),
+        "not out: discard"
+    );
 }
 
 /// T4 "participant `funding_signed`": with nothing signed back the replay

@@ -178,6 +178,10 @@ impl From<EngineError> for AppError {
                 EngineCode::TxActionRefused.into(),
                 Some(ErrorData::TxAction {
                     refusal: refusal.into(),
+                    wallet_id: match refusal {
+                        dw_engine::TxActionRefusal::RecordUnreadable(w) => Some(w.to_string()),
+                        _ => None,
+                    },
                 }),
             ),
             E::NoPeers => (EngineCode::NoPeers.into(), None),
@@ -359,7 +363,16 @@ mod tests {
         let rescan = e(TxActionRefusal::RescanFirst);
         assert_eq!(
             rescan["data"],
-            serde_json::json!({ "kind": "txAction", "refusal": "rescanFirst" })
+            serde_json::json!({ "kind": "txAction", "refusal": "rescanFirst", "walletId": null })
+        );
+        let wallet = dw_engine::WalletId([7; 32]);
+        assert_eq!(
+            e(TxActionRefusal::RecordUnreadable(wallet))["data"],
+            serde_json::json!({
+                "kind": "txAction",
+                "refusal": "recordUnreadable",
+                "walletId": wallet.to_string(),
+            })
         );
         assert_eq!(
             rescan["message"],

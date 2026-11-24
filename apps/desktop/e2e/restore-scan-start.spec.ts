@@ -88,3 +88,30 @@ test("the keyboard reaches the scan start group and arrows select A block height
   await page.keyboard.press("Tab");
   await expect(page.getByTestId("restore-height")).toBeFocused();
 });
+
+// #686: a restore from the first block says it can take long and may hold a watch-only
+// wallet's sends; the date option refuses a missing date instead of scanning from block 0.
+test("a restore from the first block warns that it is slow, and a missing date is refused", async ({ page }) => {
+  const errors = await restoreOptions(page);
+  const slow = page.getByTestId("restore-first-block-slow");
+  await expect(slow).toHaveText(
+    "This can take a long time. If this recovery phrase belongs to a watch-only wallet already in Dash Wallet, sending from that wallet is unavailable until the scan finishes.",
+  );
+  await page.getByTestId("restore-scan-height").check();
+  await page.getByTestId("restore-height").fill("1200");
+  await expect(slow).toHaveCount(0);
+
+  await page.getByTestId("restore-scan-date").check();
+  await expect(page.getByRole("alert")).toHaveText("Enter a valid wallet creation date, or choose The beginning.");
+  await expect(page.getByTestId("restore-finish")).toBeDisabled();
+  await expect(slow).toHaveCount(0);
+  await page.getByTestId("restore-date").fill("2023-02-28");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByTestId("restore-finish")).toBeEnabled();
+  await expect(page.getByTestId("restore-scan-start")).toContainText("The scan starts at block");
+
+  await option(page, "The beginning").click({ position: { x: 60, y: 8 } });
+  await expect(page.getByTestId("restore-finish")).toBeEnabled();
+  await expect(slow).toBeVisible();
+  expect(errors).toEqual([]);
+});

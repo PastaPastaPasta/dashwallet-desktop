@@ -437,7 +437,7 @@ test.describe("Home", () => {
     await authorize(page);
     await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Locked, not applied");
     await expect(page.getByTestId("platform-fund-outcome-text")).toHaveText(
-      "Your 0.50 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+      "Your 0.50000000 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
     );
     expect(await seriousAxeViolations(page)).toEqual([]);
     await page.getByTestId("platform-fund-outcome-finish").click();
@@ -455,7 +455,7 @@ test.describe("Home", () => {
     await page.getByTestId("platform-fund-finish").click();
     await authorize(page);
     await expect(page.getByTestId("platform-fund-refusal")).toHaveText(
-      "Your 0.50 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+      "Your 0.50000000 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
     );
     await expect(page.getByTestId("platform-fund-refused-back")).toHaveCount(0);
     expect(await seriousAxeViolations(page)).toEqual([]);
@@ -466,6 +466,17 @@ test.describe("Home", () => {
     await expect(page.getByTestId("platform-fund-unfinished")).toHaveCount(0);
     const calls = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_fund" || c === "resume_platform_fund"));
     expect(calls).toEqual(["resume_platform_fund", "resume_platform_fund"]);
+    expect(errors).toEqual([]);
+  });
+
+  test("credits moved from Shielded read as From Shielded in Activity, never as sent or received", async ({ page }) => {
+    const errors = await open(page, "paddr-from-shielded");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    const row = page.locator('[data-txid="platform:fromShielded:from-shielded-5a5a"]');
+    await expect(row).toContainText("From Shielded");
+    await expect(row).not.toContainText("Received");
+    await expect(row).not.toContainText("Sent");
     expect(errors).toEqual([]);
   });
 
@@ -487,7 +498,7 @@ test.describe("Home", () => {
     for (const id of ["platform-fund-stuck", "platform-fund-finish", "platform-fund-unfinished", "unfinished-card", "platform-card"]) await expect(page.getByTestId(id)).toHaveCount(0);
     await openTransfer(page, "coreToPlatform");
     const row = page.getByTestId("platform-fund-stuck");
-    await expect(row).toHaveText("0.00005 tDASH was locked to add to Platform, but it's worth less than the Platform fee, so it can't be added.");
+    await expect(row).toHaveText("0.00005000 tDASH was locked to add to Platform, but it's worth less than the Platform fee, so it can't be added.");
     expect(await seriousAxeViolations(page)).toEqual([]);
     await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
     await page.getByTestId("transfer-amount").fill("0.5");
@@ -511,7 +522,7 @@ test.describe("Home", () => {
     await open(page, "paddr-fund-checking");
     const row = page.getByTestId("platform-fund-checking");
     await expect(row).toContainText("Checking.");
-    await expect(row).toContainText("This amount may already be on your Platform addresses; we can't confirm it yet.");
+    await expect(row).toContainText("This amount may already be on your Platform addresses. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.");
     await expect(page.getByTestId("platform-fund-finish")).toHaveText("Check again");
     await page.getByTestId("platform-fund-finish").click();
     await authorize(page);

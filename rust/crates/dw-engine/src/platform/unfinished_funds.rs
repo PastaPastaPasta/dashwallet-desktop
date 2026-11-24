@@ -15,9 +15,12 @@
 //! (made then for a restored lock, paying that address), and disarmed
 //! again if none was released. After a proved apply the settle records the
 //! rise as the fund's, at most the lock's credits. Platform's "already
-//! consumed" for the exact outpoint is kept ([`Mark::Reported`]) apart from
-//! an unknown outcome: the kind takes the lock as finished elsewhere, so it
-//! leaves the lists ([`locks::LockFinish::ReportedUsed`]), and the record ends as
+//! consumed" for the exact outpoint is unproved: any node can say it. It
+//! counts only when Platform's proved state says the same
+//! ([`locks::SpentRead::Consumed`], [`FundLib::spent`]); then it is kept
+//! ([`Mark::Used`]) apart from an unknown outcome: the kind takes the lock as
+//! finished elsewhere, so it leaves the lists
+//! ([`locks::LockFinish::ReportedUsed`]), and the record ends as
 //! `platform_moves::fund_used` says (completed with its estimate only for an
 //! own fund whose apply released a signature; a restored lock's record is
 //! removed). Neither settles the lock.
@@ -41,7 +44,7 @@ use super::platform_moves::{self, FundEvidence, FundHold};
 use super::registration_flow::LockStatus;
 use super::unfinished_locks::{
     self as locks, ApplyReply, KindLock, LockKeySigner, LockKind, LockKindId, Mark, Marks, Minimum,
-    Readiness, reply_from,
+    Readiness, SpentRead, reply_from,
 };
 use crate::{NetworkSession, PlatformChange, WalletId};
 
@@ -151,7 +154,7 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
     }
 
     async fn reported_locks(&self) -> HashSet<OutPoint> {
-        self.marks(Mark::Reported).await
+        self.marks(Mark::Used).await
     }
 
     async fn mark_unknown(&self, lock: &KindLock) {
@@ -247,12 +250,23 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
                 });
             }
             Ok(ApplyReply::AlreadyConsumed) => {
+                // After the signature the answer is Platform's, unproved;
+                // before it, the library's own row, which only a proved
+                // apply makes `Consumed`.
+                let spent = match signer.inner.signed() {
+                    true => self.lib.spent(outpoint).await,
+                    false => SpentRead::Consumed,
+                };
+                if spent != SpentRead::Consumed {
+                    tracing::warn!(%outpoint, ?spent, "Platform's unproved \"already consumed\" for a fund lock: Checking");
+                    return reply;
+                }
                 // Kept first: a failed record write is retried from it.
                 locks::record(
                     self.session,
                     self.wallet,
                     LockKindId::PlatformAddress,
-                    Mark::Reported,
+                    Mark::Used,
                     outpoint,
                 )
                 .await;
@@ -343,8 +357,7 @@ pub(crate) async fn fund_evidence(
             .chain(settled)
             .chain(alone)
             .collect(),
-        reported: locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Reported)
-            .await,
+        reported: locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Used).await,
         tracked: rows.iter().map(|l| l.info.outpoint).collect(),
         caught_up: super::registration_flow::wallet_synced(session, wallet),
     }

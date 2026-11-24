@@ -8,7 +8,7 @@
 // `governance` as the engine's notifier would.
 
 import type { AppError } from "../api/generated/commands";
-import { BANNED_REJECTION, inProgress } from "../governance/model";
+import { BANNED_REJECTION, COLLATERAL_UNRESOLVED, inProgress } from "../governance/model";
 import type { GovernanceInfo } from "../api/generated/GovernanceInfo";
 import type { GovernanceSyncState } from "../api/generated/GovernanceSyncState";
 import type { MyProposal } from "../api/generated/MyProposal";
@@ -26,7 +26,15 @@ import type { VoteTally } from "../api/generated/VoteTally";
 import type { VotingMasternode } from "../api/generated/VotingMasternode";
 import type { WeightRange } from "../api/generated/WeightRange";
 import type { Ctx, Handlers } from "./handlers";
+import type { ListFacts } from "../api/generated/ListFacts";
+import type { MasternodesWorld } from "./masternodes";
+
+/** masternodes.ts's `addedVoters` and `staleAddedVoter`, passed in by handlers.ts (a value import would close a
+ * module cycle through scenarios.ts). */
+type AddedVoters = (m: MasternodesWorld) => { proTxHash: string; facts: ListFacts }[];
+type StaleAddedVoter = (m: MasternodesWorld, hash: string) => boolean;
 import { nameHandlers, nameScenarios, newNamesWorld, type NamesWorld } from "./names";
+import { newMasternodesWorld, noMasternodesWorld } from "./masternodes";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -61,10 +69,13 @@ export interface GovernanceWorld {
   /** Every confirmed proposal, in the engine's order (status groups, then net yes). */
   proposals: ProposalDetail[];
   /** The tip list's masternodes whose voting key the main wallet derives (a watch-only wallet's
-   * xpub-derived keys are the same). */
+   * xpub-derived keys are the same). Tracked masternodes with a matching added voting key follow
+   * them (`voters`). */
   masternodes: Omit<VotingMasternode, "currentVote" | "voteTime" | "keyLastVote" | "keyLastVoteTime">[];
   /** Votes seen, by proposal then ProTx hash. */
   votes: Record<string, Record<string, FixtureVote>>;
+  /** Tracked masternodes whose collateral outpoint isn't resolved yet (MG-02 D80): listed, refused at vote. */
+  collateralUnresolved: string[];
   /** `vote` refuses these masternodes with the reason (a store refusal, mg-engine §2.4). */
   refuse: Record<string, string>;
   /** `governance.list_unavailable` while SPV has no masternode list. */
@@ -147,9 +158,9 @@ export const MN_B = h("b2");
 export const MN_C = h("c3");
 
 const FIXTURE_MASTERNODES: GovernanceWorld["masternodes"] = [
-  { proTxHash: MN_A, kind: "regular", weight: 1, valid: true, keyIndex: 0, keyHolders: 1 },
-  { proTxHash: MN_B, kind: "evonode", weight: 4, valid: true, keyIndex: 1, keyHolders: 1 },
-  { proTxHash: MN_C, kind: "regular", weight: 1, valid: false, keyIndex: 2, keyHolders: 1 },
+  { proTxHash: MN_A, kind: "regular", weight: 1, valid: true, key: { kind: "keychain", index: 0 }, collateralResolved: true, keyHolders: 1 },
+  { proTxHash: MN_B, kind: "evonode", weight: 4, valid: true, key: { kind: "keychain", index: 1 }, collateralResolved: true, keyHolders: 1 },
+  { proTxHash: MN_C, kind: "regular", weight: 1, valid: false, key: { kind: "keychain", index: 2 }, collateralResolved: true, keyHolders: 1 },
 ];
 
 const synced = (): GovernanceSyncState => ({
@@ -177,6 +188,7 @@ export const newGovernanceWorld = (): GovernanceWorld => ({
   masternodes: structuredClone(FIXTURE_MASTERNODES),
   votes: { [h("1")]: { [MN_A]: { outcome: "yes", time: NOW - 40 * 60 } }, [h("2")]: { [MN_A]: { outcome: "yes", time: NOW - 3 * 86_400 }, [MN_B]: { outcome: "yes", time: NOW - 3 * 86_400 } } },
   refuse: {},
+  collateralUnresolved: [],
   listUnavailable: false,
   names: newNamesWorld(),
   mine: {},
@@ -258,9 +270,26 @@ export function governanceInfo(w: GovernanceWorld): GovernanceInfo {
   };
 }
 
-function votingFor(w: GovernanceWorld, proposal: string): VotingMasternode[] {
-  const seen = w.votes[proposal] ?? {};
-  return w.masternodes.map((m) => ({
+/** The keychain's voting masternodes, then the tracked ones whose added voting key matches (`added`). */
+function voters(world: World, added: AddedVoters): GovernanceWorld["masternodes"] {
+  const own = world.governance.masternodes;
+  const attached = added(world.masternodes)
+    .filter((l) => !own.some((m) => m.proTxHash === l.proTxHash))
+    .map((l) => ({
+      proTxHash: l.proTxHash,
+      kind: l.facts.kind,
+      weight: l.facts.kind === "evonode" ? 4 : 1,
+      valid: l.facts.valid,
+      key: { kind: "attached" as const },
+      collateralResolved: !world.governance.collateralUnresolved.includes(l.proTxHash),
+      keyHolders: 1,
+    }));
+  return [...own, ...attached];
+}
+
+function votingFor(world: World, proposal: string, added: AddedVoters): VotingMasternode[] {
+  const seen = world.governance.votes[proposal] ?? {};
+  return voters(world, added).map((m) => ({
     ...m,
     currentVote: seen[m.proTxHash]?.outcome ?? null,
     voteTime: seen[m.proTxHash]?.time ?? null,
@@ -311,10 +340,14 @@ export function governanceHandlers({
   wallet,
   grant,
   useGrant,
+  addedVoters,
+  staleAddedVoter,
 }: {
   wallet: (w: World, walletId: string) => FixtureWallet;
   grant: (w: World, id: string, walletId: string, kinds: ("spend" | "governance")[]) => FixtureGrant | null;
   useGrant: (w: World, id: string) => void;
+  addedVoters: AddedVoters;
+  staleAddedVoter: StaleAddedVoter;
 }): Handlers {
   return {
     ...nameHandlers({ wallet, grant, useGrant }),
@@ -360,7 +393,7 @@ export function governanceHandlers({
       wallet(world, walletId);
       if (!HEX64.test(proposal)) throw fail("invalid_argument", "not a 64-character hex hash");
       if (world.governance.listUnavailable) throw fail("governance.list_unavailable", "masternode list unavailable");
-      return votingFor(world.governance, proposal);
+      return votingFor(world, proposal, addedVoters);
     },
     governance_vote: ({ walletId, proposal, outcome, masternodes, grant: grantId }, ctx) => {
       const { world } = ctx;
@@ -375,9 +408,13 @@ export function governanceHandlers({
       useGrant(world, grantId);
       const seen = (g.votes[proposal] ??= {});
       const casts: VoteCast[] = masternodes.map((proTxHash) => {
-        const m = g.masternodes.find((x) => x.proTxHash === proTxHash);
+        const m = voters(world, addedVoters).find((x) => x.proTxHash === proTxHash);
         const refused = (rejected: string): VoteCast => ({ proTxHash, hash: null, peers: 0, rejected });
+        // The engine checks an attached key against the listed voting key when it signs (voting.rs `choose_key`).
+        // A keychain voter votes with its keychain key whatever key is attached (`choose_key` tries it first).
+        if (!m && staleAddedVoter(world.masternodes, proTxHash)) return refused("no_voting_key");
         if (!m) return refused("unknown_masternode");
+        if (!m.collateralResolved) return refused(COLLATERAL_UNRESOLVED);
         if (g.refuse[proTxHash]) return refused(g.refuse[proTxHash]);
         if (!m.valid) return refused(BANNED_REJECTION);
         const before = seen[proTxHash];
@@ -525,7 +562,8 @@ type Base = (theme: ThemeName | null) => World;
 function governanceBase(base: Base, theme: ThemeName | null, patch: Partial<GovernanceWorld> = {}): World {
   const w = base(theme);
   w.governance = { ...syncedGovernance(), ...patch };
-  w.settings.ui = { ...w.settings.ui, showMasternodes: true, masternodesTab: "governance" };
+  w.masternodes = newMasternodesWorld();
+  w.settings.ui = { ...w.settings.ui, masternodesItem: "on", masternodesTab: "governance" };
   return w;
 }
 
@@ -537,6 +575,14 @@ export function governanceScenarios(base: Base) {
       patch?.(w.governance.names);
       return w;
     }),
+    /** Show Masternodes on Auto, with a confirming proposal as the wallet's only masternode work. */
+    "governance-proposal-only": (t: ThemeName | null) => {
+      const w = governanceBase(base, t);
+      w.governance.mine[id(w)] = [EVERY_STATE[1]];
+      w.masternodes = noMasternodesWorld();
+      w.settings.ui = { ...w.settings.ui, masternodesItem: "auto" };
+      return w;
+    },
     /** The `gov-list` mock: synced, three voting masternodes (one banned), one own proposal confirming. */
     governance: (t: ThemeName | null) => {
       const w = governanceBase(base, t);
@@ -571,6 +617,13 @@ export function governanceScenarios(base: Base) {
       governanceBase(base, t, { sync: { ...synced(), phase: "failed", peers: 0, lastError: "every peer disconnected", nextRetryAt: NOW + 30 }, phaseOnStart: "failed" }),
     /** No masternode whose voting key the wallet holds: browsing only. */
     "governance-no-masternodes": (t: ThemeName | null) => governanceBase(base, t, { masternodes: [] }),
+    /** The tracked evonode Club votes with the voting key added to it (MG-00 D13, amended for 1.0). */
+    "governance-added-key": (t: ThemeName | null) => {
+      const w = governanceBase(base, t);
+      const club = w.masternodes.rows.find((r) => r.tracked)!.proTxHash;
+      w.masternodes.attached[club] = [{ role: "voting", keyId: w.masternodes.expected[club].voting!, check: "matched" }];
+      return w;
+    },
     /** Masternodes whose voting keys are here but none can vote (banned). */
     "governance-banned": (t: ThemeName | null) => governanceBase(base, t, { masternodes: FIXTURE_MASTERNODES.map((m) => ({ ...m, valid: false })) }),
     /** The vote is refused for the evonode: its voting key changed. */

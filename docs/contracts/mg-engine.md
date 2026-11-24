@@ -1,6 +1,6 @@
 # MG governance engine contract (`dw-engine` facade)
 
-Contract-Version: 9
+Contract-Version: 12
 
 Status: **draft**, 2026-10-16 (ROADMAP MG-02). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/governance/` (§0). Design: [`MG-02-governance.md`](../design/MG-02-governance.md);
@@ -87,7 +87,7 @@ Kind is `sync`, `async` or `free, pure`. Each row says whether the call is imple
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `voting_masternodes(wallet: WalletId, proposal: String)` | async | The masternodes of the tip list whose voting key the wallet derives (keychain indexes 0–19), each with type, weight, validity and its own current vote on `proposal` as seen. A vote counts as a masternode's own only when its collateral outpoint is resolved to that masternode, or when no other masternode of the list holds the key (D49); `key_holders` gives how many hold it, and for a shared key `key_last_vote`/`key_last_vote_time` give the key's latest vote seen, by whichever of them. The UI shows that state neutrally, as "Last vote seen with this shared key: Yes (2 masternodes use this key)", never as each masternode's vote. Watch-only wallets answer from their xpub-derived keys. `invalid_argument` for a malformed `proposal` (checked first); `governance.list_unavailable` while SPV has no masternode list. **Implemented.** | `GovernanceError` |
+| `voting_masternodes(wallet: WalletId, proposal: String)` | async | The masternodes of the tip list the wallet votes for: those whose voting key the wallet derives (keychain indexes 0–19), by index, then those whose attached `voting` key (MG-03 `attach_key`, its id recorded in app.sqlite) has the list's key id, by proTxHash. `key` says which: `keychain{index}` or `attached` (the same `NameVotingKey` contested-name voters carry). `collateral_resolved` says whether its collateral outpoint is resolved yet (D80); until it is, `vote` refuses it `collateral_unresolved`. Each comes with type, weight, validity and its own current vote on `proposal` as seen. A vote counts as a masternode's own only when its collateral outpoint is resolved to that masternode, or when no other masternode of the list holds the key (D49); `key_holders` gives how many hold it, and for a shared key `key_last_vote`/`key_last_vote_time` give the key's latest vote seen, by whichever of them. The UI shows that state neutrally, as "Last vote seen with this shared key: Yes (2 masternodes use this key)", never as each masternode's vote. Watch-only wallets answer from their xpub-derived keys. `invalid_argument` for a malformed `proposal` (checked first); `governance.list_unavailable` while SPV has no masternode list. **Implemented.** | `GovernanceError` |
 | `relay_vote(vote: RawVote)` | async | A vote signed elsewhere (Core `voteraw`): checked as a peer's vote is (§4.1 of the design), stored, announced to the connected peers and served on `getdata`. Returns `VoteRelayed { hash, peers }`. `governance.sync_disabled` while sync is off (checked first); `governance.not_synced{phase}` until a run reached `synced`, as its checks need every current vote; `invalid_argument` for a malformed proposal hash, collateral outpoint or signature; `governance.vote_rejected{reason}` if a check fails; `governance.no_peers` if no peer is connected (the vote is kept and announced on the next connection). **Implemented.** | `GovernanceError` |
 | `vote(wallet: WalletId, proposal: String, outcome: VoteOutcome, masternodes: Vec<String>, grant: String)` | async | Signs and relays a funding vote on `proposal` per masternode (proTxHash), under one `voting` lease begun from `grant` (a `Governance` grant of `wallet`; MG-05 §4) and ended when the call returns. Returns `Vec<VoteCast>`, one per masternode in the given order (MG-05 D6). The key is the wallet's keychain voting key at indexes 0–19, else the masternode's attached `voting` key, whichever hashes to the list's voting key id; each vote is stamped with the time it is signed. **Whole-call errors**, before the grant is redeemed: `governance.sync_disabled`, `governance.not_synced`, `governance.list_unavailable`, `governance.proposal_not_found`, and `invalid_argument` for no masternodes, more than the list holds, a malformed or repeated proTxHash. The lease's errors are `GovernanceError::Platform` (`platform.grant_invalid` for a grant of another purpose or wallet, or one used; MG-05 D12). **Per masternode**, `rejected` is `unknown_masternode` (not in the tip list), `collateral_unresolved` (MG-02 D80), `no_voting_key`, `cancelled` (a lock), `signer_unavailable` (a vault error, an unreadable keychain included; MG-05 D23), `in_flight` (the same vote in flight), or a store refusal with `vote_rejected`'s reasons (§4); else `hash` is set and `peers` counts the peers it went to, 0 with none connected: kept and announced on the next connection, no error (MG-05 D7, D13). | `GovernanceError` |
 
@@ -120,7 +120,7 @@ masternode and poll, one vote and its changes; `votes_used` counts the ones this
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `contested_names(wallet: WalletId)` | async | `ContestedNames`: the open DPNS contests, soonest ending first (the first page of 100 of Platform's end-date index from now on, each with its first page of 100 contenders, `contenders_complete` false for a full page; MG-07 D9), the voters in list order, each with its key (`keychain{index}` or `attached`), Platform's weight (1, 4 for an evonode) and `current`: its proved choice (one votes-by-identity query per voter, MG-07 D4) and `votes_used` in each listed contest where it has either; and `votes_allowed`. | `GovernanceError` |
+| `contested_names(wallet: WalletId)` | async | `ContestedNames`: the open DPNS contests, soonest ending first (the first page of 100 of Platform's end-date index from now on, each with its first page of 100 contenders, `contenders_complete` false for a full page; MG-07 D9; each contender's `name` is its own spelling from the `domain` document on that page, `null` when the document is missing, does not decode or fold to the label, or the page's proof used a quorum key SPV did not verify, MG-11 F1), the voters in list order, each with its key (`keychain{index}` or `attached`), Platform's weight (1, 4 for an evonode) and `current`: its proved choice (one votes-by-identity query per voter, MG-07 D4) and `votes_used` in each listed contest where it has either; and `votes_allowed`. | `GovernanceError` |
 | `vote_name(wallet: WalletId, label: String, choice: NameChoice, masternodes: Vec<String>, grant: String)` | async | Casts `choice` (`towards_identity{identity}` base58, `abstain`, `lock`) on DPNS's poll of `label` for each masternode (proTxHash), under one `voting` lease begun from `grant` (a `Governance` grant of `wallet`) and ended when the call returns. Each vote is a `MasternodeVoteTransition` the vault lays out and signs (MG-07 D5), admitted through the fence as a row-less vote keyed by its hash, broadcast and waited for (MG-07 D12). Returns `Vec<NameVoteCast>`, one per masternode in the given order. **Whole-call errors**, before the grant is redeemed, in this order: `invalid_argument` (a label that cannot be contested, a malformed identity, no masternodes, a malformed or repeated proTxHash), `governance.list_unavailable`, `invalid_argument` for more masternodes than the list holds, `platform.unavailable` (no Platform, or a poll read failed), `governance.contest_not_found`, `governance.contest_closed`, `governance.not_a_contender`, then `wallet_not_found`; then the lease's `platform.*` errors (MG-05 D12). **Per masternode**, `rejected` is `unknown_masternode`, `no_voting_key`, `cancelled`, `signer_unavailable`, `in_flight` (MG-05's meanings), `vote_limit` (this app saw it use `votes_allowed`, or Platform refused it as over the limit; at the local limit a choice that is already the masternode's present one is `already_voted`, as Drive answers, MG-07 D18), `platform_unavailable` (the nonce read failed, or the transition never left; no `transition` then), `unconfirmed` (it may have left: no answer or no proof came back, or the dispatch permit's deadline came during the broadcast; MG-07 D7, D16), or Platform's refusal: `already_voted`, `contest_closed`, `contest_not_found`, `masternode_not_found`, `wrong_voting_key`, `choice_not_allowed`, `no_voter_identity`, `voting_key_disabled`, `refused` (MG-07 D10), `already_voted` also when the broadcast is answered "already exists" and the present choice is the one cast (MG-07 D18); else `transition` is the transition's hash (hex) and the vote counts. `transition` is also set on every refusal after the broadcast. | `GovernanceError` |
 
 ## 3. Surface (generated)
@@ -129,7 +129,7 @@ Generated by `mg_governance_contract.rs` from the facade's source files; `DW_BLE
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: governance-surface -->
-<!-- surface-sha256: 3d085b62cfe2259e59c67ccc4934614b0d84973a5c9b2a07901d2b645283b6b8 version: 9 -->
+<!-- surface-sha256: 1081d076ed3c1ac0062d2849d1ef46f4c60fb1714ef8687da1ded1bf296c4227 version: 12 -->
 
 ```rust
 // src/governance/contested.rs
@@ -370,7 +370,8 @@ pub struct VotingMasternode {
     pub kind: MasternodeType,
     pub weight: u32,
     pub valid: bool,
-    pub key_index: u32,
+    pub key: NameVotingKey,
+    pub collateral_resolved: bool,
     pub current_vote: Option<VoteOutcome>,
     pub vote_time: Option<i64>,
     pub key_holders: u32,
@@ -408,6 +409,7 @@ pub enum NameChoice {
 pub struct NameContender {
     pub identity: String,
     pub votes: Option<u32>,
+    pub name: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContestedName {

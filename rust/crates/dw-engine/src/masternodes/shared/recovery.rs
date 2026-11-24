@@ -20,14 +20,15 @@ use serde::Deserialize;
 use super::super::MasternodesError;
 use super::super::protx::build::tx_size;
 use super::super::protx::ops::{conflict_of, overdue, tip_overdue};
+use super::super::protx::require_protx_sending;
 use super::super::shared_records::{
     AbandonSpend, AbandonSpendState, Blocked, BlockedReason, HandoffError, HandoffErrorOutcome,
     HandoffTx, RecoveryAction, SettledBy, Settlement, SharedKind, SharedRecovery, SharedRole,
-    SharedSession, SharedStage,
+    SharedSession, SharedStage, UnreadableSession,
 };
 use super::key_change;
 use super::key_change::KeyChange;
-use super::store::{ChainView, Loaded, reserved_of, session_hash};
+use super::store::{ChainView, Loaded, reserved_of, session_hash, signed_inputs, unreadable_view};
 use crate::coins::{own_address_info, read_coins};
 use crate::history::TxEntry;
 use crate::send::plan::{dust_threshold, fee_for};
@@ -128,6 +129,22 @@ pub(super) fn spend_state(
     })
 }
 
+/// Whether the latest spend back may still be on its way (`Uncertain` or
+/// `InHistory`): no second spend of the same coins while it is.
+pub(super) fn spend_back_pending(
+    row: &SharedSessionRow,
+    history: &HashMap<Txid, TxEntry>,
+) -> Result<bool, MasternodesError> {
+    if row.abandon_txid.is_none() {
+        return Ok(false);
+    }
+    let log = abandon_log(row)?;
+    Ok(matches!(
+        spend_state(row, latest(row, &log), history),
+        Some(AbandonSpendState::Uncertain | AbandonSpendState::InHistory)
+    ))
+}
+
 /// What the coin test says a new abandon spend may take (§4.4 change 2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum AbandonCoins {
@@ -135,10 +152,11 @@ pub(super) enum AbandonCoins {
     HeldInFlight,
     /// The wallet can't sign for a reserved coin it holds.
     NoOwnershipPath { outpoint: OutPoint },
-    /// No reserved coin is held, and this unconfirmed, not abandoned
-    /// history transaction spends one.
+    /// No reserved coin is held (none of the session's own signed
+    /// transaction's inputs, with its bytes saved), and this unconfirmed,
+    /// not abandoned history transaction spends one.
     BlockedByWalletTx { txid: Txid },
-    /// No reserved coin is held, and no such transaction is known.
+    /// No such coin is held, and no such transaction is known.
     Unavailable,
     /// The held coins don't include every outpoint a new spend must take
     /// to conflict with every earlier abandon spend.
@@ -167,6 +185,9 @@ pub(super) struct CoinFacts {
     /// With an abandon spend signed: its id (when it parses) and the
     /// outpoints a new one must take.
     pub latest: Option<(Option<Txid>, Vec<OutPoint>)>,
+    /// The inputs of the session's own transaction whose signed bytes the
+    /// row saved: a new spend conflicts with it only by taking one.
+    pub signed: Option<Vec<OutPoint>>,
 }
 
 impl CoinFacts {
@@ -203,7 +224,9 @@ impl CoinFacts {
                 outpoint: u.outpoint,
             };
         }
-        if self.held.is_empty() {
+        let conflicts = (self.signed.as_ref())
+            .is_none_or(|inputs| self.held_outpoints().any(|o| inputs.contains(&o)));
+        if self.held.is_empty() || !conflicts {
             return match self.blocker(history) {
                 Some(txid) => AbandonCoins::BlockedByWalletTx { txid },
                 None => AbandonCoins::Unavailable,
@@ -306,6 +329,43 @@ pub(super) struct ReadContext {
 }
 
 impl NetworkSession {
+    /// Whether Activity's Abandon of the latest spend back committed its
+    /// mark (a mark that cannot be read counts): it is then cancelled even
+    /// while the history still holds it live, as an Abandon flags the
+    /// entry only once its sweep is stored, so it is never handed out again.
+    pub(super) async fn spend_back_marked(&self, wallet: WalletId, row: &SharedSessionRow) -> bool {
+        match txid_of(row.abandon_txid.as_deref()) {
+            Some(txid) => self.abandon_marked(wallet, txid).await,
+            None => false,
+        }
+    }
+
+    /// [`unreadable_view`] with the coin test `abandon_unreadable_shared_session`
+    /// spends by: `abandonable` only while it passes, charged its fee. A coin
+    /// read that fails lists the row not abandonable.
+    pub(super) async fn unreadable_listing(
+        &self,
+        wallet: WalletId,
+        row: &SharedSessionRow,
+        chain: &ChainView,
+    ) -> UnreadableSession {
+        let mut view = unreadable_view(row, chain);
+        if view.abandonable && spend_back_pending(row, &chain.history).unwrap_or(true) {
+            view.abandonable = false;
+        }
+        if view.abandonable {
+            view.abandon_charge = match self.coin_facts(wallet, row, chain).await {
+                Ok(facts) => match facts.test(&chain.history) {
+                    AbandonCoins::Usable { fee, .. } => Some(fee),
+                    _ => None,
+                },
+                Err(_) => None,
+            };
+        }
+        view.abandonable = view.abandon_charge.is_some();
+        view
+    }
+
     /// [`CoinFacts`] of `row` as the wallet holds its coins now.
     pub(super) async fn coin_facts(
         &self,
@@ -342,7 +402,51 @@ impl NetworkSession {
             pending: self.spends.snapshot(&wallet),
             own: own_txids(row, chain, self.network.core_network()),
             latest,
+            signed: signed_inputs(row),
         })
+    }
+
+    /// The latest abandon spend's fee: its log entry's, else what its saved
+    /// bytes pay when every input is a reserved coin the wallet values (one
+    /// it holds, or an own input of the spend's history entry), less their
+    /// one output. `None` when neither shows it.
+    pub(super) async fn abandon_fee(
+        &self,
+        wallet: WalletId,
+        row: &SharedSessionRow,
+        entry: Option<&LogEntry>,
+        history: &HashMap<Txid, TxEntry>,
+    ) -> Result<Option<u64>, MasternodesError> {
+        if let Some(fee) = entry.and_then(|e| e.fee) {
+            return Ok(Some(fee));
+        }
+        let Some(tx) = (row.abandon_tx.as_deref())
+            .and_then(|b| dashcore::consensus::deserialize::<dashcore::Transaction>(b).ok())
+        else {
+            return Ok(None);
+        };
+        let ([output], reserved) = (tx.output.as_slice(), reserved_of(row)) else {
+            return Ok(None);
+        };
+        let recorded = history.get(&tx.txid());
+        let w = self.wallet(&wallet).await?;
+        let state = crate::wallet_read::info_of(&w).await?;
+        let coins = read_coins(&state.core_wallet).coins;
+        let mut total = 0u64;
+        for (index, input) in tx.input.iter().enumerate() {
+            let o = input.previous_output;
+            let value = (coins.iter().find(|c| c.utxo.outpoint == o))
+                .map(|c| c.utxo.value())
+                .or_else(|| {
+                    let own = recorded?.own_inputs.get(&u32::try_from(index).ok()?)?;
+                    Some(own.0)
+                });
+            match value {
+                Some(v) if reserved.contains(&o) => total = total.saturating_add(v),
+                _ => return Ok(None),
+            }
+        }
+        Ok(total.checked_sub(output.value))
     }
 
     /// `shared_stage{stage: "abandoning"}` while the latest abandon spend of
@@ -357,14 +461,11 @@ impl NetworkSession {
             return Ok(());
         }
         let chain = self.shared_chain(wallet).await?;
-        let log = abandon_log(row)?;
-        match spend_state(row, latest(row, &log), &chain.history) {
-            Some(AbandonSpendState::Uncertain | AbandonSpendState::InHistory) => {
-                Err(MasternodesError::SharedStage {
-                    stage: "abandoning".into(),
-                })
-            }
-            _ => Ok(()),
+        match spend_back_pending(row, &chain.history)? {
+            true => Err(MasternodesError::SharedStage {
+                stage: "abandoning".into(),
+            }),
+            false => Ok(()),
         }
     }
 
@@ -372,7 +473,9 @@ impl NetworkSession {
     /// wallet's valid signature over one of `l`'s own inputs and `l` isn't
     /// out yet: those bytes, or a later copy of them, may reach the network
     /// (the wallet on another install, or a database restored from an
-    /// older backup).
+    /// older backup). A transaction spending an outpoint twice is never
+    /// valid, so it is no such copy; each own input's signature is checked
+    /// once, before the wallet is read.
     pub(super) async fn own_signed_copy(
         &self,
         wallet: WalletId,
@@ -387,15 +490,23 @@ impl NetworkSession {
             return Ok(None);
         };
         let tx = frozen.tx;
+        let mut spent = HashSet::new();
+        if !tx.input.iter().all(|i| spent.insert(i.previous_output)) {
+            return Ok(None);
+        }
+        let keys: Vec<PublicKey> = (tx.input.iter().enumerate())
+            .filter(|(_, input)| own.contains(&input.previous_output))
+            .filter_map(|(index, _)| signer_of(&tx, index))
+            .collect();
+        if keys.is_empty() {
+            return Ok(None);
+        }
         let network = self.network.core_network();
         let w = self.wallet(&wallet).await?;
         let state = crate::wallet_read::info_of(&w).await?;
-        let signed = (tx.input.iter().enumerate()).any(|(index, input)| {
-            own.contains(&input.previous_output)
-                && signer_of(&tx, index).is_some_and(|key| {
-                    let address = dashcore::Address::p2pkh(&key, network);
-                    own_address_info(&state.core_wallet, &address).is_some()
-                })
+        let signed = keys.iter().any(|key| {
+            let address = dashcore::Address::p2pkh(key, network);
+            own_address_info(&state.core_wallet, &address).is_some()
         });
         Ok(signed.then_some(tx))
     }
@@ -530,7 +641,7 @@ impl NetworkSession {
             ),
             false => (
                 Loaded::of(row.clone(), network)
-                    .map(|l| l.own_inputs())
+                    .map(|l| l.conflict_inputs())
                     .unwrap_or_else(|_| reserved_of(row)),
                 txid_of(session.pro_tx_hash.as_deref()).or(txid_of(row.txid.as_deref())),
             ),
@@ -568,6 +679,15 @@ impl NetworkSession {
         let state = (pending && !terminal)
             .then(|| spend_state(row, entry, &chain.history))
             .flatten();
+        // Activity's Abandon stores its mark before its sweep, and flags the
+        // history entry only once the sweep is: marked, the spend reads
+        // abandoned there and is never replayed, and that Abandon, still
+        // accepted, finishes it. No new spend until the entry is flagged:
+        // `abandon_shared_session` still takes it as pending.
+        let marked = matches!(
+            state,
+            Some(AbandonSpendState::Uncertain | AbandonSpendState::InHistory)
+        ) && self.spend_back_marked(wallet, row).await;
         if let Some(txid) = &row.abandon_txid {
             let signed_at = entry.map_or(0, |e| e.signed_at);
             r.abandon_spend = Some(AbandonSpend {
@@ -575,7 +695,10 @@ impl NetworkSession {
                 signed_at,
                 legacy: entry.is_some_and(|e| e.legacy),
                 overdue: tip_overdue(signed_at, ctx.tip_time),
-                state,
+                state: match marked {
+                    true => Some(AbandonSpendState::AbandonedInActivity),
+                    false => state,
+                },
             });
         }
         let discard = row.out_at.is_none();
@@ -650,16 +773,21 @@ impl NetworkSession {
                 replaces: row.abandon_txid.clone(),
             });
         }
-        let replayable = match state {
-            Some(AbandonSpendState::Uncertain) => true,
-            Some(AbandonSpendState::InHistory) => row.abandon_tx.is_some(),
-            _ => false,
+        let replayable = !marked
+            && match state {
+                Some(AbandonSpendState::Uncertain) => true,
+                Some(AbandonSpendState::InHistory) => row.abandon_tx.is_some(),
+                _ => false,
+            };
+        let charge = match ctx.can_send && replayable {
+            true => self.abandon_fee(wallet, row, entry, &chain.history).await?,
+            false => None,
         };
-        if ctx.can_send && replayable && self.abandon_replay_passes(wallet, row) {
+        if let Some(charge) = charge
+            && self.abandon_replay_passes(wallet, row)
+        {
             match ctx.spv_running {
-                true => r.actions.push(RecoveryAction::ResendAbandon {
-                    charge: entry.and_then(|e| e.fee).unwrap_or(0),
-                }),
+                true => r.actions.push(RecoveryAction::ResendAbandon { charge }),
                 false => spv_held = true,
             }
         }
@@ -671,8 +799,8 @@ impl NetworkSession {
             }
             _ => None,
         };
-        let a_recorded = a.filter(|_| state == Some(AbandonSpendState::InHistory));
-        for txid in own_blocker.into_iter().chain(a_recorded) {
+        let a_live = a.filter(|_| state == Some(AbandonSpendState::InHistory) || marked);
+        for txid in own_blocker.into_iter().chain(a_live) {
             let Some(exits) = self
                 .activity_exits(wallet, txid, ctx.spv_running, ctx.peers)
                 .await?
@@ -689,7 +817,7 @@ impl NetworkSession {
                 }
                 Some(_) => {}
             }
-            if Some(txid) == a_recorded && row.abandon_tx.is_none() {
+            if Some(txid) == a_live && row.abandon_tx.is_none() {
                 match exits.resend {
                     None => r.actions.push(RecoveryAction::ResendWalletTx {
                         txid: txid.to_string(),
@@ -727,14 +855,14 @@ impl NetworkSession {
 
     /// Whether the session's own resend passes its checks before the lease,
     /// as `send_shared_registration` and `send_maintenance` run them at
-    /// `sent`.
+    /// `sent`: never on mainnet (#438).
     async fn resend_passes(
         &self,
         wallet: WalletId,
         row: &SharedSessionRow,
         session: &SharedSession,
     ) -> bool {
-        if super::v24_context(self, wallet).await.is_err() {
+        if require_protx_sending(self).is_err() || super::v24_context(self, wallet).await.is_err() {
             return false;
         }
         match session.kind {
@@ -786,10 +914,16 @@ impl NetworkSession {
 /// The code a hand-off of unknown outcome records.
 const UNKNOWN_CODE: &str = "send.broadcast_unknown";
 
+/// The transaction of each [`signer_of`] run, in tests.
+#[cfg(test)]
+pub(super) static SIGNER_RUNS: std::sync::Mutex<Vec<Txid>> = std::sync::Mutex::new(Vec::new());
+
 /// The key whose valid `SIGHASH_ALL` P2PKH signature over `tx` input
 /// `index` its scriptSig carries (a high-S one counts: it could be made
 /// standard).
 fn signer_of(tx: &SpecialTx, index: usize) -> Option<PublicKey> {
+    #[cfg(test)]
+    SIGNER_RUNS.lock().unwrap().push(tx.txid());
     let mut pushes = tx.input.get(index)?.script_sig.instructions();
     let (Some(Ok(Instruction::PushBytes(sig))), Some(Ok(Instruction::PushBytes(key))), None) =
         (pushes.next(), pushes.next(), pushes.next())

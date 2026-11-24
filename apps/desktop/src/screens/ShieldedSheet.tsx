@@ -26,11 +26,12 @@ import { GrantSheet } from "./tools/common";
 
 const MEMO_BYTES = 36;
 
-/** Formats for the sheet: Dash in the display unit, masked in discreet mode. */
-export function useFormats(network: NetworkInfo) {
+/** Formats for the sheet: Dash in the display unit with its full decimals (UX-SPEC §5.2, as Pay's sheets), masked in
+ * discreet mode. Home's card passes `compact`. */
+export function useFormats(network: NetworkInfo, style: "full" | "compact" = "full") {
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
-  const duffs = (d: number) => (discreet ? shown.masked() : `${shown.compact(d)} ${shown.name}`);
+  const duffs = (d: number) => (discreet ? shown.masked() : `${shown[style](d)} ${shown.name}`);
   return { shown, duffs, credits: (c: string) => duffs(creditsToDuffs(c)) };
 }
 
@@ -95,7 +96,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
         if (kind === "add") flow.next({ kind: "add", duffs: amount });
         else {
           const credits = String(BigInt(amount) * CREDITS_PER_DUFF);
-          flow.next(kind === "send" ? { kind: "send", credits, to, memo: flow.memo.trim() || null } : { kind: "out", credits });
+          flow.next(kind === "send" ? { kind: "send", credits, to, memo: flow.memo.trim() || null } : { kind: kind === "toPlatform" ? "toPlatform" : "out", credits });
         }
       }}
     >
@@ -185,11 +186,12 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   );
 }
 
-function Row({ label, value, testId, total }: { label: string; value: string; testId: string; total?: boolean }) {
+/** A confirm row; an amount reads right-aligned in tabular digits, so the decimals line up; an `address` does not. */
+function Row({ label, value, testId, total, address }: { label: string; value: string; testId: string; total?: boolean; address?: boolean }) {
   return (
     <div className={`detail-row ${total ? "topup-total" : ""}`}>
       <dt className="detail-label">{label}</dt>
-      <dd className="detail-value" data-testid={testId}>
+      <dd className={`detail-value ${address ? "" : "detail-amount"}`} data-testid={testId}>
         <bdi dir="ltr">{value}</bdi>
       </dd>
     </div>
@@ -234,7 +236,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
               <Row label={C.confirm.fee} value={credits(q.quote.feeCredits)} testId="shielded-quote-fee" />
               <Row label={C.confirm.total} value={credits(q.quote.totalCredits)} testId="shielded-quote-total" total />
               {q.quote.expectedDuffs !== null && <Row label={C.confirm.receive} value={duffs(q.quote.expectedDuffs)} testId="shielded-quote-receive" />}
-              {flow.request?.kind === "send" && <Row label={C.confirm.to} value={flow.request.to} testId="shielded-quote-to" />}
+              {flow.request?.kind === "send" && <Row label={C.confirm.to} value={flow.request.to} testId="shielded-quote-to" address />}
             </>
           )}
         </dl>
@@ -302,6 +304,9 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
     else ({ title, text } = { title: C.done.notApplied.title, text: C.done.notApplied.text(s.error) });
   } else if (r.outcome.state === "pending") {
     ({ title, text } = C.done.unconfirmed);
+  } else if (flow.kind === "toPlatform") {
+    ({ title } = C.done.toPlatform);
+    text = C.done.toPlatform.text(r.outcome.to);
   } else if (flow.kind === "out") {
     ({ title } = C.done.out);
     text = C.done.out.text(fmt.credits(r.outcome.credits));
@@ -314,7 +319,7 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
       <p className="topup-title" data-testid="shielded-outcome-title">
         {title}
       </p>
-      <p className="sheet-text" data-testid="shielded-outcome-text">
+      <p className="sheet-text shielded-outcome-text" data-testid="shielded-outcome-text">
         {text}
       </p>
       <div className="sheet-actions">
@@ -342,7 +347,7 @@ export function ShieldedBody({ flow, walletId, network, status }: { flow: Shield
             <span className="spinner" aria-hidden="true" />
           </p>
           <p className="sheet-text" data-testid="shielded-progress">
-            {flow.kind === "send" || flow.kind === "out" ? C.running.prove : C.running.lock}
+            {flow.kind === "add" || flow.kind === "resume" ? C.running.lock : C.running.prove}
           </p>
         </div>
       )}
@@ -464,8 +469,7 @@ export function ShieldedSendLink({ walletId, network }: { walletId: string; netw
   const status = useShieldedStatus(walletId, flow.open).data ?? null;
   const sheet = <ShieldedSheet flow={flow} walletId={walletId} network={network} status={status} />;
   if (!status?.active) return sheet;
-  const syncing = shieldedSyncing(status);
-  const why = syncing ? SHIELDED_SYNC_COPY.syncing : flow.running ? C.card.why.busy : !shieldedDuffs(status) ? C.card.why.empty : null;
+  const why = sendWhy(flow, status);
   return (
     <>
       <p className="pay-shielded" data-testid="pay-shielded">
@@ -475,5 +479,24 @@ export function ShieldedSendLink({ walletId, network }: { walletId: string; netw
       </p>
       {sheet}
     </>
+  );
+}
+
+/** Why Send from Shielded waits: syncing, a call running, another kind's result not yet seen (a
+ * Transfer move, opened from Transfer), or nothing to send; `null` when it can open. */
+function sendWhy(flow: ShieldedFlow, status: ShieldedStatus): string | null {
+  return shieldedSyncing(status) ? SHIELDED_SYNC_COPY.syncing : flow.running ? C.card.why.busy : flow.unseen && flow.kind !== "send" ? C.unseenSend : !shieldedDuffs(status) ? C.card.why.empty : null;
+}
+
+/** Pay's Shielded address: Send from Shielded, opened with the address and amount typed in Pay (the
+ * page's link holds the sheet). It waits, and says why, as the link does. */
+export function ShieldedPayButton({ walletId, status, to, text }: { walletId: string; status: ShieldedStatus; to: string; text: string }) {
+  const flow = shieldedFor(useBackend(), walletId);
+  useModel(flow);
+  const why = sendWhy(flow, status);
+  return (
+    <DashButton variant="tintedBlue" size="small" data-testid="pay-shielded-route" disabled={why !== null} why={why} onClick={() => flow.sendTo(to, text)}>
+      {C.titles.send}
+    </DashButton>
   );
 }

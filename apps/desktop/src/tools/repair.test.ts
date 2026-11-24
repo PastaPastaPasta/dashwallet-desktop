@@ -11,7 +11,7 @@ import type { RescanStatus } from "../api/generated/RescanStatus";
 import type { StuckShieldFunding } from "../api/generated/StuckShieldFunding";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { DEFAULT_PREFS, ui } from "../app/ui";
-import { appError, WALLET_A } from "../onboarding/testWorld";
+import { appError, summary, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "./testApi";
 import { GrantModel } from "./grant";
 import { RepairModel, RepairText, shieldBlockedText, stuckFundingText } from "./repair";
@@ -45,6 +45,7 @@ const QUOTE: RegistrationQuote = {
   availableDuffs: 10e8,
   grant: { maxDuffs: 3_002_261, maxCredits: "2000000000" },
   readiness: null,
+  platform: null,
 };
 
 function setup(lock = {}) {
@@ -54,7 +55,7 @@ function setup(lock = {}) {
   const api = {
     rescan: vi.fn(async (from: RescanStart) => {
       calls.push(`rescan ${from.kind}`);
-      progress = { fromHeight: 0, currentHeight: 250, targetHeight: 1000, startedAt: 0 };
+      progress = { fromHeight: 0, currentHeight: 250, targetHeight: 1000, startedAt: 0, upgradeWallets: [] };
       return null;
     }),
     rescanProgress: vi.fn(async () => progress),
@@ -71,6 +72,7 @@ function setup(lock = {}) {
       return null;
     }),
     dropUnconfirmed: vi.fn(async () => 2),
+    listWallets: vi.fn(async () => [summary(WALLET_A, "Savings"), summary("b2".repeat(32), "Spending")]),
     registrations: vi.fn(async () => [reg("r1", "fundingUnknown"), reg("r2", "instantSend")]),
     resolveStuckFunding: vi.fn(async (walletId: string, step: string, grant: string) => {
       calls.push(`resolve ${walletId.slice(0, 2)} ${step} ${grant}`);
@@ -129,6 +131,29 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(calls).toEqual(["stop", "start"]);
   });
 
+  it("a reset while mixing is refused as a network switch is, and sync starts again", async () => {
+    const { model, api, calls } = setup();
+    api.resetChainData.mockRejectedValueOnce(
+      appError("app.network_busy", { kind: "networkBusy", flows: [], stalled: false, mixing: true, broadcast: false, draining: false }),
+    );
+    model.ask("resetChainData");
+    await model.confirm();
+    expect(model.state).toEqual({ kind: "failed", text: "CoinJoin is mixing. Stop mixing first, then try again." });
+    expect(calls).toEqual(["stop", "start"]);
+  });
+
+  it("a reset while a signed round's inputs are held says to wait, and sync starts again", async () => {
+    const { model, api, calls } = setup();
+    api.resetChainData.mockRejectedValueOnce(appError("coinjoin.inputs_held"));
+    model.ask("resetChainData");
+    await model.confirm();
+    expect(model.state).toEqual({
+      kind: "failed",
+      text: "A CoinJoin round that just finished is still settling, so chain data can't be reset yet. This takes up to an hour. Try again then.",
+    });
+    expect(calls).toEqual(["stop", "start"]);
+  });
+
   it("QT148_aStopThatFailsAfterStoppingStillStartsSyncAgain", async () => {
     const { model, api, calls } = setup();
     api.stopSpv.mockRejectedValueOnce(appError("platform.timeout"));
@@ -164,6 +189,17 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(model.state).toEqual({ kind: "done", text: "2 transactions were removed; a rescan was scheduled." });
     expect(api.dropUnconfirmed).toHaveBeenCalledExactlyOnceWith(WALLET_A);
     expect(RepairText.dropped(1)).toBe("1 transaction was removed; a rescan was scheduled.");
+  });
+
+  it("a Remove Unconfirmed refused while a saved transaction doesn't read says what to do (#611)", async () => {
+    const { model, api } = setup();
+    api.dropUnconfirmed.mockRejectedValueOnce(appError("tx_action_refused", { kind: "txAction", refusal: "recordUnreadable", walletId: WALLET_A }, "engine text"));
+    model.ask("dropUnconfirmed");
+    await model.confirm();
+    expect(model.state).toEqual({
+      kind: "failed",
+      text: "Dash Wallet can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Savings and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
+    });
   });
 
   it("IOS113_birthHeightAboveTipIsRefused", async () => {

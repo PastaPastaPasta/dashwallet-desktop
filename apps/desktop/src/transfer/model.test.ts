@@ -16,7 +16,7 @@ import { resetShielded, SHIELDED_COPY, ShieldedFlow } from "../shielded/flow";
 import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
 import { engineSpendQuote, NOTE_SETS, NOTES_BALANCE } from "../shielded/testNotes";
 import { fakeVault } from "../tools/testApi";
-import { coreFundedMax, defaultRoute, feeText, listedPools, noRouteText, QuoteLine, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, type Pools, type Settled, type Timers } from "./model";
+import { canSwap, coreFundedMax, defaultRoute, feeText, listedPools, MAX_DERIVE, noRouteText, QuoteLine, ROUTES, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, unsupportedText, type Pools, type Settled, type Timers } from "./model";
 
 const duffsOf = (a: FundAmount) => (a.kind === "duffs" ? a.duffs : 0);
 
@@ -63,6 +63,8 @@ function flows() {
     resumeShield: vi.fn(async (): Promise<ShieldOutcome> => ({ txid: "lock1", state: { kind: "applied", balance: "1" } })),
     shieldedSend: vi.fn(),
     unshieldToCore: vi.fn(),
+    unshieldToPlatform: vi.fn(),
+    platformAddressesSync: vi.fn(),
     platformFund: vi.fn(),
     resumePlatformFund: vi.fn(),
     platformMoveToCore: vi.fn(),
@@ -72,7 +74,7 @@ function flows() {
 
 function model() {
   const f = flows();
-  const quotes = { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), platformFundQuote: vi.fn() };
+  const quotes = { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote: vi.fn() };
   return { t: new TransferModel(f, quotes, WALLET_A, manualTimers().timers), ...f, quotes };
 }
 
@@ -83,14 +85,26 @@ afterEach(() => {
 });
 
 describe("routes", () => {
-  it("are the four with a command; Shielded ↔ Platform has none", () => {
+  it("are the five with a command; Platform → Shielded has none", () => {
     expect(routeOf("core", "shielded")).toBe("coreToShielded");
     expect(routeOf("core", "platform")).toBe("coreToPlatform");
     expect(routeOf("shielded", "core")).toBe("shieldedToCore");
+    expect(routeOf("shielded", "platform")).toBe("shieldedToPlatform");
     expect(routeOf("platform", "core")).toBe("platformToCore");
-    expect(routeOf("shielded", "platform")).toBe("unsupported");
     expect(routeOf("platform", "shielded")).toBe("unsupported");
     expect(routeOf("core", "core")).toBeNull();
+    expect(Object.keys(ROUTES).sort()).toEqual(["coreToPlatform", "coreToShielded", "platformToCore", "shieldedToCore", "shieldedToPlatform"]);
+    expect(MAX_DERIVE.shieldedToPlatform).toBe(shieldedSpendMax);
+    expect(unsupportedText("platform", "shielded")).toBe(TRANSFER_COPY.unsupported);
+    expect(canSwap("shielded", "platform")).toBe(false);
+  });
+
+  it("Shielded → Platform is off on mainnet (flag unshield_to_platform); the others are unchanged", () => {
+    expect(routeOf("shielded", "platform", true)).toBe("unsupported");
+    expect(unsupportedText("shielded", "platform")).toBe(TRANSFER_COPY.offOnNetwork);
+    expect(routeOf("platform", "shielded", true)).toBe("unsupported");
+    for (const [from, to] of [["core", "shielded"], ["core", "platform"], ["shielded", "core"], ["platform", "core"]] as const) expect(routeOf(from, to, true)).toBe(routeOf(from, to));
+    expect(canSwap("core", "platform", true)).toBe(true);
   });
 
   it("list the pools this dw-app has; Mixed coins is not one", () => {
@@ -102,13 +116,16 @@ describe("routes", () => {
   it("each say why they can't start, with the text the Home card gave", () => {
     const { shielded, fund, move } = flows();
     const f = { shielded, fund, move };
-    for (const r of ["coreToShielded", "coreToPlatform", "shieldedToCore", "platformToCore"] as const) expect(routeWhy(r, POOLS, f), r).toBeNull();
+    for (const r of ["coreToShielded", "coreToPlatform", "shieldedToCore", "shieldedToPlatform", "platformToCore"] as const) expect(routeWhy(r, POOLS, f), r).toBeNull();
     const inactive = { ...POOLS, shielded: { active: false, syncing: false, duffs: null } };
     expect(routeWhy("coreToShielded", inactive, f)).toBe(SHIELDED_COPY.card.inactive);
     const syncing = { ...POOLS, shielded: { active: true, syncing: true, duffs: null } };
     expect(routeWhy("coreToShielded", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
     expect(routeWhy("shieldedToCore", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
     expect(routeWhy("shieldedToCore", { ...POOLS, shielded: { active: true, syncing: false, duffs: 0 } }, f)).toBe(SHIELDED_COPY.card.why.empty);
+    expect(routeWhy("shieldedToPlatform", inactive, f)).toBe(SHIELDED_COPY.card.inactive);
+    expect(routeWhy("shieldedToPlatform", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
+    expect(routeWhy("shieldedToPlatform", { ...POOLS, shielded: { active: true, syncing: false, duffs: 0 } }, f)).toBe(SHIELDED_COPY.card.why.empty);
     expect(routeWhy("coreToPlatform", { ...POOLS, platform: null }, f)).toBe("Platform addresses are not active on this network yet.");
     const platform = POOLS.platform!;
     expect(routeWhy("platformToCore", { ...POOLS, platform: { ...platform, duffs: 0 } }, f)).toBe(TRANSFER_COPY.platformEmpty);
@@ -118,11 +135,21 @@ describe("routes", () => {
     expect(routeWhy("platformToCore", { ...POOLS, platform: { ...platform, block: "pending" } }, f)).toBe(MOVE_COPY.waiting.text);
   });
 
+  it("hold only Add to Shielded while the wallet's Core sync runs: a shield's funding waits for it", () => {
+    const { shielded, fund, move } = flows();
+    const f = { shielded, fund, move };
+    const coreSyncing = { ...POOLS, coreSyncing: true };
+    expect(routeWhy("coreToShielded", coreSyncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
+    for (const r of ["shieldedToCore", "coreToPlatform", "platformToCore"] as const) expect(routeWhy(r, coreSyncing, f), r).toBeNull();
+    expect(routeWhy("coreToShielded", { ...coreSyncing, shielded: { active: false, syncing: false, duffs: null } }, f)).toBe(SHIELDED_COPY.card.inactive);
+  });
+
   it("share the Shielded flow: another of its moves running holds the other route, not its own", () => {
     const f = flows();
     f.shielded.begin("out");
     f.shielded.running = true;
     expect(routeWhy("coreToShielded", POOLS, f)).toBe(SHIELDED_COPY.card.why.busy);
+    expect(routeWhy("shieldedToPlatform", POOLS, f)).toBe(SHIELDED_COPY.card.why.busy);
     // Its own route opens at its step, even with nothing left in Shielded.
     expect(routeWhy("shieldedToCore", { ...POOLS, shielded: { active: true, syncing: false, duffs: 0 } }, f)).toBeNull();
   });
@@ -179,8 +206,8 @@ describe("the picks", () => {
     t.pick("from", "shielded", POOLS);
     expect([t.from, t.to]).toEqual(["shielded", "core"]);
     t.pick("to", "platform", POOLS);
-    expect([t.from, t.to, t.route]).toEqual(["shielded", "platform", "unsupported"]);
-    // Not a dead end: the picker still picks.
+    expect([t.from, t.to, t.route]).toEqual(["shielded", "platform", "shieldedToPlatform"]);
+    // Platform → Shielded has no command: no swap.
     t.swap();
     expect([t.from, t.to]).toEqual(["shielded", "platform"]);
     t.pick("from", "core", POOLS);
@@ -226,6 +253,20 @@ describe("Max", () => {
     expect(filled).toBe(max);
     expect(quotes.unshieldQuote).toHaveBeenCalledTimes(calls);
     expect(t.lines.shieldedToCore.state).toMatchObject({ kind: "quoted", amount: max, quote: { totalCredits: String(NOTES_BALANCE) } });
+  });
+
+  it.each([
+    [2, 124_980_000, 2],
+    [5, 124_950_000, 3],
+  ] as const)("of Shielded → Platform over %i notes derives from unshield_to_platform_quote the same way", async (n, max, calls) => {
+    const { t, quotes } = model();
+    quotes.unshieldToPlatformQuote.mockImplementation(async (_w: string, c: string, to: string | null) => (expect(to).toBeNull(), engineSpendQuote(NOTE_SETS[n], c)));
+    let filled: number | null = null;
+    await t.max("shieldedToPlatform", Number(NOTES_BALANCE / 1000n), (d) => (filled = d));
+    expect(filled).toBe(max);
+    expect(quotes.unshieldToPlatformQuote).toHaveBeenCalledTimes(calls);
+    expect(quotes.unshieldQuote).not.toHaveBeenCalled();
+    expect(t.lines.shieldedToPlatform.state).toMatchObject({ kind: "quoted", amount: max });
   });
 
   it("re-quotes once and fills only from the quote that took it", async () => {
@@ -286,7 +327,7 @@ describe("Max", () => {
       if (d === 600_000_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: d + 1_000, available: 600_000_000 });
       throw appError("credits.too_many_inputs", { kind: "number", value: 60 });
     });
-    const t = new TransferModel(flows(), { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), platformFundQuote: fetch }, WALLET_A, timers);
+    const t = new TransferModel(flows(), { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote: fetch }, WALLET_A, timers);
     const fill = vi.fn();
     await t.max("coreToPlatform", 600_000_000, fill);
     expect(fill).not.toHaveBeenCalled();
@@ -389,7 +430,7 @@ describe("a refusal never outlives its inputs", () => {
       if (d > balance) throw appError(SHIELDED_CODES.fundingInsufficient, { kind: "duffs", needed: d + 1_000, available: balance });
       return { duffs: d } as never;
     });
-    const t = new TransferModel(flows(), { shieldQuote, unshieldQuote: vi.fn(), platformFundQuote: vi.fn() }, WALLET_A, timers);
+    const t = new TransferModel(flows(), { shieldQuote, unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote: vi.fn() }, WALLET_A, timers);
     t.typed("coreToShielded", 500_000, balance);
     tick(400);
     await flush();
@@ -413,7 +454,7 @@ describe("a refusal never outlives its inputs", () => {
     const platformFundQuote = vi.fn(async (): Promise<never> => {
       throw appError("credits.fund_pending", { kind: "txid", txid: "t" });
     });
-    const t = new TransferModel(flows(), { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
+    const t = new TransferModel(flows(), { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
     t.typed("coreToPlatform", null, 3_000_000_000);
     await t.max("coreToPlatform", 3_000_000_000, vi.fn());
     expect(t.lines.coreToPlatform.state).toMatchObject({ kind: "refused" });
@@ -433,7 +474,7 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
       return { duffs: d } as never;
     });
     const shieldQuote = vi.fn(async (_wallet: string, a: FundAmount) => ({ duffs: duffsOf(a) }) as never);
-    const t = new TransferModel(flows(), { shieldQuote, unshieldQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
+    const t = new TransferModel(flows(), { shieldQuote, unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
     return { t, tick, platformFundQuote, shieldQuote };
   }
 
@@ -483,7 +524,7 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
       throw appError("credits.too_many_inputs", { kind: "number", value: 60 });
     });
     const f = flows();
-    const t = new TransferModel(f, { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
+    const t = new TransferModel(f, { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
     t.start("coreToPlatform");
     // The field as the sheet binds it: the fund flow's text, which Max fills.
     f.fund.setText("0.3");
@@ -499,7 +540,7 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
     const platformFundQuote = vi.fn(async (): Promise<never> => {
       throw appError("credits.fund_pending", { kind: "txid", txid: "t" });
     });
-    const t = new TransferModel(flows(), { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
+    const t = new TransferModel(flows(), { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
     await t.max("coreToPlatform", 3_000_000_000, vi.fn());
     expect(t.lines.coreToPlatform.state).toMatchObject({ kind: "refused", error: { code: "credits.fund_pending" } });
     t.typed("coreToPlatform", 1_000_000);
@@ -535,6 +576,28 @@ describe("the sheet over the routes' flows", () => {
     expect(shielded.step).toBe("done");
     shielded.close();
     expect(t.shown).toBe(false);
+  });
+
+  it("opens Shielded → Platform on the shared Shielded flow, and closes it when the wallet is on mainnet", () => {
+    const { t, shielded } = model();
+    t.start("shieldedToPlatform");
+    expect([t.route, shielded.open, shielded.kind, t.begunRoute, t.stepFlow()]).toEqual(["shieldedToPlatform", true, "toPlatform", "shieldedToPlatform", null]);
+    shielded.next({ kind: "toPlatform", credits: "1000" });
+    expect(t.stepFlow()).toBe("shieldedToPlatform");
+    shielded.back();
+    t.setMainnet(true);
+    expect([t.route, shielded.open, t.begunRoute]).toEqual(["unsupported", false, null]);
+    t.pick("from", "core", POOLS);
+    expect(t.route).toBe("coreToPlatform");
+  });
+
+  it("a mainnet wallet never begins Shielded → Platform", () => {
+    const { t, shielded } = model();
+    t.setMainnet(true);
+    expect(t.shown).toBe(false);
+    t.start("shieldedToCore");
+    t.pick("to", "platform", POOLS);
+    expect([t.route, shielded.open, t.begunRoute]).toEqual(["unsupported", false, null]);
   });
 
   it("leaves the shared Shielded flow alone while another of its moves runs", () => {
@@ -670,6 +733,7 @@ describe("test gaps (review r1 §8)", () => {
     // Shielded → Dash wallet: what arrives in the Dash wallet when known, else the credits.
     expect(feeText("shieldedToCore", quoted({ feeCredits: "3000000", expectedDuffs: 49_000, credits: "52000000" } as ShieldedSpendQuote), fmt)).toBe("Fee about 3000 duffs · You receive about 49000 duffs");
     expect(feeText("shieldedToCore", quoted({ feeCredits: "3000000", expectedDuffs: null, credits: "52000000" } as ShieldedSpendQuote), fmt)).toBe("Fee about 3000 duffs · You receive about 52000 duffs");
+    expect(feeText("shieldedToPlatform", quoted({ feeCredits: "3000000", expectedDuffs: null, credits: "52000000" } as ShieldedSpendQuote), fmt)).toBe("Fee about 3000 duffs · You receive about 52000 duffs");
     expect(feeText("coreToShielded", { kind: "quoting" }, fmt)).toBe(TRANSFER_COPY.quoting);
     expect(feeText("coreToShielded", { kind: "idle" }, fmt)).toBeNull();
     expect(feeText("coreToShielded", { kind: "refused", amount: 1, error: null }, fmt)).toBeNull();

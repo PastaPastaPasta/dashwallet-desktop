@@ -30,6 +30,7 @@ use super::payments::{
 };
 use super::registration_flow::b58;
 use super::runtime::guard;
+use super::shielded_payout::ArmedPayout;
 use crate::send::check_payee;
 use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
@@ -53,6 +54,9 @@ pub(crate) struct PaymentLocks {
     taken: Mutex<HashMap<(WalletId, Pair), (Address, bool)>>,
     /// Each wallet's payout rows, for contact activity (P10–P12).
     payouts: Mutex<HashMap<WalletId, Vec<Payout>>>,
+    /// Each wallet's shielded payout whose spend the library is about to
+    /// build, and the transition the hook named in its row (P6).
+    pub(super) armed: Mutex<HashMap<WalletId, ArmedPayout>>,
     /// Orders the lock changes (memory and row together): no clear's
     /// delete lands before an earlier write, nor a load between them
     /// (D23).
@@ -60,11 +64,27 @@ pub(crate) struct PaymentLocks {
     /// Tests: holds the next contact settlement before it changes a lock.
     #[cfg(test)]
     pause_settle: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the hook's `st_hash` write before it lands.
+    #[cfg(test)]
+    pub(crate) hold_st_hash: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the hook's dispatch record fails.
+    #[cfg(test)]
+    pub(crate) fail_dispatch_record: std::sync::atomic::AtomicBool,
+    /// Tests: the next payout stops after its row is written.
+    #[cfg(test)]
+    pub(crate) stop_after_row: std::sync::atomic::AtomicBool,
 }
 
 impl PaymentLocks {
     pub(crate) fn get(&self, id: &WalletId, pair: &Pair) -> Option<PaymentLock> {
         guard(&self.locks).get(id)?.get(pair).cloned()
+    }
+
+    /// The wallet's locks, by pair.
+    pub(crate) fn locks_of(&self, id: &WalletId) -> Vec<(Pair, PaymentLock)> {
+        (guard(&self.locks).get(id).into_iter().flatten())
+            .map(|(pair, lock)| (*pair, lock.clone()))
+            .collect()
     }
 
     /// Memory only: every lock's row was written before its payment's
@@ -90,6 +110,7 @@ impl PaymentLocks {
         guard(&self.reserved).clear();
         guard(&self.taken).clear();
         guard(&self.payouts).clear();
+        guard(&self.armed).clear();
     }
 
     /// Tests: holds the next contact settlement until `pause` is released.
@@ -125,6 +146,64 @@ impl PaymentLocks {
         let taken = guard(&self.taken).remove(&(id, pair));
         let checked = taken.is_some_and(|(a, checked)| a == address && checked);
         self.keep(id, pair, address, checked);
+    }
+
+    /// Orders a payout's lock change with every other (memory and row
+    /// together, D23).
+    pub(crate) async fn rows(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.rows.lock().await
+    }
+
+    /// `payout` as contact activity shows it, replacing the one with its
+    /// reference.
+    pub(crate) fn put_payout(&self, id: WalletId, payout: Payout) {
+        let mut payouts = guard(&self.payouts);
+        let rows = payouts.entry(id).or_default();
+        match rows.iter_mut().find(|p| p.reference == payout.reference) {
+            Some(held) => *held = payout,
+            None => rows.push(payout),
+        }
+    }
+
+    /// The state of payout `reference` as last loaded or written.
+    pub(crate) fn payout_state(&self, id: &WalletId, reference: &str) -> Option<PayoutState> {
+        (guard(&self.payouts).get(id)?.iter())
+            .find(|p| p.reference == reference)
+            .map(|p| p.state)
+    }
+
+    /// Payout `reference` settled as `state`; its lock goes. The pair it
+    /// held, if memory had it.
+    pub(crate) fn settle_payout(
+        &self,
+        id: WalletId,
+        reference: &str,
+        state: PayoutState,
+    ) -> Option<Pair> {
+        let mut pair = None;
+        if let Some(p) = (guard(&self.payouts).get_mut(&id))
+            .and_then(|rows| rows.iter_mut().find(|p| p.reference == reference))
+        {
+            p.state = state;
+            pair = Some(p.pair);
+        }
+        if let Some(locks) = guard(&self.locks).get_mut(&id) {
+            locks.retain(|held, lock| {
+                let mine = lock.reference == reference && lock.source != PaymentSource::Core;
+                if mine {
+                    pair = Some(*held);
+                }
+                !mine
+            });
+        }
+        pair
+    }
+
+    /// Locks `pair` behind payout `lock`, unless another lock holds it.
+    pub(crate) fn lock_payout(&self, id: WalletId, pair: Pair, lock: PaymentLock) {
+        (guard(&self.locks).entry(id).or_default())
+            .entry(pair)
+            .or_insert(lock);
     }
 
     /// Drops `address` as the pair's reserved one (DP3-04: it was taken
@@ -185,9 +264,7 @@ impl Payout {
             "not_sent" => PayoutState::NotSent,
             _ => return None,
         };
-        let script = (row.address.parse::<Address<_>>().ok())
-            .and_then(|a| a.require_network(network).ok())
-            .map(|a| a.script_pubkey());
+        let script = row_address(row, network).map(|a| a.script_pubkey());
         Some(Self {
             pair: pair_of(&row.identity, &row.contact).ok()?,
             source,
@@ -198,6 +275,44 @@ impl Payout {
             since: row.since,
         })
     }
+}
+
+/// A `dp_contact_payout.state` value.
+fn state_str(state: PayoutState) -> &'static str {
+    match state {
+        PayoutState::Pending => "pending",
+        PayoutState::Sent => "sent",
+        PayoutState::NotSent => "not_sent",
+    }
+}
+
+/// What a pending payout's source record proves (P6, P7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PayoutEvidence {
+    /// It executed.
+    Sent,
+    /// It can never execute; `give_back`: it was never signed, so its
+    /// address goes back to the pair (P5).
+    NotSent { give_back: bool },
+    /// Nothing proves either: the lock stays.
+    Unknown,
+}
+
+impl PayoutEvidence {
+    /// The state it settles a pending payout in, and whether its address
+    /// goes back to the pair; `None` keeps the lock.
+    fn settles(self) -> Option<(PayoutState, bool)> {
+        match self {
+            Self::Unknown => None,
+            Self::Sent => Some((PayoutState::Sent, false)),
+            Self::NotSent { give_back } => Some((PayoutState::NotSent, give_back)),
+        }
+    }
+}
+
+/// A payout row's Core address on `network`.
+fn row_address(row: &DpContactPayoutRow, network: dashcore::Network) -> Option<Address> {
+    (row.address.parse::<Address<_>>().ok()).and_then(|a| a.require_network(network).ok())
 }
 
 /// The settings key of the Platform move record `reference` names (P6).
@@ -211,10 +326,8 @@ pub(crate) struct PayCall {
     pub(crate) contact: String,
     pub(crate) credits: u64,
     pub(crate) source: PaymentSource,
-    #[expect(dead_code, reason = "stored in the payout row by C5a and C5b")]
     pub(crate) note: Option<String>,
     pub(crate) grant: String,
-    #[expect(dead_code, reason = "the shielded source's gate (C5a)")]
     pub(crate) confirm_unrecorded: bool,
 }
 
@@ -311,6 +424,8 @@ impl NetworkSession {
             }
         }
         self.load_payouts(id).await;
+        drop(_rows);
+        super::contact_payout::settle_recorded(self, id).await;
     }
 
     /// [`Self::load_payment_locks`]' payouts (P6), under its `rows` guard:
@@ -340,17 +455,17 @@ impl NetworkSession {
             let pair = payout.pair;
             let under_way = guard(&payments.in_flight).contains_key(&(id, pair));
             if payout.state == PayoutState::Pending && !under_way {
-                if self.payout_recorded(id, &row).await == Some(false) {
+                let settled = self.payout_evidence(id, &row).await.settles();
+                if let Some((state, give_back)) = settled {
                     let (wallet, reference) = (id.to_string(), row.reference.clone());
                     let settled = self.appdb_op(move |db| {
-                        db.settle_dp_contact_payout(&wallet, &reference, "not_sent")
+                        db.settle_dp_contact_payout(&wallet, &reference, state_str(state))
                     });
                     match settled.await {
                         Ok(true) => {
-                            payout.state = PayoutState::NotSent;
-                            if let Ok(a) = row.address.parse::<Address<_>>()
-                                && let Ok(address) = a.require_network(network)
-                            {
+                            payout.state = state;
+                            self.release_in_memory(id, pair, &row.reference);
+                            if give_back && let Some(address) = row_address(&row, network) {
                                 payments.keep(id, pair, address, false);
                             }
                             self.signal_payments(id, &pair.0);
@@ -377,12 +492,20 @@ impl NetworkSession {
         guard(&payments.payouts).insert(id, payouts);
     }
 
-    /// Whether `row`'s source record exists (P6): a Platform move record
-    /// with its reference, or a dispatch artifact with its `st_hash`.
-    /// `None` when that cannot be read, and for a row this install did not
+    /// What settles `row` (P6, P7). A row with no source record was never
+    /// signed: not sent, and its address goes back to the pair. That is a
+    /// Platform payout with no move record, or a shielded one with no
+    /// `st_hash` or none the journal has an artifact of. A shielded
+    /// artifact settles its payout by its status: executed is sent, not
+    /// executed is not sent with the address consumed (P5). Unknown when
+    /// the record cannot be read, and for a row this install did not
     /// write (no [`dw_appdb::dp_payout_marker`]: a restored backup carries
     /// the row but not its source record).
-    async fn payout_recorded(&self, id: WalletId, row: &DpContactPayoutRow) -> Option<bool> {
+    pub(crate) async fn payout_evidence(
+        &self,
+        id: WalletId,
+        row: &DpContactPayoutRow,
+    ) -> PayoutEvidence {
         let scope = dw_appdb::local_scope(&id.to_string());
         let marker = dw_appdb::dp_payout_marker(&row.reference);
         let record = (row.source == "platform").then(|| move_key(&row.reference));
@@ -394,21 +517,22 @@ impl NetworkSession {
             };
             Ok((here, moved))
         });
-        let (here, moved) = read.await.ok()?;
-        if !here {
-            return None;
-        }
+        let Ok((true, moved)) = read.await else {
+            return PayoutEvidence::Unknown;
+        };
+        let never_signed = PayoutEvidence::NotSent { give_back: true };
         match row.source.as_str() {
-            "platform" => moved,
+            "platform" if moved == Some(false) => never_signed,
             "shielded" => {
                 let Some(hash) = (row.st_hash.as_deref())
                     .and_then(|h| <[u8; 32]>::try_from(hex::decode(h).ok()?).ok())
                 else {
-                    return Some(false);
+                    return never_signed;
                 };
-                self.leases.has_shielded_artifact(id, hash).await.ok()
+                self.shielded_payout_evidence(id, &row.reference, hash)
+                    .await
             }
-            _ => None,
+            _ => PayoutEvidence::Unknown,
         }
     }
 
@@ -648,7 +772,7 @@ impl NetworkSession {
         }
     }
 
-    fn signal_payments(&self, id: WalletId, owner: &Identifier) {
+    pub(crate) fn signal_payments(&self, id: WalletId, owner: &Identifier) {
         let identity = b58(owner);
         self.hub.pump.mark_platform(
             id,
@@ -691,7 +815,13 @@ impl NetworkSession {
             }
             .into());
         };
-        // A payout settles on its source's evidence (C5a, C5b); none yet.
+        // A payout settles on its source's evidence (C5a, C5b).
+        if lock.source == PaymentSource::Shielded {
+            return Ok(self.resolve_payout(id, pair, &lock.reference).await);
+        }
+        if lock.source == PaymentSource::Platform {
+            return super::contact_payout::resolve(self, id, pair, &lock.reference).await;
+        }
         if lock.source != PaymentSource::Core {
             return Ok(LockResolution::Unknown);
         }
@@ -739,21 +869,54 @@ impl NetworkSession {
         source: PaymentSource,
     ) -> Result<ContactPayQuote, ContactError> {
         let _op = self.enter().await.map_err(PlatformError::from)?;
-        let pair = self.payout_terms(id, &identity, &contact, credits, source)?;
-        check_payee(self.payee_state(id, &pair)?, true)?;
-        self.check_payment_lock(id, &pair, None)?;
+        self.payout_quote_gates(id, &identity, &contact, credits, source)?;
+        if source == PaymentSource::Platform
+            && super::contact_payout::refuse_on_mainnet(self).is_ok()
+        {
+            return super::contact_payout::quote_live(self, id, credits).await;
+        }
         Err(payout_source(source).into())
     }
 
-    /// `DashPay::contact_pay` (C-funding P2) up to the source's gates: the
-    /// live payee, the pair's lock and rule 5 on the payee, before the grant
-    /// is redeemed or an address taken.
-    pub(crate) async fn contact_pay_of(
+    /// [`Self::contact_pay_quote_of`]'s checks before the source's.
+    pub(crate) fn payout_quote_gates(
         &self,
+        id: WalletId,
+        identity: &str,
+        contact: &str,
+        credits: u64,
+        source: PaymentSource,
+    ) -> Result<Pair, ContactError> {
+        let pair = self.payout_terms(id, identity, contact, credits, source)?;
+        check_payee(self.payee_state(id, &pair)?, true)?;
+        self.check_payment_lock(id, &pair, None)?;
+        Ok(pair)
+    }
+
+    /// `DashPay::contact_pay` (C-funding P2) up to the source's gates.
+    pub(crate) async fn contact_pay_of(
+        self: &Arc<Self>,
         id: WalletId,
         call: PayCall,
     ) -> Result<ContactPayOutcome, ContactError> {
         let _op = self.enter().await.map_err(PlatformError::from)?;
+        if call.source == PaymentSource::Platform
+            && super::contact_payout::refuse_on_mainnet(self).is_ok()
+        {
+            return super::contact_payout::pay_live(self, id, call).await;
+        }
+        self.pay_gates(id, &call).await?;
+        Err(payout_source(call.source).into())
+    }
+
+    /// [`Self::contact_pay_of`]'s gates before any source's (C-funding P2):
+    /// the arguments, the live payee, the pair's lock and rule 5 on the
+    /// payee. Nothing is taken: a refusal keeps the grant and every address.
+    pub(crate) async fn pay_gates(
+        &self,
+        id: WalletId,
+        call: &PayCall,
+    ) -> Result<Pair, ContactError> {
         let pair =
             self.payout_terms(id, &call.identity, &call.contact, call.credits, call.source)?;
         if call.grant.trim().is_empty() {
@@ -766,7 +929,186 @@ impl NetworkSession {
         self.check_payment_lock(id, &pair, None)?;
         (self.money_gate(Subject::Payee(id, pair)).await)
             .map_err(|refusal| ContactError::Platform(refusal.platform()))?;
-        Err(payout_source(call.source).into())
+        Ok(pair)
+    }
+
+    /// Writes `row` as `pair`'s payout before its source record (P6),
+    /// synced (DP3-01 D27), with its marker. Refused, and nothing written,
+    /// while another payment holds the pair (`contact.payment_locked`; that
+    /// holder becomes the pair's lock in memory) or when the write fails.
+    pub(crate) async fn record_payout(
+        &self,
+        id: WalletId,
+        pair: Pair,
+        row: DpContactPayoutRow,
+    ) -> Result<(), ContactError> {
+        let _rows = self.platform.payments.rows.lock().await;
+        let wallet = id.to_string();
+        let network = self.network.core_network();
+        let payout = Payout::of(&row, network);
+        let held = self
+            .appdb_op(move |db| db.insert_dp_contact_payout_durable(&wallet, &row))
+            .await
+            .map_err(|e| PlatformError::Storage {
+                detail: e.to_string(),
+            })?;
+        let Some(holder) = held else {
+            if let Some(payout) = payout {
+                let lock = (payout.source, payout.reference.clone());
+                {
+                    let mut payouts = guard(&self.platform.payments.payouts);
+                    let rows = payouts.entry(id).or_default();
+                    rows.retain(|p| p.reference != payout.reference);
+                    rows.push(payout.clone());
+                }
+                // The row is the pair's lock (P6): shown from now on.
+                self.hold_in_memory(id, pair, (lock.0, &lock.1), payout.since);
+            }
+            return Ok(());
+        };
+        let (txid, source, since) = match holder {
+            PairHolder::Core(txid) => (txid, PaymentSource::Core, crate::events::unix_now()),
+            PairHolder::Payout {
+                reference,
+                source,
+                since,
+            } => (
+                reference,
+                row_source(&source).unwrap_or(PaymentSource::Platform),
+                since,
+            ),
+        };
+        self.hold_in_memory(id, pair, (source, &txid), since);
+        Err(ContactError::PaymentLocked { txid })
+    }
+
+    /// Drops `pair`'s lock from memory if it is `reference`'s.
+    fn release_in_memory(&self, id: WalletId, pair: Pair, reference: &str) {
+        if let Some(wallet) = guard(&self.platform.payments.locks).get_mut(&id)
+            && wallet.get(&pair).is_some_and(|l| l.reference == reference)
+        {
+            wallet.remove(&pair);
+            self.signal_payments(id, &pair.0);
+        }
+    }
+
+    /// Puts `reference`'s lock on `pair` in memory, unless the pair has one.
+    fn hold_in_memory(
+        &self,
+        id: WalletId,
+        pair: Pair,
+        (source, reference): (PaymentSource, &str),
+        since: u64,
+    ) {
+        (guard(&self.platform.payments.locks).entry(id).or_default())
+            .entry(pair)
+            .or_insert(PaymentLock {
+                txid: reference.to_owned(),
+                since,
+                source,
+                reference: reference.to_owned(),
+            });
+        self.signal_payments(id, &pair.0);
+    }
+
+    /// Makes the pending payout `reference` the pair's lock in memory: its
+    /// outcome is not known (P7).
+    pub(crate) async fn hold_payout(
+        &self,
+        id: WalletId,
+        pair: Pair,
+        source: PaymentSource,
+        reference: &str,
+    ) {
+        let _rows = self.platform.payments.rows.lock().await;
+        self.hold_in_memory(id, pair, (source, reference), crate::events::unix_now());
+    }
+
+    /// Settles the pending payout `reference` as `state` on its evidence
+    /// (P7): the row first, then memory; `give_back` returns its address
+    /// to the pair (P5: only for a payout never signed). Whether the row is
+    /// settled; when its write fails the payout is held instead.
+    pub(crate) async fn settle_payout(
+        &self,
+        id: WalletId,
+        pair: Pair,
+        (source, reference): (PaymentSource, &str),
+        state: PayoutState,
+        give_back: Option<Address>,
+    ) -> bool {
+        let _rows = self.platform.payments.rows.lock().await;
+        let (wallet, r) = (id.to_string(), reference.to_owned());
+        let written = self
+            .appdb_op(move |db| db.settle_dp_contact_payout(&wallet, &r, state_str(state)))
+            .await;
+        let payments = &self.platform.payments;
+        match written {
+            Ok(true) => {}
+            // Settled already, by the settlement that wrote it and gave
+            // its address back if it was owed: none of that again.
+            Ok(false) => {
+                self.release_in_memory(id, pair, reference);
+                return false;
+            }
+            Err(e) => {
+                tracing::warn!(wallet_id = %id, %reference, error = %e, "could not settle a payout");
+                self.hold_in_memory(id, pair, (source, reference), crate::events::unix_now());
+                return false;
+            }
+        }
+        self.release_in_memory(id, pair, reference);
+        if let Some(rows) = guard(&payments.payouts).get_mut(&id) {
+            for p in rows.iter_mut().filter(|p| p.reference == reference) {
+                p.state = state;
+            }
+        }
+        if let Some(address) = give_back {
+            payments.give_back(id, pair, address);
+        }
+        self.signal_payments(id, &pair.0);
+        true
+    }
+
+    /// `resolve_payment_lock` of the pair's pending payout `reference`:
+    /// settled on its evidence ([`Self::payout_evidence`]), else
+    /// `Unknown`.
+    pub(crate) async fn resolve_payout(
+        &self,
+        id: WalletId,
+        pair: Pair,
+        reference: &str,
+    ) -> LockResolution {
+        // Under way: its own call settles it (a row with no `st_hash` is
+        // only a crash's after a restart).
+        if guard(&self.platform.payments.in_flight).get(&(id, pair)) == Some(&reference.to_owned())
+        {
+            return LockResolution::Unknown;
+        }
+        let wallet = id.to_string();
+        let rows = self
+            .appdb_op(move |db| db.dp_contact_payouts(&wallet))
+            .await;
+        let Some(row) = (rows.ok().into_iter().flatten())
+            .find(|r| r.reference == reference && r.state == "pending")
+        else {
+            return LockResolution::Unknown;
+        };
+        let Some(source) = row_source(&row.source) else {
+            return LockResolution::Unknown;
+        };
+        let Some((state, give_back)) = self.payout_evidence(id, &row).await.settles() else {
+            return LockResolution::Unknown;
+        };
+        let network = self.network.core_network();
+        let address = give_back.then(|| row_address(&row, network)).flatten();
+        let settled = self
+            .settle_payout(id, pair, (source, reference), state, address)
+            .await;
+        match (settled, state) {
+            (false, _) => LockResolution::Unknown,
+            (true, PayoutState::Sent) => LockResolution::Sent,
+            (true, _) => LockResolution::NotSent,
+        }
     }
 
     /// E0-04 §16.6's evidence for the locked payment `txid`.

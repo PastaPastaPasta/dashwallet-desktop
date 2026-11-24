@@ -173,8 +173,9 @@ pub(crate) enum PauseRefused<B> {
 /// order, and its holder never asks the gate again: a nested admission
 /// waits behind a pending close, which waits for the holder's guard.
 /// `close` never takes it: once the gate has drained, no holder is left.
-/// It is unrelated to the SPV start and stop lock (`platform.lifecycle`):
-/// neither is taken while the other is held. It orders operations of
+/// The SPV start and stop lock (`platform.lifecycle`) comes before it: a
+/// reset of chain data takes this lock while it holds that one, and no
+/// holder of this lock takes that one. It orders operations of
 /// one process; across processes only the removal records apply.
 #[derive(Default)]
 pub(crate) struct WalletLifecycle {

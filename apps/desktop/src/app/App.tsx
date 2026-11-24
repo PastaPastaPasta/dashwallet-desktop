@@ -6,7 +6,7 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { closeWalletGate, forgetWalletContent, lockGeneration, useWalletGateClosed } from "../api/lockGate";
-import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
+import { useBackend, useDashPayShell, useHistoryGapReads, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { EMPTY, walletListGate, walletReadyToOpen } from "../components/emptyStates";
 import { EmptyState, LoadingState } from "../components/history";
@@ -22,6 +22,7 @@ import { Overview } from "../screens/Overview";
 import { PreReleaseNotice } from "../screens/PreReleaseNotice";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
+import { MasternodeKeysSheet } from "../screens/masternodes/KeysSheet";
 import { CoinJoinPage } from "../screens/coinjoin/CoinJoinPage";
 import { MasternodesPage } from "../screens/masternodes/MasternodesPage";
 import { GovernanceStatusItem } from "../screens/masternodes/StatusItem";
@@ -38,6 +39,8 @@ import { SyncSheet } from "../screens/SyncSheet";
 import { SavedLinksSheet } from "../screens/SavedLinks";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
+import { SourceDetailSheet } from "../screens/SourceDetailSheet";
+import { rowSource } from "../history/sourceRows";
 import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
 import { useDisplay } from "../format/display";
 import { SecurityText } from "../settings/security";
@@ -56,7 +59,7 @@ import { UpdateRestartNotice } from "../screens/settings/Updates";
 import { useModel } from "../onboarding/model";
 import { navigate, ui, useUi } from "./ui";
 
-const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null });
+const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null, mnKeysRole: null });
 const closeOnboarding = () => ui.set({ onboarding: false });
 const closeForgot = () => ui.set({ forgotPassphrase: false });
 
@@ -152,14 +155,15 @@ function WalletChrome({
   const detail = useUi((s) => s.detail);
   const lock = useLockStatus();
   const sync = useSyncStatus();
+  useHistoryGapReads(sync.raw?.running === true, (wallets.data ?? []).map((w) => `${w.walletId}:${w.birthHeight}`).join(","));
   const dashpay = useDashPayShell(wallet?.walletId);
   const registration = useStatusRegistration(wallet?.walletId, dashpay.status);
   const open = (row: TxRow) => ui.set({ detail: row.txid });
 
   const masternodesItem = useMasternodesItem(wallet?.walletId ?? null);
   useEffect(() => {
-    if (route === "masternodes" && !masternodesItem.shown) navigate("home");
-  }, [route, masternodesItem.shown]);
+    if (route === "masternodes" && masternodesItem.settled && !masternodesItem.shown) navigate("home");
+  }, [route, masternodesItem.settled, masternodesItem.shown]);
 
   const walletsBlocked =
     walletsLoading ??
@@ -189,9 +193,9 @@ function WalletChrome({
     else if (route === "joinDashPay") content = <JoinDashPayPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "profile") content = <MyProfilePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "coinJoin") content = <CoinJoinPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
-    // Hidden until Show Masternodes is on (the 0.1 release plan): the effect above sends a link
-    // or a menu that opened it home; Home shows meanwhile.
-    else if (route === "masternodes" && masternodesItem.shown) content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
+    // Hidden while Show Masternodes is Off, or Auto finds nothing (MG-00 D1, D2): the effect above
+    // sends a link or a menu that opened it home. The page stays while Auto has no answer yet.
+    else if (route === "masternodes" && (masternodesItem.shown || !masternodesItem.settled)) content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
     else if (route === "masternodes") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} noWallet={walletsLoading ?? walletsError} />;
@@ -242,7 +246,12 @@ function WalletChrome({
       </div>
       {/* Sheets opened inside the shell (Pay, Receive): above it, below onboarding, which covers it (U-02 D31). */}
       <div className="sheet-layer" ref={setLayer} inert={layerInert} />
-      {sheet && <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />}
+      {sheet &&
+        (rowSource({ txid: detail! }) ? (
+          <SourceDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />
+        ) : (
+          <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />
+        ))}
     </>
   );
 }
@@ -256,6 +265,7 @@ function Shell() {
   const detail = useUi((s) => s.detail);
   const dialog = useUi((s) => s.dialog);
   const recoveryWallet = useUi((s) => s.recoveryWallet);
+  const mnKeysRole = useUi((s) => s.mnKeysRole);
   const walletId = useUi((s) => s.walletId);
   const discreet = useUi((s) => s.discreet);
   const addWallet = useUi((s) => s.onboarding);
@@ -385,6 +395,7 @@ function Shell() {
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
+      {shown === "mnKeys" && wallet && <MasternodeKeysSheet key={wallet.walletId} walletId={wallet.walletId} watchOnly={wallet.watchOnly} role={mnKeysRole} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
       {shown === "sync" && <SyncSheet onClose={closeDialog} />}
       {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}

@@ -5,6 +5,12 @@
  * `moveToCore`: a "Move to Dash wallet" of this wallet; `send`: a send of
  * this wallet to a Platform address (`to`); `fromCore`: an "Add from Dash
  * wallet" of this wallet to its Platform address (`address`), pending
- * until Platform proves it applied.
+ * until Platform proves it applied; `toIdentity`: a top-up of one of this
+ * wallet's identities (`to`, base58) from its Platform addresses;
+ * `contactPayment`: a payment to a DashPay contact (`contact`) from the
+ * Platform balance, to its Core address (`to`);
+ * `fromShielded`: an unshield of this wallet to its Platform address
+ * (`address`), pending until Platform executed it (`done`) or did not
+ * (`failed`).
  */
-export type PlatformActivityKind = "incoming" | "outgoing" | "moveToCore" | "send" | "fromCore";
+export type PlatformActivityKind = "incoming" | "outgoing" | "moveToCore" | "send" | "fromCore" | "toIdentity" | "contactPayment" | "fromShielded";

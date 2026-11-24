@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBackend, useLockStatus, useWallets } from "../../api/queries";
+import { useBackend, useLockStatus, useShieldedStatus, useWallets } from "../../api/queries";
 import { ui, type PayPrefill } from "../../app/ui";
 import { useScreenScanMode } from "../../contacts/queries";
 import { useModel } from "../../onboarding/model";
@@ -15,6 +15,7 @@ import { PayScanModel, type Scanned } from "./scan";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton } from "../../components/basics";
 import { AddressBookPicker } from "../tools/AddressBook";
+import { ShieldedPayButton } from "../ShieldedSheet";
 import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { CoinControl } from "./CoinControl";
@@ -139,7 +140,11 @@ export function PayToAddress({
     staleTime: Infinity,
   });
 
-  const addrError = checkedAddr !== "" && addrClass.data ? addressProblem(addrClass.data) : null;
+  // A Shielded address is paid with Send from Shielded while Shielded is on (the page's link).
+  const shieldedStatus = useShieldedStatus(walletId).data ?? null;
+  const shieldedRoute = shieldedStatus?.active ? shieldedStatus : null;
+  const shieldedTo = shieldedRoute !== null && checkedAddr !== "" && addrClass.data?.kind === "shielded";
+  const addrError = checkedAddr !== "" && addrClass.data && !shieldedTo ? addressProblem(addrClass.data) : null;
   // A Platform address is paid from the Platform balance (platform/send.ts), not by a Core draft.
   const platform = checkedAddr !== "" && checkedAddr === addr && addrClass.data?.kind === "platform";
   const { duffs } = amount;
@@ -191,7 +196,7 @@ export function PayToAddress({
           </p>
         )}
         <section className="pay-card card-l1">
-          <FormField label={t("pay.toAddress.payTo")} error={addrError ?? fieldError("address")}>
+          <FormField label={t("pay.toAddress.payTo")} error={addrError ?? fieldError("address")} hint={shieldedTo ? t("pay.address.shieldedRoute") : undefined}>
             {(p) => (
               <span className="amount-entry">
                 <input
@@ -221,6 +226,11 @@ export function PayToAddress({
               </span>
             )}
           </FormField>
+          {shieldedTo && (
+            <div className="pay-shielded-route">
+              <ShieldedPayButton walletId={walletId} status={shieldedRoute} to={checkedAddr} text={typeof amount.duffs === "number" && amount.duffs > 0 ? amount.text.trim() : ""} />
+            </div>
+          )}
           <div className="pay-scan-row" data-testid="pay-scan">
             {scan.kind === "reading" || scan.kind === "capturing" ? (
               <span className="field-hint" role="status" data-testid="pay-scan-status">
@@ -276,6 +286,7 @@ export function PayToAddress({
               number={i + 2}
               network={network}
               shown={shown}
+              shieldedRoute={shieldedRoute !== null}
               fieldError={(f) => fieldError(f, i + 1)}
               onChange={(r, amount, settled) => setMore((rows) => rows.map((x) => (x.id === row.id ? { ...x, recipient: r, amount, settled } : x)))}
               onSubtractFee={(on) => setRowSubtractFee(row.id, on)}

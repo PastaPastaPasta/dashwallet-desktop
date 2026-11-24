@@ -144,3 +144,92 @@ describe("credits withdrawal (DP6-02)", () => {
     expect(list.map((w) => w.updatedAt)).toEqual([...list.map((w) => w.updatedAt)].sort((a, b) => b! - a!));
   });
 });
+
+describe("credits top-up from Platform (C-routes D-C3)", () => {
+  const credits = (c: string) => ({ kind: "credits" as const, credits: c });
+  const fromPlatformGrant = async (maxCredits: string) => (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits }, W, { kind: "passphrase", passphrase: "demo" })).id;
+
+  it("quotes with the fee band on input 0, pays under the quote's grant, and debits the addresses", async () => {
+    const fx = install("dashpay-registered");
+    const p = fx.world.pending.platform!;
+    const first = [...p.addresses].sort((a, b) => (a.address < b.address ? -1 : 1))[0];
+    const quote = await cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000"));
+    // The debit the grant covers: the claim and all input 0 keeps, which the fee can take.
+    expect(quote).toEqual({ credits: "1000000000", feeCredits: "1000000", debitCredits: first.credits, inputs: [{ address: first.address, credits: "1000000000" }], grant: { maxDuffs: 0, maxCredits: first.credits } });
+    expect(await code(cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), null, await fromPlatformGrant("1")))).toBe("platform.grant_exceeded");
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), null, await fromPlatformGrant(quote.grant.maxCredits));
+    expect([out.state, out.mayLand, out.feeCredits]).toEqual(["done", false, "1000000"]);
+    expect(out.balance).not.toBeNull();
+    expect(p.addresses.find((a) => a.address === first.address)?.credits).toBe(String(BigInt(first.credits) - 1_001_000_000n));
+    expect(p.activity[0]).toMatchObject({ kind: "toIdentity", state: "done", to: A, credits: "1001000000" });
+  });
+
+  it("refuses a top-up whose fee input changed since its quote, its grant unused, and pays the new quote", async () => {
+    const fx = install("dashpay-registered");
+    const p = fx.world.pending.platform!;
+    const quote = await cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000"));
+    const g = await fromPlatformGrant("40000000000");
+    // An address before input 0 is funded: the plan's input 0 moves.
+    const before = "tdash1" + "0".repeat(56);
+    p.addresses = [...p.addresses, { address: before, credits: "20000000000" }];
+    expect(await code(cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), quote.inputs[0], g))).toBe("credits.quote_changed");
+    expect(fx.world.grants.find((x) => x.grant.id === g)?.used).toBe(false);
+    expect(p.activity.some((a) => a.kind === "toIdentity")).toBe(false);
+    const again = await cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000"));
+    expect(again.inputs[0].address).toBe(before);
+    expect((await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), again.inputs[0], g)).state).toBe("done");
+  });
+
+  it("refuses below the minimum, past the band, on mainnet, and while a move holds the addresses", async () => {
+    const fx = install("dashpay-registered");
+    expect(await code(cmd.creditsTopUpFromPlatformQuote(W, A, credits("199999")))).toBe("credits.send_out_of_range");
+    expect(await code(cmd.creditsTopUpFromPlatformQuote(W, A, credits("39998000000")))).toBe("platform.insufficient_credits");
+    expect((await cmd.creditsTopUpFromPlatformQuote(W, A, { kind: "all" })).credits).toBe("39997000000");
+    fx.world.pending.platform!.nextTopUp = "pending";
+    const g = await fromPlatformGrant("40000000000");
+    expect((await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), null, g)).state).toBe("pending");
+    expect(await code(cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000")))).toBe("credits.move_pending");
+    fx.world.pending.platform!.nextTopUp = "done";
+    fx.world.pending.platform!.activity = fx.world.pending.platform!.activity.filter((a) => a.kind !== "toIdentity");
+    // Below address funds, the quote and the top-up are refused, the grant unused.
+    const q = await cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000"));
+    fx.world.pending.platform!.sendsActive = false;
+    const off = await fromPlatformGrant("40000000000");
+    expect(await code(cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), q.inputs[0], off))).toBe("platform.feature_off");
+    expect(fx.world.grants.find((x) => x.grant.id === off)?.used).toBe(false);
+    expect(await code(cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000")))).toBe("platform.feature_off");
+    fx.world.pending.platform!.sendsActive = true;
+    fx.world.launch.network = { kind: "mainnet", dirName: "mainnet", unitName: "DASH" };
+    expect(await code(cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000")))).toBe("platform.feature_off");
+  });
+
+  it("a held top-up is freed by Move to Dash wallet: the exit executes, the top-up can no longer", async () => {
+    const fx = install("dashpay-registered");
+    const p = fx.world.pending.platform!;
+    p.nextTopUp = "held";
+    const quoteInputs = (await cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000"))).inputs.map((i) => i.address);
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), null, await fromPlatformGrant("40000000000"));
+    expect([out.state, out.mayLand]).toEqual(["failed", true]);
+    const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
+    const g = (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;
+    const others = p.addresses.filter((a) => a.address !== quoteInputs[0]);
+    expect(others.length).toBeGreaterThan(0);
+    expect(move.credits).toBe(p.addresses.find((a) => a.address === quoteInputs[0])!.credits);
+    expect((await cmd.platformMoveToCore(W, { kind: "all" }, move.to, g)).state).toBe("done");
+    expect(p.activity.find((a) => a.id === out.id)).toMatchObject({ state: "failed", mayLand: false });
+    // The exit took the top-up's inputs only.
+    expect(p.addresses).toEqual(others);
+  });
+
+  it("a pending exit leaves the held top-up able to land", async () => {
+    const fx = install("dashpay-registered");
+    const p = fx.world.pending.platform!;
+    p.nextTopUp = "held";
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), null, await fromPlatformGrant("40000000000"));
+    p.nextMove = "pending";
+    const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
+    const g = (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;
+    expect((await cmd.platformMoveToCore(W, { kind: "all" }, move.to, g)).state).toBe("pending");
+    expect(p.activity.find((a) => a.id === out.id)).toMatchObject({ state: "failed", mayLand: true });
+  });
+});

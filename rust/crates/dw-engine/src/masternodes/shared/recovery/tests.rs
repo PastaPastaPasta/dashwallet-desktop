@@ -43,6 +43,7 @@ fn facts(reserved: &[OutPoint], held: &[(OutPoint, u64)]) -> CoinFacts {
         pending: HashSet::new(),
         own: Vec::new(),
         latest: None,
+        signed: None,
     }
 }
 

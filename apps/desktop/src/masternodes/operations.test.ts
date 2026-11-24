@@ -4,8 +4,9 @@ import { describe, expect, it } from "vitest";
 import type { ProTxOperation } from "../api/generated/ProTxOperation";
 import type { ProTxOperationStateName } from "../api/generated/ProTxOperationStateName";
 import { t } from "../i18n";
-import { conflicted, inProgress, lastErrorText, opRow, resendCap, resendConfirmText, actsOn } from "./operations";
-import { REGISTRATION_SENDS } from "./registration";
+import { conflicted, inProgress, lastErrorText, opRow, proTxSends, resendCap, resendConfirmText, actsOn } from "./operations";
+import { registrarUpdateSends } from "./changeKeys";
+import { registrationSends } from "./registration";
 
 const I = "masternodes.inProgress";
 const op = (id: string, state: ProTxOperationStateName, patch: Partial<ProTxOperation> = {}): ProTxOperation => ({
@@ -66,15 +67,39 @@ describe("In progress (§1.10)", () => {
     expect(opRow(every[6])).toMatchObject({ primary: null, more: [] });
   });
 
-  it("acts on a registration row only while registrations send (D14), and keeps Discard", () => {
-    expect(REGISTRATION_SENDS).toBe(false);
+  it("acts on a registration or registrar update only off mainnet (D14), and keeps Discard", () => {
+    expect(registrationSends({ kind: "mainnet" })).toBe(false);
+    expect(registrarUpdateSends({ kind: "mainnet" })).toBe(false);
+    for (const kind of ["testnet", "regtest", "devnet"] as const) {
+      expect(registrationSends({ kind })).toBe(true);
+      expect(registrarUpdateSends({ kind })).toBe(true);
+    }
+    expect(registrationSends(null)).toBe(false);
     const sent = op("s", { kind: "sent" });
+    const main = proTxSends({ kind: "mainnet" });
+    const test = proTxSends({ kind: "testnet" });
+    expect(actsOn(sent, main)).toBe(false);
     expect(actsOn(sent)).toBe(false);
-    expect(actsOn(sent, { registration: true })).toBe(true);
-    expect(opRow(op("u", { kind: "not_sent" }, { kind: "update_registrar" }))).toMatchObject({ primary: null, more: ["discard"] });
-    for (const state of [{ kind: "needs_signature" }, { kind: "inputs_spent" }, { kind: "not_sent" }] as const) expect(opRow(op("r", state))).toMatchObject({ primary: null, more: ["discard"] });
-    expect(opRow(op("d", { kind: "sent" }, { kind: "dissolve" })).primary).toBe("resend");
-    expect(opRow(op("d", { kind: "not_sent" }, { kind: "dissolve" })).primary).toBe("resend");
+    expect(actsOn(sent, test)).toBe(true);
+    expect(opRow(op("u", { kind: "not_sent" }, { kind: "update_registrar" }), main)).toMatchObject({ primary: null, more: ["discard"] });
+    expect(opRow(op("u", { kind: "sent" }, { kind: "update_registrar", overdue: true }), test).primary).toBe("resend");
+    for (const state of [{ kind: "needs_signature" }, { kind: "inputs_spent" }, { kind: "not_sent" }] as const) {
+      expect(opRow(op("r", state), main)).toMatchObject({ primary: null, more: ["discard"] });
+      expect(opRow(op("r", state), test).primary).not.toBeNull();
+    }
+    expect(opRow(op("d", { kind: "sent" }, { kind: "dissolve" }), main).primary).toBe("resend");
+  });
+
+  it("offers no Send again on a registration or registrar update still waiting for its block, only once overdue", () => {
+    const test = proTxSends({ kind: "testnet" });
+    for (const kind of ["registration", "update_registrar"] as const) {
+      const waiting = opRow(op("w", { kind: "sent" }, { kind }), test);
+      expect(waiting).toMatchObject({ primary: null, more: [] });
+      expect(waiting.status).toBe(t(`${I}.status.sent`, { title: waiting.title }));
+      expect(opRow(op("o", { kind: "sent" }, { kind, overdue: true }), test).primary).toBe("resend");
+      expect(opRow(op("n", { kind: "not_sent" }, { kind }), test).primary).toBe("resend");
+    }
+    expect(opRow(op("d", { kind: "not_sent" }, { kind: "dissolve" }), test).primary).toBe("resend");
   });
 
   it("adds the D49 line and Open in Activity once a fee-input row is overdue, and the no-lock line for a dissolve row", () => {

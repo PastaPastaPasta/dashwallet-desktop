@@ -54,7 +54,7 @@ pub use shared_records::{
     SharedCapability, SharedEligibility, SharedImport, SharedKind, SharedMessage, SharedNext,
     SharedOutcome, SharedRecovery, SharedRole, SharedSession, SharedShares, SharedStage,
     SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource, StandbyVariant,
-    StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
+    StartSharedRequest, UnreadableSession, UpdateSharePreview, UpdateShareRequest,
 };
 pub use tracking::MAX_MASTERNODE_LABEL;
 pub use withdrawal_records::{
