@@ -2992,6 +2992,7 @@ async fn run(
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
     // only its exact retry.
+    let retry_of = named.filter(|_| matches!(target, Target::Platform(_)));
     let exit_of = named.filter(|_| matches!(target, Target::Core(_)));
     let (held, planned) = match (target, named) {
         (Target::Platform(_), Some(id)) => {
