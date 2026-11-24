@@ -198,6 +198,14 @@ codes! {
         /// Install or Restart would close the engine while something runs
         /// ([`ErrorData::UpdateBusy`] names it). Nothing changed.
         UpdateBusy = "app.update_busy",
+        /// A shared-masternode send on a network this release doesn't send
+        /// them on ([`ErrorData::SharedSendNetwork`]): mainnet. Nothing was
+        /// signed or sent.
+        SharedSendOff = "app.shared_send_off",
+        /// `mn_shared_send_maintenance` on a session kind this release
+        /// doesn't send ([`ErrorData::SharedUnsupported`]): a key change.
+        /// Nothing was signed or sent.
+        SharedSendUnsupported = "app.shared_send_unsupported",
     }
 }
 
@@ -408,6 +416,24 @@ pub enum ErrorData {
     /// `masternodes.update_pending`, `masternodes.update_superseded`: the
     /// other operation's id.
     Operation { operation: String },
+    /// `masternodes.shared_message`: why a message was refused (never its
+    /// text), and the share whose approval doesn't verify.
+    SharedMessage { reason: String, share: Option<u16> },
+    /// `masternodes.shared_stage`: the stage that refused the call.
+    SharedStage { stage: String },
+    /// `masternodes.shared_funding_mismatch`: the check that failed, and the
+    /// least fee in duffs for `fee_low`.
+    SharedFunding { reason: String, needed: Option<u64> },
+    /// `masternodes.shared_actor_fee`: the fee in duffs the request takes
+    /// from this wallet's share.
+    SharedActorFee { fee: u64 },
+    /// `app.shared_send_off`: the network the send was refused on, by its
+    /// directory name (`mainnet`).
+    SharedSendNetwork { network: String },
+    /// `app.shared_send_unsupported`: the session kind whose send was refused.
+    SharedUnsupported {
+        session_kind: crate::dto::masternodes::SharedKindName,
+    },
     /// `masternodes.unsupported`: what the call needs that the libraries
     /// lack, and the field that needs it.
     Unsupported {

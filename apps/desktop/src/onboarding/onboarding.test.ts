@@ -635,6 +635,33 @@ describe("onboarding view model: restore", () => {
     model.setScanDate("2026-10-15");
     expect(model.birthDateError).not.toBeNull();
     model.setScanDate("");
+    expect(model.birthDateError).toBe(OnboardingText.birthDateMissing);
+    expect(model.options.birthHeight).toBe(0);
+  });
+
+  it("refusesAnEmptyOrImpossibleDateAndKeepsAValidOne", async () => {
+    // #686: the date option with no date, or a day the month does not have, scanned from the
+    // first block without saying so (2023-02-31 rolled over to 2023-03-03).
+    const world = unlockedWorld();
+    const now = new Date(2026, 9, 14, 12, 0);
+    const model = new OnboardingModel(world, "mainnet", { random: seeded(42n), now: () => now });
+    await model.startRestore();
+    await model.updateRestoreText(PHRASE);
+    model.continueRestore();
+    model.setScanStart("date");
+    expect(model.birthDateError).toBe(OnboardingText.birthDateMissing);
+    await model.finishRestore();
+    expect(model.step).toBe("restoreOptions");
+
+    model.setScanDate("2023-02-31");
+    expect(model.birthDateError).toBe(OnboardingText.birthDateMissing);
+    expect(model.options.birthHeight).toBe(0);
+
+    model.setScanDate("2023-02-28");
+    expect(model.birthDateError).toBeNull();
+    expect(model.options.birthHeight).toBe(birthHeightFor(new Date(2023, 1, 28), "mainnet"));
+
+    model.setScanStart("genesis");
     expect(model.birthDateError).toBeNull();
     expect(model.options.birthHeight).toBe(0);
   });

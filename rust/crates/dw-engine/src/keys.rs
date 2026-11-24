@@ -118,6 +118,18 @@ pub(crate) const DEFAULT_LOOKAHEAD: u32 = key_wallet::gap_limit::DEFAULT_EXTERNA
 /// lookahead ([`WideScan`]). Absent on a wallet an older build scanned.
 pub(crate) const WIDE_SCAN_SETTING: &str = "coinjoin.wide_scan";
 
+/// The replay record ([`upgrade_mark`]) of the replay from its birth that
+/// a wallet's first open after an upgrade started (local scope): a replay
+/// resumed from that record is shown as the upgrade's. Cleared at an open
+/// that finds no record and when the user starts a rescan.
+pub(crate) const UPGRADE_REPLAY_SETTING: &str = "coinjoin.upgrade_replay";
+
+/// What [`UPGRADE_REPLAY_SETTING`] holds for replay record `r`: a record
+/// any later rewind merged into, or a new one, does not match it.
+pub(crate) fn upgrade_mark(r: &crate::replay_record::ReplayRecord) -> String {
+    format!("{}:{}", r.reached, r.target)
+}
+
 /// What [`WIDE_SCAN_SETTING`] holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WideScan {
@@ -1254,7 +1266,7 @@ impl NetworkSession {
                     let wm = wm.read().await;
                     let info = wm.get_wallet_info(&wallet_id.0);
                     if info.is_some_and(|i| i.core_wallet.synced_height() < r.target) {
-                        self.publish_replay(wallet_id, r.reached, r.target);
+                        self.publish_replay(wallet_id, r.reached, r.target, false);
                     }
                 }
                 self.refresh_wallet_state(&manager, wallet_id).await;
@@ -1638,6 +1650,7 @@ impl NetworkSession {
         // A wallet whose marker cannot be read is replayed and keeps that
         // marker, so its next load reads it again.
         let mut unsure = false;
+        let mut upgrade = false;
         let from = match &marker {
             Ok(Some(WideScan::Done)) => loaded_at,
             // It may owe any start: replayed from the birth, and nothing
@@ -1648,10 +1661,12 @@ impl NetworkSession {
                 Some(birth_checkpoint(manager, id).await)
             }
             Ok(Some(m)) => {
+                upgrade = matches!(m, WideScan::Legacy(_));
                 let h = (m.owed_from(birth_checkpoint(manager, id).await)).unwrap_or_default();
                 Some(loaded_at.map_or(h, |c| c.min(h)))
             }
             Ok(None) if self.scanned_narrow(manager, id, lookahead).await => {
+                upgrade = true;
                 Some(birth_checkpoint(manager, id).await)
             }
             Ok(None) => {
@@ -1667,6 +1682,7 @@ impl NetworkSession {
             Ok(live) => live.replay.stored(id).await.ok().flatten(),
             Err(_) => None,
         };
+
         // A cancelled one holding above an owed start leaves that start
         // owed: the marker stays for the next open, not `Done`. Its hold
         // comes back no lower than the birth checkpoint.
@@ -1692,6 +1708,7 @@ impl NetworkSession {
                 .inspect_err(|e| tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap"))
                 .is_ok(),
         };
+        self.note_upgrade_replay(id, upgrade).await;
         if !(widened && raised.is_ok()) {
             // The session scans on with what pools it has: the next load
             // replays from the earliest start still owed.
@@ -1727,6 +1744,48 @@ impl NetworkSession {
         lookahead
             || (wm.get_wallet_info(&id.0))
                 .is_some_and(|info| !info.core_wallet.accounts.coinjoin_accounts.is_empty())
+    }
+
+    /// Wallet `id`'s [`UPGRADE_REPLAY_SETTING`]; `None` when it cannot be
+    /// read.
+    pub(crate) async fn upgrade_replay(&self, id: WalletId) -> Option<String> {
+        let scope = dw_appdb::local_scope(&id.to_string());
+        (self
+            .appdb_op(move |db| db.setting(&scope, UPGRADE_REPLAY_SETTING))
+            .await)
+            .ok()
+            .flatten()
+    }
+
+    /// Stores or clears wallet `id`'s [`UPGRADE_REPLAY_SETTING`]; a failure
+    /// is logged: it only names why a replay runs, never which.
+    pub(crate) async fn set_upgrade_replay(&self, id: WalletId, mark: Option<String>) {
+        let scope = dw_appdb::local_scope(&id.to_string());
+        let stored = self
+            .appdb_op(move |db| db.set_setting(&scope, UPGRADE_REPLAY_SETTING, mark.as_deref()))
+            .await;
+        if let Err(e) = stored {
+            tracing::warn!(wallet_id = %id, error = %e, "could not store whether the wallet's replay is its upgrade's");
+        }
+    }
+
+    /// After a load: names wallet `id`'s replay record as its upgrade's when
+    /// `upgrade` (the open chose the upgrade's replay from its birth), and
+    /// clears a name no record carries any more. Writes only a change.
+    async fn note_upgrade_replay(&self, id: WalletId, upgrade: bool) {
+        let Ok(live) = self.live() else {
+            return;
+        };
+        let stored = self.upgrade_replay(id).await;
+        let mark = match live.replay.get(id).await {
+            Ok(Some(r)) if upgrade => Some(upgrade_mark(&r)),
+            Ok(Some(_)) => return,
+            Ok(None) => None,
+            Err(_) => return,
+        };
+        if stored != mark {
+            self.set_upgrade_replay(id, mark).await;
+        }
     }
 
     /// Wallet `id`'s [`WIDE_SCAN_SETTING`].
