@@ -84,7 +84,8 @@ export function RegisterSheet({
   const id = useId();
   const refresh = useMasternodesRefresh();
   const queryClient = useQueryClient();
-  const overview = useMasternodes(wallet.walletId);
+  // Held, the wizard follows the page's list but never reads it again on its own; Try again is the page's.
+  const overview = useMasternodes(wallet.walletId, true, sends);
   const [step, setStep] = useState<Step>(resume ? "prove" : "type");
   const [d, setD] = useState<RegDraft>(newDraft);
   const [errors, setErrors] = useState<FieldErrors>({});
@@ -147,7 +148,7 @@ export function RegisterSheet({
   }, [keys.isError, keys.error]);
 
   const cap = op && step === "prove" ? op.debit : op && op.state.kind === "not_sent" ? op.debit : figures ? registerCap(figures) : null;
-  const credential = useCredential(wallet.walletId, t(`${R}.review.ask`), cap);
+  const credential = useCredential(wallet.walletId, t(`${R}.review.ask`), cap, sends);
 
   const mounted = useRef(true);
   useEffect(() => {

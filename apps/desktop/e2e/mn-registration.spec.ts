@@ -530,6 +530,7 @@ for (const theme of ["light", "dark"] as const)
 for (const theme of ["light", "dark"] as const)
   test(`${theme}: Prove names the fee and what leaves this wallet (issue 460)`, async ({ page }, info) => {
     const errors = await open(page, "reg-prepared", theme);
+    await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
     await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
     await expect(step(page, "prove")).toBeVisible();
     await page.waitForTimeout(300);
@@ -564,6 +565,7 @@ for (const theme of ["light", "dark"] as const)
 
 test("a mistyped signature is refused before any signing, and its grant is revoked (issue 460)", async ({ page }) => {
   const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
   await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
   await expect(step(page, "prove")).toBeVisible();
   const before = await revokes(page);
@@ -599,6 +601,7 @@ for (const theme of ["light", "dark"] as const)
 
 test("fee coins spent while Prove is open: the refusal hides the old message and offers a new one (issue 460)", async ({ page }) => {
   const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
   await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
   await expect(page.getByTestId("reg-sign-request")).toBeVisible();
   await page.evaluate(() => {
@@ -737,6 +740,47 @@ test("a released collateral offers Lock it again on testnet", async ({ page }) =
   await page.getByTestId("mn-lock-again").click();
   await expect(page.getByTestId("mn-released")).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+/** All a held wizard reads, from opening to Review. The list comes from the page's own read; the
+ * page's governance polls run on their own timers, which the sheet doesn't own. */
+const HELD_READS = ["mn_preview_registration", "mn_registration_keys"];
+const PAGE_POLLS = ["governance_contested_names", "governance_info", "governance_my_proposals", "governance_upcoming_superblocks"];
+
+for (const theme of ["light", "dark"] as const)
+  test(`mainnet ${theme}: the held wizard reads only keys and the preview (issue 635)`, async ({ page }, info) => {
+    const errors = await open(page, "reg", theme, "mainnet");
+    await expect(page.getByTestId("mn-set-up")).toBeVisible();
+    // The page's own polls have started, so a late first one isn't taken for the sheet's.
+    await expect
+      .poll(() => page.evaluate(() => ["governance_info", "governance_my_proposals"].every((c) => window.__dwFixture!.calls.includes(c))))
+      .toBe(true);
+    const opened = await page.evaluate(() => [...window.__dwFixture!.calls]);
+    const from = opened.length;
+    // A poll counts as the page's only if the page made it before the sheet opened.
+    const pagePoll = (c: string) => PAGE_POLLS.includes(c) && opened.includes(c);
+    await setUp(page);
+    await hostedToKeys(page, "203.0.113.20:9999");
+    await toReview(page);
+    await expectSendOff(page);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-held-review-${theme}.png`) });
+    const made = await page.evaluate((n) => window.__dwFixture!.calls.slice(n), from);
+    expect([...new Set(made.filter((c) => !pagePoll(c)))].sort()).toEqual(HELD_READS);
+    await expect(page.getByTestId("reg-passphrase")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+test("mainnet: opening Set up after a failed list read doesn't read the list again (issue 635)", async ({ page }) => {
+  const errors = await open(page, "reg", "light", "mainnet", "&fail=mn_list:rpc");
+  await expect(page.getByTestId("mn-list-failed")).toBeVisible();
+  const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_list").length);
+  const before = await reads();
+  await page.getByTestId("mn-set-up").click();
+  await expect(sheet(page)).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(await reads()).toBe(before);
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
 });
 
 test("mainnet: Review ends with the send-off line and sends nothing", async ({ page }) => {
