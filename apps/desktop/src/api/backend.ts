@@ -205,6 +205,7 @@ import type { FoundIdentity } from "./generated/FoundIdentity";
 import type { IdentityDetail } from "./generated/IdentityDetail";
 import type { IdentityRefresh } from "./generated/IdentityRefresh";
 import type { ProtocolCompatibility } from "./generated/ProtocolCompatibility";
+import type { RecentNotice } from "./generated/RecentNotice";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -212,6 +213,8 @@ export interface Backend {
   openNetwork(): Promise<OpenedNetwork>;
   listWallets(): Promise<WalletSummary[]>;
   lockStatus(): Promise<LockStatus>;
+  /** The engine's latest notices, oldest first: those sent before the renderer listened too. */
+  recentNotices(): Promise<RecentNotice[]>;
   unlock(passphrase: string): Promise<LockStatus>;
   /** dash-qt "Unlock for mixing only" (QT-112). */
   unlockMixingOnly(passphrase: string): Promise<LockStatus>;
@@ -410,6 +413,8 @@ export interface Backend {
   /** Wallets whose latest automatic backup failed, and when. */
   automaticBackupFailures(): Promise<AutomaticBackupFailure[]>;
   backupDirectory(): Promise<string>;
+  /** Shows the automatic-backup folder in the system file manager. */
+  openBackupDirectory(): Promise<null>;
   backupPolicy(): Promise<BackupPolicyInfo>;
   setBackupPolicy(keep: number): Promise<BackupPolicyInfo>;
   readBackupHeader(path: string): Promise<BackupFileHeader>;

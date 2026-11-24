@@ -48,7 +48,8 @@ pub enum UnfinishedState {
     Confirming,
     /// Ready to finish.
     Ready,
-    /// The apply may have executed, unproved ("Checking").
+    /// The apply may have executed, or a lock read back from the chain may
+    /// already have been taken, unproved ("Checking"): its finish tries it.
     Checking,
     /// Not listed in this version: a lock Platform reported already used
     /// leaves the list, and its finish reads [`LockFinish::ReportedUsed`].
