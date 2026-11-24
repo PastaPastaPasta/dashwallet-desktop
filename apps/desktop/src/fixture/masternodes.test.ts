@@ -279,6 +279,9 @@ describe("fixture masternodes: track and keys", () => {
     await cmd.mnTrack(SPARE, null);
     await cmd.mnTrack(FRIEND, null);
     expect(await cmd.mnAttachKey(CLUB, "payout", KEY_PAYOUT)).toBe("matched");
+    // An attach never replaces a key (tracking.rs `key_exists`): Remove comes first.
+    await expect(cmd.mnAttachKey(CLUB, "payout", KEY_OTHER)).rejects.toMatchObject({ code: "masternodes.key_exists", data: { kind: "masternodeKey", role: "payout" } });
+    expect(await cmd.mnDetachKey(CLUB, "payout")).toBe(true);
     expect(await cmd.mnAttachKey(CLUB, "payout", KEY_OTHER)).toBe("unchecked");
     expect(await cmd.mnAttachKey(CLUB, "voting", KEY_VOTING)).toBe("matched");
     expect(await cmd.mnAttachKey(FRIEND, "owner", KEY_OWNER)).toBe("unchecked");
@@ -288,7 +291,8 @@ describe("fixture masternodes: track and keys", () => {
       [CLUB, "owner", "not a key", "invalid_argument"],
       [CLUB, "owner", KEY_OWNER.toUpperCase().slice(2), "invalid_argument"],
       [HOME, "owner", TEST_VECTOR_WIF, "masternodes.not_tracked"],
-      [CLUB, "voting", TEST_VECTOR_WIF, "masternodes.key_mismatch"],
+      [CLUB, "voting", TEST_VECTOR_WIF, "masternodes.key_exists"],
+      [FRIEND, "voting", TEST_VECTOR_WIF, "masternodes.key_mismatch"],
     ] as const) {
       const e = await cmd.mnAttachKey(hash, role, key).catch((x: cmd.AppError) => x);
       expect(e, `${hash} ${role}`).toMatchObject({ code });
@@ -381,6 +385,7 @@ describe("fixture masternodes: track and keys", () => {
     // A hex key in either case is one key, stored and shown in lower case.
     expect(await cmd.mnAttachKey(CLUB, "payout", "AB".repeat(32))).toBe("unchecked");
     const upper = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!.roles.attached!.find((k) => k.role === "payout")!.keyId;
+    expect(await cmd.mnDetachKey(CLUB, "payout")).toBe(true);
     expect(await cmd.mnAttachKey(CLUB, "payout", "ab".repeat(32))).toBe("unchecked");
     const lower = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!.roles.attached!.find((k) => k.role === "payout")!.keyId;
     expect(upper).toBe(lower);

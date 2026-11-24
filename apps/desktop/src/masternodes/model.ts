@@ -174,8 +174,10 @@ export function voteBlocked(r: MasternodeRow, watchOnly: boolean): string | null
 
 const K = `${P}.keys`;
 
-/** "Owner key", "Voting key", "Payout address": the names "In this wallet" uses. */
+/** "Voting key" for the offer, the name "In this wallet" uses. */
 const roleTitle = (role: AttachedKeyRoleName) => t(`${P}.role.${role}`);
+/** "voting", "owner", "payout": a key's role mid-sentence. */
+const roleWord = (role: AttachedKeyRoleName) => t(`${K}.roleWord.${role}`);
 
 export interface KeyRoleView {
   role: AttachedKeyRoleName;
@@ -188,12 +190,19 @@ export interface KeyRoleView {
  * payout keys are never imported here. While the vault is locked the attached keys are unread: the sheet
  * asks for the unlock first. */
 export function keyRoles(r: Pick<MasternodeRow, "roles">): KeyRoleView[] {
-  if (r.roles.attached?.some((k) => k.role === "voting")) return [];
+  // Unread (locked): nothing is offered until the attached keys are known.
+  if (r.roles.attached === null || r.roles.attached.some((k) => k.role === "voting")) return [];
   return [{ role: "voting", title: roleTitle("voting"), help: t(`${K}.votingHelp`) }];
 }
 
 /** More ▸ Add keys… on a tracked row: while a key can be added, or the vault must be unlocked to tell. */
 export const offersAddKey = (r: MasternodeRow) => r.tracked && (r.roles.attached === null || keyRoles(r).length > 0);
+
+/** Stop tracking's line about the added keys: their count, or, while they're unread, that any are deleted. */
+export function untrackKeysText(r: Pick<MasternodeRow, "roles">): string | null {
+  if (r.roles.attached === null) return t(`${P}.untrack.keysUnknown`);
+  return r.roles.attached.length > 0 ? t(`${P}.untrack.keys`, { count: r.roles.attached.length }) : null;
+}
 
 /** The vault holds its full-scope key: an attach can be written (tracking.rs refuses `locked` and mixing-only). */
 export const canAttach = (state: LockStateName | undefined) => state !== "locked" && state !== "unlockedMixingOnly";
@@ -209,6 +218,10 @@ export function keyResultText(check: KeyCheckName): string {
 export function keyErrorText(e: unknown): string {
   if (isAppError(e)) {
     if (e.code === "masternodes.key_mismatch") return t(`${K}.mismatch`);
+    if (e.code === "masternodes.key_exists") {
+      const role = e.data?.kind === "masternodeKey" ? e.data.role : "voting";
+      return t(`${K}.exists`, { role: roleWord(role) });
+    }
     if (e.code === "invalid_argument") return t(`${K}.invalid`);
     if (e.code === "vault.locked") return t(`${K}.locked`);
   }
@@ -220,7 +233,10 @@ export const isVaultLocked = (e: unknown) => isAppError(e) && e.code === "vault.
 export interface AttachedKeyLine {
   role: AttachedKeyRoleName;
   text: string;
-  removeLabel: string;
+  /** "Remove payout key": it deletes a private key, so it says so. */
+  remove: string;
+  /** The confirmation every Remove asks first. */
+  confirmTitle: string;
 }
 
 /** The pane's "Keys you added", every role (voting included); `null` while the vault is locked. */
@@ -228,8 +244,9 @@ export function attachedLines(r: MasternodeRow): AttachedKeyLine[] | null {
   if (r.roles.attached === null) return null;
   return r.roles.attached.map((k) => ({
     role: k.role,
-    text: t(`${K}.line`, { role: roleTitle(k.role), check: t(`${K}.check.${k.check}`) }),
-    removeLabel: t(`${K}.removeLabel`, { role: roleTitle(k.role) }),
+    text: t(`${K}.line`, { role: t(`${K}.name.${k.role}`), check: t(`${K}.check.${k.check}`) }),
+    remove: t(`${K}.removeRow`, { role: roleWord(k.role) }),
+    confirmTitle: t(`${K}.removeTitle`, { role: roleWord(k.role) }),
   }));
 }
 

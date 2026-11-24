@@ -261,7 +261,7 @@ export function newMasternodesWorld(): MasternodesWorld {
 }
 
 /** A fake key id: the engine records the hash160 of the key's public key. */
-export const keyId = (secret: string) => fake(HEX64.test(secret) ? `${secret.slice(0, 2).toLowerCase()}9` : "c0", 40);
+export const keyId = (secret: string) => fake(HEX64.test(secret) ? `${secret.slice(0, 16).toLowerCase()}9` : "c0", 40);
 
 type Attached = MasternodesWorld["attached"][string][number];
 
@@ -1013,9 +1013,11 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
       const r = tracked(world.masternodes, proTxHash);
       // tracking.rs refuses a vault without its full-scope key before the check, so a refusal keeps an attached key's id.
       if (locked(world)) throw fail("vault.locked", "vault locked");
-      const check = checkKey(world, r, role, key);
       const keys = world.masternodes.attached[r.proTxHash] ?? [];
-      world.masternodes.attached[r.proTxHash] = [...keys.filter((k) => k.role !== role), { role, keyId: keyId(key), check }];
+      // tracking.rs never replaces an attached key: Remove comes first.
+      if (keys.some((k) => k.role === role)) throw fail("masternodes.key_exists", `a ${role} key is already attached`, { kind: "masternodeKey", role });
+      const check = checkKey(world, r, role, key);
+      world.masternodes.attached[r.proTxHash] = [...keys, { role, keyId: keyId(key), check }];
       changed(ctx);
       return check;
     },

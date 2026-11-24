@@ -662,10 +662,20 @@ export const masternodes = {
       mismatch: "This key doesn't belong to this masternode.",
       invalid: "Enter the private key as a compressed WIF for this network, or as 64 hex characters.",
       locked: "Unlock to add a key.",
+      /** A key already attached for the role: Add key never replaces one. `role`: a `roleWord`. */
+      exists: "A {role} key is already added for this masternode on this computer. Remove it first.",
       added: "Keys you added",
       addedLocked: "Keys you added: unlock to see",
-      remove: "Remove",
-      removeLabel: "Remove {role}",
+      /** A key's role, lower case mid-sentence. */
+      roleWord: { voting: "voting", owner: "owner", payout: "payout" },
+      /** An added key's name in Keys you added. */
+      name: { voting: "Voting key", owner: "Owner key", payout: "Payout key" },
+      /** `role`: a `roleWord`. Remove always asks first: the key is deleted for every wallet here. */
+      removeRow: "Remove {role} key",
+      removeTitle: "Remove the {role} key?",
+      removeText:
+        "This deletes it from Dash Wallet on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.",
+      removeConfirm: "Remove key",
       check: { matched: "matches", unchecked: "not checked", key_mismatch: "doesn't match" },
       line: "{role} · {check}",
     },
@@ -678,6 +688,9 @@ export const masternodes = {
         one: "The key you added for it is deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need it again.",
         other: "The {count} keys you added for it are deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need them again.",
       },
+      /** While the vault is locked the added keys aren't read, so their count isn't known. */
+      keysUnknown:
+        "Any keys you added for it are deleted from Dash Wallet on this computer, for every wallet. They aren't in your backups, so keep your own copy if you'll need them again.",
       submit: "Stop tracking",
     },
     errors: {

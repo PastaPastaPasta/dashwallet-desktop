@@ -39,6 +39,7 @@ import {
   statusChip,
   summary,
   trackErrorText,
+  untrackKeysText,
   voteBlocked,
 } from "./model";
 
@@ -253,12 +254,43 @@ describe("track and keys (MG-10 §1.3, §1.4; MG-00 D13 amended for 1.0)", () =>
 
   it("lists every added key, voting included, or nothing while locked", () => {
     const club = rowOf(CLUB);
-    const keys = { ...club, roles: { ...club.roles, attached: [{ role: "voting" as const, keyId: null, check: "matched" as const }, { role: "owner" as const, keyId: null, check: "unchecked" as const }] } };
-    expect(attachedLines(keys)?.map((l) => [l.text, l.removeLabel])).toEqual([
-      ["Voting key · matches", "Remove Voting key"],
-      ["Owner key · not checked", "Remove Owner key"],
+    const keys = {
+      ...club,
+      roles: {
+        ...club.roles,
+        attached: [
+          { role: "voting" as const, keyId: null, check: "matched" as const },
+          { role: "payout" as const, keyId: null, check: "unchecked" as const },
+        ],
+      },
+    };
+    // Each is named as a key, never "Payout address": Remove deletes a private key, and always asks first.
+    expect(attachedLines(keys)?.map((l) => [l.text, l.remove, l.confirmTitle])).toEqual([
+      ["Voting key · matches", "Remove voting key", "Remove the voting key?"],
+      ["Payout key · not checked", "Remove payout key", "Remove the payout key?"],
     ]);
+    expect(t("masternodes.myMasternodes.keys.removeText")).toBe(
+      "This deletes it from Dash Wallet on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.",
+    );
     expect(attachedLines({ ...club, roles: { ...club.roles, attached: null } })).toBeNull();
+  });
+
+  it("refuses an occupied role in so many words, and waits for the roles before offering a key", () => {
+    const e = { code: "masternodes.key_exists", message: "a key is already attached", data: { kind: "masternodeKey" as const, role: "voting" as const } };
+    expect(keyErrorText(e)).toBe("A voting key is already added for this masternode on this computer. Remove it first.");
+    const club = rowOf(CLUB);
+    // Unread (locked or not re-read yet): no key field until the attached keys are known.
+    expect(keyRoles({ ...club, roles: { ...club.roles, attached: null } })).toEqual([]);
+  });
+
+  it("warns that Stop tracking deletes any added keys while their count isn't known", () => {
+    const club = rowOf(CLUB);
+    const key = { role: "voting" as const, keyId: null, check: "matched" as const };
+    expect(untrackKeysText({ roles: { ...club.roles, attached: null } })).toBe(
+      "Any keys you added for it are deleted from Dash Wallet on this computer, for every wallet. They aren't in your backups, so keep your own copy if you'll need them again.",
+    );
+    expect(untrackKeysText({ roles: { ...club.roles, attached: [] } })).toBeNull();
+    expect(untrackKeysText({ roles: { ...club.roles, attached: [key, { ...key, role: "payout" as const }] } })).toMatch(/^The 2 keys you added for it are deleted/);
   });
 
   it("lets a tracked masternode vote once its added voting key holds the role", () => {
