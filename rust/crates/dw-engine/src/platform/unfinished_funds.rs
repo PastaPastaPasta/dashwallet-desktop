@@ -161,6 +161,12 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
         self.record(Mark::Unknown, lock).await;
     }
 
+    async fn await_start_up(&self) {
+        (self.session.platform)
+            .settle_startup_hold(self.wallet, || self.lib.funding_hold())
+            .await;
+    }
+
     async fn readiness(&self) -> Readiness {
         if let Err(e) = fund::gate(self.lib).await {
             return match e {

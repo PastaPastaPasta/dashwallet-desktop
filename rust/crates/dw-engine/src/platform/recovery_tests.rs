@@ -2551,7 +2551,7 @@ fn skipped_at_restart(
 
 /// SPV caught up, as dash-spv reports it, so a funding of wallet `id` is
 /// held by nothing but its bring-up.
-fn caught_up(s: &NetworkSession, id: WalletId) {
+pub(super) fn caught_up(s: &NetworkSession, id: WalletId) {
     use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
     let mut headers = BlockHeadersProgress::default();
     headers.update_target_height(100);
@@ -2766,8 +2766,10 @@ fn a_rerun_answering_before_the_press_waits_still_lets_it_go_on() {
             }
             pause.release.notify_one();
         };
-        tokio::join!(fund_once(&s, id), answer).0
+        let both = async { tokio::join!(fund_once(&s, id), answer).0 };
+        tokio::time::timeout(Duration::from_secs(60), both).await
     });
+    let funded = funded.expect("the press and the answer end");
     past_the_hold(&funded);
     assert!(
         started.elapsed() < Duration::from_secs(20),
@@ -2775,6 +2777,64 @@ fn a_rerun_answering_before_the_press_waits_still_lets_it_go_on() {
         started.elapsed()
     );
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #585 (Q63c): the supervisor runs one job at a time, so the rerun a
+/// flow asks for can queue. A request past the backoff while it was
+/// queued sent a second, and the first's outcome then cleared the ask the
+/// second still stood for. Now none is sent while one is asked for: the
+/// rerun ends without lifting the hold (`PartialNoIdentity`), nothing
+/// stays asked or queued, and the next request past its pause runs it.
+#[test]
+fn a_retry_past_the_backoff_while_its_rerun_is_queued_sends_none() {
+    let dir = dw_testutil::private_tempdir();
+    let hold = Arc::new(Notify::new());
+    let platform = Arc::new(Platform {
+        partial_bring_ups: u32::MAX,
+        hold_bring_up: Some(Arc::clone(&hold)),
+        ..Platform::default()
+    });
+    let (engine, s) = session(dir.path(), Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    // The start's bring-up runs before SPV does.
+    hold.notify_one();
+    start(&engine, &s);
+    let runs = || platform.bring_ups.load(Ordering::SeqCst);
+    wait_until("the partial bring-up", || {
+        runs() == 1 && startup(&s, id) == StartupStatus::PartialNoIdentity
+    });
+    let other = restore_other(&engine, &s);
+    wait_until("the other wallet's bring-up", || {
+        startup(&s, other) == StartupStatus::Starting
+    });
+    let t0 = Instant::now();
+    assert!(s.platform.retry_startup_at(id, t0));
+    let past = t0 + Duration::from_secs(11 * 60);
+    assert!(
+        !s.platform.retry_startup_at(id, past),
+        "one is asked for: no second"
+    );
+    assert_eq!(startup(&s, id), StartupStatus::PartialNoIdentity, "queued");
+    hold.notify_one();
+    wait_until("the rerun", || startup(&s, id) == StartupStatus::Starting);
+    hold.notify_one();
+    wait_until("the rerun's end", || {
+        runs() == 3
+            && startup(&s, id) == StartupStatus::PartialNoIdentity
+            && !s.platform.bring_up_pending(&id)
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(runs(), 3, "nothing queued");
+    assert_eq!(startup(&s, id), StartupStatus::PartialNoIdentity);
+    assert!(!s.platform.bring_up_pending(&id));
+    assert!(
+        s.platform
+            .retry_startup_at(id, t0 + Duration::from_secs(30 * 60)),
+        "asked again past its pause"
+    );
+    hold.notify_one();
+    wait_until("the next rerun", || runs() == 4);
     engine.block_on(engine.shutdown()).unwrap();
 }
 
@@ -2909,16 +2969,11 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
             max_credits: 0,
         },
     );
-    let zero = "0000000000000000000000000000000000000000000000000000000000000000";
+    let txid = tracked_fund_lock(&engine, &s, id);
     let started = Instant::now();
     let dp = s.dashpay(id);
     let (finished, closed_in) = engine.block_on(async {
-        let finish = dp.finish_transfer(
-            super::LockKindId::PlatformAddress,
-            zero.into(),
-            0,
-            g.clone(),
-        );
+        let finish = dp.finish_transfer(super::LockKindId::PlatformAddress, txid, 0, g.clone());
         let closing = async {
             while !pause.reached.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2929,17 +2984,16 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
         };
         tokio::join!(finish, closing)
     });
-    assert!(finished.is_err(), "{finished:?}");
     assert!(closed_in < Duration::from_secs(10), "{closed_in:?}");
     assert!(
         started.elapsed() < Duration::from_secs(20),
         "{:?}",
         started.elapsed()
     );
-    // Refused before the lease is taken from the grant (close then revokes
-    // every grant, so the vault can't be asked after).
+    // Refused as held, before the lease is taken from the grant (close
+    // then revokes every grant, so the vault can't be asked after).
     assert!(
-        matches!(&finished, Err(PlatformError::InvalidArgument { detail }) if detail.contains("no tracked lock")),
+        matches!(&finished, Ok(super::LockFinish::NotApplied { error }) if error == "platform.unavailable"),
         "{finished:?}"
     );
     pause.release.notify_one();
@@ -2961,6 +3015,7 @@ fn unfinished_transfers_after_a_skipped_bring_up_ask_for_and_wait_on_its_rerun()
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
 
     let zero = "0000000000000000000000000000000000000000000000000000000000000000";
+    let fund_lock = tracked_fund_lock(&engine, &s, id);
     // A shielded Finish reads no funding hold, so it does not wait: the
     // rerun stays unasked.
     for (kind, waits, runs) in [
@@ -2973,15 +3028,27 @@ fn unfinished_transfers_after_a_skipped_bring_up_ask_for_and_wait_on_its_rerun()
             startup(&s, id) == StartupStatus::NotRun
         });
         caught_up(&s, id);
+        let txid = if waits {
+            fund_lock.clone()
+        } else {
+            zero.into()
+        };
         let finished =
             engine.block_on(
                 s.dashpay(id)
-                    .finish_transfer(kind, zero.into(), 0, "no grant".into()),
+                    .finish_transfer(kind, txid, 0, "no grant".into()),
             );
-        assert!(
-            matches!(finished, Err(PlatformError::InvalidArgument { .. })),
-            "{kind:?}: {finished:?}"
-        );
+        // Past the hold, the fund lock is found and, offline, not applied;
+        // the shielded Finish has no lock at that txid.
+        let refused = if waits {
+            !matches!(
+                finished,
+                Ok(super::LockFinish::Applied) | Err(PlatformError::InvalidArgument { .. })
+            )
+        } else {
+            matches!(finished, Err(PlatformError::InvalidArgument { .. }))
+        };
+        assert!(refused, "{kind:?}: {finished:?}");
         let want = if waits {
             StartupStatus::NoIdentity
         } else {
@@ -2991,6 +3058,56 @@ fn unfinished_transfers_after_a_skipped_bring_up_ask_for_and_wait_on_its_rerun()
         assert_eq!(platform.bring_ups.load(Ordering::SeqCst), runs, "{kind:?}");
     }
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #585 (Q63c): a Finish waits on the rerun only for a lock it tracks: one
+/// whose lock is gone (finished elsewhere, a stale press) is refused at
+/// once, and asks for nothing.
+#[test]
+fn a_finish_of_an_untracked_lock_does_not_wait_on_the_rerun() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, platform) = skipped_at_restart(dir.path());
+    let zero = "0000000000000000000000000000000000000000000000000000000000000000";
+    let started = Instant::now();
+    let finished = engine.block_on(s.dashpay(id).finish_transfer(
+        super::LockKindId::PlatformAddress,
+        zero.into(),
+        0,
+        "no grant".into(),
+    ));
+    assert!(
+        matches!(&finished, Err(PlatformError::InvalidArgument { detail }) if detail.contains("no tracked lock")),
+        "{finished:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(startup(&s, id), StartupStatus::NotRun);
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A proved Platform-address fund lock recovered from the chain, tracked
+/// in wallet `id`: its txid.
+fn tracked_fund_lock(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) -> String {
+    let g = grant(
+        engine,
+        s,
+        id,
+        GrantPurpose::PlatformOp {
+            max_duffs: 1,
+            max_credits: 0,
+        },
+    );
+    let kind = (
+        super::platform_fund_tests::LOCK_KEY,
+        super::flows::FlowKind::PlatformAddressFund,
+        platform_wallet::AssetLockFundingType::AssetLockAddressTopUp,
+    );
+    let at = super::platform_fund_tests::restored_lock(engine, s, id, kind, g);
+    at.txid.to_string()
 }
 
 /// ROADMAP DP1-05 on public testnet. `DW_DP105_TESTNET_FIXTURE` names the
