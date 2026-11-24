@@ -235,7 +235,15 @@ pub(crate) struct MoveRecord {
     /// The protocol version it was signed at (`None` before 0.2).
     #[serde(default)]
     pub(crate) version: Option<u32>,
+    /// The outcome rule it was written under: [`HOLD_RULE`], or 0 for a
+    /// record from before it, which a node's consensus error to its signed
+    /// transition may have marked unable to land (#471).
+    #[serde(default)]
+    pub(crate) rule: u8,
 }
+
+/// Records written since #471: no error after a signature settles one.
+pub(crate) const HOLD_RULE: u8 = 1;
 
 /// [`MoveRecord::terms`]: the kind and fee rule, the inputs (address,
 /// nonce, credits), the fee estimate, the payout and the destination.
@@ -4054,6 +4062,7 @@ pub(crate) async fn run(
         fee_taken: None,
         group: None,
         version: Some(version.protocol_version),
+        rule: HOLD_RULE,
     };
     // A move `failed` by height may still execute: only one at its very
     // inputs and nonces may follow it, and when either pays a Platform

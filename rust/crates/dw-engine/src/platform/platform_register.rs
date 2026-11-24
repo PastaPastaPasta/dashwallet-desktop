@@ -437,6 +437,7 @@ async fn sign(
         fee_taken: None,
         group: None,
         version: Some(version.protocol_version),
+        rule: HOLD_RULE,
     };
     let paths: BTreeMap<[u8; 20], DerivationPath> = (inputs.keys())
         .map(|a| match (a, pool.get(a)) {

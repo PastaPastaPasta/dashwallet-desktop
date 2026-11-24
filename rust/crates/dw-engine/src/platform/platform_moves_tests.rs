@@ -178,6 +178,7 @@ fn record(id: &str, at: u64, inputs: &[(&str, u32)]) -> MoveRecord {
         fee_taken: None,
         group: None,
         version: None,
+        rule: HOLD_RULE,
     }
 }
 
@@ -1153,6 +1154,30 @@ fn a_consensus_error_after_signing_keeps_a_moves_hold() {
         w.activity();
         assert!(w.moves().iter().all(|m| !m.holds()), "{act:?}");
     }
+}
+
+/// #471: a record keeps the outcome rule it was written under. One stored
+/// before the field existed reads as rule 0, one written now as
+/// [`HOLD_RULE`], and both survive a write and a read unchanged.
+#[test]
+fn a_move_record_keeps_its_outcome_rule() {
+    let now = record("m", 1, &[("a", 4)]);
+    let mut stored = serde_json::to_value(&now).unwrap();
+    assert_eq!(stored["rule"], HOLD_RULE);
+    let back: MoveRecord = serde_json::from_value(stored.clone()).unwrap();
+    assert_eq!(back, now);
+    stored.as_object_mut().unwrap().remove("rule");
+    let legacy: MoveRecord = serde_json::from_value(stored).unwrap();
+    assert_eq!(legacy.rule, 0);
+    let again: MoveRecord = serde_json::from_str(&serde_json::to_string(&legacy).unwrap()).unwrap();
+    assert_eq!(again, legacy);
+
+    let mut w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    w.net.then(Act::Lost);
+    w.move_all(&w.f.grant(3 * DASH)).unwrap();
+    w.reopen();
+    assert_eq!(w.moves()[0].rule, HOLD_RULE, "written and read back");
 }
 
 /// #471: once proof shows the refused move's nonces taken (it executed
