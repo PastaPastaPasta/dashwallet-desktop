@@ -12,9 +12,12 @@ Version 23 adds MG-10 EP-b1's shared abandon storage (MG-10 §4.4): an abandon s
 Version 24 adds `WithdrawalCheckingReason::PayoutChangeUnconfirmed` (`payout_change_unconfirmed`): a payout change in any loaded wallet's history, which another installation of the wallet may have sent, holds a withdrawal as a barrier does while it is out of a block, and as `platform_behind` while its block is above the proof's Core height.
 Version 25 adds `ProTxOperationState::Abandoned` (`abandoned`, MG-10 §1.10's D49 way out): a `sent` registration or
 key change whose transaction the wallet abandoned (its abandoned mark, written by `abandon_transaction` or Tools ▸
-Repair ▸ Remove unconfirmed transactions) holds its fee inputs and its payout-change barrier no longer (released in
-one transaction), so `unlock_outpoints` frees the coins, holds no later update of its masternode
-(`update_pending`/`update_superseded`), and is never resent (`operation_state{state: "abandoned"}`).
+Repair ▸ Remove unconfirmed transactions) holds its fee inputs no longer (released in one transaction), so
+`unlock_outpoints` frees the coins, and is never resent (`operation_state{state: "abandoned"}`; a resend checks the
+mark whatever the row reads, held against an abandon through its hand-off). Core may still mine it, so a key change's
+payout-change barrier stays until P16 clears it (the withdrawal quote reads `checking{payout_change_abandoned}`), and
+a preview of the masternode's next update goes through but its signing, and the resend of another, is refused
+`masternodes.update_abandoned_pending{operation}` until the abandoned one is `conflicted`.
 
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
@@ -237,7 +240,9 @@ that signed), and a signed record is never deleted (P5).
 **Consent comes after every wait.** The quote reads once and returns at once; a destination it can't fix yet reads
 `checking{reason}` (P4): `spv_unsynced` (no synced header tip), `unverified` (rule 5 under `Enforce`, P12),
 `payout_change_pending` (a payout-change barrier of the masternode is pending, or the barriers' backfill hasn't run,
-P16), `payout_change_unconfirmed` (a ProUpRegTx of the masternode in any loaded wallet's history, out of a block,
+P16), `payout_change_abandoned` (every pending barrier is an operation its wallet abandoned in Activity, which Core may
+still mine; it clears once the operation is `conflicted`, one of its coins spent in a block, MG-10 §1.10),
+`payout_change_unconfirmed` (a ProUpRegTx of the masternode in any loaded wallet's history, out of a block,
 abandoned in none of them and conflicted by no block in any of them (an InstantSend-locked one only by a ChainLocked
 block), whose payout Drive's window doesn't pay, or whose payload this version doesn't decode: another installation's
 change, which has no barrier here), `platform_behind` (the identity proof's Core chain-locked height is below the synced header tip, or such a
@@ -1322,12 +1327,16 @@ a hash's shape (D23).
   yet, and two updates out at once may be mined in either order. Also a resend of an update while an earlier one is
   sent and not in a block. Wait for the list, or discard `operation` while it is not sent; for a resend, discarding
   the row being resent (while it is not sent) also ends the refusal. One that never lists (dropped): abandon its
-  transaction (`abandon_transaction`): the operation then reads `abandoned`, its inputs are released and it blocks
-  nothing; spending one of its inputs makes sure it is never mined, and once that spend is in a block `operation`
-  reads `conflicted` (MG-04 D43, D49). Also an `update_share` or a `dissolve` while an
+  transaction (`abandon_transaction`): the operation then reads `abandoned` and its inputs are released, and the
+  refusal becomes `update_abandoned_pending` (below) for a signing; spending one of its inputs makes sure it is never
+  mined, and once that spend is in a block `operation` reads `conflicted` (MG-04 D43, D49). Also an `update_share` or a `dissolve` while an
   `update_share` or a `dissolve` of the same masternode is signed, not sent or sent (MG-04b D73, D80). For those and
   a key change's start, approval and send, `operation` may instead name a key-change session of the masternode sent
   from this wallet, `sent` or `stale` (Core may still mine it), or `confirmed` in a block not yet buried (MG-04b D105).
+- `masternodes.update_abandoned_pending{operation}`: a ProUpRegTx's signing, or the resend of an update, while
+  `operation` (an update of the same masternode in a loaded wallet) reads `abandoned`: Core may still mine it after
+  this one, and it would undo it. A preview isn't refused. It ends once `operation` reads `conflicted` (one of its
+  coins spent in a block) or `confirmed` (MG-10 §1.10, D49).
 - `masternodes.update_superseded{operation}`: `resend_operation` of a ProUpRegTx that `operation`, a later update of
   the same masternode (maybe another loaded wallet's) that is or may go out, would undo. Discard this row while it is
   not sent; a sent one ends as `update_pending` says (MG-04 D43, D49). `update_pending`'s `operation` may also be
@@ -1457,7 +1466,7 @@ ProTx operations (§2.3, MG-04 §5): `ProTxOperationState`, derived on every rea
 | `inputs_spent` | The same, a fee input since spent: refresh it. |
 | `confirmed{height}` | Its transaction is in a block of the wallet's history; or a `sent` `dissolve` that pays this wallet nothing (its actor output omitted) once its masternode is out of the synced list, the wallet's filter-scan checkpoint has reached a height the list can't be above, and the registration is in a block at or below it, at that height (MG-04b D81). |
 | `conflicted` | Another transaction in a block spends one of its inputs. |
-| `abandoned` | A `registration` or `update_registrar` that would read `sent`, whose txid the wallet's abandoned marks name (`abandon_transaction`, or Tools ▸ Repair ▸ Remove unconfirmed transactions; the mark is durable). Terminal: its fee inputs and its payout-change barrier are released in one transaction (by the abandon; `unlock_outpoints` and the follower settle them again if that failed), it holds no later update of its masternode (MG-04 D43, D49), and `resend_operation` and `discard_operation` refuse it. Core may still mine it, so it still claims its keys as `sent` does (MG-04 D51) until it is `confirmed` or `conflicted`. |
+| `abandoned` | A `registration` or `update_registrar` that would read `sent`, whose txid the wallet's abandoned marks name (`abandon_transaction`, or Tools ▸ Repair ▸ Remove unconfirmed transactions; the mark is durable). Terminal: its fee inputs are released in one transaction (by the abandon; `unlock_outpoints` and the follower settle them again if that failed, and `unlock_outpoints` refuses a coin it still holds with that failure), and `resend_operation` and `discard_operation` refuse it. Core may still mine it, so until it is `confirmed` or `conflicted` it still claims its keys as `sent` does (MG-04 D51), its payout-change barrier stays (MG-13 P16), and the signing of another update of its masternode, or the resend of one, is refused `update_abandoned_pending` (MG-04 D49). An InstantSend lock seen since makes it `sent` again; `resend_operation` still refuses it, as it does any row whose txid carries the mark. |
 | `sent` | Signed, `sent_at` set: handed to the network or may have been (`last_error` keeps an unknown outcome's code). |
 | `not_sent` | Signed, its attempts definitely not sent (`last_error`: a `send.*` code). |
 | `signed` | Signed and saved, no hand-off started (a crash between the save and the hand-off). |

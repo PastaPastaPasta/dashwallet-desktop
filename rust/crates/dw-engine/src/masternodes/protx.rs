@@ -717,15 +717,7 @@ impl Masternodes {
                 true => Some(s.masternodes.update_lock().await),
                 false => None,
             };
-            let resendable = |state| match state {
-                ProTxOperationState::Signed
-                | ProTxOperationState::NotSent
-                | ProTxOperationState::Sent => Ok(()),
-                _ => Err(MasternodesError::OperationState {
-                    state: state_name(state).into(),
-                }),
-            };
-            resendable(s.op_state(wallet, &row).await?)?;
+            s.require_resendable(wallet, &row).await?;
             if update && let Some(conflict) = s.resend_conflict(&row).await? {
                 return Err(conflict);
             }
@@ -756,9 +748,11 @@ impl Masternodes {
                 let (charge, _) = charge_fee(&lease, debit)?;
                 let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
                 let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await?;
-                // Read again under the fence: an abandon since the check
-                // released its coins, and its bytes stay unsent (D49).
-                resendable(s.op_state(wallet, &row).await?)?;
+                // Read again, held against an abandon through the hand-off:
+                // one since the check released its coins, and its bytes stay
+                // unsent (D49).
+                let _gate = s.abandon_gate.read().await;
+                s.require_resendable(wallet, &row).await?;
                 s.deliver(
                     wallet,
                     Delivery {

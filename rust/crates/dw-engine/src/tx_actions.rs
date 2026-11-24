@@ -1033,6 +1033,7 @@ impl NetworkSession {
             pause.release.notified().await;
         }
         let proof = self.root_proof(manager, wallet, root).await;
+        let _gate = self.abandon_gate.write().await;
         // Planned on a copy under the lock that applies it, so the replay
         // record stored before it covers what is abandoned; held until the
         // sweep is stored, so no descendant is credited between the plan and

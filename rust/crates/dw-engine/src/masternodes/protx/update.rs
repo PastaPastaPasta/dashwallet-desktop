@@ -104,8 +104,8 @@ impl NetworkSession {
     /// Every loaded wallet's operations on masternode `shown` (display
     /// order), newest first, with their states: an attached owner key
     /// updates a masternode from any loaded wallet (D24, D43). One whose
-    /// transaction its wallet abandoned reads `abandoned` and holds no
-    /// later update (MG-10 §1.10, D49).
+    /// transaction its wallet abandoned reads `abandoned`
+    /// ([`Self::abandoned_update`], MG-10 §1.10, D49).
     async fn ops_on(
         &self,
         shown: &str,
@@ -165,7 +165,21 @@ impl NetworkSession {
             .map(|(r, _)| r.id))
     }
 
-    /// What a resend of the update `row` would race (D43, D49): another
+    /// An update of masternode `hash` (wire order) whose transaction its
+    /// wallet abandoned, neither `confirmed` nor `conflicted`: Core may still
+    /// mine it after a new update, and it would undo that one (MG-10 §1.10,
+    /// D49). It holds no preview, only the signing and resending of another.
+    async fn abandoned_update(&self, hash: [u8; 32]) -> Result<Option<String>, MasternodesError> {
+        Ok((self.ops_on(&display_hex(&hash)).await?.into_iter())
+            .find(|(r, state)| {
+                r.kind == "update_registrar" && *state == ProTxOperationState::Abandoned
+            })
+            .map(|(r, _)| r.id))
+    }
+
+    /// What a resend of the update `row` would race (D43, D49): an update
+    /// of its masternode whose transaction its wallet abandoned, which could
+    /// be mined after it (`UpdateAbandonedPending`); another
     /// update of its masternode saved no earlier (`created_at` is in
     /// seconds: two of one second block each other) that is or may go out,
     /// which the resend would undo (`UpdateSuperseded`); or an earlier one
@@ -183,6 +197,11 @@ impl NetworkSession {
         for (r, state) in self.ops_on(shown).await? {
             if r.id == row.id || r.kind != row.kind {
                 continue;
+            }
+            if state == ProTxOperationState::Abandoned {
+                return Ok(Some(MasternodesError::UpdateAbandonedPending {
+                    operation: r.id,
+                }));
             }
             let later = r.created_at >= row.created_at;
             if later
@@ -261,6 +280,9 @@ impl NetworkSession {
         // once may be mined in either order (D49).
         if let Some(operation) = self.unlisted_operation(hash, ctx.list_height).await? {
             return Err(MasternodesError::UpdatePending { operation });
+        }
+        if commit && let Some(operation) = self.abandoned_update(hash).await? {
+            return Err(MasternodesError::UpdateAbandonedPending { operation });
         }
 
         let listed_voting = key_address(entry.voting_key_id, network);

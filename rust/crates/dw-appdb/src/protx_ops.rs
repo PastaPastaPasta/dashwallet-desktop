@@ -8,7 +8,7 @@
 
 use rusqlite::{OptionalExtension, Row, params};
 
-use crate::fault_points::{MN_BARRIER_ABANDON, MN_BARRIER_DISCARD, MN_BARRIER_WRITE};
+use crate::fault_points::{MN_BARRIER_DISCARD, MN_BARRIER_WRITE, MN_OP_ABANDON};
 use crate::payout_barriers::{NewPayoutBarrier, write_barrier};
 use crate::{AppDb, AppDbError, Holder, Result, fault_before, sql_u64, write_transaction};
 
@@ -442,13 +442,12 @@ impl AppDb {
 
     /// The release of a sent operation whose transaction the wallet
     /// abandoned (MG-10 §1.10, D49), one synced transaction: its
-    /// `fee_inputs` cleared, the locks of its fee `inputs` released (a coin
-    /// another row holds stays locked, BL-346) and its payout-change barriers
-    /// deleted (MG-13 P16), or none of them. Only while the row still holds
-    /// inputs: a second release (another caller's stale read) changes
-    /// nothing and returns `false`. The row stays: its bytes may be out (D6).
-    /// Should the abandoned transaction be mined after all, only the history
-    /// holds a withdrawal for its payout change from then on.
+    /// `fee_inputs` cleared and the locks of its fee `inputs` released (a
+    /// coin another row holds stays locked, BL-346), or neither. Only while
+    /// the row still holds inputs: a second release (another caller's stale
+    /// read) changes nothing and returns `false`. The row stays, as its
+    /// bytes may be out (D6), and so do its payout-change barriers, which
+    /// clear on P16's terms (MG-13).
     pub fn release_abandoned_masternode_op_durable(
         &self,
         wallet_id: &str,
@@ -468,16 +467,12 @@ impl AppDb {
                     let holder = Holder::Operation(id);
                     Self::release_lock_on(&tx, wallet_id, holder, txid, *vout, now)?;
                 }
-                tx.execute(
-                    "DELETE FROM mn_payout_barriers WHERE created_by = ?1 AND op_id = ?2",
-                    params![wallet_id, id],
-                )?;
             }
-            fault_before(&tx, MN_BARRIER_ABANDON)?;
+            fault_before(&tx, MN_OP_ABANDON)?;
             tx.commit()?;
             Ok(cleared)
         })?;
-        self.fault_after(MN_BARRIER_ABANDON)?;
+        self.fault_after(MN_OP_ABANDON)?;
         Ok(released)
     }
 
@@ -584,7 +579,7 @@ mod tests {
         );
         assert_eq!(locked(&db), [("c".to_owned(), 1)], "b's coin");
         assert_eq!(db.masternode_op(W, "a").unwrap().unwrap().fee_inputs, "[]");
-        assert!(db.payout_barriers().unwrap().is_empty());
+        assert_eq!(db.payout_barriers().unwrap().len(), 1, "the barrier stays");
 
         db.delete_unsent_masternode_op(W, "b").unwrap();
         db.lock_manual(W, "c", 0, 3).unwrap();

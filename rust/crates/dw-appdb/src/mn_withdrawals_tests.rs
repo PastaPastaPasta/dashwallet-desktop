@@ -1271,7 +1271,7 @@ fn cases() -> Vec<Case> {
             },
         },
         Case {
-            point: fault::MN_BARRIER_ABANDON,
+            point: fault::MN_OP_ABANDON,
             setup: |db| {
                 let row = MasternodeOpRow {
                     fee_inputs: format!("[\"{TXID}:0\"]"),
@@ -1289,9 +1289,9 @@ fn cases() -> Vec<Case> {
             written: |db| {
                 let cleared = db.masternode_op(W, "op").unwrap().unwrap().fee_inputs == "[]";
                 let unlocked = !db.locks(W).unwrap().iter().any(|r| r.is_locked());
-                let deleted = db.payout_barriers().unwrap().is_empty();
-                assert_eq!((cleared, unlocked), (deleted, deleted), "together");
-                deleted
+                assert_eq!(cleared, unlocked, "together");
+                assert_eq!(db.payout_barriers().unwrap().len(), 1, "the barrier stays");
+                cleared
             },
         },
         Case {

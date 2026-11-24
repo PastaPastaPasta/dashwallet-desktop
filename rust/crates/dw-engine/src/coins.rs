@@ -1332,16 +1332,19 @@ impl NetworkSession {
                 .collect();
             this.require_unspent(wallet_id, &unlisted).await?;
             // An operation whose transaction was abandoned holds nothing
-            // (MG-10 §1.10, D49): settled first, also after a restart.
-            if let Err(e) = this.settle_operation_locks(wallet_id).await {
-                tracing::warn!(%wallet_id, error = %e, "settling ProTx operation locks");
-            }
+            // (MG-10 §1.10, D49): settled first, also after a restart. A
+            // held coin then refuses with the settling's failure, if any.
+            let settled = (this.settle_operation_locks(wallet_id).await).map_err(|e| {
+                EngineError::Storage(format!("releasing a masternode transaction's coins: {e}"))
+            });
             this.appdb_op(move |db| {
                 let held = db.held_outpoints(&id, dw_appdb::Holder::None)?;
                 if keys.iter().any(|k| held.contains(k)) {
-                    return Ok(Err(EngineError::InvalidArgument(
-                        "the coin is reserved by a masternode transaction".into(),
-                    )));
+                    return Ok(Err(settled.err().unwrap_or_else(|| {
+                        EngineError::InvalidArgument(
+                            "the coin is reserved by a masternode transaction".into(),
+                        )
+                    })));
                 }
                 let now = now_secs();
                 for (txid, vout) in &keys {

@@ -31,6 +31,6 @@ pub const MN_BARRIER_CLEAR: &str = "mn_barrier.clear";
 pub const MN_BARRIER_DISCARD: &str = "mn_barrier.discard";
 /// The release of an abandoned operation's fee inputs and barriers
 /// ([`crate::AppDb::release_abandoned_masternode_op_durable`]).
-pub const MN_BARRIER_ABANDON: &str = "mn_barrier.abandon";
+pub const MN_OP_ABANDON: &str = "mn_op.abandon";
 /// The upgrade's backfill ([`crate::AppDb::backfill_payout_barriers_durable`]).
 pub const MN_BARRIER_BACKFILL: &str = "mn_barrier.backfill";

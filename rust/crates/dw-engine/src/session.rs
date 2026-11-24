@@ -284,6 +284,11 @@ pub struct NetworkSession {
     /// Orders every write of "ask for my passphrase for every payment"
     /// with what the vault is told of it (`keys.rs`).
     pub(crate) payment_auth: tokio::sync::Mutex<()>,
+    /// Orders an Abandon's marks with a masternode operation's resend
+    /// (MG-10 §1.10): an abandon holds it for writing from its plan through
+    /// its marks, a resend for reading from its last mark check through its
+    /// hand-off, so no resend hands off bytes an abandon has marked.
+    pub(crate) abandon_gate: tokio::sync::RwLock<()>,
     /// Other crates' tests: the next write of that setting fails.
     #[cfg(all(debug_assertions, feature = "test-support"))]
     pub(crate) payment_auth_fault: std::sync::atomic::AtomicBool,
@@ -712,6 +717,7 @@ impl NetworkSession {
             relock: Mutex::new(None),
             backups: Default::default(),
             payment_auth: tokio::sync::Mutex::new(()),
+            abandon_gate: tokio::sync::RwLock::new(()),
             #[cfg(all(debug_assertions, feature = "test-support"))]
             payment_auth_fault: Default::default(),
             resends: Mutex::new(Vec::new()),

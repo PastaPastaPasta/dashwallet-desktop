@@ -518,6 +518,39 @@ impl NetworkSession {
         Ok(abandon_settled(row, state, &history, &abandoned))
     }
 
+    /// `Ok` when a resend of `row` may hand its bytes off: it reads
+    /// `signed`, `not_sent` or `sent`, and its txid carries no abandoned mark,
+    /// whatever its state reads (an InstantSend lock seen since the abandon,
+    /// or a hand-off recovered unsent and abandoned in Activity).
+    /// `OperationState` otherwise, `abandoned` for a marked one.
+    pub(crate) async fn require_resendable(
+        &self,
+        wallet: WalletId,
+        row: &MasternodeOpRow,
+    ) -> Result<(), MasternodesError> {
+        let state = self.op_state(wallet, row).await?;
+        let abandoned = self.abandoned_txids(wallet).await?;
+        let marked = (row.txid.as_deref())
+            .and_then(|t| Txid::from_str(t).ok())
+            .is_some_and(|t| abandoned.contains(&t));
+        let state = match state {
+            ProTxOperationState::Signed
+            | ProTxOperationState::NotSent
+            | ProTxOperationState::Sent
+                if !marked =>
+            {
+                return Ok(());
+            }
+            ProTxOperationState::Signed
+            | ProTxOperationState::NotSent
+            | ProTxOperationState::Sent => ProTxOperationState::Abandoned,
+            state => state,
+        };
+        Err(MasternodesError::OperationState {
+            state: state_name(state).into(),
+        })
+    }
+
     pub(crate) async fn operation(
         &self,
         wallet: WalletId,
