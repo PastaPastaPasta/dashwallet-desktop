@@ -244,8 +244,8 @@ export const dashpay = {
       /** `credits` is a number of credits. */
       fromCredits: "Paid from your identity's credits: up to {credits} credits",
       /** Paid from the Platform balance (C-funding F9). `total`, `funding` and `fee` are amounts:
-       * `funding` what the identity receives, exactly; `fee` the network fee, about; `total` both. */
-      fromPlatform: "About {total} leaves your Platform balance: {funding} for your identity and a network fee of about {fee}. Your identity starts with {funding}.",
+       * `funding` what the identity receives, exactly; `fee` the Platform fee, about; `total` both. */
+      fromPlatform: "About {total} leaves your Platform balance: {funding} for your identity and a Platform fee of about {fee}. Your identity starts with a balance of {funding}.",
       accept: "I accept",
       pay: "Confirm & pay",
       register: "Confirm",

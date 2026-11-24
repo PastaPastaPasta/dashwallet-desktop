@@ -125,7 +125,7 @@ describe("IOS-067 step 2: the cost (D2, D5)", () => {
     const model = confirmModel(quote({ totalDuffs: 0, availableDuffs: 0, platform }), amount);
     expect(model).toEqual({
       cost: "0.02041501 tDASH",
-      lines: ["About 0.02041501 tDASH leaves your Platform balance: 0.02 tDASH for your identity and a network fee of about 0.00041501 tDASH. Your identity starts with 0.02 tDASH."],
+      lines: ["About 0.02041501 tDASH leaves your Platform balance: 0.02 tDASH for your identity and a Platform fee of about 0.00041501 tDASH. Your identity starts with a balance of 0.02 tDASH."],
       shortfall: null,
     });
     expect(confirmModel(quote({ contested: true, totalDuffs: 0, availableDuffs: 0, platform }), amount).lines[1]).toBe(REG_COPY.confirm.contested);

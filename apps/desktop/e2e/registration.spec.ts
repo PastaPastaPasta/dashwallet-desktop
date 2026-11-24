@@ -357,7 +357,7 @@ test("C-funding F4, F7, F22: paid from the Platform balance, a start waits on an
   await chooseName(page, LABEL);
   // Confirm: what leaves the Platform balance, the identity's funding and the fee.
   await expect(page.getByTestId("registration-cost")).toContainText(
-    "About 0.020415 tDASH leaves your Platform balance: 0.02 tDASH for your identity and a network fee of about 0.000415 tDASH. Your identity starts with 0.02 tDASH.",
+    "About 0.020415 tDASH leaves your Platform balance: 0.02 tDASH for your identity and a Platform fee of about 0.000415 tDASH. Your identity starts with a balance of 0.02 tDASH.",
   );
   expect(await seriousAxeViolations(page)).toEqual([]);
   await page.getByTestId("registration-pay").click();
