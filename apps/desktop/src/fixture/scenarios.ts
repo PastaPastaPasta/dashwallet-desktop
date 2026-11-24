@@ -740,6 +740,43 @@ const SCENARIOS = {
     w.send.settledChild = [row.txid];
     return w;
   },
+  /** An unconfirmed payment of the first of two open wallets, whose saved transaction doesn't read:
+   * Abandon is offered and refused, and so is Remove Unconfirmed; both name the wallet and say to
+   * close it, or remove and restore it. */
+  "abandon-record-unreadable-two-wallets": (t) => {
+    const w = twoWallets(base(t));
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
+  /** As `abandon-record-unreadable-two-wallets`, with only that wallet open: the refusal doesn't
+   * say to close it. */
+  "abandon-record-unreadable": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
   /** An unconfirmed payment a later payment spends from, already locked when the detail opens:
    * Abandon isn't offered. */
   "abandon-settled-child-hidden": (t) => {

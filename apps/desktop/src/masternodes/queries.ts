@@ -41,9 +41,10 @@ export function useMasternodeListState() {
   return useQuery({ queryKey: mnKeys.listState, queryFn: () => b.mnListState() });
 }
 
-export function useMasternodes(walletId: string, enabled = true) {
+/** `retryOnMount` false: a failed read isn't read again just because this observer mounts. */
+export function useMasternodes(walletId: string, enabled = true, retryOnMount = true) {
   const b = useBackend();
-  return useQuery({ queryKey: mnKeys.list(walletId), queryFn: () => b.mnList(walletId), enabled });
+  return useQuery({ queryKey: mnKeys.list(walletId), queryFn: () => b.mnList(walletId), enabled, retryOnMount });
 }
 
 export function useMasternode(walletId: string, hash: string, enabled = true) {

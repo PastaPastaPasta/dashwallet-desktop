@@ -2,8 +2,8 @@
 // the shielded account's (lane E1's `shielded_history`). The engine's history knows Core
 // transactions only, so these are synthetic `TxRow`s, told apart by their `platform:` or
 // `shielded:` txid (`<source>:<kind>:<id>`), shown in List mode among the Core rows by date with a
-// source tag. They open no detail (they have no Core transaction), and CSV export stays the Core
-// history.
+// source tag. They open their own details sheet, built from the activity record (they have no Core
+// transaction), and CSV export stays the Core history.
 
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
@@ -109,6 +109,30 @@ export function shieldedRow(a: ShieldedActivity): TxRow {
     address: a.counterparty,
     label: a.memo,
   };
+}
+
+export type SourceRecord =
+  | { source: "platform"; row: TxRow; record: PlatformActivity }
+  | { source: "shielded"; row: TxRow; record: ShieldedActivity };
+
+/** A row's txid without its state suffix: a move that is replaced or may still land while its
+ * details are open is still the same record. */
+const recordKey = (txid: string) => txid.replace(/:(replaced|mayland)$/, "");
+
+/** The activity record a synthetic row was made from, by its txid; `null` for a Core txid or a
+ * record no longer in the read. */
+export function findSourceRecord(txid: string, platform: readonly PlatformActivity[] | null | undefined, shielded: readonly ShieldedActivity[] | null | undefined): SourceRecord | null {
+  const key = recordKey(txid);
+  const source = rowSource({ txid });
+  if (source === "platform") {
+    const record = platform?.find((a) => recordKey(platformRow(a).txid) === key);
+    return record ? { source, row: platformRow(record), record } : null;
+  }
+  if (source === "shielded") {
+    const record = shielded?.find((a) => shieldedRow(a).txid === key);
+    return record ? { source, row: shieldedRow(record), record } : null;
+  }
+  return null;
 }
 
 export function sourceRowTitle(row: TxRow): string {
