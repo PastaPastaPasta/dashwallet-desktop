@@ -2249,3 +2249,101 @@ fn a_moves_result_says_what_arrives_and_the_fee() {
     assert_eq!(r.fee, 2 * COIN - paid);
     assert!(r.fee > 0);
 }
+
+fn reset(f: &Fixture) -> Result<(), EngineError> {
+    within(f, f.session.reset_chain_data())
+}
+
+fn refused(r: Result<(), EngineError>, failure: CoinJoinFailure) {
+    assert!(
+        matches!(&r, Err(EngineError::CoinJoin(got)) if *got == failure),
+        "{r:?}"
+    );
+}
+
+/// A reset of chain data would hide a signed round's transaction from the
+/// wallet while its inputs are held: it is refused while a wallet mixes or
+/// a session of one is open (`MixingActive`), then, once mixing stopped,
+/// while a signed round's inputs are still held (`InputsHeld`), which
+/// `mixing_busy` does not see. 59 minutes after the round it is still
+/// refused; an hour after, the reset releases them itself and runs.
+#[test]
+fn a_reset_of_chain_data_waits_for_mixing_and_a_signed_rounds_inputs() {
+    let f = fixture(false);
+    let coin = f.credit_coinjoin(1, COIN);
+
+    f.session.coinjoin.set_mixing_for_test(f.wallet, true);
+    refused(reset(&f), CoinJoinFailure::MixingActive);
+    f.session.coinjoin.set_mixing_for_test(f.wallet, false);
+    f.session.coinjoin.set_open_session_for_test(f.wallet, true);
+    refused(reset(&f), CoinJoinFailure::MixingActive);
+    f.session
+        .coinjoin
+        .set_open_session_for_test(f.wallet, false);
+
+    let owner = SpendOwner::mixing_session();
+    f.session.spends.reserve(f.wallet, owner, [coin]);
+    let now = crate::coins::now_secs();
+    f.session
+        .hold_signed_for_test(f.wallet, owner, &[coin], now);
+    assert!(!f.session.mixing_busy(), "no session open, inputs held");
+    let birth = f.session.hub.wallet_state(&f.wallet).unwrap().birth_height;
+    let manager = f.session.manager().unwrap();
+    f.engine.block_on(async {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let wm = manager.wallet_manager_arc();
+        wm.write()
+            .await
+            .update_wallet_synced_height(&f.wallet.0, birth + 100);
+    });
+    let replay = f.session.live().unwrap().replay;
+    assert_eq!(f.engine.block_on(replay.stored(f.wallet)).unwrap(), None);
+    refused(reset(&f), CoinJoinFailure::InputsHeld);
+    assert_eq!(
+        f.engine.block_on(replay.stored(f.wallet)).unwrap(),
+        None,
+        "a refused reset stores no replay record"
+    );
+    assert!(f.session.spends.snapshot(&f.wallet).contains(&coin));
+
+    let timeout = crate::coinjoin::PENDING_OBSERVATION_FOR_TEST;
+    assert_eq!(timeout, 60 * 60, "the refusal says up to an hour");
+    f.session
+        .hold_signed_for_test(f.wallet, owner, &[coin], now - timeout + 60);
+    refused(reset(&f), CoinJoinFailure::InputsHeld);
+    f.session
+        .hold_signed_for_test(f.wallet, owner, &[coin], now - timeout);
+    reset(&f).unwrap();
+    assert!(!f.session.spends.snapshot(&f.wallet).contains(&coin));
+}
+
+/// Mixing does not start while chain data is reset: a start is refused
+/// while the reset holds CoinJoin, and so is one that read its view before
+/// the reset claimed it, when it would set the flag.
+#[test]
+fn mixing_does_not_start_while_chain_data_is_reset() {
+    let f = fixture(false);
+    for n in 1..=4 {
+        f.credit_coinjoin(n, COIN);
+    }
+    let claim = f.session.coinjoin.claim_reset().unwrap();
+    refused(start(&f), CoinJoinFailure::SpvNotRunning);
+    drop(claim);
+
+    let start_read = pause_at(&f, |h, p| h.start_after_read = Some(p));
+    let _release = ReleaseOnDrop(vec![Arc::clone(&start_read)]);
+    let starting = {
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        (f.session.rt).spawn(async move { s.start_mixing(w).await })
+    };
+    reached(&start_read);
+    let claim = f.session.coinjoin.claim_reset().unwrap();
+    start_read.release.notify_one();
+    refused(
+        within(&f, async { starting.await.unwrap() }),
+        CoinJoinFailure::SpvNotRunning,
+    );
+    assert!(!f.session.coinjoin.is_mixing(&f.wallet));
+    drop(claim);
+    assert!(f.session.coinjoin.claim_reset().is_ok());
+}
