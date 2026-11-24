@@ -167,7 +167,7 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(api.dropUnconfirmed).toHaveBeenCalledExactlyOnceWith(WALLET_A);
     expect(RepairText.dropped(1)).toBe("1 transaction was removed; a rescan was scheduled.");
     expect(RepairText.dropUnconfirmedQuestion).toBe(
-      "Abandon every unconfirmed transaction that isn't locked yet, and rescan? Locked transactions are kept, because they will confirm. Any other transaction that reached the network may still confirm.",
+      "Abandon every unconfirmed transaction that isn't locked yet, and rescan? Locked transactions are kept, because they will confirm. This also ends any unconfirmed masternode registration or key change that isn't locked yet: its coins are released, and Dash Wallet never sends it again. Any abandoned transaction that reached the network may still confirm.",
     );
   });
 
