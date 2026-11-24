@@ -3004,3 +3004,87 @@ fn abandoning_while_another_wallet_is_opening_is_not_refused_as_unreadable() {
         "{abandoned:?}"
     );
 }
+
+/// The phrase of a device that holds a watch-only wallet's secret.
+const ELSEWHERE_PHRASE: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+/// #749: a watch-only wallet reaches the drop too. Its payment of A with
+/// change, signed on another device and handed to the network (as Broadcast
+/// Tx does with a PSBT), is stored; after a restart an InstantSend-locked
+/// rival paying the wallet beats it. The payment is dropped and A is held
+/// through a `dropped:` note, as for a wallet that holds its secret.
+#[test]
+fn a_watch_only_wallets_beaten_payment_is_dropped_and_its_coin_held() {
+    use key_wallet::wallet::initialization::WalletAccountCreationOptions;
+    let (_dir, engine, session, _) = engine_wallet();
+    let xpub = {
+        let device = key_wallet::Wallet::from_mnemonic(
+            key_wallet::Mnemonic::from_phrase(ELSEWHERE_PHRASE).unwrap(),
+            key_wallet::Network::Regtest,
+            WalletAccountCreationOptions::Default,
+        )
+        .unwrap();
+        let account = device.accounts.standard_bip44_accounts.get(&0).unwrap();
+        account.account_xpub.to_string()
+    };
+    let options = crate::WatchOnlyOptions {
+        birth_height: Some(super::BIRTH),
+        ..Default::default()
+    };
+    let id = engine
+        .block_on(session.import_watch_only(xpub, options))
+        .unwrap();
+    assert!(
+        (session.wallet_infos().unwrap().iter()).any(|w| w.wallet_id == id && w.watch_only),
+        "watch-only"
+    );
+    let to = fresh_address(&engine, &session, id);
+    let paid = funding(7, std::slice::from_ref(&to), COIN);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(
+        &engine,
+        &session,
+        id,
+        TIP,
+        vec![super::own_spend_disk_tests::foreign()],
+    );
+    let a = OutPoint::new(paid.txid(), 0);
+    let change = fresh_address(&engine, &session, id);
+    let p = super::signed_by_phrase_each(
+        &engine,
+        &session,
+        id,
+        ELSEWHERE_PHRASE,
+        std::slice::from_ref(&to),
+        super::spend_of(
+            a,
+            vec![
+                (super::elsewhere(), COIN / 2),
+                (change.script_pubkey(), COIN / 2 - 1_000),
+            ],
+        ),
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+
+    let session = reopen(&engine, session);
+    let back = fresh_address(&engine, &session, id);
+    let rival = super::signed_by_phrase_each(
+        &engine,
+        &session,
+        id,
+        ELSEWHERE_PHRASE,
+        std::slice::from_ref(&to),
+        super::spend_of(a, vec![(back.script_pubkey(), COIN - 2_000)]),
+    );
+    mempool(&engine, &session, id, &rival);
+    instant_lock(&engine, &session, id, &rival);
+    reconciled(&engine, &session, id);
+    assert!(
+        !live_in_history(&session, id, p.txid()),
+        "the payment is dropped"
+    );
+    let holds = crate::tx_actions::dropped_holds(&session.live().unwrap().appdb, id).unwrap();
+    assert!(holds.contains(&a), "A is held: {holds:?}");
+}
