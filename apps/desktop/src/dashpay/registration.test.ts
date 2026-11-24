@@ -206,6 +206,15 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     expect(stopped.lines).toContain(REG_COPY.recovery);
   });
 
+  it("C-funding F10: a paid failure from the Platform balance says what was kept, and offers a new registration", () => {
+    const refunded = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromPlatform: true, failure: failure("registration.refunded", { retryable: false }) }), I);
+    expect([refunded.kind, refunded.title, ...refunded.actions.map((a) => `${a.kind}:${a.label}`)]).toEqual(["failed", "Registration failed", "another:Start a new registration"]);
+    expect(refunded.lines).toEqual(["Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used."]);
+    // Another failure keeps its label.
+    const failed = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromPlatform: true, failure: failure("platform.timeout", { retryable: false }) }), I);
+    expect(failed.actions.map((a) => `${a.kind}:${a.label}`)).toEqual(["another:Choose another username"]);
+  });
+
   it("R9, R10, R11: done greets the name; a refused name keeps the identity; a contested one shows the vote", () => {
     const done = screenModel(row({ phase: "done", waiting: null, identity: "A" }), I);
     expect(done).toMatchObject({

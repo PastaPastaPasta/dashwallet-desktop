@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { MAIN_PHRASE } from "../src/fixture/vault";
-import { CARDS } from "./dashpay";
+import { CARDS, refundedFromPlatform } from "./dashpay";
 import { authorize, fixtureUrl, THEMES, trackPageErrors } from "./helpers";
 import { checkArea, overflow, PANES, PSEUDO, untranslated } from "./pseudo";
 
@@ -204,6 +204,14 @@ export const STATES: Record<string, State> = {
   repair: { scenario: "dashpay-registration-needs-finish", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "repair") },
   "repair-unknown": { scenario: "dashpay-registration-failed-unknown", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "repair") },
   stopped: { scenario: "dashpay-registration-stopped", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "stopped") },
+  refunded: {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await refundedFromPlatform(page, LABEL);
+    },
+  },
   finished: {
     scenario: "dashpay-registration-needs-finish",
     roots: ["page-joinDashPay"],

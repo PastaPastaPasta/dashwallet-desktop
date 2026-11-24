@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
+import { refundedFromPlatform } from "./dashpay";
 import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // DP1-09: the username registration wizard on the fixture backend, by parity ID: IOS-066 (choose
@@ -446,6 +447,29 @@ test("R5 Finish transfers on the page; R8 a stopped funded registration says the
   await expect(page.getByTestId("tools-repair")).toBeVisible();
 });
 
+test("C-funding F10: a create from the Platform balance that fails in a block says what was kept and offers a new registration", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  const credits = () => page.evaluate(() => window.__dwFixture!.world.pending.platform!.addresses.map((a) => a.credits));
+  const before = await credits();
+  await toJoin(page);
+  await refundedFromPlatform(page, LABEL);
+  await expect(screen(page)).toContainText("Registration failed");
+  await expect(page.getByTestId("registration-lines")).toHaveText(
+    "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
+  );
+  await expect(page.getByTestId("registration-repair")).toHaveCount(0);
+  await expect(page.getByTestId("registration-continue")).toHaveCount(0);
+  await expect(page.getByTestId("registration-another")).toHaveText("Start a new registration");
+  // Only the fee left input 0, and the card offers Join again.
+  const after = await credits();
+  expect(BigInt(before[0]) - BigInt(after[0])).toBe(41_500_000n);
+  expect(after[1]).toBe(before[1]);
+  expect(await calls(page, "start_registration")).toBe(1);
+  await page.getByTestId("registration-another").click();
+  await expect(page.getByTestId("registration-name")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 /** Every screen of the wizard, reached from its scenario. */
 const SCREENS: { name: string; scenario: string; reach: (page: Page) => Promise<void> }[] = [
   {
@@ -472,6 +496,7 @@ const SCREENS: { name: string; scenario: string; reach: (page: Page) => Promise<
   { name: "repair", scenario: "dashpay-registration-needs-finish", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "repair")) },
   { name: "repair-unknown", scenario: "dashpay-registration-failed-unknown", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "repair")) },
   { name: "stopped", scenario: "dashpay-registration-stopped", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "stopped")) },
+  { name: "refunded", scenario: "dashpay-no-identity", reach: (page) => refundedFromPlatform(page, LABEL) },
 ];
 
 for (const theme of THEMES)

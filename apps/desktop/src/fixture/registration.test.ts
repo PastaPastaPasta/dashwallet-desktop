@@ -190,6 +190,27 @@ describe("a registration from the Platform balance (C-funding F4, F9, F10, F22)"
     expect(await rowOf(draft)).toMatchObject({ phase: "identityRegistered", identity: NEW_IDENTITY });
     expect(BigInt(credits(f)[FIRST])).toBe(BigInt(before[FIRST]) - NAME_CREDITS - 41_500_000n);
   });
+
+  it("F10: a create that fails in a block keeps the fee, clears the row with registration.refunded and frees the balance", async () => {
+    const f = install();
+    f.world.dashpay.platformCreates = ["paidFailure"];
+    const before = credits(f);
+    const draft = await start();
+    f.advanceRegistration(draft);
+    f.advanceRegistration(draft);
+    expect(await rowOf(draft)).toMatchObject({
+      phase: "failed",
+      fundsCommitted: false,
+      running: false,
+      identity: null,
+      failure: { code: "registration.refunded", retryable: false },
+    });
+    expect(f.advanceRegistration(draft)).toBe(false);
+    expect(BigInt(credits(f)[FIRST])).toBe(BigInt(before[FIRST]) - 41_500_000n);
+    expect(await cmd.dashpayStatus(W)).toEqual({ kind: "noIdentity", reason: null });
+    // Nothing holds the addresses: the next Platform quote plans.
+    expect((await cmd.registrationQuote(W, platformRequest(LABEL))).platform).not.toBeNull();
+  });
 });
 
 describe("a run, step by step", () => {

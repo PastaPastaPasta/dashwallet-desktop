@@ -290,8 +290,9 @@ export interface PlatformRegisterPlan {
 }
 
 /** `registered`: the create's proved result; `unknown`: no answer (F7); `held`: failed by height
- * and able to land still (F22). */
-export type PlatformCreateOutcome = "registered" | "unknown" | "held";
+ * and able to land still (F22); `paidFailure`: executed and failed in a block, and nothing
+ * retries (F10, F12). */
+export type PlatformCreateOutcome = "registered" | "unknown" | "held" | "paidFailure";
 
 const short = (needed: bigint, available: bigint) =>
   fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(needed), available: String(available) });
@@ -735,14 +736,28 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
       break;
     case "platformCreate": {
       const outcome = dp.platformCreates?.shift() ?? "registered";
+      const plan = dp.platformPlans?.[row.draft];
+      const p = world.pending.platform;
+      if (outcome === "paidFailure") {
+        // registration_flow.rs `PaidFailure` with no identity at the row's index: the fee leaves
+        // input 0 (dpp's penalty is not modelled) and the row is cleared with `registration.refunded`.
+        if (plan && p) {
+          const source = plan.inputs[0].address;
+          p.addresses = p.addresses.map((a) => (a.address === source ? { ...a, credits: String(BigInt(a.credits) - plan.fee) } : a));
+          ctx.emit({ kind: "platform", network, walletId, change: { domain: "platformAddresses" } });
+        }
+        const failure: RegistrationFailure = { phase: row.phase, code: "registration.refunded", retryable: false, needed: null, available: null };
+        Object.assign(row, { phase: "failed", fundsCommitted: false, failure });
+        end(ctx, walletId, dp, row, d);
+        settleStatus(dp);
+        break;
+      }
       if (outcome !== "registered") {
         // F7: an unknown answer waits and reads again; F22: one failed by height parks for the user.
         Object.assign(row, { waiting: outcome === "unknown" ? "paymentUnknown" : "paymentHeld", fundsCommitted: true });
         if (outcome === "held") park(ctx, walletId, dp, row, d);
         break;
       }
-      const plan = dp.platformPlans?.[row.draft];
-      const p = world.pending.platform;
       if (plan && p) {
         // Drive takes each claim, and the fee from input 0.
         const taken = new Map(plan.inputs.map((x, i) => [x.address, x.claim + (i === 0 ? plan.fee : 0n)]));
