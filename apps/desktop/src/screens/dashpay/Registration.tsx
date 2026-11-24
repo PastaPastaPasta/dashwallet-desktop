@@ -5,6 +5,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { hasCode } from "../../api/backend";
 import type { RegistrationQuote } from "../../api/generated/RegistrationQuote";
 import { myQr } from "../../contacts/add";
 import { useMyUserLink } from "../../contacts/queries";
@@ -15,12 +16,13 @@ import { useBackend, usePoolBalances } from "../../api/queries";
 import { PAY_WITH_COPY, payWithRows } from "../../dashpay/payWith";
 import { timeText } from "../../fiat/rates";
 import { known } from "../../format/homeBalance";
-import { useLabelQuote, useNameChecks, useNameCredits, useShieldedReadiness, useUsernameCheck, useUsernameQuote } from "../../dashpay/queries";
+import { useLabelQuote, useNameChecks, useNameCredits, usePlatformSource, useShieldedReadiness, useUsernameCheck, useUsernameQuote } from "../../dashpay/queries";
 import {
   availabilityLine,
   canChoose,
   confirmModel,
   MAX_LABEL,
+  platformRefusalText,
   REG_COPY,
   RULE_TEXT,
   startErrorText,
@@ -56,7 +58,7 @@ export function ErrorLine({ wiz, inputs, claim = false }: { wiz: RegistrationWiz
   if (wiz.error === null) return null;
   return (
     <p className="registration-error" role="alert" data-testid="registration-error">
-      {claim || wiz.mode.kind === "invitation" ? claimErrorText(wiz.error, inputs.amount) : startErrorText(wiz.error, inputs.amount, inputs.discreet)}
+      {claim || wiz.mode.kind === "invitation" ? claimErrorText(wiz.error, inputs.amount) : startErrorText(wiz.error, inputs.amount, inputs.discreet, wiz.fromPlatform)}
     </p>
   );
 }
@@ -235,7 +237,7 @@ function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: Re
           size="large"
           data-testid="registration-wedge-ok"
           disabled={wiz.running !== null}
-          onClick={() => void wiz.confirmWedge(quote.grant)}
+          onClick={() => void wiz.confirmWedge(quote)}
         >
           {REG_COPY.wedge.confirm}
         </DashButton>
@@ -244,13 +246,22 @@ function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: Re
   );
 }
 
-/** Step 2's cost: the quote in Dash (D2), or what the identity's credits may pay (D6). */
+/** Step 2's cost: the quote in Dash (D2) from the Dash wallet or the Platform balance (C-funding
+ * F9), or what the identity's credits may pay (D6). */
 function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizard; walletId: string; identity: string | null; inputs: StatusInputs }) {
   useT();
-  const quote = useLabelQuote(walletId, wiz.label, identity === null);
+  const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.fromPlatform);
   const credits = useNameCredits(walletId, identity, wiz.label);
-  // Either read failing says so (review r2 L1).
-  if ((identity !== null ? credits : quote).isError) return <p className="registration-line registration-problem">{REG_COPY.confirm.quoteFailed}</p>;
+  // Either read failing says so (review r2 L1); a Platform quote's refusal says why.
+  const failed = identity !== null ? credits : quote;
+  if (failed.isError) {
+    const why = (wiz.fromPlatform && platformRefusalText(failed.error, inputs.amount)) || REG_COPY.confirm.quoteFailed;
+    return (
+      <p className="registration-line registration-problem" data-testid="registration-quote-failed">
+        {why}
+      </p>
+    );
+  }
   if (identity !== null)
     return <p className="registration-line">{credits.data ? REG_COPY.confirm.fromCredits(credits.data.maxCredits) : REG_COPY.confirm.quoting}</p>;
   if (!quote.data) return <p className="registration-line">{REG_COPY.confirm.quoting}</p>;
@@ -284,7 +295,13 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   const [accepted, setAccepted] = useState(false);
   const identity = wiz.mode.kind === "credits" ? wiz.mode.identity : null;
   // The same reads as CostLines (shared through the query cache).
-  const quote = useLabelQuote(walletId, wiz.label, identity === null);
+  const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.fromPlatform);
+  // F4: a start refused for a changed cost shows the new one.
+  const changedCost = hasCode(wiz.error, "registration.quote_changed");
+  const { refetch } = quote;
+  useEffect(() => {
+    if (changedCost) void refetch();
+  }, [changedCost, refetch]);
   const credits = useNameCredits(walletId, identity, wiz.label);
   const check = useUsernameCheck(wiz.label);
   const contested = identity !== null ? (check.data?.contested ?? false) : (quote.data?.contested ?? false);
@@ -292,7 +309,7 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   const disabled = !ready || wiz.running !== null || (contested && !accepted);
   const pay = () => {
     if (identity !== null) void wiz.registerName(identity);
-    else if (quote.data) void wiz.confirm(quote.data.grant);
+    else if (quote.data) void wiz.confirm(quote.data);
   };
   return (
     <section className="registration card-l1" data-testid="registration-confirm" aria-labelledby={`${id}-title`}>
@@ -336,9 +353,11 @@ function PayWithStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   const core = useUsernameQuote(walletId, true) ?? null;
   const pools = usePoolBalances(walletId);
   const readiness = useShieldedReadiness(walletId);
+  const platform = usePlatformSource(walletId);
   const rows = payWithRows({
     core,
     platformDuffs: known(pools.platform) ? pools.platform : null,
+    platform,
     shieldedDuffs: known(pools.shielded) ? pools.shielded : null,
     readiness,
     amount: inputs.amount,

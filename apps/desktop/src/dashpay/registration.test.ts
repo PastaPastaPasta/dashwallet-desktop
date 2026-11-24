@@ -18,9 +18,11 @@ import {
   pendingModel,
   REG_COPY,
   screenModel,
+  platformRefusalText,
   startErrorText,
   type ScreenInputs,
 } from "./registration";
+import { PAY_WITH_COPY } from "./payWith";
 import { COPY, WAITS } from "./status";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
@@ -116,6 +118,17 @@ describe("IOS-067 step 2: the cost (D2, D5)", () => {
   it("D5: a shortfall when what the funding can spend now is below the total, none at exactly the total", () => {
     expect(confirmModel(quote({ availableDuffs: 3_002_259 }), amount).shortfall).toBe("You need at least 0.0300226 tDASH to create this username.");
     expect(confirmModel(quote({ availableDuffs: 3_002_260 }), amount).shortfall).toBeNull();
+  });
+
+  it("C-funding F9: from the Platform balance, what leaves it, the identity's funding and the fee, never the reserve", () => {
+    const platform = { fundingCredits: "2000000000", feeCredits: "41500001", feeReserveCredits: "124500000", debitCredits: "2124500000" };
+    const model = confirmModel(quote({ totalDuffs: 0, availableDuffs: 0, platform }), amount);
+    expect(model).toEqual({
+      cost: "0.02041501 tDASH",
+      lines: ["About 0.02041501 tDASH leaves your Platform balance: 0.02 tDASH for your identity and a network fee of about 0.00041501 tDASH. Your identity starts with 0.02 tDASH."],
+      shortfall: null,
+    });
+    expect(confirmModel(quote({ contested: true, totalDuffs: 0, availableDuffs: 0, platform }), amount).lines[1]).toBe(REG_COPY.confirm.contested);
   });
 });
 
@@ -229,6 +242,17 @@ describe("refusals of a start", () => {
     expect(startErrorText(appError("registration.funding_unknown_recent", { kind: "draftWait", draft: "d", waitSecs: null }), amount)).toMatch(/can't yet tell/);
     expect(startErrorText(appError("name.taken"), amount)).toBe("Username taken. Choose another one.");
     expect(startErrorText(new Error("boom"), amount)).toBe("boom");
+  });
+
+  it("from the Platform balance, its own refusals say what the balance lacks or what holds it", () => {
+    const short = appError("platform.insufficient_credits", { kind: "credits", needed: "2124500000", available: "1" });
+    expect(startErrorText(short, amount, false, true)).toBe("You need at least 0.021245 tDASH to create this username.");
+    expect(startErrorText(short, amount)).toBe("The identity's credits do not cover this username.");
+    expect(startErrorText(appError("credits.move_pending", { kind: "artifact", artifact: "m" }), amount, false, true)).toBe(PAY_WITH_COPY.movePending);
+    expect(startErrorText(appError("platform.feature_off", { kind: "feature", feature: "platform_registration" }), amount, false, true)).toBe(PAY_WITH_COPY.notOffered);
+    expect(startErrorText(appError("registration.quote_changed"), amount, false, true)).toBe("The cost changed. Review it and confirm again. Nothing was paid.");
+    expect(startErrorText(appError("name.taken"), amount, false, true)).toBe("Username taken. Choose another one.");
+    expect(platformRefusalText(appError("platform.unavailable"), amount)).toBeNull();
   });
 });
 

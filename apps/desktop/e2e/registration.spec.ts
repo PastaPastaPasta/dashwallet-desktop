@@ -180,7 +180,7 @@ test("D13: a relaunch on step 1 or 2 starts from the Join card; nothing was paid
   expect(await assetLocks(page)).toBe(0);
 });
 
-test("C-funding F19: Pay another way lists the sources; only Dash wallet can pay here, selected each time; Continue and Back", async ({ page }) => {
+test("C-funding F19: Pay another way lists the sources; Dash wallet and Platform can pay here, Dash wallet selected each time; Continue and Back", async ({ page }) => {
   const errors = await open(page, "dashpay-no-identity");
   await toJoin(page);
   await page.getByTestId("join-pay-another").click();
@@ -190,11 +190,12 @@ test("C-funding F19: Pay another way lists the sources; only Dash wallet can pay
   await expect(radio("core")).toBeChecked();
   await expect(radio("core")).toBeEnabled();
   await expect(page.getByTestId("pay-with-core-reason")).toHaveCount(0);
-  for (const s of ["platform", "shielded"]) {
-    await expect(radio(s)).toBeDisabled();
-    await expect(page.getByTestId(`pay-with-${s}-reason`)).toHaveText("Not available on this network yet.");
-    await expect(radio(s)).toHaveAccessibleDescription("Not available on this network yet.");
-  }
+  await expect(radio("platform")).toBeEnabled();
+  await expect(radio("platform")).not.toBeChecked();
+  await expect(page.getByTestId("pay-with-platform-reason")).toHaveCount(0);
+  await expect(radio("shielded")).toBeDisabled();
+  await expect(page.getByTestId("pay-with-shielded-reason")).toHaveText("Not available on this network yet.");
+  await expect(radio("shielded")).toHaveAccessibleDescription("Not available on this network yet.");
   expect(await seriousAxeViolations(page)).toEqual([]);
 
   await page.getByTestId("registration-next").click();
@@ -340,6 +341,68 @@ test("#685: a held Platform payment offers Continue and Move to Dash wallet on t
   expect(await calls(page, "resume_registration")).toBe(1);
   expect(await calls(page, "registration_quote")).toBe(quotes);
   expect(await calls(page, "start_registration")).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test("C-funding F4, F7, F22: paid from the Platform balance, a start waits on an unknown answer, parks when held, and Continue finishes it", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  await page.evaluate(() => (window.__dwFixture!.world.dashpay.platformCreates = ["unknown", "held"]));
+  const credits = () => page.evaluate(() => window.__dwFixture!.world.pending.platform!.addresses.map((a) => a.credits));
+  const before = await credits();
+  await toJoin(page);
+  await page.getByTestId("join-pay-another").click();
+  await page.getByTestId("pay-with-platform").getByRole("radio").check();
+  await page.getByTestId("registration-next").click();
+  await chooseName(page, LABEL);
+  // Confirm: what leaves the Platform balance, the identity's funding and the fee.
+  await expect(page.getByTestId("registration-cost")).toContainText(
+    "About 0.020415 tDASH leaves your Platform balance: 0.02 tDASH for your identity and a network fee of about 0.000415 tDASH. Your identity starts with 0.02 tDASH.",
+  );
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  await page.getByTestId("registration-pay").click();
+  await authorize(page);
+  await expect(screen(page)).toHaveAttribute("data-kind", "progress");
+  const draft = await draftOf(page);
+  expect(await page.evaluate(() => window.__dwFixture!.world.dashpay.registrations.at(-1)!.fromPlatform)).toBe(true);
+  expect(await assetLocks(page)).toBe(0);
+
+  // F7: no answer yet; the screen waits and offers nothing.
+  await advance(page, draft);
+  await advance(page, draft);
+  await expect(screen(page)).toHaveAttribute("data-waiting", "paymentUnknown");
+  await expect(page.getByTestId("registration-continue")).toHaveCount(0);
+  // F22: failed by height; Continue and Move to Dash wallet.
+  await advance(page, draft);
+  await expect(screen(page)).toHaveAttribute("data-kind", "held");
+  await expect(page.getByTestId("registration-lines")).toContainText(HELD_LINE);
+  await expect(page.getByTestId("registration-moveToCore")).toBeVisible();
+  expect(await credits()).toEqual(before);
+
+  // Continue signs the stored plan again under the row's own grant; the run finishes.
+  await page.getByTestId("registration-continue").click();
+  await authorize(page);
+  await expect(screen(page)).toHaveAttribute("data-kind", "progress");
+  await complete(page, draft);
+  await expect(screen(page)).toHaveAttribute("data-kind", "done");
+  expect(await calls(page, "start_registration")).toBe(1);
+  expect(await calls(page, "registration_resume_grant")).toBe(1);
+  expect(await calls(page, "resume_registration")).toBe(1);
+  // One debit: the funding and the fee, from input 0.
+  const after = await credits();
+  expect(BigInt(before[0]) - BigInt(after[0])).toBe(2_041_500_000n);
+  expect(after[1]).toBe(before[1]);
+  expect(errors).toEqual([]);
+});
+
+test("Mainnet: off (flag platform_registration): Pay with says Platform is not available there", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("dashpay-no-identity", "light", "&network=mainnet"));
+  await page.getByTestId("toolbar").waitFor();
+  await toJoin(page);
+  await page.getByTestId("join-pay-another").click();
+  const radio = page.getByTestId("pay-with-platform").getByRole("radio");
+  await expect(page.getByTestId("pay-with-platform-reason")).toHaveText("Not available on this network yet.");
+  await expect(radio).toBeDisabled();
   expect(errors).toEqual([]);
 });
 

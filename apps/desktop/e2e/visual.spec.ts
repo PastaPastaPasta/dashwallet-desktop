@@ -452,6 +452,19 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
       await page.getByTestId("registration-fee").waitFor();
     },
   },
+  // C-funding F9: Confirm paid from the Platform balance.
+  "confirm-platform": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-pay-another").click();
+      await page.getByTestId("pay-with-platform").getByRole("radio").check();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-name-field").fill("alice-77");
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-fee").waitFor();
+    },
+  },
   progress: { scenario: "dashpay-registering", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=progress]").waitFor() },
   paused: { scenario: "dashpay-registration-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=paused]").waitFor() },
   retry: { scenario: "dashpay-registering-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=retry]").waitFor() },

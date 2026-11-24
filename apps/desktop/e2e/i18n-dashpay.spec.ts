@@ -159,6 +159,20 @@ export const STATES: Record<string, State> = {
   "name-taken": { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => typed(page, "b0b", /problem/) },
   confirm: { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => confirm(page, LABEL) },
   "confirm-contested": { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => confirm(page, "alice") },
+  "confirm-platform": {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await page.getByTestId("join-pay-another").click();
+      await page.getByTestId("pay-with-platform").getByRole("radio").check();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-name-field").fill(LABEL);
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-fee").waitFor();
+    },
+  },
   "confirm-shortfall": {
     scenario: "empty",
     roots: ["page-joinDashPay"],

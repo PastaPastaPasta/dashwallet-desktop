@@ -11,7 +11,7 @@ import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { CLAIM_COPY, CLAIM_KEPT, claimErrorText } from "./claim";
 import { QUOTE_LABEL } from "./status";
-import { coreRequest, invitationRequest, RegistrationWizard, resetWizards, wizardFor } from "./wizard";
+import { coreRequest, invitationRequest, platformRequest, RegistrationWizard, resetWizards, wizardFor } from "./wizard";
 
 const quote = (label: string): RegistrationQuote => ({
   contested: label.length < 6,
@@ -24,6 +24,17 @@ const quote = (label: string): RegistrationQuote => ({
   readiness: null,
   platform: null,
 });
+
+/** A quote from the Platform balance: no duffs; the grant covers the debit and the name. */
+const platformQuote: RegistrationQuote = {
+  ...quote("alice-77"),
+  lockDuffs: 0,
+  feeDuffs: 0,
+  totalDuffs: 0,
+  availableDuffs: 0,
+  grant: { maxDuffs: 0, maxCredits: "4126000000" },
+  platform: { fundingCredits: "2000000000", feeCredits: "42000000", feeReserveCredits: "126000000", debitCredits: "2126000000" },
+};
 
 const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   draft: "reg-1",
@@ -85,7 +96,7 @@ describe("IOS-067 Confirm & pay", () => {
   it("starts once under a platformOp grant of the quote's caps, then shows the row's progress", async () => {
     const { wiz, calls, vault } = setup();
     atConfirm(wiz, "alice-77");
-    await wiz.confirm(quote("alice-77").grant);
+    await wiz.confirm(quote("alice-77"));
     expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 3_002_261, maxCredits: "2000000000" }, walletId: WALLET_A });
     expect(calls).toEqual(["start alice-77 grant-1"]);
     expect(wiz).toMatchObject({ step: null, draft: "reg-9", running: null, error: null });
@@ -94,14 +105,14 @@ describe("IOS-067 Confirm & pay", () => {
   it("D8: a second Confirm while the first runs starts nothing", async () => {
     const { wiz, calls } = setup();
     atConfirm(wiz, "alice-77");
-    await Promise.all([wiz.confirm(quote("x").grant), wiz.confirm(quote("x").grant)]);
+    await Promise.all([wiz.confirm(quote("x")), wiz.confirm(quote("x"))]);
     expect(calls).toEqual(["start alice-77 grant-1"]);
   });
 
   it("a cancelled passphrase starts nothing and stays on step 2", async () => {
     const { wiz, calls } = setup({ encrypted: true });
     atConfirm(wiz, "alice-77");
-    const running = wiz.confirm(quote("x").grant);
+    const running = wiz.confirm(quote("x"));
     await vi.waitFor(() => expect(wiz.grants.pending).not.toBeNull());
     wiz.grants.cancel();
     await running;
@@ -113,7 +124,7 @@ describe("IOS-067 Confirm & pay", () => {
     const { wiz, api, vault } = setup();
     api.startRegistration.mockRejectedValueOnce(appError("registration.funding_insufficient", { kind: "duffs", needed: 3_002_260, available: 1 }));
     atConfirm(wiz, "alice-77");
-    await wiz.confirm(quote("x").grant);
+    await wiz.confirm(quote("x"));
     expect(wiz.error).toMatchObject({ code: "registration.funding_insufficient" });
     expect(wiz.step).toBe("confirm");
     expect(vault.calls.revoked).toEqual(["grant-1"]);
@@ -124,7 +135,7 @@ describe("IOS-067 Confirm & pay", () => {
     setRows([row({ draft: "reg-1", waiting: "instantSend" })]);
     api.startRegistration.mockRejectedValueOnce(appError("registration.in_progress", { kind: "draft", draft: "reg-1" }));
     atConfirm(wiz, "alice-77");
-    await wiz.confirm(quote("x").grant);
+    await wiz.confirm(quote("x"));
     expect(wiz).toMatchObject({ step: null, draft: "reg-1", error: null, wedge: null });
   });
 
@@ -133,7 +144,7 @@ describe("IOS-067 Confirm & pay", () => {
     setRows([row({ draft: "reg-1", phase: "failed", waiting: null, failure: { code: "registration.islock_timeout", phase: "fundingSent", retryable: false, needed: null, available: null } })]);
     api.startRegistration.mockRejectedValueOnce(appError("registration.in_progress", { kind: "draft", draft: "reg-1" }));
     atConfirm(wiz, "alice-77");
-    await wiz.confirm(quote("x").grant);
+    await wiz.confirm(quote("x"));
     expect(wiz).toMatchObject({ step: null, draft: "reg-1", error: { code: "registration.in_progress" } });
   });
 
@@ -142,9 +153,9 @@ describe("IOS-067 Confirm & pay", () => {
     setRows([row({ draft: "reg-1", waiting: "fundingUnknown" })]);
     api.startRegistration.mockRejectedValueOnce(appError("registration.in_progress", { kind: "draft", draft: "reg-1" }));
     atConfirm(wiz, "alice-77");
-    await wiz.confirm(quote("x").grant);
+    await wiz.confirm(quote("x"));
     expect(wiz).toMatchObject({ step: "confirm", wedge: ["reg-1"], draft: null });
-    await wiz.confirmWedge(quote("x").grant);
+    await wiz.confirmWedge(quote("x"));
     expect(calls).toEqual(["start alice-77 grant-2 past reg-1"]);
     expect(wiz).toMatchObject({ step: null, draft: "reg-10" });
   });
@@ -155,10 +166,10 @@ describe("IOS-067 Confirm & pay", () => {
     api.startRegistration.mockRejectedValueOnce(appError("registration.in_progress", { kind: "draft", draft: "reg-2" }));
     api.startRegistrationPastUnknownFunding.mockRejectedValueOnce(appError("registration.in_progress", { kind: "draft", draft: "reg-1" }));
     atConfirm(wiz, "alice-77");
-    await wiz.confirm(quote("x").grant);
-    await wiz.confirmWedge(quote("x").grant);
+    await wiz.confirm(quote("x"));
+    await wiz.confirmWedge(quote("x"));
     expect(wiz.wedge).toEqual(["reg-2", "reg-1"]);
-    await wiz.confirmWedge(quote("x").grant);
+    await wiz.confirmWedge(quote("x"));
     expect(calls.at(-1)).toBe("start alice-77 grant-3 past reg-2,reg-1");
     expect(wiz.draft).toBe("reg-10");
   });
@@ -267,7 +278,7 @@ describe("DP5-03 the claim (invitation mode)", () => {
     expect(wiz.request()).toEqual(invitationRequest("carol-77", LINK, true));
     wiz.setRequestInviter(false);
     expect(wiz.request()).toEqual(invitationRequest("carol-77", LINK, false));
-    await wiz.confirm({ maxDuffs: 0, maxCredits: "3500000000" });
+    await wiz.confirm({ grant: { maxDuffs: 0, maxCredits: "3500000000" }, platform: null });
     expect(api.startRegistration).toHaveBeenCalledWith(WALLET_A, invitationRequest("carol-77", LINK, false), "grant-1");
     expect(wiz.draft).toBe("reg-9");
     // A new claim checks the request again; without an inviter there is no one to ask.
@@ -356,16 +367,16 @@ describe("the Pay with step (C-funding F18, F19)", () => {
   it("continues to the name only from a source this build can start, and Back returns to it", () => {
     const { wiz } = setup();
     wiz.begin({ kind: "core" }, "source");
-    for (const s of ["shielded", "platform"] as const) {
+    wiz.setSource("shielded");
+    wiz.pickSource();
+    expect(wiz.step).toBe("source");
+    for (const s of ["core", "platform"] as const) {
       wiz.setSource(s);
       wiz.pickSource();
+      expect(wiz.step).toBe("name");
+      wiz.back();
       expect(wiz.step).toBe("source");
     }
-    wiz.setSource("core");
-    wiz.pickSource();
-    expect(wiz.step).toBe("name");
-    wiz.back();
-    expect(wiz.step).toBe("source");
     wiz.back();
     expect(wiz.step).toBeNull();
   });
@@ -384,8 +395,42 @@ describe("the Pay with step (C-funding F18, F19)", () => {
     wiz.pickSource();
     wiz.setLabel("alice-77");
     wiz.next();
-    await wiz.confirm(quote("alice-77").grant);
+    await wiz.confirm(quote("alice-77"));
     expect(api.startRegistration).toHaveBeenCalledTimes(1);
     expect(api.startRegistration.mock.calls[0][1]).toEqual(coreRequest("alice-77"));
+  });
+
+  it("F4, F5: from the Platform balance, the start carries the quote's numbers under its grant with no duffs", async () => {
+    const { wiz, api, vault } = setup();
+    wiz.begin({ kind: "core" }, "source");
+    wiz.setSource("platform");
+    wiz.pickSource();
+    wiz.setLabel("alice-77");
+    wiz.next();
+    expect(wiz.fromPlatform).toBe(true);
+    await wiz.confirm(platformQuote);
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "4126000000" } });
+    expect(api.startRegistration.mock.calls[0][1]).toEqual(platformRequest("alice-77", { fundingCredits: "2000000000", feeReserveCredits: "126000000" }));
+    expect(api.startRegistration.mock.calls[0][1].funding).toEqual({ kind: "platformAddresses", fundingCredits: "2000000000", feeReserveCredits: "126000000" });
+  });
+
+  it("a Platform start under a quote without Platform numbers sends zeros, which the engine refuses as changed", async () => {
+    const { wiz, api } = setup();
+    wiz.begin({ kind: "core" }, "source");
+    wiz.setSource("platform");
+    wiz.pickSource();
+    wiz.setLabel("alice-77");
+    wiz.next();
+    await wiz.confirm(quote("alice-77"));
+    expect(api.startRegistration.mock.calls[0][1].funding).toEqual({ kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" });
+  });
+
+  it("only a new identity pays from the Platform balance: a claim and a name from credits ignore the source", () => {
+    const { wiz } = setup();
+    wiz.begin({ kind: "core" }, "source");
+    wiz.setSource("platform");
+    wiz.mode = { kind: "invitation", linkId: "l", contestedAllowed: false, inviter: null };
+    expect(wiz.fromPlatform).toBe(false);
+    expect(wiz.request(platformQuote).funding.kind).toBe("invitation");
   });
 });

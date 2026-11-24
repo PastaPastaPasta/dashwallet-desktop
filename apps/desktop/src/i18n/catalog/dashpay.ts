@@ -202,6 +202,7 @@ export const dashpay = {
       /** `amount` is the least the source must hold, with its unit. */
       short: "Not enough here. You need at least {amount}.",
       notOffered: "Not available on this network yet.",
+      movePending: "Another Platform transfer is still being confirmed. Try again when it is done.",
       /** `time` is a clock time, HH:MM. */
       resting: "Your shielded funds arrived less than 3 hours ago. For your privacy, you can use them from {time}.",
       unsettled: "An earlier shielded payment is still being checked. Try again when it is settled.",
@@ -238,6 +239,9 @@ export const dashpay = {
       shortfall: "You need at least {amount} to create this username.",
       /** `credits` is a number of credits. */
       fromCredits: "Paid from your identity's credits: up to {credits} credits",
+      /** Paid from the Platform balance (C-funding F9). `total`, `funding` and `fee` are amounts:
+       * `funding` what the identity receives, exactly; `fee` the network fee, about; `total` both. */
+      fromPlatform: "About {total} leaves your Platform balance: {funding} for your identity and a network fee of about {fee}. Your identity starts with {funding}.",
       accept: "I accept",
       pay: "Confirm & pay",
       register: "Confirm",
@@ -313,6 +317,7 @@ export const dashpay = {
       contestOpen: "The network is already voting on this username, and it can no longer be joined.",
       unreachable: "Could not reach the Dash network. Try again.",
       unlock: "Unlock the wallet and try again.",
+      quoteChanged: "The cost changed. Review it and confirm again. Nothing was paid.",
     },
   },
   /** Finish transfers' report. Each value but `kind` and `kinds` is a count. */

@@ -11,6 +11,8 @@ import type { FinishReport } from "../api/generated/FinishReport";
 import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { InvitationInviter } from "../api/generated/InvitationInviter";
 import type { NameOutcome } from "../api/generated/NameOutcome";
+import type { PlatformRegistrationQuote } from "../api/generated/PlatformRegistrationQuote";
+import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { Model } from "../onboarding/model";
@@ -59,6 +61,19 @@ export const coreRequest = (label: string): RegistrationRequest => ({
   funding: { kind: "coreBalance" },
   initialProfile: null,
 });
+
+/** C-funding F4: a request paid from the Platform balance for `label`, with the numbers its quote
+ * showed (the start refuses `registration.quote_changed` for others). A quote of the source passes
+ * zeros: the engine plans its own. */
+export const platformRequest = (label: string, quote: Pick<PlatformRegistrationQuote, "fundingCredits" | "feeReserveCredits"> = { fundingCredits: "0", feeReserveCredits: "0" }): RegistrationRequest => ({
+  label,
+  temporaryLabel: null,
+  funding: { kind: "platformAddresses", fundingCredits: quote.fundingCredits, feeReserveCredits: quote.feeReserveCredits },
+  initialProfile: null,
+});
+
+/** What Confirm starts under: the quote's grant, and its Platform numbers when it is one. */
+export type ConfirmQuote = Pick<RegistrationQuote, "grant" | "platform">;
 
 /** DP5-03: the claim of the stashed invitation `linkId` for `label`; `requestInviter: false` asks
  * no one (D7). */
@@ -151,10 +166,18 @@ export class RegistrationWizard extends Model {
     this.changed();
   }
 
-  /** What Confirm starts: the claim in invitation mode, else a Core-funded registration. */
-  request(): RegistrationRequest {
+  /** Whether Confirm pays from the Platform balance: a new identity whose "Pay with" chose it. */
+  get fromPlatform(): boolean {
+    return this.mode.kind === "core" && this.source === "platform";
+  }
+
+  /** What Confirm starts: the claim in invitation mode, else a registration paid from the chosen
+   * source, with the numbers of `quote` when that is the Platform balance. */
+  request(quote: ConfirmQuote | null = null): RegistrationRequest {
     const m = this.mode;
-    return m.kind === "invitation" ? invitationRequest(this.label, m.linkId, this.requestInviter && m.inviter !== null) : coreRequest(this.label);
+    if (m.kind === "invitation") return invitationRequest(this.label, m.linkId, this.requestInviter && m.inviter !== null);
+    if (this.fromPlatform) return platformRequest(this.label, quote?.platform ?? undefined);
+    return coreRequest(this.label);
   }
 
   /** Step 1 → 2, for the label the screen has checked (`canChoose`, on the trimmed label). */
@@ -197,10 +220,10 @@ export class RegistrationWizard extends Model {
 
   /** Confirm & pay (D8: one start per Confirm). The quote's grant, then `start_registration`. A
    * refusal naming another registration shows that one; one past a wedged funding asks first. */
-  async confirm(grant: GrantRequest, past: string[] = []): Promise<void> {
-    const request = this.request();
+  async confirm(quote: ConfirmQuote, past: string[] = []): Promise<void> {
+    const request = this.request(quote);
     await this.#call("start", async () => {
-      const draft = await this.#withGrant(grant, (g) =>
+      const draft = await this.#withGrant(quote.grant, (g) =>
         past.length === 0
           ? this.api.startRegistration(this.walletId, request, g.id)
           : this.api.startRegistrationPastUnknownFunding(this.walletId, request, g.id, past),
@@ -210,8 +233,8 @@ export class RegistrationWizard extends Model {
   }
 
   /** The wedge copy was confirmed: start past every blocker named so far. */
-  async confirmWedge(grant: GrantRequest): Promise<void> {
-    if (this.wedge !== null) await this.confirm(grant, this.wedge);
+  async confirmWedge(quote: ConfirmQuote): Promise<void> {
+    if (this.wedge !== null) await this.confirm(quote, this.wedge);
   }
 
   dismissWedge() {
