@@ -6079,6 +6079,20 @@ button.bell-row-open:focus-visible {
   flex-wrap: nowrap;
 }
 
+/* The wizard's long steps keep the footer, and the primary action, in view while they scroll. */
+.sheet .mg-sheet-footer-sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--dw-role-card);
+}
+
+/* A 64-hex hash breaks in the middle (its <wbr>), never before its last character. */
+.mg-hash {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
 .sheet .mg-sheet-body {
   padding-top: var(--dw-space-xxs);
 }
