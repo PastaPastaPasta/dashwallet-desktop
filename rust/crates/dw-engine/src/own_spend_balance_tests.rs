@@ -2538,9 +2538,8 @@ fn a_drop_of_a_beaten_payment_waits_for_a_resend_hand_off() {
     mined(&engine, &session, id, TIP + 1, vec![winner]);
 
     let s = Arc::clone(&session);
-    let task = engine.block_on(async move {
-        tokio::spawn(async move { s.reconcile_duplicate_coins(id).await })
-    });
+    let rt = engine.block_on(async { tokio::runtime::Handle::current() });
+    let task = rt.spawn(async move { s.reconcile_duplicate_coins(id).await });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while gate.try_read().is_ok() && !task.is_finished() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
