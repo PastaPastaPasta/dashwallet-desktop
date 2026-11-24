@@ -41,6 +41,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   nameFailure: null,
   profileFailure: null,
   invitation: null,
+  fromPlatform: false,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -284,6 +285,15 @@ describe("DP5-03 the claim (invitation mode)", () => {
     expect(api.grantRequest).not.toHaveBeenCalled();
     expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "3500000000" } });
     expect(api.resumeRegistration).toHaveBeenCalledWith(WALLET_A, "claim-1", "grant-1");
+  });
+
+  it("#685: a Platform-funded row resumes under the row's own grant, never a Core quote's", async () => {
+    const { wiz, api, vault } = setup();
+    await wiz.resume(row({ waiting: "paymentHeld", running: false, fundsCommitted: true, fromPlatform: true }));
+    expect(api.registrationResumeGrant).toHaveBeenCalledWith(WALLET_A, "reg-1");
+    expect(api.registrationQuote).not.toHaveBeenCalled();
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "3500000000" } });
+    expect(api.resumeRegistration).toHaveBeenCalledWith(WALLET_A, "reg-1", "grant-1");
   });
 
   it("Choose another username on a failed claim discards it and goes back to the invitation", async () => {
