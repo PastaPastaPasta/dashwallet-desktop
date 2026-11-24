@@ -279,6 +279,8 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
           })
           .filter((a) => BigInt(a.credits) > 0n);
         balance = apply(ctx, walletId, dp, identity, credits);
+      } else if (mayLand) {
+        p.heldInputs = { ...p.heldInputs, [id]: inputs.map((x) => x.address) };
       }
       p.activity = [
         { id, kind: "toIdentity", state, credits: String(state === "done" ? credits + fee : credits), address: null, to: identity, expectedDuffs: null, feeCredits: state === "done" ? String(fee) : null, at, mayLand, estimated: false },

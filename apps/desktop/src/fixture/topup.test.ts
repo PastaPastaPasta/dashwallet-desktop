@@ -180,11 +180,29 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     const fx = install("dashpay-registered");
     const p = fx.world.pending.platform!;
     p.nextTopUp = "held";
+    const quoteInputs = (await cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000"))).inputs.map((i) => i.address);
     const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("2000000000"));
     expect([out.state, out.mayLand]).toEqual(["failed", true]);
     const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
     const g = (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;
+    const others = p.addresses.filter((a) => a.address !== quoteInputs[0]);
+    expect(others.length).toBeGreaterThan(0);
+    expect(move.credits).toBe(p.addresses.find((a) => a.address === quoteInputs[0])!.credits);
     expect((await cmd.platformMoveToCore(W, { kind: "all" }, move.to, g)).state).toBe("done");
     expect(p.activity.find((a) => a.id === out.id)).toMatchObject({ state: "failed", mayLand: false });
+    // The exit took the top-up's inputs only.
+    expect(p.addresses).toEqual(others);
+  });
+
+  it("a pending exit leaves the held top-up able to land", async () => {
+    const fx = install("dashpay-registered");
+    const p = fx.world.pending.platform!;
+    p.nextTopUp = "held";
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("2000000000"));
+    p.nextMove = "pending";
+    const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
+    const g = (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;
+    expect((await cmd.platformMoveToCore(W, { kind: "all" }, move.to, g)).state).toBe("pending");
+    expect(p.activity.find((a) => a.id === out.id)).toMatchObject({ state: "failed", mayLand: true });
   });
 });

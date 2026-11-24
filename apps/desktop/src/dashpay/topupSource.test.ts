@@ -10,7 +10,7 @@ import { platformActivityRefetchMs, PENDING_MOVE_REFETCH_MS } from "../api/queri
 import { isMayLandRow, platformRow, sourceRowTitle, SourceRowText } from "../history/sourceRows";
 import { appError } from "../onboarding/testWorld";
 import { hasPendingMove, hasUnansweredOp } from "../platform/move";
-import { canPay, FROM_PLATFORM_COPY, fromPlatformErrorText, platformHold, platformOutcomeText, SOURCE_COPY, topUpSources, type SourceInputs } from "./topupSource";
+import { canPay, FROM_PLATFORM_COPY, fromPlatformErrorText, liveOutcome, offersMove, platformHold, platformOutcomeText, SOURCE_COPY, topUpSources, type SourceInputs } from "./topupSource";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -20,6 +20,7 @@ const inputs = (patch: Partial<SourceInputs> = {}): SourceInputs => ({
   coreDuffs: 150_000_000,
   platform: addresses("40000000000", 40_000_000),
   hold: null,
+  mainnet: false,
   shieldedDuffs: 2_000_000,
   amount,
   discreet: false,
@@ -60,21 +61,35 @@ describe("Pay with (C3-8)", () => {
     expect(topUpSources(inputs({ discreet: true })).map((r) => r.balance)).toEqual([null, null, null]);
   });
 
-  it("Platform is disabled with its reason: no address funds here, nothing a top-up can take, or a hold", () => {
+  it("Platform is disabled with its reason: no address funds here, mainnet, nothing a top-up can take, or a hold", () => {
     expect(reasons(inputs({ platform: null })).platform).toBe(SOURCE_COPY.notOffered);
+    expect(reasons(inputs({ mainnet: true })).platform).toBe(SOURCE_COPY.notOffered);
     expect(reasons(inputs({ platform: undefined })).platform).toBe(SOURCE_COPY.loading);
     expect(reasons(inputs({ platform: addresses("0", 0) })).platform).toBe(SOURCE_COPY.nothing);
-    expect(reasons(inputs({ hold: "pending" })).platform).toBe(FROM_PLATFORM_COPY.pending.text);
-    expect(reasons(inputs({ hold: "held" })).platform).toBe(FROM_PLATFORM_COPY.held.text);
+    expect(reasons(inputs({ hold: { state: "pending", topUp: true } })).platform).toBe(FROM_PLATFORM_COPY.pending.text);
+    expect(reasons(inputs({ hold: { state: "held", topUp: true } })).platform).toBe(FROM_PLATFORM_COPY.held.text);
+    expect(canPay(topUpSources(inputs({ mainnet: true })), "platform")).toBe(false);
+  });
+
+  it("a send or move holding the addresses says so, not a top-up's copy", () => {
+    expect(reasons(inputs({ hold: { state: "pending", topUp: false } })).platform).toBe(SOURCE_COPY.heldByOther);
+    expect(reasons(inputs({ hold: { state: "held", topUp: false } })).platform).toBe(SOURCE_COPY.heldByOther);
   });
 
   it("a pending or held top-up, move or send holds the Platform addresses", () => {
     expect(platformHold([])).toBeNull();
     expect(platformHold([row({ state: "done" })])).toBeNull();
-    expect(platformHold([row({ state: "pending", mayLand: true })])).toBe("pending");
-    expect(platformHold([row({ state: "failed", mayLand: true })])).toBe("held");
+    expect(platformHold([row({ state: "pending", mayLand: true })])).toEqual({ state: "pending", topUp: true });
+    expect(platformHold([row({ state: "failed", mayLand: true })])).toEqual({ state: "held", topUp: true });
     expect(platformHold([row({ state: "failed", mayLand: false })])).toBeNull();
-    expect(platformHold([row({ kind: "moveToCore", state: "failed", mayLand: true }), row({ kind: "send", state: "pending", mayLand: true })])).toBe("pending");
+    expect(platformHold([row({ kind: "moveToCore", state: "failed", mayLand: true }), row({ kind: "send", state: "pending", mayLand: true })])).toEqual({ state: "pending", topUp: false });
+  });
+
+  it("Move to Dash wallet is offered for a held top-up only, from Activity", () => {
+    expect(offersMove(platformHold([row({ state: "failed", mayLand: true })]))).toBe(true);
+    expect(offersMove(platformHold([row({ state: "pending", mayLand: true })]))).toBe(false);
+    expect(offersMove(platformHold([row({ state: "failed", mayLand: true }), row({ id: "m-1", kind: "moveToCore", state: "failed", mayLand: true })]))).toBe(false);
+    expect(offersMove(null)).toBe(false);
   });
 });
 
@@ -98,6 +113,16 @@ describe("a top-up from Platform's outcome", () => {
     const held = platformOutcomeText(outcome({ state: "failed", mayLand: true, balance: null }), balance);
     expect(held).toEqual({ title: FROM_PLATFORM_COPY.held.title, text: FROM_PLATFORM_COPY.held.text, move: true });
     expect(platformOutcomeText(outcome({ state: "replaced", mayLand: false, balance: null }), balance).move).toBe(true);
+  });
+
+  it("follows its Activity row: a pending top-up later held offers the move; one that can never land says nothing left", () => {
+    const sent = outcome({ state: "pending", mayLand: true, balance: null });
+    expect(liveOutcome(sent, undefined)).toBe(sent);
+    expect(liveOutcome(sent, [row({ id: "other", state: "failed", mayLand: true })])).toEqual(sent);
+    const held = liveOutcome(sent, [row({ state: "failed", mayLand: true })]);
+    expect(platformOutcomeText(held, balance).move).toBe(true);
+    const never = liveOutcome(sent, [row({ state: "failed", mayLand: false })]);
+    expect(platformOutcomeText(never, balance)).toEqual({ ...FROM_PLATFORM_COPY.failed, move: false });
   });
 
   it("refusals: a hold, the range, the balance and mainnet", () => {

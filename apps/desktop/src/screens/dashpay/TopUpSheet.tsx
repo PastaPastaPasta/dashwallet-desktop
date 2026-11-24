@@ -8,7 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { CostTable } from "../../api/generated/CostTable";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { TopUpFromPlatformQuote } from "../../api/generated/TopUpFromPlatformQuote";
-import { creditsToDuffs } from "../../api/pending";
+import { CREDITS_PER_DUFF, creditsToDuffs } from "../../api/pending";
 import { useBackend, useBalance, usePlatformActivity, usePlatformAddresses, usePoolBalances } from "../../api/queries";
 import { useDebounced } from "../../app/useDebounced";
 import { navigate, useUi } from "../../app/ui";
@@ -17,39 +17,74 @@ import { Sheet } from "../../components/sheet";
 import { creditBalance, creditCount, estimateText } from "../../dashpay/profile";
 import { useTopUpQuote } from "../../dashpay/profileQueries";
 import { amountCanChange, minTopUp, outcomeText, platformAmount, PRESETS, routesToRepair, TOPUP_COPY, topUpCredits, topUpErrorText, type TopUpFlow } from "../../dashpay/topup";
-import { canPay, FROM_PLATFORM_COPY, fromPlatformErrorText, platformHold, platformOutcomeText, SOURCE_COPY, topUpSources } from "../../dashpay/topupSource";
+import {
+  canPay,
+  FROM_PLATFORM_COPY,
+  fromPlatformErrorText,
+  liveOutcome,
+  offersMove,
+  platformHold,
+  platformOutcomeText,
+  SOURCE_COPY,
+  topUpSources,
+  type PlatformHold,
+  type SourceRow,
+} from "../../dashpay/topupSource";
 import { transferFor } from "../../transfer/model";
 import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 
-/** "Pay with" (C3-8): each source with its balance, or why it cannot pay. Dash wallet first. */
-function PayWith({ flow, walletId, amount, discreet }: { flow: TopUpFlow; walletId: string; amount: (duffs: number) => string; discreet: boolean }) {
-  useT();
-  const id = useId();
+/** "Move to Dash wallet" for a held top-up: Home's transfer, at the move to the Dash wallet. */
+function useMoveToCore(flow: TopUpFlow, walletId: string) {
+  const b = useBackend();
+  return () => {
+    flow.close();
+    navigate("home");
+    transferFor(b, walletId).start("platformToCore");
+  };
+}
+
+/** The sources as the picker shows them, from the balances and the Platform hold. */
+function useSources(walletId: string, network: NetworkInfo, amount: (duffs: number) => string, discreet: boolean) {
   const balance = useBalance(walletId);
   const platform = usePlatformAddresses(walletId);
   const activity = usePlatformActivity(walletId);
   const pools = usePoolBalances(walletId);
   const shielded = pools.shielded;
   const shieldedDuffs = typeof shielded === "number" ? shielded : shielded === "absent" ? null : undefined;
+  const hold = platformHold(activity.data);
   const rows = topUpSources({
     coreDuffs: balance.data?.confirmed,
     platform: platform.isError ? null : platform.data,
-    hold: platformHold(activity.data),
+    hold,
+    mainnet: network.kind === "mainnet",
     shieldedDuffs,
     amount,
     discreet,
   });
-  // A source that can no longer pay (a hold appeared) falls back to the Dash wallet.
-  if (flow.source !== "core" && !canPay(rows, flow.source)) queueMicrotask(() => flow.chooseSource("core"));
+  return { rows, hold };
+}
+
+/** "Pay with" (C3-8): each source with its balance, or why it cannot pay. Dash wallet first. A chosen
+ * source that can no longer pay stays chosen with its reason: Continue waits for another choice. */
+function PayWith({ flow, walletId, rows, hold }: { flow: TopUpFlow; walletId: string; rows: SourceRow[]; hold: PlatformHold }) {
+  useT();
+  const id = useId();
+  const moveToCore = useMoveToCore(flow, walletId);
   return (
     <fieldset className="topup-choices topup-sources" aria-label={SOURCE_COPY.title} data-testid="topup-pay-with">
       <legend className="detail-label">{SOURCE_COPY.title}</legend>
       {rows.map((r) => (
         <label key={r.source} className="topup-choice" data-testid={`topup-source-${r.source}`} data-disabled={r.reason !== null || undefined}>
-          <input type="radio" name={`${id}-source`} checked={flow.source === r.source} disabled={r.reason !== null || flow.running} onChange={() => flow.chooseSource(r.source)} />
+          <input
+            type="radio"
+            name={`${id}-source`}
+            checked={flow.source === r.source}
+            disabled={(r.reason !== null && flow.source !== r.source) || flow.running}
+            onChange={() => flow.chooseSource(r.source)}
+          />
           <span className="topup-choice-amount">{r.label}</span>
           {r.balance !== null && (
             <span className="topup-choice-buys">
@@ -59,6 +94,11 @@ function PayWith({ flow, walletId, amount, discreet }: { flow: TopUpFlow; wallet
           {r.reason !== null && <span className="topup-choice-buys topup-source-reason">{r.reason}</span>}
         </label>
       ))}
+      {offersMove(hold) && (
+        <DashButton variant="tintedBlue" size="small" type="button" data-testid="topup-source-move-to-core" onClick={moveToCore}>
+          {FROM_PLATFORM_COPY.held.action}
+        </DashButton>
+      )}
     </fieldset>
   );
 }
@@ -73,7 +113,10 @@ function AmountStep({ flow, walletId, costs, network, amount, discreet }: { flow
   const text = choice.kind === "other" ? choice.text.trim() : "";
   const checked = useDebounced(text, 300);
   const parsed = useQuery({ queryKey: ["parseAmount", shown.unit, checked], queryFn: () => b.parseAmount(checked, shown.unit), enabled: checked !== "", staleTime: Infinity });
-  const min = minTopUp(costs);
+  const sources = useSources(walletId, network, amount, discreet);
+  const platform = flow.source === "platform";
+  // Platform's own floor is the engine's (`credits.send_out_of_range`), far below Core's.
+  const min = platform ? 1 : minTopUp(costs);
   const otherDuffs = choice.kind === "other" && checked === text && typeof parsed.data === "number" ? parsed.data : null;
   const otherProblem =
     choice.kind !== "other" || text === "" || checked !== text || parsed.isPending
@@ -85,17 +128,19 @@ function AmountStep({ flow, walletId, costs, network, amount, discreet }: { flow
           : null;
   const max = choice.kind === "max";
   const duffs = choice.kind === "preset" ? choice.duffs : choice.kind === "other" && otherProblem === null ? otherDuffs : null;
-  const buys = (d: number) => (costs ? estimateText(topUpCredits(d, costs), costs) : null);
+  // From Platform the identity gains the amount itself; Platform's fee is taken besides it.
+  const buys = (d: number) => (costs ? estimateText(platform ? BigInt(d) * CREDITS_PER_DUFF : topUpCredits(d, costs), costs) : null);
+  const payable = canPay(sources.rows, flow.source);
   return (
     <form
       className="topup-form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (duffs !== null || max) flow.next(max ? null : duffs);
+        if (payable && (duffs !== null || max)) flow.next(max ? null : duffs);
       }}
     >
       <p className="sheet-text">{TOPUP_COPY.amount.intro}</p>
-      <PayWith flow={flow} walletId={walletId} amount={amount} discreet={discreet} />
+      <PayWith flow={flow} walletId={walletId} rows={sources.rows} hold={sources.hold} />
       <fieldset className="topup-choices" aria-label={TOPUP_COPY.amount.field}>
         <legend className="detail-label">{TOPUP_COPY.amount.field}</legend>
         {PRESETS.map((p) => (
@@ -141,7 +186,7 @@ function AmountStep({ flow, walletId, costs, network, amount, discreet }: { flow
         <DashButton variant="tintedGray" size="large" type="button" data-testid="topup-cancel" onClick={() => flow.close()}>
           {TOPUP_COPY.amount.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="topup-next" disabled={duffs === null && !max} why={TOPUP_COPY.amount.first}>
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="topup-next" disabled={!payable || (duffs === null && !max)} why={payable ? TOPUP_COPY.amount.first : null}>
           {TOPUP_COPY.amount.next}
         </DashButton>
       </div>
@@ -213,8 +258,11 @@ function PlatformConfirmStep({ flow, walletId, name, amount, discreet }: { flow:
     enabled: flow.identity !== null,
     retry: false,
     staleTime: 0,
+    gcTime: 0,
   });
-  const q = quote.data;
+  // Only a current answer pays: never one cached from before, one being read again, or one a
+  // later read refused.
+  const q = quote.isSuccess && !quote.isFetching ? quote.data : undefined;
   const credits = (c: string) => amount(creditsToDuffs(c));
   return (
     <>
@@ -271,11 +319,13 @@ export function TopUpSheet({ flow, walletId, network, costs, name }: { flow: Top
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   const amount = (duffs: number) => `${shown.compact(duffs)} ${shown.name}`;
+  const activity = usePlatformActivity(walletId);
+  const moveToCore = useMoveToCore(flow, walletId);
   if (!flow.open) return <GrantSheet grants={flow.grants} />;
   const { step } = flow;
   const balance = (credits: string) => creditBalance(credits, costs, discreet, amount, shown.masked());
-  const b = useBackend();
-  const fromPlatform = step === "done" && flow.platformOutcome ? platformOutcomeText(flow.platformOutcome, balance) : null;
+  // A top-up from Platform answered `pending` may since have failed by height: Activity says.
+  const fromPlatform = step === "done" && flow.platformOutcome ? platformOutcomeText(liveOutcome(flow.platformOutcome, activity.data), balance) : null;
   const done = fromPlatform ?? (step === "done" && flow.outcome ? outcomeText(flow.outcome, balance) : null);
   const errorText = flow.source === "platform" ? fromPlatformErrorText : topUpErrorText;
   return (
@@ -308,11 +358,7 @@ export function TopUpSheet({ flow, walletId, network, costs, name }: { flow: Top
                     variant="tintedBlue"
                     size="large"
                     data-testid="topup-move-to-core"
-                    onClick={() => {
-                      flow.close();
-                      navigate("home");
-                      transferFor(b, walletId).start("platformToCore");
-                    }}
+                    onClick={moveToCore}
                   >
                     {FROM_PLATFORM_COPY.held.action}
                   </DashButton>

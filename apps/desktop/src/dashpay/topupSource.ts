@@ -22,6 +22,10 @@ export const SOURCE_COPY = withTable(messageTable("dashpay.topUp.payWith", ["tit
   get notOffered() {
     return PAY_WITH_COPY.notOffered;
   },
+  /** A move or payment from Platform holds the addresses (the Transfer sheet's copy). */
+  get heldByOther() {
+    return t("transfer.move.waiting.held");
+  },
   /** The Platform addresses are not read yet. */
   get loading() {
     return t("transfer.loading");
@@ -45,14 +49,24 @@ export const FROM_PLATFORM_COPY = withTable(messageTable("dashpay.topUp.fromPlat
 });
 
 /** How a move, send or top-up holds the Platform addresses: `pending` while Platform has not
- * answered, `held` once it failed by height and may still execute ("Move to Dash wallet" frees
- * it), `null` when nothing holds them. */
-export type PlatformHold = "pending" | "held" | null;
+ * answered, `held` once it failed by height and may still execute; `topUp` when only top-ups from
+ * Platform hold them ("Move to Dash wallet" frees a held one). `null`: nothing holds them. */
+export type PlatformHold = { state: "pending" | "held"; topUp: boolean } | null;
 
 export function platformHold(activity: readonly PlatformActivity[] | null | undefined): PlatformHold {
   const held = (activity ?? []).filter(isHeldOp);
-  if (held.some((a) => a.state === "pending")) return "pending";
-  return held.length > 0 ? "held" : null;
+  if (held.length === 0) return null;
+  return { state: held.some((a) => a.state === "pending") ? "pending" : "held", topUp: held.every((a) => a.kind === "toIdentity") };
+}
+
+/** A held top-up from Platform that "Move to Dash wallet" can free: failed by height, able to land
+ * still, and nothing else holds the addresses. */
+export const offersMove = (hold: PlatformHold) => hold?.state === "held" && hold.topUp;
+
+/** The live state of a top-up this sheet ran: its Activity row once Activity has it. */
+export function liveOutcome(o: TopUpFromPlatformOutcome, activity: readonly PlatformActivity[] | null | undefined): TopUpFromPlatformOutcome {
+  const row = activity?.find((a) => a.id === o.id && a.kind === "toIdentity");
+  return row && row.state !== o.state ? { ...o, state: row.state, mayLand: row.mayLand } : row ? { ...o, mayLand: row.mayLand } : o;
 }
 
 /** What the picker reads. Duffs; `undefined` while unread. */
@@ -63,6 +77,8 @@ export interface SourceInputs {
    * the commands are absent). */
   platform: PlatformAddressBalance | null | undefined;
   hold: PlatformHold;
+  /** Mainnet: a top-up from Platform is off there until its funds ruling. */
+  mainnet: boolean;
   shieldedDuffs: number | null | undefined;
   amount: (duffs: number) => string;
   discreet: boolean;
@@ -85,13 +101,15 @@ export function topUpSources(i: SourceInputs): SourceRow[] {
   const platformReason =
     p === undefined
       ? SOURCE_COPY.loading
-      : p === null
+      : p === null || i.mainnet
         ? SOURCE_COPY.notOffered
-        : i.hold === "pending"
-          ? FROM_PLATFORM_COPY.pending.text
-          : i.hold === "held"
-            ? FROM_PLATFORM_COPY.held.text
-            : BigInt(p.movableCredits) === 0n
+        : i.hold !== null && !i.hold.topUp
+          ? SOURCE_COPY.heldByOther
+          : i.hold?.state === "pending"
+            ? FROM_PLATFORM_COPY.pending.text
+            : i.hold?.state === "held"
+              ? FROM_PLATFORM_COPY.held.text
+              : BigInt(p.movableCredits) === 0n
               ? SOURCE_COPY.nothing
               : null;
   return [

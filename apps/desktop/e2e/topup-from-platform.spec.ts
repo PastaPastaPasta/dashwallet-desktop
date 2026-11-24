@@ -85,7 +85,11 @@ for (const theme of THEMES) {
     await page.getByTestId("profile-top-up").click();
     await expect(page.getByTestId("topup-source-platform")).toContainText("This top-up hasn't gone through yet");
     await expect(page.getByTestId("topup-source-platform").locator("input")).toBeDisabled();
+    await expect(page.getByTestId("topup-source-move-to-core")).toBeVisible();
     await shot(page, theme, "pay-with-platform-held");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("topup-source-move-to-core").click();
+    await expect(page.getByTestId("transfer-sheet")).toBeVisible();
     expect(errors).toEqual([]);
   });
 
