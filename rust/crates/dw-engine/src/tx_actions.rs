@@ -30,8 +30,8 @@ use platform_wallet::changeset::{
 use crate::csv_export::{TX_TYPE_COUNT, write_csv};
 use crate::history::{
     ChainView, HistoryFilter, HistorySort, Labels, TxEntry, TxType, Winner, amounts,
-    beaten_unrecorded, chainlock_beaten, depth_of, filtered, orphaned_unmined, records_of,
-    rival_heights, status_of,
+    beaten_unrecorded, chain_locked, chainlock_beaten, depth_of, filtered, orphaned_unmined,
+    records_of, rival_heights, status_of,
 };
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -867,6 +867,10 @@ struct DropPlan {
     /// The other `inputs`, and each coin another transaction of the wallet
     /// spends: the rewind is not for them.
     kept: HashSet<OutPoint>,
+    /// The coins an InstantSend-locked transaction out of a block spends
+    /// that no processed block spent: nothing mined takes them yet, so they
+    /// are held at each load.
+    locked_spent: HashSet<OutPoint>,
 }
 
 /// Plans dropping `roots` and what descends from them in the history `txs`
@@ -885,7 +889,7 @@ fn plan_drop(
     roots: &[Txid],
     winner: Winner,
     links: &BTreeSet<Txid>,
-    complete: bool,
+    (complete, chainlock): (bool, Option<u32>),
 ) -> Option<DropPlan> {
     let (under, _) = settled_under(txs, core);
     let (mut dead, mut links) = (BTreeSet::new(), links.clone());
@@ -934,9 +938,46 @@ fn plan_drop(
             .filter(|(t, e)| !e.is_abandoned() && !gone(t))
             .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output)),
     );
-    let known =
-        complete && (winner.mined.is_some() || winner.txid.is_some_and(|w| txs.contains_key(&w)));
+    // A lock a ChainLocked spend of one of its inputs beat takes nothing
+    // (#170 case 14).
     let observed = core.observed_spent_outpoints();
+    let beaten_lock = |t: &Txid, tx: &Transaction| {
+        (tx.input.iter()).any(|i| {
+            (observed.get(&i.previous_output)).is_some_and(|h| chainlock.is_some_and(|cl| cl >= *h))
+                || (txs.iter()).any(|(w, we)| {
+                    w != t
+                        && chain_locked(&we.context, chainlock)
+                        && (we.tx.input.iter()).any(|j| j.previous_output == i.previous_output)
+                })
+        })
+    };
+    let mut locked_spent: HashSet<OutPoint> = (txs.iter())
+        .filter(|(t, e)| {
+            locked(e) && e.context.block_info().is_none() && !gone(t) && !beaten_lock(t, &e.tx)
+        })
+        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+        .collect();
+    locked_spent.extend(
+        (core.accounts.all_accounts().into_iter())
+            .flat_map(|a| a.transactions().iter())
+            .filter(|(t, r)| {
+                !gone(t)
+                    && r.context.block_info().is_none()
+                    && (matches!(r.context, TransactionContext::InstantSend(_))
+                        || core.instant_send_locks().contains(*t))
+                    && !beaten_lock(t, &r.transaction)
+            })
+            .flat_map(|(_, r)| r.transaction.input.iter().map(|i| i.previous_output)),
+    );
+    locked_spent.retain(|o| !observed.contains_key(o));
+    // A lock key-wallet heard of for a transaction neither holds: what it
+    // spends is unknown, so nothing is freed.
+    let unknown_lock = (core.instant_send_locks().iter()).any(|t| {
+        !txs.contains_key(t) && !accounts.iter().any(|a| a.transactions().contains_key(t))
+    });
+    let known = complete
+        && !unknown_lock
+        && (winner.mined.is_some() || winner.txid.is_some_and(|w| txs.contains_key(&w)));
     let freed: BTreeSet<OutPoint> = (inputs.iter())
         .filter(|o| known && !kept.contains(*o) && !observed.contains_key(*o))
         .copied()
@@ -949,6 +990,7 @@ fn plan_drop(
         inputs,
         freed,
         kept,
+        locked_spent,
     })
 }
 
@@ -1547,6 +1589,8 @@ impl NetworkSession {
         };
         let plan = (self.hub.history).read_wallet(&wallet, |h| {
             let complete = h.loaded && !h.load_incomplete;
+            let chainlock = self.chainlock_height(&info.core_wallet);
+            let facts = (complete, chainlock);
             plan_drop(
                 &h.txs,
                 &h.swept,
@@ -1554,7 +1598,7 @@ impl NetworkSession {
                 roots,
                 winner,
                 links,
-                complete,
+                facts,
             )
         });
         let Some(plan) = plan else {
@@ -1575,11 +1619,13 @@ impl NetworkSession {
         }
         let persister = Arc::clone(&self.live()?.persister);
         // A mined winner's block spends its coins again in any rescan; the
-        // coins an unmined or unknown winner may spend are held at each
-        // load.
+        // coins an unmined or unknown winner, or a locked transaction out of
+        // a block, may spend are held at each load.
         let holds = |tx: &Transaction| {
             let held = (tx.input.iter()).map(|i| i.previous_output).filter(|o| {
-                winner.mined.is_none() && plan.inputs.contains(o) && !plan.freed.contains(o)
+                (winner.mined.is_none() || plan.locked_spent.contains(o))
+                    && plan.inputs.contains(o)
+                    && !plan.freed.contains(o)
             });
             held.map(|o| o.to_string()).collect::<Vec<_>>().join(",")
         };

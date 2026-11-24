@@ -2765,3 +2765,47 @@ fn a_drop_cut_after_its_marks_keeps_its_held_coin_out_across_restarts() {
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
 }
+
+/// Two rivals of a restored payment P of A and D with change: another
+/// device's spend of D, InstantSend-locked and unmined, then after a
+/// restart a mined spend of A paying only someone else. P goes, and D,
+/// which the locked spend may still take, stays out: in the session, after
+/// a restart, and through a rescan of its block.
+#[test]
+fn a_payment_two_rivals_beat_keeps_the_coin_a_locked_rival_spends_out() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, d) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, d]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+    wait_stored(&session, id, &[p.txid()]);
+
+    let session = reopen(&engine, session);
+    let locked = rival(&engine, &session, id, &paid, d.vout);
+    mempool(&engine, &session, id, &locked);
+    instant_lock(&engine, &session, id, &locked);
+    wait_stored(&session, id, &[locked.txid()]);
+
+    let session = reopen(&engine, session);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, p.txid()), "P goes");
+    let held_now = held(&engine, &session, id);
+    assert!(!held_now.contains(&change), "P's change: {held_now:?}");
+    assert!(!held_now.contains(&d), "D: {held_now:?}");
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    let held_now = held(&engine, &session, id);
+    assert!(!held_now.contains(&d), "rescanned: D: {held_now:?}");
+    assert!(!spendable(&engine, &session, id, d), "D is not offered");
+}
