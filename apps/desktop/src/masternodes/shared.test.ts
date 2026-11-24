@@ -108,6 +108,16 @@ describe("the session's render per network", () => {
     }
   });
 
+  it("says coins are reserved whole on Join, the setup estimate and Keep", () => {
+    expect(t("masternodes.shared.row.joinButton", { amount: "300 DASH" })).toBe("Join: reserve coins covering 300 DASH");
+    expect(t("masternodes.shared.funding.estimateCoordinator", { amount: "400.001 DASH", share: "400 DASH", fee: "0.001 DASH" })).toBe(
+      "Coins covering about 400.001 DASH will be reserved: your 400 DASH share and the 0.001 DASH network fee. Coins are reserved whole, so if a coin is larger than needed, all of it stays unavailable for other payments while the session lasts.",
+    );
+    expect(t("masternodes.shared.close.text", { debit: "300 DASH" })).toBe(
+      "Keeping it leaves the coins covering your 300 DASH reserved, whole, so you can carry on where you left off. Discarding releases them. If the others are still waiting for you, they have to start over.",
+    );
+  });
+
   it("turns off setting up and joining on mainnet with one reason, and keeps Discard and Abandon", () => {
     expect(setupOff(NETWORKS.mainnet)).toBe("This version can set up and join shared masternodes on test networks only.");
     for (const n of [NETWORKS.testnet, NETWORKS.regtest, NETWORKS.devnet]) expect(setupOff(n), n.kind).toBeNull();

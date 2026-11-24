@@ -1202,7 +1202,7 @@ export const masternodes = {
     },
     row: {
       join: "Nothing is sent to the network now.",
-      joinButton: "Join: reserve about {amount}",
+      joinButton: "Join: reserve coins covering {amount}",
       decline: "Decline",
       waitingReplies: "Waiting for replies: {joined} of {total} joined",
       copyInvitation: "Copy invitation",
@@ -1248,7 +1248,7 @@ export const masternodes = {
       /** Before coins are picked: an estimate. */
       estimate: "About {amount}: your share, plus any change too small to keep.",
       estimateCoordinator:
-        "About {amount} of your {balance} will be reserved: your {share} share and the {fee} network fee, plus any change too small to keep.",
+        "Coins covering about {amount} will be reserved: your {share} share and the {fee} network fee. Coins are reserved whole, so if a coin is larger than needed, all of it stays unavailable for other payments while the session lasts.",
       participant: "{debit} leaves this wallet: your {share} share",
       coordinator: "{debit} leaves this wallet: your {share} share and the {fee} network fee",
       participantDust: "{debit} leaves this wallet: your {share} share, and {dust} of change too small to keep, which goes to the network fee",
@@ -1262,7 +1262,7 @@ export const masternodes = {
     },
     close: {
       title: "Keep this session for later?",
-      text: "Keeping it leaves your {debit} reserved so you can carry on where you left off. Discarding releases them; if the others are still waiting for you, they have to start over.",
+      text: "Keeping it leaves the coins covering your {debit} reserved, whole, so you can carry on where you left off. Discarding releases them. If the others are still waiting for you, they have to start over.",
       keep: "Keep and close",
       discard: "Discard and release {debit}",
       cancel: "Cancel",
