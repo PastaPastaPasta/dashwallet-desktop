@@ -59,6 +59,8 @@ struct Row {
     plan: Option<PlatformPlan>,
     lease: Option<Lease>,
     draft: i64,
+    /// The identity's funding the row asks for.
+    funding: u64,
     /// The quote's reserve the row asks for.
     reserve: u64,
 }
@@ -82,6 +84,7 @@ impl World {
             plan: None,
             lease: Some(self.register_lease(20 * DASH, true)),
             draft,
+            funding: FUNDING,
             reserve: self.reserve(),
         }
     }
@@ -93,7 +96,7 @@ impl World {
         let ask = RegisterAsk {
             draft: row.draft,
             index: 0,
-            funding_credits: FUNDING,
+            funding_credits: row.funding,
             fee_reserve_credits: row.reserve,
             plan: row.plan.clone(),
             resign,
@@ -740,30 +743,28 @@ fn a_create_that_executes_beside_its_exit_registers() {
 }
 
 /// F10: the exit executed and its document cannot be read. Nothing says
-/// which of the two took the nonces, so a pass that may re-sign neither
-/// registers nor signs: the create stays held or unknown.
+/// which of the two took the nonces, so the exit is pending and a pass
+/// that may re-sign neither registers nor signs: the create is unknown.
 #[test]
 fn a_pass_beside_an_unread_exit_signs_nothing() {
     let w = World::new();
     w.net.fund(w.address(0), 5 * DASH);
     let mut row = held_create(&w);
     let q = w.quote(WithdrawAmount::All).unwrap();
-    w.net.then(Act::ExecutesUnanswered);
-    w.way_out(&q, &w.f.grant(q.credits)).unwrap();
     w.net.documents_down.store(true, Ordering::SeqCst);
+    w.net.then(Act::ExecutesUnanswered);
+    let exit = w.way_out(&q, &w.f.grant(q.credits)).unwrap();
+    assert_eq!(exit.state, PlatformActivityState::Pending);
     let sent = w.net.sent.lock().unwrap().len();
     let out = w.pass(&mut row, true).unwrap();
-    assert!(
-        matches!(out, RegisterOutcome::Held | RegisterOutcome::Unknown),
-        "{out:?}"
-    );
+    assert_eq!(out, RegisterOutcome::Unknown);
     assert_eq!(w.net.sent.lock().unwrap().len(), sent, "nothing signed");
     assert!(!w.created(row.plan.as_ref().unwrap()));
 }
 
 /// F22: the exit of a two-input create signs both its inputs: a quote of
-/// an amount is refused as the move would refuse it, and the quote of all
-/// of them names the create.
+/// an amount input 0 covers alone is refused as the move would refuse it,
+/// and the quote of all of them names the create.
 #[test]
 fn a_partial_exit_of_a_two_input_create_is_refused_at_the_quote() {
     let w = World::new();
@@ -772,10 +773,11 @@ fn a_partial_exit_of_a_two_input_create_is_refused_at_the_quote() {
     let keys = crate::platform::keys_policy::registration_specs().len();
     let reserve = crate::platform::registration_platform::REGISTER_FEE_BAND
         * crate::platform::registration_platform::register_fee(w.net.version(), 2, keys);
-    w.net.fund(first, reserve + FUNDING / 2);
-    w.net.fund(second, FUNDING);
+    let funding = 2 * DASH;
+    w.net.fund(first, reserve + funding / 2);
+    w.net.fund(second, funding);
     let mut row = w.row(1);
-    row.reserve = reserve;
+    (row.funding, row.reserve) = (funding, reserve);
     w.net.then(Act::Lost);
     assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Unknown);
     w.net.tick();
@@ -784,7 +786,7 @@ fn a_partial_exit_of_a_two_input_create_is_refused_at_the_quote() {
     assert_eq!(create.inputs.len(), 2);
     assert_eq!(
         w.quote(WithdrawAmount::Credits {
-            credits: FUNDING / 4
+            credits: funding / 4
         })
         .unwrap_err()
         .code(),
