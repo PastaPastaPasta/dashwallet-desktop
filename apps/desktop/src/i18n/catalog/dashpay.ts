@@ -533,6 +533,36 @@ export const dashpay = {
         text: "The network says this payment was already used. If your credits went up, choose 'Credits arrived' in My Profile; otherwise Finish tries again.",
       },
     },
+    /** "Pay with" (C-routes D-C3): the sources a top-up is paid from. */
+    payWith: {
+      title: "Pay with",
+      core: "Dash wallet",
+      platform: "Platform",
+      shielded: "Shielded",
+      nothing: "Your Platform addresses don't hold enough for a top-up and its fee.",
+      max: "Max",
+    },
+    /** A top-up from the Platform addresses. `identity` is the username or "your identity"; `amount`,
+     * `total` and `fee` are amounts; `address` is the address the fee is taken from. */
+    fromPlatform: {
+      you: "your identity",
+      confirm: "Top up {identity} with {amount} from your Platform addresses? About {total} leaves them: Dash Platform takes a fee of about {fee} from {address}.",
+      fee: "Estimated Platform fee",
+      pending: {
+        title: "Top-up sent",
+        text: "This top-up may still go through. Your Platform balance stays held until it does; don't top up from Platform again until it shows as done.",
+      },
+      held: {
+        text: "This top-up hasn't gone through yet and still could. To free your Platform balance, move these credits to your Dash wallet; only one of the two can happen.",
+        action: "Move to Dash wallet",
+      },
+      failed: { title: "The top-up did not go through", text: "Nothing left your Platform addresses." },
+      error: {
+        short: "Your Platform addresses don't hold enough for this top-up and its fee.",
+        /** `min` is an amount. */
+        below: "The smallest top-up from Platform is {min}.",
+      },
+    },
     /** Why a top-up was refused. `needed` and `available` are amounts; `code` is the engine's. */
     error: {
       short: "Not enough Dash.",
