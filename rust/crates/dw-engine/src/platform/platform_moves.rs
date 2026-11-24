@@ -170,6 +170,14 @@ pub(crate) enum MoveKind {
     ToIdentity,
 }
 
+impl MoveKind {
+    /// It credits one of the wallet's identities from the addresses: held,
+    /// a move to Core of exactly its inputs is its exit (C-routes C3-9).
+    pub(crate) fn credits_identity(self) -> bool {
+        matches!(self, MoveKind::ToIdentity)
+    }
+}
+
 /// One move as recorded before it is signed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MoveRecord {
@@ -2585,7 +2593,7 @@ pub(crate) async fn quote(
     // A top-up from Platform not settled: its exit takes exactly its inputs
     // (C-routes C3-9), so Confirm shows that move; one Platform has not
     // answered holds the next move, as the move refuses it.
-    let top_up = (moves.iter()).find(|m| m.kind == MoveKind::ToIdentity && m.holds());
+    let top_up = (moves.iter()).find(|m| m.kind.credits_identity() && m.holds());
     if let Some(h) = top_up.filter(|h| h.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
@@ -3014,7 +3022,7 @@ async fn run(
             let held = match exit_of {
                 Some(id) => Some(
                     (moves.iter())
-                        .find(|m| m.id == id && m.kind == MoveKind::ToIdentity && m.holds())
+                        .find(|m| m.id == id && m.kind.credits_identity() && m.holds())
                         .ok_or(CreditsError::QuoteChanged)?,
                 ),
                 None => moves.iter().find(|m| m.holds()),
