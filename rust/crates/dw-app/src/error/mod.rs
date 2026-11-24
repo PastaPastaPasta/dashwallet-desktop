@@ -198,6 +198,14 @@ codes! {
         /// Install or Restart would close the engine while something runs
         /// ([`ErrorData::UpdateBusy`] names it). Nothing changed.
         UpdateBusy = "app.update_busy",
+        /// A shared-masternode send on a network this release doesn't send
+        /// them on ([`ErrorData::SharedSendNetwork`]): mainnet. Nothing was
+        /// signed or sent.
+        SharedSendOff = "app.shared_send_off",
+        /// `mn_shared_send_maintenance` on a session kind this release
+        /// doesn't send ([`ErrorData::SharedUnsupported`]): a key change.
+        /// Nothing was signed or sent.
+        SharedSendUnsupported = "app.shared_send_unsupported",
     }
 }
 
@@ -396,7 +404,8 @@ pub enum ErrorData {
     /// `governance.not_a_contender`: the identity id (base58) the poll does
     /// not list (MG-07 D13).
     Contender { identity: String },
-    /// `masternodes.key_mismatch`: the role the key was given for.
+    /// `masternodes.key_mismatch`, `masternodes.key_exists`: the role the key
+    /// was given for.
     MasternodeKey {
         role: crate::dto::masternodes::AttachedKeyRoleName,
     },
@@ -407,6 +416,24 @@ pub enum ErrorData {
     /// `masternodes.update_pending`, `masternodes.update_superseded`: the
     /// other operation's id.
     Operation { operation: String },
+    /// `masternodes.shared_message`: why a message was refused (never its
+    /// text), and the share whose approval doesn't verify.
+    SharedMessage { reason: String, share: Option<u16> },
+    /// `masternodes.shared_stage`: the stage that refused the call.
+    SharedStage { stage: String },
+    /// `masternodes.shared_funding_mismatch`: the check that failed, and the
+    /// least fee in duffs for `fee_low`.
+    SharedFunding { reason: String, needed: Option<u64> },
+    /// `masternodes.shared_actor_fee`: the fee in duffs the request takes
+    /// from this wallet's share.
+    SharedActorFee { fee: u64 },
+    /// `app.shared_send_off`: the network the send was refused on, by its
+    /// directory name (`mainnet`).
+    SharedSendNetwork { network: String },
+    /// `app.shared_send_unsupported`: the session kind whose send was refused.
+    SharedUnsupported {
+        session_kind: crate::dto::masternodes::SharedKindName,
+    },
     /// `masternodes.unsupported`: what the call needs that the libraries
     /// lack, and the field that needs it.
     Unsupported {
@@ -425,8 +452,12 @@ pub enum ErrorData {
     /// syncing (`account`, `tree`, `journal`, `core`, `startup`; m4 §2.13);
     /// `credits.recipient_invalid`: why the address cannot be paid (m4 §2.12).
     Reason { reason: String },
-    /// `tx_action_refused`: why the abandon or resend was refused.
-    TxAction { refusal: TxActionRefusalName },
+    /// `tx_action_refused`: why the abandon or resend was refused, and for
+    /// `recordUnreadable` the wallet whose saved transaction didn't read.
+    TxAction {
+        refusal: TxActionRefusalName,
+        wallet_id: Option<String>,
+    },
     /// `request_not_found`, `height_out_of_range`, `backup.unsupported_version`,
     /// `psbt.too_large` (bytes), `shielded.too_many_inputs` (the coins the
     /// shield would spend; at most 50 fit): the number named.
@@ -539,12 +570,27 @@ pub enum TxActionRefusalName {
     /// A later transaction that spends from it is already locked or
     /// confirmed, so this one will confirm too.
     SettledDescendant,
+    /// A saved transaction of the loaded wallet `walletId` names didn't
+    /// read at its load, so what descends from this one is unknown.
+    RecordUnreadable,
 }
 
-crate::dto::mirror_enum!(dw_engine::TxActionRefusal => TxActionRefusalName {
-    Confirmed, InstantLocked, AlreadyAbandoned, Coinbase, InMempool, NotSentByWallet, RescanFirst,
-    SettledDescendant
-});
+impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
+    fn from(r: dw_engine::TxActionRefusal) -> Self {
+        use dw_engine::TxActionRefusal as R;
+        match r {
+            R::Confirmed => Self::Confirmed,
+            R::InstantLocked => Self::InstantLocked,
+            R::AlreadyAbandoned => Self::AlreadyAbandoned,
+            R::Coinbase => Self::Coinbase,
+            R::InMempool => Self::InMempool,
+            R::NotSentByWallet => Self::NotSentByWallet,
+            R::RescanFirst => Self::RescanFirst,
+            R::SettledDescendant => Self::SettledDescendant,
+            R::RecordUnreadable(_) => Self::RecordUnreadable,
+        }
+    }
+}
 
 impl AppError {
     pub fn new(code: impl Into<ErrorCode>, message: impl Into<String>) -> Self {

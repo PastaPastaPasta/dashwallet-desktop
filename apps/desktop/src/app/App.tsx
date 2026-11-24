@@ -6,7 +6,7 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { closeWalletGate, forgetWalletContent, lockGeneration, useWalletGateClosed } from "../api/lockGate";
-import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
+import { useBackend, useDashPayShell, useHistoryGapReads, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { EMPTY, walletListGate, walletReadyToOpen } from "../components/emptyStates";
 import { EmptyState, LoadingState } from "../components/history";
@@ -39,6 +39,8 @@ import { SyncSheet } from "../screens/SyncSheet";
 import { SavedLinksSheet } from "../screens/SavedLinks";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
+import { SourceDetailSheet } from "../screens/SourceDetailSheet";
+import { rowSource } from "../history/sourceRows";
 import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
 import { useDisplay } from "../format/display";
 import { SecurityText } from "../settings/security";
@@ -153,6 +155,7 @@ function WalletChrome({
   const detail = useUi((s) => s.detail);
   const lock = useLockStatus();
   const sync = useSyncStatus();
+  useHistoryGapReads(sync.raw?.running === true, (wallets.data ?? []).map((w) => `${w.walletId}:${w.birthHeight}`).join(","));
   const dashpay = useDashPayShell(wallet?.walletId);
   const registration = useStatusRegistration(wallet?.walletId, dashpay.status);
   const open = (row: TxRow) => ui.set({ detail: row.txid });
@@ -243,7 +246,12 @@ function WalletChrome({
       </div>
       {/* Sheets opened inside the shell (Pay, Receive): above it, below onboarding, which covers it (U-02 D31). */}
       <div className="sheet-layer" ref={setLayer} inert={layerInert} />
-      {sheet && <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />}
+      {sheet &&
+        (rowSource({ txid: detail! }) ? (
+          <SourceDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />
+        ) : (
+          <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />
+        ))}
     </>
   );
 }

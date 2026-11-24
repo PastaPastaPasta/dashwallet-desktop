@@ -19,6 +19,7 @@ use super::credits::{CoreMax, FundAmount};
 use super::dashpay::DashPay;
 use super::errors::ShieldedError;
 use super::flows::{DispatchState, GrantRequest};
+use super::payments::Counterparty;
 use super::shielded_pool::{self as pool, on_pool, on_pool_signing};
 use crate::EngineError;
 
@@ -322,6 +323,23 @@ pub struct ShieldedSpendOutcome {
     pub unresolved: Option<UnresolvedSpend>,
 }
 
+/// What `unshield_to_platform` did: the spend's outcome, and the Platform
+/// activity row of its `FromShielded` record when the dispatch hook armed
+/// one (C-routes C1-9). That row is `done` only once the spend's artifact
+/// reads executed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnshieldToPlatformOutcome {
+    pub credits: u64,
+    /// The shielded balance after.
+    pub balance: u64,
+    /// The Platform address paid.
+    pub to: String,
+    pub state: ShieldedSpendState,
+    pub unresolved: Option<UnresolvedSpend>,
+    /// The `id` of the record's `PlatformActivity` row (`platform_activity`).
+    pub record: Option<String>,
+}
+
 /// The kind of a shielded activity row (platform-wallet's
 /// `ShieldedActivityKind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -394,6 +412,10 @@ pub struct ShieldedActivity {
     /// notes after the wallet's first scan; `None` for a row of that first
     /// scan (restored) and for one a scan derived that is not incoming.
     pub created_at: Option<u64>,
+    /// The DashPay contact a withdrawal paid (C-funding P10): from the
+    /// contact payout's row, else by the destination address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<Counterparty>,
 }
 
 impl DashPay {
@@ -596,6 +618,42 @@ impl DashPay {
         .await
     }
 
+    /// What moving `credits` from Shielded to the wallet's own Platform
+    /// address `to` costs (its receive address when `None`), with the
+    /// refusals of [`Self::unshield_to_platform`].
+    pub async fn unshield_to_platform_quote(
+        &self,
+        credits: u64,
+        to: Option<String>,
+    ) -> Result<ShieldedSpendQuote, ShieldedError> {
+        pool::refuse_on_mainnet(self.session.network().core_network())?;
+        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+            pool::unshield_to_platform_quote(&lib, credits, to.as_deref()).await
+        })
+        .await
+    }
+
+    /// Shielded → Platform: unshields `credits` from the wallet's notes to
+    /// `to`, one of the wallet's own Platform addresses (its receive address
+    /// when `None`; any other is `shielded.invalid_address` before the grant
+    /// is redeemed), under a `ShieldedSpend` lease begun from `grant`;
+    /// `confirm_unrecorded` as for [`Self::shielded_send`].
+    pub async fn unshield_to_platform(
+        &self,
+        credits: u64,
+        to: Option<String>,
+        grant: String,
+        confirm_unrecorded: bool,
+    ) -> Result<UnshieldToPlatformOutcome, ShieldedError> {
+        pool::refuse_on_mainnet(self.session.network().core_network())?;
+        let wallet = self.wallet_id;
+        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+            let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
+            pool::unshield_to_platform(&session, wallet, &lib, credits, to, &grant, confirmed).await
+        })
+        .await
+    }
+
     /// The wallet's shielded history for Activity, pending rows first, then
     /// newest first; `limit` at most 500.
     pub async fn shielded_history(
@@ -603,8 +661,11 @@ impl DashPay {
         offset: u32,
         limit: u32,
     ) -> Result<Vec<ShieldedActivity>, ShieldedError> {
-        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
-            pool::history(&lib, offset, limit).await
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |session, lib| async move {
+            let mut rows = pool::history(&lib, offset, limit).await?;
+            session.name_shielded_payouts(wallet, &mut rows).await;
+            Ok(rows)
         })
         .await
     }

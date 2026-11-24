@@ -21,10 +21,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
-use crate::conn::AppConn;
-
 mod avatar;
-mod conn;
 mod dashpay_journal;
 pub mod dispatch;
 #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
@@ -106,6 +103,14 @@ pub fn local_scope(wallet_id: &str) -> String {
 /// (a `.dwbackup` restore), so its source record's absence proves nothing.
 pub fn dp_payout_marker(reference: &str) -> String {
     format!("dp_payout/{reference}")
+}
+
+/// The `local:` key the shielded dispatch hook writes, durably, once a
+/// payout's artifact is in the journal and before the library may send
+/// it: with it, a missing artifact proves nothing (a lost or older
+/// journal), so the payout stays held (C-funding P6).
+pub fn dp_payout_dispatched(reference: &str) -> String {
+    format!("dp_payout_dispatched/{reference}")
 }
 
 /// The lock file next to the database at `path` (`<file>.lock`), never the
@@ -555,7 +560,7 @@ impl LockRow {
 }
 
 pub struct AppDb {
-    conn: Mutex<AppConn>,
+    conn: Mutex<Connection>,
     /// A shared lock on the database's lock file for as long as this
     /// instance lives, a job still holding it after its session closed
     /// included: while it is held, no open forgets the removed wallets
@@ -613,7 +618,7 @@ impl AppDb {
         }
         // No URI and no symlink. The database file itself is never opened
         // here: closing a descriptor of it would drop SQLite's POSIX locks.
-        let conn = AppConn::open(
+        let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
@@ -661,10 +666,10 @@ impl AppDb {
 
     /// A private in-memory database (tests, fixture tooling).
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(AppConn::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(mut conn: AppConn) -> Result<Self> {
+    fn init(mut conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -672,7 +677,7 @@ impl AppDb {
             .set_abort_divergent(true)
             .set_abort_missing(true)
             .set_grouped(true)
-            .run(&mut *conn)?;
+            .run(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             _alive: None,
@@ -680,7 +685,7 @@ impl AppDb {
         })
     }
 
-    fn conn(&self) -> MutexGuard<'_, AppConn> {
+    fn conn(&self) -> MutexGuard<'_, Connection> {
         // A panic while holding the guard cannot leave SQLite half-written
         // (each statement or transaction is atomic), so a poisoned lock is
         // still a usable connection.
@@ -2053,6 +2058,28 @@ impl AppDb {
         })
     }
 
+    /// Names `st_hash` (hex) as the transition of the `pending` shielded
+    /// payout `reference`, durable as
+    /// [`Self::insert_dp_contact_payout_durable`] (C-funding P6): whether
+    /// the row now names it. A row that is not pending, not shielded, or
+    /// names another transition is left as it is (`false`).
+    pub fn set_dp_contact_payout_st_hash_durable(
+        &self,
+        wallet_id: &str,
+        reference: &str,
+        st_hash: &str,
+    ) -> Result<bool> {
+        self.durably(|conn| {
+            let n = conn.execute(
+                "UPDATE dp_contact_payout SET st_hash = ?3
+                 WHERE wallet_id = ?1 AND reference = ?2 AND state = 'pending'
+                     AND source = 'shielded' AND (st_hash IS NULL OR st_hash = ?3)",
+                params![wallet_id, reference, st_hash],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
     /// Settles a `pending` payout as `state` (`sent` or `not_sent`);
     /// whether it was pending.
     pub fn settle_dp_contact_payout(
@@ -2411,6 +2438,52 @@ mod tests {
             ..bob
         };
         assert_eq!(db.dp_contact_payouts(W).unwrap(), vec![settled]);
+    }
+
+    /// C-funding P6: the hook names a pending shielded payout's transition
+    /// once; never another transition, a settled row or a Platform one.
+    #[test]
+    fn a_shielded_payout_names_one_transition_while_pending() {
+        let db = AppDb::open_in_memory().unwrap();
+        let row = |c: &str, reference: &str, source: &str| DpContactPayoutRow {
+            reference: reference.into(),
+            identity: "me".into(),
+            contact: c.into(),
+            source: source.into(),
+            st_hash: None,
+            address: "yaddr".into(),
+            credits: 5_000,
+            expected_duffs: 4,
+            note: None,
+            state: "pending".into(),
+            since: 10,
+        };
+        let st_hash = |reference: &str| {
+            (db.dp_contact_payouts(W).unwrap().into_iter())
+                .find(|r| r.reference == reference)
+                .and_then(|r| r.st_hash)
+        };
+        let hash = |digit: &str| digit.repeat(64);
+        let name = |reference: &str, digit: &str| {
+            db.set_dp_contact_payout_st_hash_durable(W, reference, &hash(digit))
+                .unwrap()
+        };
+        db.insert_dp_contact_payout_durable(W, &row("bob", "sh-1", "shielded"))
+            .unwrap();
+        db.insert_dp_contact_payout_durable(W, &row("carol", "move-1", "platform"))
+            .unwrap();
+        assert!(!name("sh-0", "a"), "no such payout");
+        assert!(!name("move-1", "a"), "a Platform payout has no st_hash");
+        assert!(name("sh-1", "a"));
+        assert!(name("sh-1", "a"), "the same transition again");
+        assert!(!name("sh-1", "b"), "never a second transition");
+        assert_eq!(st_hash("sh-1"), Some(hash("a")));
+        db.settle_dp_contact_payout(W, "sh-1", "sent").unwrap();
+        db.insert_dp_contact_payout_durable(W, &row("dave", "sh-2", "shielded"))
+            .unwrap();
+        db.settle_dp_contact_payout(W, "sh-2", "not_sent").unwrap();
+        assert!(!name("sh-2", "c"), "a settled payout");
+        assert_eq!(st_hash("sh-2"), None);
     }
 
     /// MG-03 D34: a durable setting survives power loss, with every commit
@@ -3001,7 +3074,7 @@ mod tests {
         let in_file_alone = |key: &str| {
             let copy = dir.path().join("copy.sqlite");
             std::fs::copy(&path, &copy).unwrap();
-            let conn = AppConn::open(&copy, OpenFlags::default()).unwrap();
+            let conn = Connection::open_with_flags(&copy, OpenFlags::default()).unwrap();
             let found: Option<String> = conn
                 .query_row("SELECT value FROM settings_kv WHERE key = ?1", [key], |r| {
                     r.get(0)
@@ -3017,7 +3090,7 @@ mod tests {
         db.checkpoint_full().unwrap();
         assert!(in_file_alone("wal_only"));
 
-        let reader = AppConn::open(&path, OpenFlags::default()).unwrap();
+        let reader = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
         reader
             .execute_batch("BEGIN; SELECT * FROM settings_kv;")
             .unwrap();
@@ -3154,5 +3227,14 @@ mod tests {
         assert_eq!(db.wallet_names().unwrap(), vec![(W2.into(), "n".into())]);
         assert_eq!(db.address_book(W2, None).unwrap().len(), 1);
         assert_eq!(db.locks(W2).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_linked_sqlite_has_the_wal_close_deadlock_fix() {
+        assert!(
+            rusqlite::version_number() >= 3_051_002,
+            "SQLite {} can deadlock closing a WAL database (#105); 3.51.2 fixes it",
+            rusqlite::version()
+        );
     }
 }

@@ -37,7 +37,21 @@ impl World {
     ) -> Result<TopUpFromPlatformOutcome, CreditsError> {
         let (identity, grant) = (identity.to_owned(), grant.to_owned());
         self.call(move |net, s, w, id| async move {
-            top_up(&*net, &s, &w, id, (identity.as_str(), amount), &grant).await
+            top_up(&*net, &s, &w, id, (identity.as_str(), amount, None), &grant).await
+        })
+    }
+
+    /// Confirms `q` for `amount` as the sheet does: with its input 0.
+    fn confirm_top_up(
+        &self,
+        q: &TopUpFromPlatformQuote,
+        amount: WithdrawAmount,
+        grant: &str,
+    ) -> Result<TopUpFromPlatformOutcome, CreditsError> {
+        let (fee_input, grant) = (q.inputs[0].clone(), grant.to_owned());
+        self.call(move |net, s, w, id| async move {
+            let ask = (me(), amount, Some(&fee_input));
+            top_up(&*net, &s, &w, id, (ask.0.as_str(), ask.1, ask.2), &grant).await
         })
     }
 
@@ -54,6 +68,20 @@ impl World {
 
     fn sent(&self) -> usize {
         self.net.sent.lock().unwrap().len()
+    }
+
+    /// The quote's move, as the host confirms it: to its `to`, the exit of
+    /// its `exit_of` at its planned withdrawal, a move of no record `All`.
+    fn exit(&self, q: &MoveToCoreQuote, grant: &str) -> Result<MoveToCoreOutcome, CreditsError> {
+        let (to, exit_of, grant) = (q.to.clone(), q.exit_of.clone(), grant.to_owned());
+        let amount = match exit_of {
+            Some(_) => credits(q.credits - q.fee_credits),
+            None => WithdrawAmount::All,
+        };
+        self.call(move |net, s, w, id| async move {
+            let ask = (amount, to.as_str(), exit_of.as_deref());
+            move_to_core(&*net, &s, &w, id, ask, &grant).await
+        })
     }
 }
 
@@ -237,6 +265,110 @@ fn top_up_from_platform_refusal_keeps_the_grant() {
         w.f.flow(FlowKind::PlatformAddressMove, vec![w.f.grant(3 * DASH)]);
     w.top_up_as(&me(), credits(DASH / 10), &lease).unwrap();
     assert_eq!(w.sent(), 2);
+}
+
+/// A top-up signs the fee source and claim its Confirm showed or nothing:
+/// a deposit since the quote to an address before input 0, or to a Max's
+/// input 0, is `credits.quote_changed` with the grant kept and nothing
+/// recorded or signed. A deposit that leaves input 0 as quoted confirms,
+/// and so does a confirm without the quote's input 0, as before.
+#[test]
+fn a_top_up_takes_the_fee_input_its_quote_named() {
+    let w = World::new();
+    let order = w.in_order();
+    w.net.fund(order[1], 2 * DASH);
+    w.net.fund(order[2], 5 * DASH);
+    let grant = w.f.grant(10 * DASH);
+    let refused = |r: Result<TopUpFromPlatformOutcome, CreditsError>| {
+        assert_eq!(r.unwrap_err().code(), "credits.quote_changed");
+        assert!(w.f.unused(&grant));
+        assert_eq!(w.sent(), 0);
+        assert!(w.moves().is_empty(), "nothing recorded");
+    };
+
+    // An address before input 0 is funded: it becomes input 0.
+    let q = w.top_up_quote(&me(), credits(DASH)).unwrap();
+    assert_eq!(q.inputs[0].address, bech32m(&order[1], w.network()));
+    w.net.fund(order[0], 3 * DASH);
+    refused(w.confirm_top_up(&q, credits(DASH), &grant));
+
+    // Max over input 0: a deposit to it raises the claim.
+    let max = w.top_up_quote(&me(), WithdrawAmount::All).unwrap();
+    w.net.fund(order[0], DASH);
+    refused(w.confirm_top_up(&max, WithdrawAmount::All, &grant));
+
+    // A deposit that leaves input 0's address and claim as quoted.
+    let q = w.top_up_quote(&me(), credits(DASH)).unwrap();
+    w.net.fund(order[0], DASH);
+    w.net.fund(order[2], DASH);
+    let done = w.confirm_top_up(&q, credits(DASH), &grant).unwrap();
+    assert_eq!(done.credits, DASH);
+    assert_eq!(w.sent(), 1);
+    assert_eq!(w.net.sent.lock().unwrap()[0].keys().next(), Some(&order[0]));
+
+    // Without the quote's input 0 the same race signs the submit's plan.
+    let w = World::new();
+    w.net.fund(order[1], 2 * DASH);
+    let q = w.top_up_quote(&me(), credits(DASH)).unwrap();
+    assert_eq!(q.inputs[0].address, bech32m(&order[1], w.network()));
+    w.net.fund(order[0], 3 * DASH);
+    w.top_up(credits(DASH)).unwrap();
+    assert_eq!(w.net.sent.lock().unwrap()[0].keys().next(), Some(&order[0]));
+}
+
+/// Max over two inputs keeps the two-input band on input 0. Confirmed as
+/// its quoted credits, as the sheet and dwcli confirm it, that total would
+/// fit input 0 alone at the one-input band and claim more of it: the
+/// top-up signs the quote's own plan instead, on unchanged balances.
+#[test]
+fn a_max_top_up_confirms_its_own_quote() {
+    let w = World::new();
+    let order = w.in_order();
+    let l = limits();
+    let small = l.keep(2) - l.keep(1);
+    assert!(small >= l.min_input, "a second input the plan takes");
+    w.net.fund(order[0], 10 * DASH);
+    w.net.fund(order[1], small);
+    let max = w.top_up_quote(&me(), WithdrawAmount::All).unwrap();
+    assert_eq!(max.inputs.len(), 2);
+    let balances = BTreeMap::from([(order[0], 10 * DASH), (order[1], small)]);
+    let one = top_up_plan(&balances, credits(max.credits), &l).unwrap();
+    assert_eq!(
+        one.inputs.len(),
+        1,
+        "the same total as an amount: one input"
+    );
+    let grant = w.f.grant(max.debit_credits);
+    let done = w
+        .confirm_top_up(&max, credits(max.credits), &grant)
+        .unwrap();
+    assert_eq!(done.credits, max.credits);
+    let sent = w.net.sent.lock().unwrap()[0].clone();
+    let claims: Vec<_> = sent
+        .iter()
+        .map(|(a, (_, c))| (bech32m(a, w.network()), *c))
+        .collect();
+    let quoted: Vec<_> = max
+        .inputs
+        .iter()
+        .map(|i| (i.address.clone(), i.credits))
+        .collect();
+    assert_eq!(claims, quoted, "the quote's inputs and claims");
+}
+
+/// A quoted fee input that is not a Platform address is refused before
+/// anything is read.
+#[test]
+fn a_top_up_with_a_malformed_fee_input_is_refused() {
+    let w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    let mut q = w.top_up_quote(&me(), credits(DASH)).unwrap();
+    q.inputs[0].address = "not-an-address".into();
+    let grant = w.f.grant(10 * DASH);
+    let refused = w.confirm_top_up(&q, credits(DASH), &grant).unwrap_err();
+    assert_eq!(refused.code(), "invalid_argument");
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.sent(), 0);
 }
 
 /// An unknown outcome leaves the record pending and able to land; the next
@@ -595,7 +727,8 @@ fn the_core_quote_beside_a_held_top_up_is_its_exit() {
     w.net.fee.store(1, Ordering::SeqCst);
     let q = w.quote(WithdrawAmount::All).unwrap();
     assert_eq!(q.credits, 5 * DASH, "only the held input");
-    let exit = w.move_all(&w.f.grant(10 * DASH)).unwrap();
+    assert_eq!(q.exit_of, Some(w.moves()[0].id.clone()));
+    let exit = w.exit(&q, &w.f.grant(10 * DASH)).unwrap();
     assert_eq!(exit.state, PlatformActivityState::Done);
     let sent = w.net.sent.lock().unwrap().clone();
     assert_eq!(sent.last().unwrap().keys().collect::<Vec<_>>(), vec![&a]);
@@ -611,6 +744,419 @@ fn the_core_quote_beside_a_held_top_up_is_its_exit() {
         w.quote(WithdrawAmount::All).unwrap_err().code(),
         "credits.move_pending"
     );
+}
+
+/// The held top-up lands between its exit's quote and the Confirm. Named by
+/// the quote's `exit_of`, the exit no longer stands: `credits.quote_changed`,
+/// nothing signed or recorded, and the grant kept, which a new Confirm
+/// then spends.
+#[test]
+fn an_exit_after_its_top_up_landed_is_refused_and_keeps_the_grant() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.exit_of, Some(w.moves()[0].id.clone()));
+    w.net.execute_sent(0);
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&q, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.sent(), 1, "nothing signed");
+    let moves = w.moves();
+    assert_eq!(moves.len(), 1, "nothing recorded");
+    assert_eq!(moves[0].state, PlatformActivityState::Done);
+    assert_eq!(w.net.topped_up.load(Ordering::SeqCst), DASH);
+
+    let again = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(again.exit_of, None);
+    assert!(again.credits <= q.credits);
+    let moved = w.exit(&again, &grant).unwrap();
+    assert_eq!(moved.state, PlatformActivityState::Done);
+    assert_eq!(w.sent(), 2);
+    assert_eq!(w.net.sent.lock().unwrap()[1][&a].0, 2, "after the top-up's");
+
+    // A record pending since the quote does not hide that it changed.
+    w.net.fund(w.address(1), 3 * DASH);
+    w.net.then(Act::Lost);
+    let (_, to) = w.theirs(9);
+    let pending = w.send(credits(DASH), &to, &w.f.grant(10 * DASH)).unwrap();
+    assert_eq!(pending.state, PlatformActivityState::Pending);
+    let kept = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&q, &kept).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&kept));
+    assert_eq!(w.sent(), 3);
+}
+
+/// An exit whose top-up Activity settled is answered as changed even on a
+/// read behind that top-up, so Confirm offers Back; a move on that read
+/// still signs nothing.
+#[test]
+fn an_exit_on_a_read_behind_its_landed_top_up_is_answered_changed() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.exit_of, Some(w.moves()[0].id.clone()));
+    w.net.execute_sent(0);
+    w.activity();
+    assert_eq!(w.moves()[0].state, PlatformActivityState::Done);
+    w.net.state.lock().unwrap().get_mut(&a).unwrap().0 -= 1;
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&q, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.sent(), 1, "nothing signed");
+    assert_eq!(w.moves().len(), 1, "nothing recorded");
+
+    let again = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(again.exit_of, None);
+    assert_eq!(
+        w.exit(&again, &w.f.grant(again.credits))
+            .unwrap_err()
+            .code(),
+        "platform.unavailable"
+    );
+    assert_eq!(w.sent(), 1, "nothing signed on the lagging read");
+}
+
+/// An exit with nothing changed since its quote moves exactly the quoted
+/// withdrawal: the quote and the move plan the same inputs, fee and
+/// amount, so it neither loops on `credits.quote_changed` nor moves more.
+/// Its debit is the grant the quote asked for, not one credit more, and it
+/// pays only the wallet's own Core address.
+#[test]
+fn an_exit_reports_the_amount_it_moved() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    w.net.fund(a, DASH);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert!(q.exit_of.is_some());
+    let short = w.f.grant(q.credits - 1);
+    assert_eq!(
+        w.exit(&q, &short).unwrap_err().code(),
+        "platform.grant_exceeded"
+    );
+    assert!(w.f.unused(&short));
+    use dpp::dashcore::hashes::Hash;
+    let theirs = dpp::dashcore::Address::new(
+        w.f.s.vault.network(),
+        dpp::dashcore::address::Payload::PubkeyHash(dpp::dashcore::PubkeyHash::from_byte_array(
+            [7; 20],
+        )),
+    );
+    let elsewhere = MoveToCoreQuote {
+        to: theirs.to_string(),
+        ..q.clone()
+    };
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&elsewhere, &grant).unwrap_err().code(),
+        "invalid_argument"
+    );
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.sent(), 1, "nothing signed");
+
+    let out = w.exit(&q, &grant).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_eq!(out.expected_duffs, Some(q.expected_duffs));
+    let sent = w.net.sent.lock().unwrap()[1].clone();
+    assert_eq!(sent.keys().collect::<Vec<_>>(), vec![&a]);
+    assert_eq!(sent[&a].1, q.credits - q.fee_credits, "the quoted amount");
+}
+
+/// A named exit moves its quoted amount or nothing: when the held input
+/// carries less at submit than the quote read, the plan is short, which
+/// is `credits.quote_changed` before the grant is redeemed or anything
+/// signed; the top-up still holds.
+#[test]
+fn an_exit_whose_input_fell_since_its_quote_is_refused() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    w.net.fund(a, DASH);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    w.net.state.lock().unwrap().get_mut(&a).unwrap().1 -= DASH;
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&q, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.sent(), 1, "nothing signed");
+    let moves = w.moves();
+    assert_eq!(moves.len(), 1, "nothing recorded");
+    assert!(moves[0].holds());
+}
+
+/// A two-input held top-up: a deposit since the exit's quote never makes
+/// the exit narrower. One that lets one input carry the amount is
+/// `credits.quote_changed` with the grant kept; a smaller one leaves the
+/// exit exactly the held inputs at the held nonces, at the quoted amount,
+/// and the deposit stays on its address.
+#[test]
+fn a_deposit_on_one_input_of_a_two_input_exit_never_narrows_it() {
+    let held_world = || {
+        let w = World::new();
+        let order = w.in_order();
+        w.net.fund(order[0], 2 * DASH);
+        w.net.fund(order[1], 5 * DASH);
+        w.net.fee.store(5 * DASH, Ordering::SeqCst);
+        let out = w.top_up(credits(3 * DASH)).unwrap();
+        assert_eq!(out.state, PlatformActivityState::Pending);
+        w.activity();
+        w.net.tick();
+        w.activity();
+        let held = w.moves()[0].clone();
+        assert!(held.holds());
+        assert_eq!(held.inputs.len(), 2);
+        w.net.fee.store(1, Ordering::SeqCst);
+        let q = w.quote(WithdrawAmount::All).unwrap();
+        assert_eq!(q.exit_of, Some(held.id.clone()));
+        (w, order, held, q)
+    };
+
+    let (w, order, _, q) = held_world();
+    w.net.fund(order[1], 3 * DASH);
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&q, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.sent(), 1, "nothing signed");
+    assert_eq!(w.moves().len(), 1, "nothing recorded");
+
+    let (w, order, held, q) = held_world();
+    w.net.fund(order[0], DASH / 10);
+    let out = w.exit(&q, &w.f.grant(q.credits)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    let sent = w.net.sent.lock().unwrap()[1].clone();
+    let at: Vec<_> = (sent.iter())
+        .map(|(a, (nonce, _))| (bech32m(a, w.network()), *nonce))
+        .collect();
+    let mut key: Vec<_> = (held.inputs.iter())
+        .map(|i| (i.address.clone(), i.nonce))
+        .collect();
+    key.sort();
+    let mut at = at;
+    at.sort();
+    assert_eq!(at, key, "the held inputs at the held nonces");
+    let moved: u64 = sent.values().map(|(_, c)| *c).sum();
+    assert_eq!(moved, q.credits - q.fee_credits, "the quoted amount");
+    assert_eq!(
+        w.net.state.lock().unwrap()[&order[0]].1,
+        DASH / 10,
+        "the deposit stays"
+    );
+}
+
+/// Platform answers an exit it was sent with an input short of funds: a
+/// state error, after the grant was redeemed and the inputs signed. The
+/// exit is recorded and may still execute; it is not
+/// `credits.quote_changed`, which only a plan refuses.
+#[test]
+fn an_exit_platform_refuses_after_signing_is_recorded() {
+    let (w, _) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    let grant = w.f.grant(q.credits);
+    w.net.then(Act::NotEnoughFunds);
+    let out = w.exit(&q, &grant);
+    assert!(!matches!(out, Err(CreditsError::QuoteChanged)), "{out:?}");
+    let out = out.unwrap();
+    assert_ne!(out.state, PlatformActivityState::Done);
+    assert!(!w.f.unused(&grant), "redeemed");
+    assert_eq!(w.sent(), 2, "signed and sent");
+    let moves = w.moves();
+    assert_eq!(moves.len(), 2, "recorded");
+    let exit = moves.iter().find(|m| m.id == out.id).unwrap();
+    assert!(exit.signed && exit.can_land);
+}
+
+/// An exit beside a held top-up that Platform's stateless checks refuse
+/// for good, every input signed, fails alone: only a send's exact retry
+/// releases the record it names, so the top-up still holds, its inputs
+/// stay held, and the next quote is its exit again.
+#[test]
+fn an_exit_refused_for_good_leaves_its_top_up_held() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    let top_up = w.moves()[0].id.clone();
+    w.net.then(Act::Invalid);
+    let refused = w.exit(&q, &w.f.grant(q.credits)).unwrap_err();
+    assert_ne!(refused.code(), "credits.quote_changed");
+    let moves = w.moves();
+    assert_eq!(moves.len(), 2);
+    let exit = moves.iter().find(|m| m.id != top_up).unwrap();
+    assert!(exit.signed, "every input signed");
+    assert_eq!(
+        (exit.state, exit.can_land),
+        (PlatformActivityState::Failed, false)
+    );
+    let held = moves.iter().find(|m| m.id == top_up).unwrap();
+    assert!(held.holds(), "the top-up still holds");
+
+    let again = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(again.exit_of, Some(top_up));
+    let out = w.exit(&again, &w.f.grant(again.credits)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    let sent = w.net.sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[2][&a].0, sent[0][&a].0, "at the top-up's nonce");
+}
+
+/// The same race with no `exit_of`: as before it, the move is planned on the
+/// read under the lock, an ordinary withdrawal of what the addresses hold.
+#[test]
+fn a_move_without_exit_of_after_its_top_up_landed_is_planned_anew() {
+    let (w, a) = shortfall();
+    let b = w.address(1);
+    w.net.fund(b, DASH / 2);
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.credits, 5 * DASH, "the exit: the held input only");
+    w.net.execute_sent(0);
+    let grant = w.f.grant(q.credits);
+    let moved = w.move_all(&grant).unwrap();
+    assert_eq!(moved.state, PlatformActivityState::Done);
+    assert_eq!(w.sent(), 2);
+    let sent = w.net.sent.lock().unwrap()[1].clone();
+    assert_eq!(
+        sent.keys().collect::<Vec<_>>().len(),
+        2,
+        "every funded address"
+    );
+    assert_eq!(sent[&a].0, 2, "after the top-up's");
+    assert!(sent.contains_key(&b));
+    assert_eq!(w.net.topped_up.load(Ordering::SeqCst), DASH);
+}
+
+/// Its exit signs exactly a held top-up's inputs: a quote of only some of
+/// them (an amount the larger input carries) is refused as the move would
+/// refuse it, and the quote of all of them names the top-up.
+#[test]
+fn a_partial_exit_of_a_two_input_top_up_is_refused_at_the_quote() {
+    let w = World::new();
+    let order = w.in_order();
+    w.net.fund(order[0], 2 * DASH);
+    w.net.fund(order[1], 5 * DASH);
+    w.net.fee.store(5 * DASH, Ordering::SeqCst);
+    let out = w.top_up(credits(3 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Pending);
+    w.activity();
+    w.net.tick();
+    w.activity();
+    let held = w.moves()[0].clone();
+    assert!(held.holds());
+    assert_eq!(held.inputs.len(), 2);
+    w.net.fee.store(1, Ordering::SeqCst);
+    assert_eq!(
+        w.quote(credits(DASH)).unwrap_err().code(),
+        "credits.move_pending"
+    );
+    let all = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(all.exit_of, Some(held.id.clone()));
+    let exit = w.exit(&all, &w.f.grant(all.credits)).unwrap();
+    assert_eq!(exit.state, PlatformActivityState::Done);
+    assert_eq!(w.sent(), 2);
+}
+
+/// An `exit_of` that names no held top-up is `credits.quote_changed`, with
+/// nothing signed and the grant kept.
+#[test]
+fn an_exit_of_no_held_top_up_is_refused() {
+    let (w, _) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let mut q = w.quote(WithdrawAmount::All).unwrap();
+    let grant = w.f.grant(q.credits);
+    q.exit_of = Some("move-0-9".into());
+    assert_eq!(
+        w.exit(&q, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.sent(), 1);
+}
+
+/// A contact payout holds beside the held top-up an exit names, on one of
+/// its addresses at another nonce and on one more (no call order here makes
+/// this; a record from elsewhere can). The quote names the top-up, and the
+/// exit is refused `credits.move_pending` for the payout: nothing signed or
+/// recorded, the grant kept.
+#[test]
+fn an_exit_beside_a_held_contact_payout_is_refused_for_the_payout() {
+    let (w, _) = shortfall();
+    w.net.fund(w.address(1), 3 * DASH);
+    w.net.fee.store(1, Ordering::SeqCst);
+    let top_up = w.moves()[0].clone();
+    let mut payout = top_up.clone();
+    payout.id = "move-payout".into();
+    payout.kind = MoveKind::ToContact;
+    payout.inputs[0].nonce += 1;
+    let mut other = payout.inputs[0].clone();
+    other.address = bech32m(&w.address(1), w.network());
+    other.nonce = 1;
+    other.fee_source = false;
+    payout.inputs.push(other);
+    let write = move_write(&payout).unwrap();
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    (w.f.engine)
+        .block_on(async move { Store::of(&s, id).unwrap().commit(vec![write]).await })
+        .unwrap();
+    assert!(w.moves().iter().all(MoveRecord::holds));
+
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.exit_of, Some(top_up.id.clone()));
+    let grant = w.f.grant(q.credits);
+    let refused = w.exit(&q, &grant).unwrap_err();
+    assert!(
+        matches!(&refused, CreditsError::MovePending { id } if id == "move-payout"),
+        "{refused:?}"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.sent(), 1, "nothing signed");
+    assert_eq!(w.moves().len(), 2, "nothing recorded");
+}
+
+/// A top-up confirmed with its quote's fee input after another top-up came
+/// to hold the addresses is `credits.move_pending` for that hold: the
+/// fee-input re-plan never runs beside a hold, nothing is signed or
+/// recorded, and the grant is kept.
+#[test]
+fn a_confirmed_top_up_beside_a_held_top_up_is_refused() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let q = w.top_up_quote(&me(), credits(DASH / 10)).unwrap();
+    // Another top-up: Platform meters more than input 0 keeps.
+    w.net.fee.store(5 * DASH, Ordering::SeqCst);
+    let out = w.top_up(credits(DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Pending);
+    w.activity();
+    w.net.tick();
+    w.activity();
+    let held = w.moves()[0].clone();
+    assert_eq!(
+        (held.state, held.holds()),
+        (PlatformActivityState::Failed, true)
+    );
+    let sent = w.sent();
+    let grant = w.f.grant(q.debit_credits);
+    let refused = w
+        .confirm_top_up(&q, credits(DASH / 10), &grant)
+        .unwrap_err();
+    assert!(
+        matches!(&refused, CreditsError::MovePending { id } if *id == held.id),
+        "{refused:?}"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.sent(), sent, "nothing signed");
+    assert_eq!(w.moves().len(), 1, "nothing recorded");
 }
 
 /// The top-up executed beside its exit, and the exit's document cannot be
@@ -766,7 +1312,8 @@ fn lock_order_top_up_from_platform_vs_withdraw_vs_move() {
             // A withdrawal of the identity in flight.
             let withdrawal = locks.write.lock().await;
             let me = me();
-            let top_up = top_up(&*net, &s, &wallet, id, (me.as_str(), credits(DASH)), &grant);
+            let ask = (me.as_str(), credits(DASH), None);
+            let top_up = top_up(&*net, &s, &wallet, id, ask, &grant);
             tokio::pin!(top_up);
             let early = tokio::time::timeout(Duration::from_millis(300), &mut top_up).await;
             assert!(early.is_err(), "the top-up waits for the identity");
@@ -777,7 +1324,7 @@ fn lock_order_top_up_from_platform_vs_withdraw_vs_move() {
                     &s,
                     &wallet,
                     id,
-                    (credits(DASH), to.as_str()),
+                    (credits(DASH), to.as_str(), None),
                     &move_grant,
                 ),
             )

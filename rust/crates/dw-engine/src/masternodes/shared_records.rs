@@ -117,6 +117,14 @@ pub struct UnreadableSession {
     pub role: SharedRole,
     /// What `SharedSession.discardable` reads: nothing of it may be out.
     pub discardable: bool,
+    /// `abandon_unreadable_shared_session` would spend every reserved coin
+    /// the wallet holds back to it as of this read: out, not a
+    /// dissolve-together session, not settled by its stored columns, and
+    /// passing the coin test that call spends by (§4.4 EP 4).
+    pub abandonable: bool,
+    /// What that spend charges, exactly its `MasternodeOp` grant cap;
+    /// `None` while not `abandonable`.
+    pub abandon_charge: Option<u64>,
     /// The outpoints locked for it, `"txid:vout"`.
     pub reserved: Vec<String>,
     pub updated_at: u64,
@@ -315,6 +323,13 @@ pub struct SharedSession {
     /// session follows its own rule. The call can still refuse on a newer
     /// state or while another call holds the session.
     pub discardable: bool,
+    /// `abandon_shared_session`'s stage guards pass as of this read: a
+    /// registration out and not `confirmed` or `conflicted`; a key change
+    /// of this wallet's funding, not `confirmed`, `conflicted` or `dead`;
+    /// once out, each with a reserved coin unspent and free of other
+    /// pending spends. A dissolve-together session never is. The call's
+    /// coin test and charge are `recovery`'s `abandon` action.
+    pub abandonable: bool,
     pub warnings: Vec<SharedWarning>,
     /// The terms this wallet last approved (M-1 case 2's diff base).
     pub approved_terms: Option<ShareTermsView>,
@@ -326,6 +341,166 @@ pub struct SharedSession {
     pub created_at: u64,
     pub updated_at: u64,
     pub last_error: Option<String>,
+    /// What the wallet can do to get a session's coins back, and what it
+    /// knows of where they are (MG-10 §4.4 EP 4).
+    pub recovery: SharedRecovery,
+}
+
+/// A session's recovery (MG-10 §4.4 EP 4), computed with the predicates
+/// the recovery calls themselves run. `actions` is a safe subset of what
+/// the engine accepts now: each listed action passes its call's guards
+/// with its charge as the grant cap.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedRecovery {
+    pub out_at: Option<u64>,
+    /// Advisory: out, the list current with the tip, and three hours of
+    /// tip time since `out_at` (MG-10 §4.2).
+    pub overdue: bool,
+    pub settlement: Settlement,
+    pub handoff_error: Option<HandoffError>,
+    /// The latest abandon spend; present exactly when one was signed.
+    pub abandon_spend: Option<AbandonSpend>,
+    /// Every abandon spend's txid the session signed, oldest first.
+    pub attributed: Vec<String>,
+    pub blocked: Option<Blocked>,
+    pub actions: Vec<RecoveryAction>,
+}
+
+/// Where a session's reserved coins stand once a spend of them may be out.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Settlement {
+    #[default]
+    None,
+    /// An abandon spend is signed and no spend of a reserved coin is in a
+    /// block.
+    Pending { txid: String },
+    /// A spend of a reserved coin is in a block a reorg could still undo.
+    Confirming {
+        by: SettledBy,
+        confirmations: u32,
+        /// The tracker has seen a ChainLock.
+        chainlocked: bool,
+    },
+    /// That block is ChainLocked or six deep; `released` once the
+    /// follower cleared the reservation.
+    Settled { by: SettledBy, released: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettledBy {
+    /// Any abandon spend the session signed.
+    AbandonTx,
+    OtherSpend,
+}
+
+/// The latest failed hand-off of the session's own transaction or of its
+/// latest abandon spend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffError {
+    pub tx: HandoffTx,
+    pub outcome: HandoffErrorOutcome,
+    pub code: Option<String>,
+    /// The latest resend of the session's own transaction was refused; an
+    /// earlier attempt may be out, so `outcome` is `unknown`.
+    pub resend_refused: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffTx {
+    /// The session's own transaction: the registration or the key change.
+    Registration,
+    Abandon,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffErrorOutcome {
+    /// A definite refusal of a first hand-off this engine recorded.
+    Refused,
+    Unknown,
+}
+
+/// The latest abandon spend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbandonSpend {
+    pub txid: String,
+    pub signed_at: u64,
+    /// Saved by an earlier version: no bytes or inputs were kept.
+    pub legacy: bool,
+    /// Advisory: three hours of tip time since `signed_at`.
+    pub overdue: bool,
+    /// Only while the settlement is `pending` and the session isn't
+    /// settled.
+    pub state: Option<AbandonSpendState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AbandonSpendState {
+    /// Its first hand-off was definitely refused.
+    Refused,
+    /// It may be on the network.
+    Uncertain,
+    /// The wallet recorded it, unconfirmed.
+    InHistory,
+    /// The wallet recorded it and the user abandoned it.
+    AbandonedInActivity,
+    /// Saved by an earlier version and not in the wallet's history.
+    Legacy,
+}
+
+/// Why no abandon exit is listed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Blocked {
+    pub txid: Option<String>,
+    pub reason: BlockedReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockedReason {
+    InFlight,
+    InstantLocked,
+    SpvStopped,
+    Rescanning,
+    CoinElsewhere,
+    NoOwnershipPath,
+    TooSmall,
+}
+
+/// A recovery call the engine accepts now, with the grant cap it charges.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RecoveryAction {
+    /// The session's own transaction again (`send_shared_registration`,
+    /// `send_maintenance`).
+    Resend {
+        charge: u64,
+    },
+    /// A new abandon spend (`abandon_shared_session`).
+    Abandon {
+        charge: u64,
+        spends: bool,
+        replaces: Option<String>,
+    },
+    /// The latest abandon spend's bytes again (`resend_shared_abandon`).
+    ResendAbandon {
+        charge: u64,
+    },
+    /// Activity's Abandon of a transaction the wallet recorded.
+    AbandonWalletTx {
+        txid: String,
+    },
+    /// Activity's Resend of a transaction the wallet recorded.
+    ResendWalletTx {
+        txid: String,
+    },
+    Discard {
+        releases: u64,
+    },
 }
 
 /// The message to copy or save now (§2.3's names by stage).

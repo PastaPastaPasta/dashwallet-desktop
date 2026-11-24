@@ -16,14 +16,15 @@ import type { PeerSummary } from "../api/generated/PeerSummary";
 import type { PsbtAnalysis } from "../api/generated/PsbtAnalysis";
 import type { PsbtOutput } from "../api/generated/PsbtOutput";
 import type { RescanStatus } from "../api/generated/RescanStatus";
+import type { WalletHistoryGap } from "../api/generated/WalletHistoryGap";
 import type { StuckShieldFunding } from "../api/generated/StuckShieldFunding";
 import type { Utxo } from "../api/generated/Utxo";
 import type { VerifyMessageResult } from "../api/generated/VerifyMessageResult";
 import type { AppError, AppEvent } from "../api/generated/commands";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
-import { coinJoinAccount, DRAIN_STEP, selfSpendFee } from "./coinjoin";
-import { classifyAddress, owns } from "./send";
+import { coinJoinAccount, DRAIN_STEP, mixerBusy, selfSpendFee } from "./coinjoin";
+import { classifyAddress, owns, refused } from "./send";
 import { SHIELD_STEP } from "./shielded";
 import { FIXTURE_DATA_DIR } from "./settings";
 import { FIXTURE_NOW, makeIds, prng, secs, TIP } from "./wallet";
@@ -69,6 +70,10 @@ export interface ToolsWorld {
   rescanStep: number;
   /** How often `reset_chain_data` ran. */
   resets: number;
+  /** What `history_gap` answers; a reset clears it. */
+  historyGap: WalletHistoryGap | null;
+  /** A signed mixing round still holds its inputs: `reset_chain_data` is refused. */
+  inputsHeld: boolean;
   addressBook: Record<string, AddressBookEntry[]>;
   psbts: Record<string, FixturePsbt>;
   /** Every PSBT broadcast, in order. */
@@ -124,6 +129,8 @@ export function newToolsWorld(main: FixtureWallet): ToolsWorld {
     rescan: null,
     rescanStep: 10_000,
     resets: 0,
+    historyGap: null,
+    inputsHeld: false,
     addressBook: { [walletId]: newAddressBook(main) },
     psbts: {
       [FIXTURE_PSBT.unsigned]: {
@@ -440,9 +447,14 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
     },
     reset_chain_data: (_, { world }) => {
       if (world.sync.running) throw fail("spv_running", "SPV is running");
+      if (world.wallets.some((w) => mixerBusy(world, w.summary.walletId)))
+        throw fail("app.network_busy", "mixing", { kind: "networkBusy", flows: [], stalled: false, mixing: true, broadcast: false, draining: false });
+      if (world.tools.inputsHeld) throw fail("coinjoin.inputs_held", "a signed mixing round still holds its inputs");
       world.tools.resets += 1;
+      world.tools.historyGap = null;
       return null;
     },
+    history_gap: (_, { world }) => world.tools.historyGap,
     rescan: ({ from }, { world }) => {
       if (!world.sync.running) throw fail("spv_not_running", "SPV is not running");
       if (world.tools.rescan) throw fail("rescan_in_progress", "a rescan is running");
@@ -476,6 +488,7 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
     },
     // Counts the unconfirmed coins that are not InstantSend-locked; they stay listed (not modelled).
     drop_unconfirmed: ({ walletId }, { world }) => {
+      if (world.send.recordUnreadable.length) throw refused("recordUnreadable", world.wallets[0].summary.walletId);
       const ws = walletId === null ? world.wallets : [wallet(world, walletId)];
       const dropped = ws.flatMap((w) => w.coins).filter((u) => u.confirmations === 0 && !u.instantLocked).length;
       if (dropped && world.sync.running && !world.tools.rescan) startRescan(world, Math.min(...ws.map((w) => w.summary.birthHeight ?? 0)));

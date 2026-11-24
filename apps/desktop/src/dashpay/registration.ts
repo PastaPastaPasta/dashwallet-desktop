@@ -20,7 +20,7 @@ import { waitText } from "../onboarding/model";
 import { formatLocale, messageTable, t } from "../i18n";
 import { listed } from "../network/choice";
 import { PAY_WITH_COPY } from "./payWith";
-import { awaitsContinue, COPY, failureText, stepOf, WAITS, withTable, type CardStep } from "./status";
+import { awaitsContinue, COPY, failureText, heldWithBoth, stepOf, WAITS, withTable, type CardStep } from "./status";
 
 /** The engine's cap (`check_username`'s `maxLength`); the field takes no more. */
 export const MAX_LABEL = 23;
@@ -317,7 +317,7 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
   }
 
   if (row.waiting === "paymentHeld")
-    return base("held", progressTitle, [REG_COPY.progress.message(label), WAITS.paymentHeld], [act("continue", REG_COPY.progress.continue), act("moveToCore", REG_COPY.progress.moveToCore)]);
+    return base("held", progressTitle, [REG_COPY.progress.message(label), heldWithBoth()], [act("continue", REG_COPY.progress.continue), act("moveToCore", REG_COPY.progress.moveToCore)]);
   if (awaitsContinue(row)) return base("paused", progressTitle, [REG_COPY.progress.authorize(label)], [act("continue", REG_COPY.progress.continue)]);
   if (row.waiting === "unlock") return base("unlock", progressTitle, [REG_COPY.progress.unlock(label)], [act("unlock", REG_COPY.progress.unlockAction)]);
 

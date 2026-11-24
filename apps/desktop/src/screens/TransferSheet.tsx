@@ -37,6 +37,7 @@ import {
   QUOTE_ON_CONTINUE,
   type RouteId,
   type TransferModel,
+  unsupportedText,
 } from "../transfer/model";
 import { useCoinJoinView, useMixingAction } from "../coinjoin/queries";
 import { FundBody } from "./PlatformFundSheet";
@@ -181,6 +182,11 @@ const INTRO: Record<RouteId, { readonly text: string; testId?: string }> = {
       return SHIELDED_COPY.form.out;
     },
   },
+  shieldedToPlatform: {
+    get text() {
+      return SHIELDED_COPY.form.toPlatform;
+    },
+  },
   coreToPlatform: {
     get text() {
       return FUND_COPY.form.intro;
@@ -243,7 +249,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
         if (!ready || amount == null) return;
         if (route === "coreToPlatform") t.flows.fund.next(amount);
         else if (route === "coreToShielded") t.flows.shielded.next({ kind: "add", duffs: amount });
-        else t.flows.shielded.next({ kind: "out", credits: String(BigInt(amount) * CREDITS_PER_DUFF) });
+        else t.flows.shielded.next({ kind: route === "shieldedToPlatform" ? "toPlatform" : "out", credits: String(BigInt(amount) * CREDITS_PER_DUFF) });
       }}
     >
       <p className="sheet-text" data-testid={INTRO[route].testId}>
@@ -394,12 +400,13 @@ function useTransferReceive(t: TransferModel, route: RouteId | "unsupported" | n
   const add = useModel(t.lines.coreToShielded);
   const fund = useModel(t.lines.coreToPlatform);
   const out = useModel(t.lines.shieldedToCore);
+  const toPlatform = useModel(t.lines.shieldedToPlatform);
   const move = usePlatformMoveQuote(walletId, false);
   useModel(t.flows.shielded);
   useModel(t.flows.fund);
   const parsed = useParsed(route === "coreToPlatform" ? t.flows.fund.text : t.flows.shielded.text, network);
   if (route === "platformToCore") return move.data?.expectedDuffs ?? null;
-  const line = route === "coreToShielded" ? add : route === "coreToPlatform" ? fund : out;
+  const line = route === "coreToShielded" ? add : route === "coreToPlatform" ? fund : route === "shieldedToPlatform" ? toPlatform : out;
   if (line.state.kind !== "quoted") return parsed ?? null;
   const q = line.state.quote;
   return "expectedDuffs" in q ? q.expectedDuffs ?? creditsToDuffs(q.credits) : creditsToDuffs(q.credits);
@@ -442,7 +449,7 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
     <>
       <div className="transfer-ends">
         <End t={t} end="from" pools={pools} fmt={fmt} pickerId={pickerId} />
-        <button type="button" className="transfer-swap" data-testid="transfer-swap" aria-label={T.swap} title={T.swap} disabled={!canSwap(t.from, t.to)} onClick={() => t.swap()}>
+        <button type="button" className="transfer-swap" data-testid="transfer-swap" aria-label={T.swap} title={T.swap} disabled={!canSwap(t.from, t.to, t.mainnet)} onClick={() => t.swap()}>
           <Icon id="transfer" size={20} />
         </button>
         <End t={t} end="to" pools={pools} fmt={fmt} pickerId={pickerId} receive={receive} />
@@ -450,7 +457,7 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
       {t.picking && <Picker t={t} end={t.picking} pools={pools} fmt={fmt} id={pickerId} />}
       {route === "unsupported" ? (
         <p className="field-hint" role="status" data-testid="transfer-unavailable">
-          {T.unsupported}
+          {unsupportedText(t.from, t.to)}
         </p>
       ) : route === "platformToCore" ? (
         <WholeBalanceForm t={t} pools={pools} why={why} network={network} walletId={walletId} />
@@ -477,6 +484,7 @@ function Steps({ t, route, walletId, network, status, block }: { t: TransferMode
   switch (route) {
     case "coreToShielded":
     case "shieldedToCore":
+    case "shieldedToPlatform":
       return <ShieldedBody flow={t.flows.shielded} walletId={walletId} network={network} status={status} />;
     case "coreToPlatform":
       return <FundBody flow={t.flows.fund} walletId={walletId} network={network} />;
@@ -498,6 +506,8 @@ export function TransferSheet({ walletId, network }: { walletId: string; network
   const status = useShieldedStatus(walletId).data ?? null;
   const { block } = usePlatformHold(walletId, move);
   const defaultHere = defaultRoute(pools);
+  const mainnet = network.kind === "mainnet";
+  useEffect(() => t.setMainnet(mainnet), [t, mainnet]);
   useEffect(() => t.settleDefault(defaultHere), [t, t.awaitingDefault, defaultHere]);
   // After a pick the picked item is gone: focus goes to the amount when the route can run, else back
   // to that end's button (after the sheet's own move to its first control).

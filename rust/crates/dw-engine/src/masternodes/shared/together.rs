@@ -1210,6 +1210,7 @@ fn view(
         reserved: Vec::new(),
         next,
         discardable,
+        abandonable: false,
         warnings,
         approved_terms: None,
         base_keys: None,
@@ -1218,6 +1219,7 @@ fn view(
         created_at: t.row.created_at,
         updated_at: t.row.updated_at,
         last_error: t.row.last_error.clone(),
+        recovery: Default::default(),
     }
 }
 

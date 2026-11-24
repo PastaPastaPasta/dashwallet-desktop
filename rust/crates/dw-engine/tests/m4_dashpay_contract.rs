@@ -177,6 +177,8 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.shielded_send",
     "DashPay.unshield_quote",
     "DashPay.unshield_to_core",
+    "DashPay.unshield_to_platform_quote",
+    "DashPay.unshield_to_platform",
     "DashPay.shielded_history",
     // 0.2 RECOVERY: unfinished transfers.
     "DashPay.unfinished_transfers",
@@ -318,6 +320,7 @@ const NOT_FACADE: &[&str] = &[
     "shielded_close_tests.rs",
     "shielded_dispatch_tests.rs",
     "shielded_disposition_tests.rs",
+    "shielded_payout.rs",
     "shielded_pool.rs",
     "shielded_tests",
     "shielded_tests.rs",
@@ -1643,7 +1646,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.top_up_from_platform_quote(s(), WithdrawAmount::All)
                 .await
                 .map(drop),
-            dp.top_up_from_platform(s(), WithdrawAmount::All, s())
+            dp.top_up_from_platform(s(), WithdrawAmount::All, None, s())
                 .await
                 .map(drop),
         ] {
@@ -1657,7 +1660,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.platform_activity().await.map(drop),
             dp.sync_platform_addresses().await.map(drop),
             dp.move_to_core_quote(WithdrawAmount::All).await.map(drop),
-            dp.move_to_core(WithdrawAmount::All, s(), s())
+            dp.move_to_core(WithdrawAmount::All, s(), None, s())
                 .await
                 .map(drop),
             dp.platform_shield_quote(WithdrawAmount::All)
@@ -1685,6 +1688,8 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.shielded_send(s(), 1, None, s(), false).await.map(drop),
             dp.unshield_quote(1, None).await.map(drop),
             dp.unshield_to_core(1, None, s(), false).await.map(drop),
+            dp.unshield_to_platform_quote(1, None).await.map(drop),
+            dp.unshield_to_platform(1, None, s(), false).await.map(drop),
             dp.shielded_history(0, 10).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");

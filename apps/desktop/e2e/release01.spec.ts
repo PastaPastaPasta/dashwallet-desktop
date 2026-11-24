@@ -840,7 +840,7 @@ test.describe("Move to Dash wallet", () => {
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
-    // Settled while the sheet is still open: it keeps showing the result.
+    // Settled while the sheet is still open: it takes Activity's answer.
     await page.evaluate(() => {
       const f = window.__dwFixture!;
       const p = f.world.pending.platform!;
@@ -848,7 +848,7 @@ test.describe("Move to Dash wallet", () => {
       p.addresses = [];
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "identities" } });
     });
-    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
     await page.getByTestId("platform-move-done").click();
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
     expect(await platformMoveWhy(page)).toBe("Nothing on your Platform addresses to move yet.");
@@ -878,7 +878,7 @@ test.describe("Move to Dash wallet", () => {
 });
 
 test.describe("Platform activity in Activity", () => {
-  test("mixes Platform rows into the list with a tag, and they open nothing", async ({ page }) => {
+  test("mixes Platform rows into the list with a tag, and each opens its details", async ({ page }) => {
     const errors = await open(page, "funded");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
@@ -886,7 +886,7 @@ test.describe("Platform activity in Activity", () => {
     await expect(rows).toHaveCount(2);
     await expect(rows.first()).toContainText("Received on Platform");
     await expect(rows.first()).toContainText("Platform");
-    await expect(page.locator('button[data-txid^="platform:"]')).toHaveCount(0);
+    await expect(page.locator('button[data-txid^="platform:"]')).toHaveCount(2);
     await shot(page, "light-activity-platform");
     expect(await seriousAxeViolations(page)).toEqual([]);
     // Only under "All": a type filter is the Core engine's.
@@ -1112,7 +1112,8 @@ test.describe("Shielded", () => {
     const row = page.locator('[data-txid^="shielded:withdrawal:"]').first();
     await expect(row).toContainText("Pending");
     await expect(row).not.toContainText("Not accepted");
-    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(0);
+    await row.click();
+    await expect(page.getByTestId("source-detail-status")).toHaveText("Pending");
   });
 
   test("leaves an unavailable Shielded balance off Home, with no Home card", async ({ page }) => {
@@ -1131,7 +1132,7 @@ test.describe("Shielded", () => {
     await expect(page.getByTestId("shielded-card")).toHaveCount(0);
   });
 
-  test("Activity lists the shielded rows with a Shielded tag, that open nothing", async ({ page }) => {
+  test("Activity lists the shielded rows with a Shielded tag, each opening its details", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
@@ -1139,7 +1140,7 @@ test.describe("Shielded", () => {
     await expect(rows).toHaveCount(3);
     await expect(page.locator('[data-txid^="shielded:received:"]')).toContainText("Received in Shielded");
     await expect(page.locator('[data-txid^="shielded:shieldFromCore:"]')).toContainText("Added to Shielded");
-    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(0);
+    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(3);
   });
 });
 

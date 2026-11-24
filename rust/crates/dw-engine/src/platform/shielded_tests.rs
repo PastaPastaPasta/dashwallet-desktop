@@ -60,6 +60,7 @@ use super::unfinished_locks::SpentRead;
 use super::withdrawal::{Rules, expected_duffs};
 use crate::{DashNetwork, ImportOptions, NetworkSession};
 
+mod to_platform;
 mod unfinished;
 
 const LATEST: u32 = 15;
@@ -78,6 +79,15 @@ fn payee() -> OrchardAddress {
 
 fn payee_text() -> String {
     payee().to_bech32m_string(Network::Regtest)
+}
+
+/// The `n`th address of the wallet's Platform payment account.
+fn own_platform(n: u8) -> PlatformAddress {
+    PlatformAddress::P2pkh([n.wrapping_add(0x50); 20])
+}
+
+fn platform_text(address: PlatformAddress) -> String {
+    address.to_bech32m_string(Network::Regtest)
 }
 
 fn core_address(n: u8) -> Address {
@@ -191,7 +201,7 @@ enum AfterFailure {
 }
 
 /// platform-wallet's shielded side, scripted.
-struct FakeShielded {
+pub(crate) struct FakeShielded {
     version: u32,
     /// What a proved read of the version returns.
     refreshed: u32,
@@ -241,6 +251,10 @@ struct FakeShielded {
     /// The coins a funding may select.
     coins: Vec<u64>,
     receive: String,
+    /// The wallet's Platform payment account; its pool read fails when
+    /// `None`.
+    platform: Mutex<Option<pool::PlatformPool>>,
+    network: Network,
     /// The next spend's failure, after the keys are out.
     fails: Mutex<Option<PlatformWalletError>>,
     spent: Mutex<Vec<Spent>>,
@@ -323,6 +337,11 @@ struct FakeShielded {
     rest: Mutex<Option<pool::RestClock>>,
     /// The clock's writes return `Ok` and keep nothing.
     drops_rest: AtomicBool,
+    /// A withdrawal runs the engine's hook steps in the funder's session
+    /// first, as the library's first send does: the payout's accept, then
+    /// the artifact, unless `drops_artifact`.
+    hooks: AtomicBool,
+    drops_artifact: AtomicBool,
 }
 
 /// A funding that fails after its signatures, as platform-wallet ends one
@@ -434,6 +453,11 @@ impl Default for FakeShielded {
             },
             coins: vec![10_000_000_000],
             receive: core_address(9).to_string(),
+            platform: Mutex::new(Some(pool::PlatformPool {
+                receive: own_platform(0),
+                addresses: (0..3).map(own_platform).collect(),
+            })),
+            network: Network::Regtest,
             fails: Mutex::new(None),
             spent: Mutex::new(Vec::new()),
             unresolved: Mutex::default(),
@@ -467,6 +491,8 @@ impl Default for FakeShielded {
             fund_end: Mutex::default(),
             rest: Mutex::new(Some(pool::RestClock::default())),
             drops_rest: AtomicBool::new(false),
+            hooks: AtomicBool::new(false),
+            drops_artifact: AtomicBool::new(false),
             spent_reads: Mutex::default(),
         }
     }
@@ -565,6 +591,84 @@ impl FakeShielded {
         self.track(lock, true).await;
     }
 
+    /// A library whose withdrawals pass the engine's hook steps in
+    /// `session` for `wallet` ([`Self::dispatch_withdrawal`]).
+    pub(crate) fn hooked_to(session: &Arc<NetworkSession>, wallet: crate::WalletId) -> Self {
+        let lib = Self::default();
+        *lib.funder.lock().unwrap() = Some((Arc::downgrade(session), wallet));
+        lib.hooks.store(true, Ordering::SeqCst);
+        lib
+    }
+
+    /// The transition the `n`th spend signs.
+    pub(crate) fn st_hash(n: u8) -> [u8; 32] {
+        [0xb0 + n; 32]
+    }
+
+    /// The hook's steps for the next withdrawal, as `EngineDispatch`
+    /// takes them: the payout's accept, then the artifact. A refusal is
+    /// the library's `ShieldedDispatchRefused`, nothing sent.
+    async fn dispatch_withdrawal(&self) -> Result<(), SpendError> {
+        let (session, wallet) = self.funder();
+        let n = self.spent.lock().unwrap().len() as u8;
+        let st_hash = Self::st_hash(n);
+        let kind = platform_wallet::wallet::shielded::ShieldedDispatchKind::Withdraw;
+        let refused = |reason: String| {
+            SpendError::Library(Box::new(PlatformWalletError::ShieldedDispatchRefused {
+                reason,
+            }))
+        };
+        let named = (session.accept_payout_spend(wallet, &kind, st_hash).await).map_err(refused)?;
+        if self.drops_artifact.load(Ordering::SeqCst) {
+            return Err(refused("the artifact was not written".into()));
+        }
+        let artifact = NewShieldedArtifact {
+            activity: [n; 32],
+            origin: ArtifactOrigin::Dispatched,
+            st_hash: Some(st_hash),
+            kind: Some(ArtifactKind::Withdraw),
+            anchor: Some([7; 32]),
+            identity_id: None,
+            selected: vec![[n.wrapping_add(100); 32]],
+            published: vec![[n.wrapping_add(100); 32]],
+        };
+        match session
+            .leases
+            .record_shielded_artifact(wallet, artifact)
+            .await
+        {
+            Ok(true) => (session
+                .confirm_payout_dispatch(wallet, named, st_hash)
+                .await)
+                .map_err(refused),
+            other => Err(refused(format!("the artifact was not written: {other:?}"))),
+        }
+    }
+
+    /// The next withdrawal's artifact write fails after the accept.
+    pub(crate) fn drop_artifacts(&self) {
+        self.drops_artifact.store(true, Ordering::SeqCst);
+    }
+
+    /// A failed send's notes stay held, as the pinned library leaves a
+    /// hooked spend whose broadcast failed (`Unresolved(Cancelled)`).
+    pub(crate) fn hold_failed(&self) {
+        *self.after_failure.lock().unwrap() = AfterFailure::Held;
+    }
+
+    /// The addresses the withdrawals paid, in order.
+    pub(crate) fn withdrawn_to(&self) -> Vec<String> {
+        (self.spent().into_iter())
+            .filter(|s| s.operation == "withdraw")
+            .map(|s| s.to)
+            .collect()
+    }
+
+    /// The full viewing keys of the key sets the spends were released.
+    pub(crate) fn spent_fvks(&self) -> Vec<[u8; 96]> {
+        self.spent().into_iter().map(|s| s.fvk).collect()
+    }
+
     fn at(version: u32, refreshed: u32) -> Self {
         Self {
             version,
@@ -577,19 +681,20 @@ impl FakeShielded {
         self.spent.lock().unwrap().clone()
     }
 
-    fn fail_with(&self, e: PlatformWalletError) {
+    pub(crate) fn fail_with(&self, e: PlatformWalletError) {
         *self.fails.lock().unwrap() = Some(e);
     }
 
+    /// A spend under `keys`, which the adapter releases before the library
+    /// runs (and so before its dispatch hook).
     fn spend(
         &self,
-        permit: &CallPermit,
+        keys: OrchardKeySet,
         operation: &'static str,
         to: String,
         credits: u64,
         memo: &[u8],
     ) -> Result<(), SpendError> {
-        let keys = permit.shielded_keys()?;
         if let Some(probe) = &*self.probe.lock().unwrap() {
             self.probed.lock().unwrap().push(probe());
         }
@@ -659,7 +764,7 @@ fn unresolved(n: u8) -> UnresolvedSpend {
 
 impl ShieldedLib for FakeShielded {
     fn network(&self) -> Network {
-        Network::Regtest
+        self.network
     }
 
     fn protocol_version(&self) -> u32 {
@@ -731,7 +836,7 @@ impl ShieldedLib for FakeShielded {
         memo: [u8; 36],
     ) -> Result<(), SpendError> {
         let to = to.to_bech32m_string(Network::Regtest);
-        self.spend(permit, "transfer", to, credits, &memo)
+        self.spend(permit.shielded_keys()?, "transfer", to, credits, &memo)
     }
 
     async fn withdraw(
@@ -740,12 +845,37 @@ impl ShieldedLib for FakeShielded {
         to: &Address,
         credits: u64,
     ) -> Result<(), SpendError> {
-        self.spend(permit, "withdraw", to.to_string(), credits, &[])
+        let keys = permit.shielded_keys()?;
+        if self.hooks.load(Ordering::SeqCst) {
+            self.dispatch_withdrawal().await?;
+        }
+        self.spend(keys, "withdraw", to.to_string(), credits, &[])
     }
 
     async fn receive_address(&self) -> Result<String, PlatformError> {
         self.issued.fetch_add(1, Ordering::SeqCst);
         Ok(self.receive.clone())
+    }
+
+    async fn unshield(
+        &self,
+        permit: &CallPermit,
+        to: &PlatformAddress,
+        credits: u64,
+    ) -> Result<(), SpendError> {
+        self.spend(
+            permit.shielded_keys()?,
+            "unshield",
+            platform_text(*to),
+            credits,
+            &[],
+        )
+    }
+
+    async fn platform_pool(&self) -> Result<pool::PlatformPool, PlatformError> {
+        (self.platform.lock().unwrap().clone()).ok_or(PlatformError::Storage {
+            detail: "the payment account could not be read".into(),
+        })
     }
 
     async fn shield_locks(&self) -> Vec<LockInfo> {

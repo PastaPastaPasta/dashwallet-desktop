@@ -22,17 +22,19 @@ import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 
 export type ShieldedApi = Pick<
   Backend,
-  "shieldFromCore" | "resumeShield" | "shieldedSend" | "unshieldToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
+  "shieldFromCore" | "resumeShield" | "shieldedSend" | "unshieldToCore" | "unshieldToPlatform" | "platformAddressesSync" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
 >;
 
-/** What a sheet is for: the three moves, and finishing a lock that was not applied. */
-export type ShieldedKind = "add" | "send" | "out" | "resume";
+/** What a sheet is for: the moves, and finishing a lock that was not applied. `toPlatform` moves to the
+ * wallet's own Platform receive address. */
+export type ShieldedKind = "add" | "send" | "out" | "toPlatform" | "resume";
 
 /** What the confirm step quotes and sends. Credits are decimal strings, a duff is 1000 of them. */
 export type ShieldedRequest =
   | { kind: "add"; duffs: number }
   | { kind: "send"; credits: string; to: string; memo: string | null }
   | { kind: "out"; credits: string }
+  | { kind: "toPlatform"; credits: string }
   | { kind: "resume"; txid: string };
 
 export type ShieldedStep = "form" | "confirm" | "running" | "done" | "refused";
@@ -92,6 +94,9 @@ export const SHIELDED_COPY = {
     },
     get out() {
       return t("transfer.shielded.form.out");
+    },
+    get toPlatform() {
+      return t("transfer.shielded.form.toPlatform");
     },
     get to() {
       return t("transfer.shielded.form.to");
@@ -228,6 +233,12 @@ export const SHIELDED_COPY = {
       },
       text: (amount: string) => t("transfer.shielded.done.out.text", { amount }),
     },
+    toPlatform: {
+      get title() {
+        return t("transfer.shielded.done.out.title");
+      },
+      text: (addr: string) => t("transfer.shielded.done.toPlatform.text", { addr }),
+    },
   },
   /** The confirmation a send or move from a wallet with an unrecorded spend needs (DEC-1057). */
   unrecorded: {
@@ -266,6 +277,9 @@ export const SHIELDED_COPY = {
   },
   get unseen() {
     return t("transfer.shielded.unseen");
+  },
+  get unseenSend() {
+    return t("transfer.shielded.unseenSend");
   },
   receive: {
     get text() {
@@ -331,7 +345,8 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
     case "platform.feature_off":
       return t("transfer.shielded.error.featureOff");
     case "platform.broadcast_unknown":
-      return kind === "add" ? SHIELDED_COPY.fundingUnknown : moveErrorText(e, credits);
+      if (kind === "add") return SHIELDED_COPY.fundingUnknown;
+      return kind === "toPlatform" ? t("transfer.shielded.error.toPlatformUnknown") : moveErrorText(e, credits);
     default:
       return moveErrorText(e, credits);
   }
@@ -483,6 +498,7 @@ export class ShieldedFlow extends Model {
       if (got) {
         this.result = got.value;
         this.step = "done";
+        if (request.kind === "toPlatform" && got.value.kind === "spend" && got.value.outcome.state === "done") this.readPlatform();
       } else if (request.kind === "resume") {
         // A cancelled passphrase: there is no form to go back to.
         this.open = false;
@@ -499,6 +515,12 @@ export class ShieldedFlow extends Model {
     }
   }
 
+  /** The Platform address a done move credited is read now, not at the next pass: Home's total
+   * follows it. A failed read changes nothing of the move. */
+  private readPlatform() {
+    this.api.platformAddressesSync(this.walletId).then(shieldedSettled, () => undefined);
+  }
+
   private async call(r: ShieldedRequest, grant: string, confirmUnrecorded: boolean): Promise<ShieldedResult> {
     switch (r.kind) {
       case "add":
@@ -509,6 +531,8 @@ export class ShieldedFlow extends Model {
         return { kind: "spend", outcome: await this.api.shieldedSend(this.walletId, r.to, r.credits, r.memo, grant, confirmUnrecorded) };
       case "out":
         return { kind: "spend", outcome: await this.api.unshieldToCore(this.walletId, r.credits, null, grant, confirmUnrecorded) };
+      case "toPlatform":
+        return { kind: "spend", outcome: await this.api.unshieldToPlatform(this.walletId, r.credits, null, grant, confirmUnrecorded) };
     }
   }
 }

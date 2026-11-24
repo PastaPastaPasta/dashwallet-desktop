@@ -31,6 +31,7 @@ import { FrequentStrip } from "./pay/FrequentStrip";
 import { ExportStagingBanner } from "./ExportStagingBanner";
 import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
+import { HistoryGapNotice } from "./HistoryGapNotice";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 import { defaultRoute, transferFor } from "../transfer/model";
@@ -278,6 +279,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">
+        <HistoryGapNotice />
         <UpgradeReplayNotice walletId={walletId} />
         <ProtocolAdvisoryBanner network={network} />
         <ExportStagingBanner />

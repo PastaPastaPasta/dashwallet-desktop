@@ -138,6 +138,41 @@ fn a_start_checks_the_quoted_numbers_and_writes_nothing() {
     assert!(f.rows().is_empty());
 }
 
+/// F5: a lease named as a Platform registration's grant that does not
+/// carry the Platform-address signer is `grant_invalid`: no row, nothing
+/// funded or created, the lease's credits untouched and still no signer.
+#[test]
+fn a_lease_without_the_platform_signer_starts_no_platform_registration() {
+    let f = fixture(false);
+    let lib = f.fake();
+    funded(&lib);
+    let q = quote(&f, &lib).unwrap();
+    let p = q.platform.clone().unwrap();
+    let g = f.grant(0, q.grant.max_credits, Credential::None);
+    let lease = (f.engine)
+        .block_on(
+            f.session
+                .begin_lease(f.wallet, FlowKind::Registration, &[g]),
+        )
+        .unwrap();
+    assert!(lease.call_platform_address_signer().is_err());
+    let before = lease.available(BudgetPurpose::Credits);
+    let e = (f.engine)
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            quoted(&p),
+            lease.id_string(),
+        ))
+        .unwrap_err();
+    assert_eq!(e.code(), "platform.grant_invalid", "{e:?}");
+    assert!(f.rows().is_empty());
+    assert_eq!(lib.counts(), (0, 0), "nothing funded or created");
+    assert_eq!(lease.available(BudgetPurpose::Credits), before);
+    assert!(lease.call_platform_address_signer().is_err());
+}
+
 /// F2: this build reads and runs a Platform row, planned or not.
 #[test]
 fn a_platform_row_is_run_by_this_build() {
@@ -615,7 +650,8 @@ fn a_held_platform_row_resumes_with_its_own_grant() {
 /// F5 (#685): a resume grant is never sized from defaults: a Platform row
 /// whose stored funding is missing a field, whose plan is half stored, or
 /// whose plan is not one the funding step makes (an address twice, nonce
-/// 0, a zero claim, claims below the stored funding) has none.
+/// 0, a zero claim, claims below the stored funding, an address or an
+/// identity that does not parse) has none.
 #[test]
 fn an_edited_or_missing_platform_funding_sizes_no_grant() {
     let f = fixture(false);
@@ -639,11 +675,19 @@ fn an_edited_or_missing_platform_funding_sizes_no_grant() {
     let raw = |rest: &str| {
         format!(r#"{{"v":1,"kind":"platform_addresses","funding_credits":{FUNDING}{rest}}}"#)
     };
-    let planned = |inputs: &str| {
+    let planned_by = |inputs: &str, identity: &str| {
         raw(&format!(
             r#","fee_reserve_credits":{RESERVE},"inputs":{inputs},"identity":"{identity}""#
         ))
     };
+    let planned = |inputs: &str| planned_by(inputs, &identity);
+    let address = |b: u8| {
+        crate::platform::platform_moves::bech32m(
+            &PlatformAddress::P2pkh([b; 20]),
+            dpp::dashcore::Network::Testnet,
+        )
+    };
+    let (a, b) = (address(0xa1), address(0xb1));
     let one = |address: &str, nonce: u32, credits: u64| {
         format!(r#"{{"address":"{address}","nonce":{nonce},"credits":{credits}}}"#)
     };
@@ -652,34 +696,46 @@ fn an_edited_or_missing_platform_funding_sizes_no_grant() {
     assert_eq!(
         grant(raw(&format!(
             r#","fee_reserve_credits":{RESERVE},"inputs":[{}]"#,
-            one("a", 1, FUNDING)
+            one(&a, 1, FUNDING)
         ))),
         Err("invalid_argument"),
         "inputs without the identity"
     );
-    assert!(grant(planned(&format!("[{}]", one("a", 1, FUNDING)))).is_ok());
+    assert!(grant(planned(&format!("[{}]", one(&a, 1, FUNDING)))).is_ok());
     for (inputs, why) in [
         (
-            format!("[{},{}]", one("a", 1, FUNDING), one("a", 2, 1)),
+            format!("[{},{}]", one(&a, 1, FUNDING), one(&a, 2, 1)),
             "an address twice",
         ),
-        (format!("[{}]", one("a", 0, FUNDING)), "nonce 0"),
+        (format!("[{}]", one(&a, 0, FUNDING)), "nonce 0"),
         (
-            format!("[{},{}]", one("a", 1, FUNDING), one("b", 1, 0)),
+            format!("[{},{}]", one(&a, 1, FUNDING), one(&b, 1, 0)),
             "a zero claim",
         ),
         (
-            format!("[{}]", one("a", 1, FUNDING - 1)),
+            format!("[{}]", one(&a, 1, FUNDING - 1)),
             "claims below the funding",
         ),
         (
-            format!("[{}]", one("a", 1, FUNDING + 1)),
+            format!("[{}]", one(&a, 1, FUNDING + 1)),
             "claims above the funding",
+        ),
+        (
+            format!("[{}]", one("tdashevo1plan", 1, FUNDING)),
+            "an address that does not parse",
         ),
         ("[]".to_owned(), "no inputs"),
     ] {
         assert_eq!(grant(planned(&inputs)), Err("invalid_argument"), "{why}");
     }
+    assert_eq!(
+        grant(planned_by(
+            &format!("[{}]", one(&a, 1, FUNDING)),
+            "not-an-identity"
+        )),
+        Err("invalid_argument"),
+        "an identity that does not parse"
+    );
     let unfunded = format!(
         r#"{{"v":1,"kind":"platform_addresses","funding_credits":0,"fee_reserve_credits":{RESERVE},"inputs":[],"identity":"{identity}"}}"#
     );

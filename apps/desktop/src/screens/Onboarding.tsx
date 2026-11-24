@@ -652,9 +652,16 @@ function RestoreOptions({ model }: { model: OnboardingModel }) {
             {model.birthDateError}
           </p>
         ) : (
-          <p className="form-hint" data-testid="restore-scan-start">
-            {birthHeight ? t("onboarding.options.startsAt", { height: birthHeight }) : t("onboarding.options.startsAtFirst")}
-          </p>
+          <>
+            <p className="form-hint" data-testid="restore-scan-start">
+              {birthHeight ? t("onboarding.options.startsAt", { height: birthHeight }) : t("onboarding.options.startsAtFirst")}
+            </p>
+            {!birthHeight && (
+              <p className="form-hint" data-testid="restore-first-block-slow">
+                {t("onboarding.options.firstBlockSlow")}
+              </p>
+            )}
+          </>
         )}
       </div>
       <DashButton

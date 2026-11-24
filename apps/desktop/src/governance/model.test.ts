@@ -72,7 +72,8 @@ const node = (patch: Partial<VotingMasternode> = {}): VotingMasternode => ({
   kind: "regular",
   weight: 1,
   valid: true,
-  keyIndex: 0,
+  key: { kind: "keychain", index: 0 },
+  collateralResolved: true,
   currentVote: null,
   voteTime: null,
   keyHolders: 1,
@@ -249,17 +250,33 @@ describe("the vote sheet", () => {
         node({ proTxHash: "a".repeat(64) }),
         node({ proTxHash: "b".repeat(64), valid: false }),
         node({ proTxHash: "c".repeat(64), currentVote: "yes", voteTime: NOW - 40 * 60 }),
-        node({ proTxHash: "d".repeat(64), kind: "evonode", weight: 4, keyIndex: 2, keyHolders: 3 }),
+        node({ proTxHash: "d".repeat(64), kind: "evonode", weight: 4, key: { kind: "keychain", index: 2 }, keyHolders: 3 }),
+        node({ proTxHash: "e".repeat(64), key: { kind: "attached" } }),
+        node({ proTxHash: "f".repeat(64), key: { kind: "attached" }, keyHolders: 2 }),
       ],
       NOW,
       L,
     );
-    expect(rows.map((r) => r.eligible)).toEqual([true, false, false, true]);
+    expect(rows.map((r) => r.eligible)).toEqual([true, false, false, true, true, true]);
+    expect(rows[0].sub).toBe("key in this wallet · voting key 1");
     expect(rows[1].sub).toBe("PoSe banned: a banned masternode can't vote");
     expect(rows[2].sub).toMatch(/^Voted Yes 40 min ago · can change after \d{1,2}:20 PM$/);
     expect(rows[3].sub).toBe("key in this wallet · voting key 3 · 3 masternodes use this key");
+    // A tracked masternode's added voting key (MG-00 D13, amended for 1.0).
+    expect(rows[4].sub).toBe("key you added");
+    expect(rows[5].sub).toBe("key you added · 2 masternodes use this key");
     expect(selectionNote([rows[0], rows[3]])).toBe("2 masternodes · weight 5 · no fee");
     expect(selectionNote([rows[0]])).toBe("1 masternode · weight 1 · no fee");
+  });
+
+  it("shows a masternode whose collateral isn't resolved with its reason, off and uncounted (MG-02 D80)", () => {
+    const nodes = [node({ proTxHash: "a".repeat(64) }), node({ proTxHash: "c".repeat(64), key: { kind: "attached" }, weight: 4, kind: "evonode", collateralResolved: false, currentVote: "no" })];
+    const rows = voteRows(nodes, NOW, L);
+    expect(rows.map((r) => r.eligible)).toEqual([true, false]);
+    expect(rows[1].sub).toBe("Its collateral isn't found yet, so it can't vote from this wallet yet.");
+    expect(selectionNote(rows.filter((r) => r.eligible))).toBe("1 masternode · weight 1 · no fee");
+    // Its vote seen doesn't preset the outcome either.
+    expect(presetOutcome(nodes)).toBeNull();
   });
 
   it("presets the outcome only when every valid masternode saw the same one", () => {

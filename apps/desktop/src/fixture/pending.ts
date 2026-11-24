@@ -5,9 +5,11 @@
 // handler then rejects as an unknown command does.
 
 import type { AppError } from "../api/generated/AppError";
+import type { CommandArgs } from "../api/generated/commands";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FundAmount } from "../api/generated/FundAmount";
+import type { PaymentSourceName } from "../api/generated/PaymentSourceName";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
@@ -17,14 +19,18 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { NetworkSwitch } from "../api/generated/NetworkSwitch";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { PlatformAddressBalance } from "../api/generated/PlatformAddressBalance";
+import type { PlatformAddressRow } from "../api/generated/PlatformAddressRow";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
 import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
 import type { PlatformSendOutcome } from "../api/generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
+import type { ContactPayQuoteInfo } from "../api/generated/ContactPayQuoteInfo";
+import type { PayoutStateName } from "../api/generated/PayoutStateName";
+import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, fundDuffs, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, fundDuffs, HANDLERS, landHeldTopUp, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
@@ -38,11 +44,18 @@ const MOVE_FEE_CREDITS = 2_000_000n;
  * a send pays (dpp's minimum output). The fee is taken from its source address, whatever it holds then. */
 const SEND_FEE_CREDITS = 6_500_000n;
 const SEND_MIN_CREDITS = 500_000n;
+/** A contact payout's fee estimate, and Platform's withdrawal range (fixture/topup.ts's). */
+const PAYOUT_FEE_CREDITS = 2_000_000n;
+const PAYOUT_MIN_CREDITS = 1_190_000n;
+const PAYOUT_MAX_CREDITS = 50_000_000_000_000n;
+/** What the asset unlock keeps back on Core, in duffs. */
+const UNLOCK_FEE_DUFFS = 226;
 
 /** What the next `platform_move_to_core` comes to: Platform's proved answer, an answer that says
  * nothing (the move stays `pending`), a refusal, a move whose debit is proved but not what
- * arrives (`unproved`: `expectedDuffs` is null), or the refusal of too many separate coins. */
-export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins";
+ * arrives (`unproved`: `expectedDuffs` is null), the refusal of too many separate coins, or the exit of a
+ * held top-up that executed in its place (`lost`: the move is `failed` and moves nothing). */
+export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins" | "lost";
 
 /** What the next `platform_fund` comes to: applied, locked with its proof still missing, locked and
  * possibly already applied (`checking`), locked and refused by Platform (`notApplied`), or locked
@@ -113,6 +126,8 @@ export interface PlatformWorld {
   nextTopUp: "done" | "pending" | "held" | "failed";
   /** The addresses each top-up from Platform not done yet signed at (by id): its exit moves those. */
   heldInputs?: Record<string, string[]>;
+  /** What each of those claimed for which identity: it lands with that if it executes in its exit's place. */
+  heldTopUps?: Record<string, { walletId: string; identity: string; inputs: PlatformAddressRow[]; credits: string }>;
   /** What the next Finish of one of those adds comes to. */
   nextResume: ResumeResult;
   /** The locks of "Add from Dash wallet" not applied yet. */
@@ -131,6 +146,12 @@ export interface PlatformWorld {
   syncedAt: number | null;
   /** Credits on addresses too small to move: in `credits`, not in `movableCredits`. */
   dust: string;
+  /** `false`: the network's protocol version has no address funds transitions yet (below 11). */
+  sendsActive?: boolean;
+  /** What the next payment to a contact from this balance comes to (C-funding D-C5). */
+  nextPayout: PayoutStateName;
+  /** The next payment's reply is lost after the engine recorded it (an `internal` error). */
+  loseReply?: boolean;
 }
 
 export interface PendingWorld {
@@ -171,6 +192,7 @@ export const newPlatformWorld = (): PlatformWorld => ({
   nextOperation: 1,
   receive: { address: "tdash1k9w4v7d2n8x3c5m0q6z8r2t4y6u8p0s2a4d6f8h0", index: 2 },
   dust: "0",
+  nextPayout: "sent",
   syncedAt: Math.floor(FIXTURE_NOW.getTime() / 1000) - 60,
 });
 
@@ -237,9 +259,15 @@ function moveWorld(world: World, to: ChosenNetwork) {
 const sum = (addresses: PlatformWorld["addresses"]) => addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
 const total = (p: PlatformWorld) => sum(p.addresses);
 
+/** A held top-up from Platform whose inputs the fixture knows: a move is its exit (C3-9). */
+function heldTopUp(p: PlatformWorld): PlatformActivity | null {
+  const held = p.activity.find((a) => a.kind === "toIdentity" && isHeldOp(a));
+  return held && p.heldInputs?.[held.id] ? held : null;
+}
+
 /** The inputs of a held top-up from Platform: its exit (C3-9) moves those only. `null`: no such hold. */
 function exitInputs(p: PlatformWorld): string[] | null {
-  const held = p.activity.find((a) => a.kind === "toIdentity" && isHeldOp(a));
+  const held = heldTopUp(p);
   return held ? (p.heldInputs?.[held.id] ?? null) : null;
 }
 
@@ -254,7 +282,7 @@ const movable = (p: PlatformWorld) => (total(p) > MOVE_FEE_CREDITS ? total(p) : 
 
 function balance(p: PlatformWorld): PlatformAddressBalance {
   const credits = total(p) + BigInt(p.dust);
-  return { credits: String(credits), movableCredits: String(movable(p)), duffs: Number(movable(p) / CREDITS_PER_DUFF), addresses: [...p.addresses].sort((a, b) => Number(BigInt(b.credits) - BigInt(a.credits))), syncedAt: p.syncedAt, syncing: false };
+  return { credits: String(credits), movableCredits: String(movable(p)), duffs: Number(movable(p) / CREDITS_PER_DUFF), addresses: [...p.addresses].sort((a, b) => Number(BigInt(b.credits) - BigInt(a.credits))), syncedAt: p.syncedAt, syncing: false, sendsActive: p.sendsActive ?? true };
 }
 
 /** The platform state of `world`, or the absent-command rejection. */
@@ -263,10 +291,65 @@ function platformOf(world: Ctx["world"], call: string): PlatformWorld {
   return world.pending.platform;
 }
 
+/** `contact_pay_quote` from the Platform balance: the engine's refusals in its order (a held move
+ * or send, the withdrawal range, the balance), then the amount, about what arrives, the fee, and a
+ * grant for the amount and three fee estimates (P8). */
+export function contactPayoutQuote(world: Ctx["world"], walletId: string, credits: string): ContactPayQuoteInfo {
+  wallet(world, walletId);
+  const p = world.pending.platform;
+  if (p === null) throw fail("platform.feature_off", "platform_addresses", { kind: "feature", feature: "platform_addresses" });
+  const held = p.activity.filter(isHeldOp);
+  if (held.length > 0) throw moveHeld(held[0].id);
+  const c = BigInt(credits);
+  if (c < PAYOUT_MIN_CREDITS || c > PAYOUT_MAX_CREDITS)
+    throw fail("credits.withdrawal_out_of_range", "out of range", { kind: "creditRange", min: String(PAYOUT_MIN_CREDITS), max: String(PAYOUT_MAX_CREDITS) });
+  const most = c + 3n * PAYOUT_FEE_CREDITS;
+  if (most > total(p)) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(most), available: String(total(p)) });
+  const expectedDuffs = Math.max(0, Number(c / CREDITS_PER_DUFF) - UNLOCK_FEE_DUFFS);
+  return { source: "platform", credits: String(c), expectedDuffs, feeCredits: String(PAYOUT_FEE_CREDITS), grant: { maxDuffs: 0, maxCredits: String(most) } };
+}
+
+/** `contact_pay` from the Platform balance under `grant`: as `nextPayout` says, sent (the debit and
+ * a `contactPayment` row), unknown (a pending row that holds the balance) or not sent (nothing). */
+export function contactPayout(world: Ctx["world"], walletId: string, credits: string, grant: string, contact: TxCounterparty): { reference: string; state: PayoutStateName } {
+  const q = contactPayoutQuote(world, walletId, credits);
+  const g = checkGrant(world, grant, walletId, ["platformOp"]);
+  if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
+  if (BigInt(g.grant.purpose.maxCredits) < BigInt(q.grant.maxCredits))
+    throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: q.grant.maxCredits, remaining: g.grant.purpose.maxCredits });
+  useGrant(world, grant);
+  const p = platformOf(world, "contact_pay");
+  const state = p.nextPayout;
+  const reference = `move-${p.activity.length + 1}`;
+  if (state === "notSent") return { reference, state };
+  const sent = state === "sent";
+  const debit = BigInt(q.credits) + PAYOUT_FEE_CREDITS;
+  p.activity = [
+    {
+      id: reference,
+      kind: "contactPayment",
+      state: sent ? "done" : "pending",
+      credits: sent ? String(debit) : q.credits,
+      address: null,
+      to: null,
+      expectedDuffs: q.expectedDuffs,
+      feeCredits: sent ? q.feeCredits : null,
+      at: Math.floor(FIXTURE_NOW.getTime() / 1000),
+      mayLand: !sent,
+      estimated: false,
+      contact,
+    },
+    ...p.activity,
+  ];
+  if (sent) spend(p, debit);
+  return { reference, state };
+}
+
 /** The credits a move of `amount` takes: all of them, or that many (the quote's refusals). */
 function moveCredits(p: PlatformWorld, amount: WithdrawAmount): bigint {
   const available = sum(moveSources(p));
-  const credits = amount.kind === "all" ? available : BigInt(amount.credits);
+  // An amount is the withdrawal, as the engine's: the move also keeps its fee.
+  const credits = amount.kind === "all" ? available : BigInt(amount.credits) + MOVE_FEE_CREDITS;
   if (available === 0n || credits <= MOVE_FEE_CREDITS) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(MOVE_FEE_CREDITS + 1n), available: String(available) });
   if (credits > available) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(credits), available: String(available) });
   return credits;
@@ -279,8 +362,15 @@ function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQu
   const sending = p.activity.find((a) => a.kind === "send" && isHeldOp(a));
   if (sending) throw moveHeld(sending.id);
   const credits = moveCredits(p, amount);
+  // An exit signs exactly its top-up's inputs: an amount the largest of fewer of them carry is refused.
+  const held = heldTopUp(p);
+  if (held && amount.kind === "credits") {
+    const sources = moveSources(p).map((a) => BigInt(a.credits)).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+    let carried = 0n;
+    if (sources.slice(0, -1).some((c) => (carried += c) >= credits)) throw moveHeld(held.id);
+  }
   const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
-  return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) } };
+  return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) }, exitOf: heldTopUp(p)?.id ?? null };
 }
 
 /** The engine's recipient check (m4 §2.12): a Platform address of this network that is not one of
@@ -437,7 +527,34 @@ function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): Pla
   return { duffs, feeDuffs: FUND_LOCK_FEE_DUFFS, totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(duffs)), to: p.receive.address, grant: { maxDuffs: totalDuffs, maxCredits: "0" }, max: null };
 }
 
+/** As the engine's `refuse_on_mainnet`: a payment from a balance is off on mainnet, before anything else. */
+function refusePayoutOnMainnet(world: Ctx["world"], source: PaymentSourceName) {
+  if (source === "platform" && world.launch.network.kind === "mainnet") throw fail("platform.feature_off", "platform_contact_payment", { kind: "feature", feature: "platform_contact_payment" });
+}
+
 export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
+  // DashPay::contact_pay_quote and contact_pay (C-funding D-C5): the payee as a draft checks it,
+  // then the source: Shielded is off until its slice; Platform pays one address withdrawal.
+  contact_pay_quote: ({ walletId, identity, contact, credits, source }: CommandArgs["contact_pay_quote"], { world }: Ctx) => {
+    refusePayoutOnMainnet(world, source);
+    payeeOfPayout(world, walletId, { identity, contact }, credits, source);
+    return contactPayoutQuote(world, walletId, credits);
+  },
+  contact_pay: ({ walletId, identity, contact, payment, grant }: CommandArgs["contact_pay"], ctx: Ctx) => {
+    const pair = { identity, contact };
+    refusePayoutOnMainnet(ctx.world, payment.source);
+    if (grant === "") throw fail("invalid_argument", "empty grant");
+    const c = payeeOfPayout(ctx.world, walletId, pair, payment.credits, payment.source);
+    const counterparty = { identity: contact, username: c.summary.username, displayName: c.summary.displayName, avatarUrl: c.profile?.avatarUrl ?? null };
+    const out = contactPayout(ctx.world, walletId, payment.credits, grant, counterparty);
+    payoutOnContact(ctx, walletId, pair, c, out, payment.credits);
+    const p = ctx.world.pending.platform;
+    if (p?.loseReply) {
+      p.loseReply = false;
+      throw fail("internal", "the reply was lost after the payout was recorded");
+    }
+    return out;
+  },
   get_network_choice: (_: unknown, { world }: Ctx) => {
     if (world.pending.networkChoice === null) throw absent("get_network_choice");
     return networkView(world);
@@ -632,9 +749,19 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     return { txid, state: { kind: "applied", credits: String(credits) } };
   },
   platform_move_to_core_quote: ({ walletId, amount }: { walletId: string; amount: WithdrawAmount }, ctx: Ctx) => quote(ctx, walletId, amount),
-  platform_move_to_core: ({ walletId, amount, to, grant }: { walletId: string; amount: WithdrawAmount; to: string; grant: string }, ctx: Ctx): MoveToCoreOutcome => {
+  platform_move_to_core: ({ walletId, amount, to, exitOf, grant }: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string }, ctx: Ctx): MoveToCoreOutcome => {
     const { world } = ctx;
-    const q = quote(ctx, walletId, amount);
+    // As the engine, first: the exit of a top-up that no longer holds is not the move Confirm showed.
+    if (exitOf != null && heldTopUp(platformOf(world, "platform_move_to_core"))?.id !== exitOf) throw fail("credits.quote_changed", "the held top-up settled since this move was quoted");
+    // An exit moves its quoted amount: inputs that no longer carry it are not the move Confirm showed.
+    const q = (() => {
+      try {
+        return quote(ctx, walletId, amount);
+      } catch (e) {
+        if (exitOf != null && (e as AppError).code === "platform.insufficient_credits") throw fail("credits.quote_changed", "the held inputs no longer carry the quoted amount");
+        throw e;
+      }
+    })();
     // Only to one of the wallet's own receiving addresses (the quote's).
     if (to !== q.to) throw fail("invalid_argument", "not an address of this wallet", { kind: "reason", reason: "not an address of this wallet" });
     const p = platformOf(world, "platform_move_to_core");
@@ -650,11 +777,13 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     useGrant(world, grant);
     if (p.nextMove === "refused") throw fail("platform.unavailable", "the fixture refuses the move");
     if (p.nextMove === "tooManyCoins") throw fail("invalid_argument", "more than 50 separate balances", { kind: "reason", reason: "Your Platform addresses hold too many separate balances to move at once. Consolidate coins first" });
-    const state = p.nextMove === "pending" ? "pending" : "done";
+    // `lost`: the held top-up it exits executed in its place, so the move fails and moves nothing.
+    const state = p.nextMove === "pending" ? "pending" : p.nextMove === "lost" ? "failed" : "done";
     const expectedDuffs = p.nextMove === "unproved" ? null : q.expectedDuffs;
     const id = `pm-${p.activity.length + 1}`;
     const feeCredits = state === "done" ? q.feeCredits : null;
     const exit = exitInputs(p);
+    const lost = state === "failed" ? heldTopUp(p)?.id : undefined;
     // Of a group of moves at the same inputs at most one executes: the new one replaces the held ones.
     p.activity = [
       { id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: state === "pending", estimated: false },
@@ -665,11 +794,15 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
           ? { ...a, state: "replaced" as const, mayLand: false }
           : state === "done" && a.kind === "toIdentity" && isHeldOp(a)
             ? { ...a, state: "failed" as const, mayLand: false }
-            : a,
+            : state === "failed" && a.kind === "toIdentity" && isHeldOp(a)
+              ? { ...a, state: "done" as const, mayLand: false }
+              : a,
       ),
     ];
-    // A move that is `done` has emptied the addresses it took from; a `pending` one has not been seen yet.
+    // A move that is `done` has emptied the addresses it took from; a lost exit's top-up landed as a done
+    // one does; a `pending` one has not been seen yet.
     if (state === "done") p.addresses = exit ? p.addresses.filter((a) => !exit.includes(a.address)) : [];
+    if (lost) landHeldTopUp(ctx, lost);
     return { id, credits: q.credits, expectedDuffs, to: q.to, state, feeCredits };
   },
 };

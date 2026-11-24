@@ -25,6 +25,7 @@ import { fundable } from "./registration";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import type { PlatformAddressRow } from "../api/generated/PlatformAddressRow";
 import type { TopUpFromPlatformOutcome } from "../api/generated/TopUpFromPlatformOutcome";
+import type { PlatformWorld } from "./pending";
 import { isHeldOp } from "../platform/move";
 import { TOP_UP_FROM_PLATFORM } from "../dashpay/topupSource";
 
@@ -154,9 +155,42 @@ function fromPlatformPlan(addresses: readonly PlatformAddressRow[], amount: With
   return { credits, inputs, debit };
 }
 
+const changed = ({ world, emit }: Ctx, walletId: string) =>
+  emit({ kind: "platform", network: world.launch.network.dirName, walletId, change: { domain: "identities" } });
+
+function apply(d: TopUpDeps, ctx: Ctx, walletId: string, dp: DashPayWorld, identity: string, added: bigint): string {
+  let balance = "0";
+  dp.identities = dp.identities.map((i) => {
+    if (i.identity !== identity) return i;
+    balance = String(BigInt(i.balance ?? "0") + added);
+    return { ...i, balance, balanceStale: false, creditLevel: BigInt(balance) < BigInt(d.costs.emptyCredits) ? "empty" : BigInt(balance) <= BigInt(d.costs.lowCredits) ? "low" : "ok" };
+  });
+  changed(ctx, walletId);
+  return balance;
+}
+
+/** Input 0 pays the fee from what it kept; addresses left empty go. */
+function debitInputs(p: PlatformWorld, inputs: readonly PlatformAddressRow[], fee: bigint) {
+  p.addresses = p.addresses
+    .map((a) => {
+      const i = inputs.findIndex((x) => x.address === a.address);
+      return i < 0 ? a : { ...a, credits: String(BigInt(a.credits) - BigInt(inputs[i].credits) - (i === 0 ? fee : 0n)) };
+    })
+    .filter((a) => BigInt(a.credits) > 0n);
+}
+
+/** A held top-up from Platform that executed in its exit's place: it lands as a done one does. */
+export function landHeldTopUp(d: TopUpDeps, ctx: Ctx, id: string): void {
+  const p = ctx.world.pending.platform;
+  const held = p?.heldTopUps?.[id];
+  if (!p || !held) return;
+  const fee = FROM_PLATFORM_RULES.fee;
+  debitInputs(p, held.inputs, fee);
+  apply(d, ctx, held.walletId, d.dashpay(ctx.world, held.walletId, held.identity), held.identity, BigInt(held.credits));
+  p.activity = p.activity.map((a) => (a.id === id ? { ...a, credits: String(BigInt(held.credits) + fee), feeCredits: String(fee) } : a));
+}
+
 export function topUpHandlers(d: TopUpDeps): Handlers {
-  const changed = ({ world, emit }: Ctx, walletId: string) =>
-    emit({ kind: "platform", network: world.launch.network.dirName, walletId, change: { domain: "identities" } });
 
   /** The quote's refusals, in the engine's order; the total once nothing refuses. */
   function check(world: World, walletId: string, identity: string, duffs: number) {
@@ -176,7 +210,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
   function fromPlatformChecks(world: World, amount: WithdrawAmount) {
     if (world.launch.network.dirName === "mainnet") throw fail("platform.feature_off", TOP_UP_FROM_PLATFORM, { kind: "feature", feature: TOP_UP_FROM_PLATFORM });
     const p = world.pending.platform;
-    if (p === null) throw fail("platform.feature_off", "platform_addresses", { kind: "feature", feature: "platform_addresses" });
+    if (p === null || p.sendsActive === false) throw fail("platform.feature_off", "platform_addresses", { kind: "feature", feature: "platform_addresses" });
     const held = p.activity.find(isHeldOp);
     if (held) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: held.id });
     return { p, ...fromPlatformPlan(p.addresses, amount) };
@@ -184,17 +218,6 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
 
   /** What a top-up of `duffs` adds: its lock in credits less the table's fee. */
   const creditsFor = (duffs: number) => BigInt(duffs) * BigInt(d.costs.creditsPerDuff) - BigInt(d.costs.topUpFee);
-
-  function apply(ctx: Ctx, walletId: string, dp: DashPayWorld, identity: string, added: bigint): string {
-    let balance = "0";
-    dp.identities = dp.identities.map((i) => {
-      if (i.identity !== identity) return i;
-      balance = String(BigInt(i.balance ?? "0") + added);
-      return { ...i, balance, balanceStale: false, creditLevel: BigInt(balance) < BigInt(d.costs.emptyCredits) ? "empty" : BigInt(balance) <= BigInt(d.costs.lowCredits) ? "low" : "ok" };
-    });
-    changed(ctx, walletId);
-    return balance;
-  }
 
   return {
     // The answer arrives as `Platform{Identities}` in the engine; the fixture's balance is current.
@@ -231,7 +254,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       switch (c.next) {
         case "applied":
         case "alreadyApplied":
-          state = { kind: "applied", creditsAdded: String(added), balance: apply(ctx, walletId, dp, identity, added) };
+          state = { kind: "applied", creditsAdded: String(added), balance: apply(d, ctx, walletId, dp, identity, added) };
           break;
         case "consumptionUnknown":
           state = { kind: "consumptionUnknown", balance: me.balance };
@@ -255,10 +278,13 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       const fee = FROM_PLATFORM_RULES.fee;
       return { credits: String(credits), feeCredits: String(fee), debitCredits: String(debit), inputs, grant: { maxDuffs: 0, maxCredits: String(debit) } };
     },
-    credits_top_up_from_platform: ({ walletId, identity, amount, grant }, ctx) => {
+    credits_top_up_from_platform: ({ walletId, identity, amount, feeInput, grant }, ctx) => {
       const { world } = ctx;
       const dp = d.dashpay(world, walletId, identity);
       const { p, credits, inputs, debit } = fromPlatformChecks(world, amount);
+      // As the engine: the fee source and its claim Confirm showed, or nothing (before the grant).
+      if (feeInput && (inputs[0]?.address !== feeInput.address || inputs[0]?.credits !== feeInput.credits))
+        throw fail("credits.quote_changed", "the fee input changed since this top-up was quoted");
       const fee = FROM_PLATFORM_RULES.fee;
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
@@ -273,16 +299,11 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       const mayLand = next === "pending" || next === "held";
       let balance: string | null = null;
       if (state === "done") {
-        // Input 0 pays the fee from what it kept.
-        p.addresses = p.addresses
-          .map((a) => {
-            const i = inputs.findIndex((x) => x.address === a.address);
-            return i < 0 ? a : { ...a, credits: String(BigInt(a.credits) - BigInt(inputs[i].credits) - (i === 0 ? fee : 0n)) };
-          })
-          .filter((a) => BigInt(a.credits) > 0n);
-        balance = apply(ctx, walletId, dp, identity, credits);
+        debitInputs(p, inputs, fee);
+        balance = apply(d, ctx, walletId, dp, identity, credits);
       } else if (mayLand) {
         p.heldInputs = { ...p.heldInputs, [id]: inputs.map((x) => x.address) };
+        p.heldTopUps = { ...p.heldTopUps, [id]: { walletId, identity, inputs, credits: String(credits) } };
       }
       p.activity = [
         { id, kind: "toIdentity", state, credits: String(state === "done" ? credits + fee : credits), address: null, to: identity, expectedDuffs: null, feeCredits: state === "done" ? String(fee) : null, at, mayLand, estimated: false },
@@ -304,7 +325,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       c.pending = c.pending.filter((p) => p !== row);
       const added = creditsFor(row.duffs);
       const identity = row.identity ?? dp.identities.find((i) => i.index === row.identityIndex)!.identity;
-      return { txid, state: { kind: "applied", creditsAdded: String(added), balance: apply(ctx, walletId, dp, identity, added) } };
+      return { txid, state: { kind: "applied", creditsAdded: String(added), balance: apply(d, ctx, walletId, dp, identity, added) } };
     },
     credits_withdraw_quote: ({ walletId, identity, amount }, { world }) => {
       const me = d.dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!;
@@ -329,7 +350,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
         c.lost = null;
         c.nextWithdraw = "applied";
         c.withdrawals = [lost.doc, ...c.withdrawals];
-        apply(ctx, walletId, dp, identity, -lost.total);
+        apply(d, ctx, walletId, dp, identity, -lost.total);
         throw fail("credits.withdrawal_landed", "the earlier withdrawal went through", { kind: "artifact", artifact: lost.doc.id });
       }
       const g = d.grant(world, grant, walletId, ["platformOp"]);
@@ -344,7 +365,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       if (c.nextWithdraw === "unknown" || c.nextWithdraw === "lostLanded")
         throw fail("platform.broadcast_unknown", "withdrawal outcome unknown", { kind: "artifact", artifact: id });
       c.withdrawals = [{ id, credits: String(credits), expectedDuffs, to: to.trim(), status: "queued", createdAt: at, updatedAt: at }, ...c.withdrawals];
-      const remaining = apply(ctx, walletId, dp, identity, -total);
+      const remaining = apply(d, ctx, walletId, dp, identity, -total);
       return { credits: String(credits), expectedDuffs, remainingCredits: c.nextWithdraw === "landed" ? null : remaining, withdrawal: id } satisfies WithdrawOutcome;
     },
     credits_withdrawals: ({ walletId, identity }, { world }) => creditsOf(d.dashpay(world, walletId, identity)).withdrawals,

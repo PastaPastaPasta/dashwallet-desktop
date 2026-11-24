@@ -101,20 +101,17 @@ pub(crate) async fn register_fund<'w>(
     if let Some(plan) = &ask.plan {
         addresses.extend(plan.inputs.iter().filter_map(|(a, _, _)| parse(a)));
     }
+    // Settled before the read, so a record done here is never expired by
+    // a read taken before it executed.
+    let (mut shielded, _) = from_shielded(session, wallet_id, &store).await?;
     // Rule 5 and the one read every decision below rests on.
     let seen = read(session, net, addresses, true).await?;
     let mut funds = store.funds().await?;
     let held = fund_holds(session, wallet_id);
     let evidence = exits(session, net, &moves, &seen).await;
     let docs = documents(session, net, &moves, &seen).await;
-    if observe(
-        &store,
-        (&mut moves, &mut funds),
-        held,
-        (&seen, &evidence, &docs),
-    )
-    .await?
-    {
+    let records = (&mut moves[..], &mut funds[..], &mut shielded[..]);
+    if observe(&store, records, held, (&seen, &evidence, &docs)).await? {
         session
             .hub
             .pump

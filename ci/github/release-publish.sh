@@ -5,12 +5,15 @@
 #   ci/github/release-publish.sh prepare   check what this run publishes, stage and copy the files
 #   ci/github/release-publish.sh publish   create / update the releases
 #
-# Needs: DIST (the downloaded dist-* artifacts: five bundles, two SBOMs and their SHA256SUMS), VERSION
-# (release-version.sh), GITHUB_EVENT_NAME, GITHUB_REF, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_RUN_NUMBER, GITHUB_RUN_ID,
-# GITHUB_SERVER_URL, GH_TOKEN, and a checkout whose `origin/main` is fetched with full history.
+# Needs: DIST (the downloaded dist-* artifacts: five bundles, two SBOMs, SHA256SUMS, and optionally
+# SHA256SUMS.asc on signed tag builds), VERSION (release-version.sh), GITHUB_EVENT_NAME, GITHUB_REF,
+# GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_RUN_NUMBER, GITHUB_RUN_ID, GITHUB_SERVER_URL, GH_TOKEN, and a
+# checkout whose `origin/main` is fetched with full history.
 # FEED (optional) is the update feed the checksums job made (release-feed.sh): latest.json and the macOS
 # app archive. Only a stable release tag vX.Y.Z publishes one; a feed on any other trigger is refused.
 # With DW_UPDATER_REQUIRED=1 (a repository variable, docs/release/updater.md) a stable tag without one is.
+# With DW_SIGNING_REQUIRED=1 (a repository variable, docs/release/CHECKLIST.md) a stable tag without
+# SHA256SUMS.asc is refused; release candidates (-rc.N) never require signing.
 # OUT defaults to $DIST/../publish. DRY_RUN=1 runs the reads (release and tag lookups) and prints each
 # write instead of doing it, so the logic can be run by hand against the real repository.
 #
@@ -136,6 +139,15 @@ if [[ "$kind" == main ]]; then
 else
   tag=${ref#refs/tags/}
 fi
+asc=()
+if [[ -f "$DIST/SHA256SUMS.asc" ]]; then
+  [[ -s "$DIST/SHA256SUMS.asc" ]] || die "$DIST/SHA256SUMS.asc is empty"
+  [[ "$kind" == tag ]] || die "SHA256SUMS.asc on $ref: only a release tag publishes a PGP signature"
+  asc=("$DIST/SHA256SUMS.asc")
+fi
+if [[ "${DW_SIGNING_REQUIRED:-}" == 1 && "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && ((${#asc[@]} == 0)); then
+  die "$tag has no SHA256SUMS.asc and DW_SIGNING_REQUIRED=1: a final release must carry a PGP signature (missing RELEASE_PGP_PRIVATE_KEY, RELEASE_PGP_PASSPHRASE, or RELEASE_PGP_FINGERPRINT)"
+fi
 feed=()
 if [[ -n "${FEED:-}" && -d "$FEED" ]]; then
   while IFS= read -r f; do feed+=("$f"); done < <(find "$FEED" -maxdepth 1 -type f | LC_ALL=C sort)
@@ -160,6 +172,7 @@ prepare)
   # Everything attested sits flat in attest/. The continuous files have the same bytes as the run's
   # (so one attestation covers both copies), except SHA256SUMS, which lists the continuous names.
   cp "${files[@]}" "$DIST/SHA256SUMS" "$out/attest/"
+  if ((${#asc[@]})); then cp "${asc[@]}" "$out/attest/"; fi
   if ((${#feed[@]})); then cp "${feed[@]}" "$out/attest/"; fi
   if [[ "$kind" == main ]]; then
     for f in "${files[@]}"; do
@@ -181,14 +194,14 @@ publish)
     version=${tag#v}
     notes=(--notes "Release $tag. $verify_note")
     [[ ! -f "$here/../../docs/release/${version%%-*}-notes.md" ]] || notes=(--notes-file "$here/../../docs/release/${version%%-*}-notes.md")
-    if complete_release "$tag" $((8 + ${#feed[@]})); then
+    if complete_release "$tag" $((8 + ${#asc[@]} + ${#feed[@]})); then
       echo "release-publish: release $tag exists and is complete; leaving it as it is"
     else
       # The tag exists (it triggered this run). A version (vX.Y.Z) is a full release, and GitHub picks
       # Latest by version; a release candidate (-rc.N) is a prerelease, never Latest.
       flavour=()
       [[ "$version" != *-rc.* ]] || flavour=(--prerelease --latest=false)
-      w gh release create "$tag" "${files[@]}" "$DIST/SHA256SUMS" "${feed[@]}" --repo "$repo" --verify-tag \
+      w gh release create "$tag" "${files[@]}" "$DIST/SHA256SUMS" "${asc[@]}" "${feed[@]}" --repo "$repo" --verify-tag \
         "${flavour[@]}" --title "Dash Wallet Desktop $version" "${notes[@]}"
     fi
     exit 0

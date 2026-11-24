@@ -23,7 +23,7 @@ import {
   type ScreenInputs,
 } from "./registration";
 import { PAY_WITH_COPY } from "./payWith";
-import { COPY, WAITS } from "./status";
+import { COPY, heldWithBoth } from "./status";
 import { t } from "../i18n";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
@@ -152,7 +152,7 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
   it("#685: a held Platform payment's screen offers Continue, then Move to Dash wallet", () => {
     const m = screenModel(row({ waiting: "paymentHeld", running: false, fundsCommitted: true, fromPlatform: true }), I);
     expect(m).toMatchObject({ kind: "held", busy: false, step: { n: 1 } });
-    expect(m.lines).toEqual([REG_COPY.progress.message("alice"), WAITS.paymentHeld]);
+    expect(m.lines).toEqual([REG_COPY.progress.message("alice"), heldWithBoth()]);
     expect(m.actions).toEqual([
       { kind: "continue", label: "Continue" },
       { kind: "moveToCore", label: "Move to Dash wallet" },

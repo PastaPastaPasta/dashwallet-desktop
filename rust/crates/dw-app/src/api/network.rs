@@ -534,6 +534,16 @@ fn update_busy(leases: &[LeaseView], mixing: bool, broadcast: bool) -> Option<Up
     })
 }
 
+/// The switch's refusal while mixing, for a reset of chain data too: a
+/// mixing session's signed inputs stay held while the reset blinds the
+/// wallet to its transaction.
+pub(crate) fn mixing_busy_error() -> AppError {
+    busy_error(Busy {
+        mixing: true,
+        ..Busy::default()
+    })
+}
+
 fn busy_error(busy: Busy) -> AppError {
     let Busy {
         flows,
