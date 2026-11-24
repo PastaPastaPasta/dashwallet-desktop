@@ -48,6 +48,7 @@ for (const theme of THEMES) {
     const errors = await open(page, "sh-capability-active", theme);
     await page.getByTestId("mn-shared").click();
     await expect(page.getByTestId("sh-start")).toBeVisible();
+    await expect(page.getByTestId("sh-start-button"), "the capability read has landed").toBeEnabled();
     if (info.project.name === "chromium") await shot(page, "sh-start", theme);
     await page.getByTestId("sh-start-button").click();
     await expect(page.getByTestId("sh-setup-step-shares")).toBeVisible();
