@@ -924,7 +924,16 @@ mod tests {
                 let row = (overview.masternodes.iter())
                     .find(|r| r.pro_tx_hash == display_hex(&HASH))
                     .expect("the tracked row");
-                for key in row.roles.attached.clone().expect("an unlocked vault") {
+                let notes = engine.block_on(s.appdb_op(load_notes)).unwrap();
+                assert!(
+                    !notes
+                        .key_ids
+                        .contains_key(&(display_hex(&HASH), AttachedKeyRole::Owner)),
+                    "no id recorded after an ambiguous write"
+                );
+                let attached = row.roles.attached.clone().expect("an unlocked vault");
+                assert!(attached.len() <= 1);
+                for key in attached {
                     assert_eq!(key.key_id, None, "no id after an ambiguous write");
                     assert_eq!(key.check, KeyCheck::Unchecked);
                     assert!(!key.holds());
@@ -943,8 +952,8 @@ mod tests {
             engine.block_on(engine.shutdown()).unwrap();
         }
 
-        /// The owner key's id and whether it holds after attaching B over A
-        /// and a power loss once the vault made B durable, before app.sqlite
+        /// The owner key's id and whether it holds after removing A, attaching
+        /// B and a power loss once the vault made B durable, before app.sqlite
         /// synced (MG-03 D34). `skip_barrier` skips the sync of the attach's
         /// clearing of A's id; `!verify` skips the session's comparison of
         /// the recorded ids with the vault's keys.
