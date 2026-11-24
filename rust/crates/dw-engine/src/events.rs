@@ -609,6 +609,18 @@ pub(crate) struct SessionHub {
     pub(crate) unreadable_record: Mutex<(Option<dashcore::Txid>, Option<dashcore::Txid>)>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next read of a masternode's operations once it has
+    /// judged their states, before it returns them.
+    #[cfg(test)]
+    pub(crate) pause_ops_read: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next Activity Resend once it has checked the
+    /// transaction, before its hand-off.
+    #[cfg(test)]
+    pub(crate) pause_resend: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: takes the bytes Activity Resend hands off, in place of the
+    /// network.
+    #[cfg(test)]
+    pub(crate) resend_wire: Mutex<Option<Arc<Mutex<Vec<Txid>>>>>,
     /// Tests: the next abandon quits before its sweep, as at an exit.
     #[cfg(test)]
     pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
@@ -816,6 +828,12 @@ impl SessionHub {
             pause_spend_claims: Mutex::new(None),
             #[cfg(test)]
             pause_history: Mutex::new(None),
+            #[cfg(test)]
+            pause_ops_read: Mutex::new(None),
+            #[cfg(test)]
+            pause_resend: Mutex::new(None),
+            #[cfg(test)]
+            resend_wire: Mutex::new(None),
             #[cfg(test)]
             fail_history_read: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -1649,6 +1667,19 @@ impl SessionHub {
                             (e.tx.input.iter()).any(|i| i.previous_output.txid == *superseded_by)
                         })
                     });
+                    if claim
+                        && (txids.iter()).all(|t| {
+                            h.txs.get(t).is_none_or(|e| {
+                                !(e.tx.input.iter())
+                                    .any(|i| i.previous_output.txid == *superseded_by)
+                            })
+                        })
+                    {
+                        let unheld: Vec<&Txid> =
+                            (txids.iter()).filter(|t| !h.txs.contains_key(*t)).collect();
+                        tracing::debug!(wallet = %id, ?unheld, winner = %superseded_by,
+                            "a sweep is taken as a claim only because the history lacks a swept transaction");
+                    }
                     let children = match claim {
                         true => BTreeSet::new(),
                         false => crate::history::unmined_children(&h.txs, txids),

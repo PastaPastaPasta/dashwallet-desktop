@@ -614,22 +614,23 @@ pub(crate) fn unmined_children(txs: &HashMap<Txid, TxEntry>, parents: &[Txid]) -
 /// 4): its parent was swept or dropped, so they can never confirm. The
 /// store keeps every row once final, so a missing one is not a pruned
 /// funding. One that spends a transaction the store dropped as an unsigned
-/// claim (`dropped`) is the claim rule's to judge (#739), and is left.
+/// claim, or one key-wallet swept as a claim (`orphan_exempt`), is the claim
+/// rule's to judge (#739), and is left.
 pub(crate) fn orphaned_unmined(
     txs: &HashMap<Txid, TxEntry>,
     stored: &HashSet<Txid>,
-    dropped: &HashSet<Txid>,
+    orphan_exempt: &HashSet<Txid>,
 ) -> Vec<Txid> {
     let gone = |p: &Txid| !stored.contains(p) && !txs.get(p).is_some_and(|e| !e.is_abandoned());
-    let claim_dropped =
-        |e: &TxEntry| (e.tx.input.iter()).any(|i| dropped.contains(&i.previous_output.txid));
+    let exempt =
+        |e: &TxEntry| (e.tx.input.iter()).any(|i| orphan_exempt.contains(&i.previous_output.txid));
     (txs.iter())
         .filter(|(t, e)| {
             stored.contains(*t)
                 && e.context.block_info().is_none()
                 && !e.is_abandoned()
                 && !instant_locked(e)
-                && !claim_dropped(e)
+                && !exempt(e)
                 && (e.own_inputs.keys())
                     .filter_map(|i| e.tx.input.get(*i as usize))
                     .any(|i| gone(&i.previous_output.txid))

@@ -627,6 +627,7 @@ pub enum ProTxOperationStateName {
     Sent,
     Confirmed { height: u32 },
     Conflicted,
+    Abandoned,
 }
 
 impl From<engine::ProTxOperationState> for ProTxOperationStateName {
@@ -640,6 +641,7 @@ impl From<engine::ProTxOperationState> for ProTxOperationStateName {
             S::Sent => Self::Sent,
             S::Confirmed { height } => Self::Confirmed { height },
             S::Conflicted => Self::Conflicted,
+            S::Abandoned => Self::Abandoned,
         }
     }
 }

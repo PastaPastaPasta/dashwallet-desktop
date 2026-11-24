@@ -2281,6 +2281,77 @@ fn a_payment_marked_abandoned_is_never_resent() {
     refused(&session);
 }
 
+/// An Activity Resend that checked a payment just before an Abandon
+/// committed its mark hands nothing off: it reads the mark again, held
+/// against the Abandon, before its bytes go out.
+#[test]
+fn an_abandon_during_an_activity_resend_stops_its_hand_off() {
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    start_offline_spv(&engine, &session);
+    dash_spv::EventHandler::on_network_event(
+        &*session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected {
+            address: "127.0.0.1:9".parse().unwrap(),
+        },
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_resend.lock().unwrap() = Some(Arc::clone(&pause));
+    let resending = {
+        let s = Arc::clone(&session);
+        session
+            .rt
+            .spawn(async move { s.resend_transaction(id, txid).await })
+    };
+    eventually("the resend checked the payment", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst) || resending.is_finished()
+    });
+    assert!(!resending.is_finished(), "{:?}", engine.block_on(resending));
+    try_abandon(&engine, &session, id, txid).unwrap();
+    assert!(
+        abandon_marked(&session, id, txid),
+        "the mark was not written"
+    );
+    pause.release.notify_one();
+    let resent = engine.block_on(resending).unwrap();
+    assert!(
+        matches!(
+            resent,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::AlreadyAbandoned
+            ))
+        ),
+        "{resent:?}"
+    );
+    assert!(wire.lock().unwrap().is_empty(), "handed off after the mark");
+}
+
+/// A restart ends dash-spv's rebroadcast of an abandoned payment: its
+/// tracked broadcasts live in memory, and the wallet store hands
+/// platform-wallet's load no sends to dispatch again, before or after the
+/// Abandon.
+#[test]
+fn the_wallet_store_stages_no_sends_to_dispatch_again_at_load() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+    let staged = |session: &Arc<NetworkSession>| {
+        let state = session.live().unwrap().persister.load().unwrap();
+        let wallet = state.wallets.get(&id.0).expect("the wallet loads");
+        wallet.unconfirmed_outgoing_txs.len()
+    };
+    assert_eq!(staged(&session), 0, "a pending send is staged");
+    try_abandon(&engine, &session, id, payment.txid()).unwrap();
+    assert_eq!(staged(&session), 0, "an abandoned send is staged");
+    let session = reopen(&engine, session);
+    assert_eq!(
+        staged(&session),
+        0,
+        "an abandoned send is staged after a restart"
+    );
+}
+
 /// Remove unconfirmed transactions whose read of the sent marks fails says
 /// so, rather than reporting nothing removed, and abandons nothing: also
 /// across wallets, when a wallet read after the payment's fails.
@@ -2439,6 +2510,53 @@ fn a_restored_payment_a_mined_rival_paying_the_wallet_beat_drops_its_change() {
 #[test]
 fn a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change() {
     a_restored_payment_beaten_by_a_mined_rival_drops_its_change(false);
+}
+
+/// #170 case 3 against a resend: a drop of a beaten payment waits for the
+/// wallet's abandon gate, which a resend holds for reading through its
+/// hand-off, and writes no mark until it is released (MG-10 §1.10). The
+/// hand-off starts before the block, so the reconcile its event starts
+/// waits too.
+#[test]
+fn a_drop_of_a_beaten_payment_waits_for_a_resend_hand_off() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    let session = reopen(&engine, session);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    let gate = session.abandon_gate(id);
+    let resend = engine.block_on(Arc::clone(&gate).read_owned());
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+
+    let s = Arc::clone(&session);
+    let task = engine.block_on(async move {
+        tokio::spawn(async move { s.reconcile_duplicate_coins(id).await })
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while gate.try_read().is_ok() && !task.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        !task.is_finished(),
+        "the drop ran through a resend's hand-off"
+    );
+    assert!(gate.try_read().is_err(), "the drop never reached the gate");
+    assert!(live_in_history(&session, id, p.txid()));
+    assert!(!abandon_marked(&session, id, p.txid()));
+
+    drop(resend);
+    engine.block_on(task).unwrap();
+    assert!(!live_in_history(&session, id, p.txid()), "the payment goes");
+    assert!(abandon_marked(&session, id, p.txid()));
 }
 
 /// Payment P of A with change and its child C of P's change and D, both

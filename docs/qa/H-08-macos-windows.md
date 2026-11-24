@@ -158,10 +158,12 @@ On every machine, in the clean account, before anything else has been installed.
 - [ ] Create a wallet with a passphrase. Write the recovery phrase on paper only. Expected: Home with a zero
       balance, syncing.
 - [ ] Fund it from the faucet. Expected: the payment shows in Activity, then confirms.
-- [ ] Settings ▸ About shows version `X.Y.Z` (the candidate's version without `-rc.N`; the exact candidate is the
-      file you verified in section 1). Tools ▸ Information shows a warning banner (a candidate is a pre-release
-      build; a higher-priority warning, such as the network one, may be the one shown). Note its text.
-- [ ] Screenshots in light and dark: Home, Activity, Settings, Settings ▸ About.
+- [ ] Settings ▸ About shows the candidate's tag without its `v` (`X.Y.Z-rc.N`; the release workflow stamps the
+      tag's version into the build). Tools ▸ Information shows a warning banner (a candidate is a pre-release
+      build; a higher-priority warning, such as a stalled sync, may be the one shown). Note its text. If it is not
+      the test-build warning, clear it and look again (an unclean-shutdown warning clears only after a normal
+      quit and relaunch).
+- [ ] Screenshots in light and dark: Home, Activity, Settings, Settings ▸ About, Tools ▸ Information.
 
 **Fail if:** the OS blocked the app and the documented way to open it does not work; Windows asks for administrator
 rights; the app runs under Rosetta on Apple silicon; the timed second launch takes more than 5 seconds; the notice
@@ -223,7 +225,7 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
        - run E: the lock screen, not Welcome, and the passphrase unlocks. Run S: the wallet opens with no
          passphrase. A macOS Keychain prompt to let Dash Wallet use its own item is a finding if **Always Allow**
          makes it go away, and a failure if it does not or the wallet reports a missing key;
-       - the network is Testnet; Settings ▸ About shows the candidate's `X.Y.Z`;
+       - the network is Testnet; Settings ▸ About shows the candidate's `X.Y.Z-rc.N`;
        - everything in baseline 1 is the same (statuses may have moved on to more confirmations or ChainLocked);
        - Tools ▸ Sign/Verify verifies the baseline signature, and signing `h08 upgrade` with the same address gives
          the same signature.

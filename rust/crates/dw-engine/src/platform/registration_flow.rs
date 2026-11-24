@@ -37,7 +37,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -67,12 +67,13 @@ use super::invitations::{InvitationInvalidReason, InvitationStatus};
 use super::lease::mode_b::TrackedRow;
 use super::lease::{CallPermit, CallStep, CallStepStatus, DraftKey, FundingKey, Lease, LeaseTable};
 use super::names::NameOutcome;
+use super::platform_moves::{PlanFund, PlanWrite, PlanWriter, RegisterAsk, RegisterOutcome};
 use super::registration::{RegistrationWait, ShieldedFacts};
 use super::registration_ledger::{
     IndexOwner, Ledger, NoIndex, Owner, Reconcile, Standing, StepClaim, Taker, index_after,
 };
-use super::registration_platform::RegisterPlan;
-use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
+use super::registration_platform::{self, RegisterPlan};
+use super::registration_rows::{Decoded, Funding, Phase, PlatformPlan, ProfileRecord};
 use super::startup::StartupStatus;
 use crate::coins::CoinFence;
 use crate::{DashNetwork, NetworkSession, WalletId};
@@ -423,6 +424,15 @@ pub(crate) trait RegistrationLib: Send + Sync {
         &self,
         funding: u64,
     ) -> impl Future<Output = Result<RegisterPlan, CreditsError>> + Send;
+    /// One funding pass of a Platform-funded row under its `lease`
+    /// (C-funding F9, F10): `write_plan` writes a new plan into the row
+    /// before anything is recorded or signed.
+    fn platform_fund<'a>(
+        &'a self,
+        ask: RegisterAsk,
+        lease: Option<&'a Lease>,
+        write_plan: PlanWriter<'a>,
+    ) -> PlanFund<'a>;
     /// DP2-02's contact request from `identity` to `inviter`, under the
     /// registration's `lease` (DP5-02 §4).
     fn request_inviter(
@@ -1168,12 +1178,13 @@ pub(crate) fn interpret(row: &RegistrationRow) -> Result<(Phase, Funding), &'sta
             feature: String::new(),
         }
         .code()),
-        // No flow step runs these yet (C4b-2, C4a-2): never funded,
-        // discarded or advanced here.
-        Funding::Shielded { .. } | Funding::PlatformAddresses { .. } => Err(unsupported()),
-        Funding::CoreBalance { .. } | Funding::ExistingIdentity | Funding::Invitation { .. } => {
-            Ok((phase, funding))
-        }
+        // No flow step runs it yet (C4b-2): never funded, discarded or
+        // advanced here.
+        Funding::Shielded { .. } => Err(unsupported()),
+        Funding::CoreBalance { .. }
+        | Funding::ExistingIdentity
+        | Funding::Invitation { .. }
+        | Funding::PlatformAddresses { .. } => Ok((phase, funding)),
     }
 }
 
@@ -1219,6 +1230,21 @@ pub(crate) fn claim_discard_refused(
                 || code == InvitationError::Claimed.code()
         });
     (released && !disproved).then_some("the claim may have reached the network")
+}
+
+/// A Platform-funded row whose plan is written (C-funding F6): a signature
+/// for its create may have been released, and only evidence that it never
+/// executes clears the plan. The plan stays once the identity exists.
+pub(crate) fn platform_committed(row: &RegistrationRow) -> bool {
+    matches!(
+        Funding::decode(&row.funding),
+        Decoded::Known(Funding::PlatformAddresses { plan: Some(_), .. })
+    )
+}
+
+/// Why a Platform-funded row must not be discarded (C-funding F6).
+pub(crate) fn platform_discard_refused(row: &RegistrationRow) -> Option<&'static str> {
+    platform_committed(row).then_some("the registration's payment may have reached the network")
 }
 
 /// A claim row stopped on `invitation.already_has_identity` (DP5-03 D24):
@@ -1598,6 +1624,9 @@ pub(crate) struct Driver<'a, L> {
     /// the network itself, keeping its lease (one prompt, §2.6). `false`
     /// parks at each, as "Finish transfers" does.
     waits: bool,
+    /// A Platform-funded create was signed in this run: a held one is not
+    /// signed again until the next (C-funding F22).
+    signed: AtomicBool,
 }
 
 impl<'a, L: RegistrationLib> Driver<'a, L> {
@@ -1616,6 +1645,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             claim,
             lease: Mutex::new(lease),
             waits,
+            signed: AtomicBool::new(false),
         }
     }
 
@@ -1854,6 +1884,14 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         let Ok((phase, funding)) = interpret(row) else {
             return Ok(Step::Stop);
         };
+        // Off on mainnet: a Platform-funded row runs no step there but the
+        // funding step's own refusal.
+        if matches!(funding, Funding::PlatformAddresses { .. })
+            && phase != Phase::KeysPrepared
+            && registration_platform::refuse_on_mainnet(&self.lib.network()).is_err()
+        {
+            return Ok(Step::Stop);
+        }
         // §5.2: terminal evidence for the row first; a write steps again.
         if matches!(
             phase,
@@ -1885,6 +1923,14 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 Funding::Invitation {
                     link_id, identity, ..
                 } => self.claim_invitation(row, &link_id, &identity).await,
+                Funding::PlatformAddresses {
+                    funding_credits,
+                    fee_reserve_credits,
+                    plan,
+                } => {
+                    let numbers = (funding_credits, fee_reserve_credits);
+                    self.platform_fund(row, numbers, plan).await
+                }
                 _ => Ok(Step::Fail(internal(), false)),
             },
             Phase::FundingSent | Phase::ProofWaiting => self.create_identity(row, phase).await,
@@ -2637,6 +2683,148 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 }
             }
         })
+    }
+
+    /// KeysPrepared → IdentityRegistered for a row paid from the Platform
+    /// addresses (C-funding F9, F10, F22): one pass of the create under the
+    /// move lock, its plan written into the row before anything is signed.
+    async fn platform_fund(
+        &self,
+        row: &RegistrationRow,
+        (funding_credits, fee_reserve_credits): (u64, u64),
+        plan: Option<PlatformPlan>,
+    ) -> Result<Step, PlatformError> {
+        if let Err(off) = registration_platform::refuse_on_mainnet(&self.lib.network()) {
+            // This build signs nothing there; a plan stored elsewhere holds.
+            return Ok(match plan {
+                None => Step::Fail(off.code(), false),
+                Some(_) => Step::Park(RegistrationWait::PaymentUnknown),
+            });
+        }
+        let Some(index) = row.identity_index else {
+            return Ok(Step::Fail(internal(), false));
+        };
+        if let Some(wait) = self.lib.claim_hold() {
+            return Ok(hold_step(wait));
+        }
+        // An identity the seed already holds at the row's index (a row from a
+        // backup older than its create) is the row's: planning again would
+        // pay Platform's duplicate-key penalty.
+        if plan.is_none()
+            && let Some(identity) = self.identity_at(index).await?
+        {
+            let change = RegistrationChange {
+                phase: Some(Phase::IdentityRegistered.as_str().into()),
+                identity: Some(identity),
+                ..Default::default()
+            };
+            return self.advance(row, change).await;
+        }
+        // A stored plan is settled by reads alone; a new one or a signature
+        // needs the run's lease.
+        let lease = self.lease();
+        if lease.is_none() && plan.is_none() {
+            return Ok(Step::Park(self.authority_wait()));
+        }
+        let in_call = match self.flows().enter_call(self.claim) {
+            Ok(in_call) => in_call,
+            Err(step) => return Ok(step),
+        };
+        let funding = move |plan| {
+            Funding::PlatformAddresses {
+                funding_credits,
+                fee_reserve_credits,
+                plan,
+            }
+            .encode()
+        };
+        let resign = !self.signed.swap(true, Ordering::SeqCst);
+        let ask = RegisterAsk {
+            draft: row.id,
+            index,
+            funding_credits,
+            fee_reserve_credits,
+            plan,
+            resign,
+        };
+        let write_plan: PlanWriter<'_> = Box::new(move |plan: PlatformPlan| {
+            let change = RegistrationChange {
+                funding: Some(funding(Some(plan))),
+                ..Default::default()
+            };
+            let write: PlanWrite<'_> = Box::pin(async move {
+                match self.write(row, change).await? {
+                    Written::Applied => Ok(()),
+                    // Not written: nothing may be signed.
+                    Written::Moved | Written::Lost => Err(PlatformError::Storage {
+                        detail: "the registration changed before its plan was written".into(),
+                    }),
+                }
+            });
+            write
+        });
+        let outcome = (self.lib)
+            .platform_fund(ask, lease.as_ref(), write_plan)
+            .await;
+        drop(in_call);
+        if resign && outcome.is_err() {
+            // Refused before or around a signature: signing the same plan
+            // again is the same transition, so the run keeps its try.
+            self.signed.store(false, Ordering::SeqCst);
+        }
+        let cleared = |failure: Option<(&str, bool)>| RegistrationChange {
+            funding: Some(funding(None)),
+            failure: failure.map(|(code, retryable)| Some((code.to_owned(), retryable))),
+            ..Default::default()
+        };
+        let registered = |identity: String| RegistrationChange {
+            phase: Some(Phase::IdentityRegistered.as_str().into()),
+            identity: Some(identity),
+            ..Default::default()
+        };
+        match outcome {
+            Ok(RegisterOutcome::Registered(identity)) => {
+                self.advance(row, registered(identity)).await
+            }
+            Ok(RegisterOutcome::Unknown) => Ok(Step::Wait(RegistrationWait::PaymentUnknown)),
+            Ok(RegisterOutcome::Held) => Ok(Step::Park(RegistrationWait::PaymentHeld)),
+            // F22: back to Confirm, with a new quote.
+            Ok(RegisterOutcome::Exited) => {
+                let quote = RegistrationError::QuoteChanged.code();
+                self.advance(row, cleared(Some((quote, false)))).await
+            }
+            // F10, F12: an identity of the seed at the row's index is the
+            // create's; else the penalty was taken and nothing retries.
+            Ok(RegisterOutcome::PaidFailure) => match self.identity_at(index).await? {
+                Some(identity) => self.advance(row, registered(identity)).await,
+                None => {
+                    tracing::warn!(draft = row.id, "a Platform-funded create failed in a block");
+                    let refunded = RegistrationError::Refunded.code();
+                    self.advance(row, cleared(Some((refunded, false)))).await
+                }
+            },
+            Ok(RegisterOutcome::Adopt) => match self.identity_at(index).await? {
+                Some(identity) => self.advance(row, registered(identity)).await,
+                None => self.advance(row, cleared(None)).await,
+            },
+            Ok(RegisterOutcome::Replan(refusal)) => {
+                let step = self.advance(row, cleared(None)).await?;
+                Ok(match refusal {
+                    Some(e) if step == Step::Again => self.failed(&e),
+                    _ => step,
+                })
+            }
+            Err(CreditsError::Platform(e @ PlatformError::Storage { .. })) => Err(e),
+            Err(CreditsError::Platform(e)) => Ok(self.failed(&e)),
+            Err(CreditsError::QuoteChanged) => {
+                Ok(Step::Fail(RegistrationError::QuoteChanged.code(), false))
+            }
+            Err(CreditsError::MovePending { id }) => {
+                tracing::info!(draft = row.id, %id, "a Platform-funded registration waits for a move");
+                Ok(Step::Wait(RegistrationWait::Network))
+            }
+            Err(e) => Ok(Step::Fail(e.code(), true)),
+        }
     }
 
     /// Wipes the claimed link from the stash (D13); a failure is logged and
@@ -3585,6 +3773,29 @@ impl RegistrationLib for PwLib {
             funding,
         )
         .await
+    }
+
+    fn platform_fund<'a>(
+        &'a self,
+        ask: RegisterAsk,
+        lease: Option<&'a Lease>,
+        write_plan: PlanWriter<'a>,
+    ) -> PlanFund<'a> {
+        Box::pin(async move {
+            let net = super::platform_moves::SdkMoves {
+                sdk: Arc::clone(&self.sdk),
+                wallet: Arc::clone(&self.wallet),
+            };
+            super::platform_moves::register_fund(
+                &net,
+                &self.session,
+                &self.wallet,
+                self.wallet_id,
+                (ask, lease),
+                write_plan,
+            )
+            .await
+        })
     }
 
     async fn request_inviter(

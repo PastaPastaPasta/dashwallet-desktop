@@ -6356,6 +6356,22 @@ button.bell-row-open:focus-visible {
   outline: none;
 }
 
+.mg-menu button[aria-disabled="true"] {
+  color: var(--dw-role-text-secondary);
+  cursor: default;
+}
+
+.mg-menu button[aria-disabled="true"]:hover,
+.mg-menu button[aria-disabled="true"]:focus-visible {
+  background: none;
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-menu button[aria-disabled="true"]:focus-visible {
+  outline: 2px solid var(--dw-role-accent);
+  outline-offset: -2px;
+}
+
 /* mg-00.css's helpers (its "Empty state" section's tail). */
 .mg-muted {
   color: var(--dw-role-text-secondary);

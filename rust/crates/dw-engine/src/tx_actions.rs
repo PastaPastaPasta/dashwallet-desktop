@@ -132,7 +132,7 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// comma-separated), restored as claims at each load ([`dropped_holds`]).
 /// Not `dropped:`, which marks a transaction the claim rule dropped (#739)
 /// and holds nothing: neither reads the other's keys.
-const DROPPED_PREFIX: &str = "drop_holds:";
+const DROP_HOLDS_PREFIX: &str = "drop_holds:";
 
 /// Settings key prefix (wallet scope) of a transaction key-wallet swept
 /// for a winner that funds it: a claim, whose descendants the claim rule
@@ -152,14 +152,21 @@ pub(crate) fn note_claims_swept(
     appdb.set_settings_durable(&wallet.to_string(), &writes)
 }
 
-/// The transactions of `wallet` swept as claims ([`note_claims_swept`]).
+/// The transactions of `wallet` swept as claims ([`note_claims_swept`]); a
+/// note whose key names no transaction is left out.
 pub(crate) fn claims_swept(
     appdb: &AppDb,
     wallet: WalletId,
 ) -> Result<HashSet<Txid>, dw_appdb::AppDbError> {
     let rows = appdb.settings_with_prefix_lossy(&wallet.to_string(), CLAIM_SWEPT_PREFIX)?;
     Ok((rows.into_iter())
-        .filter_map(|(key, _)| Txid::from_str(&key[CLAIM_SWEPT_PREFIX.len()..]).ok())
+        .filter_map(|(key, _)| {
+            let txid = Txid::from_str(&key[CLAIM_SWEPT_PREFIX.len()..]).ok();
+            if txid.is_none() {
+                tracing::warn!(%wallet, "a claim swept note names no transaction");
+            }
+            txid
+        })
         .collect())
 }
 
@@ -170,7 +177,7 @@ pub(crate) type DroppedHolds = HashMap<WalletId, BTreeSet<OutPoint>>;
 #[cfg(all(test, debug_assertions))]
 pub(crate) const DROPPED_HOLDS_FAULT: &str = "tx_actions.dropped_holds";
 
-/// The coins the drops of `wallet` hold for good ([`DROPPED_PREFIX`]); a
+/// The coins the drops of `wallet` hold for good ([`DROP_HOLDS_PREFIX`]); a
 /// note whose value does not parse holds nothing.
 pub(crate) fn dropped_holds(
     appdb: &AppDb,
@@ -178,7 +185,7 @@ pub(crate) fn dropped_holds(
 ) -> Result<BTreeSet<OutPoint>, dw_appdb::AppDbError> {
     #[cfg(all(test, debug_assertions))]
     appdb.fault_point(DROPPED_HOLDS_FAULT, dw_appdb::fault::Stage::Before)?;
-    let rows = appdb.settings_with_prefix_lossy(&wallet.to_string(), DROPPED_PREFIX)?;
+    let rows = appdb.settings_with_prefix_lossy(&wallet.to_string(), DROP_HOLDS_PREFIX)?;
     Ok((rows.into_iter())
         .filter_map(|(_, value)| value)
         .flat_map(|v| (v.split(',').filter_map(|o| OutPoint::from_str(o).ok())).collect::<Vec<_>>())
@@ -472,12 +479,26 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Abandoned, boo
     (out, true)
 }
 
+/// The txids `wallet`'s abandoned marks name, each by its key (an Abandon's
+/// commit point): one whose copy does not read back still counts.
+pub(crate) fn abandoned_txids(
+    appdb: &AppDb,
+    wallet: WalletId,
+) -> Result<HashSet<Txid>, dw_appdb::AppDbError> {
+    Ok(
+        (appdb.settings_with_prefix_lossy(&wallet.to_string(), ABANDONED_PREFIX)?)
+            .into_iter()
+            .filter_map(|(key, _)| Txid::from_str(&key[ABANDONED_PREFIX.len()..]).ok())
+            .collect(),
+    )
+}
+
 /// Finishes in the wallet store the abandons whose marks are stored but
 /// whose sweeps are not (the mark is the commit point): of `wallets`, each
 /// payment marked abandoned that is still stored out of a block and
 /// unlocked (its record in the mempool, or only its outputs) is swept, and
 /// the coins it spent that no other stored record spends are released,
-/// except a dropped one's ([`DROPPED_PREFIX`]).
+/// except a dropped one's ([`DROP_HOLDS_PREFIX`]).
 /// Only marked payments are swept; one mined or InstantSend-locked since
 /// (a height-only row, a record in a block or locked, a stored lock) counts
 /// again and is left. Run before the wallets load, so a swept payment's
@@ -579,16 +600,16 @@ pub(crate) fn finish_marked_abandons(
                 spent_by_others.extend(r.transaction.input.iter().map(|i| i.previous_output));
             }
         }
-        let dropped: HashSet<Txid> = (appdb
-            .settings_with_prefix_lossy(&wallet.to_string(), DROPPED_PREFIX))
+        let drop_held: HashSet<Txid> = (appdb
+            .settings_with_prefix_lossy(&wallet.to_string(), DROP_HOLDS_PREFIX))
         .map_err(|e| storage(&e))?
         .into_iter()
-        .filter_map(|(key, _)| Txid::from_str(&key[DROPPED_PREFIX.len()..]).ok())
+        .filter_map(|(key, _)| Txid::from_str(&key[DROP_HOLDS_PREFIX.len()..]).ok())
         .collect();
         let mut sent = None;
         let (mut spent, mut held) = (BTreeSet::new(), BTreeSet::new());
         for (t, copy) in &pending {
-            let spent = match dropped.contains(t) {
+            let spent = match drop_held.contains(t) {
                 true => &mut held,
                 false => &mut spent,
             };
@@ -1195,7 +1216,74 @@ impl Facts {
     }
 }
 
+/// Why Activity's Abandon or Resend of a transaction refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivityRefusal {
+    SpvNotRunning,
+    NoPeers,
+    Tx(TxActionRefusal),
+}
+
+impl From<ActivityRefusal> for EngineError {
+    fn from(r: ActivityRefusal) -> Self {
+        match r {
+            ActivityRefusal::SpvNotRunning => EngineError::SpvNotRunning,
+            ActivityRefusal::NoPeers => EngineError::NoPeers,
+            ActivityRefusal::Tx(r) => EngineError::TxActionRefused(r),
+        }
+    }
+}
+
+/// [`NetworkSession::abandon_transaction`]'s refusal, in its order: no SPV
+/// client first, then dash-qt's enablement.
+fn activity_abandon_refusal(spv_running: bool, f: &Facts) -> Option<ActivityRefusal> {
+    if !spv_running {
+        return Some(ActivityRefusal::SpvNotRunning);
+    }
+    f.abandon_refusal().map(ActivityRefusal::Tx)
+}
+
+/// [`NetworkSession::resend_transaction`]'s refusal, in its order: dash-qt's
+/// enablement, then no SPV client, then no connected peer.
+fn activity_resend_refusal(f: &Facts, spv_running: bool, peers: u32) -> Option<ActivityRefusal> {
+    if let Some(r) = f.resend_refusal() {
+        return Some(ActivityRefusal::Tx(r));
+    }
+    if !spv_running {
+        return Some(ActivityRefusal::SpvNotRunning);
+    }
+    (peers == 0).then_some(ActivityRefusal::NoPeers)
+}
+
+/// What Activity's Abandon and Resend would say of one transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActivityExits {
+    pub abandon: Option<ActivityRefusal>,
+    pub resend: Option<ActivityRefusal>,
+}
+
 impl NetworkSession {
+    /// Activity's verdicts on `txid` of `wallet` with the SPV client
+    /// `spv_running` and `peers` connected, as the detail offers them:
+    /// `None` when the history doesn't hold it.
+    pub(crate) async fn activity_exits(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+        spv_running: bool,
+        peers: u32,
+    ) -> Result<Option<ActivityExits>, EngineError> {
+        let manager = self.manager()?;
+        match self.tx_facts(&manager, wallet, txid, true).await {
+            Ok((_, f)) => Ok(Some(ActivityExits {
+                abandon: activity_abandon_refusal(spv_running, &f),
+                resend: activity_resend_refusal(&f, spv_running, peers),
+            })),
+            Err(EngineError::TxNotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Facts of one transaction of `wallet`, `TxNotFound` when unknown.
     /// With `offer`, the ChainLock exception counts only when the abandon's
     /// plan would not refuse it (what the detail offers); without, the
@@ -1248,14 +1336,20 @@ impl NetworkSession {
         }
         // Read after the history: an Abandon writes its mark under the
         // manager's lock the view waits on, and flags the entry only once
-        // its sweep is stored. A mark that cannot be read counts.
+        // its sweep is stored.
+        f.abandon_marked = self.abandon_marked(wallet, txid).await;
+        Ok((entry, f))
+    }
+
+    /// Whether an Abandon of `txid` committed its mark, which it writes
+    /// before its sweep: a mark that cannot be read counts.
+    pub(crate) async fn abandon_marked(&self, wallet: WalletId, txid: Txid) -> bool {
         let (scope, key) = (wallet.to_string(), format!("{ABANDONED_PREFIX}{txid}"));
-        f.abandon_marked = (self.appdb_op(move |db| {
+        (self.appdb_op(move |db| {
             Ok((db.settings_with_prefix_lossy(&scope, &key)?.into_iter()).any(|(k, _)| k == key))
         }))
         .await
-        .unwrap_or(true);
-        Ok((entry, f))
+        .unwrap_or(true)
     }
 
     /// dash-qt detail fields and action enablement for one transaction.
@@ -1334,12 +1428,13 @@ impl NetworkSession {
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let manager = this.manager()?;
             this.require_wallet(&wallet)?;
-            if !manager.spv().is_started() {
+            let spv_running = manager.spv().is_started();
+            if !spv_running {
                 return Err(EngineError::SpvNotRunning);
             }
             let (_, f) = this.tx_facts(&manager, wallet, txid, false).await?;
-            if let Some(r) = f.abandon_refusal() {
-                return Err(EngineError::TxActionRefused(r));
+            if let Some(r) = activity_abandon_refusal(spv_running, &f) {
+                return Err(r.into());
             }
             // Its rewind record stays stored until its rescan starts, as a
             // Remove Unconfirmed batch's does: a sync commit meanwhile
@@ -1413,6 +1508,7 @@ impl NetworkSession {
             pause.release.notified().await;
         }
         let proof = self.root_proof(manager, wallet, root).await;
+        let _gate = self.abandon_gate(wallet).write_owned().await;
         // Planned on a copy under the lock that applies it, so the replay
         // record stored before it covers what is abandoned; held until the
         // sweep is stored, so no descendant is credited between the plan and
@@ -1634,10 +1730,10 @@ impl NetworkSession {
     /// left (#170 cases 3 and 4), one drop at a time: the children of the
     /// payments a sweep took, which its event queued with its winner; the
     /// payments [`beaten_unrecorded`] finds; and, at a load that read every
-    /// stored transaction (`stored`, with those the store dropped as
-    /// unsigned claims), the [`orphaned_unmined`] ones, whose winner is
-    /// unknown. Reads under the manager's read lock, and takes
-    /// the write lock only to drop something.
+    /// stored transaction (`stored`, with the parents whose children are
+    /// the claim rule's), the [`orphaned_unmined`] ones, whose winner is
+    /// unknown. Reads under the manager's read lock, and takes the write
+    /// lock only to drop something.
     pub(crate) async fn drop_dead(
         &self,
         manager: &Manager,
@@ -1675,7 +1771,7 @@ impl NetworkSession {
                         beaten.entry(w).or_default().push(t);
                     }
                     work.extend((beaten.into_iter()).map(|(w, ts)| (ts, w, BTreeSet::new(), true)));
-                    let orphans = stored.map(|(s, dropped)| orphaned_unmined(&h.txs, s, dropped));
+                    let orphans = stored.map(|(s, exempt)| orphaned_unmined(&h.txs, s, exempt));
                     if let Some(orphans) = orphans.filter(|o| !o.is_empty()) {
                         work.push((orphans, Winner::default(), BTreeSet::new(), false));
                     }
@@ -1738,7 +1834,9 @@ impl NetworkSession {
     /// go. A coin they spent comes back only through the rewind, which is
     /// recorded before the marks and made after the sweep, and only when
     /// the plan frees it; the sweep stores none unspent. Every other coin
-    /// they spent is claimed for good. Returns the dropped txids.
+    /// they spent is claimed for good. Holds the wallet's abandon gate for
+    /// writing through its marks, as an abandon does, so no resend hands off
+    /// bytes it has marked. Returns the dropped txids.
     pub(crate) async fn drop_dead_unmined(
         &self,
         manager: &Manager,
@@ -1748,6 +1846,7 @@ impl NetworkSession {
         links: &BTreeSet<Txid>,
         recheck: bool,
     ) -> Result<BTreeSet<Txid>, EngineError> {
+        let _gate = self.abandon_gate(wallet).write_owned().await;
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
         // What any loaded wallet settled can descend from this one's
@@ -1845,7 +1944,7 @@ impl NetworkSession {
             .flat_map(|(t, tx)| {
                 [
                     (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)),
-                    (format!("{DROPPED_PREFIX}{t}"), holds(tx)),
+                    (format!("{DROP_HOLDS_PREFIX}{t}"), holds(tx)),
                 ]
             })
             .collect();
@@ -1869,7 +1968,7 @@ impl NetworkSession {
                 .flat_map(|(t, _)| {
                     [
                         format!("{ABANDONED_PREFIX}{t}"),
-                        format!("{DROPPED_PREFIX}{t}"),
+                        format!("{DROP_HOLDS_PREFIX}{t}"),
                     ]
                 })
                 .collect();
@@ -2065,6 +2164,12 @@ impl NetworkSession {
         let changed: Vec<Txid> = abandoned.iter().copied().collect();
         self.hub.pump.mark_history(wallet, Some(&changed));
         self.hub.pump.mark_balances(wallet);
+        // A masternode operation whose transaction this abandoned holds its
+        // coins no longer (MG-10 §1.10, D49). The mark is durable, so a
+        // release that fails here runs again at the next settling.
+        if let Err(e) = self.settle_operation_locks(wallet).await {
+            tracing::warn!(%wallet, error = %e, "releasing an abandoned ProTx operation's coins");
+        }
         Ok(())
     }
 
@@ -2333,22 +2438,40 @@ impl NetworkSession {
             let _op = this.enter().await?;
             let manager = this.manager()?;
             let (entry, f) = this.tx_facts(&manager, wallet, txid, false).await?;
-            if let Some(r) = f.resend_refusal() {
-                return Err(EngineError::TxActionRefused(r));
+            let peers = this.hub.tracker().snapshot().connected_peers;
+            if let Some(r) = activity_resend_refusal(&f, manager.spv().is_started(), peers) {
+                return Err(r.into());
             }
-            if !manager.spv().is_started() {
-                return Err(EngineError::SpvNotRunning);
+            #[cfg(test)]
+            let pause = this.hub.pause_resend.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause.mark_reached();
+                pause.release.notified().await;
             }
-            if this.hub.tracker().snapshot().connected_peers == 0 {
-                return Err(EngineError::NoPeers);
+            // Read again, held against an abandon through the hand-off: one
+            // since the check committed its mark, and its bytes stay unsent.
+            let gate = this.abandon_gate(wallet).read_owned().await;
+            if this.abandon_marked(wallet, txid).await {
+                return Err(EngineError::TxActionRefused(
+                    TxActionRefusal::AlreadyAbandoned,
+                ));
             }
             let handle = this.wallet(&wallet).await?;
+            #[cfg(test)]
+            let wire = this.hub.resend_wire.lock().unwrap().clone();
             // platform-wallet's only broadcast entry point waits for the
             // network's acceptance (up to dash-spv's 60 s timeout). The send
             // itself happens at once, so the call returns after a short
             // hand-off window and leaves the wait to a background task; a
             // send dash-spv refuses outright (no connection) is reported.
             let mut task = tokio::spawn(async move {
+                let _gate = gate;
+                #[cfg(test)]
+                if let Some(wire) = wire {
+                    wire.lock().unwrap().push(entry.tx.txid());
+                    return Ok(entry.tx.txid());
+                }
                 let outcome = handle.core().broadcast_transaction(&entry.tx).await;
                 match &outcome {
                     Ok(_) => tracing::info!(%txid, "resent transaction accepted"),
