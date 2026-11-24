@@ -67,6 +67,7 @@ export const keys = {
   platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
+  rescanProgress: ["rescanProgress"] as const,
   scanHeightAll: ["scanHeight"] as const,
   scanHeight: (walletId: string) => ["scanHeight", walletId] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
@@ -642,6 +643,12 @@ export function useDustProtection() {
 export function useNodeInfo() {
   const b = useBackend();
   return useQuery({ queryKey: keys.nodeInfo, queryFn: () => b.nodeInfo(), staleTime: 0 });
+}
+
+/** The running rescan, re-read every few seconds: an in-memory read the engine answers at once. */
+export function useRescanProgress() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.rescanProgress, queryFn: () => b.rescanProgress(), refetchInterval: 5_000 });
 }
 
 export function useProtocolCompatibility() {

@@ -95,6 +95,11 @@ export const app = {
     running: "The wallet is catching up with the network. You can send once it has finished.",
     interrupted: "The last rescan was interrupted. Finish it in Repair ▸ Rescan before sending.",
   },
+  /** Home and Pay, while the first start after an update replays this wallet from its birth. */
+  upgradeReplay: {
+    label: "Checking history after the update",
+    text: "Checking this wallet's history after the update. This version rescans it once from its birth to find CoinJoin payments that earlier versions may have missed. You can send when it finishes, usually within a few minutes. A long history takes longer.",
+  },
   /** The confirm sheets when the fees are a tenth of the amount or more. */
   feeWarning: {
     most: "Most of this goes to fees.",
