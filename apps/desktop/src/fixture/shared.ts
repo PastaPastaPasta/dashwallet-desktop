@@ -577,11 +577,10 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       wallet(world, walletId);
       requireSending(world);
       const lost = world.shared.unreadable.find((x) => x.id === id);
-      if (!lost) {
-        if (world.shared.sessions.some((x) => x.id === id)) throw fail("invalid_argument", "the session reads: abandon_shared_session");
-        throw fail("masternodes.shared_session_not_found", "no such shared session");
-      }
-      if (lost.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
+      const row = lost ?? world.shared.sessions.find((x) => x.id === id);
+      if (!row) throw fail("masternodes.shared_session_not_found", "no such shared session");
+      if (row.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
+      if (!lost) throw fail("invalid_argument", "the session reads: abandon_shared_session");
       if (lost.discardable || !lost.abandonable) throw stageRefusal(outStage(lost.role));
       capped(world, walletId, grantId, SHARED_ABANDON_FEE);
       lost.abandonable = false;
