@@ -171,6 +171,7 @@ const STATES: Record<string, State> = {
       await page.getByTestId("platform-fund-go").click();
       await authorize(page);
       await expect(page.getByTestId("platform-fund-progress")).toBeVisible();
+      await expect(page.getByTestId("transfer-preparing")).toBeVisible();
     },
   },
   "fund-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "coreToPlatform") },
