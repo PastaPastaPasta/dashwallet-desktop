@@ -2565,6 +2565,8 @@ pub(super) fn caught_up(s: &NetworkSession, id: WalletId) {
     progress.update_headers(headers);
     progress.update_masternodes(mn);
     s.hub.tracker().on_progress(&progress);
+    // A later report of the offline SPV client would read as behind.
+    s.hub.pin_progress.store(true, Ordering::SeqCst);
     assert!(super::registration_flow::wallet_synced(s, id), "caught up");
 }
 
@@ -2977,7 +2979,7 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
     let txid = tracked_fund_lock(&engine, &s, id);
     let started = Instant::now();
     let dp = s.dashpay(id);
-    let (finished, closed_in) = engine.block_on(async {
+    let finished = engine.block_on(async {
         let finish = dp.finish_transfer(super::LockKindId::PlatformAddress, txid, 0, g.clone());
         let closing = async {
             while !pause.reached.load(Ordering::SeqCst) {
@@ -2987,8 +2989,11 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
             s.close().await;
             at.elapsed()
         };
-        tokio::join!(finish, closing)
+        let both = async { tokio::join!(finish, closing) };
+        tokio::time::timeout(Duration::from_secs(60), both).await
     });
+    let (finished, closed_in) =
+        finished.expect("the Finish waits on the rerun and the close ends it");
     assert!(closed_in < Duration::from_secs(10), "{closed_in:?}");
     assert!(
         started.elapsed() < Duration::from_secs(20),
