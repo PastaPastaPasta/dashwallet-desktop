@@ -166,10 +166,16 @@ async function main() {
     await wd.waitGone(tid("mn-add-key-sheet"), "the add key sheet");
 
     await wd.waitFor(tid(`mn-row-${VOTER}`), "the tracked masternode's row");
-    evidence.keyAdded = await poll(TIMEOUT_MS, "Keys you added", async () => ((await exists("mn-key-added-voting")) ? (await textOf("mn-key-added-voting")).trim() : undefined));
+    // The pane reads the key's check again; a match with the synced list is what lets it vote (D29).
+    let keyLine = "";
+    evidence.keyAdded = await poll(TIMEOUT_MS, "Keys you added to say the voting key matches", async () => {
+      keyLine = (await textOf("mn-key-added-voting")).trim();
+      return keyLine.includes("· matches") ? keyLine : undefined;
+    }).catch(() => {
+      throw new Error(`Keys you added says "${keyLine}", not that the voting key matches`);
+    });
     evidence.trackedRow = await textOf(`mn-row-${VOTER}`);
     await wd.screenshot("3-tracked-row");
-    if (!String(evidence.keyAdded).includes("· matches")) throw new Error(`Keys you added: ${evidence.keyAdded}`);
     step(`tracked row "${evidence.trackedRow}"; ${evidence.keyAdded}`);
 
     // Vote with it.
