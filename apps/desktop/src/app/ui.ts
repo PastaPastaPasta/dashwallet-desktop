@@ -133,7 +133,7 @@ export const DEFAULT_PREFS: UiSettings = {
   autohideBalance: false,
   autoLockSecs: null,
   subtractFeeByDefault: false,
-  showMasternodes: false,
+  masternodesItem: "auto",
   masternodesTab: "myMasternodes",
   preReleaseNoticeDismissed: false,
   language: null,

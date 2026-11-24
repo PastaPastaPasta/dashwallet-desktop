@@ -203,12 +203,12 @@ test("Mine: a slow Submit says Sending… and keeps the row (D17)", async ({ pag
   await expect(page.getByTestId("mine-chip-desktop-wallet-i18n")).toHaveText("Fee paid");
 });
 
-test("the sidebar shows Masternodes only with the setting", async ({ page }) => {
+test("Show Masternodes On shows the sidebar item and offers governance data", async ({ page }) => {
   await page.goto(fixtureUrl("funded", "light"));
   await page.getByTestId("toolbar").waitFor();
   await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
   await command(page, { kind: "navigate", route: "settings" });
-  await page.getByTestId("settings-show-masternodes").check();
+  await page.getByTestId("settings-show-masternodes-on").click();
   await expect(page.getByTestId("settings-governance-ask")).toBeVisible();
   await page.getByTestId("settings-governance-turn-on").click();
   await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();

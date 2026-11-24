@@ -20,12 +20,15 @@
 //! - [`planner`]: create-denominations / make-collaterals amounts and the
 //!   collateral transaction's change.
 //! - [`queue`]: known `dsq` queues and per-masternode queue counters.
-//! - [`client`]: one session's protocol run against a masternode.
+//! - [`client`]: one session's protocol run against a masternode: 1:1
+//!   mixing, or a post-V24 promotion (ten coins into one of the next larger
+//!   denomination) or demotion (one coin into ten of the next smaller).
+//! - [`rebalance`]: when Core promotes or demotes, and the inputs it spends.
 //! - [`recovery`]: IOS-057 "move mixed coins" chunking.
 //!
-//! Not built: post-V24 promotion/demotion entries (the client only joins
-//! standard 1:1 sessions; it signs final transactions that contain other
-//! participants' rebalance entries, as Core does).
+//! Promotion and demotion run only once the engine has seen V24 active on
+//! the chain (a version-3 provider transaction in the verified masternode
+//! list) and only with a masternode at the rebalance protocol (70241).
 
 pub mod bls;
 pub mod client;
@@ -34,6 +37,7 @@ pub mod messages;
 pub mod planner;
 pub mod progress;
 pub mod queue;
+pub mod rebalance;
 pub mod recovery;
 pub mod rounds;
 pub mod settings;

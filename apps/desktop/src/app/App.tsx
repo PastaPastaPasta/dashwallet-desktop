@@ -159,8 +159,8 @@ function WalletChrome({
 
   const masternodesItem = useMasternodesItem(wallet?.walletId ?? null);
   useEffect(() => {
-    if (route === "masternodes" && !masternodesItem.shown) navigate("home");
-  }, [route, masternodesItem.shown]);
+    if (route === "masternodes" && masternodesItem.settled && !masternodesItem.shown) navigate("home");
+  }, [route, masternodesItem.settled, masternodesItem.shown]);
 
   const walletsBlocked =
     walletsLoading ??
@@ -190,9 +190,9 @@ function WalletChrome({
     else if (route === "joinDashPay") content = <JoinDashPayPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "profile") content = <MyProfilePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "coinJoin") content = <CoinJoinPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
-    // Hidden until Show Masternodes is on (the 0.1 release plan): the effect above sends a link
-    // or a menu that opened it home; Home shows meanwhile.
-    else if (route === "masternodes" && masternodesItem.shown) content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
+    // Hidden while Show Masternodes is Off, or Auto finds nothing (MG-00 D1, D2): the effect above
+    // sends a link or a menu that opened it home. The page stays while Auto has no answer yet.
+    else if (route === "masternodes" && (masternodesItem.shown || !masternodesItem.settled)) content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
     else if (route === "masternodes") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} noWallet={walletsLoading ?? walletsError} />;
