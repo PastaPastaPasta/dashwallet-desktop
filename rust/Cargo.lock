@@ -2735,6 +2735,7 @@ dependencies = [
 name = "dw-uri"
 version = "0.3.0"
 dependencies = [
+ "bech32",
  "dashcore",
  "dw-units",
  "proptest",

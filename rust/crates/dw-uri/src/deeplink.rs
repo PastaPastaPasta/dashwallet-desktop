@@ -699,7 +699,7 @@ mod tests {
             ([0xFF; 32], false),
             ([1; 32], true),
         ] {
-            let secp = dashcore::secp256k1::SecretKey::from_secret_bytes(key).is_ok();
+            let secp = dashcore::ecdsa::EcdsaSecretKey::from_bytes(&key).is_ok();
             assert_eq!(secp, ok, "{key:?}");
             let code = format!("dash:?du=bob&dapk={}", base58(&blob_with(5, key)));
             assert_eq!(DashPayContactCode::parse(&code).is_some(), ok, "{key:?}");
