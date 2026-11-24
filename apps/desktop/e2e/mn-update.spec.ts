@@ -164,6 +164,38 @@ test("discarding an update that didn't go out frees the masternode for another c
   await expect(page.getByTestId("mn-change-review-voting")).toBeVisible();
 });
 
+test("a saved change that didn't go out: Discard, then a fresh preview, with nothing sent (#438)", async ({ page }) => {
+  const errors = await open(page, "mn-update-saved");
+  await page.getByTestId(`mn-row-${HOME}`).click();
+  await page.getByTestId("mn-change-keys").click();
+  await expect(page.getByTestId("mn-change-unsent")).toContainText("This change didn't go out");
+  await page.getByTestId("mn-change-unsent-discard").click();
+  await expect(page.getByTestId("mn-change-keys-discarded")).toContainText("Discarded. Nothing was sent.");
+  await page.getByTestId("mn-change-keys-done").click();
+  await page.getByTestId("mn-change-keys").click();
+  await page.getByTestId("mn-change-voting-keychain").click();
+  await expect(page.getByTestId("mn-change-review-voting")).toContainText("Changes");
+  const calls = await page.evaluate(() => window.__dwFixture!.calls);
+  expect(calls.filter((c) => c === "mn_update_registrar" || c === "mn_resend_operation" || c === "authorize")).toEqual([]);
+  expect(await page.evaluate(() => window.__dwFixture!.world.masternodes.operations.length)).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+for (const theme of THEMES)
+  test(`a change already sent ${theme}: the sheet says how to free the masternode (#438)`, async ({ page }) => {
+    const errors = await open(page, "mn-update-sent", theme);
+    await page.getByTestId(`mn-row-${HOME}`).click();
+    await page.getByTestId("mn-change-keys").click();
+    const error = page.getByTestId("mn-change-preview-error");
+    await expect(error).toContainText("was sent but hasn't reached the masternode list yet");
+    await expect(error).toContainText("abandon it in Activity");
+    await expect(page.getByTestId("mn-change-unsent")).toHaveCount(0);
+    await fontsReady(page);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await shot(page, "change-keys-pending-sent", theme);
+    expect(errors).toEqual([]);
+  });
+
 test("mainnet: Change keys can be reviewed, and nothing is sent", async ({ page }) => {
   const errors = await open(page, "mn-list", "light", "mainnet");
   await page.getByTestId(`mn-row-${HOME}`).click();

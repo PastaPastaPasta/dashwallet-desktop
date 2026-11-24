@@ -3,8 +3,8 @@
 
 import { describe, expect, it } from "vitest";
 import type { MasternodeDetail } from "../api/generated/MasternodeDetail";
-import type { UpdateRegistrarPreview } from "../api/generated/UpdateRegistrarPreview";
 import type { ProTxOperation } from "../api/generated/ProTxOperation";
+import type { UpdateRegistrarPreview } from "../api/generated/UpdateRegistrarPreview";
 import { buildRequest, changeKeysErrorText, changesNothing, fieldErrors, initialForm, keepsRecordedPayout, pinToPreview, reviewLines, signerLine, unsentUpdate } from "./changeKeys";
 
 const HASH = "4e".repeat(32);
@@ -81,6 +81,20 @@ describe("Change keys or payout", () => {
     expect(changeKeysErrorText(refused("bad-protx-dup-key"))).toMatch(/Another masternode already uses/);
     expect(changeKeysErrorText({ code: "send.grant_exceeded", message: "x", data: { kind: "spendCap", maxDuffs: 1, outflow: 2 } })).toMatch(/fee changed/);
     expect(changeKeysErrorText({ code: "masternodes.update_pending", message: "x", data: null })).toMatch(/hasn't reached the masternode list/);
+  });
+
+  it("tells a sent pending change, which only an abandon in Activity frees, from one never sent (#438)", () => {
+    const pending = { code: "masternodes.update_pending", message: "x", data: { kind: "operation", operation: "u1" } };
+    const op = (kind: ProTxOperation["state"]["kind"]) => [{ id: "u1", state: { kind } } as ProTxOperation];
+    const SENT =
+      "An earlier change to this masternode was sent but hasn't reached the masternode list yet. Wait for it to confirm. If it never will, because it was replaced or dropped from the network, abandon it in Activity. That frees its coins, and you can make a new change. Don't abandon a change that may still be on the network.";
+    const NEVER_SENT = "An earlier change to this masternode hasn't reached the masternode list yet. Wait for it, or discard it in In progress if it was never sent.";
+    expect(changeKeysErrorText(pending, op("sent"))).toBe(SENT);
+    expect(changeKeysErrorText(pending, op("not_sent"))).toBe(NEVER_SENT);
+    expect(changeKeysErrorText(pending, op("signed"))).toBe(NEVER_SENT);
+    // Not read yet, or another operation: the line that claims nothing about a send.
+    expect(changeKeysErrorText(pending, undefined)).toBe(NEVER_SENT);
+    expect(changeKeysErrorText({ ...pending, data: { kind: "operation", operation: "other" } }, op("sent"))).toBe(NEVER_SENT);
   });
 
   it("keeps the recorded payout only when the preview reads it as no change (Q4: false, true, null)", () => {

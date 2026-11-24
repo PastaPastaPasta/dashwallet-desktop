@@ -121,7 +121,7 @@ export function ChangeKeysSheet({
       if (!grant) return;
       finish(await b.mnUpdateRegistrar(wallet.walletId, pinToPreview(request, current), grant.id), current.payoutChanges);
     } catch (e) {
-      credential.setError(changeKeysErrorText(e));
+      credential.setError(changeKeysErrorText(e, ops.data));
       if (feeWentUp(e)) void preview.refetch();
     } finally {
       sending.current = false;
@@ -229,7 +229,7 @@ export function ChangeKeysSheet({
           <h3 className="mg-section-title">{t(`${P}.review.title`)}</h3>
           {preview.isError && request !== null && debounced === live ? (
             <p className="mg-field-error" role="alert" data-testid="mn-change-preview-error">
-              {changeKeysErrorText(preview.error)}
+              {changeKeysErrorText(preview.error, ops.data)}
             </p>
           ) : current ? (
             <>
@@ -303,6 +303,7 @@ function UnsentUpdate({
   onClose: () => void;
 }) {
   const t = useT();
+  const ops = useMasternodeOperations(wallet.walletId);
   const b = useBackend();
   const credential = useCredential(wallet.walletId, t(`${P}.notSent.ask`), null);
   const acting = useRef(false);
@@ -324,7 +325,7 @@ function UnsentUpdate({
     } catch (e) {
       // A refusal before the lease leaves the grant unused.
       if (granted) void b.revokeGrant(granted).catch(() => null);
-      credential.setError(changeKeysErrorText(e));
+      credential.setError(changeKeysErrorText(e, ops.data));
     } finally {
       acting.current = false;
       setBusy(false);

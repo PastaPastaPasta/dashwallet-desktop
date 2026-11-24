@@ -8,6 +8,7 @@ import type { MasternodePayout } from "../api/generated/MasternodePayout";
 import type { MasternodeRow } from "../api/generated/MasternodeRow";
 import type { MasternodeStatusName } from "../api/generated/MasternodeStatusName";
 import type { MasternodeTypeName } from "../api/generated/MasternodeTypeName";
+import type { ProTxOperation } from "../api/generated/ProTxOperation";
 import { creditsToDuffs } from "../api/pending";
 import { withTable } from "../dashpay/status";
 import { shortDate, shortHash, type ChipView, type NodeNames } from "../governance/model";
@@ -237,9 +238,18 @@ const ERROR_KEYS = [
 ] as const;
 const ERRORS = messageTable(`${P}.errors`, ERROR_KEYS);
 
-/** A masternodes call's error as a sentence (§3.8); unknown codes keep the engine's message. */
-export function mnErrorText(e: unknown): string {
+/** `update_pending` names the update that blocks: once it was sent, the way out is to abandon it in Activity (issue 438). */
+export function pendingWasSent(e: unknown, ops: readonly ProTxOperation[] | undefined): boolean {
+  if (!isAppError(e) || e.code !== "masternodes.update_pending" || e.data?.kind !== "operation") return false;
+  const id = e.data.operation;
+  return ops?.find((o) => o.id === id)?.state.kind === "sent";
+}
+
+/** A masternodes call's error as a sentence (§3.8); unknown codes keep the engine's message. `ops`: the wallet's
+ * operations, which tell a sent pending update from one never sent. */
+export function mnErrorText(e: unknown, ops?: readonly ProTxOperation[]): string {
   if (!isAppError(e)) return e instanceof Error ? e.message : String(e);
+  if (pendingWasSent(e, ops)) return t(`${P}.errors.update_pending_sent`);
   if (e.code === "masternodes.no_owner_key") return t(`${P}.errors.no_owner_key`);
   if (e.code === "vault.locked") return t(`${P}.errors.vault_locked`);
   const key = e.code.startsWith("masternodes.") ? e.code.slice("masternodes.".length) : null;
