@@ -120,6 +120,10 @@ export interface World {
   explorerOpened?: string[];
   /** How many times `open_releases_page` was called. */
   releasesOpened?: number;
+  /** `open_project_link` calls, in order (the fixture opens nothing). */
+  linksOpened?: string[];
+  /** `open_project_link` fails as when no browser opens. */
+  linkOpenFails?: boolean;
   /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
   protocolCompatibility?: ProtocolCompatibility;
   /** "Ask for my passphrase for every payment". The funded scenario leaves it on, so the
