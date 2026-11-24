@@ -57,8 +57,8 @@ use super::flow::signer_refusal;
 use super::send::typed;
 use super::standby::{in_history, p2pkh_address, registration_of};
 use super::store::{
-    ChainView, copy_rank, decode_outpoints, encode_outpoints, json, message_refusal, reserved_of,
-    role_name, role_of, stage_refusal,
+    ChainView, copy_rank, decode_outpoints, encode_outpoints, json, may_discard, message_refusal,
+    releasable_by_columns, reserved_of, role_name, role_of, stage_refusal,
 };
 use super::together::{TogetherView, absorb, known_mn, unsigned};
 use crate::coins::now_secs;
@@ -1290,7 +1290,7 @@ impl NetworkSession {
         wallet: WalletId,
         row: &SharedSessionRow,
     ) -> Result<(), MasternodesError> {
-        if row.out_at.is_none() {
+        if may_discard(row) {
             return Ok(());
         }
         let stage = match KeyChange::of(row.clone(), self.network.core_network()) {
@@ -1331,7 +1331,15 @@ impl NetworkSession {
             if row != listed {
                 continue;
             }
-            let Ok(k) = KeyChange::of(row, network) else {
+            let Ok(k) = KeyChange::of(row.clone(), network) else {
+                if releasable_by_columns(&row, &v.chain, &buried) {
+                    let (w, id, expected) = (wallet.to_string(), row.id, row.reserved);
+                    released |= self
+                        .appdb_op(move |db| {
+                            db.release_shared_session_locks_durable(&w, &id, &expected, now_secs())
+                        })
+                        .await?;
+                }
                 continue;
             };
             let release = match self.key_change_session(&k, &v).stage {
@@ -1464,6 +1472,13 @@ fn view(
         txid: k.row.txid.clone(),
         reserved: reserved_of(&k.row).iter().map(outpoint_string).collect(),
         next,
+        discardable: may_discard(&k.row),
+        abandonable: funder
+            && !matches!(
+                stage,
+                SharedStage::Confirmed { .. } | SharedStage::Conflicted | SharedStage::Dead { .. }
+            )
+            && (k.row.out_at.is_none() || v.chain.holds_any(&reserved_of(&k.row))),
         warnings,
         approved_terms: None,
         base_keys: Some(k.base.clone()),

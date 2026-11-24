@@ -28,6 +28,7 @@ import {
   feeMode,
   keepsPromise,
   MIXED_INPUT_WARNING,
+  MIXED_LEFT_OVER_WARNING,
   mixedSendNotes,
   unsignedKeepsPromise,
   outpointKey,
@@ -466,20 +467,31 @@ describe("mixedSendNotes (U-06b)", () => {
 
   it("warns from 10 coins, as dash-qt does", () => {
     expect(MIXED_INPUT_WARNING).toBe(10);
-    expect(mixedSendNotes("mixed", est(9))).toEqual({ inputCount: 9, manyCoins: false, leftOver: null });
-    expect(mixedSendNotes("mixed", est(10))?.manyCoins).toBe(true);
-    expect(mixedSendNotes("mixed", est(11))?.manyCoins).toBe(true);
-    expect(mixedSendNotes("mixed", est(1))?.manyCoins).toBe(false);
+    expect(mixedSendNotes("mixed", est(9), false)).toEqual({ inputCount: 9, manyCoins: false, leftOver: null, largeLeftOver: false });
+    expect(mixedSendNotes("mixed", est(10), false)?.manyCoins).toBe(true);
+    expect(mixedSendNotes("mixed", est(11), false)?.manyCoins).toBe(true);
+    expect(mixedSendNotes("mixed", est(1), false)?.manyCoins).toBe(false);
   });
 
   it("names the left-over only when there is one", () => {
-    expect(mixedSendNotes("mixed", est(2, 0))?.leftOver).toBeNull();
-    expect(mixedSendNotes("mixed", est(2, 49_999_660))?.leftOver).toBe(49_999_660);
+    expect(mixedSendNotes("mixed", est(2, 0), false)?.leftOver).toBeNull();
+    expect(mixedSendNotes("mixed", est(2, 49_999_660), false)?.leftOver).toBe(49_999_660);
+  });
+
+  it("warns about a left-over from 0.01 DASH (#668)", () => {
+    expect(MIXED_LEFT_OVER_WARNING).toBe(1_000_000);
+    expect(mixedSendNotes("mixed", est(2, 999_999), false)?.largeLeftOver).toBe(false);
+    expect(mixedSendNotes("mixed", est(2, 1_000_000), false)?.largeLeftOver).toBe(true);
+    expect(mixedSendNotes("mixed", est(2), false)?.largeLeftOver).toBe(false);
+  });
+
+  it("leaves the left-over to the note while the 10% fee warning shows", () => {
+    expect(mixedSendNotes("mixed", est(2, 1_000_000), true)).toEqual({ inputCount: 2, manyCoins: false, leftOver: 1_000_000, largeLeftOver: false });
   });
 
   it("says nothing for any other coin source", () => {
-    expect(mixedSendNotes("any", est(11, 500))).toBeNull();
-    expect(mixedSendNotes("selected", est(11, 500))).toBeNull();
+    expect(mixedSendNotes("any", est(11, 500), false)).toBeNull();
+    expect(mixedSendNotes("selected", est(11, 500), false)).toBeNull();
   });
 });
 

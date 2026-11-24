@@ -171,9 +171,13 @@ export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inpu
 }
 
 /** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`
- * refusal from the catalog. */
+ * refusal and why a `settledDescendant` one can't be abandoned from the catalog. */
 export function actionProblem(e: unknown): string {
-  return isAppError(e) && e.data?.kind === "txAction" && e.data.refusal === "rescanFirst" ? t("activity.abandon.rescanFirst") : errorMessage(e);
+  if (isAppError(e) && e.data?.kind === "txAction") {
+    if (e.data.refusal === "rescanFirst") return t("activity.abandon.rescanFirst");
+    if (e.data.refusal === "settledDescendant") return t("activity.abandon.settledChild");
+  }
+  return errorMessage(e);
 }
 
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */

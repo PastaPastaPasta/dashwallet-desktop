@@ -141,9 +141,13 @@ struct Fx {
 }
 
 fn open(engine: &Engine) -> Arc<NetworkSession> {
+    open_on(engine, DashNetwork::Regtest)
+}
+
+fn open_on(engine: &Engine, network: DashNetwork) -> Arc<NetworkSession> {
     engine
         .block_on(engine.open_network(
-            DashNetwork::Regtest,
+            network,
             crate::SessionOptions {
                 dapi_addresses: vec!["http://127.0.0.1:1".into()],
                 quorum_url: Some("http://127.0.0.1:1".into()),
@@ -170,6 +174,11 @@ fn seam_for(session: &NetworkSession, net: &Arc<Net>) -> Arc<Seam> {
 
 /// A regtest session with `n` wallets; v24 seen when `v24`.
 fn fx(n: usize, v24: bool) -> Fx {
+    fx_on(DashNetwork::Regtest, n, v24)
+}
+
+/// [`fx`] on `network`.
+fn fx_on(network: DashNetwork, n: usize, v24: bool) -> Fx {
     let dir = dw_testutil::private_tempdir();
     let config = EngineConfig {
         data_root: dir.path().join("data"),
@@ -181,7 +190,7 @@ fn fx(n: usize, v24: bool) -> Fx {
         },
     };
     let engine = Engine::new(config, Arc::new(NoEvents)).unwrap();
-    let session = open(&engine);
+    let session = open_on(&engine, network);
     engine
         .block_on(session.vault_op(|v| v.create(None)))
         .unwrap();
@@ -2543,8 +2552,10 @@ fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
     let f = fx(3, true);
     let id = three_approved(&f);
     f.imported(1, &f.message(0, &id));
+    assert!(!f.session_of(1, &id).abandonable, "not out");
     assert_stage(f.abandon(1, &id).unwrap_err(), "combined");
     f.sign(1, &id, 301 * COIN).unwrap();
+    assert!(f.session_of(1, &id).abandonable, "out, its coins held");
     let reserved = f.locked(1);
     let s = f.abandon(1, &id).unwrap();
     assert_eq!(s.stage, SharedStage::FundingSigned);
@@ -2565,6 +2576,7 @@ fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
     // refused `abandoning` (MG-10 §4.4 change 4), not at the participant's
     // out stage as before.
     f.spend(1, spend.input[0].previous_output);
+    assert!(!f.session_of(1, &id).abandonable, "no coin left to spend");
     assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
     assert_eq!(f.net.sent().len(), 1);
 
@@ -2674,6 +2686,7 @@ fn test_an_abandon_spend_is_stored_with_its_outcome() {
         super::super::protx::build::tx_size(1, &[spend.output[0].script_pubkey.len()], 0),
     );
     assert_eq!(log[0]["fee"].as_u64(), fee);
+    assert_eq!(fee, Some(crate::masternodes::shared_abandon_fee()));
     assert_eq!(log[0]["legacy"], serde_json::json!(false));
     assert!(!row.legacy_bound && !row.resend_marked);
     assert_eq!(row.last_error, None);
@@ -3527,5 +3540,440 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
                 false
             }));
         }
+    }
+}
+
+fn assert_discard_refused(f: &Fx, w: usize, id: &str) {
+    let e = f
+        .run(f.mn().discard_shared_session(f.wallets[w], id.to_string()))
+        .unwrap_err();
+    assert_eq!(code(e), "masternodes.shared_stage");
+}
+
+/// `SharedSession.discardable` (MG-10 S5) reads the rule
+/// `discard_shared_session` refuses by: true at every stage before `out_at`
+/// for the coordinator and each participant, false from the `out_at` write
+/// on, a crash between that write and the return included, with the call
+/// refusing wherever it reads false.
+#[test]
+fn test_discardable_reads_the_discard_rule_at_every_stage() {
+    let mut f = fx(3, true);
+    f.credit(0, 1, 401 * COIN);
+    f.credit(1, 2, 300 * COIN + 50_000);
+    f.credit(2, 3, 350 * COIN);
+    let inv = start(&f, 0, request(&[("A", 400), ("B", 300), ("C", 300)], FEE)).unwrap();
+    let id = inv.session.id.clone();
+    assert!(inv.session.discardable, "draft");
+    for w in [1, 2] {
+        let (s, _) = f.imported(w, &inv.message.text);
+        assert_eq!(s.stage, SharedStage::Invited);
+        assert!(s.discardable, "invited");
+        let joined = f.join(w, &id);
+        assert!(joined.session.discardable, "joined");
+        f.imported(0, &joined.message.text);
+    }
+    assert!(f.session_of(0, &id).discardable, "every row in");
+    let locked = f.lock(0, &id).unwrap();
+    assert_eq!(locked.session.stage, SharedStage::Signing);
+    assert!(locked.session.discardable, "locked");
+    for w in [1, 2] {
+        f.imported(w, &locked.message.text);
+        let approved = f.approve(w, &id).unwrap();
+        assert!(approved.session.discardable, "approved");
+        f.imported(0, &approved.message.text);
+    }
+    let combined = f.session_of(0, &id);
+    assert_eq!(combined.stage, SharedStage::Combined);
+    assert!(combined.discardable, "combined");
+    let signing_request = f.message(0, &id);
+
+    f.imported(1, &signing_request);
+    assert!(f.session_of(1, &id).discardable, "combined, unsigned");
+    let signed = f.sign(1, &id, 301 * COIN).unwrap();
+    assert_eq!(signed.session.stage, SharedStage::FundingSigned);
+    assert!(!signed.session.discardable, "signed");
+    assert_discard_refused(&f, 1, &id);
+    f.imported(0, &signed.message.text);
+    assert!(
+        f.session_of(0, &id).discardable,
+        "a coordinator holding a signature, its own inputs unsigned"
+    );
+
+    // A crash after the participant's `out_at` write, before the return.
+    f.imported(2, &signing_request);
+    *f.seam.crash.lock().unwrap() = Some(CrashPoint::SharedOut);
+    assert!(f.sign(2, &id, 301 * COIN).is_err());
+    *f.seam.crash.lock().unwrap() = None;
+    assert!(f.row(2, &id).out_at.is_some());
+    assert!(!f.session_of(2, &id).discardable, "out, never returned");
+    assert_discard_refused(&f, 2, &id);
+    f.restart();
+    assert!(!f.session_of(2, &id).discardable, "out, after a restart");
+    assert_discard_refused(&f, 2, &id);
+    let signed = f.message(2, &id);
+    f.imported(0, &signed);
+    assert!(f.session_of(0, &id).discardable, "every other input signed");
+
+    let sent = f.send(0, &id, 400 * COIN + FEE).unwrap();
+    assert!(!sent.session.discardable, "sent");
+    assert_discard_refused(&f, 0, &id);
+}
+
+/// A reserving session whose envelope no longer parses is skipped by
+/// `shared_sessions` and refused by `shared_session`, yet listed from its
+/// row by `unreadable_shared_sessions` as discardable; Discard frees its
+/// coins, durably across a restart.
+#[test]
+fn test_an_unreadable_session_is_listed_and_discard_frees_its_coins() {
+    let mut f = fx(3, true);
+    let share = f.credit(0, 1, 400 * COIN + FEE);
+    let req = || request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
+    let id = start(&f, 0, req()).unwrap().session.id;
+    assert_eq!(f.locked(0), HashSet::from([share]));
+    f.rewrite(0, &id, |u| u.envelope = "{\"not\": \"an envelope\"".into());
+    let parsed = f.run(f.mn().shared_sessions(f.wallets[0])).unwrap();
+    assert!(parsed.iter().all(|s| s.id != id));
+    assert!(
+        f.run(f.mn().shared_session(f.wallets[0], id.clone()))
+            .is_err()
+    );
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[0]))
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, id);
+    assert_eq!(listed[0].kind, crate::masternodes::SharedKind::Registration);
+    assert_eq!(listed[0].role, SharedRole::Coordinator);
+    assert!(listed[0].discardable);
+    assert_eq!(listed[0].reserved, vec![share.to_string()]);
+    f.run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
+        .unwrap();
+    assert!(f.locked(0).is_empty());
+    assert!(
+        f.run(f.mn().unreadable_shared_sessions(f.wallets[0]))
+            .unwrap()
+            .is_empty()
+    );
+    f.restart();
+    assert!(f.locked(0).is_empty(), "the unlock survives a restart");
+    start(&f, 0, req()).unwrap();
+    assert_eq!(f.locked(0), HashSet::from([share]));
+}
+
+/// An unreadable session that may be out is listed too, not discardable:
+/// Discard is refused and its coins stay locked.
+#[test]
+fn test_an_unreadable_session_that_may_be_out_is_listed_not_discardable() {
+    let f = fx(2, true);
+    let id = two_joined(&f);
+    let held = f.locked(1);
+    assert!(!held.is_empty());
+    assert!(
+        f.db()
+            .mark_shared_session_out_durable(&f.wallets[1].to_string(), &id, &[7], "tx", 1)
+            .unwrap()
+    );
+    f.rewrite(1, &id, |u| u.envelope = "{\"not\": \"an envelope\"".into());
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[1]))
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(!listed[0].discardable);
+    assert!(
+        f.run(f.mn().discard_shared_session(f.wallets[1], id.clone()))
+            .is_err()
+    );
+    assert_eq!(f.locked(1), held);
+}
+
+/// A fee raised with `set_shared_fee` re-reserves the coordinator's coins;
+/// Discard, which `discardable` allows, releases every one of them, durably:
+/// after a restart a new session selects them again.
+#[test]
+fn test_a_discard_after_a_fee_change_frees_every_fee_coin() {
+    let mut f = fx(3, true);
+    let share = f.credit(0, 1, 400 * COIN + FEE);
+    let extra = f.credit(0, 2, COIN);
+    let req = || request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
+    let inv = start(&f, 0, req()).unwrap();
+    let id = inv.session.id.clone();
+    assert_eq!(f.locked(0), HashSet::from([share]));
+    let raised = f
+        .run(f.mn().set_shared_fee(f.wallets[0], id.clone(), 2 * FEE))
+        .unwrap();
+    assert_eq!(f.locked(0), HashSet::from([share, extra]));
+    assert!(raised.session.discardable);
+    f.run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
+        .unwrap();
+    assert!(f.locked(0).is_empty());
+    f.restart();
+    assert!(f.locked(0).is_empty(), "the unlock survives a restart");
+    let mut again = req();
+    again.fee = 2 * FEE;
+    let inv = start(&f, 0, again).unwrap();
+    assert_eq!(inv.session.reserved.len(), 2);
+    assert_eq!(f.locked(0), HashSet::from([share, extra]));
+}
+
+/// F2: an unreadable registration whose funding signature went out.
+/// `abandon_shared_session` refuses it before spending (it used to spend,
+/// then fail to read the record back); `abandon_unreadable_shared_session`
+/// spends a reserved coin back to the wallet and returns its listing, and
+/// the follower releases the locks once that spend is six deep. A session
+/// that reads, and an unreadable one not out, are refused.
+#[test]
+fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let reserved = f.locked(1);
+    f.rewrite(1, &id, |u| u.envelope = "{\"not\": \"an envelope\"".into());
+    assert!(f.abandon(1, &id).is_err());
+    assert!(f.net.sent().is_empty(), "refused before any spend");
+    let fee = crate::masternodes::shared_abandon_fee();
+    let abandon = |w: usize, id: &str| {
+        f.run(f.mn().abandon_unreadable_shared_session(
+            f.wallets[w],
+            id.to_string(),
+            f.grant(w, fee),
+        ))
+    };
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[1]))
+        .unwrap();
+    assert!(listed[0].abandonable && !listed[0].discardable);
+    let after = abandon(1, &id).unwrap();
+    assert_eq!(after.id, id);
+    let sent = f.net.sent();
+    assert_eq!(sent.len(), 1);
+    let spend = sent[0].clone();
+    assert!(reserved.contains(&spend.input[0].previous_output));
+    // The wallet's record of the spend (the test network records none).
+    f.spend(1, spend.input[0].previous_output);
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[1]))
+        .unwrap();
+    assert!(!listed[0].abandonable, "no coin left to spend");
+    assert_eq!(f.locked(1), reserved, "kept until a block settles it");
+    f.mine(spend, 60);
+    f.tip(60);
+    f.follow();
+    assert_eq!(f.locked(1), reserved, "one deep: kept");
+    assert_stage(abandon(1, &id).unwrap_err(), "conflicted");
+    f.tip(64);
+    f.follow();
+    assert_eq!(f.locked(1), reserved, "five deep: kept");
+    f.tip(65);
+    f.follow();
+    assert!(f.locked(1).is_empty());
+
+    // The coordinator's own row of the session reads, and isn't out.
+    assert_eq!(code(abandon(0, &id).unwrap_err()), "invalid_argument");
+    f.rewrite(0, &id, |u| u.envelope = "{".into());
+    assert_stage(abandon(0, &id).unwrap_err(), "sent");
+    assert!(
+        !f.run(f.mn().unreadable_shared_sessions(f.wallets[0]))
+            .unwrap()[0]
+            .abandonable
+    );
+}
+
+/// A stored key-change session of wallet `w`, its message never read.
+fn key_change_row(f: &Fx, w: usize) -> String {
+    let id = "c".repeat(64);
+    let row = dw_appdb::SharedSessionRow {
+        id: id.clone(),
+        kind: super::key_change::KIND.into(),
+        role: "coordinator".into(),
+        envelope: "{}".into(),
+        my_shares: "{}".into(),
+        contribution: None,
+        reserved: "[]".into(),
+        approved_terms: None,
+        base_keys: None,
+        signed_tx: None,
+        txid: None,
+        out_at: None,
+        abandon_txid: None,
+        created_at: 1,
+        updated_at: 1,
+        last_error: None,
+        abandon_tx: None,
+        abandon_log: None,
+        legacy_bound: false,
+        resend_marked: false,
+    };
+    f.db()
+        .insert_shared_session_durable(&f.wallets[w].to_string(), &row, 1)
+        .unwrap();
+    id
+}
+
+/// A saved, signed MG-04 operation of wallet `w` and `kind`, its bytes
+/// never read.
+fn operation_row(f: &Fx, w: usize, kind: crate::masternodes::ProTxOperationKind) -> String {
+    let id = super::super::protx::ops::new_id();
+    let row = dw_appdb::MasternodeOpRow {
+        id: id.clone(),
+        kind: super::super::protx::ops::kind_name(kind).into(),
+        terms: "{}".into(),
+        request: "{}".into(),
+        unsigned_tx: None,
+        sign_address: None,
+        sign_message: None,
+        fee_inputs: String::new(),
+        signed_tx: Some(vec![0]),
+        txid: Some(Txid::from_byte_array([7; 32]).to_string()),
+        pro_tx_hash: Some(Txid::from_byte_array([7; 32]).to_string()),
+        locked_collateral: false,
+        fee: 1_000,
+        created_at: 1,
+        signed_at: Some(1),
+        sent_at: None,
+        last_error: None,
+    };
+    f.db()
+        .insert_masternode_op_durable(&f.wallets[w].to_string(), &row, &[], 1)
+        .unwrap();
+    id
+}
+
+/// #438: on mainnet the shared registration (start, fee, join, lock,
+/// approve, sign, send), the reward change (and its resend) and the key
+/// change (start, approve, send) refuse first, sending, locking and writing
+/// nothing; the exits (discard, abandon, a dissolution's resend) still
+/// run. On testnet none is refused as mainnet.
+#[test]
+fn test_QT_126_mainnet_refuses_shared_registration_and_key_change_sends() {
+    use crate::masternodes::{JoinSharedRequest, KeepOr, KeyChangeRequest, ProTxOperationKind};
+    let refusal = |r: &Result<(), MasternodesError>| {
+        matches!(r, Err(MasternodesError::Unsupported { feature, field })
+            if feature == "protx_sending" && field.as_deref() == Some("mainnet"))
+    };
+    let calls = |f: &Fx| -> Vec<(&'static str, Result<(), MasternodesError>)> {
+        let mn = f.mn();
+        let (w0, w1) = (f.wallets[0], f.wallets[1]);
+        let sid = "ab".repeat(32);
+        let kc = key_change_row(f, 0);
+        let share = operation_row(f, 0, ProTxOperationKind::UpdateShare);
+        let g = |w| f.grant(w, 500 * COIN);
+        vec![
+            (
+                "start",
+                start(
+                    f,
+                    0,
+                    request(&[("a", 900 * COIN), ("b", 100 * COIN)], 1_000),
+                )
+                .map(drop),
+            ),
+            (
+                "set fee",
+                f.run(mn.set_shared_fee(w0, sid.clone(), 2_000)).map(drop),
+            ),
+            (
+                "join",
+                f.run(mn.join_shared(
+                    w1,
+                    sid.clone(),
+                    JoinSharedRequest {
+                        share_index: None,
+                        reward: RewardChoice::Refund,
+                    },
+                ))
+                .map(drop),
+            ),
+            (
+                "lock",
+                f.run(mn.lock_shared_terms(w0, sid.clone(), 1, g(0)))
+                    .map(drop),
+            ),
+            (
+                "approve",
+                f.run(mn.approve_shared(w1, sid.clone(), "ab".repeat(32), g(1)))
+                    .map(drop),
+            ),
+            (
+                "sign",
+                f.run(mn.sign_shared_funding(w1, sid.clone(), g(1)))
+                    .map(drop),
+            ),
+            (
+                "send",
+                f.run(mn.send_shared_registration(w0, sid.clone(), g(0)))
+                    .map(drop),
+            ),
+            (
+                "update share",
+                f.run(mn.update_share(
+                    w0,
+                    UpdateShareRequest {
+                        pro_tx_hash: sid.clone(),
+                        share_index: 0,
+                        reward: RewardChoice::Refund,
+                    },
+                    g(0),
+                ))
+                .map(drop),
+            ),
+            (
+                "resend update share",
+                f.run(mn.resend_operation(w0, share, g(0))).map(drop),
+            ),
+            (
+                "start key change",
+                f.run(mn.start_key_change(
+                    w0,
+                    KeyChangeRequest {
+                        pro_tx_hash: sid.clone(),
+                        operator: KeepOr::Keep,
+                        voting: KeepOr::Keep,
+                    },
+                    g(0),
+                ))
+                .map(drop),
+            ),
+            (
+                "approve key change",
+                f.run(mn.approve_maintenance(w0, kc.clone(), g(0), false))
+                    .map(drop),
+            ),
+            (
+                "send key change",
+                f.run(mn.send_maintenance(w0, kc, g(0))).map(drop),
+            ),
+        ]
+    };
+
+    let f = fx_on(DashNetwork::Mainnet, 2, true);
+    f.credit(0, 1, 1_000 * COIN);
+    f.credit(1, 2, 200 * COIN);
+    for (call, r) in calls(&f) {
+        assert!(refusal(&r), "mainnet {call}: {r:?}");
+    }
+    assert!(f.net.sent().is_empty(), "nothing handed off");
+    assert!(
+        f.locked(0).is_empty() && f.locked(1).is_empty(),
+        "no coin locked"
+    );
+    let (w0, kc) = (f.wallets[0], "c".repeat(64));
+    let abandon = f.run(
+        f.mn()
+            .abandon_shared_session(w0, kc.clone(), f.grant(0, COIN)),
+    );
+    assert!(!refusal(&abandon.map(drop)), "abandon refused on mainnet");
+    let dissolve = operation_row(&f, 0, ProTxOperationKind::Dissolve);
+    let resend = f.run(f.mn().resend_operation(w0, dissolve, f.grant(0, COIN)));
+    assert!(
+        !refusal(&resend.map(drop)),
+        "a dissolution's resend refused on mainnet"
+    );
+    f.run(f.mn().discard_shared_session(w0, kc))
+        .expect("discard runs on mainnet");
+
+    let f = fx_on(DashNetwork::Testnet, 2, true);
+    f.credit(0, 1, 1_000 * COIN);
+    f.credit(1, 2, 200 * COIN);
+    for (call, r) in calls(&f) {
+        assert!(!refusal(&r), "testnet {call} refused as mainnet: {r:?}");
     }
 }

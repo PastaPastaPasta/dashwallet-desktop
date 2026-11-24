@@ -925,6 +925,7 @@ fn registration_params(e: &RegistrationError) -> Value {
         R::Recoverable { draft } => json!({"draft": draft}),
         R::Name(n) => name_params(n),
         R::Invitation(i) => invitation_params(i),
+        R::Credits(c) => credits_params(c),
         R::Platform(p) => platform_params(p),
     }
 }
@@ -943,6 +944,7 @@ fn contact_params(e: &ContactError) -> Value {
         | C::ScanUnverified
         | C::NoUsername => json!({}),
         C::Platform(p) => platform_params(p),
+        C::Credits(c) => credits_params(c),
     }
 }
 

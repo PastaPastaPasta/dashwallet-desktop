@@ -36,6 +36,9 @@ import type { ConsoleOutput } from "./ConsoleOutput";
 import type { ContactActivityPage } from "./ContactActivityPage";
 import type { ContactDetailInfo } from "./ContactDetailInfo";
 import type { ContactList } from "./ContactList";
+import type { ContactPayArgs } from "./ContactPayArgs";
+import type { ContactPayOutcomeInfo } from "./ContactPayOutcomeInfo";
+import type { ContactPayQuoteInfo } from "./ContactPayQuoteInfo";
 import type { ContactQueryArgs } from "./ContactQueryArgs";
 import type { ContactRecipient } from "./ContactRecipient";
 import type { ContactRequestOutcome } from "./ContactRequestOutcome";
@@ -86,6 +89,7 @@ import type { IdentityRefresh } from "./IdentityRefresh";
 import type { IdentitySummary } from "./IdentitySummary";
 import type { ImportOptions } from "./ImportOptions";
 import type { InvitationStatus } from "./InvitationStatus";
+import type { JoinSharedRequest } from "./JoinSharedRequest";
 import type { JsonValue } from "./serde_json/JsonValue";
 import type { KeyCheckName } from "./KeyCheckName";
 import type { KeyMaterialInput } from "./KeyMaterialInput";
@@ -152,6 +156,7 @@ import type { PrivateContactDetails } from "./PrivateContactDetails";
 import type { ProTxKeys } from "./ProTxKeys";
 import type { ProTxOperation } from "./ProTxOperation";
 import type { ProfileEditArgs } from "./ProfileEditArgs";
+import type { ProjectLinkName } from "./ProjectLinkName";
 import type { ProposalDetail } from "./ProposalDetail";
 import type { ProposalDraft } from "./ProposalDraft";
 import type { ProposalPreview } from "./ProposalPreview";
@@ -178,6 +183,11 @@ import type { RevealedMnemonic } from "./RevealedMnemonic";
 import type { ScannedContactInfo } from "./ScannedContactInfo";
 import type { ScreenScanMode } from "./ScreenScanMode";
 import type { SessionSettings } from "./SessionSettings";
+import type { SharedCapability } from "./SharedCapability";
+import type { SharedImport } from "./SharedImport";
+import type { SharedMessage } from "./SharedMessage";
+import type { SharedOutcome } from "./SharedOutcome";
+import type { SharedSession } from "./SharedSession";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
 import type { ShieldOutcome } from "./ShieldOutcome";
@@ -188,6 +198,7 @@ import type { ShieldedSpendOutcome } from "./ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
 import type { ShieldedStatus } from "./ShieldedStatus";
 import type { SpvStateName } from "./SpvStateName";
+import type { StartSharedRequest } from "./StartSharedRequest";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
 import type { StuckShieldFunding } from "./StuckShieldFunding";
 import type { StuckTopUpFunding } from "./StuckTopUpFunding";
@@ -207,6 +218,7 @@ import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
+import type { UnreadableSession } from "./UnreadableSession";
 import type { UntrackOutcome } from "./UntrackOutcome";
 import type { UpdateRegistrarPreview } from "./UpdateRegistrarPreview";
 import type { UpdateRegistrarRequest } from "./UpdateRegistrarRequest";
@@ -242,6 +254,9 @@ export const SHELL_EVENT = "shell://event";
 
 /** Txids per `historyChanged` or `newTransactions` event. */
 export const MAX_TXIDS = 256;
+
+/** What `mnSharedAbandon` and `mnSharedAbandonUnreadable` charge, in duffs: a `masternodeOp` grant's exact cap. */
+export const SHARED_ABANDON_FEE = 193;
 
 /**
  * How the app was launched: the self-test, the forced theme, and the
@@ -296,6 +311,14 @@ export function setUiSettings(settings: UiSettings): Promise<UiSettings> {
  */
 export function openReleasesPage(): Promise<null> {
   return invoke<null>("open_releases_page");
+}
+
+/**
+ * Opens one of the project pages About links to, in the system browser.
+ * The renderer names the page; its URL is fixed in Rust.
+ */
+export function openProjectLink(link: ProjectLinkName): Promise<null> {
+  return invoke<null>("open_project_link", { link });
 }
 
 /**
@@ -1018,7 +1041,10 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
  * and a rescan give that evidence.
  * Any transaction is refused (`instantLocked`, or `confirmed`) when
  * abandoning it would also take one the history holds as InstantSend-
- * locked (or in a block).
+ * locked (or in a block). One that is not InstantSend-locked itself is
+ * refused (`settledDescendant`) when a later transaction spending from
+ * it is InstantSend-locked, in a block or finalized, unless a ChainLocked
+ * spend of one of its inputs beat it and those are only locked (#446).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1038,8 +1064,9 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
  * wallet (every wallet when `walletId` is `null`) that Abandon would,
  * InstantSend-locked ones only under its ChainLock exception, then
  * rescans once, from the lowest funding height of them all. One the
- * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says)
- * is skipped.
+ * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
+ * or that a settled later transaction holds (`settledDescendant`), is
+ * skipped.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
@@ -2354,6 +2381,23 @@ export function resolveContactPaymentLock(walletId: string, identity: string, co
 }
 
 /**
+ * What paying `credits` to `contact` from the Shielded or Platform
+ * balance takes and pays; `core` is a send draft's.
+ */
+export function contactPayQuote(walletId: string, identity: string, contact: string, credits: string, source: PaymentSourceName): Promise<ContactPayQuoteInfo> {
+  return invoke<ContactPayQuoteInfo>("contact_pay_quote", { walletId, identity, contact, credits, source });
+}
+
+/**
+ * Pays `credits` to `contact` from the Shielded or Platform balance
+ * under `grant`, a `platformOp` grant or a `contactPayFromBalance`
+ * lease; `note` stays in this wallet.
+ */
+export function contactPay(walletId: string, identity: string, contact: string, payment: ContactPayArgs, grant: string): Promise<ContactPayOutcomeInfo> {
+  return invoke<ContactPayOutcomeInfo>("contact_pay", { walletId, identity, contact, payment, grant });
+}
+
+/**
  * The payments with `contact`, newest first; `cursor` is the previous
  * page's `nextCursor`.
  */
@@ -3003,6 +3047,152 @@ export function mnLockCollateral(walletId: string, proTxHash: string): Promise<n
 }
 
 /**
+ * What the wallet can do with shared masternodes: v24 as far as it can
+ * tell, shared evonodes (always off), and whether sending is on.
+ */
+export function mnSharedCapability(walletId: string): Promise<SharedCapability> {
+  return invoke<SharedCapability>("mn_shared_capability", { walletId });
+}
+
+/**
+ * Every shared-masternode session of the wallet, newest first.
+ */
+export function mnSharedSessions(walletId: string): Promise<Array<SharedSession>> {
+  return invoke<Array<SharedSession>>("mn_shared_sessions", { walletId });
+}
+
+/**
+ * Sessions whose stored record no longer reads, newest first: each can
+ * be discarded while nothing of it may be out.
+ */
+export function mnSharedUnreadable(walletId: string): Promise<Array<UnreadableSession>> {
+  return invoke<Array<UnreadableSession>>("mn_shared_unreadable", { walletId });
+}
+
+/**
+ * One session, its stage derived now.
+ */
+export function mnSharedSession(walletId: string, session: string): Promise<SharedSession> {
+  return invoke<SharedSession>("mn_shared_session", { walletId, session });
+}
+
+/**
+ * Starts a session as its coordinator: reserves the coordinator's share
+ * and the fee, signs nothing, and returns the Invitation.
+ */
+export function mnSharedStart(walletId: string, request: StartSharedRequest): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_start", { walletId, request });
+}
+
+/**
+ * Changes a draft's network fee before anyone replied.
+ */
+export function mnSharedSetFee(walletId: string, session: string, fee: number): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_set_fee", { walletId, session, fee });
+}
+
+/**
+ * Joins an imported Invitation: reserves exactly the share, signs
+ * nothing, and returns the reply.
+ */
+export function mnSharedJoin(walletId: string, session: string, request: JoinSharedRequest): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_join", { walletId, session, request });
+}
+
+/**
+ * The message to copy or save now.
+ */
+export function mnSharedMessage(walletId: string, session: string): Promise<SharedMessage> {
+  return invoke<SharedMessage>("mn_shared_message", { walletId, session });
+}
+
+/**
+ * Locks the terms at the `revision` the coordinator reviewed and signs
+ * its consent. Takes a `masternodeOp` grant of 0.
+ */
+export function mnSharedLock(walletId: string, session: string, revision: number, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_lock", { walletId, session, revision, grant });
+}
+
+/**
+ * Unlocks the terms; every approval is dropped.
+ */
+export function mnSharedUnlock(walletId: string, session: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_unlock", { walletId, session });
+}
+
+/**
+ * Approves the locked terms of `consent_hash`, the one the participant
+ * reviewed. Takes a `masternodeOp` grant of 0.
+ */
+export function mnSharedApprove(walletId: string, session: string, consentHash: string, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_approve", { walletId, session, consentHash, grant });
+}
+
+/**
+ * Spends one reserved coin of a session that may be out back to the
+ * wallet, so it can't confirm (`SharedSession.abandonable`). Takes a
+ * `masternodeOp` grant covering `SHARED_ABANDON_FEE`. Every network.
+ */
+export function mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
+  return invoke<SharedSession>("mn_shared_abandon", { walletId, session, grant });
+}
+
+/**
+ * The same for a session whose stored record no longer reads
+ * (`UnreadableSession.abandonable`).
+ */
+export function mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession> {
+  return invoke<UnreadableSession>("mn_shared_abandon_unreadable", { walletId, session, grant });
+}
+
+/**
+ * A participant at `combined` signs its funding inputs into the
+ * registration, charged its `debit`. Takes a `masternodeOp` grant of at
+ * least that `debit`. Refused on mainnet before the engine is called
+ * (`app.shared_send_off`).
+ */
+export function mnSharedSign(walletId: string, session: string, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_sign", { walletId, session, grant });
+}
+
+/**
+ * The coordinator signs its own inputs last and sends the registration
+ * at `combined`, or sends the saved registration again at `sent`,
+ * charged its `debit`. Takes a `masternodeOp` grant of at least that
+ * `debit`. Refused on mainnet before the engine is called
+ * (`app.shared_send_off`).
+ */
+export function mnSharedSend(walletId: string, session: string, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_send", { walletId, session, grant });
+}
+
+/**
+ * Deletes a session nothing of which may be out and releases its coins
+ * (`SharedSession.discardable`).
+ */
+export function mnSharedDiscard(walletId: string, session: string): Promise<null> {
+  return invoke<null>("mn_shared_discard", { walletId, session });
+}
+
+/**
+ * Reads a pasted message, or one standby transaction line. A refusal
+ * names its reason, never the text.
+ */
+export function mnSharedImport(walletId: string, text: string, target: string | null): Promise<SharedImport> {
+  return invoke<SharedImport>("mn_shared_import", { walletId, text, target });
+}
+
+/**
+ * Shows the open dialog and imports the chosen file: a message whole,
+ * or each transaction of a standby file once. `null` when the user
+ * cancelled. The file's text never reaches the renderer.
+ */
+export function mnSharedImportFile(walletId: string, target: string | null): Promise<Array<SharedImport> | null> {
+  return invoke<Array<SharedImport> | null>("mn_shared_import_file", { walletId, target });
+}
+
+/**
  * The settings and the chosen currency's price and state now.
  */
 export function ratesStatus(): Promise<RatesView> {
@@ -3156,6 +3346,7 @@ export type CommandArgs = {
   ui_settings: {  };
   set_ui_settings: { settings: UiSettings };
   open_releases_page: {  };
+  open_project_link: { link: ProjectLinkName };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   switch_network: { network: ChosenNetwork };
@@ -3407,6 +3598,8 @@ export type CommandArgs = {
   dashpay_verify_scanned: { walletId: string; text: string };
   contact_payment_lock: { walletId: string; identity: string; contact: string };
   resolve_contact_payment_lock: { walletId: string; identity: string; contact: string };
+  contact_pay_quote: { walletId: string; identity: string; contact: string; credits: string; source: PaymentSourceName };
+  contact_pay: { walletId: string; identity: string; contact: string; payment: ContactPayArgs; grant: string };
   contact_activity: { walletId: string; identity: string; contact: string; cursor: string | null; filter: ActivityFilterName };
   frequent_contacts: { walletId: string; identity: string; limit: number };
   dashpay_events: { walletId: string; identity: string; cursor: number | null; limit: number };
@@ -3485,6 +3678,24 @@ export type CommandArgs = {
   mn_submit_external_registration: { walletId: string; operation: string; signature: string; grant: string };
   mn_release_collateral: { walletId: string; proTxHash: string };
   mn_lock_collateral: { walletId: string; proTxHash: string };
+  mn_shared_capability: { walletId: string };
+  mn_shared_sessions: { walletId: string };
+  mn_shared_unreadable: { walletId: string };
+  mn_shared_session: { walletId: string; session: string };
+  mn_shared_start: { walletId: string; request: StartSharedRequest };
+  mn_shared_set_fee: { walletId: string; session: string; fee: number };
+  mn_shared_join: { walletId: string; session: string; request: JoinSharedRequest };
+  mn_shared_message: { walletId: string; session: string };
+  mn_shared_lock: { walletId: string; session: string; revision: number; grant: string };
+  mn_shared_unlock: { walletId: string; session: string };
+  mn_shared_approve: { walletId: string; session: string; consentHash: string; grant: string };
+  mn_shared_abandon: { walletId: string; session: string; grant: string };
+  mn_shared_abandon_unreadable: { walletId: string; session: string; grant: string };
+  mn_shared_sign: { walletId: string; session: string; grant: string };
+  mn_shared_send: { walletId: string; session: string; grant: string };
+  mn_shared_discard: { walletId: string; session: string };
+  mn_shared_import: { walletId: string; text: string; target: string | null };
+  mn_shared_import_file: { walletId: string; target: string | null };
   rates_status: {  };
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
@@ -3510,6 +3721,7 @@ export type CommandResults = {
   ui_settings: UiSettings;
   set_ui_settings: UiSettings;
   open_releases_page: null;
+  open_project_link: null;
   probe_unlisted: string;
   open_network: OpenedNetwork;
   switch_network: NetworkSwitch;
@@ -3761,6 +3973,8 @@ export type CommandResults = {
   dashpay_verify_scanned: ScannedContactInfo;
   contact_payment_lock: PaymentLockInfo | null;
   resolve_contact_payment_lock: LockResolutionName;
+  contact_pay_quote: ContactPayQuoteInfo;
+  contact_pay: ContactPayOutcomeInfo;
   contact_activity: ContactActivityPage;
   frequent_contacts: Array<ContactSummaryInfo>;
   dashpay_events: DashPayEventPage;
@@ -3839,6 +4053,24 @@ export type CommandResults = {
   mn_submit_external_registration: ProTxOperation;
   mn_release_collateral: null;
   mn_lock_collateral: null;
+  mn_shared_capability: SharedCapability;
+  mn_shared_sessions: Array<SharedSession>;
+  mn_shared_unreadable: Array<UnreadableSession>;
+  mn_shared_session: SharedSession;
+  mn_shared_start: SharedOutcome;
+  mn_shared_set_fee: SharedOutcome;
+  mn_shared_join: SharedOutcome;
+  mn_shared_message: SharedMessage;
+  mn_shared_lock: SharedOutcome;
+  mn_shared_unlock: SharedOutcome;
+  mn_shared_approve: SharedOutcome;
+  mn_shared_abandon: SharedSession;
+  mn_shared_abandon_unreadable: UnreadableSession;
+  mn_shared_sign: SharedOutcome;
+  mn_shared_send: SharedOutcome;
+  mn_shared_discard: null;
+  mn_shared_import: SharedImport;
+  mn_shared_import_file: Array<SharedImport> | null;
   rates_status: RatesView;
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
@@ -3866,6 +4098,7 @@ export const COMMANDS: Record<CommandName, string> = {
   ui_settings: "app",
   set_ui_settings: "app",
   open_releases_page: "app",
+  open_project_link: "app",
   probe_unlisted: "app",
   open_network: "network",
   switch_network: "network",
@@ -4117,6 +4350,8 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_verify_scanned: "social",
   contact_payment_lock: "social",
   resolve_contact_payment_lock: "social",
+  contact_pay_quote: "social",
+  contact_pay: "social",
   contact_activity: "social",
   frequent_contacts: "social",
   dashpay_events: "social",
@@ -4195,6 +4430,24 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_submit_external_registration: "masternodes",
   mn_release_collateral: "masternodes",
   mn_lock_collateral: "masternodes",
+  mn_shared_capability: "masternodes",
+  mn_shared_sessions: "masternodes",
+  mn_shared_unreadable: "masternodes",
+  mn_shared_session: "masternodes",
+  mn_shared_start: "masternodes",
+  mn_shared_set_fee: "masternodes",
+  mn_shared_join: "masternodes",
+  mn_shared_message: "masternodes",
+  mn_shared_lock: "masternodes",
+  mn_shared_unlock: "masternodes",
+  mn_shared_approve: "masternodes",
+  mn_shared_abandon: "masternodes",
+  mn_shared_abandon_unreadable: "masternodes",
+  mn_shared_sign: "masternodes",
+  mn_shared_send: "masternodes",
+  mn_shared_discard: "masternodes",
+  mn_shared_import: "masternodes",
+  mn_shared_import_file: "masternodes",
   rates_status: "rates",
   rates_currencies: "rates",
   set_rates_settings: "rates",
@@ -4245,6 +4498,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.update_install",
   "app.update_state",
   "app.update_busy",
+  "app.shared_send_off",
+  "app.shared_send_unsupported",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

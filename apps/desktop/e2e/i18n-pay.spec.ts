@@ -129,7 +129,7 @@ const STATES: State[] = [
     },
   },
   {
-    // U-06b: twelve fully mixed coins, of which paying 1.05 spends eleven, so the confirm sheet shows the count, the warning and the left-over.
+    // U-06b: twelve fully mixed coins, of which paying 1.05 spends eleven, so the confirm sheet shows the count, the warning and the 0.05 left-over warning.
     name: "pay-confirm-mixed",
     roots: ["pay-confirm"],
     data: ADDRESSES,
@@ -149,7 +149,7 @@ const STATES: State[] = [
       await page.getByTestId("pay-fee-line").waitFor();
       await confirm(page);
       await expect(page.getByTestId("pay-confirm-mixed-warning")).toBeVisible();
-      await expect(page.getByTestId("pay-confirm-mixed-change")).toBeVisible();
+      await expect(page.getByTestId("pay-confirm-mixed-left-over")).toBeVisible();
     },
   },
   {

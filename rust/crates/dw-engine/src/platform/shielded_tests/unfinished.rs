@@ -11,7 +11,7 @@ use crate::platform::lease::FlowOutcome;
 use crate::platform::unfinished_conformance::{self as conformance, End, Rig};
 use crate::platform::unfinished_locks::{
     self as locks, KindLock, LockFinish, LockKind, LockKindId, LockOrigin, Mark, Marks, Minimum,
-    UnfinishedLock, UnfinishedState,
+    SpentRead, UnfinishedLock, UnfinishedState,
 };
 use crate::platform::unfinished_shields::ShieldLocks;
 
@@ -464,7 +464,7 @@ impl Rig for ShieldRig {
             match mark {
                 Mark::Settled => lib.settle(txid).await.unwrap(),
                 Mark::Unknown => lib.mark_unknown(txid).await,
-                Mark::Reported => unreachable!("no record by txid of a report"),
+                Mark::Used => unreachable!("no record by txid of a proved use"),
             }
         });
     }
@@ -537,6 +537,10 @@ impl Rig for ShieldRig {
     /// The conformance run's locks are restored ones.
     fn reports_used(&self) -> bool {
         true
+    }
+
+    fn prove_spent(&self, outpoint: OutPoint, read: SpentRead) {
+        self.lib.spent_reads.lock().unwrap().insert(outpoint, read);
     }
 }
 
@@ -918,9 +922,13 @@ fn finish_transfers_runs_each_lock_once_and_reports_the_kind() {
         locks: vec![unproved.clone(), applied.clone(), used.clone()],
         ..FakeShielded::default()
     });
-    // In txid order: the first apply hears "already consumed", the second
-    // is proved.
+    // In txid order: the first apply hears "already consumed", which
+    // Platform's proof confirms, the second is proved.
     lib.consumed.store(true, Ordering::SeqCst);
+    lib.spent_reads
+        .lock()
+        .unwrap()
+        .insert(used.outpoint, SpentRead::Consumed);
     answer(&lib, Ok(Applied::Done));
     let before = funding_counts(&lib);
     let (wallet, grant) = (fx.wallet, shield_grant(&fx, 1));
@@ -1145,8 +1153,9 @@ fn the_real_persister_cannot_record_a_consumed_report() {
 
 /// F2: a restored lock, `RecoveredFromChain` with its proof, that Platform
 /// answers "already consumed" for, the library unable to record the answer
-/// at the real persister: finished elsewhere, off the list and the card,
-/// settled nowhere, and so after a restart, with no second apply.
+/// at the real persister, and Platform's proved state says consumed:
+/// finished elsewhere, off the list and the card, settled nowhere, and so
+/// after a restart, with no second apply.
 #[test]
 fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
     let mut fx = Fixture::new(0);
@@ -1156,6 +1165,7 @@ fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
         ..FakeShielded::default()
     });
     (lib.lib_errors.lock().unwrap()).push_back(conformance::unrecorded_consumed(&fx.s));
+    (lib.spent_reads.lock().unwrap()).insert(restored.outpoint, SpentRead::Consumed);
     let (finished, begun) = finish(&fx, &lib, restored.outpoint);
     assert!(begun);
     assert_eq!(finished.unwrap(), LockFinish::ReportedUsed);
@@ -1171,7 +1181,8 @@ fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
 }
 
 /// F2's "Finish all": both restored locks answered "already consumed",
-/// unrecorded by the library, count as already used, none pending.
+/// unrecorded by the library and proved consumed, count as already used,
+/// none pending.
 #[test]
 fn finish_transfers_counts_restored_locks_platform_reports_used() {
     let fx = Fixture::new(0);
@@ -1180,11 +1191,15 @@ fn finish_transfers_counts_restored_locks_platform_reports_used() {
         lock(2, LockStatus::RecoveredFromChain),
     );
     let lib = Arc::new(FakeShielded {
-        locks: vec![a, b],
+        locks: vec![a.clone(), b.clone()],
         ..FakeShielded::default()
     });
-    for _ in 0..2 {
+    for at in [a.outpoint, b.outpoint] {
         (lib.lib_errors.lock().unwrap()).push_back(conformance::unrecorded_consumed(&fx.s));
+        lib.spent_reads
+            .lock()
+            .unwrap()
+            .insert(at, SpentRead::Consumed);
     }
     assert_eq!(
         finish_transfers(&fx, &lib),
@@ -1244,4 +1259,39 @@ fn only_the_outpoints_own_answer_finishes_a_restored_lock() {
         ]
     );
     assert!(lib.settles.lock().unwrap().is_empty());
+}
+
+/// BL-921: an earlier version kept Platform's unproved "already consumed"
+/// as `recovery.shield.reported.<outpoint>`. That record no longer hides
+/// the lock: it lists again, and leaves the card only once Platform's
+/// proof says it is consumed (the apply signing, as a real one does).
+#[test]
+fn an_earlier_versions_unproved_report_no_longer_hides_a_shield_lock() {
+    let rig = ShieldRig::new();
+    let tx = conformance::transaction(0xB1, 1, 1_000_000, &rig.script);
+    let row = conformance::tracked(
+        &tx,
+        0,
+        AssetLockFundingType::AssetLockShieldedAddressTopUp,
+        AssetLockStatus::RecoveredFromChain,
+        true,
+    );
+    let at = row.out_point;
+    rig.track(vec![row]);
+    let appdb = rig.fx.s.live().unwrap().appdb;
+    let scope = dw_appdb::local_scope(&rig.fx.wallet.to_string());
+    let key = format!("recovery.shield.reported.{at}");
+    appdb.set_setting_durable(&scope, &key, Some("1")).unwrap();
+    let listed = rig.list().unwrap();
+    assert_eq!(listed.len(), 1, "listed again: {listed:?}");
+    assert_eq!(
+        listed[0].state,
+        UnfinishedState::Checking,
+        "a restored lock"
+    );
+
+    rig.prove_spent(at, SpentRead::Consumed);
+    rig.next(End::AlreadyConsumed);
+    assert_eq!(rig.finish(at).0.unwrap(), LockFinish::ReportedUsed);
+    assert!(rig.list().unwrap().is_empty(), "off the card once proved");
 }

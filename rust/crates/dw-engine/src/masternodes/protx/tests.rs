@@ -143,9 +143,13 @@ fn config(dir: &tempfile::TempDir, store: Arc<MemoryOsStore>) -> EngineConfig {
 }
 
 fn open(engine: &Engine) -> Arc<NetworkSession> {
+    open_on(engine, DashNetwork::Regtest)
+}
+
+fn open_on(engine: &Engine, network: DashNetwork) -> Arc<NetworkSession> {
     engine
         .block_on(engine.open_network(
-            DashNetwork::Regtest,
+            network,
             crate::SessionOptions {
                 dapi_addresses: vec!["http://127.0.0.1:1".into()],
                 quorum_url: Some("http://127.0.0.1:1".into()),
@@ -177,10 +181,14 @@ impl crate::events::EventSink for NoEvents {
 }
 
 fn fx(mode: Library) -> Fx {
+    fx_on(DashNetwork::Regtest, mode)
+}
+
+fn fx_on(network: DashNetwork, mode: Library) -> Fx {
     let dir = dw_testutil::private_tempdir();
     let store = Arc::new(MemoryOsStore::new());
     let engine = Engine::new(config(&dir, store), Arc::new(NoEvents)).unwrap();
-    let session = open(&engine);
+    let session = open_on(&engine, network);
     engine
         .block_on(session.vault_op(|v| v.create(None)))
         .unwrap();
@@ -5208,4 +5216,130 @@ fn the_collateral_follower_of_a_wallet_gone_from_the_manager_does_not_panic() {
             .contains(&f.wallet),
         "a step that failed with wallet_not_found is not re-armed"
     );
+}
+
+/// A saved, signed row of `kind` for a resend, its bytes never read.
+fn saved_row(f: &Fx, kind: ProTxOperationKind) -> String {
+    let id = super::ops::new_id();
+    let row = dw_appdb::MasternodeOpRow {
+        id: id.clone(),
+        kind: super::ops::kind_name(kind).into(),
+        terms: "{}".into(),
+        request: "{}".into(),
+        unsigned_tx: None,
+        sign_address: None,
+        sign_message: None,
+        fee_inputs: String::new(),
+        signed_tx: Some(vec![0]),
+        txid: Some(Txid::from_byte_array([7; 32]).to_string()),
+        pro_tx_hash: Some(Txid::from_byte_array([7; 32]).to_string()),
+        locked_collateral: false,
+        fee: 1_000,
+        created_at: 1,
+        signed_at: Some(1),
+        sent_at: None,
+        last_error: None,
+    };
+    f.db()
+        .insert_masternode_op_durable(&f.wallet.to_string(), &row, &[], 1)
+        .unwrap();
+    id
+}
+
+/// #438: on mainnet every call that sends a ProRegTx or ProUpRegTx, or
+/// locks a coin or takes a grant for one, refuses first: no row, no lock,
+/// and the grant is left. Previews and discards still run there. On
+/// testnet the same calls pass the check.
+#[test]
+fn mainnet_refuses_masternode_registration_and_update_sends_first() {
+    let refusal = |e: &MasternodesError| {
+        matches!(e, MasternodesError::Unsupported { feature, field }
+            if feature == "protx_sending" && field.as_deref() == Some("mainnet"))
+    };
+    type Outcome = Result<ProTxOperation, MasternodesError>;
+    let calls = |f: &Fx, grant: &str| -> Vec<(&'static str, Outcome)> {
+        let mn = f.mn();
+        let w = f.wallet;
+        let reg = saved_row(f, ProTxOperationKind::Registration);
+        let upd = saved_row(f, ProTxOperationKind::UpdateRegistrar);
+        vec![
+            (
+                "register",
+                f.register(request(CollateralChoice::FundNew), grant.into()),
+            ),
+            (
+                "prepare_external_registration",
+                f.engine.block_on(mn.prepare_external_registration(
+                    w,
+                    request(CollateralChoice::External {
+                        outpoint: format!("{}:0", Txid::from_byte_array([3; 32])),
+                        address: String::new(),
+                    }),
+                )),
+            ),
+            (
+                "submit_external_registration",
+                f.engine.block_on(mn.submit_external_registration(
+                    w,
+                    "missing".into(),
+                    String::new(),
+                    grant.into(),
+                )),
+            ),
+            (
+                "refresh_external_registration",
+                f.engine
+                    .block_on(mn.refresh_external_registration(w, "missing".into())),
+            ),
+            (
+                "update_registrar",
+                f.engine.block_on(mn.update_registrar(
+                    w,
+                    keep(&Txid::from_byte_array([7; 32]).to_string()),
+                    grant.into(),
+                )),
+            ),
+            (
+                "resend registration",
+                f.engine.block_on(mn.resend_operation(w, reg, grant.into())),
+            ),
+            (
+                "resend update",
+                f.engine.block_on(mn.resend_operation(w, upd, grant.into())),
+            ),
+        ]
+    };
+
+    let f = fx_on(DashNetwork::Mainnet, Library::Accept);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let grant = f.grant(COIN);
+    for (call, r) in calls(&f, &grant) {
+        assert!(r.as_ref().is_err_and(refusal), "mainnet {call}: {r:?}");
+    }
+    assert!(f.lib.sent().is_empty(), "nothing handed off");
+    assert!(f.locked().is_empty(), "no coin locked");
+    assert_eq!(f.rows().len(), 2, "only the two saved rows");
+    f.session
+        .vault()
+        .check_grant(&grant, dw_vault::GrantKind::MasternodeOp, Some(&f.wallet.0))
+        .expect("the grant is left");
+    let first = f.rows()[0].id.clone();
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, first))
+        .expect("discard runs on mainnet");
+    assert_eq!(f.rows().len(), 1);
+
+    let f = fx_on(DashNetwork::Testnet, Library::Accept);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let grant = f.grant(COIN);
+    let results = calls(&f, &grant);
+    for (call, r) in &results {
+        assert!(
+            !r.as_ref().is_err_and(refusal),
+            "testnet {call} refused as mainnet: {r:?}"
+        );
+    }
+    let registered = results[0].1.as_ref().expect("testnet registers");
+    assert_eq!(registered.state, ProTxOperationState::Sent);
+    assert_eq!(f.lib.sent().len(), 1, "the registration was handed off");
 }
