@@ -100,7 +100,7 @@ export function useBalancePay({
   shown: Shown;
   /** Why the chosen source cannot pay now: Review waits with it, and nothing is quoted. */
   blocked: string | null;
-  /** What the quote depends on besides the amount (the balance, the transfers that hold it): a
+  /** What the quote depends on besides the amount (the balance, each read of Platform activity): a
    * change reads a new quote for the form. An open confirmation keeps the quote it showed. */
   basis: string;
 }) {

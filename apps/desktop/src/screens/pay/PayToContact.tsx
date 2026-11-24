@@ -30,7 +30,6 @@ import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { BalanceAmount, BalancePaySheet, FromStep, useBalancePay } from "./PayFromBalance";
 import { chosenReason, fromRows, liveSources, type PaySource } from "./fromBalance";
-import { isHeldOp } from "../../platform/move";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
@@ -372,7 +371,7 @@ function ContactForm({
   // The choice stays the user's: a source that can no longer pay holds Review with its reason.
   const source = chosen;
   const activity = usePlatformActivity(walletId);
-  const basis = `${pools.platform}|${(activity.data ?? []).filter(isHeldOp).map((a) => a.id).join(",")}`;
+  const basis = `${pools.platform}|${activity.dataUpdatedAt}`;
   const balance = useBalancePay({ walletId, identity, contact, source, duffs, settled: amount.settled && !amount.fiat.error, shown, blocked: chosenReason(rows, chosen), basis });
   // A payment whose reply was lost holds the contact until a later read settles it (P6).
   const [lostFound, setLostFound] = useState<{ text: string; resolved: boolean } | null>(null);
