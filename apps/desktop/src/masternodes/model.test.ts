@@ -210,7 +210,7 @@ describe("track and keys (MG-10 §1.3, §1.4; MG-00 D13 amended for 1.0)", () =>
     expect([canAttach("unlocked"), canAttach("unencrypted"), canAttach("locked"), canAttach("unlockedMixingOnly")]).toEqual([true, true, false, false]);
   });
 
-  it("says Stop tracking deletes the added keys from every wallet here, and that a name is shared", () => {
+  it("says Stop tracking deletes the added keys from every wallet here, and that a name (tracked or renamed) is shared", () => {
     expect(t("masternodes.myMasternodes.untrack.keys", { count: 1 })).toBe(
       "The key you added for it is deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need it again.",
     );
@@ -220,6 +220,8 @@ describe("track and keys (MG-10 §1.3, §1.4; MG-00 D13 amended for 1.0)", () =>
     // A tracked masternode's name is the tracked registry's (tracking.rs `set_label`), which every wallet on
     // this network reads, not this wallet's alone.
     expect(t("masternodes.myMasternodes.track.labelHelp")).toBe("Only Dash Wallet on this computer sees it.");
+    // Rename too: an own masternode's name is in app.sqlite's global settings (follow.rs `set_label`), shared alike.
+    expect(t("masternodes.myMasternodes.renameHelp")).toBe("Only Dash Wallet on this computer sees it. Leave it empty for the default name.");
   });
 
   it("keeps only the latest search current, so an earlier query's answer never shows under a later one", () => {

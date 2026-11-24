@@ -458,7 +458,8 @@ export const masternodes = {
     rename: "Rename…",
     renameTitle: "Rename masternode",
     renameName: "Name",
-    renameHelp: "Only this wallet sees it. Leave it empty for the default name.",
+    /** A masternode's name is kept for every wallet on this network (app.sqlite's global settings, or the tracked registry). */
+    renameHelp: "Only Dash Wallet on this computer sees it. Leave it empty for the default name.",
     cancel: "Cancel",
     save: "Save",
     copyHash: "Copy ProTx hash",
