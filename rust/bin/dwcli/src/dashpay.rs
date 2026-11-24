@@ -2833,6 +2833,10 @@ mod tests {
             NOT_IDENTIFIER,
         ),
         ("identity withdrawals --identity I", NOT_IDENTIFIER),
+        (
+            "identity top-up-from-platform --identity I --credits 5 --quote-only",
+            NOT_IDENTIFIER,
+        ),
         ("identity top-up-stuck", r#"{"ok":true,"result":[]}"#),
         (
             "identity top-up-resume abababababababababababababababababababababababababababababababab",

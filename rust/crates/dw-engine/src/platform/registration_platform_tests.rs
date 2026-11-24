@@ -177,10 +177,9 @@ fn an_address_at_the_last_nonce_is_not_planned() {
 
 /// A reserve for two inputs leaves the first address out (it holds less);
 /// the next is input 0, and the last input's claim below the input minimum
-/// borrows the shortfall from input 0's claim: the identity receives
-/// exactly the funding.
+/// is raised to it, so the identity receives the claims' sum.
 #[test]
-fn a_short_last_claim_borrows_from_the_one_before() {
+fn a_last_claim_raised_to_the_input_minimum_is_funded() {
     let funding = 25_000_000;
     let min_input = version()
         .dpp
@@ -200,12 +199,12 @@ fn a_short_last_claim_borrows_from_the_one_before() {
     assert_eq!(
         p.inputs,
         [
-            (address(2), (3, funding - min_input)),
+            (address(2), (3, funding - short)),
             (address(3), (4, min_input))
         ]
         .into()
     );
-    assert_eq!(p.funding_credits, funding);
+    assert_eq!(p.funding_credits, funding - short + min_input);
     assert_eq!(p.fee_reserve_credits, reserve(2));
     assert_eq!(p.fee_credits, register_fee(version(), 2, KEYS));
 }

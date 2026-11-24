@@ -120,6 +120,7 @@ fn crowd(winner: Option<PollWinner>, at_ms: u64, n: u8, with_me: bool) -> Poll {
         contenders,
         lock_votes: Some(0),
         abstain_votes: Some(0),
+        labels: BTreeMap::new(),
     }
 }
 
@@ -137,6 +138,7 @@ pub(super) fn poll(winner: Option<PollWinner>, at_ms: u64, contenders: &[u8]) ->
             .collect(),
         lock_votes: Some(1),
         abstain_votes: Some(0),
+        labels: BTreeMap::new(),
     }
 }
 
@@ -1049,8 +1051,13 @@ fn t2_testnet_polls_give_won_lost_and_locked() {
     let mut labels: Vec<String> = TESTNET_LABELS.iter().map(|l| l.to_string()).collect();
     labels.extend(ends.keys().cloned());
     let mut seen = BTreeMap::<&str, Vec<String>>::new();
+    let mut named = 0;
     for label in &labels {
         let poll = engine.block_on(net.page(label, POLL_PAGE)).unwrap();
+        eprintln!("  names: {:?}", poll.labels);
+        if ends.contains_key(label) {
+            named += poll.labels.len();
+        }
         eprintln!(
             "{label}: winner {:?}, {} contenders, lock {:?}, abstain {:?}",
             poll.winner,
@@ -1081,8 +1088,148 @@ fn t2_testnet_polls_give_won_lost_and_locked() {
         }
     }
     eprintln!("seen: {seen:?}");
+    if !ends.is_empty() {
+        assert!(named > 0, "no open poll's contender was named (MG-11 F1)");
+    }
     for kind in ["won", "lost", "locked"] {
         assert!(seen.contains_key(kind), "no {kind} poll among {labels:?}");
     }
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A DPNS `domain` document for `label` owned by `owner`, as Drive
+/// serializes it on a vote-state page.
+fn domain_document(owner: Identifier, label: &str) -> Vec<u8> {
+    use dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
+    use dpp::document::{Document, DocumentV0};
+    use dpp::platform_value::Value;
+    use dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+    use dpp::util::strings::convert_to_homograph_safe_chars;
+    use dpp::version::PlatformVersion;
+    let pv = PlatformVersion::latest();
+    let contract = load_system_data_contract(SystemDataContract::DPNS, pv).unwrap();
+    let domain = contract.document_type_for_name("domain").unwrap();
+    let text = |s: &str| Value::Text(s.to_owned());
+    let doc: Document = DocumentV0 {
+        id: Identifier::from([0x5d; 32]),
+        owner_id: owner,
+        properties: BTreeMap::from([
+            ("label".to_owned(), text(label)),
+            (
+                "normalizedLabel".to_owned(),
+                text(&convert_to_homograph_safe_chars(label)),
+            ),
+            ("parentDomainName".to_owned(), text("dash")),
+            ("normalizedParentDomainName".to_owned(), text("dash")),
+            ("preorderSalt".to_owned(), Value::Bytes32([7; 32])),
+            (
+                "records".to_owned(),
+                Value::Map(vec![(
+                    text("identity"),
+                    Value::Identifier(owner.to_buffer()),
+                )]),
+            ),
+            (
+                "subdomainRules".to_owned(),
+                Value::Map(vec![(text("allowSubdomains"), Value::Bool(false))]),
+            ),
+        ]),
+        revision: Some(1),
+        created_at: Some(1_700_000_000_000),
+        updated_at: Some(1_700_000_000_000),
+        transferred_at: Some(1_700_000_000_000),
+        ..DocumentV0::default()
+    }
+    .into();
+    doc.serialize(domain, &contract, pv).unwrap()
+}
+
+/// Contender `n` with one vote and `document`, as a vote-state page holds it.
+fn contender(
+    n: u8,
+    document: Option<Vec<u8>>,
+) -> (
+    Identifier,
+    dpp::voting::contender_structs::ContenderWithSerializedDocument,
+) {
+    use dpp::voting::contender_structs::{
+        ContenderWithSerializedDocument, ContenderWithSerializedDocumentV0,
+    };
+    (
+        id(n),
+        ContenderWithSerializedDocument::V0(ContenderWithSerializedDocumentV0 {
+            identity_id: id(n),
+            serialized_document: document,
+            vote_tally: Some(1),
+        }),
+    )
+}
+
+/// A contender's name is its own document's `label` (MG-11 F1): one with
+/// no document, a document that doesn't decode, or a label that doesn't
+/// fold to the poll's has none.
+#[test]
+fn contenders_are_named_by_their_own_documents() {
+    use dash_sdk::query_types::Contenders;
+    use dpp::version::PlatformVersion;
+    let state = Contenders {
+        winner: None,
+        contenders: BTreeMap::from([
+            contender(1, Some(domain_document(id(1), "Alice"))),
+            contender(2, Some(domain_document(id(2), "a11ce"))),
+            contender(3, None),
+            contender(4, Some(vec![0, 1, 2, 3])),
+            contender(5, Some(domain_document(id(5), "bob"))),
+        ]),
+        abstain_vote_tally: None,
+        lock_vote_tally: None,
+    };
+    let labels = contender_labels(&state, "a11ce", PlatformVersion::latest());
+    assert_eq!(
+        labels,
+        BTreeMap::from([(id(1), "Alice".to_owned()), (id(2), "a11ce".to_owned())])
+    );
+}
+
+/// A poll read through the trusted-service fallback (some quorum key not
+/// SPV-verified, H-09) keeps its contenders, tallies and winner, and names
+/// no one: a name is a name-to-identity binding the wallet can't vouch for.
+#[test]
+fn a_poll_read_through_the_trusted_fallback_names_no_one() {
+    use dash_sdk::query_types::Contenders;
+    use dpp::version::PlatformVersion;
+    let state = Contenders {
+        winner: None,
+        contenders: BTreeMap::from([
+            contender(1, Some(domain_document(id(1), "Alice"))),
+            contender(2, Some(domain_document(id(2), "A11ce"))),
+        ]),
+        abstain_vote_tally: Some(2),
+        lock_vote_tally: Some(3),
+    };
+    let pv = PlatformVersion::latest();
+    let fallback = Poll::read(state.clone(), "a11ce", pv, false);
+    assert!(fallback.labels.is_empty());
+    assert_eq!(
+        fallback.contenders,
+        vec![(id(1), Some(1)), (id(2), Some(1))]
+    );
+    assert_eq!(
+        (fallback.lock_votes, fallback.abstain_votes),
+        (Some(3), Some(2))
+    );
+    assert_eq!(fallback.winner, None);
+    let verified = Poll::read(state, "a11ce", pv, true);
+    assert_eq!(
+        verified.labels,
+        BTreeMap::from([(id(1), "Alice".to_owned()), (id(2), "A11ce".to_owned())])
+    );
+    assert_eq!(
+        Poll {
+            labels: BTreeMap::new(),
+            ..verified
+        },
+        fallback
+    );
 }

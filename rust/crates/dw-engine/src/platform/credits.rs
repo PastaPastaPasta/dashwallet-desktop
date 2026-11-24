@@ -234,9 +234,9 @@ pub struct TopUpFromPlatformQuote {
     /// Platform meters the fee at execution and takes it from input 0's
     /// remainder, with no cap.
     pub fee_credits: u64,
-    /// `credits` plus what input 0 keeps for the fee (three times the
-    /// estimate): the planned debit, the grant's cap; not what the copy
-    /// shows.
+    /// `credits` plus all that input 0 keeps (at least three times the
+    /// estimate), which the fee can take: the most it debits, the grant's
+    /// cap; not what the copy shows.
     pub debit_credits: u64,
     /// Each address (bech32m) with its claim, input 0 (the fee source)
     /// first, in `PlatformAddress` order.

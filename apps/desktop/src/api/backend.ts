@@ -204,6 +204,7 @@ import type { PublishStateName } from "./generated/PublishStateName";
 import type { FoundIdentity } from "./generated/FoundIdentity";
 import type { IdentityDetail } from "./generated/IdentityDetail";
 import type { IdentityRefresh } from "./generated/IdentityRefresh";
+import type { ProjectLinkName } from "./generated/ProjectLinkName";
 import type { ProtocolCompatibility } from "./generated/ProtocolCompatibility";
 import type { RecentNotice } from "./generated/RecentNotice";
 
@@ -326,6 +327,8 @@ export interface Backend {
   openTxInExplorer(txid: string): Promise<null>;
   /** Opens the GitHub releases page in the system browser. */
   openReleasesPage(): Promise<null>;
+  /** Opens a project page from Settings ▸ About; the URL is fixed in Rust. */
+  openProjectLink(link: ProjectLinkName): Promise<null>;
   /** The network's observed Platform protocol version and the version this build supports. */
   protocolCompatibility(): Promise<ProtocolCompatibility>;
   // Receive (U-03 D11).
@@ -413,6 +416,8 @@ export interface Backend {
   /** Wallets whose latest automatic backup failed, and when. */
   automaticBackupFailures(): Promise<AutomaticBackupFailure[]>;
   backupDirectory(): Promise<string>;
+  /** Shows the automatic-backup folder in the system file manager. */
+  openBackupDirectory(): Promise<null>;
   backupPolicy(): Promise<BackupPolicyInfo>;
   setBackupPolicy(keep: number): Promise<BackupPolicyInfo>;
   readBackupHeader(path: string): Promise<BackupFileHeader>;

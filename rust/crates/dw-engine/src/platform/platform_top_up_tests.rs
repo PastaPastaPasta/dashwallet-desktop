@@ -80,7 +80,9 @@ fn top_up_from_platform_fee_on_input_0() {
     let q = w.top_up_quote(&me(), credits(DASH)).unwrap();
     assert_eq!(q.credits, DASH);
     assert_eq!(q.fee_credits, l.fee(1));
-    assert_eq!(q.debit_credits, DASH + l.keep(1));
+    // The fee can take all input 0 keeps: the grant covers the claim and
+    // that remainder, not only the band.
+    assert_eq!(q.debit_credits, 2 * DASH);
     assert_eq!(q.grant.max_credits, q.debit_credits);
     assert_eq!(q.inputs.len(), 1);
     assert_eq!(q.inputs[0].address, bech32m(&order[1], w.network()));
@@ -492,21 +494,121 @@ fn several_present_exits_settle_one() {
     assert_eq!(states(&moves), [failed, failed, done]);
     assert!(moves.iter().all(|m| !m.holds()));
     assert!(moves.iter().all(|m| m.state == done || !m.can_land));
+
+    // Exits of other amounts share the document, which does not say which
+    // paid: the newest carries the group, unattributed.
+    let mut moves = vec![
+        failed_top_up(),
+        record_of(MoveKind::ToCore, "x", 2),
+        record_of(MoveKind::ToCore, "y", 3),
+    ];
+    moves[1].answered = true;
+    moves[2].inputs[0].credits += 1;
+    settle_with(&mut moves, &seen_at(20, 4), &present);
+    assert_eq!(states(&moves), [failed, failed, done]);
+    assert!(
+        moves[2].group.is_some(),
+        "not attributed to one exit's terms"
+    );
+    assert!(moves.iter().all(|m| !m.holds()));
 }
 
 /// A read whose nonce is below one a done record signed is behind what
-/// this wallet already settled on: nothing is planned on it.
+/// this wallet already settled on: nothing is planned on it. A top-up
+/// checks every done record; a move or send a done top-up's, so a read
+/// behind a top-up never signs its nonce again.
 #[test]
 fn a_read_behind_a_settled_move_is_refused() {
     let mut done = record_of(MoveKind::ToIdentity, "t", 1);
     done.state = PlatformActivityState::Done;
     let moves = [done];
+    for every in [true, false] {
+        assert_eq!(
+            behind(&moves, &seen_at(20, 3), every),
+            Err(PlatformError::Unavailable)
+        );
+        assert_eq!(behind(&moves, &seen_at(20, 4), every), Ok(()));
+        assert_eq!(behind(&moves, &seen(20, &[("a", None)]), every), Ok(()));
+    }
+    let mut moved = record_of(MoveKind::ToCore, "m", 1);
+    moved.state = PlatformActivityState::Done;
     assert_eq!(
-        behind(&moves, &seen_at(20, 3)),
+        behind(&[moved.clone()], &seen_at(20, 3), true),
         Err(PlatformError::Unavailable)
     );
-    assert_eq!(behind(&moves, &seen_at(20, 4)), Ok(()));
-    assert_eq!(behind(&moves, &seen(20, &[("a", None)])), Ok(()));
+    assert_eq!(behind(&[moved], &seen_at(20, 3), false), Ok(()));
+}
+
+/// After a done top-up, a send planned on a read behind it is refused
+/// before anything is signed: it would sign the nonce the top-up took.
+#[test]
+fn a_send_on_a_read_behind_a_done_top_up_is_refused() {
+    let w = World::new();
+    let a = w.address(0);
+    w.net.fund(a, 5 * DASH);
+    w.net.fee.store(1, Ordering::SeqCst);
+    assert_eq!(
+        w.top_up(credits(DASH)).unwrap().state,
+        PlatformActivityState::Done
+    );
+    let sent = w.sent();
+    w.net.state.lock().unwrap().get_mut(&a).unwrap().0 -= 1;
+    let (_, to) = w.theirs(9);
+    let grant = w.f.grant(10 * DASH);
+    assert_eq!(
+        w.send(credits(DASH / 10), &to, &grant).unwrap_err().code(),
+        "platform.unavailable"
+    );
+    assert_eq!(w.sent(), sent, "nothing signed");
+}
+
+/// The fee can take more than the band, up to all input 0 keeps: the
+/// grant the quote asks for covers it.
+#[test]
+fn a_fee_above_the_band_stays_within_the_grant() {
+    let w = World::new();
+    let a = w.address(0);
+    w.net.fund(a, 2 * DASH);
+    let q = w.top_up_quote(&me(), credits(DASH)).unwrap();
+    let fee = 4 * limits().keep(1);
+    w.net.fee.store(fee, Ordering::SeqCst);
+    let out = w.top_up(credits(DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    let debit = 2 * DASH - w.net.state.lock().unwrap()[&a].1;
+    assert_eq!(debit, DASH + fee);
+    assert!(
+        debit <= q.grant.max_credits,
+        "{debit} > {}",
+        q.grant.max_credits
+    );
+}
+
+/// A held top-up's exit takes exactly its inputs: the Core quote shows
+/// that move, not one of every address, and a top-up Platform has not
+/// answered holds the quote as it holds the move.
+#[test]
+fn the_core_quote_beside_a_held_top_up_is_its_exit() {
+    let (w, a) = shortfall();
+    w.net.fund(w.address(1), 3 * DASH);
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.credits, 5 * DASH, "only the held input");
+    let exit = w.move_all(&w.f.grant(10 * DASH)).unwrap();
+    assert_eq!(exit.state, PlatformActivityState::Done);
+    let sent = w.net.sent.lock().unwrap().clone();
+    assert_eq!(sent.last().unwrap().keys().collect::<Vec<_>>(), vec![&a]);
+
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    w.net.then(Act::Lost);
+    assert_eq!(
+        w.top_up(credits(DASH)).unwrap().state,
+        PlatformActivityState::Pending
+    );
+    assert_eq!(
+        w.quote(WithdrawAmount::All).unwrap_err().code(),
+        "credits.move_pending"
+    );
 }
 
 /// The top-up executed beside its exit, and the exit's document cannot be
@@ -612,6 +714,10 @@ fn a_top_up_stopped_anywhere_is_settled_after_a_restart() {
         assert_eq!(last.keys().collect::<Vec<_>>(), vec![&a], "{stop:?}");
         assert_eq!(last[&a].0, 1, "the nonce the stopped top-up recorded");
         assert_eq!(topped(&w), 0, "{stop:?}");
+        // The exit leaves `a` the change of its fee estimate, so the next
+        // top-up's input 0 is `a`, keeping the band: Platform meters a
+        // top-up's fee, not the withdrawal's this fake charged so far.
+        w.net.fee.store(limits().fee(2), Ordering::SeqCst);
         let next = w.top_up(credits(DASH)).unwrap();
         assert_eq!(next.state, PlatformActivityState::Done, "{stop:?}");
         assert_eq!(topped(&w), DASH, "{stop:?}");
@@ -632,7 +738,7 @@ fn top_up_from_platform_is_off_on_mainnet() {
         assert_eq!(top_up_open(on), Ok(()), "{on:?}");
     }
     let w = World::new();
-    assert_eq!(w.network(), Network::Testnet);
+    assert_ne!(w.network(), Network::Mainnet);
     w.net.fund(w.address(0), 5 * DASH);
     assert_eq!(
         w.top_up(credits(DASH)).unwrap().state,

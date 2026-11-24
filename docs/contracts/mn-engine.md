@@ -1,6 +1,6 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 24
+Contract-Version: 25
 
 Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32; version 4 adds MG-04's ProTx owner flows, §2.3, citing
 [`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on; version 7, after the slice's validator review, binds `lock_shared_terms` to a revision and `approve_shared` to a consent hash, and adds `SharedSession.consent_hash`, MG-04b D56; version 8 adds `sign_shared_funding`'s consent-hash refusal, MG-04b D65; version 9 adds slice 1b's sending: `can_send` true, `send_shared_registration`, `abandon_shared_session`, `update_share` and `ProTxOperationKind::UpdateShare`, `SharedSession.debit`, `MasternodeRow.shares`, MG-04b D68–D75; version 10, after its review r1, puts sending behind one switch that is off until slice 1c, `can_send` false and the four sending calls refusing `unsupported`, DEC-678, MG-04b D71); version 11, after its review r2, says where `resend_operation` of an `update_share` row refuses (MG-04b D71); version 12 turns sending on (slice 1c: D39 closed by MG-04b D75, M9 by D78); version 13 adds `ShareTermsView.service_read`, Core's reading of a service written in another form (MG-04b D78); version 14 adds MG-04b slice 2a's dissolve now: `preview_dissolve`, `dissolve`, `ProTxOperationKind::Dissolve`, `DissolveRequest`, `DissolvePreview` and `ShareReturn`, a `dissolve` row's resend and state, MG-04b D79–D83; version 15 adds MG-04b slice 2b's standby: `create_standby`, `standby`, `export_standby`, `send_standby`, `Standby`, `StandbyDescription`, `StandbyFile`, `StandbySource`, `StandbyVariant`, `SharedImport::Standby` (and `SharedImport::Session`'s session boxed, its JSON unchanged), `SharedNext::CreateStandby`, a `dissolve` row of another share's standby, MG-04b D84–D91; version 16 adds MG-04b slice 2c's dissolve together: `start_dissolve_together`, `approve_maintenance`, `send_maintenance`, `masternodes.shared_actor_fee{fee}`, `SharedWarning::SkippedSignatures` and `NoApprovals`, the import of a `dissolve` sigs envelope and of a targeted bare array, a dissolve-together session's stages, and a `dissolve` row it sends, MG-04b D92–D98; version 17 adds MG-04b slice 2d's key change: `start_key_change`, `KeyChangeRequest`, `KeyChangeView` and `SharedSession.key_change`, `SharedWarning::OperatorReset` and `UsableByFunder`, `DeadReason::Abandoned`, the import of a `registrar` sigs envelope and of a bare array targeting a key change, a key-change session's stages, its abandon before `out_at`, `shared_message{reason}`'s `not_key_change`, `inputs_hash` and `stale`, and `update_pending{operation}` naming a key-change session; and it breaks `send_maintenance`, which returned a `ProTxOperation` and now returns `MaintenanceSent` (`operation` for a dissolution, `session` for a key change, each boxed, which the JSON doesn't show), MG-04b D99–D105. Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
@@ -10,6 +10,7 @@ The `registered` and conflict-scan refactors preserve existing call behavior. Sh
 Version 19 adds MG-13's evonode credit withdrawal, §2.5, citing MG-13's plan decisions (`MG-13-evonode-withdrawal.md`) as "MG-13 P1" and so on: `withdrawal_quote`, `withdraw_credits`, `retry_withdrawal`, `withdrawals`, `recheck_withdrawal`, `mark_withdrawal`, their records (`WithdrawalQuote`, `CreditWithdrawal` and the rest), the `masternodes.withdrawal_*` codes, the records' states, the `withdrawal_ready` event, the `MasternodeWithdraw` signer, and the payout-change barriers MG-04's ProUpRegTx writes and its discard deletes (MG-13 P16); version 20, after MG-13's code review round 1 (Sol M1), gives `retry_withdrawal` the `pro_tx_hash` the user acted on, binds the `MasternodeWithdraw` grant to it (m4 item 86, version 64), and adds `masternodes.withdraw_target_mismatch`; version 21, after its code review round 2, has a final record's recheck raise the group's floor too (P5) and names `retry_withdrawal`'s two refusals of `id`. Version 22 adds `SharedWarning::AbandonHint` for a funder's key change that has sat at `signing` for the overdue quiet period, includes a mined copy with the same payload in a funder's `confirmed` stage reading (ranked with the sent transaction as a registration's copies), and has a key change's prepare, send and resend refuse a voting key that any reward script this wallet has seen a share hold pays (`bad-proupsharedreg-payee-reuse`).
 Version 23 adds MG-10 EP-b1's shared abandon storage (MG-10 §4.4): an abandon spend's bytes and log entry are written durably before its hand-off and its outcome is recorded in that entry; a resend of a session's own bytes is marked `send.resend_in_progress` before its hand-off; an inherited refusal code on an out session reads `send.broadcast_unknown` after the upgrade; and a funder's abandoned key change is never resent (`shared_stage{stage: "abandoned"}`). The abandon spend's coins and its refusals are unchanged.
 Version 24 adds `WithdrawalCheckingReason::PayoutChangeUnconfirmed` (`payout_change_unconfirmed`): a payout change in any loaded wallet's history, which another installation of the wallet may have sent, holds a withdrawal as a barrier does while it is out of a block, and as `platform_behind` while its block is above the proof's Core height.
+Version 25 adds `WithdrawalCheckingReason::OwnerPayoutP2sh` (`owner_payout_p2sh`), the owner key's only: while the latest payout of the masternode in the loaded wallets' history (its ProRegTx, or its latest ProUpRegTx neither conflicted nor abandoned) is P2SH while Drive's window pays P2PKH, the quote's owner destination reads `checking{owner_payout_p2sh}` and an owner-key withdrawal is refused with it, because Drive pays the P2PKH of the payout's 20 bytes (dashpay/platform#5840); once Drive's window pays the P2SH script, nothing is refused. The recheck doesn't send an open owner-key record again while that holds, or while the identity read it rests on fails or doesn't pass rule 5. A payout key is unaffected, and a masternode with no payout in the history withdraws as before.
 
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
@@ -241,7 +242,10 @@ change only pays, or names a key of, records it with nothing of its own to aband
 drops it, and so does an abandon in a wallet that paid for it. Tools ▸ Repair ▸ Remove unconfirmed transactions
 (`drop_unconfirmed`) abandons it without asking the network, so it releases a live change too (#372). Removing that
 wallet and restoring it from its phrase drops a change the network forgot and sees a live one again; the UI copy offers
-that way out. Rescan keeps the entry. While only Platform is behind, the quote starts one wait per masternode in the background (every 20 s, for at
+that way out. Rescan keeps the entry. The owner key's destination also reads `checking{owner_payout_p2sh}` when the
+others hold and the latest payout of the masternode in the loaded wallets' history is P2SH while Drive's window pays
+P2PKH (Drive would pay the P2PKH of its 20 bytes, which nobody can spend), and the recheck holds the rebroadcast of an
+open owner-key record then; a payout key is unaffected. While only Platform is behind, the quote starts one wait per masternode in the background (every 20 s, for at
 most 240 s) and sends §6's event (`withdrawal_ready`) when the destination is fixed; the host reads the quote again
 and asks for consent then. The grant is that consent: a `MasternodeWithdraw{pro_tx_hash, max_credits, destination}`
 grant (m4 item 86) bound to the masternode the user acted on, whose `max_credits` covers the amount and Drive's fee
@@ -295,7 +299,7 @@ Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BL
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: 80272bc097c7c56b9688bdb563ddb08ca4ca07d766fc12946e11c320d9afa96d version: 24 -->
+<!-- surface-sha256: 2fd611b49701d17b5d64f13f9aae1e6e08fabb3a548ce2829a8d4556fad13847 version: 25 -->
 
 ```rust
 // src/masternodes/errors.rs
@@ -1158,6 +1162,7 @@ pub enum WithdrawalCheckingReason {
     PlatformBehind,
     PayoutChangePending,
     PayoutChangeUnconfirmed,
+    OwnerPayoutP2sh,
     Unverified,
     SpvUnsynced,
 }
@@ -1331,8 +1336,11 @@ a hash's shape (D23).
   `replied` for a fee change after another party's reply (MG-04b D33), `incomplete` for a lock before every row and
   contribution is in, `unsigned` for a send before every participant's input is signed (MG-04b D71), `abandoned` for a resend of an
   abandoned session (MG-04b D72).
-- `masternodes.shared_message{reason, share}`: a pasted or opened message is refused: `not_shared`, `too_large`,
-  `parse`, `network`, `other_session`, `terms_changed`, `older`, `conflict` (also a lock or approval of a copy other
+- `masternodes.shared_message{reason, share}`: a pasted or opened message is refused: `not_shared`, `too_large`
+  (also JSON whose message code would render past 4 MiB), `parse` (also JSON nested past 16 levels, holding over
+  65,536 values, or with a key twice in one object, refused before its code is computed; and a session at revision
+  `i32::MAX`, which `join_shared`, `set_shared_fee` and `unlock_shared_terms` can't advance; a reply merged into one is
+  `conflict`), `network`, `other_session`, `terms_changed`, `older`, `conflict` (also a lock or approval of a copy other
   than the session's current one, MG-04b D56), `bad_signature` (with `share`), `not_participant`, `labels`;
   for a dissolve-together request `not_dissolution`, `other_masternode`, `signed` and `outputs` (MG-04b D92); for a
   key change `not_key_change`, `other_masternode` and `inputs_hash` (MG-04b D104), and `stale` for an approval or send
@@ -1358,8 +1366,8 @@ a hash's shape (D23).
 - `masternodes.withdrawal_no_payout_key{detail}`: an owner-key withdrawal while Drive's window holds no key it pays
   to: `no transfer key`, `every transfer key disabled`, or `a transfer key of a type Core can't be paid to` (F3).
 - `masternodes.withdrawal_destination_checking{reason}`: P4's (a)–(c) don't hold after the signing call's wait or at
-  its final look: `reason` is `spv_unsynced`, `unverified`, `payout_change_pending`, `payout_change_unconfirmed` or
-  `platform_behind` (§2.5).
+  its final look: `reason` is `spv_unsynced`, `unverified`, `payout_change_pending`, `payout_change_unconfirmed`,
+  `platform_behind`, or for an owner key `owner_payout_p2sh` (§2.5).
   Nothing is signed and the grant is unspent.
 - `masternodes.withdrawal_pending`: the identity has an open record (`signed`, `sent`, `refused`, `couldnt_confirm`),
   another process won the open-record index, or P10 can't choose a nonce (an undecided group's nonce above a stale

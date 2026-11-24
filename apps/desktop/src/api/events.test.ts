@@ -64,6 +64,7 @@ describe("event bridge", () => {
       keys.coinsAll("w"),
       dashpayKeys.quote("w"),
       keys.coinjoinStatus("w"),
+      mnKeys.list("w"),
     ]);
     // A lock drops the wallet's queries rather than reading them again; an unlock reads them.
     expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.lockReconcile]);
