@@ -117,11 +117,14 @@ export function ChangeKeysSheet({
     if (!sends || sending.current || busy || !request || !current || !signable || !credential.ready) return;
     sending.current = true;
     setBusy(true);
+    let granted: string | null = null;
     try {
       const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: current.totalDebit });
       if (!grant) return;
+      granted = grant.id;
       finish(await b.mnUpdateRegistrar(wallet.walletId, pinToPreview(request, current), grant.id), current.payoutChanges);
     } catch (e) {
+      if (granted) void b.revokeGrant(granted).catch(() => null);
       credential.setError(await refusal(e));
       if (feeWentUp(e)) void preview.refetch();
     } finally {

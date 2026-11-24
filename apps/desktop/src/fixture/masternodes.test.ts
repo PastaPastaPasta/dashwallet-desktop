@@ -795,6 +795,15 @@ describe("Change keys or payout (MG-10 S3, ProUpRegTx)", () => {
     }
   });
 
+  it("previews a change behind an abandoned one, and refuses sending it, naming it, before the grant is used (update.rs resolve_update)", async () => {
+    const f = install("mn-update-abandoned");
+    await cmd.mnPreviewUpdateRegistrar(W, req(HOME));
+    const grant = (await cmd.authorize({ kind: "masternodeOp", maxDuffs: 100_000_000 }, W, PASS)).id;
+    await expect(cmd.mnUpdateRegistrar(W, req(HOME), grant)).rejects.toMatchObject({ code: "masternodes.update_abandoned_pending", data: { kind: "operation", operation: OP_UPDATE } });
+    expect(f.world.grants.find((g) => g.grant.id === grant)!.used).toBe(false);
+    expect((await cmd.mnOperations(W)).map((o) => o.id)).toEqual([OP_UPDATE]);
+  });
+
   it("refuses Send again of a change saved behind a sent one, naming it, and keeps the grant (resend_conflict)", async () => {
     const f = install("mn-update-saved-behind-sent");
     const grant = (await cmd.authorize({ kind: "masternodeOp", maxDuffs: 100_000_000 }, W, PASS)).id;

@@ -1063,6 +1063,9 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
       const { world } = ctx;
       wallet(world, walletId);
       const plan = planUpdate(world, walletId, request);
+      const hash = request.proTxHash.toLowerCase();
+      const abandoned = world.masternodes.operations.find((u) => u.kind === "update_registrar" && u.proTxHash === hash && u.state.kind === "abandoned");
+      if (abandoned) throw fail("masternodes.update_abandoned_pending", `operation ${abandoned.id} on this masternode was abandoned and may still confirm`, { kind: "operation", operation: abandoned.id });
       masternodeGrant(world, walletId, grantId, plan.totalDebit);
       const m = world.masternodes;
       const n = m.operations.filter((o) => o.kind === "update_registrar").length + 1;
@@ -1348,6 +1351,8 @@ export function masternodesScenarios(base: Base) {
     "mn-update-saved": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" })])),
     /** `mn-list` with a change to Home sent and not in the list yet: a new change is refused `update_pending`. */
     "mn-update-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "sent" })])),
+    /** `mn-list` with a change to Home abandoned in Activity: a new change previews, and sending it is refused `update_abandoned_pending`. */
+    "mn-update-abandoned": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "abandoned" })])),
     /** `mn-update-sent` with a later change to Home saved and not sent: its Send again is refused `update_pending`. */
     "mn-update-saved-behind-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" }, OP_UPDATE_SAVED, 2), homeUpdate({ kind: "sent" })])),
     /** The keychain: Home's operator key matched in the basic form, Office's in the legacy form, Lab evonode's platform node id. */
