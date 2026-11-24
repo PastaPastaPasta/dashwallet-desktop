@@ -2891,7 +2891,8 @@ fn a_press_refused_after_the_wait_leaves_its_grant_unused() {
 
 /// #585 (Q63): the session closing mid-wait ends the wait. A Finish waits
 /// as a press does, holding the session's gate and close preflight; close
-/// cancels the wait first, returns promptly, and the grant stays unused.
+/// cancels the wait first and returns promptly, and the Finish is refused
+/// before it takes a lease from its grant.
 #[test]
 fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
     let dir = dw_testutil::private_tempdir();
@@ -2910,8 +2911,9 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
     );
     let zero = "0000000000000000000000000000000000000000000000000000000000000000";
     let started = Instant::now();
+    let dp = s.dashpay(id);
     let (finished, closed_in) = engine.block_on(async {
-        let finish = s.dashpay(id).finish_transfer(
+        let finish = dp.finish_transfer(
             super::LockKindId::PlatformAddress,
             zero.into(),
             0,
@@ -2934,11 +2936,11 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
         "{:?}",
         started.elapsed()
     );
+    // Refused before the lease is taken from the grant (close then revokes
+    // every grant, so the vault can't be asked after).
     assert!(
-        (s.vault)
-            .grant_purpose(&g, dw_vault::GrantKind::PlatformOp, Some(&id.0))
-            .is_ok(),
-        "the grant is unused"
+        matches!(&finished, Err(PlatformError::InvalidArgument { detail }) if detail.contains("no tracked lock")),
+        "{finished:?}"
     );
     pause.release.notify_one();
     engine.block_on(engine.shutdown()).unwrap();
