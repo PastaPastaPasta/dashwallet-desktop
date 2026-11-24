@@ -1091,8 +1091,8 @@ for (const theme of THEMES) {
 }
 
 // MG-10 S2: the registration wizard's steps and the In progress group, under
-// MG-00's frame names. `reg-review` is the hosted FundNew masternode, which can't send yet, `reg-operator-evo`
-// the self-run evonode.
+// MG-00's frame names. `reg-review` is the hosted FundNew masternode on testnet, which can register,
+// `reg-operator-evo` the self-run evonode.
 async function openMasternodes(page: Page, scenario: string, theme: Theme) {
   await page.clock.setFixedTime(FIXTURE_NOW);
   await page.goto(fixtureUrl(scenario, theme));
@@ -1128,7 +1128,7 @@ for (const theme of THEMES) {
     await shootStep(page, "reg-keys", theme);
     await page.getByTestId("reg-continue").click();
     await page.getByTestId("reg-review").waitFor();
-    await page.getByTestId("reg-send-off").waitFor();
+    await page.getByTestId("reg-register").waitFor();
     await shootStep(page, "reg-review", theme);
   });
 
