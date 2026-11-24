@@ -13,6 +13,7 @@ import { inTauri, tauriTools } from "../api/tauri";
 import { messageTable, t } from "../i18n";
 import { showShellToast } from "../components/toast";
 import { NetworkText } from "../network/choice";
+import { setLinkDrop } from "./dropGuard";
 import { noteLiveLink, SavedLinksText } from "./savedLinks";
 import { navigate, openPayForm, ui } from "./ui";
 
@@ -140,6 +141,19 @@ export function applyLink(route: LinkRoute) {
       return;
   }
   focusPage();
+}
+
+/** Routes a typed or dropped link (File ▸ Open URI…, a drop on the window, QT-019) as a clicked one
+ * is, and opens it: why it did not open, or `null` when it did. A refusal of the call is said too. */
+export async function openLinkText(backend: Pick<Backend, "routeLink">, network: string, text: string): Promise<string | null> {
+  try {
+    const route = await backend.routeLink(network, text);
+    const why = linkProblem(route);
+    if (!why) applyLink(route);
+    return why;
+  } catch (e) {
+    return errorMessage(e);
+  }
 }
 
 /** Carries out a menu or tray command. A route command closes an open dialog first, as a link
@@ -298,6 +312,11 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
       runCommand(command, lockNow);
     };
     if (!inTauri()) window.addEventListener("keydown", onKey);
+    // A link dropped on the window opens as Open URI… would; what stops it is said in a toast.
+    setLinkDrop((text) => {
+      if (ui.get().switching) return;
+      void openLinkText(backend, network, text).then((why) => why && showShellToast(why));
+    });
     let switching = ui.get().switching;
     const stopWatching = ui.subscribe(() => {
       const now = ui.get().switching;
@@ -307,6 +326,7 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
     return () => {
       void unlisten.then((f) => f());
       window.removeEventListener("keydown", onKey);
+      setLinkDrop(null);
       stopWatching();
     };
   }, [backend, network, trace]);
