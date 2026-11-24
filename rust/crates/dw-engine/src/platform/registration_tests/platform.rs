@@ -715,6 +715,108 @@ fn an_edited_or_missing_platform_funding_sizes_no_grant() {
     ] {
         assert_eq!(grant(planned(&inputs)), Err("invalid_argument"), "{why}");
     }
+    let unfunded = format!(
+        r#"{{"v":1,"kind":"platform_addresses","funding_credits":0,"fee_reserve_credits":{RESERVE},"inputs":[],"identity":"{identity}"}}"#
+    );
+    assert_eq!(
+        grant(unfunded),
+        Err("invalid_argument"),
+        "no inputs, no funding"
+    );
+}
+
+/// F5 (#685): a plan the funding step makes is one `resume_grant` accepts.
+/// The quote stores the plan's `funding_credits`, the sum of its claims,
+/// even where a claim was raised past the requested funding to the input
+/// minimum; the step stores those inputs only when its plan gives the same
+/// numbers. Through the real planner: one input, two inputs, and a last
+/// claim raised to the input minimum.
+#[test]
+fn a_plan_the_funding_step_makes_sizes_a_grant() {
+    use crate::platform::keys_policy::registration_specs;
+    use crate::platform::platform_moves::bech32m;
+    use crate::platform::registration_platform::register_plan;
+    use dpp::dashcore::Network;
+    use dpp::version::PlatformVersion;
+
+    let f = fixture(false);
+    let lib = f.fake();
+    let version = PlatformVersion::latest();
+    let keys = registration_specs().len();
+    let reserve = |inputs: usize| REGISTER_FEE_BAND * register_fee(version, inputs, keys);
+    let min_input = version.dpp.state_transitions.address_funds.min_input_amount;
+    let address = |b: u8| PlatformAddress::P2pkh([b; 20]);
+    let short = 50_000;
+    for (entries, inputs, raised, why) in [
+        (vec![(1u8, HELD)], 1, false, "one input"),
+        (
+            vec![(1, reserve(2) + 10_000_000), (2, 20_000_000)],
+            2,
+            false,
+            "two inputs",
+        ),
+        (
+            vec![
+                (1, reserve(1) + 200_000),
+                (2, reserve(2) + FUNDING - short),
+                (3, HELD),
+            ],
+            2,
+            true,
+            "a last claim raised to the input minimum",
+        ),
+    ] {
+        let balances = entries.iter().map(|(b, c)| (address(*b), *c)).collect();
+        let nonces = entries
+            .iter()
+            .map(|(b, _)| (address(*b), *b as u32))
+            .collect();
+        let planned = register_plan((&balances, &nonces), FUNDING, keys, version).unwrap();
+        let claims: u64 = planned.inputs.values().map(|(_, c)| *c).sum();
+        assert_eq!(planned.inputs.len(), inputs, "{why}");
+        assert_eq!(planned.funding_credits, claims, "{why}");
+        assert_eq!(planned.funding_credits > FUNDING, raised, "{why}");
+        if raised {
+            assert!(
+                planned.inputs.values().any(|(_, c)| *c == min_input),
+                "{why}"
+            );
+        }
+        let plan = PlatformPlan {
+            inputs: (planned.inputs.iter())
+                .map(|(a, (n, c))| (bech32m(a, Network::Testnet), *n, *c))
+                .collect(),
+            identity: platform_identity(),
+        };
+        let draft = f.insert(NewRegistration {
+            funding: Funding::PlatformAddresses {
+                funding_credits: planned.funding_credits,
+                fee_reserve_credits: planned.fee_reserve_credits,
+                plan: Some(plan),
+            }
+            .encode(),
+            ..platform_row(None)
+        });
+        let grant = (f.engine)
+            .block_on(registration::resume_grant(
+                &f.session,
+                f.wallet,
+                &*lib,
+                &draft.to_string(),
+            ))
+            .unwrap_or_else(|e| panic!("{why}: {e:?}"));
+        assert_eq!(
+            (grant.max_duffs, grant.max_credits),
+            (
+                0,
+                planned.funding_credits
+                    + planned.fee_reserve_credits
+                    + NAME_CREDITS
+                    + flow::PROFILE_CREDITS
+            ),
+            "{why}"
+        );
+    }
 }
 
 /// F5 (#685), mainnet off: a held row's resume grant is not sized, and a

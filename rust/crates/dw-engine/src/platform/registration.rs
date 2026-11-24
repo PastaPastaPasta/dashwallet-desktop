@@ -972,7 +972,8 @@ pub(crate) async fn resume_grant<L: RegistrationLib>(
 fn plan_as_made(plan: &PlatformPlan, funding_credits: u64) -> bool {
     let addresses: BTreeSet<&str> = plan.inputs.iter().map(|(a, _, _)| a.as_str()).collect();
     let claims = (plan.inputs.iter()).try_fold(0u64, |sum, (_, _, c)| sum.checked_add(*c));
-    addresses.len() == plan.inputs.len()
+    !plan.inputs.is_empty()
+        && addresses.len() == plan.inputs.len()
         && plan.inputs.iter().all(|&(_, n, c)| n > 0 && c > 0)
         && claims == Some(funding_credits)
 }
