@@ -2550,8 +2550,8 @@ fn nothing_changed(demo: &Demo, wallet: &Value, draft: &Value, grant: &Value) {
 }
 
 /// Row 74 r1: the engine's own refusals of the close (a wallet still
-/// opening, a shielded spend not resolved) refuse the switch, named, and
-/// change nothing.
+/// opening, a shielded spend not resolved, a transfer waiting on its
+/// wallet's start-up) refuse the switch, named, and change nothing.
 #[test]
 fn a_close_that_refuses_itself_refuses_the_switch_and_changes_nothing() {
     use dw_engine::test_support::{CloseFence, hold_close_fence};
@@ -2564,6 +2564,11 @@ fn a_close_that_refuses_itself_refuses_the_switch_and_changes_nothing() {
             CloseFence::ShieldedSpend,
             "shielded_spend_unresolved",
             "shieldedSpendUnresolved",
+        ),
+        (
+            CloseFence::Preparing,
+            "app.transfer_preparing",
+            "transferPreparing",
         ),
     ] {
         let grant = platform_grant(&demo, &wallet);

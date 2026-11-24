@@ -121,6 +121,9 @@ describe("switchOutcome", () => {
     expect(switchOutcome(refused("shielded_spend_unresolved", "shieldedSpendUnresolved"), "testnet", "mainnet")).toEqual({
       problem: "A shielded payment is still being confirmed. Switch networks once it is.",
     });
+    expect(switchOutcome(refused("app.transfer_preparing", "transferPreparing"), "testnet", "mainnet")).toEqual({
+      problem: "A transfer is still being prepared. Try again when it's done.",
+    });
     // A reason this build does not know, and a `wallet` error that is not the close's refusal.
     expect(switchOutcome(refused("wallet", "later"), "mainnet", "testnet")).toEqual({ problem: "Dash Wallet could not switch networks. x (wallet)" });
     expect(switchOutcome({ code: "wallet", message: "the wallet file is damaged", data: null }, "mainnet", "testnet")).toEqual({

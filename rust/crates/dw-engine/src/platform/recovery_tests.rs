@@ -2946,6 +2946,60 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// A network switch while a Finish waits on its wallet's rerun is refused
+/// as preparing, not as an unresolved shielded spend, and the Finish goes on.
+#[test]
+fn a_switch_while_a_finish_waits_on_a_rerun_is_refused_as_preparing() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, _platform) = skipped_at_restart(dir.path());
+    *guard(&s.platform.bring_up_waits) = Some((Duration::from_secs(120), Duration::from_secs(120)));
+    let pause = test_pause();
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    let g = grant(
+        &engine,
+        &s,
+        id,
+        GrantPurpose::PlatformOp {
+            max_duffs: 1,
+            max_credits: 0,
+        },
+    );
+    let zero = "0000000000000000000000000000000000000000000000000000000000000000";
+    let network = s.network().clone();
+    let dp = s.dashpay(id);
+    let (finished, refused) = engine.block_on(async {
+        let finish = dp.finish_transfer(
+            super::LockKindId::PlatformAddress,
+            zero.into(),
+            0,
+            g.clone(),
+        );
+        let switching = async {
+            while !pause.reached.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(s.platform.preparing());
+            let refused = engine
+                .close_network_unless_busy(network, Duration::from_secs(2), |_| None::<()>)
+                .await;
+            pause.release.notify_one();
+            refused
+        };
+        tokio::join!(finish, switching)
+    });
+    assert!(
+        matches!(refused, Err(crate::CloseRefused::Preparing)),
+        "{refused:?}"
+    );
+    assert!(s.is_open());
+    assert!(
+        matches!(&finished, Err(PlatformError::InvalidArgument { detail }) if detail.contains("no tracked lock")),
+        "{finished:?}"
+    );
+    assert!(!s.platform.preparing());
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// #585 (Q63 C4): after a restart, a marker wallet's unfinished transfers
 /// list asks for the bring-up's rerun (nothing else would before the next
 /// start), and a Finish waits for it, as a fund or shield press does.
