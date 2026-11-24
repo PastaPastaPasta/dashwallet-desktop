@@ -246,7 +246,7 @@ function Reveal({ walletId, k }: { walletId: string; k: MasternodeKeyInfo }) {
     void model.load();
     return () => model.dispose();
   }, [model]);
-  // A shown secret hides when the window loses focus and when the vault locks (MG, #428).
+  // A shown secret hides when the window loses focus and when the vault locks.
   const lock = useLockStatus();
   const locked = lock.data?.state === "locked" || lock.data?.state === "unlockedMixingOnly";
   useEffect(() => {

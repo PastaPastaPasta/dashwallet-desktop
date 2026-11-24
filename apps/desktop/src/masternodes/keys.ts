@@ -16,7 +16,7 @@ import { mnErrorText } from "./model";
 export const KEY_ROLES: readonly MasternodeKeyRoleName[] = ["owner", "voting", "operator", "platform_node"];
 
 /** Operator and platform node secrets go to the server that runs the node, so they copy; owner
- * and voting secrets never leave the wallet and refuse copying, as the recovery phrase does (#428). */
+ * and voting secrets never leave the wallet and refuse copying, as the recovery phrase does. */
 export const canCopySecret = (role: MasternodeKeyRoleName) => role === "operator" || role === "platform_node";
 
 /** Keys per page, for every role (MG-10 §1.5). */
