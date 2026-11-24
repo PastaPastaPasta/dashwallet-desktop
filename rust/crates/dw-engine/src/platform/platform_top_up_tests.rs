@@ -58,11 +58,7 @@ impl World {
 
     /// The quote's move, as the host confirms it: to its `to`, the exit of
     /// its `exit_of`.
-    fn exit(
-        &self,
-        q: &MoveToCoreQuote,
-        grant: &str,
-    ) -> Result<MoveToCoreOutcome, CreditsError> {
+    fn exit(&self, q: &MoveToCoreQuote, grant: &str) -> Result<MoveToCoreOutcome, CreditsError> {
         let (to, exit_of, grant) = (q.to.clone(), q.exit_of.clone(), grant.to_owned());
         self.call(move |net, s, w, id| async move {
             let ask = (WithdrawAmount::All, to.as_str(), exit_of.as_deref());
@@ -633,7 +629,7 @@ fn an_exit_after_its_top_up_landed_is_refused_and_keeps_the_grant() {
     w.net.fee.store(1, Ordering::SeqCst);
     let q = w.quote(WithdrawAmount::All).unwrap();
     assert_eq!(q.exit_of, Some(w.moves()[0].id.clone()));
-    w.lands(0);
+    w.net.execute_sent(0);
     let grant = w.f.grant(q.credits);
     assert_eq!(
         w.exit(&q, &grant).unwrap_err().code(),
@@ -653,6 +649,20 @@ fn an_exit_after_its_top_up_landed_is_refused_and_keeps_the_grant() {
     assert_eq!(moved.state, PlatformActivityState::Done);
     assert_eq!(w.sent(), 2);
     assert_eq!(w.net.sent.lock().unwrap()[1][&a].0, 2, "after the top-up's");
+
+    // A record pending since the quote does not hide that it changed.
+    w.net.fund(w.address(1), 3 * DASH);
+    w.net.then(Act::Lost);
+    let (_, to) = w.theirs(9);
+    let pending = w.send(credits(DASH), &to, &w.f.grant(10 * DASH)).unwrap();
+    assert_eq!(pending.state, PlatformActivityState::Pending);
+    let kept = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&q, &kept).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&kept));
+    assert_eq!(w.sent(), 3);
 }
 
 /// The same race with no `exit_of`: as before it, the move is planned on the
@@ -660,16 +670,55 @@ fn an_exit_after_its_top_up_landed_is_refused_and_keeps_the_grant() {
 #[test]
 fn a_move_without_exit_of_after_its_top_up_landed_is_planned_anew() {
     let (w, a) = shortfall();
+    let b = w.address(1);
+    w.net.fund(b, DASH / 2);
     w.net.fee.store(1, Ordering::SeqCst);
     let q = w.quote(WithdrawAmount::All).unwrap();
-    w.lands(0);
+    assert_eq!(q.credits, 5 * DASH, "the exit: the held input only");
+    w.net.execute_sent(0);
     let grant = w.f.grant(q.credits);
     let moved = w.move_all(&grant).unwrap();
     assert_eq!(moved.state, PlatformActivityState::Done);
-    assert!(moved.credits < q.credits);
     assert_eq!(w.sent(), 2);
-    assert_eq!(w.net.sent.lock().unwrap()[1][&a].0, 2, "after the top-up's");
+    let sent = w.net.sent.lock().unwrap()[1].clone();
+    assert_eq!(
+        sent.keys().collect::<Vec<_>>().len(),
+        2,
+        "every funded address"
+    );
+    assert_eq!(sent[&a].0, 2, "after the top-up's");
+    assert!(sent.contains_key(&b));
     assert_eq!(w.net.topped_up.load(Ordering::SeqCst), DASH);
+}
+
+/// Its exit signs exactly a held top-up's inputs: a quote of only some of
+/// them (an amount the larger input carries) is refused as the move would
+/// refuse it, and the quote of all of them names the top-up.
+#[test]
+fn a_partial_exit_of_a_two_input_top_up_is_refused_at_the_quote() {
+    let w = World::new();
+    let order = w.in_order();
+    w.net.fund(order[0], 2 * DASH);
+    w.net.fund(order[1], 5 * DASH);
+    w.net.fee.store(5 * DASH, Ordering::SeqCst);
+    let out = w.top_up(credits(3 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Pending);
+    w.activity();
+    w.net.tick();
+    w.activity();
+    let held = w.moves()[0].clone();
+    assert!(held.holds());
+    assert_eq!(held.inputs.len(), 2);
+    w.net.fee.store(1, Ordering::SeqCst);
+    assert_eq!(
+        w.quote(credits(DASH)).unwrap_err().code(),
+        "credits.move_pending"
+    );
+    let all = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(all.exit_of, Some(held.id.clone()));
+    let exit = w.exit(&all, &w.f.grant(all.credits)).unwrap();
+    assert_eq!(exit.state, PlatformActivityState::Done);
+    assert_eq!(w.sent(), 2);
 }
 
 /// An `exit_of` that names no held top-up is `credits.quote_changed`, with

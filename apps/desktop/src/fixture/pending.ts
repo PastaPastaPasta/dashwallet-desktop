@@ -641,6 +641,8 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   platform_move_to_core_quote: ({ walletId, amount }: { walletId: string; amount: WithdrawAmount }, ctx: Ctx) => quote(ctx, walletId, amount),
   platform_move_to_core: ({ walletId, amount, to, exitOf, grant }: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string }, ctx: Ctx): MoveToCoreOutcome => {
     const { world } = ctx;
+    // As the engine, first: the exit of a top-up that no longer holds is not the move Confirm showed.
+    if (exitOf != null && heldTopUp(platformOf(world, "platform_move_to_core"))?.id !== exitOf) throw fail("credits.quote_changed", "the held top-up settled since this move was quoted");
     const q = quote(ctx, walletId, amount);
     // Only to one of the wallet's own receiving addresses (the quote's).
     if (to !== q.to) throw fail("invalid_argument", "not an address of this wallet", { kind: "reason", reason: "not an address of this wallet" });
@@ -649,8 +651,6 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     // settles). A move that failed by height does not: the next one signs at the same inputs and frees it.
     const holding = p.activity.find((a) => isHeldOp(a) && (a.kind === "send" || a.state === "pending"));
     if (holding) throw moveHeld(holding.id);
-    // As the engine: the exit of a top-up that no longer holds is not the move Confirm showed.
-    if (exitOf != null && exitOf !== q.exitOf) throw fail("credits.quote_changed", "the held top-up settled since this move was quoted");
     const supersedes = p.activity.filter((a) => a.kind === "moveToCore" && isHeldOp(a)).map((a) => a.id);
     const g = checkGrant(world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");

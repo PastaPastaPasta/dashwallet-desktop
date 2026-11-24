@@ -2602,6 +2602,17 @@ pub(crate) async fn quote(
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
     let planned = plan_beside(&target, balances, amount, &limits, top_up, network)?;
+    // Its exit signs exactly its inputs, so a plan of only some of them
+    // (an amount) is refused here, as the move would refuse it.
+    if let Some(h) = top_up {
+        let held: BTreeSet<&str> = h.inputs.iter().map(|i| i.address.as_str()).collect();
+        let addresses: Vec<String> = (planned.inputs.keys())
+            .map(|a| bech32m(a, network))
+            .collect();
+        if addresses.len() != held.len() || !addresses.iter().all(|a| held.contains(a.as_str())) {
+            return Err(CreditsError::MovePending { id: h.id.clone() });
+        }
+    }
     let to = session
         .current_receiving_address(wallet_id)
         .await
@@ -3002,6 +3013,16 @@ async fn run(
     // only its exact retry.
     let retry_of = named.filter(|_| matches!(target, Target::Platform(_)));
     let exit_of = named.filter(|_| matches!(target, Target::Core(_)));
+    // The exit's quote was planned beside that record: once it no longer
+    // holds, this is not the move Confirm showed, whatever else holds now.
+    let exited = match exit_of {
+        Some(id) => Some(
+            (moves.iter())
+                .find(|m| m.id == id && m.kind.credits_identity() && m.holds())
+                .ok_or(CreditsError::QuoteChanged)?,
+        ),
+        None => None,
+    };
     let (held, planned) = match (target, named) {
         (Target::Platform(_), Some(id)) => {
             let held = (moves.iter()).find(|m| m.id == id);
@@ -3017,16 +3038,7 @@ async fn run(
                     id: pending.id.clone(),
                 });
             }
-            // The exit's quote was planned beside that top-up: once it no
-            // longer holds, this is not the move Confirm showed.
-            let held = match exit_of {
-                Some(id) => Some(
-                    (moves.iter())
-                        .find(|m| m.id == id && m.kind.credits_identity() && m.holds())
-                        .ok_or(CreditsError::QuoteChanged)?,
-                ),
-                None => moves.iter().find(|m| m.holds()),
-            };
+            let held = exited.or_else(|| moves.iter().find(|m| m.holds()));
             if let (Target::Platform(_) | Target::Identity(_), Some(h)) = (target, held) {
                 // A new send: the hold came after its quote. A top-up signs
                 // no other record's terms (C-routes C3-9).
