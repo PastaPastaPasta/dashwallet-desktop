@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 80
+Contract-Version: 81
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -4744,7 +4744,7 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
 
 100. **Credits from Shielded, attributed (C-routes D-C1, slice C1b-2, version 79).** `PlatformActivityKind::FromShielded` and its record in app.sqlite (`platform_address/from_shielded/<activity>`: the spend's activity and transition hash, the source (tagged; `unshield` now, room for a registration's refund later), the address, the credits, the state, `armed` and when, each part of a rise it absorbed and when it was read, what it has still to read, what its first read did not show, and the baseline height it was settled done at). The dispatch hook, in its accept of an unshield, checks the signed transition against the address and credits the engine quoted, writes the record unarmed before the artifact and arms it after, under the Platform move lock taken after the shielded wallet lock; its admission of a re-send arms a record a stop left unarmed first, so no unshield leaves without an armed record (one dispatched before records were kept has none and reads as `Incoming`, as before). The signed transition's total must equal the quoted total (credits plus fee). The activity reads settle it by the spend's artifact (executed by the library's own proof: `Done`, rule 2, a confirmed but unattributable spend stays `Pending`; not executed: `Failed`, each part of its absorbed rise taken over by the address's other records armed before that part was read, and the rest given back as `Incoming`); a done record's rise still to read takes from what the first read above its settled height that compares its address finds `Incoming` there, the oldest record's first, and what that read does not show is never taken from a later rise, only from a give-back. A fund's give-back (a closed fund, a removed restored one) offers each absorbed part to the address's records armed before it first; fund records keep their parts only when the address has a `FromShielded` record, so other funds are written as before (`changes` is unchanged). `unshield_to_platform` returns `UnshieldToPlatformOutcome` with the record's row id.
 
-101. **A top-up from Platform as its Confirm showed (C-routes D-C3 review, version 80).** `top_up_from_platform`
+102. **A top-up from Platform as its Confirm showed (C-routes D-C3 review, version 81).** `top_up_from_platform`
     takes `fee_input: Option<PlatformAddressRow>`, its quote's input 0 (the fee source): a plan at submit that takes
     its fee another way (another address, or the same one with another claim) is `credits.quote_changed` before the
     grant is used, nothing signed. A plan that differs only by the input count's reserve is re-planned at each
