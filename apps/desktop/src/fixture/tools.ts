@@ -23,7 +23,7 @@ import type { VerifyMessageResult } from "../api/generated/VerifyMessageResult";
 import type { AppError, AppEvent } from "../api/generated/commands";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
-import { coinJoinAccount, DRAIN_STEP, selfSpendFee } from "./coinjoin";
+import { coinJoinAccount, DRAIN_STEP, mixerBusy, selfSpendFee } from "./coinjoin";
 import { classifyAddress, owns } from "./send";
 import { SHIELD_STEP } from "./shielded";
 import { FIXTURE_DATA_DIR } from "./settings";
@@ -72,6 +72,8 @@ export interface ToolsWorld {
   resets: number;
   /** What `history_gap` answers; a reset clears it. */
   historyGap: WalletHistoryGap | null;
+  /** A signed mixing round still holds its inputs: `reset_chain_data` is refused. */
+  inputsHeld: boolean;
   addressBook: Record<string, AddressBookEntry[]>;
   psbts: Record<string, FixturePsbt>;
   /** Every PSBT broadcast, in order. */
@@ -128,6 +130,7 @@ export function newToolsWorld(main: FixtureWallet): ToolsWorld {
     rescanStep: 10_000,
     resets: 0,
     historyGap: null,
+    inputsHeld: false,
     addressBook: { [walletId]: newAddressBook(main) },
     psbts: {
       [FIXTURE_PSBT.unsigned]: {
@@ -444,6 +447,9 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
     },
     reset_chain_data: (_, { world }) => {
       if (world.sync.running) throw fail("spv_running", "SPV is running");
+      if (world.wallets.some((w) => mixerBusy(world, w.summary.walletId)))
+        throw fail("app.network_busy", "mixing", { kind: "networkBusy", flows: [], stalled: false, mixing: true, broadcast: false, draining: false });
+      if (world.tools.inputsHeld) throw fail("coinjoin.inputs_held", "a signed mixing round still holds its inputs");
       world.tools.resets += 1;
       world.tools.historyGap = null;
       return null;

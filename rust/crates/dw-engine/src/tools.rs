@@ -1011,7 +1011,11 @@ impl NetworkSession {
     }
 
     /// QT-148 "Rebuild Index" equivalent: deletes the SPV chain data and
-    /// keeps wallets, vault and app data. SPV must be stopped. Every
+    /// keeps wallets, vault and app data. SPV must be stopped, no wallet
+    /// mixing or with a session open (`MixingActive`), and no signed
+    /// round's inputs held (`InputsHeld`): the reset would hide that
+    /// round's transaction from the wallet. Mixing does not start while it
+    /// runs. Every
     /// wallet's filter checkpoint goes back below its birth height, so the
     /// next `start_spv` syncs headers again and rescans each wallet.
     pub async fn reset_chain_data(self: &Arc<Self>) -> Result<(), EngineError> {
@@ -1023,6 +1027,8 @@ impl NetworkSession {
             if this.platform_spv_state(&manager) != crate::SpvState::Stopped {
                 return Err(EngineError::SpvRunning);
             }
+            this.expire_all_held();
+            let _coinjoin = this.coinjoin.claim_reset()?;
             let wallets: Vec<(WalletId, u32)> = (manager.list_wallet_ids_blocking().into_iter())
                 .map(|id| {
                     let wallet = WalletId(id);

@@ -59,6 +59,30 @@ test("the reset asks as Repair does, and the notice goes once it has run", async
   expect(errors).toEqual([]);
 });
 
+test("a reset refused while mixing says so, and sync runs again", async ({ page }) => {
+  const errors = await open(page, "history-gap-mixing", "light");
+  await page.getByTestId("history-gap-reset").click();
+  await page.getByTestId("history-gap-confirm-ok").click();
+  await expect(page.getByTestId("history-gap-error")).toHaveText("CoinJoin is mixing. Stop mixing first, then try again.");
+  await expect(page.getByTestId("history-gap-notice")).toBeVisible();
+  await expect(page.getByTestId("history-gap-reset")).toBeEnabled();
+  await expect(page.getByTestId("status-bar")).toContainText("8 peers");
+  expect(errors).toEqual([]);
+});
+
+test("a reset refused while a mixing round settles says to wait, and sync runs again", async ({ page }) => {
+  const errors = await open(page, "history-gap-settling", "light");
+  await page.getByTestId("history-gap-reset").click();
+  await page.getByTestId("history-gap-confirm-ok").click();
+  await expect(page.getByTestId("history-gap-error")).toHaveText(
+    "A CoinJoin round that just finished is still settling, so chain data can't be reset yet. This takes up to an hour. Try again then.",
+  );
+  await expect(page.getByTestId("history-gap-notice")).toBeVisible();
+  await expect(page.getByTestId("history-gap-reset")).toBeEnabled();
+  await expect(page.getByTestId("status-bar")).toContainText("8 peers");
+  expect(errors).toEqual([]);
+});
+
 test("Not now hides the notice until the app starts again", async ({ page }) => {
   await open(page, "history-gap", "light");
   await page.getByTestId("history-gap-not-now").click();

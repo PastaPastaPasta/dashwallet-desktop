@@ -99,7 +99,8 @@ pub enum CoinJoinFailure {
     /// The coins a move or consolidation would spend are not those of the
     /// plan the user confirmed (another set, or a higher fee): plan again.
     PlanChanged,
-    /// The recovery scan needs a running SPV client.
+    /// The recovery scan needs a running SPV client; mixing does not start
+    /// while chain data is reset.
     SpvNotRunning,
     NoPeers,
     /// A peer rejected a sweep transaction; the reason is Core's.
@@ -110,6 +111,10 @@ pub enum CoinJoinFailure {
     /// Mixing, or another move, waits for a running move of the wallet's
     /// mixed coins to end.
     MoveRunning,
+    /// A reset of chain data waits for the inputs of a signed mixing round,
+    /// held until the wallet sees its transaction or the observation
+    /// timeout passes.
+    InputsHeld,
 }
 
 impl std::fmt::Display for CoinJoinFailure {
@@ -129,6 +134,7 @@ impl std::fmt::Display for CoinJoinFailure {
             Self::BroadcastRejected(r) => write!(f, "broadcast rejected: {r}"),
             Self::MixingActive => f.write_str("stop mixing first"),
             Self::MoveRunning => f.write_str("a move of the mixed coins is running"),
+            Self::InputsHeld => f.write_str("a signed mixing round still holds its inputs"),
         }
     }
 }
@@ -446,6 +452,17 @@ impl Drop for SweepClaim<'_> {
     }
 }
 
+/// A reset of chain data's claim on CoinJoin: while it lives no mixing
+/// starts ([`CoinJoinRuntime::claim_reset`]).
+pub(crate) struct ResetClaim<'a>(&'a CoinJoinRuntime);
+
+impl Drop for ResetClaim<'_> {
+    fn drop(&mut self) {
+        let _mixers = self.0.mixers();
+        self.0.resetting.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Per-session CoinJoin state (one per [`NetworkSession`]).
 pub(crate) struct CoinJoinRuntime {
     settings: RwLock<CoinJoinSettings>,
@@ -461,6 +478,8 @@ pub(crate) struct CoinJoinRuntime {
     quotes: Mutex<HashMap<(WalletId, SweepTarget), SweepQuote>>,
     /// V24 was seen active on this network; it never deactivates.
     v24_seen: AtomicBool,
+    /// Chain data is being reset; set and read under the mixers lock.
+    resetting: AtomicBool,
     /// Tests: stand-ins for a sweep's broadcast and chunk size.
     #[cfg(test)]
     pub(crate) sweep_hooks: Mutex<sweep_test_hooks::Hooks>,
@@ -479,6 +498,7 @@ impl CoinJoinRuntime {
             listener: Mutex::new(None),
             quotes: Mutex::new(HashMap::new()),
             v24_seen: AtomicBool::new(false),
+            resetting: AtomicBool::new(false),
             #[cfg(test)]
             sweep_hooks: Mutex::default(),
         }
@@ -586,6 +606,23 @@ impl CoinJoinRuntime {
         })
     }
 
+    /// Claims CoinJoin for a reset of chain data: refused while a wallet
+    /// mixes or a session of one is open (`MixingActive`), or a signed
+    /// round's inputs are held (`InputsHeld`). Checked and taken under the
+    /// lock `start_mixing` sets the mixing flag under, so exactly one of the
+    /// two wins.
+    pub(crate) fn claim_reset(&self) -> Result<ResetClaim<'_>, CoinJoinFailure> {
+        let mixers = self.mixers();
+        if mixers.values().any(|m| m.mixing || !m.sessions.is_empty()) {
+            return Err(CoinJoinFailure::MixingActive);
+        }
+        if mixers.values().any(|m| !m.held.is_empty()) {
+            return Err(CoinJoinFailure::InputsHeld);
+        }
+        self.resetting.store(true, Ordering::SeqCst);
+        Ok(ResetClaim(self))
+    }
+
     fn sweeping(&self, id: &WalletId) -> bool {
         self.mixers().get(id).is_some_and(|m| m.sweeping)
     }
@@ -594,6 +631,50 @@ impl CoinJoinRuntime {
     #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     pub(crate) fn set_mixing_for_test(&self, id: WalletId, mixing: bool) {
         self.mixers().entry(id).or_default().mixing = mixing;
+    }
+
+    /// Tests: opens one mixing session of `id` with no masternode behind it,
+    /// or (`open` false) drops every open session of `id`.
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+    pub(crate) fn set_open_session_for_test(&self, id: WalletId, open: bool) {
+        let mut mixers = self.mixers();
+        let m = mixers.entry(id).or_default();
+        if !open {
+            m.sessions.clear();
+            return;
+        }
+        let key = m.next_session;
+        m.next_session += 1;
+        m.sessions.insert(
+            key,
+            SessionSlot {
+                masternode: PeerEntry {
+                    pro_tx_hash: [0; 32],
+                    service: None,
+                    operator_public_key: [0; 48],
+                    is_valid: true,
+                    is_evonode: false,
+                },
+                progress: SessionProgress {
+                    state: PoolState::Queue,
+                    session_id: 0,
+                    denom: 0,
+                    entries: 0,
+                    last_message: None,
+                    status: StatusCode::TryingToConnect,
+                },
+                stop: watch::channel(false).0,
+            },
+        );
+    }
+
+    /// Tests: `input` held by `owner` since now, as a session that signed
+    /// and ended leaves it.
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+    pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
+        let mut mixers = self.mixers();
+        let held = &mut mixers.entry(id).or_default().held;
+        held.insert((input, owner), now_secs());
     }
 
     fn any_mixing(&self) -> bool {
@@ -1558,6 +1639,9 @@ impl NetworkSession {
                 // A move claimed the account since the check above.
                 if m.sweeping {
                     return Err(CoinJoinFailure::MoveRunning.into());
+                }
+                if this.coinjoin.resetting.load(Ordering::SeqCst) {
+                    return Err(CoinJoinFailure::SpvNotRunning.into());
                 }
                 m.mixing = true;
                 m.stopping = false;
@@ -2544,6 +2628,14 @@ impl NetworkSession {
             this.refresh_coinjoin_status(wallet_id).await;
         });
         Ok(())
+    }
+
+    /// [`Self::expire_held`] for every wallet with mixing state.
+    pub(crate) fn expire_all_held(&self) {
+        let wallets: Vec<WalletId> = self.coinjoin.mixers().keys().copied().collect();
+        for wallet in wallets {
+            self.expire_held(wallet);
+        }
     }
 
     /// Releases held inputs older than the observation timeout and drops

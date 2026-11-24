@@ -2681,6 +2681,45 @@ fn a_switch_refuses_while_a_flow_holds_a_lease() {
     assert_eq!(demo.active(), "testnet");
 }
 
+/// A reset of chain data is refused, as a network switch is, while a wallet
+/// mixes and while a mixing session is still open after mixing stopped. It
+/// goes ahead once mixing has stopped and its sessions have closed.
+#[test]
+fn a_reset_of_chain_data_refuses_while_mixing_a_session_is_open_or_inputs_are_held() {
+    let demo = launched_on_mainnet();
+    let (wallet, _) = mainnet_wallet_and_draft(&demo);
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let id = crate::state::parse_wallet_id(wallet.as_str().unwrap()).unwrap();
+    demo.ok("stop_spv", json!({}));
+
+    dw_engine::test_support::set_mixing(&session, id, true);
+    let e = demo.err("reset_chain_data", json!({}), "app.network_busy");
+    assert_eq!(e["data"]["mixing"], true, "{e}");
+
+    dw_engine::test_support::set_mixing(&session, id, false);
+    dw_engine::test_support::set_open_mixing_session(&session, id, true);
+    let e = demo.err("reset_chain_data", json!({}), "app.network_busy");
+    assert_eq!(e["data"]["mixing"], true, "{e}");
+
+    dw_engine::test_support::set_open_mixing_session(&session, id, false);
+    dw_engine::test_support::hold_signed_round_input(&session, id);
+    assert!(!session.mixing_busy());
+    demo.err("reset_chain_data", json!({}), "coinjoin.inputs_held");
+}
+
+#[test]
+fn a_reset_of_chain_data_runs_once_mixing_stopped() {
+    let demo = launched_on_mainnet();
+    let (wallet, _) = mainnet_wallet_and_draft(&demo);
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let id = crate::state::parse_wallet_id(wallet.as_str().unwrap()).unwrap();
+    demo.ok("stop_spv", json!({}));
+    dw_engine::test_support::set_mixing(&session, id, true);
+    demo.err("reset_chain_data", json!({}), "app.network_busy");
+    demo.ok("stop_mixing", json!({ "walletId": wallet }));
+    demo.ok("reset_chain_data", json!({}));
+}
+
 /// Row 74 r1: a wallet mixing refuses the switch.
 #[test]
 fn a_switch_refuses_while_a_wallet_mixes() {

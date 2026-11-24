@@ -123,6 +123,10 @@ export function repairErrorText(e: unknown): string {
       return t("tools.repair.errors.noPeers");
     case "not_implemented":
       return t("tools.repair.errors.notImplemented");
+    case "coinjoin.inputs_held":
+      return t("tools.repair.errors.inputsHeld");
+    case "app.network_busy":
+      return e.data?.kind === "networkBusy" && e.data.mixing ? t("settings.updates.busy.mixing") : failureText(e);
     case "stuck_funding":
       return e.data?.kind === "stuckFunding" ? stuckFundingText(e.data.refusal, e.data.retryLater) : e.message;
     default:

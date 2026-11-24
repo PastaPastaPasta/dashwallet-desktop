@@ -1254,6 +1254,13 @@ const SCENARIOS = {
     w.tools.historyGap = { startHeight: 1_100_000, walletIds: [w.wallets[0].summary.walletId] };
     return w;
   },
+  /** The notice with mixing stopped but a signed round's inputs still held: its reset is refused. */
+  "history-gap-settling": (t) => {
+    const w = base(t);
+    w.tools.historyGap = { startHeight: 1_100_000, walletIds: [w.wallets[0].summary.walletId] };
+    w.tools.inputsHeld = true;
+    return w;
+  },
   /** The same for two wallets. */
   "history-gap-two-wallets": (t) => {
     const w = twoWallets(base(t));

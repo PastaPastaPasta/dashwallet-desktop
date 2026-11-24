@@ -130,6 +130,29 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(calls).toEqual(["stop", "start"]);
   });
 
+  it("a reset while mixing is refused as a network switch is, and sync starts again", async () => {
+    const { model, api, calls } = setup();
+    api.resetChainData.mockRejectedValueOnce(
+      appError("app.network_busy", { kind: "networkBusy", flows: [], stalled: false, mixing: true, broadcast: false, draining: false }),
+    );
+    model.ask("resetChainData");
+    await model.confirm();
+    expect(model.state).toEqual({ kind: "failed", text: "CoinJoin is mixing. Stop mixing first, then try again." });
+    expect(calls).toEqual(["stop", "start"]);
+  });
+
+  it("a reset while a signed round's inputs are held says to wait, and sync starts again", async () => {
+    const { model, api, calls } = setup();
+    api.resetChainData.mockRejectedValueOnce(appError("coinjoin.inputs_held"));
+    model.ask("resetChainData");
+    await model.confirm();
+    expect(model.state).toEqual({
+      kind: "failed",
+      text: "A CoinJoin round that just finished is still settling, so chain data can't be reset yet. This takes up to an hour. Try again then.",
+    });
+    expect(calls).toEqual(["stop", "start"]);
+  });
+
   it("QT148_aStopThatFailsAfterStoppingStillStartsSyncAgain", async () => {
     const { model, api, calls } = setup();
     api.stopSpv.mockRejectedValueOnce(appError("platform.timeout"));
