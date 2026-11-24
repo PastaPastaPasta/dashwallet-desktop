@@ -1,12 +1,13 @@
 //! The kill -9 matrix's harness (ROADMAP H-03): a row's child process (this
 //! test binary, re-run on one `#[ignore]`d child test) takes an operation to
-//! a named point and reports; the parent sends it SIGKILL, opens the same
+//! a named point and reports; the parent kills it (SIGKILL on Unix,
+//! TerminateProcess on Windows), opens the same
 //! data folder again and checks the state it finds.
 //!
 //! The rows are opt-in, run by the nightly job:
 //! `cargo test -p dw-engine --lib kill9 -- --ignored --skip kill9_finding`;
 //! R5b's (`send/contact_tests/kill9.rs`) run in every suite, Windows
-//! included, as they did before they moved onto this harness. The parent
+//! included. The parent
 //! unlocks the vault of the folder it opens again ([`engine_at`]).
 //! A `kill9_finding_<issue>` row reproduces an open issue and stays out of
 //! it until the fix. A child test does nothing unless this harness started
@@ -17,6 +18,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 mod import;
 
 use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, UnlockScope, VaultConfig};
@@ -96,6 +98,7 @@ pub(crate) fn engine_at(
 
 /// Closes `engine` and waits for its sessions to release the data folder,
 /// so the next [`engine_at`] on it in this process can open it.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn close(engine: Engine) {
     engine.block_on(engine.shutdown()).unwrap();
 }
@@ -126,7 +129,7 @@ pub(crate) fn scratch(child: &Child) -> tempfile::TempDir {
 }
 
 /// Runs the child test `test` (its full path in this binary) for `row` up
-/// to `point`, kills it with SIGKILL once it reports, and returns its data
+/// to `point`, kills it once it reports, and returns its data
 /// folder and report.
 pub(crate) fn killed_at(test: &str, row: &str, point: &str) -> (tempfile::TempDir, String) {
     let dir = dw_testutil::private_tempdir();
@@ -157,8 +160,9 @@ pub(crate) fn killed_at(test: &str, row: &str, point: &str) -> (tempfile::TempDi
     // `Child::kill` is SIGKILL on Unix and TerminateProcess on Windows: no
     // destructor, close or flush runs.
     child.kill().unwrap();
-    #[cfg_attr(not(unix), allow(unused_variables))]
     let status = child.wait().unwrap();
+    #[cfg(not(unix))]
+    assert!(!status.success(), "{status:?}");
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;

@@ -231,12 +231,13 @@ fn kill9_r6a_abandon_killed_before_its_rescan_frees_the_coins_after_it() {
     let last = seen(&engine, &session, id, txid, &inputs);
     settled(&last, "relaunched after the rescan");
     assert_eq!(last.replay, None, "the rescan runs again: {last:?}");
-    assert!(last.synced >= TIP, "{last:?}");
+    assert!(last.synced > TIP, "{last:?}");
     let source = CoinSource::Outpoints(inputs.iter().copied().collect());
     let (_, spend) = prepare(&engine, &session, id, source);
     let spent: BTreeSet<OutPoint> = (spend.summary().inputs.iter())
         .map(|i| i.outpoint)
         .collect();
-    assert!(spent.is_subset(&inputs), "{spent:?}");
+    assert_eq!(spent, inputs, "the recovered coins pay");
+    drop(spend);
     kill9::close(engine);
 }

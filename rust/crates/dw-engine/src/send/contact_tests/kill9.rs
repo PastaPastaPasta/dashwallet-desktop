@@ -1,5 +1,5 @@
-//! H-03 rows R5a and R5b: a contact payment to Bob killed with SIGKILL in a
-//! child process.
+//! H-03 rows R5a and R5b: a contact payment to Bob killed in a child
+//! process.
 //!
 //! R5a: after its gate passed and his address was reserved, before anything
 //! marks it sent; after the relaunch the contact is not locked, no lock row
