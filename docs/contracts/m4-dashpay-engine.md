@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 77
+Contract-Version: 78
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -75,7 +75,7 @@ type is `pub(crate)`.
 | `platform_addresses.rs` | release 0.1, lane E2; 0.2 X1b | `platform_addresses`, `platform_activity`, `sync_platform_addresses`, `move_to_core_quote`, `move_to_core`, `platform_receive_address`, `platform_send_quote`, `platform_send`, `platform_fund_quote`, `platform_fund`, `pending_platform_funds`, `resume_platform_fund` |
 | `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
-| `shielded.rs` | 0.1 E1 (RELEASE-PLAN §1 "Shielded") | `shielded_status`, `shielded_sync`, `shielded_receive_address`, `shield_quote`, `shield_from_core`, `resume_shield`, `shield_mixed_quote`, `stuck_shield_fundings`, `shield_mixed_coins`, `shielded_send_quote`, `shielded_send`, `unshield_quote`, `unshield_to_core`, `shielded_history` |
+| `shielded.rs` | 0.1 E1 (RELEASE-PLAN §1 "Shielded") | `shielded_status`, `shielded_sync`, `shielded_receive_address`, `shield_quote`, `shield_from_core`, `resume_shield`, `shield_mixed_quote`, `stuck_shield_fundings`, `shield_mixed_coins`, `shielded_send_quote`, `shielded_send`, `unshield_quote`, `unshield_to_core`, `unshield_to_platform_quote`, `unshield_to_platform`, `shielded_history` |
 | `unfinished.rs` | 0.2 RECOVERY | `unfinished_transfers`, `finish_transfer` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
 
@@ -714,7 +714,7 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   unchanged. The library does not ask about a spend stored before any hook was set (a 0.1 one): the pass's own
   admission above holds the lease and the schema-9 record. A locked wallet's pass still scans; its hooked re-sends
   wait for the lease at `admit`.
-- **Without the hook** nothing is sent: `shielded_send` and `unshield_to_core` are `platform.unavailable` before any
+- **Without the hook** nothing is sent: `shielded_send`, `unshield_to_core` and `unshield_to_platform` are `platform.unavailable` before any
   quote, any address is issued, the grant or any key, no pass is admitted, and a coordinator whose hook did not set is not
   handed to any call (the next call sets it or fails the same way).
 - **A refused spend** (`shielded.spend_refused`, "The payment was not sent"): the engine refused it before its first
@@ -877,6 +877,8 @@ again after a restart (the step's signed-lock record, the library's tracked row,
 | `shielded_send(to, credits, memo, grant, confirm_unrecorded)` | async | Shielded → Shielded: `invalid_argument` for a memo over 36 bytes and `shielded.invalid_address`, then `shielded.not_synced{journal}` while the dispatch journal is not read (only a closing session's, §2.13) (`platform.unavailable` if it cannot be) and `shielded.unrecorded_spend` while the wallet holds an unrecorded spend and `confirm_unrecorded` is false (DEC-1057, above), then the quote's refusals, then under the `ShieldedSpend` lease, quoted again once no sync pass can move the notes and charged that total (a fee above what the grant confirmed is `platform.grant_exceeded`, nothing signed), the library's transfer from account 0's notes to `to` (change to the account's own address), proved, accepted by the dispatch hook and broadcast, waiting for Platform's proved result. `platform.unavailable` while the hook is not set, before the grant is redeemed; `shielded.spend_refused` when the spend was refused before anything was sent (§2.13 "The dispatch hook"). Returns `ShieldedSpendOutcome{credits, balance, to, state, unresolved}`: `state` `done`, or `pending` for a broadcast with no proved answer ("Unconfirmed spends" above; no retry) and for a send that failed after the library stored it (`unresolved` names the retained armed transition, or is `null` when only an unresolved disposition holds the notes; "The dispatch hook"). | `ShieldedError` |
 | `unshield_quote(credits, to)` | async | As `shielded_send_quote` for a withdrawal to Core: `to` a P2PKH or P2SH address of the network, or the wallet's next receive address when `None` (`shielded.invalid_address` otherwise), plus `expected_duffs`, what reaches the address. | `ShieldedError` |
 | `unshield_to_core(credits, to, grant, confirm_unrecorded)` | async | Shielded → Core: the journal and `confirm_unrecorded` gates as `shielded_send`'s, then the quote's refusals, then under the `ShieldedSpend` lease the library's `withdraw` to `to` at Core fee rate 1, as `shielded_send` otherwise. The duffs arrive when Platform's asset unlock is mined. Platform refuses a withdrawal from a pool holding fewer than its minimum of notes (250 in every version at the pin, `minimum_pool_notes_for_outgoing`); that refusal is `shielded.pool_too_small{notes, required}` ("Shielded withdrawals open once the network's shielded pool has enough activity. Try again later."). The engine does not check the floor first: mainnet and testnet are past it. | `ShieldedError` |
+| `unshield_to_platform_quote(credits, to)` | async | Off on mainnet: `platform.feature_off{feature: "unshield_to_platform"}` first, before any read, grant or write. As `shielded_send_quote` for an unshield to one of the wallet's own Platform addresses (C-routes D-C1, C1b): `to` a Platform address of the network (bech32m, `shielded.invalid_address` otherwise) in the wallet's Platform payment account (`shielded.invalid_address{detail: "not this wallet's Platform address"}` otherwise), or its receive address (`platform_receive_address`'s) when `None`. Platform's fee for an unshield (the transfer's plus the flat cost of the address's credit, `compute_shielded_unshield_fee`); `credits` above 0 (`shielded.below_minimum{min: 1}`) and at most `i64::MAX`; `expected_duffs` is `None`. | `ShieldedError` |
+| `unshield_to_platform(credits, to, grant, confirm_unrecorded)` | async | Off on mainnet: `platform.feature_off{feature: "unshield_to_platform"}` first, before any read, grant or write. Shielded → Platform: the hook, journal and `confirm_unrecorded` gates as `unshield_to_core`'s, then the own-address rule above (before the quote and the grant: a refusal keeps the grant), then the quote's refusals, then under the `ShieldedSpend` lease the library's keyset unshield (`shielded_unshield_to_with_keyset` with the keyset the vault derives: the seed never leaves the vault, and the call never uses the seed-taking `shielded_unshield_to`) to that address, as `unshield_to_core` otherwise: the same pending outcomes, `platform.broadcast_unknown{artifact: "shielded unshield"}` and `shielded.pool_too_small{notes, required}`. It takes the shielded wallet lock and no Platform-address lock: it spends no address nonce, so a held move does not refuse it. The outcome's `to` is the address paid, bech32m. The dispatch artifact's kind is `unshield`. | `ShieldedError` |
 | `shielded_history(offset, limit)` | async | The account's activity rows (`ShieldedActivity`), pending first, then by block height, newest first: kind, direction, credits, fee, counterparty (a shielded, Platform or Core address), memo, block height, status and when this device recorded it. `limit` above 500 is `invalid_argument`. The gate. | `ShieldedError` |
 
 ### 2.14 Unfinished transfers (`unfinished.rs`; 0.2 RECOVERY)
@@ -966,7 +968,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 2e2331e9c4bb50183ae9e75699d85322ca0e43e2dcdfcd94303d4d16f8f5b9e1 version: 77 -->
+<!-- surface-sha256: 3f1e7497c7090c7089e794ed85ef6f84205cb053f29014cd59b19502d33ae5c5 version: 78 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2538,6 +2540,8 @@ impl DashPay {
     pub async fn shielded_send(&self, to: String, credits: u64, memo: Option<String>, grant: String, confirm_unrecorded: bool) -> Result<ShieldedSpendOutcome, ShieldedError>;
     pub async fn unshield_quote(&self, credits: u64, to: Option<String>) -> Result<ShieldedSpendQuote, ShieldedError>;
     pub async fn unshield_to_core(&self, credits: u64, to: Option<String>, grant: String, confirm_unrecorded: bool) -> Result<ShieldedSpendOutcome, ShieldedError>;
+    pub async fn unshield_to_platform_quote(&self, credits: u64, to: Option<String>) -> Result<ShieldedSpendQuote, ShieldedError>;
+    pub async fn unshield_to_platform(&self, credits: u64, to: Option<String>, grant: String, confirm_unrecorded: bool) -> Result<ShieldedSpendOutcome, ShieldedError>;
     pub async fn shielded_history(&self, offset: u32, limit: u32) -> Result<Vec<ShieldedActivity>, ShieldedError>;
 }
 // src/platform/startup.rs
@@ -4724,3 +4728,5 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     (P10):** `PlatformActivityKind::ContactPayment` rows, with `PlatformActivity.contact` from the payout row.
     `ContactError` gains `Credits` for the move's own refusals (`credits.move_pending`,
     `credits.withdrawal_out_of_range`).
+
+99. **Shielded → Platform (C-routes D-C1, slice C1b-1, version 78).** `unshield_to_platform_quote` and `unshield_to_platform` (§2.13): off on mainnet (flag `unshield_to_platform`: both refuse `platform.feature_off{feature: "unshield_to_platform"}` first, before the wallet or its shielded store is opened and before any read, grant or write; on elsewhere, until its funds ruling); an unshield from the wallet's notes to one of its own Platform addresses (C1-1: the Platform payment account; its receive address by default), through platform-wallet's keyset entry point under the dispatch hook, with `unshield_to_core`'s gates and outcomes. A foreign `to` is refused before the grant. Attribution of the address's rise (`FromShielded`) is a later slice; until then the rise reads as an `incoming` row.
