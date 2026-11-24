@@ -21,6 +21,10 @@ export interface MoreRow {
   id: number;
   /** The row's recipient once complete and checked; `null` while it is not. */
   recipient: Recipient | null;
+  /** Its amount as parsed, whatever the address: Max pays around it. */
+  amount: number | null;
+  /** Its amount field settled (Max waits for every row). */
+  settled: boolean;
   subtractFee: boolean;
 }
 
@@ -40,7 +44,7 @@ export function MoreRecipient({
   network: NetworkInfo;
   shown: Shown;
   fieldError: (f: "address" | "amount") => string | null;
-  onChange: (recipient: Recipient | null) => void;
+  onChange: (recipient: Recipient | null, amount: number | null, settled: boolean) => void;
   onSubtractFee: (on: boolean) => void;
   onRemove: () => void;
 }) {
@@ -64,9 +68,10 @@ export function MoreRecipient({
     checked === addr && amount.settled && !amount.fiat.error && cls.data?.kind === "core" && typeof duffs === "number" && duffs > 0
       ? recipientOf({ address: checked, amount: duffs, subtractFee: row.subtractFee, label, message: "" })
       : null;
-  const key = recipient ? JSON.stringify(recipient) : null;
+  const parsed = typeof duffs === "number" && duffs > 0 ? duffs : null;
+  const key = JSON.stringify([recipient, parsed, amount.settled]);
   useEffect(() => {
-    onChange(recipient);
+    onChange(recipient, parsed, amount.settled);
     // `key` is the recipient's value: a new object of the same value is no change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);

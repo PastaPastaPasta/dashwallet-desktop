@@ -56,7 +56,7 @@ for (const theme of THEMES)
     await expect(page.getByTestId("pay-confirm-recipient-1")).toContainText("Bob");
     const fee = Number((await page.getByTestId("pay-confirm-fee").innerText()).replace(/[^0-9.]/g, ""));
     await expect(page.getByTestId("pay-confirm-recipient-1")).toContainText((0.2 - fee).toFixed(8));
-    await expect(page.getByTestId("pay-confirm")).toContainText("The fee is subtracted from Bob's amount");
+    await expect(page.getByTestId("pay-confirm-subtract-many")).toContainText("of the fee is subtracted from Bob's amount");
     await shot(page, "pay-many-confirm", theme);
     await page.getByTestId("pay-confirm-passphrase").fill("demo");
     await page.getByTestId("pay-confirm-send").click();
@@ -79,9 +79,23 @@ test("a removed row leaves the payment, a refused row says so, and mainnet has n
   await page.getByTestId("pay-add-recipient").click();
   await page.getByTestId("pay-more-2-address").fill(PAYEE);
   await page.getByTestId("pay-more-2-amount").fill("0.1");
-  // The same address twice: the engine refuses it.
+  // The same address twice: the engine refuses it, on the repeated row.
   await expect(page.getByTestId("pay-continue")).toBeDisabled();
   await expect(page.getByTestId("pay-problem")).toBeVisible();
+  await expect(page.getByTestId("pay-more-2")).toContainText(await page.getByTestId("pay-problem").innerText());
+  // Max waits for every row's amount, and pays around it.
+  await page.getByTestId("pay-more-2-address").fill("");
+  await page.getByTestId("pay-max").click();
+  await expect.poll(async () => Number(await page.getByTestId("pay-amount").inputValue())).toBeGreaterThan(0);
+  const max = Number(await page.getByTestId("pay-amount").inputValue());
+  await page.getByTestId("pay-amount").fill("0.1");
+  await page.getByTestId("pay-more-2-remove").click();
+  await page.getByTestId("pay-max").click();
+  await expect.poll(async () => Number(await page.getByTestId("pay-amount").inputValue())).toBeCloseTo(max + 0.1, 6);
+  await page.getByTestId("pay-amount").fill("0.1");
+  await page.getByTestId("pay-add-recipient").click();
+  await page.getByTestId("pay-more-2-address").fill(PAYEE);
+  await page.getByTestId("pay-more-2-amount").fill("0.1");
   await page.getByTestId("pay-more-2-remove").click();
   await expect(page.getByTestId("pay-more-2")).toHaveCount(0);
   await expect(page.getByTestId("pay-continue")).toBeEnabled();

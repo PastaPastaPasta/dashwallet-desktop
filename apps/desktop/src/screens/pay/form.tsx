@@ -314,21 +314,26 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
 }
 
 /** Max (U-03): everything the chosen coins can pay, the fee subtracted from it. */
-export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: (amountText: string) => void, othersTotal = 0) {
+export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: (amountText: string) => void, othersTotal = 0, othersPending = false) {
   const b = useBackend();
   const [error, setError] = useState<string | null>(null);
   const fee = feeMode(advanced);
+  // The added recipients' total now: an answer for another total is dropped.
+  const others = useRef(othersTotal);
+  others.current = othersTotal;
   const run = async () => {
     setError(null);
-    if (!fee) return;
+    if (!fee || othersPending) return;
+    const asked = others.current;
     try {
+      const max = await b.maxSpendable(walletId, coinSource(advanced), fee);
       // With added recipients, Max is what is left once they are paid.
-      set(shown.full(Math.max(0, (await b.maxSpendable(walletId, coinSource(advanced), fee)) - othersTotal)));
+      if (asked === others.current) set(shown.full(Math.max(0, max - asked)));
     } catch (e) {
       setError(sendErrorText(e, shown.chain, shown.amountUnit)?.text ?? errorMessage(e));
     }
   };
-  return { run, error, disabled: !fee };
+  return { run, error, disabled: !fee || othersPending };
 }
 
 /** The amount with Max, then Subtract fee (U-03), and the fiat toggle with the other unit under it

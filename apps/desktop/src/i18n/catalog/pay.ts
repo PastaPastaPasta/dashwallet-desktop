@@ -104,7 +104,7 @@ export const pay = {
     remove: "Remove",
     platform: "A Dash Platform address can't be added to a payment. Pay it on its own.",
     /** Shown under Add recipient while the feature is testnet-only. */
-    testnetOnly: "Paying several recipients at once is available on testnet only in this version.",
+    testnetOnly: "Paying several recipients at once is available on test networks only in this version.",
   },
   toAddress: {
     form: "Pay to an address",
@@ -188,7 +188,8 @@ export const pay = {
     total: "Total",
     subtractNote: "The fee is subtracted from the amount: the payee receives the amount above.",
     /** A payment to several recipients: one of them may pay the fee from its amount. */
-    subtractNoteMany: "The fee is subtracted from {address}'s amount: each recipient receives the amount shown.",
+    /** `amount`: what was taken from that recipient's entered amount. */
+    subtractNoteMany: "{amount} of the fee is subtracted from {address}'s amount: each recipient receives the amount shown.",
     /** The row of each recipient in a payment to several. */
     recipients: { one: "{count} recipient", other: "{count} recipients" },
     changeNote: "The total includes the change: the custom change address may not belong to this wallet.",

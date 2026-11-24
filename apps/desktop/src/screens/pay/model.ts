@@ -514,6 +514,8 @@ export function unsignedKeepsPromise(c: Confirmed, a: PsbtAnalysis): boolean {
   const rs = [recipient, ...c.more];
   const received = receivedAmounts(rs, estimate.totalSent);
   if (!received || new Set(rs.map((r) => r.address)).size !== rs.length) return false;
+  // The payments add up to what the sheet showed as sent (a planner's estimate that disagrees is no promise kept).
+  if (received.reduce((n, a) => n + a, 0) !== estimate.totalSent) return false;
   const rest = takePayments(a.outputs, rs, received);
   if (rest === null) return false;
   const change =

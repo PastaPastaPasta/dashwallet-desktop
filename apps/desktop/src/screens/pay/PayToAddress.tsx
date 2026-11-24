@@ -149,7 +149,8 @@ export function PayToAddress({
       ? recipientOf({ address: checkedAddr, amount: duffs, subtractFee, label, message })
       : null;
   const moreRecipients = more.every((r) => r.recipient) ? more.map((r) => r.recipient!) : null;
-  const othersTotal = more.reduce((n, r) => n + (r.recipient?.amount ?? 0), 0);
+  const othersTotal = more.reduce((n, r) => n + (r.amount ?? 0), 0);
+  const rowsSettled = more.every((r) => r.settled);
   const spec = draftSpec(recipient, advanced, multi ? moreRecipients : []);
   const available = useAvailable(walletId, advanced, sheets.held);
 
@@ -164,6 +165,7 @@ export function PayToAddress({
       setSubtractFee(true);
     },
     othersTotal,
+    !rowsSettled,
   );
 
   const review = (from: "review" | "psbt") => {
@@ -265,20 +267,21 @@ export function PayToAddress({
             </>
           )}
         </section>
-        {!platform &&
-          multi &&
+        {multi &&
           more.map((row, i) => (
+            // Hidden, not unmounted, while the first address is a Platform one: the rows keep what was typed.
+            <div key={row.id} hidden={platform}>
             <MoreRecipient
-              key={row.id}
               row={row}
               number={i + 2}
               network={network}
               shown={shown}
               fieldError={(f) => fieldError(f, i + 1)}
-              onChange={(r) => setMore((rows) => rows.map((x) => (x.id === row.id ? { ...x, recipient: r } : x)))}
+              onChange={(r, amount, settled) => setMore((rows) => rows.map((x) => (x.id === row.id ? { ...x, recipient: r, amount, settled } : x)))}
               onSubtractFee={(on) => setRowSubtractFee(row.id, on)}
               onRemove={() => setMore((rows) => rows.filter((x) => x.id !== row.id))}
             />
+            </div>
           ))}
         {!platform && multi && (
           <div className="pay-more-add">
@@ -286,7 +289,7 @@ export function PayToAddress({
               variant="tintedBlue"
               size="small"
               data-testid="pay-add-recipient"
-              onClick={() => setMore((rows) => [...rows, { id: nextRow.current++, recipient: null, subtractFee: false }])}
+              onClick={() => setMore((rows) => [...rows, { id: nextRow.current++, recipient: null, amount: null, settled: true, subtractFee: false }])}
             >
               {t("pay.more.add")}
             </DashButton>
@@ -297,7 +300,7 @@ export function PayToAddress({
         )}
         {!platform && (
           <>
-            <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs + othersTotal : null} />
+            <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" && more.every((r) => r.amount !== null) ? [duffs, ...more.map((r) => r.amount!)] : null} />
             <UnsignedPsbt
               watchOnly={watchOnly}
               why={reviewBlockedReason(ready, [addrError, fieldError("address"), amount.fiat.error, amount.error, fieldError("amount"), max.error, generalError], !!spec)}

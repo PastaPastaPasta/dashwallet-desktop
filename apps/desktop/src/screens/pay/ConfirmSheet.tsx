@@ -157,7 +157,10 @@ export function ConfirmSheet({
   // A payment to several: each recipient's row with what it receives (`receivedAmounts`).
   const many = !isContact(recipient) && more.length > 0 ? [recipient, ...more] : null;
   const received = many ? receivedAmounts(many, estimate.totalSent) : null;
-  const subtracting = many?.find(subtractsFee) ?? null;
+  const payer = many ? many.findIndex(subtractsFee) : -1;
+  // What the fee took from that recipient's entered amount: nothing when a dust rest paid it.
+  const deducted = many && received && payer >= 0 ? many[payer].amount - received[payer] : 0;
+  const subtracting = payer >= 0 && deducted > 0 ? many![payer] : null;
   // The fee against what the payee gets (after a subtract-fee share; the change is not in it).
   const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
   const toast = useActionToast(walletId);
@@ -446,7 +449,11 @@ export function ConfirmSheet({
           </p>
         )}
         {many
-          ? subtracting && <p className="placeholder-note">{t("pay.confirm.subtractNoteMany", { address: subtracting.label || subtracting.address })}</p>
+          ? subtracting && (
+              <p className="placeholder-note" data-testid="pay-confirm-subtract-many">
+                {t("pay.confirm.subtractNoteMany", { amount: `${shown.full(deducted)} ${unit}`, address: ("label" in subtracting && subtracting.label) || ("address" in subtracting ? subtracting.address : "") })}
+              </p>
+            )
           : subtractsFee(recipient) && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
         {changeAddress !== null && <p className="placeholder-note">{t("pay.confirm.changeNote")}</p>}
         {unmixed && (

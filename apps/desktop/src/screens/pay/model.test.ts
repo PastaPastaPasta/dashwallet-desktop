@@ -553,4 +553,27 @@ describe("a payment to several recipients (QT-052)", () => {
     expect(unsignedKeepsPromise(many, psbt([ok[0], { ...ok[1], amount: 50_000_000 }, { ...ok[2], amount: 19_999_700 }, ok[3]]))).toBe(false);
     expect(unsignedKeepsPromise(many, psbt(ok.slice(0, 3)))).toBe(false);
   });
+
+  it("refuses a PSBT whose payments add up to more than the sheet showed as sent (one and several recipients)", () => {
+    const psbt = (out: PsbtAnalysis["outputs"], fee = 226): PsbtAnalysis => ({
+      outputs: out,
+      fee,
+      total: 0,
+      unsignedInputs: 1,
+      status: "needsSignatures",
+      signability: "canSign",
+      externalSent: 0,
+      unsignedTxid: "cd".repeat(32),
+    });
+    // An estimate that says 0.9 is sent for a 1 DASH entry: a PSBT paying 1 DASH is not what the sheet showed.
+    const one = confirmedOf({ ...recipient, amount: 100_000_000 }, { ...estimate, totalSent: 90_000_000 }, { kind: "auto" });
+    expect(unsignedKeepsPromise(one, psbt([{ address: PAYEE, amount: 100_000_000, isMine: false }, { address: "yOwnChange", amount: 10, isMine: true }]))).toBe(false);
+    const noSubtract = confirmedOf(recipient, { ...est, totalSent: 69_000_000 }, { kind: "auto" }, [bob]);
+    const paid = [
+      { address: PAYEE, amount: 50_000_000, isMine: false },
+      { address: BOB, amount: 20_000_000, isMine: false },
+      { address: "yOwnChange", amount: 10, isMine: true },
+    ];
+    expect(unsignedKeepsPromise(noSubtract, psbt(paid, 300))).toBe(false);
+  });
 });

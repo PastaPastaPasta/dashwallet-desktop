@@ -340,7 +340,8 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
     if (r.amount <= 0 || r.amount > MAX_MONEY) throw fail("send.invalid_amount", "invalid amount", { kind: "recipient", index });
     if (r.amount < DUST) throw fail("send.dust_amount", "dust amount", { kind: "recipient", index });
   });
-  if (new Set(d.recipients.map((r) => r.address)).size !== d.recipients.length) throw fail("send.duplicate_address", "duplicate address");
+  const duplicate = d.recipients.findIndex((r, i) => d.recipients.findIndex((o) => o.address === r.address) !== i);
+  if (duplicate >= 0) throw fail("send.duplicate_address", "duplicate address", { kind: "recipient", index: duplicate });
   if (d.change.kind === "address" && classifyAddress(network, d.change.address).kind !== "core")
     throw fail("send.invalid_change_address", "invalid change address");
   checkRate(d.fee);
