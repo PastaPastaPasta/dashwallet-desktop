@@ -247,7 +247,8 @@ export function canAbandon(s: SharedSession): boolean {
 /** MG's way-out line, collapsed: wherever this wallet holds the registration (`txid`), at `sent`,
  * and wherever `row.signedOut` or `unvalued_inputs_out` is hidden because Abandon isn't offered. */
 export function wayOutShown(s: SharedSession, row: RowKey): boolean {
-  if (!s.txid || !isRegistration(s)) return false;
+  const settled = s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
+  if (!s.txid || !isRegistration(s) || settled) return false;
   if (s.stage.kind === "sent") return true;
   return !canAbandon(s) && (row === "signedOut" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs")));
 }

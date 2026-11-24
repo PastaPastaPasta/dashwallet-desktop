@@ -758,7 +758,6 @@ export function sharedScenarios(base: Base) {
   };
 }
 
-/** Alice coordinates; everyone approved, Bob and Carol signed their contributions. */
 /** The registration in Activity: unconfirmed, so Activity offers to abandon it. */
 function registrationRow(txid: string, debit: number): TxRow {
   return {
@@ -778,6 +777,7 @@ function registrationRow(txid: string, debit: number): TxRow {
   };
 }
 
+/** Alice coordinates; everyone approved, Bob and Carol signed their contributions. */
 function readyToSend(patch: Partial<SharedSession> = {}): SharedSession {
   return coordinatorSession(["Bob", "Carol"], {
     stage: { kind: "combined" },

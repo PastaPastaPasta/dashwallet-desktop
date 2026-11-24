@@ -32,6 +32,7 @@ export const mnKeys = {
   sharedSessions: (walletId: string) => [...m, "sharedSessions", walletId] as const,
   sharedUnreadable: (walletId: string) => [...m, "sharedUnreadable", walletId] as const,
   sharedSession: (walletId: string, session: string) => [...m, "sharedSession", walletId, session] as const,
+  sharedSessionAll: (walletId: string) => [...m, "sharedSession", walletId] as const,
   registrationKeys: (walletId: string, kind: MasternodeTypeName) => [...m, "registrationKeys", walletId, kind] as const,
 };
 

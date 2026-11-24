@@ -228,6 +228,9 @@ describe("sign and send copy", () => {
     expect(wayOutShown(unvalued, "sendSigned"), "unvalued_inputs_out hidden").toBe(true);
     expect(wayOutShown({ ...unvalued, txid: null }, "sendSigned"), "not held").toBe(false);
     expect(wayOutShown(out, "sendSigned"), "nothing hidden").toBe(false);
+    for (const stage of [{ kind: "confirmed", height: 1 }, { kind: "conflicted" }, { kind: "dead", reason: "inputs_spent" }] as SharedSession["stage"][]) {
+      expect(wayOutShown({ ...unvalued, stage }, "confirmed"), stage.kind).toBe(false);
+    }
   });
 
   it("reads as refused exactly the codes the engine does", () => {
