@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 85
+Contract-Version: 86
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -4805,7 +4805,7 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     withdrawal, never `All`. A failed exit can keep its credits (another device took the nonce first); the host
     says so and points at the Platform balance, with no engine flag.
 
-104. **Registration from the Platform addresses: the funding step (C4a-2; F5–F10, F22; version 85).**
+104. **Registration from the Platform addresses: the funding step (C4a-2; F5–F10, F22; version 86).**
     `start_registration` with `PlatformAddresses` whose numbers are the plan's now writes the row (on mainnet it is
     still `platform.feature_off{feature: "platform_registration"}` before anything is read, written or redeemed, and
     the flow step refuses there too). The grant must carry no duffs (`platform.grant_invalid`, as a claim's); a
