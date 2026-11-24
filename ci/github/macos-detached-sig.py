@@ -358,8 +358,13 @@ def _paths_overlap(a: Path, b: Path) -> bool:
     return ra == rb or ra in rb.parents or rb in ra.parents
 
 
-def _atomic_replace_dir(stage_dir: Path, target_dir: Path) -> None:
-    """Replace target_dir with stage_dir, preserving target_dir on failure."""
+def _replace_dir_via_backup(stage_dir: Path, target_dir: Path) -> None:
+    """Replace target_dir by renaming any existing dir aside first, then renaming stage_dir into place.
+
+    Not atomic across concurrent readers (target_dir is briefly absent between the two renames).
+    If the second rename fails before committing, the prior target_dir is restored; once committed,
+    a failure while removing the old backup emits a stderr warning and succeeds.
+    """
     backup_dir: Path | None = None
     if target_dir.exists() or target_dir.is_symlink():
         backup_dir = Path(tempfile.mkdtemp(prefix=".tmp-backup-", dir=str(target_dir.parent)))
@@ -372,10 +377,17 @@ def _atomic_replace_dir(stage_dir: Path, target_dir: Path) -> None:
             os.rename(backup_dir, target_dir)
         raise
     if backup_dir is not None:
-        if backup_dir.is_symlink() or backup_dir.is_file():
-            backup_dir.unlink()
-        else:
-            shutil.rmtree(backup_dir)
+        try:
+            if backup_dir.is_symlink() or backup_dir.is_file():
+                backup_dir.unlink()
+            else:
+                shutil.rmtree(backup_dir)
+        except OSError as exc:
+            print(
+                f"macos-detached-sig: warning: replaced {target_dir}, but failed to remove "
+                f"previous backup {backup_dir}: {exc}",
+                file=sys.stderr,
+            )
 
 
 def cmd_extract(args: argparse.Namespace) -> None:
@@ -483,7 +495,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
             "unchanged_files": unchanged_files,
         }
         (stage_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-        _atomic_replace_dir(stage_dir, sigs_dir)
+        _replace_dir_via_backup(stage_dir, sigs_dir)
     except BaseException:
         if stage_dir.exists():
             shutil.rmtree(stage_dir, ignore_errors=True)
@@ -590,7 +602,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
             shutil.copyfile(src, dst)
             os.chmod(dst, 0o644)
 
-        _atomic_replace_dir(stage_app, out_app)
+        _replace_dir_via_backup(stage_app, out_app)
     finally:
         if stage_parent.exists():
             shutil.rmtree(stage_parent, ignore_errors=True)

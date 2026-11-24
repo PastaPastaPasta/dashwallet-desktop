@@ -1382,7 +1382,7 @@ PY
   check "H1/L2: macos-detached-sig.py apply refuses non-canonical cs_file path" \
     '[[ $cs_rc -ne 0 ]] && grep -qF "Untrusted cs_file" "$e2e/cs.out"'
 
-  # r4687084381: failed extract preserves previously valid sigs_dir intact (atomic temp-dir swap)
+  # r4687084381: failed extract preserves previously valid sigs_dir intact (staged rename-aside swap)
   cp -R "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/sigs-preserve"
   printf 'keep-prior-sigs\n' > "$e2e/work/sigs-preserve/SENTINEL"
   ext_fail_rc=0
@@ -1410,6 +1410,37 @@ PY
     "$e2e/work/sigs-cs" "$e2e/work/prior-out.app" > "$e2e/app-preserve.out" 2>&1 || app_fail_rc=$?
   check "r4687084393: failed macos-detached-sig.py apply preserves prior out_app intact" \
     '[[ $app_fail_rc -ne 0 && "$(cat "$e2e/work/prior-out.app/SENTINEL")" == "keep-prior-app" ]]'
+
+  # r4687262777: post-commit backup cleanup failure emits a stderr warning naming the backup path, exits 0, and leaves the new output intact
+  mkdir -p "$e2e/work/ro-cleanup/prior.app/locked"
+  printf 'locked-old\n' > "$e2e/work/ro-cleanup/prior.app/locked/old.txt"
+  chmod 555 "$e2e/work/ro-cleanup/prior.app/locked"
+  ro_rc=0
+  if [[ $(id -u) -ne 0 ]]; then
+    python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
+      "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/ro-cleanup/prior.app" > "$e2e/ro-cleanup.stdout" 2> "$e2e/ro-cleanup.stderr" || ro_rc=$?
+  else
+    python3 - "$here/macos-detached-sig.py" "$e2e/work/unsigned-app/Dash Wallet.app" \
+      "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/ro-cleanup/prior.app" > "$e2e/ro-cleanup.stdout" 2> "$e2e/ro-cleanup.stderr" <<'PY' || ro_rc=$?
+import importlib.util, shutil, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("mds", sys.argv[1])
+mds = importlib.util.module_from_spec(spec); spec.loader.exec_module(mds)
+orig_rmtree = shutil.rmtree
+def fail_backup_rmtree(p, *a, **kw):
+    if ".tmp-backup-" in str(p):
+        raise PermissionError(13, "Permission denied", str(p))
+    return orig_rmtree(p, *a, **kw)
+shutil.rmtree = fail_backup_rmtree
+sys.argv = [sys.argv[1], "apply", sys.argv[2], sys.argv[3], sys.argv[4]]
+mds.main()
+PY
+  fi
+  ro_verify_rc=0
+  python3 "$here/macos-detached-sig.py" verify-signed "$e2e/work/ro-cleanup/prior.app" >/dev/null 2>&1 || ro_verify_rc=$?
+  check "r4687262777: post-commit backup cleanup failure warns on stderr with backup path, exits 0, and leaves new output intact" \
+    '[[ $ro_rc -eq 0 && $ro_verify_rc -eq 0 ]] && grep -q "warning:" "$e2e/ro-cleanup.stderr" && grep -q "\.tmp-backup-" "$e2e/ro-cleanup.stderr"'
+  chmod -R u+w "$e2e/work/ro-cleanup" 2>/dev/null || true
 
   # H2/M4: verify-dmg-layout accepts exact {Dash Wallet.app, Applications -> /Applications} and refuses extras/mode tamper
   mkdir -p "$e2e/work/dmg-ok"
