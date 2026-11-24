@@ -4067,3 +4067,208 @@ fn keys_attached_show_no_replay_spv_already_finished() {
         None
     );
 }
+
+/// Keys attached alone (no Dash Core range, no lookahead) with a birth
+/// height below a synced watch-only wallet's lower its birth and replay
+/// from there.
+#[test]
+fn keys_attached_alone_with_an_earlier_birth_replay_from_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |birth| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(birth),
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    commit_batch(&engine, &session, id, HEIGHT + 100);
+
+    assert_eq!(import(HEIGHT - 500).unwrap(), id);
+
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500);
+    assert_eq!(stored_birth(&session, id), Some(HEIGHT - 500));
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT - 501);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((HEIGHT - 501, HEIGHT + 100))
+    );
+}
+
+/// Keys attached with an earlier birth to a watch-only wallet whose
+/// checkpoint is already at or below the attach's start need no rewind, and
+/// still lower the birth: dash-spv scans nothing below it.
+#[test]
+fn keys_attached_with_an_earlier_birth_below_no_checkpoint_still_lower_the_birth() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |birth, lookahead| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(birth),
+                lookahead,
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(HEIGHT, None).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_synced_only(&session, id, 0);
+    engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&id.0).unwrap();
+        info.core_wallet.update_synced_height(0);
+    });
+    assert_eq!(synced_height(&engine, &session, id), 0);
+
+    assert_eq!(import(HEIGHT - 500, Some(200)).unwrap(), id);
+
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500);
+    assert_eq!(stored_birth(&session, id), Some(HEIGHT - 500));
+    assert_eq!(replay_record(&engine, &session, id), None, "no rewind");
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+}
+
+/// Keys attached alone with an earlier birth whose seed cannot be stored
+/// are refused, and the birth and the marker the attach changed are put
+/// back.
+#[test]
+fn keys_attached_alone_with_an_earlier_birth_that_are_refused_put_the_birth_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |birth| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(birth),
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    commit_batch(&engine, &session, id, HEIGHT + 100);
+    let marker = wide_scan(&engine, &session, id);
+    let appdb = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::After;
+    dw_appdb::fault::arm(&appdb, crate::keys::IMPORT_ROWS, stage);
+
+    assert!(import(HEIGHT - 500).is_err());
+
+    dw_appdb::fault::disarm(&appdb);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
+    assert_eq!(stored_birth(&session, id), Some(HEIGHT));
+    assert_eq!(wide_scan(&engine, &session, id), marker);
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT + 100);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
+/// Wallets the two tests below import, each its own: their birth-store
+/// faults go by wallet id.
+const LOWERING_PHRASE: &[u8] =
+    b"afford alter spike radar gate glance object seek swamp infant panel yellow";
+const PUT_BACK_PHRASE: &[u8] =
+    b"turtle front uncle idea crush write shrug there lottery flower risk shell";
+
+/// Keys alone with an earlier birth whose lowering cannot be stored are
+/// refused with the replay from that birth still owed: the next load lowers
+/// the birth and replays.
+#[test]
+fn keys_attached_alone_whose_lower_birth_cannot_be_stored_leave_the_replay_owed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |birth| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(LOWERING_PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(birth),
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+
+    let refused = failing(&crate::tools::FAIL_BIRTH_STORE, id, || import(HEIGHT - 500));
+
+    assert!(refused.is_err());
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(HEIGHT - 501))
+    );
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500);
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT - 501);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((HEIGHT - 501, HEIGHT + 100))
+    );
+}
+
+/// A refused attach that cannot put its lower birth back keeps the replay
+/// owed rather than marking the lower birth scanned: the next load
+/// replays from it.
+#[test]
+fn keys_attached_alone_whose_birth_cannot_be_put_back_leave_the_replay_owed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |birth| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PUT_BACK_PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(birth),
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+    let appdb = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    dw_appdb::fault::arm(
+        &appdb,
+        crate::keys::IMPORT_ROWS,
+        dw_appdb::fault::Stage::After,
+    );
+
+    let refused = failing(&crate::keys::FAIL_BIRTH_PUT_BACK, id, || {
+        import(HEIGHT - 500)
+    });
+
+    dw_appdb::fault::disarm(&appdb);
+    assert!(refused.is_err());
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500);
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(HEIGHT - 501))
+    );
+    let session = reopen(&engine, session);
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT - 501);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((HEIGHT - 501, HEIGHT + 100))
+    );
+}

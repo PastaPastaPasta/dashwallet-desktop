@@ -164,6 +164,11 @@ pub(crate) static FAIL_WIDE_SCAN_IO: std::sync::Mutex<Vec<[u8; 32]>> =
 pub(crate) static FAIL_WIDE_SCAN_READ: std::sync::Mutex<Vec<[u8; 32]>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Tests: wallets whose refused attach cannot put its birth back.
+#[cfg(test)]
+pub(crate) static FAIL_BIRTH_PUT_BACK: std::sync::Mutex<Vec<[u8; 32]>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// Tests: wallets whose lookahead cannot be stored.
 #[cfg(test)]
 pub(crate) static FAIL_LOOKAHEAD_WRITE: std::sync::Mutex<Vec<[u8; 32]>> =
@@ -1092,10 +1097,20 @@ impl NetworkSession {
         // import's lookahead, so a crash after either replays with it. It is
         // replayed once the keys are attached, with the birth lowered to that
         // start if it is below.
-        // A refused attach puts back the lookahead row and the marker it
-        // replaced, in that order: an exit in between leaves a replay owed.
-        let mut undo = (None, None);
-        let attached = if registered && (state.issued.is_some() || lookahead.is_some()) {
+        // A refused attach puts back the lookahead row, the birth and the
+        // marker it replaced, in that order: an exit in between leaves a
+        // replay owed. Keys attached alone with a birth below the wallet's
+        // replay from it the same way.
+        // Not for a backup restore, which rewinds no wallet that was there
+        // before until it commits (`restore_one`).
+        let birth = birth_checkpoint(&manager, wallet_id).await;
+        let earlier_birth = registered
+            && state.rows.is_none()
+            && birth_height.is_some_and(|h| h.saturating_sub(1) < birth);
+        let mut undo = (None, None, None);
+        let attached = if registered
+            && (state.issued.is_some() || lookahead.is_some() || earlier_birth)
+        {
             // The wallet keeps the larger of its own lookahead (the default
             // when none is stored, or none that parses) and the import's.
             let previous_gap = match lookahead {
@@ -1107,10 +1122,18 @@ impl NetworkSession {
                 .flatten()
                 .and_then(|v| parse_lookahead(&v));
             let lookahead = lookahead.map(|gap| gap.max(stored.unwrap_or(DEFAULT_LOOKAHEAD)));
-            let birth = birth_checkpoint(&manager, wallet_id).await;
-            let from = birth_height.map_or(birth, |h| h.saturating_sub(1).min(birth));
-            let (from, replaced) = self.note_narrow_below(&manager, wallet_id, from).await?;
-            undo = (previous_gap, replaced);
+            let requested = birth_height.map_or(birth, |h| h.saturating_sub(1).min(birth));
+            let (from, replaced) = (self.note_narrow_below(&manager, wallet_id, requested)).await?;
+            undo = (previous_gap, None, replaced);
+            // Lowered to the attach's own start now, with the replay marked,
+            // not once the keys are stored: a quit in between would keep the
+            // old birth for good when no rewind is owed. A failure leaves the
+            // replay owed.
+            if requested < birth {
+                let lowered = requested.saturating_add(1);
+                (self.lower_birth_height(&manager, wallet_id, lowered)).await?;
+                undo.1 = Some((lowered, birth.saturating_add(1)));
+            }
             let applied = async {
                 self.cover_imported_range(&manager, wallet_id, &state)
                     .await?;
@@ -1130,7 +1153,7 @@ impl NetworkSession {
             match applied {
                 Ok(raised) => Some((from, raised)),
                 Err(e) => {
-                    self.undo_attach(wallet_id, undo.0, undo.1).await;
+                    self.undo_attach(wallet_id, undo.0, undo.1, undo.2).await;
                     return Err(e);
                 }
             }
@@ -1153,7 +1176,8 @@ impl NetworkSession {
         {
             Ok(prior) => prior,
             Err(e) => {
-                self.undo_attach(wallet_id, undo.0.clone(), undo.1).await;
+                self.undo_attach(wallet_id, undo.0.clone(), undo.1, undo.2)
+                    .await;
                 if readmitted || !had_secret {
                     self.record_removed_again(held, wallet_id).await;
                 }
@@ -1189,7 +1213,7 @@ impl NetworkSession {
                             None => true,
                         };
                         if restored {
-                            self.undo_attach(wallet_id, undo.0, undo.1).await;
+                            self.undo_attach(wallet_id, undo.0, undo.1, undo.2).await;
                         }
                     } else {
                         self.record_removed_again(held, wallet_id).await;
@@ -1466,12 +1490,15 @@ impl NetworkSession {
             .await
     }
 
-    /// Puts back what a refused attach replaced: the lookahead row, then
-    /// the marker. Failures are logged.
+    /// Puts back what a refused attach replaced: the lookahead row, the
+    /// birth height it lowered (`(lowered, old)`; not when something changed
+    /// it since), then the marker. A failure is logged and leaves the marker
+    /// pending, so the next load replays what may be owed.
     async fn undo_attach(
         &self,
         id: WalletId,
         gap: Option<Option<String>>,
+        birth: Option<(u32, u32)>,
         marker: Option<Option<WideScan>>,
     ) {
         if let Some(gap) = gap
@@ -1479,6 +1506,30 @@ impl NetworkSession {
         {
             tracing::warn!(wallet_id = %id, error = %e, "could not put the lookahead back");
             return;
+        }
+        if let Some((lowered, old)) = birth {
+            let Ok(manager) = self.manager() else {
+                return;
+            };
+            let current = {
+                let wm = manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                (wm.get_wallet_info(&id.0)).map(|info| info.core_wallet.birth_height())
+            };
+            if current == Some(lowered) {
+                let put_back = async {
+                    #[cfg(test)]
+                    if fails_for(&FAIL_BIRTH_PUT_BACK, id) {
+                        return Err(EngineError::Storage("test: birth not put back".into()));
+                    }
+                    self.store_birth_height(id, old).await
+                };
+                if let Err(e) = put_back.await {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not put the birth height back");
+                    return;
+                }
+                self.refresh_wallet_state(&manager, id).await;
+            }
         }
         if let Some(marker) = marker {
             self.set_wide_scan(id, marker).await;
