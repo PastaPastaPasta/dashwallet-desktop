@@ -488,8 +488,9 @@ fn abandoning_a_relayed_marked_payment_of_an_unknown_coin_rescans_from_the_birth
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     mined(&engine, &session, id, TIP, vec![paid]);
     let own = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    // Not [7; 32], whose output 0 the test wallet's funding spends.
     let coin = OutPoint::new(
-        <Txid as dashcore::hashes::Hash>::from_byte_array([7; 32]),
+        <Txid as dashcore::hashes::Hash>::from_byte_array([0x5c; 32]),
         0,
     );
     let payment = super::spend_of(

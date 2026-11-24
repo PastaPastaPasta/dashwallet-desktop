@@ -25,6 +25,7 @@ import { keys, scanHeightsStale } from "./queries";
 import { showShellToast } from "../components/toast";
 import { t } from "../i18n";
 import { announceable, feedSync } from "./syncDisplay";
+import { isExportStagingNotice, onExportStagingNotice, readExportStagingNotices } from "../app/exportStaging";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
  * engine's identity read was not live, so it proves nothing), and no Platform signal follows when
@@ -55,8 +56,9 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
-      // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).
-      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId)];
+      // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7). The
+      // masternode overview lists collateral-shaped coins, which Show Masternodes' Auto counts.
+      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId), mnKeys.list(event.walletId)];
     case "historyChanged":
       return [
         keys.historyAll(event.walletId),
@@ -229,6 +231,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
     // A notice's detail can name a wallet or an asset lock: not while locked.
     if (event.kind === "notice") console.warn("engine notice", event.code, ...(walletGateClosed() ? [] : [event.detail]));
     if (event.kind === "notice" && event.code === "backupFailed") showShellToast(t("settings.backups.automaticFailed.toast"));
+    if (event.kind === "notice" && isExportStagingNotice(event.code)) onExportStagingNotice(event.code, event.detail);
     // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
     // below. Not the query's, which only follows once its refetch is back.
     if (event.kind === "sync") feedSync(backend, event.status);
@@ -306,6 +309,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
   const stopShielded = onShieldedSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   // A finished transfer leaves the unfinished list and joins the Shielded balance.
   const stopRecovery = onRecoverySettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  void readExportStagingNotices(() => backend.recentNotices(), network).catch(() => undefined);
   return () => {
     stopReconcile();
     stopHeldNews();

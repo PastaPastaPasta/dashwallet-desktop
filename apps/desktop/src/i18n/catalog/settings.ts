@@ -31,7 +31,10 @@ export const settings = {
     languageUnavailable: "{tag} (not available, using System default)",
     languageHint: "The language of Dash Wallet's own screens. Messages that come from the network stay in English.",
     showMasternodes: "Show Masternodes",
-    showMasternodesHint: "Shows Masternodes in the sidebar: to read and vote on proposals and to vote on usernames. It is off until you turn it on.",
+    showMasternodesHint: "Shows Masternodes in the sidebar, where you follow masternodes and vote on proposals and usernames. Auto shows it while this wallet holds a masternode or one of its keys, tracks a masternode, holds a coin of exactly 1,000 or 4,000 Dash, or has a proposal in progress.",
+    masternodesAuto: "Auto",
+    masternodesOn: "On",
+    masternodesOff: "Off",
     governanceAskTitle: "Load governance data?",
     governanceAskText: "Also load proposals and votes from the network? Governance data is off for this network.",
     governanceTurnOn: "Turn on",
@@ -359,6 +362,10 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
     /** A spending limit: `amount` is a number of DASH. */
     dash: "{amount} DASH",
     duffs: "{amount} duffs",
+    /** The engine reports the sealed spending limit as unreadable (issue 173, item 10). MG's words. */
+    spendLimitUnreadable:
+      "Dash Wallet couldn't read your saved spending limit, so it asks for your passphrase for every payment, and quick unlock is off. Set the limit again to turn quick unlock back on. Setting up quick unlock again won't fix this.",
+    spendLimitSetAgain: "Set limit again…",
     spendLimitChange:
       "Change the limit from {from} to {to}. Payments during the 5 minutes after you unlock can add up to {to}. A total over that still asks for the passphrase.",
     encryptFirst: "Encrypt the wallet first.",

@@ -1066,10 +1066,16 @@ function payoutRows(m: MasternodesWorld): TxRow[] {
   }));
 }
 
+/** The default world's: the network's list, but no masternode, tracked one or collateral of this
+ * wallet's, so Show Masternodes' Auto keeps the item hidden in scenarios that aren't about them. */
+export function noMasternodesWorld(): MasternodesWorld {
+  return { ...newMasternodesWorld(), rows: [], payouts: {}, attached: {}, collateralCoins: [] };
+}
+
 function mnBase(base: Base, theme: ThemeName | null, patch?: (m: MasternodesWorld, w: World) => void): World {
   const w = base(theme);
   w.masternodes = newMasternodesWorld();
-  w.settings.ui = { ...w.settings.ui, showMasternodes: true };
+  w.settings.ui = { ...w.settings.ui, masternodesItem: "on" };
   patch?.(w.masternodes, w);
   const main = w.wallets[0];
   main.rows = [...main.rows, ...payoutRows(w.masternodes)].sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));

@@ -194,7 +194,7 @@ test compares them with `ServiceErrorCode.m3EngineCodes`):
 
 - **`CoinSource::FullyMixedOnly` (R1).** Stops returning `NotImplemented`. Candidates: coins of the CoinJoin account
   that pass the QT-043 rule, confirmed or IS-locked. The draft has **no change output**: the difference between the
-  inputs and the recipients becomes fee (dash-qt CoinJoin page); `TxEstimate.fee` shows it, and `send.absurd_fee`
+  inputs and the recipients becomes fee (dash-qt CoinJoin page); `TxEstimate.fee` shows it, and `TxEstimate.left_over` names the part of it beyond the draft's rate for the transaction's size (U-06b; dw-app and the renderer, not the dw-ffi record), so an exact payment has a positive `fee` and a zero `left_over`, and `send.absurd_fee`
   still caps it. The transaction is stored with the DS=1 mark so history shows `CoinJoinSend`. A `ChangePolicy`
   other than `Auto` is refused with `invalid_argument` for this source.
 - **`WalletBalances.coinjoin` (R1).** Becomes `CoinJoinBalances.fully_mixed` (the M1 doc comment says the rule was

@@ -2,6 +2,7 @@
 // each SPV phase with its own progress (the status bar shows only their mean), the latest block and
 // its ChainLock, the connected peers, and how long the sync has gone without progress.
 
+import { useEffect, useState } from "react";
 import type { SyncPhaseStatus } from "../api/generated/SyncPhaseStatus";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import { useBackend, useSyncStatus } from "../api/queries";
@@ -26,10 +27,30 @@ export function phaseText(t: Translate, p: SyncPhaseStatus, locale: string | und
   return t("shell.sync.progress", { current: n.format(current), target: n.format(p.targetHeight), percent });
 }
 
-/** Minutes without progress worth saying, or `null`. */
-export function stalledMinutes(s: SyncStatus): number | null {
-  if (!s.running || s.caughtUp || s.secondsSinceProgress === null || s.secondsSinceProgress < STALL_SECS) return null;
-  return Math.floor(s.secondsSinceProgress / 60);
+/** Minutes without progress worth saying, or `null`. `sinceReading`: seconds since this reading
+ * arrived, added to its own count, as the engine reports a quiet stall once and then nothing. */
+export function stalledMinutes(s: SyncStatus, sinceReading = 0): number | null {
+  if (!s.running || s.caughtUp || s.secondsSinceProgress === null) return null;
+  const secs = s.secondsSinceProgress + sinceReading;
+  return secs < STALL_SECS ? null : Math.floor(secs / 60);
+}
+
+/** The status bar holds a synced wallet at "Up to date" while a new block is processed, but the
+ * phase rows are the engine's own: say why one is still short of done. */
+export function processingBlock(s: SyncStatus): boolean {
+  return s.running && s.caughtUp && s.phases.some((p) => !p.done && p.targetHeight !== null && p.targetHeight > 0);
+}
+
+/** Seconds since `reading` arrived, ticking while the sheet is open. */
+function useSecondsSince(reading: unknown): number {
+  const [since, setSince] = useState(() => ({ reading, at: Date.now() }));
+  const [, tick] = useState(0);
+  if (since.reading !== reading) setSince({ reading, at: Date.now() });
+  useEffect(() => {
+    const id = window.setInterval(() => tick((n) => n + 1), 5_000);
+    return () => window.clearInterval(id);
+  }, []);
+  return since.reading === reading ? Math.floor((Date.now() - since.at) / 1000) : 0;
 }
 
 export function SyncSheet({ onClose }: { onClose: () => void }) {
@@ -37,12 +58,18 @@ export function SyncSheet({ onClose }: { onClose: () => void }) {
   const { locale } = useBackend();
   const sync = useSyncStatus().data;
   const n = new Intl.NumberFormat(locale);
-  const stalled = sync ? stalledMinutes(sync) : null;
+  const since = useSecondsSince(sync);
+  const stalled = sync ? stalledMinutes(sync, since) : null;
   return (
     <Sheet title={t("shell.status.syncProgress")} width="small" testId="sync-sheet" onClose={onClose}>
       <p className="sheet-text" data-testid="sync-sheet-state">
         {syncState(sync)}
       </p>
+      {sync && processingBlock(sync) && (
+        <p className="sheet-text mg-muted" data-testid="sync-sheet-processing">
+          {t("shell.sync.processingBlock")}
+        </p>
+      )}
       {stalled !== null && (
         <p className="sheet-warning" role="note" data-testid="sync-sheet-stalled">
           {t("shell.sync.stalled", { count: stalled })}

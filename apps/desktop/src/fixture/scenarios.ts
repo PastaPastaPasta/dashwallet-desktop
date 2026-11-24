@@ -43,7 +43,7 @@ import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinj
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
-import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -130,6 +130,9 @@ export interface World {
   paymentAuth: boolean;
   /** Quick-unlock and signing-window spend limit, in duffs. Default 0.5 DASH. */
   spendLimitDuffs: number;
+  /** The sealed limit no longer authenticates (issue 173, item 10): while unlocked the engine reports
+   * it, the limit in force is 0, and setting the limit again clears it. */
+  spendLimitUnreadable?: boolean;
   /** When the post-unlock signing window ends (ms). `null` when it is closed. The funded
    * scenario starts unlocked, so the window is open. */
   signingUntil: number | null;
@@ -259,7 +262,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
-    masternodes: newMasternodesWorld(),
+    masternodes: noMasternodesWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
     pending: newPendingWorld(),
@@ -695,6 +698,35 @@ const SCENARIOS = {
     const w = base(t);
     w.pending.shielded = null;
     w.pending.platform = null;
+    return w;
+  },
+  /** An InstantSend-locked payment a ChainLocked spend beat, sent before a restart: Abandon is
+   * offered, and refused until the wallet restarts and rescans. */
+  "abandon-rescan-first": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5e".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.rescanFirst = [row.txid];
+    return w;
+  },
+  /** A payment this wallet made on another device, seen only by its change before the coins it
+   * spent are known: its debit is unknown, so Abandon warns about paying twice. */
+  "abandon-debit-unknown": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const received = wallet.rows.find((r) => r.category === "received" && r.status.kind === "unconfirmed")!;
+    const row: TxRow = { ...received, txid: "d0".repeat(32), timestamp: (received.timestamp ?? 0) + 60, label: null };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.debitUnknown = [row.txid];
     return w;
   },
   /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
