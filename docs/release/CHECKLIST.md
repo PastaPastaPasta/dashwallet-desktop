@@ -189,6 +189,15 @@ none of these secrets.
 | `DW_SIGNING_REQUIRED` | repo variable | `macos`, `windows`, `checksums`, `publish` | Set to `1` to fail early on any final `vX.Y.Z` tag missing any of the three signing sets (or missing `SHA256SUMS.asc` in `publish`); candidates (`-rc.N`) never require signing | Final tags without signing secrets warn once per job and publish unsigned |
 | `DW_UPDATER_REQUIRED` | repo variable | `macos`, `windows`, `linux`, `publish` | Set to `1` after the first signed updater release so a final tag cannot publish without `latest.json` | Final tags without the updater key warn and publish without a feed |
 
+Environment and secret-exposure notes:
+
+- `checksums` enters the `release` environment on every signed final tag (and on a candidate when
+  `DW_SIGN_CANDIDATES=1`), in addition to `macos`, `windows`, and `linux`. If required reviewers are enabled on
+  `release`, `checksums` will also pause for approval once the build jobs finish.
+- The Apple signing/notarization secrets (in `macos`) and Azure Artifact Signing secrets (in `windows`) are present in
+  the environment for the entire `pnpm tauri build` step (including frontend build commands and Cargo build scripts),
+  the same exposure as `TAURI_SIGNING_PRIVATE_KEY`.
+
 Rollout steps before 1.0:
 
 - [ ] **Populate secrets and variables** in the `release` environment (tag rule `v*`) and repository variables for

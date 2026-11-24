@@ -46,16 +46,25 @@ trap cleanup EXIT
 gpg --batch --quiet --pinentry-mode loopback --passphrase-fd 3 --import \
   3<<<"$RELEASE_PGP_PASSPHRASE" <<<"$RELEASE_PGP_PRIVATE_KEY"
 
-mapfile -t primary_fprs < <(
-  gpg --batch --with-colons --list-secret-keys |
-    awk -F: '$1 == "sec" { want = 1; next } want && $1 == "fpr" { print toupper($10); want = 0 }'
+sec_listing=$(gpg --batch --with-colons --list-secret-keys)
+mapfile -t primary_records < <(
+  awk -F: '
+    $1 == "sec" { want = 1; stub = $15; next }
+    want && $1 == "fpr" { print stub ":" toupper($10); want = 0 }
+  ' <<<"$sec_listing"
 )
-if [[ ${#primary_fprs[@]} -ne 1 ]]; then
-  echo "::error::release-pgp-sign: expected 1 imported primary secret key, found ${#primary_fprs[@]}" >&2
+if [[ ${#primary_records[@]} -ne 1 ]]; then
+  echo "::error::release-pgp-sign: expected 1 imported primary secret key, found ${#primary_records[@]}" >&2
   exit 1
 fi
-if [[ "${primary_fprs[0]}" != "$want_fpr" ]]; then
-  echo "::error::release-pgp-sign: imported primary key fingerprint ${primary_fprs[0]} does not match RELEASE_PGP_FINGERPRINT $want_fpr" >&2
+primary_stub=${primary_records[0]%%:*}
+primary_fpr=${primary_records[0]#*:}
+if [[ "$primary_stub" != "#" ]]; then
+  echo "::error::release-pgp-sign: RELEASE_PGP_PRIVATE_KEY contains the primary secret key (sec field 15='${primary_stub}', expected offline stub '#'); export only the signing subkey with gpg --armor --export-secret-subkeys" >&2
+  exit 1
+fi
+if [[ "$primary_fpr" != "$want_fpr" ]]; then
+  echo "::error::release-pgp-sign: imported primary key fingerprint $primary_fpr does not match RELEASE_PGP_FINGERPRINT $want_fpr" >&2
   exit 1
 fi
 

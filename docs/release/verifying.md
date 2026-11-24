@@ -159,7 +159,8 @@ complete; it lists what Cargo and the pnpm lockfile resolve, not code vendored b
   if a download fails or the checksum does not match, fetch the file and `SHA256SUMS` again a minute later.
 - **Tagged releases** (`vX.Y.Z` and `vX.Y.Z-rc.N`) are made by the same workflow from the tag. Final 1.0+
   releases are full releases and ship fully signed (PGP `SHA256SUMS.asc`, macOS Developer ID + notarization,
-  Windows Authenticode, plus GitHub build attestations). Pre-1.0 release candidates (`-rc.N`), `main` builds, and
+  Windows Authenticode, plus GitHub build attestations) when signing credentials are configured (required from 1.0
+  with `DW_SIGNING_REQUIRED=1`). Pre-1.0 release candidates (`-rc.N`), `main` builds, and
   `continuous` are prereleases and ship keyless: ad-hoc signed on macOS and unsigned on Windows (see the release
   notes and README for the first-launch warnings).
 

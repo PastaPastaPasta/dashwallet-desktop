@@ -580,6 +580,7 @@ if command -v gpg >/dev/null 2>&1; then
   gpg_fpr=$(GNUPGHOME=$gpg_gen gpg --batch --with-colons --list-secret-keys | awk -F: '$1=="sec"{s=1;next} s&&$1=="fpr"{print $10; exit}')
   GNUPGHOME=$gpg_gen gpg --batch --pinentry-mode loopback --passphrase "subkey-pass" --quick-add-key "$gpg_fpr" ed25519 sign never >/dev/null 2>&1
   gpg_subkey=$(GNUPGHOME=$gpg_gen gpg --batch --pinentry-mode loopback --passphrase "subkey-pass" --armor --export-secret-subkeys "$gpg_fpr" 2>/dev/null)
+  gpg_full=$(GNUPGHOME=$gpg_gen gpg --batch --pinentry-mode loopback --passphrase "subkey-pass" --armor --export-secret-keys "$gpg_fpr" 2>/dev/null)
   gpg_pub=$(GNUPGHOME=$gpg_gen gpg --batch --armor --export "$gpg_fpr" 2>/dev/null)
   GNUPGHOME=$gpg_gen gpgconf --kill gpg-agent >/dev/null 2>&1 || true
 
@@ -600,6 +601,13 @@ if command -v gpg >/dev/null 2>&1; then
   check "release-pgp-sign: produced SHA256SUMS.asc verifies cleanly with the public key" \
     'GNUPGHOME=$gpg_ver gpg --batch --verify "$pgp_sums.asc" "$pgp_sums" >/dev/null 2>&1'
   GNUPGHOME=$gpg_ver gpgconf --kill gpg-agent >/dev/null 2>&1 || true
+
+  rm -f "$pgp_sums.asc"
+  pgp_full_rc=0
+  RUNNER_TEMP=$pgp_rt RELEASE_PGP_PRIVATE_KEY=$gpg_full RELEASE_PGP_PASSPHRASE=subkey-pass \
+    RELEASE_PGP_FINGERPRINT=$gpg_fpr "$here/release-pgp-sign.sh" "$pgp_sums" > "$work/pgp-full.out" 2>&1 || pgp_full_rc=$?
+  check "release-pgp-sign: refuses a full secret-key export (requires offline primary stub '#')" \
+    '[[ $pgp_full_rc -ne 0 && ! -e "$pgp_sums.asc" && ! -e "$pgp_rt/gnupg-release" ]] && grep -qF "export-secret-subkeys" "$work/pgp-full.out"'
 
   rm -f "$pgp_sums.asc"
   pgp_bad_rc=0

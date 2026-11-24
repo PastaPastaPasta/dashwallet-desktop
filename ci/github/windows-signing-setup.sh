@@ -46,6 +46,12 @@ rm -f "$zip_path"
 dlib="$dir/client/bin/x64/Azure.CodeSigning.Dlib.dll"
 [[ -f "$dlib" ]] || { echo "::error::windows-signing-setup: $dlib not found after extraction" >&2; exit 1; }
 
+# Microsoft.ArtifactSigning.Client 1.0.151 targets net10.0 (Microsoft.NETCore.App 10.0.0).
+if ! command -v dotnet >/dev/null 2>&1 || ! dotnet --list-runtimes | grep -q 'Microsoft\.NETCore\.App 10\.'; then
+  echo "::error::windows-signing-setup: Microsoft.NETCore.App 10.x runtime is required for Microsoft.ArtifactSigning.Client ${version}" >&2
+  exit 1
+fi
+
 # Find the newest compatible x64 signtool.exe in Windows Kits 10 (skip 10.0.20348.*, unsupported by the dlib).
 kits_bin="${WINDOWS_KITS_BIN:-/c/Program Files (x86)/Windows Kits/10/bin}"
 signtool_unix=$(

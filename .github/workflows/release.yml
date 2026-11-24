@@ -210,11 +210,27 @@ jobs:
           APPLE_API_ISSUER: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_API_ISSUER || '' }}
           APPLE_API_KEY: ${{ needs.decide.outputs.signing == 'true' && secrets.APPLE_API_KEY || '' }}
         run: |
+          out=$(mktemp)
+          rc=0
           xcrun notarytool submit "$DMG" \
             --key "$APPLE_API_KEY_PATH" \
             --key-id "$APPLE_API_KEY" \
             --issuer "$APPLE_API_ISSUER" \
-            --wait
+            --wait --timeout 60m \
+            --output-format json | tee "$out" || rc=$?
+          status=$(jq -r '.status // empty' "$out" 2>/dev/null || true)
+          sub_id=$(jq -r '.id // empty' "$out" 2>/dev/null || true)
+          rm -f "$out"
+          if [[ $rc -ne 0 || "$status" != Accepted ]]; then
+            if [[ -n "$sub_id" ]]; then
+              xcrun notarytool log "$sub_id" \
+                --key "$APPLE_API_KEY_PATH" \
+                --key-id "$APPLE_API_KEY" \
+                --issuer "$APPLE_API_ISSUER" || true
+            fi
+            echo "::error::macOS dmg notarization failed (exit=$rc, status=${status:-unknown}, id=${sub_id:-unknown})" >&2
+            exit 1
+          fi
           xcrun stapler staple "$DMG"
           xcrun stapler validate "$DMG"
           codesign --verify --verbose=2 "$DMG"
@@ -327,6 +343,11 @@ jobs:
       - name: pnpm install
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
+      - name: Set up .NET 10 for Azure Artifact Signing dlib
+        if: ${{ env.WINDOWS_SIGN == '1' }}
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.x
       - name: Prepare Azure Artifact Signing
         if: ${{ env.WINDOWS_SIGN == '1' }}
         env:
