@@ -49,9 +49,9 @@ pub enum TxActionRefusal {
     NotSentByWallet,
     /// The evidence is incomplete: the ChainLock exception (#170 case 14)
     /// lacks a coin the payment's own spend claim, restored at the wallet's
-    /// load, keeps out of the wallet; or a stored record didn't read at the
-    /// load, so what descends from the payment is unknown (#611). A restart
-    /// and a rescan give the evidence.
+    /// load, keeps out of the wallet; or a stored record of any loaded
+    /// wallet didn't read at its load, so what descends from the payment is
+    /// unknown (#611). A restart and a rescan give the evidence.
     RescanFirst,
     /// A later transaction that spends from it is InstantSend-locked, in a
     /// block or finalized: the network holds this one too (#446).
@@ -736,7 +736,7 @@ impl NetworkSession {
                 (self.hub.history).read(&WalletId(*id), |txs| settled_under(txs, core));
             all.under.extend(under);
             all.mined.extend(mined);
-            all.incomplete |= (self.hub.history).with_wallet(WalletId(*id), |h| h.load_incomplete);
+            all.incomplete |= (self.hub.history).read_wallet(&WalletId(*id), |h| h.load_incomplete);
         }
         all
     }
