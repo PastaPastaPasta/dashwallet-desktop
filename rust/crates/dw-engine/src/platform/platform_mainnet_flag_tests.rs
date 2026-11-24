@@ -260,6 +260,47 @@ fn a_held_send_from_before_is_retried_on_mainnet() {
     assert_eq!(w.net.sent().len(), 1);
 }
 
+/// Pay retries a held send from its Activity row, which does not say
+/// whether it was Max: its credits first, then Max. On mainnet the credits
+/// ask of a held Max send answers the flag, and the Max ask is its retry.
+#[test]
+fn a_held_max_send_is_retried_on_mainnet_as_max() {
+    let w = World::mainnet();
+    let a = w.address(0);
+    w.net.fund(a, 3 * DASH);
+    let (them, theirs) = w.theirs(9);
+    let mut max = held(
+        "move-1-0",
+        MoveKind::Transfer,
+        (&bech32m(&a, Network::Mainnet), 1, 3 * DASH, 3 * DASH),
+        &theirs,
+    );
+    (max.fee_from_output, max.credits) = (true, 3 * DASH);
+    w.seed(&max);
+    let row = (w.activity().into_iter())
+        .find(|r| r.id == "move-1-0")
+        .unwrap();
+
+    let credits = WithdrawAmount::Credits {
+        credits: row.credits,
+    };
+    off(w.retry_quote(credits, &theirs, Some("move-1-0")));
+    let quote = (w.retry_quote(WithdrawAmount::All, &theirs, Some("move-1-0"))).unwrap();
+    assert_eq!(quote.retry_of.as_deref(), Some("move-1-0"));
+    let retried = w
+        .confirm(&quote.operation, &w.f.grant(quote.credits))
+        .unwrap();
+    assert_eq!(retried.state, PlatformActivityState::Done);
+    let sent = w.net.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0][&a],
+        (1, 3 * DASH),
+        "its very input, nonce and claim"
+    );
+    assert!(w.net.credits(them) > 0);
+}
+
 /// A move a build before the flag signed settles on mainnet by the proof
 /// of its nonce: Activity still reads and settles it.
 #[test]

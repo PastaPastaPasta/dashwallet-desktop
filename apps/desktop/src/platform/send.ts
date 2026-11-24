@@ -16,6 +16,7 @@ import { failureText, Model } from "../onboarding/model";
 import { t } from "../i18n";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { invalidArgumentText, isHeldOp, moveCanRetry, moveErrorText, onMoveSettledNotify } from "./move";
+import { isAddressSendsOff } from "./mainnetOff";
 
 export type PlatformSendApi = Pick<Backend, "platformSend" | "platformSendQuote" | "authorize" | "authorizePlatformSend" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -444,8 +445,9 @@ export class PlatformSendFlow extends Model {
           else this.noRetry = true;
           break;
         } catch (e) {
-          // Activity cannot tell Max from an exact amount: the next ask is Max.
-          if (i < asks.length - 1 && hasCode(e, "invalid_argument")) continue;
+          // Activity cannot tell Max from an exact amount: the next ask is Max. On mainnet the flag
+          // answers an ask that is not the held send's exact terms.
+          if (i < asks.length - 1 && (hasCode(e, "invalid_argument") || isAddressSendsOff(e))) continue;
           throw e;
         }
       }

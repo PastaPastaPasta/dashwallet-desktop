@@ -244,6 +244,26 @@ describe("Pay from Platform", () => {
       expect(got).toMatchObject({ amount: { kind: "all" }, quote: { retryOf: "ps-9" } });
     });
 
+    it("on mainnet a held Max send's retry from the form asks Max after the flag refuses its credits", async () => {
+      const { flow, api } = setup();
+      const held = row("ps-9", { credits: "40000000000" });
+      const off = () => appError("platform.feature_off", { kind: "feature", feature: "platform_address_sends" });
+      api.platformSendQuote.mockRejectedValueOnce(off());
+      api.platformSendQuote.mockResolvedValueOnce({ ...QUOTE, operation: "op-6", retryOf: "ps-9", feeFromAmount: true });
+      const got = await flow.quoteRetry({ id: "ps-9", to: TO }, retryAsks(held));
+      expect(api.platformSendQuote.mock.calls.map((c) => [c[2], c[3]])).toEqual([[{ kind: "credits", credits: "40000000000" }, "ps-9"], [{ kind: "all" }, "ps-9"]]);
+      expect(got).toMatchObject({ amount: { kind: "all" }, quote: { retryOf: "ps-9" } });
+
+      api.platformSendQuote.mockRejectedValueOnce(off());
+      api.platformSendQuote.mockRejectedValueOnce(off());
+      expect(await flow.quoteRetry({ id: "ps-9", to: TO }, retryAsks(held))).toBeNull();
+      expect([api.platformSendQuote.mock.calls.length, flow.step]).toEqual([4, "refused"]);
+
+      api.platformSendQuote.mockRejectedValueOnce(appError("platform.feature_off", { kind: "feature", feature: "platform_addresses" }));
+      expect(await flow.quoteRetry({ id: "ps-9", to: TO }, retryAsks(held))).toBeNull();
+      expect(api.platformSendQuote.mock.calls.length).toBe(5);
+    });
+
     it("a refusal other than invalid_argument stops the form's retry at the first ask", async () => {
       const { flow, api } = setup();
       api.platformSendQuote.mockRejectedValueOnce(appError("credits.move_pending", { kind: "artifact", artifact: "ps-9" }));
