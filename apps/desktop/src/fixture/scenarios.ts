@@ -1513,6 +1513,13 @@ const SCENARIOS = {
   },
   /** Coin Selection: CoinJoin denominations beside the plain coins, hidden by default (QT-071). */
   "tools-coinjoin": (t) => withCoinJoinCoins(base(t)),
+  /** Coin control: the 7.5 DASH coin is held while a block-spend check runs; the other coins are as in funded. */
+  "coins-checking": (t) => {
+    const w = base(t);
+    const coins = w.wallets[0].coins;
+    coins[1] = { ...coins[1], checking: true, spendable: false };
+    return w;
+  },
   /** Every coin is mixed, so Coin Selection's default list is empty until Show all coins. */
   "coins-all-mixed": (t) => {
     const w = base(t);

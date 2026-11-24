@@ -84,6 +84,7 @@ export function outpointOf(key: string): OutPoint {
 /** Why a coin cannot be chosen, or `null` when it can (Pay's coin control and Tools ▸ Coin
  * Selection, U-05 D19). */
 export function notSelectable(u: Utxo): string | null {
+  if (u.checking) return t("pay.notSelectable.checking");
   if (u.spendable) return null;
   if (u.reserved) return t("pay.notSelectable.reserved");
   if (u.userLocked) return t("pay.notSelectable.locked");

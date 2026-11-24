@@ -38,6 +38,7 @@ import {
   sendErrorText,
   settleNotSent,
   multiRecipientPay,
+  notSelectable,
   receivedAmounts,
   withSubtractFee,
 } from "./model";
@@ -620,5 +621,47 @@ describe("a payment to several recipients (QT-052)", () => {
       { address: "yOwnChange", amount: 10, isMine: true },
     ];
     expect(unsignedKeepsPromise(noSubtract, psbt(paid, 300))).toBe(false);
+  });
+});
+
+describe("why a coin cannot be chosen", () => {
+  const coin = (patch: Partial<Utxo> = {}): Utxo => ({
+    outpoint: { txid: "ab".repeat(32), vout: 0 },
+    address: "yAddressOne0000000000000000000001",
+    amount: 100_000_000,
+    confirmations: 10,
+    blockHeight: 100,
+    timestamp: 1_700_000_000,
+    instantLocked: false,
+    chainLocked: true,
+    userLocked: false,
+    reserved: false,
+    label: null,
+    isChange: false,
+    isCoinbase: false,
+    coinjoinDenominated: false,
+    coinjoinRounds: null,
+    spendable: true,
+    checking: false,
+    ...patch,
+  });
+  const CHECKING = "Checking whether it was spent elsewhere";
+
+  it("says a coin under a block-spend check is being checked, before any other reason", () => {
+    expect(notSelectable(coin({ checking: true, spendable: false }))).toBe(CHECKING);
+    expect(notSelectable(coin({ checking: true, spendable: true }))).toBe(CHECKING);
+    expect(notSelectable(coin({ checking: true, spendable: false, reserved: true }))).toBe(CHECKING);
+    expect(notSelectable(coin({ checking: true, spendable: false, userLocked: true }))).toBe(CHECKING);
+    expect(notSelectable(coin({ checking: true, spendable: false, isCoinbase: true }))).toBe(CHECKING);
+    expect(notSelectable(coin({ checking: true, spendable: false, confirmations: 0 }))).toBe(CHECKING);
+    expect(notSelectable(coin({ checking: true, spendable: false, reserved: true, userLocked: true, isCoinbase: true }))).toBe(CHECKING);
+  });
+
+  it("keeps every other coin's reason", () => {
+    expect(notSelectable(coin())).toBeNull();
+    expect(notSelectable(coin({ spendable: false, reserved: true }))).toBe("Reserved by a payment in progress");
+    expect(notSelectable(coin({ spendable: false, userLocked: true }))).toBe("Locked");
+    expect(notSelectable(coin({ spendable: false, isCoinbase: true }))).toBe("Immature");
+    expect(notSelectable(coin({ spendable: false, confirmations: 0 }))).toBe("Not spendable");
   });
 });

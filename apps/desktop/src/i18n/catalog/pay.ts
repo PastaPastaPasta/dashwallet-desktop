@@ -2,6 +2,7 @@ import type { Tree } from "../core";
 
 export const pay = {
   notSelectable: {
+    checking: "Checking whether it was spent elsewhere",
     reserved: "Reserved by a payment in progress",
     locked: "Locked",
     immature: "Immature",

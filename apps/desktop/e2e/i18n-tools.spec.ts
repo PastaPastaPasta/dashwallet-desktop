@@ -224,6 +224,15 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
     data: COIN_DATE,
     scrollers: [COIN_TABLE],
   },
+  "coin-selection-checking": {
+    open: async (page, theme, lang) => {
+      await openTab(page, theme, lang, "coinSelection", "coins-checking");
+      await expect(page.getByTestId("coin-table")).toBeVisible();
+      await page.addStyleTag({ content: CONTAIN_ENGLISH_COIN_TABLE_SR_ONLY_HEADERS });
+    },
+    data: COIN_DATE,
+    scrollers: [COIN_TABLE],
+  },
   "coin-selection-tree": {
     open: async (page, theme, lang) => {
       await openTreeMode(page, theme, lang);

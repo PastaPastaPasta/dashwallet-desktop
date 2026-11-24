@@ -31,8 +31,8 @@ async function toAddress(page: Page, theme: Theme, lang: string, scenario = "fun
   await expect(page.getByTestId("pay-address-form")).toBeVisible();
 }
 
-async function filled(page: Page, theme: Theme, lang: string, broadcast?: string) {
-  await toAddress(page, theme, lang);
+async function filled(page: Page, theme: Theme, lang: string, broadcast?: string, scenario = "funded") {
+  await toAddress(page, theme, lang, scenario);
   if (broadcast) await world(page, `(w) => (w.send.broadcast = "${broadcast}")`);
   await page.getByTestId("pay-address").fill(PAYEE);
   await page.getByTestId("pay-amount").fill("0.5");
@@ -106,6 +106,17 @@ const STATES: State[] = [
       await page.getByTestId("fee-rate").fill("abc");
       await page.getByTestId("change-custom").check();
       await expect(page.getByTestId("fee-choice").locator(".field-error")).toBeVisible();
+    },
+  },
+  {
+    name: "pay-coin-control-checking",
+    roots: ["pay-address-form"],
+    data: ADDRESSES,
+    open: async (page, theme, lang) => {
+      await filled(page, theme, lang, undefined, "coins-checking");
+      await page.getByTestId("pay-advanced").locator("summary").click();
+      await page.getByTestId("coin-choice-selected").check();
+      await expect(page.getByTestId("coin-table").locator("tbody input:disabled")).toHaveCount(2);
     },
   },
   {

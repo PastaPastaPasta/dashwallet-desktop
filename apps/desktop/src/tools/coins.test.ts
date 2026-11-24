@@ -131,6 +131,16 @@ describe("Coin Selection (QT-069…074)", () => {
     expect([m.lockedCount, m.lockedText]).toEqual([0, null]);
   });
 
+  it("a coin under a block-spend check cannot be picked, alone or with select all", () => {
+    const { m } = selection([utxo(1, 1000), utxo(2, 2000, { checking: true, spendable: false }), utxo(3, 3000)]);
+    m.toggle(key(2));
+    expect(m.selected).toEqual([]);
+    m.toggleAll();
+    expect([...m.selected].sort()).toEqual([key(1), key(3)].sort());
+    const why = (n: number) => notSelectable(m.visible.find((u) => outpointKey(u.outpoint) === key(n))!);
+    expect([why(1), why(2), why(3)]).toEqual([null, "Checking whether it was spent elsewhere", null]);
+  });
+
   it("QT070_toggleLockStateFlipsEveryLock (the Swift QT070_unlockAllFlipsEveryLock)", async () => {
     const { m, locks } = selection([utxo(1, 1000), utxo(2, 2000)], [key(1)]);
     await m.toggleLocks();
