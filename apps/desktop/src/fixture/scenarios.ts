@@ -711,6 +711,24 @@ const SCENARIOS = {
     w.send.rescanFirst = [row.txid];
     return w;
   },
+  /** An unconfirmed payment whose later payment locked while its detail was open: Abandon is
+   * offered and refused, and the detail says why. */
+  "abandon-settled-child": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5c".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChild = [row.txid];
+    return w;
+  },
   /** A payment this wallet made on another device, seen only by its change before the coins it
    * spent are known: its debit is unknown, so Abandon warns about paying twice. */
   "abandon-debit-unknown": (t) => {

@@ -92,6 +92,9 @@ export interface SendWorld {
   /** InstantSend-locked payments a ChainLocked spend beat: Abandon is offered, and refused until
    * the wallet restarts and rescans (the engine's `rescanFirst`). */
   rescanFirst: string[];
+  /** Payments a later payment spends from, which locked while the detail was open: Abandon is
+   * offered, and refused (the engine's `settledDescendant`). */
+  settledChild: string[];
   /** Payments of this wallet seen by their change before the coins they spent are known: the
    * engine reports their debit as unknown (`totalDebit: null`). */
   debitUnknown: string[];
@@ -107,6 +110,7 @@ export const newSendWorld = (): SendWorld => ({
   contactIndex: {},
   lockEvidence: null,
   rescanFirst: [],
+  settledChild: [],
   debitUnknown: [],
 });
 
@@ -851,6 +855,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
       if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
+      if (ctx.world.send.settledChild.includes(txid)) throw refused("settledDescendant");
       const refusal = abandonRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
