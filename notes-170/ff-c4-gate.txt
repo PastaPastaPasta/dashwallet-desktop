@@ -1,0 +1,36 @@
+fail-first C4: gate line removed from drop_dead_unmined (tx_actions.rs:1807), tree 5e9a2c3f275fc5181d0b08f05353cbe0bfdb74aa + working changes
+   Compiling dw-appdb v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-appdb)
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-engine)
+warning: method `hold_for_test` is never used
+   --> crates/dw-engine/src/coinjoin.rs:677:19
+    |
+491 | impl CoinJoinRuntime {
+    | -------------------- method in this implementation
+...
+677 |     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
+    |                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dw-engine` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 25s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 1 test
+test mempool_sync_tests::own_spend_balance_tests::a_drop_of_a_beaten_payment_waits_for_a_resend_hand_off ... FAILED
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::a_drop_of_a_beaten_payment_waits_for_a_resend_hand_off stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_drop_of_a_beaten_payment_waits_for_a_resend_hand_off' (1400306) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2546:5:
+the drop ran through a resend's hand-off
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::a_drop_of_a_beaten_payment_waits_for_a_resend_hand_off
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3210 filtered out; finished in 3.64s
+
+error: test failed, to rerun pass `-p dw-engine --lib`

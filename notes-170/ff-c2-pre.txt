@@ -1,0 +1,42 @@
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-engine)
+warning: method `hold_for_test` is never used
+   --> crates/dw-engine/src/coinjoin.rs:677:19
+    |
+491 | impl CoinJoinRuntime {
+    | -------------------- method in this implementation
+...
+677 |     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
+    |                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dw-engine` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 39s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 2 tests
+test mempool_sync_tests::own_spend_balance_tests::a_swept_doubtful_claims_payment_is_left_to_the_claim_rule ... FAILED
+test mempool_sync_tests::own_spend_balance_tests::a_payment_on_a_claim_the_store_dropped_is_not_taken_as_orphaned ... FAILED
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::a_swept_doubtful_claims_payment_is_left_to_the_claim_rule stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_swept_doubtful_claims_payment_is_left_to_the_claim_rule' (502054) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:3053:5:
+swept: S is kept
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- mempool_sync_tests::own_spend_balance_tests::a_payment_on_a_claim_the_store_dropped_is_not_taken_as_orphaned stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_payment_on_a_claim_the_store_dropped_is_not_taken_as_orphaned' (502053) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:3053:5:
+loaded: S is kept
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::a_payment_on_a_claim_the_store_dropped_is_not_taken_as_orphaned
+    mempool_sync_tests::own_spend_balance_tests::a_swept_doubtful_claims_payment_is_left_to_the_claim_rule
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 3071 filtered out; finished in 0.38s
+
+error: test failed, to rerun pass `-p dw-engine --lib`
+exit=101

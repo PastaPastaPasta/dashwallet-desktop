@@ -1,0 +1,192 @@
+    Blocking waiting for file lock on package cache
+warning: method `hold_for_test` is never used
+   --> crates/dw-engine/src/coinjoin.rs:677:19
+    |
+491 | impl CoinJoinRuntime {
+    | -------------------- method in this implementation
+...
+677 |     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
+    |                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dw-engine` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 53.05s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 158 tests
+test history::tests::unmined_own_spends_give_a_beaten_payments_children_no_claim ... ok
+test history::tests::unmined_own_spends_claim_only_live_payments_this_app_sent ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_coin_spent_unmined_is_not_credited_again_by_its_funding_block ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_half_done_abandon_without_a_record_or_a_readable_copy_releases_its_coins ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_mined_payment_without_change_stays_in_the_history ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_chainlock_another_wallet_applied_keeps_a_payment_mark ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_bad_abandoned_mark_leaves_a_healthy_payments_coin_out ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_failed_abandoned_mark_write_refuses_the_abandon ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_half_done_abandon_whose_mark_copy_does_not_read_back_is_swept ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_coin_spent_unmined_without_change_is_not_credited_again_after_a_restart ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_coin_spent_unmined_is_not_credited_again_by_its_funding_block_after_a_restart ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_load_with_an_unreadable_record_claims_nothing_until_a_clean_load ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_bad_sent_row_does_not_fail_the_start ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_bad_abandoned_row_does_not_fail_the_start ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_failed_read_of_the_sent_marks_fails_the_start_until_it_reads ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_load_with_an_unreadable_abandoned_mark_claims_nothing ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_beaten_payment_without_change_keeps_its_other_coin_out_until_it_is_abandoned ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_of_a_beaten_payment_frees_its_other_coin_after_the_funding_scan ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_payment_abandoned_and_then_locked_is_left_by_the_load ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_closed_wallets_unfinished_sweep_fails_only_its_open ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_relayed_between_the_sweep_and_the_reconcile_goes ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_locked_payment_whose_abandon_mark_is_damaged_keeps_its_coin_out ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_while_the_history_load_is_incomplete_frees_nothing ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_drop_cut_after_its_marks_keeps_its_held_coin_out_across_restarts ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_coin_spent_unmined_stays_spent_two_restarts_later ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_history_load_missing_the_winner_keeps_the_coin_a_beaten_payment_spent ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_payment_abandoned_and_then_mined_is_left_by_the_load ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_payments_mark_names_each_coin_it_spends ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_rescan_does_not_credit_again_a_coin_spent_unmined ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_half_done_abandon_whose_own_mark_key_is_damaged_can_be_abandoned_again ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_payment_mark_stays_when_the_chainlock_names_another_block ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_rescan_after_a_restart_does_not_credit_again_a_coin_spent_unmined ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_pending_spend_this_app_did_not_send_claims_nothing ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_payment_mark_goes_at_a_load_whose_header_chain_proves_it_chainlocked ... ok
+test mempool_sync_tests::own_spend_balance_tests::abandoning_again_after_a_failed_sweep_stores_it ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_wallet_opened_later_claims_its_spent_coins_before_its_history_loads ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_payment_relayed_after_a_restart_keeps_its_claims_across_the_next ... ok
+test mempool_sync_tests::own_spend_balance_tests::an_own_payment_of_an_unconfirmed_coin_counts_each_coin_once ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_payment_marked_abandoned_is_never_resent ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_restored_child_of_a_swept_payment_goes_and_its_coin_the_winner_spent_stays_out ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_restored_child_of_a_swept_payment_goes_and_its_other_coin_comes_back ... ok
+test mempool_sync_tests::own_spend_balance_tests::abandoning_a_stored_payment_after_its_funding_block_was_scanned_frees_its_coins ... ok
+test mempool_sync_tests::own_spend_balance_tests::abandoning_a_stored_payment_after_a_restart_frees_its_coins ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_wallet_opened_later_drops_a_spent_coin_credited_before_its_claims ... ok
+test mempool_sync_tests::own_spend_balance_tests::an_abandon_whose_sweep_fails_after_its_mark_loads_abandoned ... ok
+test mempool_sync_tests::own_spend_balance_tests::an_own_payment_without_change_removes_its_coins_at_once ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_payment_two_rivals_beat_keeps_the_coin_a_locked_rival_spends_out ... ok
+test mempool_sync_tests::own_spend_balance_tests::an_abandon_whose_sweep_fails_offers_no_change_in_the_session ... ok
+test mempool_sync_tests::own_spend_balance_tests::an_open_that_cannot_read_a_drops_holds_fails ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_restored_payment_a_mined_rival_paying_the_wallet_beat_drops_its_change ... ok
+test mempool_sync_tests::own_spend_balance_tests::an_own_payment_stored_unmined_counts_each_coin_once_after_a_restart ... ok
+test mempool_sync_tests::own_spend_balance_tests::abandoning_a_restored_payment_abandons_its_restored_child ... ok
+test mempool_sync_tests::own_spend_balance_tests::chained_own_payments_count_each_coin_once_after_a_restart ... ok
+test mempool_sync_tests::own_spend_balance_tests::an_own_payment_with_change_counts_each_coin_once_until_mined ... ok
+test mempool_sync_tests::own_spend_balance_tests::opening_a_wallet_finishes_its_half_done_abandon ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_lock_arriving_after_the_load_keeps_a_locked_payments_claims ... ignored, a lock after the load reaches only the recipient wallet, see #245
+test mempool_sync_tests::own_spend_balance_tests::a_store_holding_a_claimed_coin_unspent_loads_it_once ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_stored_spends_read_missing_the_winner_keeps_the_coin_a_beaten_payment_spent ... ok
+test mempool_sync_tests::own_spend_balance_tests::outputs_with_any_credit_verdict_are_not_stored ... ok
+test mempool_sync_tests::own_spend_balance_tests::coins_freed_by_an_abandon_after_their_funding_block_load_after_a_restart ... ok
+test mempool_sync_tests::own_spend_balance_tests::the_load_sweep_keeps_a_coin_a_stored_mined_payment_spends ... ok
+test mempool_sync_tests::own_spend_balance_tests::the_load_sweep_keeps_a_coin_a_stored_pending_payment_spends ... ok
+test mempool_sync_tests::own_spend_balance_tests::the_load_sweep_fails_when_another_stored_record_does_not_read_back ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_chainlock_after_a_reorg_keeps_the_reorged_payments_mark ... ok
+test mempool_sync_tests::own_spend_balance_tests::nothing_is_dropped_while_another_wallet_loaded_incomplete ... FAILED
+test mempool_sync_tests::own_spend_disk_tests::a_chainlock_of_a_later_block_keeps_an_earlier_payments_mark ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_chainlock_of_a_payments_block_drops_its_mark_in_the_session ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_chainlock_of_another_block_at_its_height_keeps_a_payments_mark ... ok
+test mempool_sync_tests::own_spend_balance_tests::the_load_sweeps_only_payments_marked_abandoned ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_late_event_for_a_live_transaction_writes_its_balance ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_header_chain_behind_a_payments_block_keeps_its_mark ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_block_seen_before_the_claims_beats_a_locked_payment_only_once_chainlocked ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_coin_stored_unspent_stays_so_whatever_a_later_verdict_says ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_child_stored_after_its_abandons_sweep_is_never_credited ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_chainlock_applied_before_the_claims_are_installed_beats_a_locked_payment ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_lock_arriving_after_an_abandon_keeps_the_payments_sent_mark ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_coin_kept_for_a_spend_the_store_never_got_comes_back_with_a_rescan ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_in_its_own_session_leaves_at_the_chainlock ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_chainlock_applied_while_both_wallets_were_closed_beats_a_locked_payment ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_grandchild_credited_between_the_plan_and_the_sweep_is_never_left_credited ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_lock_arriving_before_the_claims_are_installed_keeps_a_locked_payments_claims ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_after_a_load_missing_its_child ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_chainlock_applied_while_the_wallet_was_closed_beats_a_locked_payment ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_abandoned_then_locked ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_finalized_unheard ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandon_hold_on_a_large_wallet ... ignored, measurement: DWD_ABANDON_HOLD=1
+test mempool_sync_tests::own_spend_disk_tests::a_payment_seen_by_its_change_before_its_inputs_has_an_unknown_debit ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_locked_child ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_mined_unheard ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_locked_payment_a_chainlocked_foreign_spend_beat_after_a_rescan ... ignored, #170 case 14 variant 1: needs key-wallet to keep a ChainLocked spend of a claimed coin
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_the_history_lacks ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_when_its_child_locks_meanwhile ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_a_replaced_block_spends_its_coin ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_under_a_child_claiming_its_own_coin_is_refused_as_locked ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_record_chainlocked_at_catch_up_loses_its_mark_once_the_header_chain_proves_it ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_record_stored_chainlocked_in_a_block_the_header_chain_replaced_keeps_its_mark ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_its_other_coin_is_unproven ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_payment_locked_apart_from_its_record_is_not_abandoned_after_a_restart ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_beaten_after_a_restart_is_abandoned_only_after_the_next ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_mined_spend_beat_frees_its_other_coin_after_a_restart ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_sync_commit_during_a_single_abandon_keeps_its_rewind_record ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_keeps_its_coin_from_selection_without_a_claim ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_whose_other_coin_a_chainlocked_block_spent_goes_after_a_restart_and_a_rescan ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_the_scan_replays ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlocked_spend_beat_is_abandoned_and_its_change_goes ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_wallet_closed_through_a_reset_of_chain_data_rescans_from_its_birth_when_opened ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_wallet_opened_later_stores_no_coin_its_payment_spent_unspent ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_coin_a_pending_payment_from_elsewhere_spends_is_never_offered_after_a_rescan ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_sync_commit_during_remove_unconfirmed_keeps_its_rewind_record ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_remove_unconfirmed_that_fails_after_a_sweep_still_rescans_its_coins ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_a_foreign_spend_beat_keeps_its_coin_spent_after_a_restart ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_wallet_opened_later_keeps_a_locked_payments_claims_until_a_chainlock ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_locked_payment_a_chainlock_beat_takes_a_grandchild_the_history_has_not_heard ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_to_a_contact_marks_nothing_of_the_contacts_spend ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_locked_payment_a_chainlock_beat_leaves_an_unrelated_unheard_spend ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_under_a_child_locked_and_mined_in_the_history_only_is_refused_as_confirmed ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_to_a_contact_releases_a_coin_of_a_spend_behind_the_contacts ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_under_a_child_locked_in_the_history_only_is_refused ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_under_a_child_mined_before_the_history_heard_is_refused ... ok
+test mempool_sync_tests::own_spend_disk_tests::an_abandoned_payment_a_chainlock_beat_stays_abandoned_when_redelivered ... ignored, #170 case 14: intake does not honour a ChainLock defeat
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_under_a_child_mined_in_the_history_only_is_refused_as_confirmed ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_locked_payment_a_chainlock_beat_takes_a_grandchild_behind_an_abandoned_child ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_after_a_load_missing_its_child_is_refused ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_under_a_child_locked_before_the_history_heard_is_refused ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_spent ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_under_a_locked_child_is_refused_and_its_coin_stays_spent ... ok
+test platform::platform_moves::tests::a_moves_own_spend_is_no_outgoing_row ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_under_a_mined_child_is_refused_and_its_coin_stays_spent ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_payment_whose_locked_child_kept_only_its_lock_is_refused ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_locked_payment_a_chainlocked_spend_beat_frees_a_and_drops_its_change ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_spend_of_a_coin_an_abandoned_payment_locked_later_spends_keeps_it ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_restored_payment_abandons_both_children_of_its_change ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_an_unlocked_payment_a_chainlock_beat_under_a_mined_child_is_refused ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_an_unlocked_payment_a_chainlock_beat_frees_its_other_coin_after_a_restart ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_an_unlocked_payment_a_chainlock_beat_under_a_locked_child_drops_its_other_output ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_transfer_a_second_wallet_spent_locked_is_refused ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_rescan_restores_the_coin_of_an_abandon_stopped_without_its_rewind_record ... ok
+test mempool_sync_tests::own_spend_disk_tests::closing_a_wallet_during_a_coin_read_does_not_panic ... ok
+test mempool_sync_tests::own_spend_disk_tests::an_abandoned_payment_relayed_with_its_lock_keeps_its_coins_spent ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_an_unlocked_payment_takes_a_grandchild_the_history_has_not_heard ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandons_rescan_counts_but_never_offers_a_coin_a_pending_payment_from_elsewhere_spends ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_one_of_two_spends_of_a_coin_keeps_it_until_the_other_goes ... ok
+test mempool_sync_tests::own_spend_disk_tests::another_wallets_chainlock_drops_no_mark_of_the_sender ... ok
+test mempool_sync_tests::own_spend_disk_tests::removing_unconfirmed_keeps_a_payment_under_a_locked_child ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_one_of_two_spends_of_a_coin_after_a_restart_keeps_it_until_the_other_goes ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_through_an_abandoned_child_leaves_its_change_unclaimed ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_the_root_of_a_chain_a_second_wallet_spent_locked_two_hops_on_is_refused ... ok
+test mempool_sync_tests::own_spend_disk_tests::removing_unconfirmed_drops_every_locked_payment_a_chainlock_beat ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_rescan_from_the_birth_frees_a_coin_a_half_done_abandon_could_not_name ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_while_a_second_wallet_loaded_incomplete_is_refused ... ok
+test mempool_sync_tests::own_spend_disk_tests::an_override_abandon_cut_before_its_sweep_ends_with_the_next ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_both_spends_of_a_coin_in_one_session_releases_it ... ok
+test mempool_sync_tests::own_spend_balance_tests::remove_unconfirmed_fails_when_the_sent_marks_do_not_read ... ok
+test mempool_sync_tests::own_spend_disk_tests::an_abandon_that_releases_nothing_leaves_no_scan_for_a_restart ... ok
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::nothing_is_dropped_while_another_wallet_loaded_incomplete stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::nothing_is_dropped_while_another_wallet_loaded_incomplete' (2872848) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2919:5:
+the payment stays
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::nothing_is_dropped_while_another_wallet_loaded_incomplete
+
+test result: FAILED. 153 passed; 1 failed; 4 ignored; 0 measured; 2911 filtered out; finished in 70.79s
+
+error: test failed, to rerun pass `-p dw-engine --lib`
+exit=101

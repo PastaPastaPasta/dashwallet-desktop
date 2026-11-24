@@ -1,0 +1,35 @@
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-engine)
+warning: method `hold_for_test` is never used
+   --> crates/dw-engine/src/coinjoin.rs:677:19
+    |
+491 | impl CoinJoinRuntime {
+    | -------------------- method in this implementation
+...
+677 |     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
+    |                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dw-engine` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 36s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 1 test
+test mempool_sync_tests::own_spend_balance_tests::an_empty_dropped_key_does_not_erase_a_drops_holds ... FAILED
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::an_empty_dropped_key_does_not_erase_a_drops_holds stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::an_empty_dropped_key_does_not_erase_a_drops_holds' (527531) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2498:5:
+rescanned: D: {OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 0 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 1 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 2 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 3 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 4 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 5 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 6 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 7 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 8 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 9 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 10 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 11 }}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::an_empty_dropped_key_does_not_erase_a_drops_holds
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3073 filtered out; finished in 0.40s
+
+error: test failed, to rerun pass `-p dw-engine --lib`
+exit=101

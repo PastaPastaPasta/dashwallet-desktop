@@ -1,0 +1,23 @@
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 59s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-97b325163d97ab51)
+
+running 1 test
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing has been running for over 60 seconds
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing ... FAILED
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing' (2311425) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2497:5:
+rescanned: D: {OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 1 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 2 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 3 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 4 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 5 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 6 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 7 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 8 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 9 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 10 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 11 }}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2974 filtered out; finished in 62.77s
+
+error: test failed, to rerun pass `-p dw-engine --lib`

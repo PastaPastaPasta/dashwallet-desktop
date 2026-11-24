@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 1 test
+test mempool_sync_tests::own_spend_balance_tests::nothing_is_dropped_while_another_wallet_loaded_incomplete ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3062 filtered out; finished in 49.14s
+

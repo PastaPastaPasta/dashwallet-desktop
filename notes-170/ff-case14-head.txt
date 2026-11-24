@@ -1,0 +1,124 @@
+# ff14 at 36e886df581f073029341db9562598dd0af33eb3, with this diff:
+diff --git a/rust/crates/dw-engine/src/history.rs b/rust/crates/dw-engine/src/history.rs
+index 694968dd2..759d0d1f4 100644
+--- a/rust/crates/dw-engine/src/history.rs
++++ b/rust/crates/dw-engine/src/history.rs
+@@ -472,7 +472,7 @@ pub(crate) fn unmined_own_spends(
+         .collect();
+     let mut dead = HashSet::new();
+     while let Some(t) = todo.pop() {
+-        if dead.insert(t) && !txs.get(&t).is_some_and(instant_locked) {
++        if dead.insert(t) {
+             todo.extend(children.get(&t).into_iter().flatten());
+         }
+     }
+@@ -558,7 +558,6 @@ pub(crate) fn beaten_unrecorded(
+         let in_history = (e.tx.input.iter()).find_map(|i| {
+             let (w, we) = (spenders.get(&i.previous_output)?.iter()).find(|(w, we)| {
+                 *w != t
+-                    && (we.context.block_info().is_some() || recorded(w))
+                     && beats(we, e, chainlock)
+             })?;
+             Some(Winner {
+
+# cargo test -p dw-engine --lib -- a_locked_payment_a_chainlock_beat
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/ff14/rust/crates/dw-engine)
+warning: method `hold_for_test` is never used
+   --> crates/dw-engine/src/coinjoin.rs:677:19
+    |
+491 | impl CoinJoinRuntime {
+    | -------------------- method in this implementation
+...
+677 |     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
+    |                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dw-engine` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 55s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-ff14/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 15 tests
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_mined_unheard ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_in_its_own_session_leaves_at_the_chainlock ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_a_replaced_block_spends_its_coin ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_after_a_load_missing_its_child ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_the_history_lacks ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_locked_payment_a_chainlock_beat_takes_a_grandchild_the_history_has_not_heard ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_when_its_child_locks_meanwhile ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_under_a_child_claiming_its_own_coin_is_refused_as_locked ... FAILED
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_abandoned_then_locked ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_locked_child ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_the_scan_replays ... FAILED
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_locked_payment_a_chainlock_beat_leaves_an_unrelated_unheard_spend ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_finalized_unheard ... ok
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_its_other_coin_is_unproven ... ok
+test mempool_sync_tests::own_spend_disk_tests::abandoning_a_locked_payment_a_chainlock_beat_takes_a_grandchild_behind_an_abandoned_child ... ok
+
+failures:
+
+---- mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_under_a_child_claiming_its_own_coin_is_refused_as_locked stdout ----
+
+thread 'mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_under_a_child_claiming_its_own_coin_is_refused_as_locked' (4139841) panicked at crates/dw-engine/src/own_spend_disk_tests.rs:4940:5:
+the child claims D
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_the_scan_replays stdout ----
+
+thread 'mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_the_scan_replays' (4139840) panicked at crates/dw-engine/src/own_spend_disk_tests.rs:1790:5:
+replayed to A
+
+
+failures:
+    mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_the_scan_replays
+    mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_under_a_child_claiming_its_own_coin_is_refused_as_locked
+
+test result: FAILED. 13 passed; 2 failed; 0 ignored; 0 measured; 3056 filtered out; finished in 1.68s
+
+error: test failed, to rerun pass `-p dw-engine --lib`
+exit=101
+
+# isolation: only history.rs:561 removed
+diff --git a/rust/crates/dw-engine/src/history.rs b/rust/crates/dw-engine/src/history.rs
+index 694968dd2..51cf09f7e 100644
+--- a/rust/crates/dw-engine/src/history.rs
++++ b/rust/crates/dw-engine/src/history.rs
+@@ -558,7 +558,6 @@ pub(crate) fn beaten_unrecorded(
+         let in_history = (e.tx.input.iter()).find_map(|i| {
+             let (w, we) = (spenders.get(&i.previous_output)?.iter()).find(|(w, we)| {
+                 *w != t
+-                    && (we.context.block_info().is_some() || recorded(w))
+                     && beats(we, e, chainlock)
+             })?;
+             Some(Winner {
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_the_scan_replays ... FAILED
+
+--
+thread 'mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_while_the_scan_replays' (4172119) panicked at crates/dw-engine/src/own_spend_disk_tests.rs:1790:5:
+replayed to A
+--
+test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 3056 filtered out; finished in 3.89s
+
+
+# isolation: only history.rs:475 removed
+diff --git a/rust/crates/dw-engine/src/history.rs b/rust/crates/dw-engine/src/history.rs
+index 694968dd2..2712620ce 100644
+--- a/rust/crates/dw-engine/src/history.rs
++++ b/rust/crates/dw-engine/src/history.rs
+@@ -472,7 +472,7 @@ pub(crate) fn unmined_own_spends(
+         .collect();
+     let mut dead = HashSet::new();
+     while let Some(t) = todo.pop() {
+-        if dead.insert(t) && !txs.get(&t).is_some_and(instant_locked) {
++        if dead.insert(t) {
+             todo.extend(children.get(&t).into_iter().flatten());
+         }
+     }
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_under_a_child_claiming_its_own_coin_is_refused_as_locked ... FAILED
+test mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_locked_child ... ok
+--
+thread 'mempool_sync_tests::own_spend_disk_tests::a_locked_payment_a_chainlock_beat_under_a_child_claiming_its_own_coin_is_refused_as_locked' (4188468) panicked at crates/dw-engine/src/own_spend_disk_tests.rs:4940:5:
+the child claims D
+--
+test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 3056 filtered out; finished in 2.66s
+

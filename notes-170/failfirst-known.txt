@@ -1,0 +1,29 @@
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 50s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-97b325163d97ab51)
+
+running 2 tests
+test mempool_sync_tests::own_spend_balance_tests::a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out ... FAILED
+test mempool_sync_tests::own_spend_balance_tests::a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load ... FAILED
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out' (344487) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2483:5:
+rescanned: D: {OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 1 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 2 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 3 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 4 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 5 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 6 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 7 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 8 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 9 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 10 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 11 }}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- mempool_sync_tests::own_spend_balance_tests::a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load' (344488) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2483:5:
+rescanned: D: {OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 0 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 1 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 2 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 3 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 4 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 5 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 6 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 7 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 8 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 9 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 10 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 11 }}
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out
+    mempool_sync_tests::own_spend_balance_tests::a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 2968 filtered out; finished in 2.01s
+
+error: test failed, to rerun pass `-p dw-engine --lib`

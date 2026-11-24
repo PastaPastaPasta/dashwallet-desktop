@@ -1,0 +1,23 @@
+   Compiling dw-appdb v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-appdb)
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 53s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 1 test
+test mempool_sync_tests::own_spend_balance_tests::nothing_is_dropped_while_another_wallet_loaded_incomplete ... FAILED
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::nothing_is_dropped_while_another_wallet_loaded_incomplete stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::nothing_is_dropped_while_another_wallet_loaded_incomplete' (2608453) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2919:5:
+the payment stays
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::nothing_is_dropped_while_another_wallet_loaded_incomplete
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3062 filtered out; finished in 7.15s
+
+error: test failed, to rerun pass `-p dw-engine --lib`

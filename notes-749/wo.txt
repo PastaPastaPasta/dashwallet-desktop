@@ -1,0 +1,35 @@
+   Compiling dw-units v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-units)
+   Compiling dw-fs v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-fs)
+   Compiling dw-p2p v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-p2p)
+   Compiling dw-protx v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-protx)
+   Compiling dw-testutil v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-testutil)
+   Compiling dw-psbt v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-psbt)
+   Compiling dw-uri v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-uri)
+   Compiling dw-coinjoin v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-coinjoin)
+   Compiling dw-appdb v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-appdb)
+   Compiling dw-message v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-message)
+   Compiling dw-compat v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-compat)
+   Compiling dw-governance v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-governance)
+   Compiling dw-vault v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-vault)
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-engine)
+warning: method `hold_for_test` is never used
+   --> crates/dw-engine/src/coinjoin.rs:677:19
+    |
+491 | impl CoinJoinRuntime {
+    | -------------------- method in this implementation
+...
+677 |     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
+    |                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dw-engine` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 04s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-749/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 1 test
+test mempool_sync_tests::own_spend_balance_tests::a_watch_only_wallets_beaten_payment_is_dropped_and_its_coin_held ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3071 filtered out; finished in 18.29s
+
+exit=0

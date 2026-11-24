@@ -1,0 +1,13 @@
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-engine)
+   Compiling dw-app v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-app)
+   Compiling dw-console v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-console)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 01s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-749/debug/deps/dw_app-39b27e667b4bd31a)
+
+running 2 tests
+test codegen::tests::bindings_have_no_trailing_whitespace ... ok
+test codegen::tests::bindings_are_current ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 307 filtered out; finished in 4.03s
+
+exit=0

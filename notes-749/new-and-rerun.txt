@@ -1,0 +1,59 @@
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-engine)
+warning: method `hold_for_test` is never used
+   --> crates/dw-engine/src/coinjoin.rs:677:19
+    |
+491 | impl CoinJoinRuntime {
+    | -------------------- method in this implementation
+...
+677 |     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
+    |                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dw-engine` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 56s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-749/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 5 tests
+test history::tests::held_total_sums_the_valued_coins_and_counts_the_unvalued ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_watch_only_wallets_beaten_payment_is_dropped_and_its_coin_held ... ok
+test mempool_sync_tests::own_spend_balance_tests::removing_and_reimporting_a_watch_only_wallet_drops_its_holds ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_held_coin_counts_in_the_held_total_and_never_in_the_balance ... ok
+test mempool_sync_tests::own_spend_balance_tests::removing_and_restoring_the_wallet_drops_its_holds ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3074 filtered out; finished in 3.98s
+
+exit=0
+warning: method `hold_for_test` is never used
+   --> crates/dw-engine/src/coinjoin.rs:677:19
+    |
+491 | impl CoinJoinRuntime {
+    | -------------------- method in this implementation
+...
+677 |     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
+    |                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dw-engine` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-749/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 13 tests
+test platform::lease::tests::r4_f1_a_sighting_after_a_failed_erase_keeps_its_step_before_any_copy ... ok
+test platform::lease::session_tests::repair_leaves_a_counted_denomination_out_of_the_self_spend ... ok
+test platform::registration_tests::a_failed_name_after_the_identity_settles_the_row ... ok
+test platform::registration_tests::a_failed_profile_after_the_identity_settles_the_row ... ok
+test platform::recovery_tests::a_discovery_while_spv_is_stopped_advances_at_the_next_bring_up ... ok
+test platform::registration_tests::a_crash_before_the_funding_signature_closes_its_row ... ok
+test platform::registration_tests::invitation::a_claim_registers_publishes_and_asks_the_inviter_with_no_duffs ... ok
+test platform::registration_tests::a_kill_at_any_transition_resumes_to_one_registration ... ok
+test platform::runtime_tests::a_start_during_an_uncommitted_restore_skips_its_wallet ... ok
+test platform::trust_tests::after_masternode_sync_the_degraded_mode_falls_back_at_once ... ok
+test platform::lease::session_tests::r1_f3_the_real_spv_dispatch_stops_at_the_permit_deadline ... ok
+test platform::registration_tests::a_funding_refused_during_a_replay_waits_for_sync ... ok
+test platform::runtime_tests::a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 3066 filtered out; finished in 32.90s
+
+exit=0

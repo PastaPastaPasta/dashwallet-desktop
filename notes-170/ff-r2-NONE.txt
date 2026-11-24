@@ -1,0 +1,23 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.59s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-97b325163d97ab51)
+
+running 3 tests
+test mempool_sync_tests::own_spend_balance_tests::an_open_that_cannot_read_a_drops_holds_fails ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_while_the_history_load_is_incomplete_frees_nothing ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing ... FAILED
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing' (2292780) panicked at crates/dw-engine/src/mempool_sync_tests.rs:90:10:
+called `Result::unwrap()` on an `Err` value: StorageInUse("a SqlitePersister is already open on /work/tmp/.tmpUIpHun/data/regtest/wallet.sqlite in this process")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 2972 filtered out; finished in 11.56s
+
+error: test failed, to rerun pass `-p dw-engine --lib`

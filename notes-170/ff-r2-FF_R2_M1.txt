@@ -1,0 +1,33 @@
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 52s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-97b325163d97ab51)
+
+running 3 tests
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing has been running for over 60 seconds
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_while_the_history_load_is_incomplete_frees_nothing has been running for over 60 seconds
+test mempool_sync_tests::own_spend_balance_tests::an_open_that_cannot_read_a_drops_holds_fails has been running for over 60 seconds
+test mempool_sync_tests::own_spend_balance_tests::an_open_that_cannot_read_a_drops_holds_fails ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing ... FAILED
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_while_the_history_load_is_incomplete_frees_nothing ... FAILED
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing' (2172246) panicked at crates/dw-engine/src/mempool_sync_tests.rs:90:10:
+called `Result::unwrap()` on an `Err` value: StorageInUse("a SqlitePersister is already open on /work/tmp/.tmpg17ouN/data/regtest/wallet.sqlite in this process")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- mempool_sync_tests::own_spend_balance_tests::a_child_dropped_while_the_history_load_is_incomplete_frees_nothing stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_child_dropped_while_the_history_load_is_incomplete_frees_nothing' (2172247) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2497:5:
+rescanned again: D: {OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 1 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 2 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 3 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 4 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 5 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 6 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 7 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 8 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 9 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 10 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 11 }}
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::a_child_dropped_beside_an_unknown_lock_frees_nothing
+    mempool_sync_tests::own_spend_balance_tests::a_child_dropped_while_the_history_load_is_incomplete_frees_nothing
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 2972 filtered out; finished in 297.23s
+
+error: test failed, to rerun pass `-p dw-engine --lib`

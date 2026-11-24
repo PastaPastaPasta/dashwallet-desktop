@@ -1,0 +1,32 @@
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-749/rust/crates/dw-engine)
+warning: method `hold_for_test` is never used
+   --> crates/dw-engine/src/coinjoin.rs:677:19
+    |
+491 | impl CoinJoinRuntime {
+    | -------------------- method in this implementation
+...
+677 |     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
+    |                   ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dw-engine` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 44s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-749/debug/deps/dw_engine-5f6bbca0b0edea4a)
+
+running 11 tests
+test restore_tests::a_watch_only_import_whose_registration_fails_keeps_the_lookahead_stored_before ... ok
+test restore_tests::a_watch_only_import_that_cannot_read_the_previous_marker_is_refused ... ok
+test restore_tests::a_watch_only_import_whose_registration_fails_puts_the_marker_back ... ok
+test restore_tests::a_watch_only_import_stores_its_lookahead_before_the_wallet_is_registered ... ok
+test restore_tests::a_watch_only_import_with_the_default_lookahead_drops_a_row_left_before_it ... ok
+test restore_tests::a_watch_only_import_whose_registration_fails_puts_the_lookahead_back ... ok
+test restore_tests::a_watch_only_import_rescans_a_batch_committed_before_its_lookahead_was_raised ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_watch_only_wallets_beaten_payment_is_dropped_and_its_coin_held ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_held_coin_counts_in_the_held_total_and_never_in_the_balance ... ok
+test restore_tests::a_watch_only_lookahead_is_stored_and_raised_on_its_account_at_load ... ok
+test mempool_sync_tests::own_spend_balance_tests::removing_and_restoring_the_wallet_drops_its_holds ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 3063 filtered out; finished in 3.96s
+
+exit=0

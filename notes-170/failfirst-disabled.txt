@@ -1,0 +1,74 @@
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 56s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-97b325163d97ab51)
+
+running 11 tests
+test history::tests::a_locked_child_of_a_beaten_parent_keeps_its_inputs_held ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change ... FAILED
+test mempool_sync_tests::own_spend_balance_tests::a_child_relayed_between_the_sweep_and_the_reconcile_goes ... FAILED
+test mempool_sync_tests::own_spend_balance_tests::a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out ... FAILED
+test mempool_sync_tests::own_spend_balance_tests::a_mined_payment_without_change_stays_in_the_history ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_restored_child_of_a_swept_payment_goes_and_its_coin_the_winner_spent_stays_out ... FAILED
+test mempool_sync_tests::own_spend_balance_tests::a_restored_child_of_a_swept_payment_goes_and_its_other_coin_comes_back ... FAILED
+test mempool_sync_tests::own_spend_balance_tests::a_restored_payment_a_mined_rival_paying_the_wallet_beat_drops_its_change ... FAILED
+test mempool_sync_tests::own_spend_balance_tests::a_child_of_a_beaten_payment_frees_its_other_coin_after_the_funding_scan ... FAILED
+test mempool_sync_tests::own_spend_balance_tests::abandoning_a_restored_payment_abandons_its_restored_child ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load ... FAILED
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change' (308055) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2396:5:
+the beaten payment's change goes
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- mempool_sync_tests::own_spend_balance_tests::a_child_relayed_between_the_sweep_and_the_reconcile_goes stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_child_relayed_between_the_sweep_and_the_reconcile_goes' (308051) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2482:5:
+dropped: C's change: {OutPoint { txid: 0x7734d7733fdf7529c9ff93a81aea532f61d361eb3001017b453965a384103c13, vout: 0 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 2 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 3 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 4 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 5 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 6 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 7 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 8 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 9 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 10 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 11 }}
+
+---- mempool_sync_tests::own_spend_balance_tests::a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out' (308049) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2482:5:
+swept: C's change: {OutPoint { txid: 0x7734d7733fdf7529c9ff93a81aea532f61d361eb3001017b453965a384103c13, vout: 0 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 2 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 3 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 4 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 5 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 6 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 7 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 8 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 9 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 10 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 11 }}
+
+---- mempool_sync_tests::own_spend_balance_tests::a_restored_child_of_a_swept_payment_goes_and_its_coin_the_winner_spent_stays_out stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_restored_child_of_a_swept_payment_goes_and_its_coin_the_winner_spent_stays_out' (308053) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2482:5:
+swept: C's change: {OutPoint { txid: 0x7734d7733fdf7529c9ff93a81aea532f61d361eb3001017b453965a384103c13, vout: 0 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 2 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 3 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 4 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 5 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 6 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 7 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 8 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 9 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 10 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 11 }}
+
+---- mempool_sync_tests::own_spend_balance_tests::a_restored_child_of_a_swept_payment_goes_and_its_other_coin_comes_back stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_restored_child_of_a_swept_payment_goes_and_its_other_coin_comes_back' (308054) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2529:5:
+C goes
+
+---- mempool_sync_tests::own_spend_balance_tests::a_restored_payment_a_mined_rival_paying_the_wallet_beat_drops_its_change stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_restored_payment_a_mined_rival_paying_the_wallet_beat_drops_its_change' (308056) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2396:5:
+the beaten payment's change goes
+
+---- mempool_sync_tests::own_spend_balance_tests::a_child_of_a_beaten_payment_frees_its_other_coin_after_the_funding_scan stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_child_of_a_beaten_payment_frees_its_other_coin_after_the_funding_scan' (308048) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2659:5:
+P goes
+
+---- mempool_sync_tests::own_spend_balance_tests::a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load' (308050) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2482:5:
+loaded: C's change: {OutPoint { txid: 0x7734d7733fdf7529c9ff93a81aea532f61d361eb3001017b453965a384103c13, vout: 0 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 2 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 3 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 4 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 5 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 6 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 7 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 8 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 9 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 10 }, OutPoint { txid: 0xf6c19cdeea389c99762ba20785bcd1b16376f1c023ba788b166f55772473f636, vout: 11 }}
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::a_child_of_a_beaten_payment_frees_its_other_coin_after_the_funding_scan
+    mempool_sync_tests::own_spend_balance_tests::a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out
+    mempool_sync_tests::own_spend_balance_tests::a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load
+    mempool_sync_tests::own_spend_balance_tests::a_child_relayed_between_the_sweep_and_the_reconcile_goes
+    mempool_sync_tests::own_spend_balance_tests::a_restored_child_of_a_swept_payment_goes_and_its_coin_the_winner_spent_stays_out
+    mempool_sync_tests::own_spend_balance_tests::a_restored_child_of_a_swept_payment_goes_and_its_other_coin_comes_back
+    mempool_sync_tests::own_spend_balance_tests::a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change
+    mempool_sync_tests::own_spend_balance_tests::a_restored_payment_a_mined_rival_paying_the_wallet_beat_drops_its_change
+
+test result: FAILED. 3 passed; 8 failed; 0 ignored; 0 measured; 2959 filtered out; finished in 1.55s
+
+error: test failed, to rerun pass `-p dw-engine --lib`

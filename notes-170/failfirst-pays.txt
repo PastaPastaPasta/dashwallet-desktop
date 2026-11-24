@@ -1,0 +1,22 @@
+   Compiling dw-engine v0.3.0 (/work/scratch/fs6/wt-170/rust/crates/dw-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 50s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-97b325163d97ab51)
+
+running 1 test
+test mempool_sync_tests::own_spend_balance_tests::a_mined_payment_without_change_stays_in_the_history ... FAILED
+
+failures:
+
+---- mempool_sync_tests::own_spend_balance_tests::a_mined_payment_without_change_stays_in_the_history stdout ----
+
+thread 'mempool_sync_tests::own_spend_balance_tests::a_mined_payment_without_change_stays_in_the_history' (328311) panicked at crates/dw-engine/src/own_spend_balance_tests.rs:2694:5:
+the payment stays
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mempool_sync_tests::own_spend_balance_tests::a_mined_payment_without_change_stays_in_the_history
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2969 filtered out; finished in 0.56s
+
+error: test failed, to rerun pass `-p dw-engine --lib`

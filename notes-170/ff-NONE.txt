@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+     Running unittests src/lib.rs (/work/scratch/fs6/target-170/debug/deps/dw_engine-97b325163d97ab51)
+
+running 4 tests
+test mempool_sync_tests::own_spend_balance_tests::a_child_dropped_while_the_history_load_is_incomplete_frees_nothing ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_drop_cut_after_its_marks_keeps_its_held_coin_out_across_restarts ... ok
+test mempool_sync_tests::own_spend_balance_tests::a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2968 filtered out; finished in 0.65s
+
