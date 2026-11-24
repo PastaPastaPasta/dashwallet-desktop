@@ -5,7 +5,6 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { hasCode } from "../../api/backend";
 import type { RegistrationQuote } from "../../api/generated/RegistrationQuote";
 import { myQr } from "../../contacts/add";
 import { useMyUserLink } from "../../contacts/queries";
@@ -385,12 +384,11 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   // The same reads as CostLines (shared through the query cache).
   const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.fromPlatform, wiz.temporaryLabel);
   // F4: a start refused for a changed cost shows the new one; F22: so does a run's.
-  const changedCost = hasCode(wiz.error, "registration.quote_changed");
   const stands = wiz.quoteStands(quote.dataUpdatedAt);
   const { refetch } = quote;
   useEffect(() => {
-    if (changedCost || !stands) void refetch();
-  }, [changedCost, stands, refetch]);
+    if (!stands) void refetch();
+  }, [stands, refetch]);
   const credits = useNameCredits(walletId, identity, wiz.label);
   const check = useUsernameCheck(wiz.label);
   const contested = identity !== null ? (check.data?.contested ?? false) : (quote.data?.contested ?? false);

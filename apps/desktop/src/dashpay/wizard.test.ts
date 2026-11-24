@@ -235,8 +235,8 @@ describe("IOS-068 the row's actions", () => {
     expect(api.startRegistration).not.toHaveBeenCalled();
     // Only a quote read after the refusal may be paid.
     expect(wiz.quoteStands(before - 1)).toBe(false);
-    expect(wiz.quoteStands(wiz.requoteAt!)).toBe(false);
-    expect(wiz.quoteStands(wiz.requoteAt! + 1)).toBe(true);
+    expect(wiz.quoteStands(wiz.requoteAt! - 1)).toBe(false);
+    expect(wiz.quoteStands(wiz.requoteAt!)).toBe(true);
     // Back goes to the name, then "Pay with".
     wiz.back();
     expect(wiz.step).toBe("name");
@@ -455,6 +455,28 @@ describe("the Pay with step (C-funding F18, F19)", () => {
     expect(api.startRegistration).not.toHaveBeenCalled();
     expect(wiz.error).toMatchObject({ code: "registration.quote_changed" });
     expect(wiz.step).toBe("confirm");
+    expect(wiz.requoteAt).not.toBeNull();
+  });
+
+  it("F4: a start refused with registration.quote_changed pays only a quote read since, and starts nothing more", async () => {
+    const { wiz, api } = setup();
+    viaSource(wiz, "platform");
+    const read = Date.now() - 1;
+    expect(wiz.quoteStands(read)).toBe(true);
+    api.startRegistration.mockRejectedValueOnce(appError("registration.quote_changed"));
+    await wiz.confirm(platformQuote);
+    expect(wiz.error).toMatchObject({ code: "registration.quote_changed" });
+    expect(wiz.step).toBe("confirm");
+    // The quote the start refused no longer stands; one read since the refusal does.
+    expect(wiz.requoteAt).not.toBeNull();
+    expect(wiz.quoteStands(read)).toBe(false);
+    expect(wiz.quoteStands(wiz.requoteAt!)).toBe(true);
+    expect(api.startRegistration).toHaveBeenCalledTimes(1);
+    // Another refusal leaves the wait as it was.
+    api.startRegistration.mockRejectedValueOnce(appError("registration.funding_insufficient", { kind: "duffs", needed: 3_002_260, available: 1 }));
+    const at = wiz.requoteAt;
+    await wiz.confirm(platformQuote);
+    expect(wiz.requoteAt).toBe(at);
   });
 
   it("only a new identity pays from the Platform balance: a claim and a name from credits ignore the source", () => {

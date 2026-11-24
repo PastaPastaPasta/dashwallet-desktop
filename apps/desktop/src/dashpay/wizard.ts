@@ -127,7 +127,8 @@ export class RegistrationWizard extends Model {
   wedge: string[] | null = null;
   /** Finish transfers' report, once it ran. */
   finished: FinishReport | null = null;
-  /** When the last plan was refused at run time (F22): Confirm pays only a quote read since. */
+  /** When the last plan was refused, at the start or at run time (F4, F22): Confirm pays only a
+   * quote read since. */
   requoteAt: number | null = null;
   readonly grants: GrantModel;
 
@@ -291,17 +292,24 @@ export class RegistrationWizard extends Model {
     // nothing (F4).
     if (this.fromPlatform && quote.platform === null) {
       this.error = { code: "registration.quote_changed", message: "not a Platform quote", data: null } satisfies AppError;
+      this.requoteAt = Date.now();
       this.changed();
       return;
     }
     const request = this.request(quote);
     await this.#call("start", async () => {
-      const draft = await this.#withGrant(quote.grant, (g) =>
-        past.length === 0
-          ? this.api.startRegistration(this.walletId, request, g.id)
-          : this.api.startRegistrationPastUnknownFunding(this.walletId, request, g.id, past),
-      );
-      if (draft !== null) this.#started(draft);
+      try {
+        const draft = await this.#withGrant(quote.grant, (g) =>
+          past.length === 0
+            ? this.api.startRegistration(this.walletId, request, g.id)
+            : this.api.startRegistrationPastUnknownFunding(this.walletId, request, g.id, past),
+        );
+        if (draft !== null) this.#started(draft);
+      } catch (e) {
+        // The refused quote is never paid again: Pay waits for one read since.
+        if (hasCode(e, "registration.quote_changed")) this.requoteAt = Date.now();
+        throw e;
+      }
     });
   }
 
@@ -371,9 +379,9 @@ export class RegistrationWizard extends Model {
     });
   }
 
-  /** Whether a quote read at `readAt` may be paid: after a run-time refusal, only one read since. */
+  /** Whether a quote read at `readAt` may be paid: after a refused plan, only one read since. */
   quoteStands(readAt: number): boolean {
-    return this.requoteAt === null || readAt > this.requoteAt;
+    return this.requoteAt === null || readAt >= this.requoteAt;
   }
 
   /** Finish transfers (R5, D10). */
