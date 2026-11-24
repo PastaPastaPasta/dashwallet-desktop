@@ -95,6 +95,7 @@ fn register_inputs(
         max_inputs: funds.max_address_inputs as usize,
         min_claim_0: min_input,
         min_total: min_funding(version),
+        exact: true,
     };
     let total = balances.values().copied().fold(0, u64::saturating_add);
     let mut candidates = balances.clone();

@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 
 use super::wallets::ImportOptions;
 use crate::dto::{NetworkInfo, mirror_enum};
-use crate::error::AppError;
+use crate::error::{AppCode, AppError};
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
 
@@ -431,6 +431,27 @@ commands! {
     fn backup_directory(state) -> String {
         let dir = state.session().await?.backup_directory();
         Ok(dir.to_string_lossy().into_owned())
+    }
+
+    /// Shows the network's automatic-backup folder in the system file
+    /// manager (Settings ▸ Backups ▸ Show folder). The folder is the
+    /// session's own, never an argument; one not written yet is refused.
+    #[facade()]
+    fn open_backup_directory(state) -> () {
+        let dir = state.session().await?.backup_directory();
+        // The folder check and the opener both touch the disk: off the async runtime. Only a folder
+        // that isn't there is "missing"; one that can't be read is a failed open.
+        tauri::async_runtime::spawn_blocking(move || match std::fs::metadata(&dir) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(AppError::app(AppCode::BackupFolderMissing, "no backup folder yet".to_string()))
+            }
+            Err(e) => Err(AppError::app(AppCode::FolderOpen, e.to_string())),
+            Ok(m) if !m.is_dir() => Err(AppError::app(AppCode::FolderOpen, "the backup path is not a folder".to_string())),
+            // Detached: the file manager can outlive this command.
+            Ok(_) => open::that_detached(&dir).map_err(|e| AppError::app(AppCode::FolderOpen, e.to_string())),
+        })
+        .await
+        .map_err(|e| AppError::app(AppCode::FolderOpen, e.to_string()))?
     }
 
     /// How many automatic backups are kept per wallet, and where.

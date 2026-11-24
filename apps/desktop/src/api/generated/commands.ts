@@ -1131,6 +1131,15 @@ export function backupDirectory(): Promise<string> {
 }
 
 /**
+ * Shows the network's automatic-backup folder in the system file
+ * manager (Settings ▸ Backups ▸ Show folder). The folder is the
+ * session's own, never an argument; one not written yet is refused.
+ */
+export function openBackupDirectory(): Promise<null> {
+  return invoke<null>("open_backup_directory");
+}
+
+/**
  * How many automatic backups are kept per wallet, and where.
  */
 export function backupPolicy(): Promise<BackupPolicyInfo> {
@@ -3244,6 +3253,7 @@ export type CommandArgs = {
   automatic_backups: { walletId: string | null };
   automatic_backup_failures: {  };
   backup_directory: {  };
+  open_backup_directory: {  };
   backup_policy: {  };
   set_backup_policy: { keep: number };
   read_backup_header: { path: string };
@@ -3597,6 +3607,7 @@ export type CommandResults = {
   automatic_backups: Array<BackupSummary>;
   automatic_backup_failures: Array<AutomaticBackupFailure>;
   backup_directory: string;
+  open_backup_directory: null;
   backup_policy: BackupPolicyInfo;
   set_backup_policy: BackupPolicyInfo;
   read_backup_header: BackupFileHeader;
@@ -3952,6 +3963,7 @@ export const COMMANDS: Record<CommandName, string> = {
   automatic_backups: "backup",
   automatic_backup_failures: "backup",
   backup_directory: "backup",
+  open_backup_directory: "backup",
   backup_policy: "backup",
   set_backup_policy: "backup",
   read_backup_header: "backup",
@@ -4223,6 +4235,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.network_switch_failed",
   "app.explorer_open",
   "app.browser_open",
+  "app.backup_folder_missing",
+  "app.folder_open",
   "app.updates_unavailable",
   "app.update_check",
   "app.update_not_published",
