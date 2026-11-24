@@ -550,7 +550,7 @@ export function RegisterSheet({
       preview.isPending || (preview.data && !figures) ? (
         <LoadingState testId="reg-preview-loading" text={t(`${R}.review.checking`)} />
       ) : figures ? (
-        <Review d={d} p={figures} amount={amount} changed={changed} />
+        <Review d={d} p={figures} amount={amount} />
       ) : null;
   else if (step === "prove" && op)
     body = (
@@ -613,6 +613,14 @@ export function RegisterSheet({
   const action = finalAction(step, external, sends);
   const sendOff = action === "sendOff";
   const notSent = step === "done" && op?.state.kind === "not_sent";
+  // Review, Prove and Not sent keep their messages beside the passphrase and the action, in the
+  // sticky footer, so a long step can't scroll them out of view.
+  const messagesInFooter = reviewing || proving || notSent;
+  const generalLine = (
+    <p className="form-problem" role="alert" data-testid="reg-general">
+      {general}
+    </p>
+  );
   const title = d.kind === "evonode" || op?.terms.masternodeType === "evonode" ? t(`${R}.titleEvonode`) : t(`${R}.titleRegular`);
   const count = external || proving ? STEPS.length + 1 : STEPS.length;
   return (
@@ -643,9 +651,7 @@ export function RegisterSheet({
                 {t(`${R}.sendOff`)}
               </p>
             )}
-            <p className="form-problem" role="alert" data-testid="reg-general">
-              {general}
-            </p>
+            {!messagesInFooter && generalLine}
           </div>
         </div>
         {askDiscard ? (
@@ -664,7 +670,17 @@ export function RegisterSheet({
           </footer>
         ) : (
           <footer className="mg-sheet-footer mg-sheet-footer-sticky">
-            {!sendOff && ((reviewing && !external) || proving || notSent) && <CredentialField c={credential} busy={busy} testId="reg" className="mg-sheet-footer-credential" />}
+            {messagesInFooter && (
+              <div className="mg-sheet-footer-credential">
+                {reviewing && changed && (
+                  <p className="mg-notice mg-notice-warning" role="alert" data-testid="reg-changed">
+                    {t(`${R}.review.changed`)}
+                  </p>
+                )}
+                {generalLine}
+                {!sendOff && ((reviewing && !external) || proving || notSent) && <CredentialField c={credential} busy={busy} testId="reg" />}
+              </div>
+            )}
             <span className="mg-sheet-footer-note">
               {step !== "done" && t(`${R}.stepOf`, { step: String(proving ? count : index + 1), count: String(count) })}
               {reviewing && figures && <span className="mg-small mg-muted"> {d.collateral === "fund_new" ? t(`${R}.review.withCollateral`) : external ? t(`${R}.review.external`) : t(`${R}.review.onlyFee`)}</span>}
@@ -742,7 +758,7 @@ function stepHeading(step: Step, kind: MasternodeTypeName, self: boolean, t: Ret
   }
 }
 
-function Review({ d, p, amount, changed }: { d: RegDraft; p: MnRegistrationPreview; amount: (duffs: number) => ReactNode; changed: boolean }) {
+function Review({ d, p, amount }: { d: RegDraft; p: MnRegistrationPreview; amount: (duffs: number) => ReactNode }) {
   const t = useT();
   const terms = p.terms;
   const self = d.runner === "self";
@@ -786,11 +802,6 @@ function Review({ d, p, amount, changed }: { d: RegDraft; p: MnRegistrationPrevi
         </DetailRow>
         <DetailRow label={t(`${R}.review.then`)}>{t(self ? `${R}.review.thenSelf` : `${R}.review.thenHosted`)}</DetailRow>
       </dl>
-      {changed && (
-        <p className="mg-notice mg-notice-warning" role="alert" data-testid="reg-changed">
-          {t(`${R}.review.changed`)}
-        </p>
-      )}
     </>
   );
 }

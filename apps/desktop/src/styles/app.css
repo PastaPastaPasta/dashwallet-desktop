@@ -6111,9 +6111,22 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-card);
 }
 
-/* The passphrase rides in the sticky footer, on its own row above the note and the actions. */
+/* The passphrase, with the step's messages, rides in the sticky footer, on its own row above the
+   note and the actions. */
 .mg-sheet-footer-credential {
+  display: flex;
   flex: 1 0 100%;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+/* An empty problem line takes no room there. */
+.mg-sheet-footer-credential .form-problem {
+  margin: 0;
+}
+
+.mg-sheet-footer-credential .form-problem:empty {
+  display: none;
 }
 
 /* Under it, the note shrinks so the actions keep the right end of the same row. */
