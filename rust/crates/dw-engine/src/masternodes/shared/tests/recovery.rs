@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use dashcore::Address;
 use key_wallet::transaction_checking::TransactionContext;
 
-use super::super::recovery::spend_fee;
+use super::super::recovery::{SIGNER_RUNS, spend_fee};
 use super::*;
 use crate::masternodes::{
     AbandonSpendState, BlockedReason, HandoffErrorOutcome, HandoffTx, RecoveryAction, SettledBy,
@@ -1144,6 +1144,63 @@ fn test_a_refused_copy_carrying_our_signature_reads_possibly_out() {
         .run(f.mn().discard_shared_session(f.wallets[1], id.clone()))
         .unwrap_err();
     assert_eq!(code(e), "masternodes.shared_stage");
+}
+
+/// A refused copy spending one of our own inputs fifty times, each with our
+/// scriptSig, is never ours (no valid transaction spends an outpoint
+/// twice): the session stays discardable, not out, and the import checks
+/// no more signatures than the session has own inputs, so a copy can't hold
+/// the wallet's read for long. Such a copy parses only before `combined`
+/// (no consent signature covers its inputs), so it is a `frozen` one.
+#[test]
+fn test_a_refused_copy_repeating_our_input_stays_discardable() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.imported(1, &f.message(0, &id));
+    let before = f.row(1, &id);
+    let signed = f.sign(1, &id, 301 * COIN).unwrap();
+    restore(&f, 1, &id, &before);
+    let own = reserved_coins(&f, 1, &id);
+    let mut copy = parse(&signed.message.text);
+    let frozen = decode_frozen(&copy).unwrap();
+    let mut tx = frozen.tx;
+    let index = (tx.input.iter())
+        .position(|i| own.contains(&i.previous_output))
+        .unwrap();
+    let ours = tx.input[index].clone();
+    assert!(!ours.script_sig.is_empty(), "our signature");
+    let o = ours.previous_output;
+    let listed = (copy.contributions.iter_mut())
+        .find_map(|c| {
+            let at =
+                (c.inputs.iter()).position(|i| i.txid == o.txid.to_string() && i.vout == o.vout)?;
+            Some((c, at))
+        })
+        .unwrap();
+    let (contribution, at) = listed;
+    let input = contribution.inputs[at].clone();
+    for _ in 0..49 {
+        tx.input.insert(index + 1, ours.clone());
+        contribution.inputs.insert(at + 1, input.clone());
+    }
+    copy.stage = Stage::Frozen;
+    copy.sigs.clear();
+    copy.protx = hex::encode(tx.to_bytes());
+    copy.consent_hash =
+        dw_protx::shared::ProRegTxV3::display_hash(&frozen.payload.consent_hash(&tx));
+    copy.revision += 1;
+    assert_message(f.import(1, &copy.to_text()).unwrap_err(), "conflict");
+    let runs = (SIGNER_RUNS.lock().unwrap().iter())
+        .filter(|t| **t == tx.txid())
+        .count();
+    assert!(runs <= own.len(), "{runs} signature checks");
+    let row = f.row(1, &id);
+    assert_eq!((row.out_at, row.last_error), (None, None));
+    f.spv(true, 1);
+    assert!(
+        (f.recovery(1, &id).actions.iter()).any(|a| matches!(a, RecoveryAction::Discard { .. })),
+        "not out: discard"
+    );
 }
 
 /// T4 "participant `funding_signed`": with nothing signed back the replay

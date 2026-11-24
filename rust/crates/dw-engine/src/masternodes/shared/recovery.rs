@@ -454,7 +454,9 @@ impl NetworkSession {
     /// wallet's valid signature over one of `l`'s own inputs and `l` isn't
     /// out yet: those bytes, or a later copy of them, may reach the network
     /// (the wallet on another install, or a database restored from an
-    /// older backup).
+    /// older backup). A transaction spending an outpoint twice is never
+    /// valid, so it is no such copy; each own input's signature is checked
+    /// once, before the wallet is read.
     pub(super) async fn own_signed_copy(
         &self,
         wallet: WalletId,
@@ -469,15 +471,23 @@ impl NetworkSession {
             return Ok(None);
         };
         let tx = frozen.tx;
+        let mut spent = HashSet::new();
+        if !tx.input.iter().all(|i| spent.insert(i.previous_output)) {
+            return Ok(None);
+        }
+        let keys: Vec<PublicKey> = (tx.input.iter().enumerate())
+            .filter(|(_, input)| own.contains(&input.previous_output))
+            .filter_map(|(index, _)| signer_of(&tx, index))
+            .collect();
+        if keys.is_empty() {
+            return Ok(None);
+        }
         let network = self.network.core_network();
         let w = self.wallet(&wallet).await?;
         let state = crate::wallet_read::info_of(&w).await?;
-        let signed = (tx.input.iter().enumerate()).any(|(index, input)| {
-            own.contains(&input.previous_output)
-                && signer_of(&tx, index).is_some_and(|key| {
-                    let address = dashcore::Address::p2pkh(&key, network);
-                    own_address_info(&state.core_wallet, &address).is_some()
-                })
+        let signed = keys.iter().any(|key| {
+            let address = dashcore::Address::p2pkh(key, network);
+            own_address_info(&state.core_wallet, &address).is_some()
         });
         Ok(signed.then_some(tx))
     }
@@ -872,10 +882,16 @@ impl NetworkSession {
 /// The code a hand-off of unknown outcome records.
 const UNKNOWN_CODE: &str = "send.broadcast_unknown";
 
+/// The transaction of each [`signer_of`] run, in tests.
+#[cfg(test)]
+pub(super) static SIGNER_RUNS: std::sync::Mutex<Vec<Txid>> = std::sync::Mutex::new(Vec::new());
+
 /// The key whose valid `SIGHASH_ALL` P2PKH signature over `tx` input
 /// `index` its scriptSig carries (a high-S one counts: it could be made
 /// standard).
 fn signer_of(tx: &SpecialTx, index: usize) -> Option<PublicKey> {
+    #[cfg(test)]
+    SIGNER_RUNS.lock().unwrap().push(tx.txid());
     let mut pushes = tx.input.get(index)?.script_sig.instructions();
     let (Some(Ok(Instruction::PushBytes(sig))), Some(Ok(Instruction::PushBytes(key))), None) =
         (pushes.next(), pushes.next(), pushes.next())
