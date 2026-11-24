@@ -42,6 +42,9 @@ import type { RatesSettings } from "./generated/RatesSettings";
 import type { RatesView } from "./generated/RatesView";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
+import type { ContactPayArgs } from "./generated/ContactPayArgs";
+import type { ContactPayOutcomeInfo } from "./generated/ContactPayOutcomeInfo";
+import type { ContactPayQuoteInfo } from "./generated/ContactPayQuoteInfo";
 import type { ContactQueryArgs } from "./generated/ContactQueryArgs";
 import type { CredentialSpec } from "./generated/CredentialSpec";
 import type { DashPayStatus } from "./generated/DashPayStatus";
@@ -492,6 +495,10 @@ export interface Backend {
   frequentContacts(walletId: string, identity: string, limit: number): Promise<ContactSummaryInfo[]>;
   /** Looks for the locked payment's outcome; `sent` and `notSent` clear the lock (DP3-01). */
   resolveContactPaymentLock(walletId: string, identity: string, contact: string): Promise<LockResolutionName>;
+  /** What paying `credits` from the Shielded or Platform balance takes and pays (C-funding D-C5). */
+  contactPayQuote(walletId: string, identity: string, contact: string, credits: string, source: PaymentSourceName): Promise<ContactPayQuoteInfo>;
+  /** Pays from that balance under a `platformOp` grant the quote sized. */
+  contactPay(walletId: string, identity: string, contact: string, payment: ContactPayArgs, grant: string): Promise<ContactPayOutcomeInfo>;
   /** The caps of the `platformOp` grant a DashPay write needs. */
   grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest>;
   creditsCostTable(walletId: string): Promise<CostTable>;

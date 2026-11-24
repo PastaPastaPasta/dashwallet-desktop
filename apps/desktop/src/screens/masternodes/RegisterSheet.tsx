@@ -5,7 +5,7 @@
 // the margin. An External registration is saved at Review's [Continue] (`needs_signature`, In
 // progress) and reopens at Prove. A refusal goes back to the step and field it belongs to.
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { isAppError } from "../../api/backend";
 import { lockGeneration, refusedWhileLocked, walletGateClosed } from "../../api/lockGate";
@@ -29,7 +29,7 @@ import { shortAddress, shortHash } from "../../governance/model";
 import { useT } from "../../i18n";
 import { mnErrorText } from "../../masternodes/model";
 import { lastErrorText } from "../../masternodes/operations";
-import { useMasternodes, useMasternodesRefresh, useRegistrationKeys } from "../../masternodes/queries";
+import { mnKeys, useMasternodes, useMasternodesRefresh, useRegistrationKeys } from "../../masternodes/queries";
 import {
   buildRequest,
   coinsFor,
@@ -82,6 +82,7 @@ export function RegisterSheet({
   const shown = useDisplay(network);
   const id = useId();
   const refresh = useMasternodesRefresh();
+  const queryClient = useQueryClient();
   const overview = useMasternodes(wallet.walletId);
   const [step, setStep] = useState<Step>(resume ? "prove" : "type");
   const [d, setD] = useState<RegDraft>(newDraft);
@@ -101,6 +102,8 @@ export function RegisterSheet({
   // The keys are held from the call itself, since the send announces its change before React renders.
   const [sending, setSending] = useState(false);
   const sendingKeys = useRef<ProTxKeys | null>(null);
+  // The engine sends a sign request only while the row needs a signature; a spent row needs a new message.
+  const needsNewMessage = inputsSpent || (op !== null && op.signRequest === null);
   const set = (patch: Partial<RegDraft>) => setD((x) => ({ ...x, ...patch }));
 
   const keys = useRegistrationKeys(wallet.walletId, d.kind, !resume && step !== "type" && step !== "collateral" && !sending);
@@ -202,6 +205,7 @@ export function RegisterSheet({
     if (busy || !confirmed || !credential.ready) return;
     const departed = pressGuard();
     setBusy(true);
+    let granted: string | null = null;
     try {
       const r = await preview.refetch();
       if (departed() || r.isError || !r.data || shownKey.current !== requestKey) return;
@@ -213,6 +217,7 @@ export function RegisterSheet({
       setChanged(false);
       const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: registerCap(confirmed) });
       if (!grant) return;
+      granted = grant.id;
       if (departed()) {
         void backend.revokeGrant(grant.id).catch(() => null);
         return;
@@ -225,6 +230,7 @@ export function RegisterSheet({
       setOp(sent);
       setStep("done");
     } catch (e) {
+      if (granted) void backend.revokeGrant(granted).catch(() => null);
       if (refusedWhileLocked(e) || !mounted.current) return;
       if (isAppError(e) && e.code === "send.grant_exceeded") {
         setChanged(true);
@@ -250,9 +256,11 @@ export function RegisterSheet({
     const departed = pressGuard();
     setBusy(true);
     setErrors({});
+    let granted: string | null = null;
     try {
       const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: op.debit });
       if (!grant) return;
+      granted = grant.id;
       if (departed()) {
         void backend.revokeGrant(grant.id).catch(() => null);
         return;
@@ -266,9 +274,16 @@ export function RegisterSheet({
       setOp(result);
       setStep("done");
     } catch (e) {
+      if (granted) void backend.revokeGrant(granted).catch(() => null);
       if (refusedWhileLocked(e) || !mounted.current) return;
       if (isAppError(e) && e.code === "masternodes.operation_state" && e.data?.kind === "operationState" && e.data.state === "inputs_spent") {
         setInputsSpent(true);
+        // The saved row reads spent at once, so In progress offers a new message if this sheet closes
+        // before the list is read again.
+        queryClient.setQueryData<ProTxOperation[]>(mnKeys.operations(wallet.walletId), (rows) =>
+          rows?.map((o) => (o.id === op.id ? { ...o, state: { kind: "inputs_spent" }, signRequest: null } : o)),
+        );
+        void refresh();
         return;
       }
       if (!refuse(e)) credential.setError(errorText(e));
@@ -279,9 +294,12 @@ export function RegisterSheet({
 
   const newMessage = async () => {
     if (busy || !op) return;
+    setGeneral(null);
     setBusy(true);
     try {
       const fresh = await b.mnRefreshExternalRegistration(wallet.walletId, op.id);
+      // In progress reopens the saved row as the engine returned it, even before the list is read again.
+      queryClient.setQueryData<ProTxOperation[]>(mnKeys.operations(wallet.walletId), (rows) => rows?.map((o) => (o.id === fresh.id ? fresh : o)));
       if (!mounted.current) return;
       setOp(fresh);
       setSignature("");
@@ -534,11 +552,12 @@ export function RegisterSheet({
       ) : figures ? (
         <Review d={d} p={figures} amount={amount} changed={changed} />
       ) : null;
-  else if (step === "prove" && op?.signRequest)
+  else if (step === "prove" && op)
     body = (
       <>
         <h4 className="mg-section-title">{t(`${R}.prove.heading`)}</h4>
         <p className="mg-small">{t(`${R}.prove.text`, { outpoint: op.terms.collateralOutpoint ? shortOutpoint(op.terms.collateralOutpoint) : "" })}</p>
+        {op.signRequest && !needsNewMessage && (
         <dl className="detail-list card-l1" data-testid="reg-sign-request">
           <DetailRow label={t(`${R}.prove.address`)}>
             <span className="copy-value">
@@ -557,7 +576,16 @@ export function RegisterSheet({
             </span>
           </DetailRow>
         </dl>
-        {inputsSpent ? (
+        )}
+        <dl className="detail-list card-l1" data-testid="reg-prove-cost">
+          <DetailRow label={t(`${R}.review.fee`)} testId="reg-prove-fee">
+            {amount(op.fee)}
+          </DetailRow>
+          <DetailRow label={t(`${R}.review.total`)} testId="reg-prove-debit">
+            {amount(op.debit)}
+          </DetailRow>
+        </dl>
+        {needsNewMessage ? (
           <div className="mg-notice mg-notice-warning" role="alert" data-testid="reg-inputs-spent">
             <p className="mg-flush">{t(`${R}.refused.inputsSpent`)}</p>
             <DashButton variant="filledBlue" size="small" data-testid="reg-new-message" disabled={busy} onClick={() => void newMessage()}>
@@ -615,7 +643,7 @@ export function RegisterSheet({
                 {t(`${R}.sendOff`)}
               </p>
             ) : (
-              (reviewing || proving || notSent) && <CredentialField c={credential} busy={busy} testId="reg" />
+              ((reviewing && !external) || proving || notSent) && <CredentialField c={credential} busy={busy} testId="reg" />
             )}
             <p className="form-problem" role="alert" data-testid="reg-general">
               {general}
@@ -676,7 +704,7 @@ export function RegisterSheet({
                       variant="filledBlue"
                       size="medium"
                       data-testid={action === "register" ? "reg-register" : action === "submit" ? "reg-submit" : "reg-continue"}
-                      disabled={busy || (reviewing && !figures) || (action !== "continue" ? !credential.ready : false) || (proving && inputsSpent) || (step === "keys" && !keys.data)}
+                      disabled={busy || (reviewing && !figures) || (action !== "continue" && !credential.ready) || (proving && needsNewMessage) || (step === "keys" && !keys.data)}
                     >
                       {busy && (reviewing || proving) ? t(`${R}.registering`) : action !== "continue" ? t(`${R}.register`) : t(`${R}.continue`)}
                     </DashButton>

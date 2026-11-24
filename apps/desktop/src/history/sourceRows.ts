@@ -2,8 +2,8 @@
 // the shielded account's (lane E1's `shielded_history`). The engine's history knows Core
 // transactions only, so these are synthetic `TxRow`s, told apart by their `platform:` or
 // `shielded:` txid (`<source>:<kind>:<id>`), shown in List mode among the Core rows by date with a
-// source tag. They open no detail (they have no Core transaction), and CSV export stays the Core
-// history.
+// source tag. They open their own details sheet, built from the activity record (they have no Core
+// transaction), and CSV export stays the Core history.
 
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
@@ -33,6 +33,8 @@ export const SourceRowText = {
   shieldedReceived: "Received in Shielded",
   shieldedSent: "Sent from Shielded",
   shieldedPaid: "Paid from Shielded",
+  /** A payment to a DashPay contact from the Platform balance (C-funding P10). */
+  contactPayment: "Paid from Platform",
 };
 
 const REPLACED = ":replaced";
@@ -78,13 +80,15 @@ export function platformRow(a: PlatformActivity): TxRow {
   // A move with no proved arrival shows what left (`credits`), never an amount that "arrives".
   const amount = replaced ? 0 : move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
   const topUp = a.kind === "toIdentity";
-  const mayLand = a.state === "failed" && a.mayLand && (move || a.kind === "send" || topUp);
+  const paid = a.kind === "outgoing" || a.kind === "send" || a.kind === "contactPayment" || topUp;
+  const mayLand = a.state === "failed" && a.mayLand && (move || a.kind === "send" || a.kind === "contactPayment" || topUp);
   const kind = a.state === "done" || replaced ? "confirmed" : a.state === "pending" || mayLand ? "unconfirmed" : "notAccepted";
   return {
-    ...base(`platform:${a.kind}:${a.id}${replaced ? REPLACED : mayLand ? MAY_LAND : ""}`, statusOf(kind), a.at, (a.kind === "outgoing" || a.kind === "send" || topUp) && amount !== 0 ? -amount : amount),
+    ...base(`platform:${a.kind}:${a.id}${replaced ? REPLACED : mayLand ? MAY_LAND : ""}`, statusOf(kind), a.at, paid && amount !== 0 ? -amount : amount),
     txType: move ? "platformTransfer" : received ? "recvWithAddress" : "sendToAddress",
     category: move ? "platform" : received ? "received" : "sent",
-    address: move || a.kind === "send" ? a.to : a.address,
+    address: move || a.kind === "send" || a.kind === "contactPayment" ? a.to : a.address,
+    ...(a.contact ? { counterparty: a.contact } : {}),
   };
 }
 
@@ -105,10 +109,34 @@ export function shieldedRow(a: ShieldedActivity): TxRow {
   };
 }
 
+export type SourceRecord =
+  | { source: "platform"; row: TxRow; record: PlatformActivity }
+  | { source: "shielded"; row: TxRow; record: ShieldedActivity };
+
+/** A row's txid without its state suffix: a move that is replaced or may still land while its
+ * details are open is still the same record. */
+const recordKey = (txid: string) => txid.replace(/:(replaced|mayland)$/, "");
+
+/** The activity record a synthetic row was made from, by its txid; `null` for a Core txid or a
+ * record no longer in the read. */
+export function findSourceRecord(txid: string, platform: readonly PlatformActivity[] | null | undefined, shielded: readonly ShieldedActivity[] | null | undefined): SourceRecord | null {
+  const key = recordKey(txid);
+  const source = rowSource({ txid });
+  if (source === "platform") {
+    const record = platform?.find((a) => recordKey(platformRow(a).txid) === key);
+    return record ? { source, row: platformRow(record), record } : null;
+  }
+  if (source === "shielded") {
+    const record = shielded?.find((a) => shieldedRow(a).txid === key);
+    return record ? { source, row: shieldedRow(record), record } : null;
+  }
+  return null;
+}
+
 export function sourceRowTitle(row: TxRow): string {
   const kind = row.txid.split(":")[1];
   if (rowSource(row) === "platform")
-    return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
+    return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
   switch (kind) {
     case "shield":
     case "shieldFromCore":

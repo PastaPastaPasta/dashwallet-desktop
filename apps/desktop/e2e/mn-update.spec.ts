@@ -131,6 +131,25 @@ for (const theme of THEMES)
     expect(errors).toEqual([]);
   });
 
+test("a refused Send again of an update that didn't go out leaves no live grant (review of issue 460)", async ({ page }) => {
+  const errors = await open(page, "mn-update-not-sent");
+  await page.getByTestId(`mn-row-${HOME}`).click();
+  await page.getByTestId("mn-change-keys").click();
+  await page.getByTestId("mn-change-operator-keychain").click();
+  await page.getByTestId("mn-change-passphrase").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("mn-change-send").click();
+  await expect(page.getByTestId("mn-change-unsent")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_resend_operation", "rpc"));
+  const revokes = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "revoke_grant").length);
+  const before = await revokes();
+  await page.getByTestId("mn-change-unsent-passphrase").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("mn-change-unsent-resend").click();
+  await expect.poll(revokes).toBe(before + 1);
+  expect(await page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).length)).toBe(0);
+  await expect(page.getByTestId("mn-change-unsent")).toBeVisible();
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
 test("discarding an update that didn't go out frees the masternode for another change", async ({ page }) => {
   await open(page, "mn-update-not-sent");
   await page.getByTestId(`mn-row-${HOME}`).click();
