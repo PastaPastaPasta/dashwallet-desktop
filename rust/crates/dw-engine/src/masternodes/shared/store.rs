@@ -686,7 +686,7 @@ fn contribution_signed(session: &Session, label: &str) -> bool {
 fn warnings(l: &Loaded) -> Vec<SharedWarning> {
     let s = &l.session;
     let mut out = Vec::new();
-    if s.terms.early_penalty == 0 {
+    if s.terms.early_period_blocks > 0 && s.terms.early_penalty == 0 {
         out.push(SharedWarning::ZeroPenalty);
     }
     if s.terms.core_p2p_addrs.trim().is_empty() {

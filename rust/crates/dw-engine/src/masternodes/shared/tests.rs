@@ -29,7 +29,8 @@ use super::super::protx::ops::{CrashPoint, Seam};
 use crate::masternodes::{
     HeldShares, Masternodes, MasternodesError, OperatorChoice, RewardChoice, ShareSlot, ShareTerms,
     ShareTermsView, SharedImport, SharedNext, SharedOutcome, SharedRole, SharedSession,
-    SharedStage, StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
+    SharedStage, SharedWarning, StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest,
+    VotingChoice,
 };
 use crate::send::TestBroadcaster;
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
@@ -3785,6 +3786,24 @@ fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {
             .unwrap()[0]
             .abandonable
     );
+}
+
+/// `zero_penalty` warns only of an early period with no penalty: with no
+/// early period there is nothing to leave early from.
+#[test]
+fn test_zero_penalty_warns_only_with_an_early_period() {
+    for (period, penalty, warned) in [(0, 0, false), (1_000, 0, true), (1_000, COIN, false)] {
+        let f = fx(2, true);
+        f.credit(0, 1, 501 * COIN);
+        let mut req = request(&[("A", 500), ("B", 500)], FEE);
+        (req.terms.early_period_blocks, req.terms.early_penalty) = (period, penalty);
+        let s = start(&f, 0, req).unwrap().session;
+        assert_eq!(
+            s.warnings.contains(&SharedWarning::ZeroPenalty),
+            warned,
+            "period {period}, penalty {penalty}"
+        );
+    }
 }
 
 /// Once this wallet signed an abandon spend, the session hands nothing on:
