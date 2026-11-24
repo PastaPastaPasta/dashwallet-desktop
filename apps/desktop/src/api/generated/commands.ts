@@ -258,9 +258,6 @@ export const SHELL_EVENT = "shell://event";
 /** Txids per `historyChanged` or `newTransactions` event. */
 export const MAX_TXIDS = 256;
 
-/** What `mnSharedAbandon` and `mnSharedAbandonUnreadable` charge, in duffs: a `masternodeOp` grant's exact cap. */
-export const SHARED_ABANDON_FEE = 193;
-
 /**
  * How the app was launched: the self-test, the forced theme, and the
  * network `openNetwork` opens by default: the window's, which
@@ -3164,17 +3161,26 @@ export function mnSharedApprove(walletId: string, session: string, consentHash: 
 }
 
 /**
- * Spends one reserved coin of a session that may be out back to the
- * wallet, so it can't confirm (`SharedSession.abandonable`). Takes a
- * `masternodeOp` grant covering `SHARED_ABANDON_FEE`. Every network.
+ * Spends every reserved coin of a session that may be out back to the
+ * wallet, so it can't confirm (`SharedSession.abandonCharge`). Takes a
+ * `masternodeOp` grant of exactly that charge. Every network.
  */
 export function mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
   return invoke<SharedSession>("mn_shared_abandon", { walletId, session, grant });
 }
 
 /**
+ * The latest abandon spend's saved bytes handed off again, while the
+ * spend may be out (`SharedSession.resendAbandonCharge`). Takes a
+ * `masternodeOp` grant of exactly that charge. Every network.
+ */
+export function mnSharedResendAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
+  return invoke<SharedSession>("mn_shared_resend_abandon", { walletId, session, grant });
+}
+
+/**
  * The same for a session whose stored record no longer reads
- * (`UnreadableSession.abandonable`).
+ * (`UnreadableSession.abandonCharge`).
  */
 export function mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession> {
   return invoke<UnreadableSession>("mn_shared_abandon_unreadable", { walletId, session, grant });
@@ -3182,8 +3188,8 @@ export function mnSharedAbandonUnreadable(walletId: string, session: string, gra
 
 /**
  * A participant at `combined` signs its funding inputs into the
- * registration, charged its `debit`. Takes a `masternodeOp` grant of at
- * least that `debit`. Refused on mainnet before the engine is called
+ * registration, charged its `debit`. Takes a `masternodeOp` grant of
+ * exactly that `debit`. Refused on mainnet before the engine is called
  * (`app.shared_send_off`).
  */
 export function mnSharedSign(walletId: string, session: string, grant: string): Promise<SharedOutcome> {
@@ -3193,7 +3199,7 @@ export function mnSharedSign(walletId: string, session: string, grant: string): 
 /**
  * The coordinator signs its own inputs last and sends the registration
  * at `combined`, or sends the saved registration again at `sent`,
- * charged its `debit`. Takes a `masternodeOp` grant of at least that
+ * charged its `debit`. Takes a `masternodeOp` grant of exactly that
  * `debit`. Refused on mainnet before the engine is called
  * (`app.shared_send_off`).
  */
@@ -3727,6 +3733,7 @@ export type CommandArgs = {
   mn_shared_unlock: { walletId: string; session: string };
   mn_shared_approve: { walletId: string; session: string; consentHash: string; grant: string };
   mn_shared_abandon: { walletId: string; session: string; grant: string };
+  mn_shared_resend_abandon: { walletId: string; session: string; grant: string };
   mn_shared_abandon_unreadable: { walletId: string; session: string; grant: string };
   mn_shared_sign: { walletId: string; session: string; grant: string };
   mn_shared_send: { walletId: string; session: string; grant: string };
@@ -4105,6 +4112,7 @@ export type CommandResults = {
   mn_shared_unlock: SharedOutcome;
   mn_shared_approve: SharedOutcome;
   mn_shared_abandon: SharedSession;
+  mn_shared_resend_abandon: SharedSession;
   mn_shared_abandon_unreadable: UnreadableSession;
   mn_shared_sign: SharedOutcome;
   mn_shared_send: SharedOutcome;
@@ -4485,6 +4493,7 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_shared_unlock: "masternodes",
   mn_shared_approve: "masternodes",
   mn_shared_abandon: "masternodes",
+  mn_shared_resend_abandon: "masternodes",
   mn_shared_abandon_unreadable: "masternodes",
   mn_shared_sign: "masternodes",
   mn_shared_send: "masternodes",

@@ -477,9 +477,9 @@ commands! {
         Ok(outcome.into())
     }
 
-    /// Spends one reserved coin of a session that may be out back to the
-    /// wallet, so it can't confirm (`SharedSession.abandonable`). Takes a
-    /// `masternodeOp` grant covering `SHARED_ABANDON_FEE`. Every network.
+    /// Spends every reserved coin of a session that may be out back to the
+    /// wallet, so it can't confirm (`SharedSession.abandonCharge`). Takes a
+    /// `masternodeOp` grant of exactly that charge. Every network.
     #[facade("Masternodes::abandon_shared_session")]
     fn mn_shared_abandon(state, wallet_id: String, session: String, grant: String) -> SharedSession {
         let wallet = parse_wallet_id(&wallet_id)?;
@@ -491,8 +491,27 @@ commands! {
         Ok(session.into())
     }
 
+    /// The latest abandon spend's saved bytes handed off again, while the
+    /// spend may be out (`SharedSession.resendAbandonCharge`). Takes a
+    /// `masternodeOp` grant of exactly that charge. Every network.
+    #[facade("Masternodes::resend_shared_abandon")]
+    fn mn_shared_resend_abandon(
+        state,
+        wallet_id: String,
+        session: String,
+        grant: String,
+    ) -> SharedSession {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let session = state
+            .masternodes()
+            .await?
+            .resend_shared_abandon(wallet, session, grant)
+            .await?;
+        Ok(session.into())
+    }
+
     /// The same for a session whose stored record no longer reads
-    /// (`UnreadableSession.abandonable`).
+    /// (`UnreadableSession.abandonCharge`).
     #[facade("Masternodes::abandon_unreadable_shared_session")]
     fn mn_shared_abandon_unreadable(
         state,
@@ -510,8 +529,8 @@ commands! {
     }
 
     /// A participant at `combined` signs its funding inputs into the
-    /// registration, charged its `debit`. Takes a `masternodeOp` grant of at
-    /// least that `debit`. Refused on mainnet before the engine is called
+    /// registration, charged its `debit`. Takes a `masternodeOp` grant of
+    /// exactly that `debit`. Refused on mainnet before the engine is called
     /// (`app.shared_send_off`).
     #[facade("Masternodes::sign_shared_funding")]
     fn mn_shared_sign(state, wallet_id: String, session: String, grant: String) -> SharedOutcome {
@@ -527,7 +546,7 @@ commands! {
 
     /// The coordinator signs its own inputs last and sends the registration
     /// at `combined`, or sends the saved registration again at `sent`,
-    /// charged its `debit`. Takes a `masternodeOp` grant of at least that
+    /// charged its `debit`. Takes a `masternodeOp` grant of exactly that
     /// `debit`. Refused on mainnet before the engine is called
     /// (`app.shared_send_off`).
     #[facade("Masternodes::send_shared_registration")]
@@ -598,11 +617,13 @@ commands! {
 
 /// Whether this version sends shared-masternode transactions on `network`:
 /// everywhere but mainnet (MG's ruling for this release). [`SHARED_SEND_GATE`]
-/// lists what it gates: `mn_shared_dissolve`, `mn_shared_send_standby`,
-/// `mn_shared_send_maintenance`, and `sign_shared_funding` once a command
-/// binds it (a participant's funding signature lets the coordinator send).
-/// Reads, standby create and export, approvals, the maintenance starts and
-/// `abandon_shared_session` send nothing of a share and are never gated.
+/// lists what it gates: `mn_shared_sign` (a participant's funding signature
+/// lets the coordinator send) and `mn_shared_send` refuse before the engine
+/// is called, and `dissolve`, `send_standby`, `send_maintenance` and
+/// `update_share` must check it once a command binds them. Reads, standby
+/// create and export, approvals, the maintenance starts and the abandon
+/// calls (`abandon_shared_session`, `resend_shared_abandon`, the unreadable
+/// abandon) send nothing of a share and are never gated.
 pub(crate) fn shared_sends_allowed(network: &DashNetwork) -> bool {
     !matches!(network, DashNetwork::Mainnet)
 }
@@ -647,7 +668,9 @@ pub(crate) const SHARED_SEND_GATE: &[(&str, SendGate)] = &[
     ("mn_shared_send", SendGate::Gated),
     ("Masternodes::update_share", SendGate::GatedWhenBound),
     ("Masternodes::abandon_shared_session", SendGate::Never),
+    ("Masternodes::resend_shared_abandon", SendGate::Never),
     ("mn_shared_abandon", SendGate::Never),
+    ("mn_shared_resend_abandon", SendGate::Never),
     ("mn_shared_abandon_unreadable", SendGate::Never),
     ("mn_shared_lock", SendGate::Never),
     ("mn_shared_approve", SendGate::Never),
@@ -758,7 +781,9 @@ mod tests {
         assert!(SHARED_SEND_GATE.contains(&("mn_shared_send", SendGate::Gated)));
         for abandon in [
             "Masternodes::abandon_shared_session",
+            "Masternodes::resend_shared_abandon",
             "mn_shared_abandon",
+            "mn_shared_resend_abandon",
             "mn_shared_abandon_unreadable",
         ] {
             assert!(SHARED_SEND_GATE.contains(&(abandon, SendGate::Never)), "{abandon}");

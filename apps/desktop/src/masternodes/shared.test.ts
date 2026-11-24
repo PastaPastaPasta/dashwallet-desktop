@@ -6,7 +6,6 @@ import { coordinatorSession, participantSession } from "../fixture/shared";
 import { en } from "../i18n/en";
 import { flatten } from "../i18n/core";
 import { t } from "../i18n";
-import { SHARED_ABANDON_FEE } from "../api/generated/commands";
 import {
   abandonNeedsOwnFirst,
   canAbandon,
@@ -27,6 +26,8 @@ import {
   S5_SLICE,
   sendOffer,
   sessionNeedsAction,
+  setupOff,
+  setupSteps,
   sharedErrorText,
   sharedSendsOn,
   shareErrors,
@@ -35,6 +36,9 @@ import {
   stageStep,
   unreadableInProgress,
   warningText,
+  feeRowValue,
+  spendBackAction,
+  spendBackLine,
   wayOutShown,
 } from "./shared";
 
@@ -102,6 +106,37 @@ describe("the session's render per network", () => {
       const v = renderSession(s, S5_SLICE);
       expect(v, at).toEqual({ row, primary, copy, known: true });
     }
+  });
+
+  it("says coins are reserved whole on Join, the setup estimate and Keep", () => {
+    expect(t("masternodes.shared.row.joinButton", { amount: "300 DASH" })).toBe("Join: reserve coins covering 300 DASH");
+    expect(t("masternodes.shared.funding.estimateCoordinator", { amount: "400.001 DASH", share: "400 DASH", fee: "0.001 DASH" })).toBe(
+      "Coins covering about 400.001 DASH will be reserved: your 400 DASH share and the 0.001 DASH network fee. Coins are reserved whole, so if a coin is larger than needed, all of it stays unavailable for other payments while the session lasts.",
+    );
+    expect(t("masternodes.shared.close.text", { debit: "300 DASH" })).toBe(
+      "Keeping it leaves the coins covering your 300 DASH reserved, whole, so you can carry on where you left off. Discarding releases them. If the others are still waiting for you, they have to start over.",
+    );
+  });
+
+  it("turns off setting up and joining on mainnet with one reason, and keeps Discard and Abandon", () => {
+    expect(setupOff(NETWORKS.mainnet)).toBe("This version can set up and join shared masternodes on test networks only.");
+    for (const n of [NETWORKS.testnet, NETWORKS.regtest, NETWORKS.devnet]) expect(setupOff(n), n.kind).toBeNull();
+    const cases: [SharedSession, string[]][] = [
+      [participantSession("invited"), ["join"]],
+      [coordinatorSession(), ["fee"]],
+      [coordinatorSession(["Bob", "Carol"]), ["lock"]],
+      [participantSession("signing"), ["approve"]],
+      [coordinator({ kind: "signing" }, "copy"), ["unlock"]],
+      [participantSession("combined"), []],
+      [participantSession("funding_signed"), []],
+    ];
+    for (const [s, steps] of cases) {
+      const at = `${s.role} ${s.stage.kind} ${s.next}`;
+      expect(setupSteps(s, sliceFor(NETWORKS.mainnet)), at).toEqual(steps);
+      expect(setupSteps(s, sliceFor(NETWORKS.testnet)), at).toEqual(steps);
+    }
+    expect(coordinatorSession().discardable).toBe(true);
+    expect(canAbandon(participantSession("funding_signed"))).toBe(true);
   });
 
   it("keeps mainnet's rows as before sends: no Sign, Send or Send again, and the note says why", () => {
@@ -218,19 +253,29 @@ describe("sign and send copy", () => {
     const tx = { txid: "7e".repeat(32), discardable: false };
     const row = (x: SharedSession) => renderSession(x, S5_SLICE).row;
     const shown = (x: SharedSession) => wayOutShown(x, row(x));
-    expect(shown(coordinator({ kind: "sent" }, "wait", tx)), "sent").toBe(true);
-    expect(shown(participantSession("sent", tx)), "sent, participant").toBe(true);
-    expect(shown(coordinator({ kind: "sent" }, "wait", { ...tx, txid: null })), "not held").toBe(false);
+    expect(shown(coordinator({ kind: "sent" }, "wait", tx)), "sent").toBe("collapsed");
+    expect(shown(participantSession("sent", tx)), "sent, participant").toBe("collapsed");
+    expect(shown(coordinator({ kind: "sent" }, "wait", { ...tx, txid: null })), "not held").toBeNull();
     const out = participantSession("funding_signed", { ...tx, abandonable: false });
-    expect(wayOutShown(out, "signedOut"), "signedOut hidden").toBe(true);
-    expect(wayOutShown({ ...out, abandonable: true }, "signedOut"), "Abandon offered").toBe(false);
+    expect(wayOutShown(out, "signedOut"), "signedOut hidden").toBe("collapsed");
+    expect(wayOutShown({ ...out, abandonable: true, abandonCharge: 193 }, "signedOut"), "Abandon offered").toBeNull();
+    expect(wayOutShown({ ...out, abandonable: true }, "signedOut"), "abandonable, but the recovery read lists no Abandon").toBe("collapsed");
     const unvalued = { ...out, warnings: [{ kind: "unvalued_inputs" as const, shares: [1], count: 1 }] };
-    expect(wayOutShown(unvalued, "sendSigned"), "unvalued_inputs_out hidden").toBe(true);
-    expect(wayOutShown({ ...unvalued, txid: null }, "sendSigned"), "not held").toBe(false);
-    expect(wayOutShown(out, "sendSigned"), "nothing hidden").toBe(false);
+    expect(wayOutShown(unvalued, "sendSigned"), "unvalued_inputs_out hidden").toBe("collapsed");
+    expect(wayOutShown({ ...unvalued, txid: null }, "sendSigned"), "not held").toBeNull();
+    expect(wayOutShown(out, "sendSigned"), "nothing hidden").toBeNull();
     for (const stage of [{ kind: "confirmed", height: 1 }, { kind: "conflicted" }, { kind: "dead", reason: "inputs_spent" }] as SharedSession["stage"][]) {
-      expect(wayOutShown({ ...unvalued, stage }, "confirmed"), stage.kind).toBe(false);
+      expect(wayOutShown({ ...unvalued, stage }, "confirmed"), stage.kind).toBeNull();
     }
+  });
+
+  it("expands the way out once the session is overdue, and only where it is shown (D49)", () => {
+    const tx = { txid: "7e".repeat(32), discardable: false };
+    const out = participantSession("funding_signed", { ...tx, abandonable: false });
+    expect(wayOutShown({ ...out, overdue: true }, "signedOut")).toBe("expanded");
+    expect(wayOutShown(coordinator({ kind: "sent" }, "wait", { ...tx, overdue: true }), "sent")).toBe("expanded");
+    expect(wayOutShown({ ...out, overdue: true, abandonable: true, abandonCharge: 193 }, "signedOut"), "Abandon offered").toBeNull();
+    expect(wayOutShown({ ...out, overdue: true, txid: null }, "signedOut"), "not held").toBeNull();
   });
 
   it("reads as refused exactly the codes the engine does", () => {
@@ -301,13 +346,58 @@ describe("Abandon", () => {
     expect(abandonNeedsOwnFirst(new Error("x"))).toBe(false);
   });
 
-  it("caps its grant at the engine's exact fee", () => {
-    expect(SHARED_ABANDON_FEE).toBe(193);
+  it("reads an abandoned session as its spend back, by state, and never says it didn't go out without a refusal", () => {
+    const out = participantSession("funding_signed", { txid: "7e".repeat(32), discardable: false });
+    const spend = (state: NonNullable<SharedSession["abandonSpend"]>["state"], patch: Partial<SharedSession> = {}): SharedSession => ({
+      ...out,
+      next: "nothing",
+      abandonable: state === "refused" || state === "abandoned_in_activity",
+      abandonCharge: state === "refused" || state === "abandoned_in_activity" ? 193 : null,
+      resendAbandonCharge: state === "uncertain" || state === "in_history" ? 193 : null,
+      abandonSpend: { txid: "a8".repeat(32), state, overdue: false, code: state === "refused" ? "send.broadcast_rejected" : null },
+      ...patch,
+    });
+    const refused = (code: string) => (code === "send.broadcast_rejected" ? "The network refused it." : null);
+    expect(renderSession(spend("uncertain"), S5_SLICE)).toMatchObject({ row: "abandoning", copy: false, primary: null, known: true });
+    expect(spendBackLine(spend("uncertain"), refused)).toBe("The spend back to this wallet (a8a8a8a8) may already be on the network. The wallet couldn't confirm it went out.");
+    expect(spendBackAction(spend("uncertain"))).toBe("resend");
+    expect(spendBackLine(spend("refused"), refused)).toBe("The spend back to this wallet didn't go out: The network refused it.");
+    expect(spendBackAction(spend("refused"))).toBe("tryAgain");
+    expect(spendBackLine(spend("in_history"), refused)).toBe("Abandoning: waiting for the spend back (a8a8a8a8) to confirm. Your coins are still reserved.");
+    expect(spendBackAction(spend("in_history"))).toBe("resend");
+    expect(spendBackAction(spend("abandoned_in_activity"))).toBe("abandonAgain");
+    expect(spendBackAction(spend("legacy"))).toBeNull();
+    const overdueLegacy = spend("legacy", { abandonable: true, abandonCharge: 193, abandonSpend: { txid: "a8".repeat(32), state: "legacy", overdue: true, code: null } });
+    expect(spendBackAction(overdueLegacy), "an older version's spend, once overdue").toBe("abandonAgain");
+    const sentAbandoned = coordinator({ kind: "sent" }, "nothing", { txid: "7e".repeat(32), discardable: false, lastError: "send.broadcast_rejected", abandonSpend: spend("refused").abandonSpend, abandonable: true, abandonCharge: 193 });
+    expect(handoffLine(sentAbandoned, refused), "lastError is the spend back's").toBeNull();
+    expect(renderSession(sentAbandoned, S5_SLICE).row).toBe("abandoning");
+    expect(wayOutShown(sentAbandoned, "abandoning"), "the spend back's row has its own action").toBeNull();
+    expect(wayOutShown({ ...sentAbandoned, abandonSpend: null, next: "wait" }, "sent")).toBe("collapsed");
+    for (const state of ["uncertain", "in_history", "abandoned_in_activity", "legacy"] as const) {
+      expect(spendBackLine(spend(state), refused), state).not.toMatch(/didn't go out/);
+    }
+    expect(renderSession({ ...spend("in_history"), stage: { kind: "conflicted" } }, S5_SLICE).row, "settled").toBe("conflicted");
+  });
+
+  it("reads the Network fee row's value without repeating its label", () => {
+    const dash = (d: number) => `${(d / 1e8).toFixed(8)} tDASH`;
+    const coord = coordinator({ kind: "draft" }, "copy", { fee: 1_000 });
+    expect(feeRowValue(coord, dash, "Alice")).toBe("0.00001000 tDASH, paid by you");
+    expect(feeRowValue(participantSession("draft", { fee: 1_000 }), dash, "Alice")).toBe("Paid by Alice");
+    expect(feeRowValue({ ...coord, fee: null }, dash, "Alice")).toBeNull();
+  });
+
+  it("offers Abandon only while the recovery read lists it", () => {
+    const out = participantSession("funding_signed", { txid: "7e".repeat(32), discardable: false });
+    expect(out.abandonCharge, "one reserved coin spent whole").toBe(193);
+    expect(canAbandon(out)).toBe(true);
+    expect(canAbandon({ ...out, abandonCharge: null }), "no Abandon listed").toBe(false);
   });
 });
 
 describe("unreadable sessions in progress", () => {
-  const row = { id: "a".repeat(64), code: "AAAAAA", kind: "registration" as const, role: "participant" as const, discardable: false, abandonable: false, reserved: ["x-0"], updatedAt: 1 };
+  const row = { id: "a".repeat(64), code: "AAAAAA", kind: "registration" as const, role: "participant" as const, discardable: false, abandonable: false, abandonCharge: null, reserved: ["x-0"], updatedAt: 1 };
   it("lists one it may discard or one still holding coins, and drops one whose locks were released", () => {
     expect(unreadableInProgress([row])).toHaveLength(1);
     expect(unreadableInProgress([{ ...row, discardable: true, reserved: [] }])).toHaveLength(1);

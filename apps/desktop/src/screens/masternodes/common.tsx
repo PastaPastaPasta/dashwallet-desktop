@@ -45,6 +45,7 @@ export interface MenuItem {
   id: string;
   title: string;
   onSelect: () => void;
+  disabled?: boolean;
 }
 
 /** "More": a menu button whose items close it; Escape and a click elsewhere close it too. */
@@ -101,7 +102,9 @@ export function MoreMenu({ items, testId }: { items: MenuItem[]; testId: string 
                 type="button"
                 role="menuitem"
                 data-testid={`${testId}-${item.id}`}
+                aria-disabled={item.disabled || undefined}
                 onClick={() => {
+                  if (item.disabled) return;
                   close();
                   item.onSelect();
                 }}

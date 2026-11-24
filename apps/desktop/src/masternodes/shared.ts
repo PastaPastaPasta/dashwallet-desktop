@@ -41,6 +41,22 @@ export const NO_SENDS: SharedSlice = { sign: false, send: false };
  * approvals, standby create and export, and the maintenance starts stay on. */
 export const sharedSendsOn = (network: Pick<NetworkInfo, "kind">) => network.kind !== "mainnet";
 
+/** Why `network` turns off setting up and joining (Start, Join, Lock, Approve, Change fee, Unlock),
+ * or null where they're on. Reads, Discard and Abandon stay either way. */
+export const setupOff = (network: Pick<NetworkInfo, "kind">) => (sharedSendsOn(network) ? null : t("masternodes.shared.mainnetOff"));
+
+/** A setup step a session sheet shows: its primary Join, Lock or Approve, or the coordinator's Change
+ * fee (a draft nobody has joined) and Unlock (while signing). */
+export type SetupStep = "join" | "lock" | "approve" | "fee" | "unlock";
+
+export function setupSteps(s: SharedSession, slice: SharedSlice): SetupStep[] {
+  const p = renderSession(s, slice).primary;
+  const steps: SetupStep[] = p === "join" || p === "lock" || p === "approve" ? [p] : [];
+  if (s.role === "coordinator" && s.stage.kind === "draft" && s.rows.slice(1).every((r) => !r.contributed)) steps.push("fee");
+  if (s.role === "coordinator" && s.stage.kind === "signing") steps.push("unlock");
+  return steps;
+}
+
 /** The slice the screens render under on `network`. */
 export const sliceFor = (network: Pick<NetworkInfo, "kind">): SharedSlice => (sharedSendsOn(network) ? S5_SLICE : NO_SENDS);
 
@@ -66,6 +82,7 @@ export type RowKey =
   | "waitingSigned"
   | "signLater"
   | "signedOut"
+  | "abandoning"
   | "send"
   | "sent"
   | "confirmed"
@@ -92,6 +109,8 @@ export function renderSession(s: SharedSession, slice: SharedSlice = NO_SENDS): 
   const r = (row: RowKey, primary: SessionRender["primary"], copy = false, known = true): SessionRender => ({ row: row === "signLater" && !s.discardable ? "signedOut" : row, primary, copy, known });
   if (!isRegistration(s)) return r("unknown", null, false, false);
   const stage = s.stage.kind;
+  // This wallet signed a spend back (D50): nothing hands the session's message or transaction on.
+  if (s.abandonSpend && s.next === "nothing" && stage !== "confirmed" && stage !== "conflicted" && stage !== "dead") return r("abandoning", null);
   const c = coordinator(s);
   switch (s.next) {
     case "join":
@@ -209,11 +228,12 @@ export function grantCap(action: Exclude<SharedAction, "copy" | "join">, s: Shar
  * 3): nothing left. Any other code, the resend marker included, may have left. */
 export const REFUSED_HANDOFF: readonly string[] = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent", "send.cancelled", "network_not_open", "wallet_not_found", "send.held_until_restart"];
 
-/** §2.3.3's hand-off line under a sent registration, `null` when the hand-off left no error. A
+/** §2.3.3's hand-off line under a sent registration, `null` when the hand-off left no error or
+ * once it is abandoned (`lastError` is then the spend back's, which `spendBackLine` reads). A
  * refused code reads as `refused`'s sentence; an unknown one as this sheet's own lower-case
  * sentence (the resend marker, the timeout), else as the bare code. */
 export function handoffLine(s: SharedSession, refused: (code: string) => string | null): string | null {
-  if (s.stage.kind !== "sent" || !s.lastError) return null;
+  if (s.stage.kind !== "sent" || !s.lastError || s.abandonSpend) return null;
   const code = s.lastError;
   const bare = () => t("masternodes.shared.row.handoffCode", { code });
   if (REFUSED_HANDOFF.includes(code)) {
@@ -222,6 +242,39 @@ export function handoffLine(s: SharedSession, refused: (code: string) => string 
   const sentence =
     code === "send.resend_in_progress" ? t("masternodes.shared.row.handoffResending") : code === "send.broadcast_unknown" ? t("masternodes.shared.row.handoffTimeout") : bare();
   return t("masternodes.shared.row.handoffUnknown", { sentence });
+}
+
+/** D50's line for the spend back while it is pending, by its state; `null` without one. "Didn't go
+ * out" only for a recorded refusal, whose `{sentence}` is the refusal's own. */
+export function spendBackLine(s: SharedSession, refused: (code: string) => string | null): string | null {
+  const a = s.abandonSpend;
+  if (!a?.state) return null;
+  const txid = a.txid.slice(0, 8);
+  switch (a.state) {
+    case "uncertain":
+      return t("masternodes.shared.spendBack.uncertain", { txid });
+    case "refused": {
+      const code = a.code ?? "";
+      const sentence = (refused(code) ?? t("masternodes.shared.row.handoffCode", { code })).replace(/[.。]\s*$/, "");
+      return t("masternodes.shared.spendBack.refused", { sentence });
+    }
+    case "in_history":
+      return t("masternodes.shared.spendBack.inHistory", { txid });
+    case "abandoned_in_activity":
+      return t("masternodes.shared.spendBack.cancelled", { txid });
+    case "legacy":
+      return t("masternodes.shared.spendBack.legacy", { txid });
+  }
+}
+
+/** The spend back's own action (D50): Send again replays the same bytes while the read lists it;
+ * Try again (refused) and Abandon again (cancelled in Activity, or an older version's spend once
+ * overdue) are a new spend of the same coins. */
+export function spendBackAction(s: SharedSession): "resend" | "tryAgain" | "abandonAgain" | null {
+  const state = s.abandonSpend?.state;
+  if (state === "refused") return canAbandon(s) ? "tryAgain" : null;
+  if (state === "abandoned_in_activity" || state === "legacy") return canAbandon(s) ? "abandonAgain" : null;
+  return s.resendAbandonCharge !== null && (state === "uncertain" || state === "in_history") ? "resend" : null;
 }
 
 /** `row.signedOut` with its `{abandon}` filled by the Abandon button's own label. Shown only
@@ -236,21 +289,30 @@ export function abandonNeedsOwnFirst(e: unknown): boolean {
   return stage === "sent" || stage === "funding_signed";
 }
 
-/** Whether the sheet offers Abandon (§9.3): the engine's refusal rule. A registration that may
- * be out (`discardable` false), not settled, with a reserved coin this wallet still holds
- * (`abandonable`, which the engine reads by the same rule it spends by). */
+/** Whether the sheet offers Abandon (§9.3): a registration that may be out (`discardable`
+ * false), not settled, with a reserved coin, whose recovery read lists Abandon (`abandonCharge`,
+ * from the same coin test the call spends by). */
 export function canAbandon(s: SharedSession): boolean {
   const settled = s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
-  return isRegistration(s) && !s.discardable && !settled && s.reserved.length > 0 && s.abandonable;
+  return isRegistration(s) && !s.discardable && !settled && s.reserved.length > 0 && s.abandonable && s.abandonCharge !== null;
 }
 
-/** MG's way-out line, collapsed: wherever this wallet holds the registration (`txid`), at `sent`,
- * and wherever `row.signedOut` or `unvalued_inputs_out` is hidden because Abandon isn't offered. */
-export function wayOutShown(s: SharedSession, row: RowKey): boolean {
+/** MG's way-out line: wherever this wallet holds the registration (`txid`), at `sent`, and
+ * wherever `row.signedOut` or `unvalued_inputs_out` is hidden because Abandon isn't offered.
+ * Not under the spend back's own row (`abandoning`). Collapsed until the session is `overdue` (D49), then expanded; `null` where it isn't shown. */
+export function wayOutShown(s: SharedSession, row: RowKey): "collapsed" | "expanded" | null {
   const settled = s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
-  if (!s.txid || !isRegistration(s) || settled) return false;
-  if (s.stage.kind === "sent") return true;
-  return !canAbandon(s) && (row === "signedOut" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs")));
+  if (!s.txid || !isRegistration(s) || settled || row === "abandoning") return null;
+  const shown = s.stage.kind === "sent" || (!canAbandon(s) && (row === "signedOut" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs"))));
+  if (!shown) return null;
+  return s.overdue ? "expanded" : "collapsed";
+}
+
+/** The session sheet's Network fee row value, under its own "Network fee" label: the fee for the
+ * coordinator who pays it, who pays it for a participant; `null` without a fee. */
+export function feeRowValue(s: SharedSession, dash: (duffs: number) => string, coordinatorLabel: string): string | null {
+  if (s.fee === null) return null;
+  return coordinator(s) ? t("masternodes.shared.session.feeYoursValue", { fee: dash(s.fee) }) : t("masternodes.shared.session.feePayerValue", { coordinator: coordinatorLabel });
 }
 
 /** The exact funding line (§2.3.2): what leaves this wallet and why, from `debit`. */
