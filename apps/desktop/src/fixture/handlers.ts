@@ -279,6 +279,9 @@ function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPu
     }
     case "quickUnlock":
       if (!w.lock.quickUnlockEnrolled) throw fail("vault.quick_unlock_unavailable", "quick unlock is not enrolled");
+      // An unreadable sealed limit pays nothing by quick unlock (dw-vault `sealed_spend_limit`).
+      if (w.spendLimitUnreadable && purposes.some((p) => quickValue(p) !== null && quickValue(p)! > 0n))
+        throw fail("vault.credential_required", "the spending limit can't be read: the passphrase is required");
       return;
     case "unencrypted":
       if (w.lock.state === "locked") throw fail("vault.locked", "vault locked");
@@ -847,8 +850,8 @@ export const HANDLERS: Handlers = {
     return null;
   },
   quick_unlock_policy: (_, { world }) => {
-    // Known only with the data key, as the vault reads it.
-    const unreadable = world.spendLimitUnreadable === true && world.lock.state === "unlocked";
+    // Known only with the data key, as the vault reads it (a mixing-only unlock holds it too).
+    const unreadable = world.spendLimitUnreadable === true && (world.lock.state === "unlocked" || world.lock.state === "unlockedMixingOnly");
     return {
       enrolled: world.lock.quickUnlockEnrolled,
       spendLimitDuffs: unreadable ? 0 : world.spendLimitDuffs,
