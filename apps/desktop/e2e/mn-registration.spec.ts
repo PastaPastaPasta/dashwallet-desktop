@@ -193,6 +193,42 @@ test("ExistingUtxo: a locked coin can't be picked, Continue needs a pick, the re
   expect(errors).toEqual([]);
 });
 
+test("ExistingUtxo: while Register waits for the network, the coin it locked doesn't send Review back to Collateral", async ({ page }) => {
+  const errors = await open(page, "reg");
+  await setUp(page);
+  await next(page);
+  await page.getByTestId("reg-collateral-existing").click();
+  await page.getByTestId(`reg-coin-${REG_COIN}`).click();
+  await next(page);
+  await page.getByTestId("reg-operator-key").fill(OPERATOR_KEY);
+  await page.getByTestId("reg-service").fill(SERVICE);
+  await next(page);
+  await toReview(page);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.evaluate(() => {
+    (window as unknown as { __release: () => void }).__release = window.__dwFixture!.hold("mn_register");
+  });
+  await page.getByTestId("reg-register").click();
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("mn_register"))).toBe(true);
+  // The engine locks the collateral and announces the change before the network accepts the registration.
+  const before = await page.evaluate((coin) => {
+    const f = window.__dwFixture!;
+    const m = f.world.masternodes;
+    m.collateralCoins = m.collateralCoins.filter((c) => c.outpoint !== coin);
+    const n = f.calls.length;
+    f.emit({ kind: "masternodes", network: f.world.launch.network.dirName });
+    return n;
+  }, REG_COIN);
+  await expect.poll(() => page.evaluate((n) => window.__dwFixture!.calls.slice(n).includes("mn_list"), before)).toBe(true);
+  await page.waitForTimeout(500);
+  await expect(step(page, "review")).toBeVisible();
+  await expect(step(page, "collateral")).toHaveCount(0);
+  await expect(page.getByTestId("reg-error-outpoint")).toHaveCount(0);
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(page.getByTestId("reg-done-body")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("External: Review names the other wallet's coin; Continue saves it and opens Prove", async ({ page }) => {
   const errors = await open(page, "reg");
   await setUp(page);

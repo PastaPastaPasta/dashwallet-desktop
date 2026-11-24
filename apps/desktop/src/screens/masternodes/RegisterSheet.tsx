@@ -107,7 +107,8 @@ export function RegisterSheet({
   const preview = useQuery({
     queryKey: ["masternodes", "registrationPreview", wallet.walletId, requestKey] as const,
     queryFn: () => b.mnPreviewRegistration(wallet.walletId, request),
-    enabled: step === "review" && keys.isSuccess,
+    // Not while Register runs: the coin it locks would read as unavailable before the send returns.
+    enabled: step === "review" && keys.isSuccess && !busy,
     retry: false,
     gcTime: 0,
   });
