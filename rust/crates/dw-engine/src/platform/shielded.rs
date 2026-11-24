@@ -322,6 +322,23 @@ pub struct ShieldedSpendOutcome {
     pub unresolved: Option<UnresolvedSpend>,
 }
 
+/// What `unshield_to_platform` did: the spend's outcome, and the Platform
+/// activity row of its `FromShielded` record when the dispatch hook armed
+/// one (C-routes C1-9). That row is `done` only once the spend's artifact
+/// reads executed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnshieldToPlatformOutcome {
+    pub credits: u64,
+    /// The shielded balance after.
+    pub balance: u64,
+    /// The Platform address paid.
+    pub to: String,
+    pub state: ShieldedSpendState,
+    pub unresolved: Option<UnresolvedSpend>,
+    /// The `id` of the record's `PlatformActivity` row (`platform_activity`).
+    pub record: Option<String>,
+}
+
 /// The kind of a shielded activity row (platform-wallet's
 /// `ShieldedActivityKind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -592,6 +609,42 @@ impl DashPay {
         on_pool_signing(&self.session, wallet, move |session, lib| async move {
             let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
             pool::unshield(&session, wallet, &lib, credits, to, &grant, confirmed).await
+        })
+        .await
+    }
+
+    /// What moving `credits` from Shielded to the wallet's own Platform
+    /// address `to` costs (its receive address when `None`), with the
+    /// refusals of [`Self::unshield_to_platform`].
+    pub async fn unshield_to_platform_quote(
+        &self,
+        credits: u64,
+        to: Option<String>,
+    ) -> Result<ShieldedSpendQuote, ShieldedError> {
+        pool::refuse_on_mainnet(self.session.network().core_network())?;
+        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+            pool::unshield_to_platform_quote(&lib, credits, to.as_deref()).await
+        })
+        .await
+    }
+
+    /// Shielded → Platform: unshields `credits` from the wallet's notes to
+    /// `to`, one of the wallet's own Platform addresses (its receive address
+    /// when `None`; any other is `shielded.invalid_address` before the grant
+    /// is redeemed), under a `ShieldedSpend` lease begun from `grant`;
+    /// `confirm_unrecorded` as for [`Self::shielded_send`].
+    pub async fn unshield_to_platform(
+        &self,
+        credits: u64,
+        to: Option<String>,
+        grant: String,
+        confirm_unrecorded: bool,
+    ) -> Result<UnshieldToPlatformOutcome, ShieldedError> {
+        pool::refuse_on_mainnet(self.session.network().core_network())?;
+        let wallet = self.wallet_id;
+        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+            let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
+            pool::unshield_to_platform(&session, wallet, &lib, credits, to, &grant, confirmed).await
         })
         .await
     }
