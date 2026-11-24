@@ -461,11 +461,14 @@ for (const theme of ["light", "dark"] as const)
     // The engine sends no sign request for a spent row: Prove offers the new message, not an empty step.
     await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
     await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+    // No message yet, so no "sign this message": the notice carries the step (issue 641).
+    await expect(sheet(page)).not.toContainText("sign this message");
     await expect(page.getByTestId("reg-submit")).toBeDisabled();
     await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000453");
     await page.getByTestId("reg-new-message").click();
     await expect(page.getByTestId("reg-sign-request")).toBeVisible();
     await expect(page.getByTestId("reg-inputs-spent")).toHaveCount(0);
+    await expect(page.getByTestId("reg-prove-text")).toContainText("sign this message");
     // The new message comes with new fee inputs: Prove shows the replanned fee, and the grant is capped at it.
     await expect(page.getByTestId("reg-prove-fee")).toContainText("0.00000573");
     await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000573");
@@ -562,6 +565,7 @@ test("fee coins spent while Prove is open: the refusal hides the old message and
   await page.getByTestId("reg-submit").click();
   await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
   await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+  await expect(sheet(page)).not.toContainText("sign this message");
   await expect.poll(() => revokes(page)).toBe(before + 1);
   expect(await liveGrants(page)).toEqual([]);
   // Closed and resumed with no further read: the saved row reads spent too, and Prove asks for a new message.
