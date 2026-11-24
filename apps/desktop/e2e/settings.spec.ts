@@ -487,6 +487,20 @@ test.describe("Backups", () => {
     await expect(page.getByTestId("settings-export-path")).toContainText("-descriptors.json");
   });
 
+  test("a legacy wallet.dat refused on purpose says why and what to do instead", async ({ page }) => {
+    await settings(page, "backups");
+    await page.getByTestId("settings-import-file").click();
+    await page.getByTestId("settings-import-path").fill(FIXTURE_FILES.walletDatTooLarge);
+    await page.getByTestId("settings-import-inspect").click();
+    await expect(page.getByTestId("settings-import-error")).toHaveText(/more than 10,000 addresses in a row.*send its funds to an address from Receive in Dash Wallet/);
+    await page.getByTestId("settings-import-path").fill(FIXTURE_FILES.walletDatTwoAccounts);
+    await page.getByTestId("settings-import-inspect").click();
+    // A file whose only account is not the first: the advice names no destination inside the file.
+    await expect(page.getByTestId("settings-import-error")).toHaveText(/an HD account other than the first one.*an address from Receive in Dash Wallet/);
+    await expect(page.getByTestId("settings-import-error")).not.toContainText("same wallet");
+    await expect(page.getByTestId("settings-import-error")).not.toContainText("cannot read this kind of file");
+  });
+
   test("QT107_importADumpwalletFile", async ({ page }) => {
     await settings(page, "backups");
     await page.getByTestId("settings-import-file").click();

@@ -89,7 +89,7 @@ fn a_restored_shield_lock_is_listed_and_finished_on_its_outpoint() {
             kind: LockKindId::Shielded,
             duffs: restored.amount,
             origin: LockOrigin::Restored,
-            state: UnfinishedState::Ready,
+            state: UnfinishedState::Checking,
         }]
     );
 
@@ -228,7 +228,7 @@ fn a_lock_without_a_proof_waits() {
 #[test]
 fn a_finish_refused_before_its_signature_is_not_applied() {
     let fx = Fixture::new(0);
-    let restored = lock(1, LockStatus::RecoveredFromChain);
+    let restored = lock(1, LockStatus::ChainLocked);
     let lib = Arc::new(FakeShielded {
         locks: vec![restored.clone()],
         ..FakeShielded::default()
@@ -347,7 +347,7 @@ fn a_restored_library_row_lists_with_its_credit_script() {
             kind: LockKindId::Shielded,
             duffs: 1_000_000,
             origin: LockOrigin::Restored,
-            state: UnfinishedState::Ready,
+            state: UnfinishedState::Checking,
         }]
     );
     let scripts = fx.engine.block_on(async {
@@ -770,7 +770,7 @@ fn a_lock_below_the_fee_is_too_small_and_keeps_the_grant() {
         state_of(&fx, &lib),
         [
             (LockOrigin::Restored, UnfinishedState::TooSmall),
-            (LockOrigin::Restored, UnfinishedState::Ready),
+            (LockOrigin::Restored, UnfinishedState::Checking),
         ]
     );
     let (wallet, grant) = (fx.wallet, shield_grant(&fx, 1));
@@ -961,18 +961,22 @@ fn finish_transfers_runs_each_lock_once_and_reports_the_kind() {
     );
 }
 
-/// Finish all tries a Ready lock only: one already Checking before the bulk
-/// (an earlier apply may have executed) is pending, not tried; its own
-/// "Check again" (`finish_transfer`) still runs it.
+/// Finish all tries a Ready lock and a restore's lock read back from the
+/// chain (Checking: Platform may already have taken it); this device's
+/// lock already Checking before the bulk (an earlier apply may have
+/// executed) is pending, not tried; its own "Check again"
+/// (`finish_transfer`) still runs it.
 #[test]
 fn finish_transfers_leaves_a_checking_lock_to_check_again() {
     let fx = Fixture::new(0);
-    let (ready, checking) = (
-        lock(1, LockStatus::RecoveredFromChain),
+    let (ready, restored, checking) = (
+        lock(1, LockStatus::ChainLocked),
         lock(2, LockStatus::RecoveredFromChain),
+        lock(3, LockStatus::ChainLocked),
     );
     let lib = Arc::new(FakeShielded {
-        locks: vec![ready.clone(), checking.clone()],
+        locks: vec![ready.clone(), restored.clone(), checking.clone()],
+        own: Some(HashSet::from([checking.outpoint.txid])),
         ..FakeShielded::default()
     });
     lib.unknown.lock().unwrap().insert(checking.outpoint.txid);
@@ -981,24 +985,29 @@ fn finish_transfers_leaves_a_checking_lock_to_check_again() {
         [
             (LockOrigin::Restored, UnfinishedState::Ready),
             (LockOrigin::Restored, UnfinishedState::Checking),
+            (LockOrigin::ThisDevice, UnfinishedState::Checking),
         ]
     );
     answer(&lib, Ok(Applied::Done));
+    lib.queued.lock().unwrap().push_back(Ok(Applied::Done));
     let report = finish_transfers(&fx, &lib);
-    assert_eq!(totals(&report), (1, 1, 1));
+    assert_eq!(totals(&report), (2, 2, 1));
     assert_eq!(
         report.by_kind,
         [locks::TransfersReport {
             kind: LockKindId::Shielded,
-            resumed: 1,
-            completed: 1,
+            resumed: 2,
+            completed: 2,
             still_pending: 1,
         }]
     );
-    assert_eq!(*lib.applied.lock().unwrap(), [ready.outpoint]);
+    assert_eq!(
+        *lib.applied.lock().unwrap(),
+        [ready.outpoint, restored.outpoint]
+    );
     assert_eq!(
         state_of(&fx, &lib),
-        [(LockOrigin::Restored, UnfinishedState::Checking)]
+        [(LockOrigin::ThisDevice, UnfinishedState::Checking)]
     );
 
     answer(&lib, Ok(Applied::Done));
@@ -1008,7 +1017,7 @@ fn finish_transfers_leaves_a_checking_lock_to_check_again() {
     );
     assert_eq!(
         *lib.applied.lock().unwrap(),
-        [ready.outpoint, checking.outpoint]
+        [ready.outpoint, restored.outpoint, checking.outpoint]
     );
 }
 
@@ -1207,9 +1216,9 @@ fn only_the_outpoints_own_answer_finishes_a_restored_lock() {
     let fx = Fixture::new(0);
     let own = lock(1, LockStatus::InstantSendLocked);
     let (failed, misnamed, untried) = (
-        lock(2, LockStatus::RecoveredFromChain),
-        lock(3, LockStatus::RecoveredFromChain),
-        lock(4, LockStatus::RecoveredFromChain),
+        lock(2, LockStatus::ChainLocked),
+        lock(3, LockStatus::ChainLocked),
+        lock(4, LockStatus::ChainLocked),
     );
     let lib = Arc::new(FakeShielded {
         locks: vec![own.clone(), failed.clone(), misnamed.clone(), untried],

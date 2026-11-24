@@ -104,12 +104,15 @@ import type { MasternodeKeyRoleName } from "./MasternodeKeyRoleName";
 import type { MasternodeListState } from "./MasternodeListState";
 import type { MasternodeOverview } from "./MasternodeOverview";
 import type { MasternodePayout } from "./MasternodePayout";
+import type { MasternodeTypeName } from "./MasternodeTypeName";
 import type { MixedCoinsConsolidationPlan } from "./MixedCoinsConsolidationPlan";
 import type { MixedCoinsDestination } from "./MixedCoinsDestination";
 import type { MixedCoinsResend } from "./MixedCoinsResend";
 import type { MixedCoinsSweepPlan } from "./MixedCoinsSweepPlan";
 import type { MixedCoinsSweepResult } from "./MixedCoinsSweepResult";
 import type { MixedShieldQuote } from "./MixedShieldQuote";
+import type { MnRegistrationPreview } from "./MnRegistrationPreview";
+import type { MnRegistrationRequest } from "./MnRegistrationRequest";
 import type { MnemonicCheck } from "./MnemonicCheck";
 import type { MnemonicLanguageName } from "./MnemonicLanguageName";
 import type { MoveToCoreOutcome } from "./MoveToCoreOutcome";
@@ -146,6 +149,7 @@ import type { PlatformShieldQuote } from "./PlatformShieldQuote";
 import type { PreparedTxHandle } from "./PreparedTxHandle";
 import type { PreparedTxSummary } from "./PreparedTxSummary";
 import type { PrivateContactDetails } from "./PrivateContactDetails";
+import type { ProTxKeys } from "./ProTxKeys";
 import type { ProTxOperation } from "./ProTxOperation";
 import type { ProfileEditArgs } from "./ProfileEditArgs";
 import type { ProposalDetail } from "./ProposalDetail";
@@ -2892,6 +2896,70 @@ export function mnDiscardOperation(walletId: string, operation: string): Promise
 }
 
 /**
+ * The keychain keys a registration of `kind` would use by default.
+ * Public keys and addresses only; needs the synced list.
+ */
+export function mnRegistrationKeys(walletId: string, kind: MasternodeTypeName): Promise<ProTxKeys> {
+  return invoke<ProTxKeys>("mn_registration_keys", { walletId, kind });
+}
+
+/**
+ * Checks a registration with Core's rules and plans its transaction.
+ * Locks, reserves and issues nothing.
+ */
+export function mnPreviewRegistration(walletId: string, request: MnRegistrationRequest): Promise<MnRegistrationPreview> {
+  return invoke<MnRegistrationPreview>("mn_preview_registration", { walletId, request });
+}
+
+/**
+ * Registers a masternode with a fund-new or existing-coin collateral
+ * under a `masternodeOp` grant, which the call consumes. The result is
+ * the saved operation, `sent` or `not_sent` with its `lastError`.
+ */
+export function mnRegister(walletId: string, request: MnRegistrationRequest, grant: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_register", { walletId, request, grant });
+}
+
+/**
+ * Prepares an external-collateral registration: locks its fee inputs
+ * and saves it as `needs_signature` with the message the collateral's
+ * key signs. No grant; signs nothing.
+ */
+export function mnPrepareExternalRegistration(walletId: string, request: MnRegistrationRequest): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_prepare_external_registration", { walletId, request });
+}
+
+/**
+ * Re-plans an external registration whose fee inputs were spent: new
+ * inputs and a new message, the same terms.
+ */
+export function mnRefreshExternalRegistration(walletId: string, operation: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_refresh_external_registration", { walletId, operation });
+}
+
+/**
+ * Finishes an external registration with the collateral key's
+ * `signmessage` signature (base64), under a `masternodeOp` grant.
+ */
+export function mnSubmitExternalRegistration(walletId: string, operation: string, signature: string, grant: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_submit_external_registration", { walletId, operation, signature, grant });
+}
+
+/**
+ * Unlocks a masternode's collateral coin and remembers it. Sends nothing.
+ */
+export function mnReleaseCollateral(walletId: string, proTxHash: string): Promise<null> {
+  return invoke<null>("mn_release_collateral", { walletId, proTxHash });
+}
+
+/**
+ * Locks a released collateral coin again.
+ */
+export function mnLockCollateral(walletId: string, proTxHash: string): Promise<null> {
+  return invoke<null>("mn_lock_collateral", { walletId, proTxHash });
+}
+
+/**
  * The settings and the chosen currency's price and state now.
  */
 export function ratesStatus(): Promise<RatesView> {
@@ -3363,6 +3431,14 @@ export type CommandArgs = {
   mn_operations: { walletId: string };
   mn_resend_operation: { walletId: string; operation: string; grant: string };
   mn_discard_operation: { walletId: string; operation: string };
+  mn_registration_keys: { walletId: string; kind: MasternodeTypeName };
+  mn_preview_registration: { walletId: string; request: MnRegistrationRequest };
+  mn_register: { walletId: string; request: MnRegistrationRequest; grant: string };
+  mn_prepare_external_registration: { walletId: string; request: MnRegistrationRequest };
+  mn_refresh_external_registration: { walletId: string; operation: string };
+  mn_submit_external_registration: { walletId: string; operation: string; signature: string; grant: string };
+  mn_release_collateral: { walletId: string; proTxHash: string };
+  mn_lock_collateral: { walletId: string; proTxHash: string };
   rates_status: {  };
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
@@ -3706,6 +3782,14 @@ export type CommandResults = {
   mn_operations: Array<ProTxOperation>;
   mn_resend_operation: ProTxOperation;
   mn_discard_operation: null;
+  mn_registration_keys: ProTxKeys;
+  mn_preview_registration: MnRegistrationPreview;
+  mn_register: ProTxOperation;
+  mn_prepare_external_registration: ProTxOperation;
+  mn_refresh_external_registration: ProTxOperation;
+  mn_submit_external_registration: ProTxOperation;
+  mn_release_collateral: null;
+  mn_lock_collateral: null;
   rates_status: RatesView;
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
@@ -4051,6 +4135,14 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_operations: "masternodes",
   mn_resend_operation: "masternodes",
   mn_discard_operation: "masternodes",
+  mn_registration_keys: "masternodes",
+  mn_preview_registration: "masternodes",
+  mn_register: "masternodes",
+  mn_prepare_external_registration: "masternodes",
+  mn_refresh_external_registration: "masternodes",
+  mn_submit_external_registration: "masternodes",
+  mn_release_collateral: "masternodes",
+  mn_lock_collateral: "masternodes",
   rates_status: "rates",
   rates_currencies: "rates",
   set_rates_settings: "rates",
@@ -4202,6 +4294,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "compat.invalid_key_material",
   "compat.watch_only",
   "compat.destination_unwritable",
+  "compat.wallet_too_large",
+  "compat.extra_hd_account",
   "backup.vault_locked",
   "backup.passphrase_required",
   "backup.wrong_passphrase",

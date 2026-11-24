@@ -78,7 +78,7 @@ base64 = "0.22"
 # Read-only enumeration of persisted transaction ids in wallet.sqlite (the
 # persister has no list API); same version dw-appdb and
 # platform-wallet-storage link, so one bundled libsqlite3.
-rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # DP4-02 avatars: the guarded fetch (the reqwest the trusted context provider
 # already links; its TLS), URL parsing, the bounded decoder and thumbnails
 # (the image features platform-wallet's dHash builds with), the hashes.

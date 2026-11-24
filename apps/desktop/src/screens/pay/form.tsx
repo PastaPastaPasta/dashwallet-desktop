@@ -13,6 +13,7 @@ import { FiatSecondary, FiatToggle, useFiatEntry } from "../../fiat/entry";
 import type { useDisplay } from "../../format/display";
 import { useT, t } from "../../i18n";
 import { availableLabel, changePolicy, coinSource, contactDataText, DEFAULT_ADVANCED, feeMode, incompleteText, isContact, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayForm, type PayRecipient, type Sending } from "./model";
+import type { Recipient } from "../../api/generated/Recipient";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 /** How long a field stays unchanged before it is checked and the draft estimated (U-03 D5). */
@@ -213,12 +214,13 @@ export function FormField({
   );
 }
 
-/** The draft paying `recipient` with the Advanced choices; `null` while either is incomplete. */
-export function draftSpec(recipient: PayRecipient | null, a: Advanced): DraftSpec | null {
+/** The draft paying `recipient` (and the added `more`) with the Advanced choices; `null` while
+ * any is incomplete (`more` is `null` while an added recipient is). */
+export function draftSpec(recipient: PayRecipient | null, a: Advanced, more: Recipient[] | null = []): DraftSpec | null {
   const fee = feeMode(a);
   const change = changePolicy(a);
   const noCoins = a.coins === "selected" && a.selected.length === 0;
-  return recipient && fee && change && !noCoins ? { recipient, source: coinSource(a), fee, change } : null;
+  return recipient && more && fee && change && !noCoins ? { recipient, more, source: coinSource(a), fee, change } : null;
 }
 
 /** The amount field: the text, and once it settled the engine's parse of it (`undefined` while
@@ -287,7 +289,8 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
   // A fully mixed payment refused as an absurd fee: offer Subtract fee with what it would send,
   // from the engine's own estimate of it (MX-FEE); a refusal of that too leaves the reason alone.
   const mixed = estimate.isError && spec ? mixedFeeText(estimate.error, spec, chain, amountUnit) : null;
-  const subtracted = mixed && spec ? { ...spec, recipient: withSubtractFee(spec.recipient) } : null;
+  // With added recipients the offer would make a second one subtract the fee: none is offered.
+  const subtracted = mixed && spec && spec.more.length === 0 ? { ...spec, recipient: withSubtractFee(spec.recipient) } : null;
   const offer = useQuery({
     queryKey: [...keys.coinsAll(walletId), "estimate", subtracted] as const,
     queryFn: () => draft.estimate(subtracted!),
@@ -302,26 +305,35 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
   else if (advanced.coins === "selected" && advanced.selected.length === 0) general = t("pay.form.chooseCoins");
   else if (!feeMode(advanced)) general = t("pay.form.enterRate");
   else if (advanced.changeAddress !== null && advanced.changeAddress.trim() === "") general = t("pay.form.enterChangeAddress");
-  const fieldError = (f: "address" | "amount") => (refusal?.field === f ? refusal.text : null);
+  // The engine names which recipient it refused (`{kind: "recipient", index}`); without, the first.
+  const data = estimate.isError ? (estimate.error as { data?: { kind?: string; index?: number } | null }).data : null;
+  const refusedIndex = data?.kind === "recipient" && typeof data.index === "number" ? data.index : 0;
+  const fieldError = (f: "address" | "amount", index = 0) => (refusal?.field === f && refusedIndex === index ? refusal.text : null);
   const ready = !!spec && estimate.isSuccess && !estimate.isFetching && !hold;
   return { estimate, general, fieldError, ready, offer: subtracted && offer.isSuccess ? offer.data.totalSent : null };
 }
 
 /** Max (U-03): everything the chosen coins can pay, the fee subtracted from it. */
-export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: (amountText: string) => void) {
+export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: (amountText: string) => void, othersTotal = 0, othersPending = false) {
   const b = useBackend();
   const [error, setError] = useState<string | null>(null);
   const fee = feeMode(advanced);
+  // The added recipients' total now: an answer for another total is dropped.
+  const others = useRef(othersTotal);
+  others.current = othersTotal;
   const run = async () => {
     setError(null);
-    if (!fee) return;
+    if (!fee || othersPending) return;
+    const asked = others.current;
     try {
-      set(shown.full(await b.maxSpendable(walletId, coinSource(advanced), fee)));
+      const max = await b.maxSpendable(walletId, coinSource(advanced), fee);
+      // With added recipients, Max is what is left once they are paid.
+      if (asked === others.current) set(shown.full(Math.max(0, max - asked)));
     } catch (e) {
       setError(sendErrorText(e, shown.chain, shown.amountUnit)?.text ?? errorMessage(e));
     }
   };
-  return { run, error, disabled: !fee };
+  return { run, error, disabled: !fee || othersPending };
 }
 
 /** The amount with Max, then Subtract fee (U-03), and the fiat toggle with the other unit under it
