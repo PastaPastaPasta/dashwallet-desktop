@@ -682,6 +682,21 @@ the focus.
 
 **Fail if:** a setting is read without its label or its state; a tab cannot be reached or chosen by keyboard.
 
+### 8.8 My Profile
+
+- [ ] Tab to the identity chip in the toolbar. Expected: it is read as "My profile, @<name>" and a button. Choose it.
+      Expected: **My Profile** opens and its heading "My Profile" is read.
+- [ ] Read the page through. Expected: the display name (or @<name> when there is none) as a heading, @<name> under
+      it, **Edit Profile** and **Share Username** as buttons; "Usernames" and "Identity", each read with its value,
+      and **Copy identity ID**; the heading "Credit balance" with the balance, then **Top up** and **Withdraw**.
+- [ ] Choose **Edit Profile**. Expected: the sheet "Edit Profile" is announced and takes the focus; Tab reaches
+      "Display Name" and "About me", each read with its label and its counter ("<n>/<max> characters"), then
+      **Cancel** and **Save Changes**, and never the page behind the sheet. Change nothing and press Escape. Expected:
+      the sheet closes and the focus is back on **Edit Profile**.
+
+**Fail if:** the chip has no name or does not include the username; a field of Edit Profile is read without its
+label; Escape does not close the sheet or the focus is lost after it.
+
 ## 9. Flows only fixture tests cover: the real app on testnet, by hand
 
 The browser suite (`apps/desktop/e2e/`) runs these flows against fixture data; nothing runs them in the real app
@@ -848,10 +863,10 @@ makes these cells incomplete; only 7.6's own rerun rule does:
 
 Screen readers, one row per reader (section 8), with the OS and reader versions and real or VM:
 
-| Machine, OS, reader | Real or VM | Lock (8.1) | Onboarding (8.2) | Home, Activity, detail (8.3) | Pay (8.4) | Receive (8.5) | Contacts and bell (8.6) | Settings (8.7) |
-|---|---|---|---|---|---|---|---|---|
-| Mac …, macOS …, VoiceOver | | | | | | | | |
-| PC …, Windows 11 …, Narrator | | | | | | | | |
+| Machine, OS, reader | Real or VM | Lock (8.1) | Onboarding (8.2) | Home, Activity, detail (8.3) | Pay (8.4) | Receive (8.5) | Contacts and bell (8.6) | Settings (8.7) | My Profile (8.8) |
+|---|---|---|---|---|---|---|---|---|---|
+| Mac …, macOS …, VoiceOver | | | | | | | | | |
+| PC …, Windows 11 …, Narrator | | | | | | | | | |
 
 Fixture-only flows in the real app (section 9), one row per OS:
 

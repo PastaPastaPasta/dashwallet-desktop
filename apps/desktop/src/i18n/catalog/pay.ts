@@ -108,6 +108,16 @@ export const pay = {
     messageHint: "Kept with the transaction in this wallet; not sent to the payee.",
     reviewPsbt: "Review PSBT",
   },
+  /** Pay ▸ To an address: a QR code from an image or the screen (IOS-043 on a desktop without a camera). */
+  scan: {
+    openImage: "Open QR Code Image…",
+    screen: "Scan a Screen Region",
+    cancel: "Cancel",
+    hint: "You can also paste or drop a QR code image into Pay to.",
+    reading: "Reading the image…",
+    capturing: "Select a region of the screen…",
+    noPayment: "There is no Dash address or payment link in this QR code.",
+  },
   psbt: {
     summary: "Advanced: unsigned transaction (PSBT)",
     watchOnly:
@@ -168,6 +178,7 @@ export const pay = {
     total: "Total",
     subtractNote: "The fee is subtracted from the amount: the payee receives the amount above.",
     changeNote: "The total includes the change: the custom change address may not belong to this wallet.",
+    unmixed: "This payment uses coins that aren't mixed, so it can be traced back to where they came from. To pay privately, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).",
     checkingPolicy: "Checking the payment settings",
     passphrase: "Passphrase",
     wait: "Too many attempts. Try again in {secs} s.",

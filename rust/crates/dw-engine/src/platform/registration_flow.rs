@@ -273,7 +273,7 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// Every asset lock the wallet tracks.
     fn tracked_locks(&self) -> impl Future<Output = Vec<LockInfo>> + Send;
     /// The wallet's identities: (index, base58 id).
-    fn identities(&self) -> impl Future<Output = Vec<(u32, String)>> + Send;
+    fn identities(&self) -> impl Future<Output = Result<Vec<(u32, String)>, PlatformError>> + Send;
     fn spendable(&self) -> impl Future<Output = Result<Spendable, PlatformError>> + Send;
     /// A replay read live (0.1.x-bal §1), whose re-credits read held (no
     /// `CoinsLocked`): `ContextUnavailable` while one runs (a sync wait),
@@ -1925,21 +1925,18 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
 
     /// The claim's identity `own` among the seed's at `index` (`Some(true)`),
     /// only others there (`Some(false)`), or none (D26).
-    async fn holds_claim(&self, index: u32, own: &str) -> Option<bool> {
-        let at: Vec<_> = (self.lib.identities().await.into_iter())
+    async fn holds_claim(&self, index: u32, own: &str) -> Result<Option<bool>, PlatformError> {
+        let at: Vec<_> = (self.lib.identities().await?.into_iter())
             .filter(|(i, _)| *i == index)
             .map(|(_, id)| id)
             .collect();
-        (!at.is_empty()).then(|| at.iter().any(|id| id == own))
+        Ok((!at.is_empty()).then(|| at.iter().any(|id| id == own)))
     }
 
-    async fn identity_at(&self, index: u32) -> Option<String> {
-        self.lib
-            .identities()
-            .await
-            .into_iter()
+    async fn identity_at(&self, index: u32) -> Result<Option<String>, PlatformError> {
+        Ok((self.lib.identities().await?.into_iter())
             .find(|(i, _)| *i == index)
-            .map(|(_, id)| id)
+            .map(|(_, id)| id))
     }
 
     /// Draft → KeysPrepared: the identity index, chosen only after the
@@ -1955,7 +1952,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             let found = self
                 .lib
                 .identities()
-                .await
+                .await?
                 .into_iter()
                 .find(|(_, id)| id == identity);
             let Some((index, id)) = found else {
@@ -1984,7 +1981,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             return Ok(hold_step(wait));
         }
         // DP5-02 D7, again once the bring-up has found the seed's identities.
-        if matches!(funding, Funding::Invitation { .. }) && !self.lib.identities().await.is_empty()
+        if matches!(funding, Funding::Invitation { .. }) && !self.lib.identities().await?.is_empty()
         {
             return Ok(Step::Fail(
                 InvitationError::AlreadyHasIdentity.code(),
@@ -1997,7 +1994,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
     /// Writes the run's own row's [`Reconcile`] (§5.2), under the run's
     /// claim, in one job with the ledger it reads: whether it wrote.
     async fn reconcile(&self) -> Result<bool, PlatformError> {
-        let (locks, identities) = (self.lib.tracked_locks().await, self.lib.identities().await);
+        let (locks, identities) = (self.lib.tracked_locks().await, self.lib.identities().await?);
         let (wallet, draft, owner) = (self.wallet, self.draft(), self.claim.owner);
         let leases = Arc::clone(&self.session.leases);
         let now = crate::events::unix_now();
@@ -2027,7 +2024,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
     /// one, chosen from the rows read in the write's own job: no two flows
     /// take one index.
     async fn assign_index(&self, row: &RegistrationRow) -> Result<Step, PlatformError> {
-        let (locks, identities) = (self.lib.tracked_locks().await, self.lib.identities().await);
+        let (locks, identities) = (self.lib.tracked_locks().await, self.lib.identities().await?);
         let (wallet, leases) = (self.wallet, Arc::clone(&self.session.leases));
         self.advance_from(row, move |db, flows| {
             // The steps too: no new index lands on a step's slot (I12).
@@ -2428,7 +2425,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         // Only the identity this lock makes: another at the index is not
         // this flow's.
         let own = b58(&identity_for(outpoint));
-        if self.identity_at(index).await.as_ref() == Some(&own) {
+        if self.identity_at(index).await?.as_ref() == Some(&own) {
             return self.advance(row, registered(own)).await;
         }
         match self.lib.find_identity(outpoint).await {
@@ -2542,7 +2539,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         // restored row, or a claim whose record was lost). Another one the
         // seed made there is not (D26), and holds the claim's keys, which
         // Platform refuses twice: the row fails before the call, link kept.
-        match self.holds_claim(index, own).await {
+        match self.holds_claim(index, own).await? {
             Some(true) => return self.advance(row, registered(own.to_owned())).await,
             Some(false) => {
                 tracing::warn!(
@@ -2602,7 +2599,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             }
             Err(e) => e,
         };
-        if self.holds_claim(index, own).await == Some(true) {
+        if self.holds_claim(index, own).await? == Some(true) {
             return self.advance(row, registered(own.to_owned())).await;
         }
         Ok(match e {
@@ -3445,13 +3442,13 @@ impl RegistrationLib for PwLib {
             .collect()
     }
 
-    async fn identities(&self) -> Vec<(u32, String)> {
-        let state = self.wallet.state().await;
-        state
+    async fn identities(&self) -> Result<Vec<(u32, String)>, PlatformError> {
+        let state = crate::wallet_read::info_of(&self.wallet).await?;
+        Ok(state
             .identity_manager
             .wallet_managed_identities(&self.wallet_id.0)
             .filter_map(|m| Some((m.identity_index?, b58(&m.identity.id()))))
-            .collect()
+            .collect())
     }
 
     async fn spendable(&self) -> Result<Spendable, PlatformError> {

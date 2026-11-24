@@ -14,6 +14,7 @@ pub mod files;
 pub mod links;
 pub mod menu;
 pub mod native;
+pub mod quit;
 pub mod sleep;
 #[cfg(desktop)]
 pub mod tray;
