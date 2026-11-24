@@ -777,6 +777,7 @@ impl NetworkSession {
         session.leases.install_resumer(tracked);
         session.hub.attach_leases(&session.leases);
         session.attach_reconcile();
+        session.attach_dead_claims();
         session.attach_sweep_resend();
         session.attach_balance_reread();
         session.attach_sweep_news();
