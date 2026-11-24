@@ -17,10 +17,14 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse
 
-# Retired / dead CI updater key IDs that must NEVER sign a stable feed.
+# Retired / dead CI updater key IDs and Ed25519 public-key SHA-256 fingerprints that must NEVER sign a stable feed.
 RETIRED_UPDATER_KEY_IDS = frozenset({
     "ED322B963B527B21",  # former GitHub Actions `release` environment key (PK-03)
     "7A4629E8E5438F3C",  # earlier dead test key
+})
+RETIRED_UPDATER_PUBKEY_SHA256 = frozenset({
+    # SHA-256 of the 32-byte Ed25519 public key for retired CI key ED322B963B527B21
+    "7821a52f7420d38804e03530e867ed5b2a50402b5c75ba9751ed9746fc8dc689",
 })
 
 # RFC 8032 Ed25519 curve parameters (verification only; public values).
@@ -233,10 +237,12 @@ def main() -> None:
 
     pub_key_id, pub_ed25519 = decode_minisign_pubkey(pubkey_b64)
     key_id_hex = pub_key_id[::-1].hex().upper()
-    if key_id_hex in RETIRED_UPDATER_KEY_IDS:
+    pub_sha256 = hashlib.sha256(pub_ed25519).hexdigest()
+    if key_id_hex in RETIRED_UPDATER_KEY_IDS or pub_sha256 in RETIRED_UPDATER_PUBKEY_SHA256:
         raise SystemExit(
-            f"verify-minisign: refusing retired updater key ID {key_id_hex} "
-            "(rotate the local-only stable updater key in tauri.conf.json before tagging 1.0)"
+            f"verify-minisign: refusing retired updater key (key ID {key_id_hex}, "
+            f"ed25519 sha256:{pub_sha256[:16]}...) "
+            "(rotate to a fresh local-only stable updater key in tauri.conf.json before tagging 1.0)"
         )
     latest = json.loads(Path(args.latest_json).read_text())
 

@@ -45,6 +45,20 @@ die() { echo "fetch-unsigned: $*" >&2; exit 1; }
 [[ "$run_id" =~ ^[0-9]+$ ]] || die "--run-id must be numeric"
 [[ -n "$unsigned_dir" && -n "$sigs_dir" ]] || die "--unsigned-dir and --sigs-dir are required"
 
+check_fresh_dir() {
+  local label=$1 dir=$2
+  [[ ! -L "$dir" ]] || die "$label must not be a symlink: $dir"
+  if [[ -e "$dir" ]]; then
+    [[ -d "$dir" ]] || die "$label exists and is not a directory: $dir"
+    [[ -z "$(ls -A "$dir")" ]] ||
+      die "$label must be absent or an empty directory (refusing to overwrite/delete existing files in $dir)"
+  fi
+}
+
+check_fresh_dir "--unsigned-dir" "$unsigned_dir"
+check_fresh_dir "--sigs-dir" "$sigs_dir"
+[[ "$unsigned_dir" != "$sigs_dir" ]] || die "--unsigned-dir and --sigs-dir must be distinct paths"
+
 command -v gh >/dev/null 2>&1 || die "gh CLI is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
@@ -99,8 +113,20 @@ else
   (cd "$stage" && shasum -a 256 -c unsigned.SHA256SUMS)
 fi
 
-rm -rf "$unsigned_dir"
+# Re-verify destinations are still fresh/empty right before writing (never rm -rf user directories
+# and never follow symlinks at destination paths).
+check_fresh_dir "--unsigned-dir" "$unsigned_dir"
+check_fresh_dir "--sigs-dir" "$sigs_dir"
 mkdir -p "$unsigned_dir" "$sigs_dir"
-cp "$stage"/* "$unsigned_dir/"
-cp "$unsigned_dir/unsigned.SHA256SUMS" "$sigs_dir/unsigned.SHA256SUMS"
+[[ "$(cd "$unsigned_dir" && pwd -P)" != "$(cd "$sigs_dir" && pwd -P)" ]] ||
+  die "--unsigned-dir and --sigs-dir resolve to the same directory"
+for f in "$stage"/*; do
+  [[ -f "$f" && ! -L "$f" ]] || die "unexpected non-regular entry in staged download: $f"
+  dst="$unsigned_dir/${f##*/}"
+  [[ ! -e "$dst" && ! -L "$dst" ]] || die "refusing to overwrite existing path: $dst"
+  cp -P "$f" "$dst"
+done
+sigs_sums="$sigs_dir/unsigned.SHA256SUMS"
+[[ ! -e "$sigs_sums" && ! -L "$sigs_sums" ]] || die "refusing to overwrite existing path: $sigs_sums"
+cp -P "$unsigned_dir/unsigned.SHA256SUMS" "$sigs_sums"
 echo "fetch-unsigned: verified $count attested unsigned files for $tag ($want_sha) into $unsigned_dir"

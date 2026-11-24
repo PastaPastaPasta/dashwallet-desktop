@@ -536,13 +536,15 @@ python3 - "$work" <<'PY'
 import base64, json, sys
 from pathlib import Path
 wk = Path(sys.argv[1])
-def make_conf(kid_hex: str, path: Path) -> None:
+retired_ed25519 = bytes.fromhex("5482c426fb97af310e6cccdb492b20e0fa2fa94dc9bc0424066ecd7e1a144152")
+def make_conf(kid_hex: str, path: Path, ed_bytes: bytes = b"\x11" * 32) -> None:
     kid = bytes.fromhex(kid_hex)[::-1]
-    pub = b"Ed" + kid + b"\x11" * 32
+    pub = b"Ed" + kid + ed_bytes
     b64 = base64.b64encode(f"untrusted comment: minisign public key: {kid_hex}\n{base64.b64encode(pub).decode()}\n".encode()).decode()
     path.write_text(json.dumps({"plugins": {"updater": {"pubkey": b64}}}))
 make_conf("1122334455667788", wk / "tauri-rotated.conf.json")
 make_conf("ED322B963B527B21", wk / "tauri-retired.conf.json")
+make_conf("1122334455667788", wk / "tauri-relabelled-retired.conf.json", retired_ed25519)
 PY
 tb() { # tb ENABLE_UPDATER LOCAL_KEY [TAURI_CONF]: runs tauri-build.sh with a fake pnpm; sets $tbs, $TB
   local env_file=$work/tb-env
@@ -559,6 +561,9 @@ check "tauri-build: DW_ENABLE_UPDATER=1 merges feed URL with createUpdaterArtifa
 tb 1 "" "$work/tauri-retired.conf.json"
 check "Blocker #6: tauri-build refuses DW_ENABLE_UPDATER=1 with retired CI key ED322B963B527B21" \
   '[[ $tbs -ne 0 && "$TB" == *"ED322B963B527B21"* ]]'
+tb 1 "" "$work/tauri-relabelled-retired.conf.json"
+check "tauri-build refuses DW_ENABLE_UPDATER=1 when retired CI Ed25519 pubkey bytes are relabelled with a new key ID" \
+  '[[ $tbs -ne 0 && "$TB" == *"7821a52f7420d388"* ]]'
 tb 0 "" "$work/tauri-retired.conf.json"
 check "tauri-build: plain build without DW_ENABLE_UPDATER adds no updater config (even before key rotation)" \
   '[[ $tbs -eq 0 && "$TB" == *"pnpm tauri build --bundles appimage"* && "$TB" != *config* && ! -s "$work/tb-env" ]]'
@@ -811,8 +816,70 @@ kp1 = ed_keypair(bytes(range(32)))
 kp2 = ed_keypair(bytes(range(32, 64)))
 key_id = bytes.fromhex("8877665544332211")  # key ID 1122334455667788 (non-retired)
 retired_kid = bytes.fromhex("217b523b962b32ed")  # ED322B963B527B21 (retired CI key)
+retired_ed25519 = bytes.fromhex("5482c426fb97af310e6cccdb492b20e0fa2fa94dc9bc0424066ecd7e1a144152")
 (wk / "tauri.conf.json").write_text(json.dumps({"plugins": {"updater": {"pubkey": make_minisign_pub(key_id, kp1[3])}}}))
 (wk / "tauri-retired.conf.json").write_text(json.dumps({"plugins": {"updater": {"pubkey": make_minisign_pub(retired_kid, kp1[3])}}}))
+(wk / "tauri-relabelled-retired.conf.json").write_text(json.dumps({"plugins": {"updater": {"pubkey": make_minisign_pub(key_id, retired_ed25519)}}}))
+
+# Real Tauri CLI (@tauri-apps/cli 2.12.1) minisign fixture: exercises verify-minisign.py against
+# genuine Tauri-emitted prehashing (BLAKE2b-512), envelope framing, trusted-comment signing, and
+# pure-Python RFC 8032 Ed25519 verification on BOTH Linux and macOS without needing Node/pnpm in CI.
+#
+# How this public fixture was generated (throwaway private key discarded immediately after signing):
+#   pnpm --dir apps/desktop tauri signer generate --ci -p '' -w /tmp/test.key
+#   printf 'tauri-real-fixture-appimage-v0.1.0\n' > /tmp/dash-wallet-0.1.0-linux-x86_64.AppImage
+#   printf 'tauri-real-fixture-windows-v0.1.0\n'  > /tmp/dash-wallet-0.1.0-windows-x64-setup.exe
+#   printf 'tauri-real-fixture-macos-v0.1.0\n'    > /tmp/dash-wallet-0.1.0-macos-universal.app.tar.gz
+#   pnpm --dir apps/desktop tauri signer sign --private-key-path /tmp/test.key --password '' --app-version 0.1.0 <each-file>
+tauri_real_dir = wk / "tauri-real-fixture"
+tauri_real_dir.mkdir()
+tauri_real_pub = (
+    "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNERDExMzAwN0Y1Rjg1QkUK"
+    "UldTK2hWOS9BQlBSUFVmS1dEdzQrTGFjWk91N1lPVk5ZQ3JORWFYdFh3b2d3cWZGcmVML096NjMK"
+)
+tauri_real_files = {
+    "dash-wallet-0.1.0-linux-x86_64.AppImage": (
+        b"tauri-real-fixture-appimage-v0.1.0\n",
+        "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTK2hWOS9BQlBSUFJxN1RtVTBSN2tOM2t0cmc0ZXYwMGVsdWNiMTVnWUdPQTlzWGtqUkNXRnltT1ZZb01jRkVJU1lJeGVxbGgzVSs1dVRxR01xLzl4TEhEK3YvekJmaHdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTU2Mjg2CWZpbGU6ZGFzaC13YWxsZXQtMC4xLjAtbGludXgteDg2XzY0LkFwcEltYWdlCXZlcnNpb246MC4xLjAKN1ZETUxOdHYwc01vUGVzMnptbENHa0xGY1RONWVqQm5zOVhPVUUvUGloOEgxQnhLT0N6SFliQXJEUW91NGp4eHE1MS91ZUhoUzdkbzdKQ3BkREVSQWc9PQo=",
+    ),
+    "dash-wallet-0.1.0-windows-x64-setup.exe": (
+        b"tauri-real-fixture-windows-v0.1.0\n",
+        "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTK2hWOS9BQlBSUGVtQkNCSUxxTjFtKy82WXFTMFBzMVhzTzJnOHNHWTBNeWthM2gwcXMrV2d2MmdNcTBQN2FTdlFYQWNyL0lSVjJ3SUpZYWlETUNsUWdadWZjdFlZaVF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTU2Mjg2CWZpbGU6ZGFzaC13YWxsZXQtMC4xLjAtd2luZG93cy14NjQtc2V0dXAuZXhlCXZlcnNpb246MC4xLjAKSGl4SzdWUXU5WVRjUXVyK0x4eU1FRnVqeFg4ZXUvbXJLWjlmRUUwaHZabW5jRzdBdkx0VWZpRGtCN1dlN0tGUy9saFkwVTVGVHBHcnRucGJWbUVERFE9PQo=",
+    ),
+    "dash-wallet-0.1.0-macos-universal.app.tar.gz": (
+        b"tauri-real-fixture-macos-v0.1.0\n",
+        "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTK2hWOS9BQlBSUGNhQkJkdmxpY2orWXRub1NtSjlWRVA1SnBDajkzQVN1SG5KYW05eW9HS3lBUTNBQ2VHL3RwUXZialMvclQ4Vlg3YVNuaDFtSUVhaTF0c0VvODFPMmdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTU2Mjg3CWZpbGU6ZGFzaC13YWxsZXQtMC4xLjAtbWFjb3MtdW5pdmVyc2FsLmFwcC50YXIuZ3oJdmVyc2lvbjowLjEuMApCRTRIMVNkWFcrWEREbElpeEZ6MVp3SGhtNWc4S3JWM04xUlUvSWZ5RUZGUWF1aFE0eURjTDc4cGRwRVkxcE9DbTlFRHN1Yzc2bjFKWEFqVklCc3lBUT09Cg==",
+    ),
+}
+for fname, (fbytes, _) in tauri_real_files.items():
+    (tauri_real_dir / fname).write_bytes(fbytes)
+real_base_url = f"https://github.com/o/r/releases/download/v{ver}"
+(tauri_real_dir / "latest.json").write_text(json.dumps({
+    "version": ver,
+    "platforms": {
+        "linux-x86_64-appimage": {"url": f"{real_base_url}/dash-wallet-{ver}-linux-x86_64.AppImage", "signature": tauri_real_files["dash-wallet-0.1.0-linux-x86_64.AppImage"][1]},
+        "windows-x86_64-nsis": {"url": f"{real_base_url}/dash-wallet-{ver}-windows-x64-setup.exe", "signature": tauri_real_files["dash-wallet-0.1.0-windows-x64-setup.exe"][1]},
+        "darwin-aarch64-app": {"url": f"{real_base_url}/dash-wallet-{ver}-macos-universal.app.tar.gz", "signature": tauri_real_files["dash-wallet-0.1.0-macos-universal.app.tar.gz"][1]},
+        "darwin-x86_64-app": {"url": f"{real_base_url}/dash-wallet-{ver}-macos-universal.app.tar.gz", "signature": tauri_real_files["dash-wallet-0.1.0-macos-universal.app.tar.gz"][1]},
+    },
+}, indent=2) + "\n")
+(tauri_real_dir / "pubkey.b64").write_text(tauri_real_pub)
+# Also build a comment-tampered variant of latest.json (1-char change in trusted comment)
+tampered_box = base64.b64decode(tauri_real_files["dash-wallet-0.1.0-linux-x86_64.AppImage"][1]).decode()
+tampered_box = tampered_box.replace("timestamp:1795556286", "timestamp:1795556287")
+tampered_latest = json.loads((tauri_real_dir / "latest.json").read_text())
+tampered_latest["platforms"]["linux-x86_64-appimage"]["signature"] = base64.b64encode(tampered_box.encode()).decode()
+(tauri_real_dir / "latest-badtc.json").write_text(json.dumps(tampered_latest, indent=2) + "\n")
+
+# Temporary placeholder & populated Windows CA bundle fixtures (never assume docs/release/windows-ca.pem stays unpopulated)
+(wk / "windows-ca-placeholder.pem").write_text(
+    "# Placeholder template mentioning -----BEGIN CERTIFICATE----- in a comment only.\n"
+    "# Replace with real CA certificates before 1.0.\n"
+)
+(wk / "windows-ca-populated.pem").write_text(
+    "# Populated test Windows CA bundle (mirrors release owner committing real CA certs)\n"
+    + (wk / "win.crt").read_text()
+)
 
 def minisign_file(p: Path, version: str) -> str:
     return minisign_with_kp(kp1, key_id, p, version)
@@ -1033,9 +1100,53 @@ HD
     echo "--- end release-publish.sh output ---" >&2
   fi
 
-  # Blocker #4: checked-in placeholder docs/release/windows-ca.pem must NOT trigger --win-ca-file and is refused if passed
-  check "Blocker #4: checked-in placeholder docs/release/windows-ca.pem does not match standalone BEGIN CERTIFICATE delimiter" \
-    '! grep -qx -- "-----BEGIN CERTIFICATE-----" "$here/../../docs/release/windows-ca.pem"'
+  # Real Tauri CLI (@tauri-apps/cli 2.12.1) minisign fixture: known-good, 1-byte-tampered artifact, and tampered trusted comment
+  real_ms_pub=$(cat "$e2e/work/tauri-real-fixture/pubkey.b64")
+  real_ms_rc=0
+  python3 "$here/verify-minisign.py" --pubkey "$real_ms_pub" \
+    --latest-json "$e2e/work/tauri-real-fixture/latest.json" --version 0.1.0 \
+    --files-dir "$e2e/work/tauri-real-fixture" --repo o/r > "$e2e/real-ms-ok.out" 2>&1 || real_ms_rc=$?
+  check "verify-minisign: accepts real Tauri CLI (@tauri-apps/cli 2.12.1) signed 4-platform fixture" \
+    '[[ $real_ms_rc -eq 0 ]] && grep -q "3DD113007F5F85BE" "$e2e/real-ms-ok.out"'
+
+  cp -R "$e2e/work/tauri-real-fixture" "$e2e/work/tauri-real-tampered"
+  python3 - "$e2e/work/tauri-real-tampered/dash-wallet-0.1.0-linux-x86_64.AppImage" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1]); b = bytearray(p.read_bytes()); b[0] ^= 0x01; p.write_bytes(bytes(b))
+PY
+  real_ms_bad_rc=0
+  python3 "$here/verify-minisign.py" --pubkey "$real_ms_pub" \
+    --latest-json "$e2e/work/tauri-real-tampered/latest.json" --version 0.1.0 \
+    --files-dir "$e2e/work/tauri-real-tampered" --repo o/r > "$e2e/real-ms-bad.out" 2>&1 || real_ms_bad_rc=$?
+  check "verify-minisign: rejects real Tauri CLI fixture after flipping 1 byte of the artifact" \
+    '[[ $real_ms_bad_rc -ne 0 ]] && grep -q "artifact signature verification failed" "$e2e/real-ms-bad.out"'
+
+  real_ms_tc_rc=0
+  python3 "$here/verify-minisign.py" --pubkey "$real_ms_pub" \
+    --latest-json "$e2e/work/tauri-real-fixture/latest-badtc.json" --version 0.1.0 \
+    --files-dir "$e2e/work/tauri-real-fixture" --repo o/r > "$e2e/real-ms-tc.out" 2>&1 || real_ms_tc_rc=$?
+  check "verify-minisign: rejects real Tauri CLI fixture when trusted comment is modified" \
+    '[[ $real_ms_tc_rc -ne 0 ]] && grep -q "global signature over trusted comment failed" "$e2e/real-ms-tc.out"'
+
+  # Windows CA bundle detection: test comment-only placeholder fixture AND populated real (test) CA bundle fixture,
+  # plus adaptive validation of production docs/release/windows-ca.pem so committing the real CA bundle keeps tests green.
+  check "Blocker #4: comment-only placeholder Windows CA fixture does not match standalone BEGIN CERTIFICATE delimiter" \
+    '! grep -qx -- "-----BEGIN CERTIFICATE-----" "$e2e/work/windows-ca-placeholder.pem"'
+  check "Windows CA bundle: populated test CA fixture matches standalone BEGIN CERTIFICATE delimiter" \
+    'grep -qx -- "-----BEGIN CERTIFICATE-----" "$e2e/work/windows-ca-populated.pem"'
+  pop_ca_rc=0
+  PATH="$attach_path" "$here/release-attach.sh" "${attach_base[@]}" \
+    --win-ca-file "$e2e/work/windows-ca-populated.pem" --out-dir "$e2e/attached-popca" > "$e2e/attach-popca.out" 2>&1 || pop_ca_rc=$?
+  check "Windows CA bundle: release-attach succeeds with populated test CA bundle (comment header + PEM cert)" \
+    '[[ $pop_ca_rc -eq 0 && -f "$e2e/attached-popca/signed-manifest.json" ]]'
+  if grep -qx -- "-----BEGIN CERTIFICATE-----" "$here/../../docs/release/windows-ca.pem"; then
+    check "Windows CA bundle: populated production docs/release/windows-ca.pem parses as a valid X.509 PEM certificate" \
+      'grep -qx -- "-----END CERTIFICATE-----" "$here/../../docs/release/windows-ca.pem" && openssl x509 -noout -in "$here/../../docs/release/windows-ca.pem" >/dev/null 2>&1'
+  else
+    check "Windows CA bundle: unpopulated production docs/release/windows-ca.pem is skipped by workflow standalone delimiter check" \
+      '! grep -qx -- "-----BEGIN CERTIFICATE-----" "$here/../../docs/release/windows-ca.pem"'
+  fi
 
   # Helper for negative release-attach.sh checks
   expect_attach_fail() {
@@ -1050,14 +1161,19 @@ HD
   }
 
   expect_attach_fail \
-    "Blocker #4: release-attach refuses placeholder docs/release/windows-ca.pem when passed as --win-ca-file" \
+    "Blocker #4: release-attach refuses comment-only placeholder Windows CA fixture when passed as --win-ca-file" \
     "no valid PEM certificate" "$e2e/attach-badca.out" \
-    "${attach_base[@]}" --win-ca-file "$here/../../docs/release/windows-ca.pem" --out-dir "$e2e/attached-badca"
+    "${attach_base[@]}" --win-ca-file "$e2e/work/windows-ca-placeholder.pem" --out-dir "$e2e/attached-badca"
 
   expect_attach_fail \
     "Blocker #6: verify-minisign refuses retired CI updater key ED322B963B527B21" \
-    "refusing retired updater key ID ED322B963B527B21" "$e2e/attach-retired-ms.out" \
+    "refusing retired updater key .*ED322B963B527B21" "$e2e/attach-retired-ms.out" \
     "${attach_base[@]}" --tauri-conf "$e2e/work/tauri-retired.conf.json" --out-dir "$e2e/attached-retired-ms"
+
+  expect_attach_fail \
+    "verify-minisign refuses retired CI Ed25519 pubkey bytes even when relabelled with a new key ID" \
+    "refusing retired updater key .*7821a52f7420d388" "$e2e/attach-relabelled-ms.out" \
+    "${attach_base[@]}" --tauri-conf "$e2e/work/tauri-relabelled-retired.conf.json" --out-dir "$e2e/attached-relabelled-ms"
 
   # Unsigned input tampering
   cp -R "$e2e/unsigned" "$e2e/unsigned-bad"
@@ -1279,6 +1395,35 @@ FGH
     --unsigned-dir "$fu/out-badatt" --sigs-dir "$fu/sigs-badatt" > "$fu/badatt.out" 2>&1 || fu_rc=$?
   check "Blocker #7: fetch-unsigned.sh refuses attestation failure without exposing staged files" \
     '[[ $fu_rc -ne 0 && ! -d "$fu/out-badatt" ]]'
+
+  # Safety: fetch-unsigned.sh refuses non-empty --unsigned-dir / --sigs-dir or symlinks, leaving existing files untouched
+  mkdir -p "$fu/reused-unsigned"
+  printf 'precious-user-file\n' > "$fu/reused-unsigned/keep-me.txt"
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/unsigned" FU_REMOTE_SHA="$fu_sha" \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/reused-unsigned" --sigs-dir "$fu/sigs-reused1" > "$fu/reused-u.out" 2>&1 || fu_rc=$?
+  check "fetch-unsigned.sh refuses non-empty --unsigned-dir and leaves unrelated files untouched" \
+    '[[ $fu_rc -ne 0 && "$(cat "$fu/reused-unsigned/keep-me.txt")" == "precious-user-file" && ! -d "$fu/sigs-reused1" ]] && grep -q "empty directory" "$fu/reused-u.out"'
+
+  mkdir -p "$fu/reused-sigs"
+  printf 'victim-original\n' > "$fu/victim.txt"
+  ln -s "$fu/victim.txt" "$fu/reused-sigs/unsigned.SHA256SUMS"
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/unsigned" FU_REMOTE_SHA="$fu_sha" \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/out-reused2" --sigs-dir "$fu/reused-sigs" > "$fu/reused-s.out" 2>&1 || fu_rc=$?
+  check "fetch-unsigned.sh refuses non-empty --sigs-dir with symlink and leaves target file untouched" \
+    '[[ $fu_rc -ne 0 && "$(cat "$fu/victim.txt")" == "victim-original" && ! -d "$fu/out-reused2" ]] && grep -q "empty directory" "$fu/reused-s.out"'
+
+  mkdir -p "$fu/sym-target"
+  ln -s "$fu/sym-target" "$fu/sym-unsigned"
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/unsigned" FU_REMOTE_SHA="$fu_sha" \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/sym-unsigned" --sigs-dir "$fu/sigs-sym" > "$fu/sym-u.out" 2>&1 || fu_rc=$?
+  check "fetch-unsigned.sh refuses symlink --unsigned-dir" \
+    '[[ $fu_rc -ne 0 && -z "$(ls -A "$fu/sym-target")" ]] && grep -q "must not be a symlink" "$fu/sym-u.out"'
 fi
 
 # --- release-version.sh
