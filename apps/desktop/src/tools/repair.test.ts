@@ -55,7 +55,7 @@ function setup(lock = {}) {
   const api = {
     rescan: vi.fn(async (from: RescanStart) => {
       calls.push(`rescan ${from.kind}`);
-      progress = { fromHeight: 0, currentHeight: 250, targetHeight: 1000, startedAt: 0 };
+      progress = { fromHeight: 0, currentHeight: 250, targetHeight: 1000, startedAt: 0, upgradeWallets: [] };
       return null;
     }),
     rescanProgress: vi.fn(async () => progress),

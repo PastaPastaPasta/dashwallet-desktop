@@ -278,6 +278,12 @@ pub(crate) trait ShieldedLib: Send + Sync {
     fn settled_locks(&self) -> impl Future<Output = HashSet<Txid>> + Send;
     /// Records the shield lock `txid` settled by a proved apply.
     fn settle(&self, txid: Txid) -> impl Future<Output = Result<(), PlatformError>> + Send;
+    /// Platform's proved answer whether the lock at `outpoint` is spent
+    /// ([`super::unfinished_locks::proved_spent`]).
+    fn spent(
+        &self,
+        outpoint: OutPoint,
+    ) -> impl Future<Output = super::unfinished_locks::SpentRead> + Send;
     /// Whether the engine's dispatch hook is set on the network's
     /// coordinator ([`EngineDispatch`]). Without it the library would send
     /// a spend the engine never accepted.
@@ -2808,6 +2814,10 @@ impl ShieldedLib for PwShielded {
 
     async fn wait_proof(&self, outpoint: OutPoint, timeout: Duration) -> Result<(), FundError> {
         Reg::wait_proof(&self.pw, outpoint, timeout).await
+    }
+
+    async fn spent(&self, outpoint: OutPoint) -> super::unfinished_locks::SpentRead {
+        super::unfinished_locks::proved_spent(&self.pw.sdk, outpoint).await
     }
 
     async fn credit_script(&self, outpoint: OutPoint) -> Option<dashcore::ScriptBuf> {

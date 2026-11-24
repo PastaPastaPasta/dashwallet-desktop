@@ -885,6 +885,8 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         w.coins = w.coins.filter((u) => u.outpoint.txid !== txid);
         moveBalance(w, -row.amount, row.status.instantLocked || row.status.confirmations > 0 ? "confirmed" : "unconfirmed");
       }
+      // The wallet's own registration abandoned: the shared session's reserved coins are spendable again.
+      for (const sh of ctx.world.shared.sessions) if (sh.txid === txid && sh.stage.kind === "sent" && sh.reserved.length > 0) sh.abandonable = true;
       changed(ctx, w, [txid]);
       return null;
     },

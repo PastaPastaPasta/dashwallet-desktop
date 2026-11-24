@@ -44,6 +44,7 @@ import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld }
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { newSharedWorld, sharedScenarios, type SharedWorld } from "./shared";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -158,6 +159,8 @@ export interface World {
   governance: GovernanceWorld;
   /** My masternodes: the SPV list, own and tracked masternodes, attached keys (masternodes.ts, MG-10). */
   masternodes: MasternodesWorld;
+  /** Shared masternodes: the capability and the main wallet's sessions (shared.ts, MG-10b). */
+  shared: SharedWorld;
   /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
   rates: RatesWorld;
   /** Updates: what this copy can do, the feed and the install (updates.ts, PK-03). */
@@ -263,6 +266,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
     masternodes: noMasternodesWorld(),
+    shared: newSharedWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
     pending: newPendingWorld(),
@@ -1275,6 +1279,15 @@ const SCENARIOS = {
     main.rows = [];
     return w;
   },
+  /** The first start after an update from 0.1 or 0.2: the funded wallet is replayed once from its
+   * birth, so Home and Pay say why sends wait. The replay does not move on while the scenario is up. */
+  "upgrade-replay": (t) => {
+    const w = base(t);
+    const tip = w.sync.tipHeight!;
+    w.tools.rescan = { fromHeight: tip - 200_000, currentHeight: tip - 150_000, targetHeight: tip, startedAt: secs(FIXTURE_NOW), upgradeWallets: [w.wallets[0].summary.walletId] };
+    w.tools.rescanStep = 0;
+    return w;
+  },
   /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */
   "wallet-behind-stopped": (t) => walletBehind(t, true, false),
   /** The same with nothing found yet: Home shows 0. */
@@ -1646,6 +1659,8 @@ const SCENARIOS = {
   ...governanceScenarios(base),
   // My masternodes (MG-10): masternodes.ts.
   ...masternodesScenarios(base),
+  // Shared masternodes (MG-10b): shared.ts.
+  ...sharedScenarios(base),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesScenarios(base),
   // Transfer (POLISH 25): transfer.ts.
