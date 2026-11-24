@@ -249,15 +249,8 @@ pub(crate) fn persisted_txids(
     // so no wallet loads complete without them. As in the store, a blob
     // over its size limit isn't read (SQLite returns NULL for it), and the
     // wallet's locks count as unread.
-    let mut stmt = conn.prepare(
-        "SELECT l.wallet_id, l.txid, \
-         CASE WHEN length(l.islock_blob) <= ?1 THEN l.islock_blob END \
-         FROM core_instant_locks l WHERE l.verified = 1 AND NOT EXISTS \
-         (SELECT 1 FROM core_transactions t WHERE t.wallet_id = l.wallet_id \
-         AND t.txid = l.txid AND t.record_blob IS NOT NULL)",
-    )?;
-    let limit = i64::try_from(platform_wallet_storage::SIZE_LIMIT_BYTES).unwrap_or(i64::MAX);
-    let rows = stmt.query_map([limit], |r| {
+    let mut stmt = conn.prepare(LOCKS_WITHOUT_RECORD)?;
+    let rows = stmt.query_map([lock_size_limit()], |r| {
         Ok((
             r.get::<_, Vec<u8>>(0)?,
             r.get::<_, Vec<u8>>(1)?,
@@ -291,6 +284,17 @@ pub(crate) fn persisted_txids(
         }
     }
     Ok(out)
+}
+
+/// Verified lock rows with no record, their blob NULL when over `?1` bytes.
+const LOCKS_WITHOUT_RECORD: &str = "SELECT l.wallet_id, l.txid, \
+     CASE WHEN length(l.islock_blob) <= ?1 THEN l.islock_blob END \
+     FROM core_instant_locks l WHERE l.verified = 1 AND NOT EXISTS \
+     (SELECT 1 FROM core_transactions t WHERE t.wallet_id = l.wallet_id \
+     AND t.txid = l.txid AND t.record_blob IS NOT NULL)";
+
+fn lock_size_limit() -> i64 {
+    i64::try_from(platform_wallet_storage::SIZE_LIMIT_BYTES).unwrap_or(i64::MAX)
 }
 
 /// A stored lock row's blob, decoded as the store encodes it.
@@ -1138,14 +1142,29 @@ mod lock_row_tests {
         .unwrap();
         drop(conn);
 
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let blob_of = |wallet: u8| -> Option<Vec<u8>> {
+            let mut stmt = conn.prepare(LOCKS_WITHOUT_RECORD).unwrap();
+            let mut rows = stmt.query([lock_size_limit()]).unwrap();
+            while let Some(r) = rows.next().unwrap() {
+                if r.get::<_, Vec<u8>>(0).unwrap() == [wallet; 32] {
+                    return r.get(2).unwrap();
+                }
+            }
+            panic!("no row of wallet {wallet}")
+        };
+        assert!(blob_of(3).is_none(), "an oversized blob isn't returned");
+        assert!(blob_of(2).is_some());
+        drop(conn);
+
         let out = persisted_txids(&path).unwrap();
-        let one = &out[&[1; 32]];
+        let one = &out[&[1u8; 32]];
         assert_eq!(
             one.lock_parents,
             HashMap::from([(txid(10), vec![txid(11)])])
         );
         assert!(!one.locks_unread);
-        for wallet in [2, 3, 4] {
+        for wallet in [2u8, 3, 4] {
             assert!(out[&[wallet; 32]].lock_parents.is_empty());
             assert!(out[&[wallet; 32]].locks_unread, "wallet {wallet}");
         }

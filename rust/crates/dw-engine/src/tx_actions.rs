@@ -2348,30 +2348,26 @@ mod tests {
             output: Vec::new(),
             special_transaction_payload: None,
         };
-        let wallet = key_wallet::wallet::Wallet::new_random(
+        let wallet = key_wallet::Wallet::new_random(
             dashcore::Network::Regtest,
             key_wallet::wallet::initialization::WalletAccountCreationOptions::Default,
         )
         .unwrap();
         let core = ManagedWalletInfo::from_wallet(&wallet, 0);
-        let a = WalletHistory {
-            lock_parents: HashMap::from([(c.txid(), vec![p])]),
-            ..Default::default()
-        };
-        let b = WalletHistory {
-            txs: HashMap::from([(
-                c.txid(),
-                TxEntry {
-                    tx: c.clone(),
-                    context: TransactionContext::Mempool,
-                    instant_locked: false,
-                    first_seen: None,
-                    own_inputs: Default::default(),
-                    abandoned: false,
-                },
-            )]),
-            ..Default::default()
-        };
+        let mut a = WalletHistory::default();
+        a.lock_parents.insert(c.txid(), vec![p]);
+        let mut b = WalletHistory::default();
+        b.txs.insert(
+            c.txid(),
+            TxEntry {
+                tx: c.clone(),
+                context: TransactionContext::Mempool,
+                instant_locked: false,
+                first_seen: None,
+                own_inputs: Default::default(),
+                abandoned: false,
+            },
+        );
         let (unlocked, _) = settled_under(&b.txs, &core);
         assert!(!unlocked.contains(&p), "B alone settles nothing");
         for order in [[&a, &b], [&b, &a]] {
