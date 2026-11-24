@@ -452,14 +452,14 @@ fn a_sessions_own_coin_stays_its_own_and_a_lock_or_claim_withdraws_it() {
 
     let other = crate::send::SpendOwner::mixing_session();
     session.spends.reserve(id, other, [coin]);
-    assert_eq!(ask().0, true, "another owner's claim");
+    assert!(ask().0, "another owner's claim");
     session.spends.release_some(&id, other, [coin]);
-    assert_eq!(ask().0, false, "the claim released");
+    assert!(!ask().0, "the claim released");
 
     engine
         .block_on(session.lock_outpoints(id, vec![coin]))
         .unwrap();
-    assert_eq!(ask().0, true, "the user locked it");
+    assert!(ask().0, "the user locked it");
     wallet.unlock_coins(&[coin]);
 }
 
