@@ -63,7 +63,7 @@ export function SharedSetup({ wallet, network, onClose, onCreated }: { wallet: W
   ]);
   const [service, setService] = useState("");
   const [operator, setOperator] = useState<Operator>("given");
-  const [operatorKey, setOperatorKey] = useState("");
+  const [operatorKey, setOperatorPublic] = useState("");
   const [operatorShare, setOperatorShare] = useState("0");
   const [voting, setVoting] = useState<Voting>("wallet");
   const [votingAddress, setVotingAddress] = useState("");
@@ -223,7 +223,7 @@ export function SharedSetup({ wallet, network, onClose, onCreated }: { wallet: W
           </label>
         </fieldset>
         {operator === "given" &&
-          field("operatorKey", t(`${P}.operatorKey`), <input id={`${id}-operatorKey`} className="mono" data-testid="sh-setup-operator-key" spellCheck={false} autoComplete="off" value={operatorKey} onChange={(e) => setOperatorKey(e.target.value)} />, t(`${P}.operatorKeyHelp`))}
+          field("operatorKey", t(`${P}.operatorKey`), <input id={`${id}-operatorKey`} className="mono" data-testid="sh-setup-operator-key" spellCheck={false} autoComplete="off" value={operatorKey} onChange={(e) => setOperatorPublic(e.target.value)} />, t(`${P}.operatorKeyHelp`))}
         {field("operatorShare", t(`${P}.operatorShare`), <input id={`${id}-operatorShare`} inputMode="decimal" data-testid="sh-setup-operator-share" value={operatorShare} onChange={(e) => setOperatorShare(e.target.value)} />, t(`${P}.operatorShareHelp`))}
         <fieldset className="mg-choices" data-testid="sh-setup-voting">
           <legend className="mg-section-title">{t(`${P}.votes`)}</legend>
