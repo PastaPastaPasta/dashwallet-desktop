@@ -95,9 +95,10 @@ pub(crate) mod shield_drain;
 mod shielded;
 #[cfg(test)]
 mod shielded_close_tests;
+pub(crate) mod shielded_payout;
 pub(crate) mod shielded_pool;
 #[cfg(test)]
-mod shielded_tests;
+pub(crate) mod shielded_tests;
 pub mod signers;
 mod startup;
 mod startup_status;
