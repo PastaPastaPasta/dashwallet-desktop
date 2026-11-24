@@ -25,6 +25,7 @@ import {
   canSwap,
   defaultRoute,
   feeText,
+  isCoreRoute,
   listedPools,
   noRouteText,
   ROUTES,
@@ -228,12 +229,15 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const amountProblem = text.trim() !== "" && amount === null ? T.invalidAmount : route === "coreToPlatform" && amount != null && probe !== null && amount > probe ? tr("transfer.notEnoughSpendable", { amount: fmt(probe) }) : null;
   const { status: mixing } = useCoinJoinView(walletId, network);
   const pause = useMixingAction(walletId, network);
+  // Max from the Dash wallet is the engine's Core Max while the field holds what it filled.
+  const coreMax = isCoreRoute(route) && t.isMax(route);
+  const maxRefused = line.state.kind === "refused" && (line.state.whole === true || coreMax);
   const refusal =
     line.state.kind !== "refused"
       ? null
       : route === "coreToPlatform"
-        ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: null, pending })
-        : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedSyncing(status));
+        ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: maxRefused ? { kind: "add", duffs: 0, all: true } : null, pending })
+        : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedSyncing(status), maxRefused);
   const fee = QUOTE_ON_CONTINUE.has(route) ? T.feeOnNextStep : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount;
@@ -247,8 +251,8 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
       onSubmit={(e) => {
         e.preventDefault();
         if (!ready || amount == null) return;
-        if (route === "coreToPlatform") t.flows.fund.next(amount);
-        else if (route === "coreToShielded") t.flows.shielded.next({ kind: "add", duffs: amount });
+        if (route === "coreToPlatform") t.flows.fund.next(amount, coreMax);
+        else if (route === "coreToShielded") t.flows.shielded.next(coreMax ? { kind: "add", duffs: amount, all: true } : { kind: "add", duffs: amount });
         else t.flows.shielded.next({ kind: route === "shieldedToPlatform" ? "toPlatform" : "out", credits: String(BigInt(amount) * CREDITS_PER_DUFF) });
       }}
     >
@@ -280,6 +284,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
             onFocus={(e) => hidden && e.target.select()}
             onChange={(e) => {
               if (line.maxing) line.set(null);
+              t.edited(route);
               flow.setText(hidden ? e.target.value.split(mask).join("") : e.target.value);
             }}
           />

@@ -60,6 +60,26 @@ describe("the shielded flow", () => {
     stop();
   });
 
+  it("a Core Max (Max from the Dash wallet) is sent as {kind: all}, never as an amount with the fee on top", async () => {
+    const { flow, api } = setup();
+    flow.begin("add");
+    flow.next({ kind: "add", duffs: 199_998_956, all: true });
+    await flow.run({ maxDuffs: 200_000_000, maxCredits: "0" });
+    expect(api.shieldFromCore.mock.calls).toEqual([[WALLET_A, { kind: "all" }, "grant-1"]]);
+  });
+
+  it("a Core Max's refusals say what Max needs; an amount's keep their own words", () => {
+    const text = (e: unknown, max: boolean) => shieldedErrorText(e, credits, duffs, "add", false, max);
+    const locked = appError("shielded.coins_locked");
+    expect(text(locked, true)).toBe("Max can't run: some coins in your Dash wallet are locked. Enter an amount instead.");
+    expect(text(locked, false)).not.toContain("Max");
+    expect(text(appError("shielded.too_many_inputs", { kind: "number", value: 61 }), true)).toBe("Max needs at most 50 coins; this wallet has 61. Enter an amount instead.");
+    expect(text(appError("shielded.mixing_active"), true)).toBe("Max can't run while mixing. Stop mixing first, or enter an amount.");
+    expect(text(appError("shielded.move_running"), true)).toBe("Another move of your coins is running. Try Max again when it's done.");
+    expect(text(appError("shielded.coins_changed"), true)).toBe("Your Dash wallet changed since this was worked out. Review the amount again.");
+    expect(shieldedCanChange(appError("shielded.coins_changed"))).toBe(true);
+  });
+
   it("sends with its memo and moves out to the wallet's own address (null)", async () => {
     const { flow, calls, answer } = setup();
     flow.begin("send");

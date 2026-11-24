@@ -47,6 +47,17 @@ async function confirm(page: Page, route: TransferRoute) {
   await expect(page.getByTestId(GO[route])).toBeEnabled();
 }
 
+/** A Dash wallet Max through Continue: its confirmation with what it moves and leaves behind. */
+async function maxConfirm(page: Page, route: "coreToShielded" | "coreToPlatform") {
+  await openTransfer(page, route);
+  await page.getByTestId("transfer-max").click();
+  await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+  await page.getByTestId("transfer-continue").click();
+  await expect(page.getByTestId(BODY[route])).toHaveAttribute("data-step", "confirm");
+  await expect(page.getByTestId("core-max-note")).toHaveCount(2);
+  await expect(page.getByTestId(GO[route])).toBeEnabled();
+}
+
 /** Confirm, the passphrase, and the route's result. */
 async function run(page: Page, route: TransferRoute) {
   await confirm(page, route);
@@ -153,6 +164,7 @@ const STATES: Record<string, State> = {
     },
   },
   "shielded-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "coreToShielded") },
+  "shielded-max-confirm": { scenario: "coinjoin-move", routeHeader: true, go: (page) => maxConfirm(page, "coreToShielded") },
   "shielded-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "shielded-refused": { scenario: "transfer-shielded-refused", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "shielded-waiting": { scenario: "transfer-shield-waiting", routeHeader: true, go: (page) => run(page, "coreToShielded") },
@@ -162,6 +174,7 @@ const STATES: Record<string, State> = {
   "toPlatform-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "shieldedToPlatform") },
   "toPlatform-may-be-out": { scenario: "funded", extra: "&fail=unshield_to_platform:artifact", routeHeader: true, go: (page) => run(page, "shieldedToPlatform") },
   "fund-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "coreToPlatform") },
+  "fund-max-confirm": { scenario: "coinjoin-move", routeHeader: true, go: (page) => maxConfirm(page, "coreToPlatform") },
   "fund-progress": {
     scenario: "funded",
     routeHeader: true,

@@ -67,6 +67,37 @@ describe("the Add from Dash wallet flow", () => {
     stop();
   });
 
+  it("a Core Max (Max from the Dash wallet) is sent as {kind: all}, never as an amount with the fee on top", async () => {
+    const { flow, api, answer } = setup();
+    flow.begin();
+    flow.next(199_998_956, true);
+    expect(flow.request).toEqual({ kind: "add", duffs: 199_998_956, all: true });
+    const going = flow.run({ maxDuffs: 200_000_000, maxCredits: "0" });
+    await vi.waitFor(() => expect(api.platformFund).toHaveBeenCalled());
+    answer(APPLIED);
+    await going;
+    expect(api.platformFund.mock.calls).toEqual([[WALLET_A, { kind: "all" }, "grant-1"]]);
+    flow.begin();
+    flow.close();
+    flow.begin();
+    flow.next(50_000_000);
+    expect(flow.request).toEqual({ kind: "add", duffs: 50_000_000 });
+  });
+
+  it("a Core Max's refusals say what Max needs; an amount's keep their own words", () => {
+    const max = { request: { kind: "add" as const, duffs: 1, all: true } };
+    expect(fundErrorText(appError("credits.coins_locked"), credits, duffs, max)).toBe("Max can't run: some coins in your Dash wallet are locked. Enter an amount instead.");
+    expect(text(appError("credits.coins_locked"))).not.toContain("Max");
+    expect(fundErrorText(appError("credits.too_many_inputs", { kind: "number", value: 61 }), credits, duffs, max)).toBe("Max needs at most 50 coins; this wallet has 61. Enter an amount instead.");
+    expect(text(appError("credits.mixing_active"))).toBe("Max can't run while mixing. Stop mixing first, or enter an amount.");
+    expect(text(appError("credits.move_running"))).toBe("Another move of your coins is running. Try Max again when it's done.");
+    expect(text(appError("credits.coins_changed"))).toBe("Your Dash wallet changed since this was worked out. Review the amount again.");
+    expect(fundCanChange(appError("credits.coins_changed"))).toBe(true);
+    // A Max's grant is exactly its quote's total: one exceeded means the coins grew since.
+    expect(fundErrorText(appError("platform.grant_exceeded"), credits, duffs, max)).toBe("Your Dash wallet changed since this was worked out. Review the amount again.");
+    expect(text(appError("platform.grant_exceeded"))).not.toContain("Your Dash wallet changed");
+  });
+
   it("finishes a lock that was not applied with one duff of grant and no confirm step", async () => {
     const { flow, vault, calls } = setup();
     await flow.resume("lock1");

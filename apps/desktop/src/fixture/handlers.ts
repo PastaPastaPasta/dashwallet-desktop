@@ -23,7 +23,6 @@ import type { PaymentSourceName } from "../api/generated/PaymentSourceName";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FlowKindName } from "../api/generated/FlowKindName";
-import type { FundAmount } from "../api/generated/FundAmount";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -331,12 +330,6 @@ export function checkGrant(w: World, id: string, walletId: string, kinds: GrantP
 
 export function useGrant(w: World, id: string) {
   for (const g of w.grants) if (g.grant.id === id) g.used = true;
-}
-
-/** A shield's or a fund's amount in duffs; the fixture has no Core Max (`all`) yet. */
-export function fundDuffs(amount: FundAmount): number {
-  if (amount.kind === "duffs") return amount.duffs;
-  throw fail("invalid_argument", "the fixture has no Core Max", { kind: "reason", reason: "the fixture has no Core Max" });
 }
 
 /** An unused `changeCredential` grant whose key is usable (it is bound to no wallet). */

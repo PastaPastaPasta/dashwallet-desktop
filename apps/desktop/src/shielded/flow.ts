@@ -11,7 +11,7 @@ import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
-import { SHIELDED_CODES } from "../api/pending";
+import { coreMaxRefusal, fundAmount, SHIELDED_CODES } from "../api/pending";
 import { RESCAN_TEXT } from "../app/rescan";
 import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
@@ -31,7 +31,9 @@ export type ShieldedKind = "add" | "send" | "out" | "toPlatform" | "resume";
 
 /** What the confirm step quotes and sends. Credits are decimal strings, a duff is 1000 of them. */
 export type ShieldedRequest =
-  | { kind: "add"; duffs: number }
+  /** `all`: a Core Max, everything in the Dash wallet's account 0 with the fee out of it (`duffs`
+   * is what its quote said the lock would be). */
+  | { kind: "add"; duffs: number; all?: boolean }
   | { kind: "send"; credits: string; to: string; memo: string | null }
   | { kind: "out"; credits: string }
   | { kind: "toPlatform"; credits: string }
@@ -307,12 +309,15 @@ function errorLike(e: unknown): { code: string; data: Record<string, unknown> | 
 /** Whether `e` is the app error `code`. */
 export const isCode = (e: unknown, code: string): boolean => errorLike(e)?.code === code;
 
-/** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. */
-export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, syncing = false): string {
+/** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. `max`:
+ * the refusal of a Core Max. */
+export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, syncing = false, max = false): string {
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;
   if (syncingRefusal(err.code, syncing)) return SHIELDED_SYNC_COPY.syncing;
+  const maxText = coreMaxRefusal(err, max);
+  if (maxText) return maxText;
   switch (err.code) {
     case SHIELDED_CODES.notActive:
       return SHIELDED_COPY.card.inactive;
@@ -354,7 +359,7 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
 
 /** Back is offered when another amount or address may pass. */
 export const shieldedCanChange = (e: unknown): boolean =>
-  [SHIELDED_CODES.invalidAddress, SHIELDED_CODES.insufficientFunds, SHIELDED_CODES.fundingInsufficient, SHIELDED_CODES.belowMinimum, "platform.grant_exceeded", "invalid_argument", SHIELDED_CODES.unrecordedSpend].some((c) => isCode(e, c));
+  [SHIELDED_CODES.invalidAddress, SHIELDED_CODES.insufficientFunds, SHIELDED_CODES.fundingInsufficient, SHIELDED_CODES.belowMinimum, SHIELDED_CODES.coinsChanged, "platform.grant_exceeded", "invalid_argument", SHIELDED_CODES.unrecordedSpend].some((c) => isCode(e, c));
 
 const settledListeners = new Set<() => void>();
 
@@ -524,7 +529,7 @@ export class ShieldedFlow extends Model {
   private async call(r: ShieldedRequest, grant: string, confirmUnrecorded: boolean): Promise<ShieldedResult> {
     switch (r.kind) {
       case "add":
-        return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, { kind: "duffs", duffs: r.duffs }, grant) };
+        return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, fundAmount(r), grant) };
       case "resume":
         return { kind: "shield", outcome: await this.api.resumeShield(this.walletId, r.txid, grant) };
       case "send":

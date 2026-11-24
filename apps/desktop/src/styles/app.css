@@ -556,6 +556,18 @@ input[type="radio"]:disabled {
   overflow-wrap: anywhere;
 }
 
+/* Max from the Dash wallet on Confirm: what it moves, then what stays behind, each its own line. */
+.core-max-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-block: var(--dw-space-s);
+}
+
+.core-max-confirm p {
+  margin: 0;
+}
+
 /* A banned masternode's notice is a long run in some languages: it wraps rather than widening the pane. */
 .mn-banned-notice {
   overflow-wrap: anywhere;

@@ -30,10 +30,10 @@ import type { PayoutStateName } from "../api/generated/PayoutStateName";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, fundDuffs, HANDLERS, landHeldTopUp, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, HANDLERS, landHeldTopUp, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
-import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
+import { coreMaxPlan, lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { restarted } from "./registration";
 import { buildWorld, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
@@ -527,6 +527,18 @@ function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): Pla
   return { duffs, feeDuffs: FUND_LOCK_FEE_DUFFS, totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(duffs)), to: p.receive.address, grant: { maxDuffs: totalDuffs, maxCredits: "0" }, max: null };
 }
 
+/** A fund's quote of `amount`: an amount with the fee on top, or a Core Max (`core_max.rs`). */
+function fundQuoteOf(ctx: Ctx, walletId: string, amount: FundAmount, call: string): PlatformFundQuote {
+  if (amount.kind === "duffs") return fundQuote(ctx, walletId, amount.duffs, call);
+  const p = platformOf(ctx.world, call);
+  const blocking = p.funds.find((f) => !NOT_BLOCKING.includes(f.state));
+  if (blocking) throw fail("credits.fund_pending", "an earlier add is pending", { kind: "txid", txid: blocking.txid });
+  const plan = coreMaxPlan(ctx.world, walletId, "credits", FUND_MIN_DUFFS, () => {
+    throw fail("credits.below_minimum", "below the minimum", { kind: "limit", duffs: FUND_MIN_DUFFS });
+  });
+  return { duffs: plan.duffs, feeDuffs: plan.feeDuffs, totalDuffs: plan.totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(plan.duffs)), to: p.receive.address, grant: { maxDuffs: plan.totalDuffs, maxCredits: "0" }, max: plan.max };
+}
+
 /** As the engine's `refuse_on_mainnet`: a payment from a balance is off on mainnet, before anything else. */
 function refusePayoutOnMainnet(world: Ctx["world"], source: PaymentSourceName) {
   if (source === "platform" && world.launch.network.kind === "mainnet") throw fail("platform.feature_off", "platform_contact_payment", { kind: "feature", feature: "platform_contact_payment" });
@@ -693,16 +705,18 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     }
     return sendOutcome(p, row);
   },
-  platform_fund_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => fundQuote(ctx, walletId, fundDuffs(amount), "platform_fund_quote"),
+  platform_fund_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => fundQuoteOf(ctx, walletId, amount, "platform_fund_quote"),
   platform_fund: ({ walletId, amount, grant }: { walletId: string; amount: FundAmount; grant: string }, ctx: Ctx): PlatformFundOutcome => {
     const { world } = ctx;
-    const duffs = fundDuffs(amount);
-    const q = fundQuote(ctx, walletId, duffs, "platform_fund");
+    const q = fundQuoteOf(ctx, walletId, amount, "platform_fund");
+    const duffs = q.duffs;
     const p = platformOf(world, "platform_fund");
     const g = checkGrant(world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
     if (g.grant.purpose.maxDuffs < q.totalDuffs)
       throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "funding", needed: String(q.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
+    // A Core Max's grant is its quote's coins' sum: coins read again to another sum are not the quote's.
+    if (amount.kind === "all" && g.grant.purpose.maxDuffs !== q.totalDuffs) throw fail("credits.coins_changed", "the coins changed since the quote");
     useGrant(world, grant);
     const txid = `f0${(p.activity.length + 1).toString(16).padStart(2, "0")}`.padEnd(64, "d");
     const pending = p.nextFund !== "done";

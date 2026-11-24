@@ -3,6 +3,7 @@
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { FundAmount } from "./generated/FundAmount";
 import type { Backend } from "./backend";
 import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
@@ -11,7 +12,7 @@ import type { SyncStatus } from "./generated/SyncStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import { freshLockStatus, lockGeneration, seedLockStatus } from "./lockGate";
-import { creditsToDuffs } from "./pending";
+import { creditsToDuffs, fundAmount } from "./pending";
 import { feedSync, rawSync, readTicket, useRawSync, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
@@ -62,7 +63,7 @@ export const keys = {
   // Not under "dashpay": a quote is a proven network read, which a signal must not repeat while Confirm is open.
   platformMoveQuote: (walletId: string) => ["platformMoveQuote", walletId] as const,
   platformReceiveAddress: (walletId: string) => ["dashpay", "platformReceiveAddress", walletId] as const,
-  platformFundQuote: (walletId: string, duffs: number) => ["platformFundQuote", walletId, duffs] as const,
+  platformFundQuote: (walletId: string, amount: FundAmount) => ["platformFundQuote", walletId, amount] as const,
   // Under "dashpay" so the settle invalidation (events.ts) re-reads the unfinished locks.
   pendingPlatformFunds: (walletId: string) => ["dashpay", "pendingPlatformFunds", walletId] as const,
   platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
@@ -216,13 +217,13 @@ export function usePlatformSendQuote(walletId: string, to: string, amount: Withd
   });
 }
 
-/** What "Add from Dash wallet" of `duffs` costs and adds; `null` duffs: no quote yet. */
-export function usePlatformFundQuote(walletId: string, duffs: number | null) {
+/** What "Add from Dash wallet" of `amount` costs and adds; `null`: no quote yet. */
+export function usePlatformFundQuote(walletId: string, amount: FundAmount | null) {
   const b = useBackend();
   return useQuery({
-    queryKey: keys.platformFundQuote(walletId, duffs ?? 0),
-    queryFn: () => b.platformFundQuote(walletId, { kind: "duffs", duffs: duffs! }),
-    enabled: duffs !== null,
+    queryKey: keys.platformFundQuote(walletId, amount ?? { kind: "duffs", duffs: 0 }),
+    queryFn: () => b.platformFundQuote(walletId, amount!),
+    enabled: amount !== null,
     retry: false,
     gcTime: 0,
   });
@@ -281,7 +282,7 @@ export function useShieldedQuote(walletId: string, request: ShieldedRequest | nu
     queryFn: async (): Promise<ShieldedQuoteView> => {
       switch (request?.kind) {
         case "add": {
-          return { kind: "add", quote: await b.shieldQuote(walletId, { kind: "duffs", duffs: request.duffs }) };
+          return { kind: "add", quote: await b.shieldQuote(walletId, fundAmount(request)) };
         }
         case "send": {
           return { kind: "spend", quote: await b.shieldedSendQuote(walletId, request.to, request.credits) };
