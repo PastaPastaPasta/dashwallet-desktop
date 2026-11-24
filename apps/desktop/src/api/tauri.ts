@@ -273,6 +273,7 @@ export class IpcBackend implements Backend {
   stopSpv = () => cmd.stopSpv();
   startSpv = () => cmd.startSpv();
   resetChainData = () => cmd.resetChainData();
+  historyGap = () => cmd.historyGap();
   setBirthHeight = cmd.setBirthHeight;
   dropUnconfirmed = cmd.dropUnconfirmed;
   registrations = cmd.registrations;
@@ -388,6 +389,7 @@ export class IpcBackend implements Backend {
   mnSharedApprove = cmd.mnSharedApprove;
   mnSharedDiscard = cmd.mnSharedDiscard;
   mnSharedAbandon = cmd.mnSharedAbandon;
+  mnSharedResendAbandon = cmd.mnSharedResendAbandon;
   mnSharedAbandonUnreadable = cmd.mnSharedAbandonUnreadable;
   mnSharedSign = cmd.mnSharedSign;
   mnSharedSend = cmd.mnSharedSend;

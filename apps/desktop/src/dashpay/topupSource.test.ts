@@ -14,7 +14,7 @@ import { canPay, FROM_PLATFORM_COPY, fromPlatformErrorText, liveOutcome, maxMask
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
-const addresses = (movable: string, duffs: number): PlatformAddressBalance => ({ credits: movable, movableCredits: movable, duffs, addresses: [], syncedAt: null, syncing: false });
+const addresses = (movable: string, duffs: number): PlatformAddressBalance => ({ credits: movable, movableCredits: movable, duffs, addresses: [], syncedAt: null, syncing: false, sendsActive: true });
 
 const inputs = (patch: Partial<SourceInputs> = {}): SourceInputs => ({
   coreDuffs: 150_000_000,
@@ -52,9 +52,17 @@ describe("Pay with (C3-8)", () => {
       ["platform", SOURCE_COPY.platform, "0.4 tDASH"],
       ["shielded", SOURCE_COPY.shielded, "0.02 tDASH"],
     ]);
-    expect(reasons(inputs())).toEqual({ core: null, platform: null, shielded: SOURCE_COPY.notOffered });
+    expect(reasons(inputs())).toEqual({ core: null, platform: null, shielded: SOURCE_COPY.shieldedNotOffered });
     expect(canPay(rows, "platform")).toBe(true);
     expect(canPay(rows, "shielded")).toBe(false);
+  });
+
+  it("Shielded says paying from it isn't available here yet, on every network, while the other rows keep their reasons", () => {
+    for (const i of [inputs(), inputs({ mainnet: true }), inputs({ platform: null })]) {
+      expect(reasons(i).shielded).toBe("Paying from Shielded isn't available here yet.");
+    }
+    expect(reasons(inputs({ platform: null })).platform).toBe("Not available on this network yet.");
+    expect(SOURCE_COPY.notOffered).toBe("Not available on this network yet.");
   });
 
   it("discreet mode shows no balances", () => {
@@ -64,6 +72,8 @@ describe("Pay with (C3-8)", () => {
   it("Platform is disabled with its reason: no address funds here, mainnet, nothing a top-up can take, or a hold", () => {
     expect(reasons(inputs({ platform: null })).platform).toBe(SOURCE_COPY.notOffered);
     expect(reasons(inputs({ mainnet: true })).platform).toBe(SOURCE_COPY.notOffered);
+    expect(reasons(inputs({ platform: { ...addresses("40000000000", 40_000_000), sendsActive: false } })).platform).toBe(SOURCE_COPY.notOffered);
+    expect(canPay(topUpSources(inputs({ platform: { ...addresses("40000000000", 40_000_000), sendsActive: false } })), "platform")).toBe(false);
     expect(reasons(inputs({ platform: undefined })).platform).toBe(SOURCE_COPY.loading);
     expect(reasons(inputs({ platform: addresses("0", 0) })).platform).toBe(SOURCE_COPY.nothing);
     expect(reasons(inputs({ hold: { state: "pending", topUp: true } })).platform).toBe(FROM_PLATFORM_COPY.pending.text);

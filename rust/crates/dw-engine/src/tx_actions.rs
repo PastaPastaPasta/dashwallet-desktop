@@ -29,8 +29,8 @@ use platform_wallet::changeset::{
 
 use crate::csv_export::{TX_TYPE_COUNT, write_csv};
 use crate::history::{
-    ChainView, HistoryFilter, HistorySort, Labels, TxEntry, TxType, amounts, chainlock_beaten,
-    depth_of, filtered, records_of, rival_heights, status_of,
+    ChainView, HistoryFilter, HistorySort, Labels, TxEntry, TxType, WalletHistory, amounts,
+    chainlock_beaten, depth_of, filtered, records_of, rival_heights, status_of,
 };
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -688,6 +688,32 @@ fn add_known(
     }
 }
 
+/// Adds the transactions with a verified InstantSend lock stored and no
+/// record, linked to their parents by the inputs their lock names (#611):
+/// a locked child whose record is gone still proves its parents.
+fn add_locked_without_record(
+    known: &mut HashMap<Txid, Known>,
+    lock_parents: &HashMap<Txid, Vec<Txid>>,
+) {
+    for (t, parents) in lock_parents {
+        known
+            .entry(*t)
+            .or_insert_with(|| Known {
+                parents: parents.clone(),
+                ..Known::default()
+            })
+            .settled = true;
+    }
+}
+
+/// Adds one loaded wallet to `known`: its history and records, then its
+/// stored locks without a record. Neither clears what another wallet's
+/// entry for the same transaction set.
+fn add_wallet(known: &mut HashMap<Txid, Known>, h: &WalletHistory, core: &ManagedWalletInfo) {
+    add_known(known, &h.txs, core);
+    add_locked_without_record(known, &h.lock_parents);
+}
+
 /// The transactions something settled descends from in `known`: first
 /// under one InstantSend-locked, in a block or finalized, then under one in
 /// a block or finalized.
@@ -760,8 +786,11 @@ impl NetworkSession {
     ) -> Settled {
         let (mut known, mut incomplete) = (HashMap::new(), None);
         for (id, core) in infos {
-            (self.hub.history).read(&WalletId(*id), |txs| add_known(&mut known, txs, core));
-            if (self.hub.history).read_wallet(&WalletId(*id), |h| h.load_incomplete) {
+            let unread = (self.hub.history).read_wallet(&WalletId(*id), |h| {
+                add_wallet(&mut known, h, core);
+                h.load_incomplete
+            });
+            if unread {
                 incomplete.get_or_insert(WalletId(*id));
             }
         }
@@ -927,7 +956,74 @@ impl Facts {
     }
 }
 
+/// Why Activity's Abandon or Resend of a transaction refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivityRefusal {
+    SpvNotRunning,
+    NoPeers,
+    Tx(TxActionRefusal),
+}
+
+impl From<ActivityRefusal> for EngineError {
+    fn from(r: ActivityRefusal) -> Self {
+        match r {
+            ActivityRefusal::SpvNotRunning => EngineError::SpvNotRunning,
+            ActivityRefusal::NoPeers => EngineError::NoPeers,
+            ActivityRefusal::Tx(r) => EngineError::TxActionRefused(r),
+        }
+    }
+}
+
+/// [`NetworkSession::abandon_transaction`]'s refusal, in its order: no SPV
+/// client first, then dash-qt's enablement.
+fn activity_abandon_refusal(spv_running: bool, f: &Facts) -> Option<ActivityRefusal> {
+    if !spv_running {
+        return Some(ActivityRefusal::SpvNotRunning);
+    }
+    f.abandon_refusal().map(ActivityRefusal::Tx)
+}
+
+/// [`NetworkSession::resend_transaction`]'s refusal, in its order: dash-qt's
+/// enablement, then no SPV client, then no connected peer.
+fn activity_resend_refusal(f: &Facts, spv_running: bool, peers: u32) -> Option<ActivityRefusal> {
+    if let Some(r) = f.resend_refusal() {
+        return Some(ActivityRefusal::Tx(r));
+    }
+    if !spv_running {
+        return Some(ActivityRefusal::SpvNotRunning);
+    }
+    (peers == 0).then_some(ActivityRefusal::NoPeers)
+}
+
+/// What Activity's Abandon and Resend would say of one transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActivityExits {
+    pub abandon: Option<ActivityRefusal>,
+    pub resend: Option<ActivityRefusal>,
+}
+
 impl NetworkSession {
+    /// Activity's verdicts on `txid` of `wallet` with the SPV client
+    /// `spv_running` and `peers` connected, as the detail offers them:
+    /// `None` when the history doesn't hold it.
+    pub(crate) async fn activity_exits(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+        spv_running: bool,
+        peers: u32,
+    ) -> Result<Option<ActivityExits>, EngineError> {
+        let manager = self.manager()?;
+        match self.tx_facts(&manager, wallet, txid, true).await {
+            Ok((_, f)) => Ok(Some(ActivityExits {
+                abandon: activity_abandon_refusal(spv_running, &f),
+                resend: activity_resend_refusal(&f, spv_running, peers),
+            })),
+            Err(EngineError::TxNotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Facts of one transaction of `wallet`, `TxNotFound` when unknown.
     /// With `offer`, the ChainLock exception counts only when the abandon's
     /// plan would not refuse it (what the detail offers); without, the
@@ -980,14 +1076,20 @@ impl NetworkSession {
         }
         // Read after the history: an Abandon writes its mark under the
         // manager's lock the view waits on, and flags the entry only once
-        // its sweep is stored. A mark that cannot be read counts.
+        // its sweep is stored.
+        f.abandon_marked = self.abandon_marked(wallet, txid).await;
+        Ok((entry, f))
+    }
+
+    /// Whether an Abandon of `txid` committed its mark, which it writes
+    /// before its sweep: a mark that cannot be read counts.
+    pub(crate) async fn abandon_marked(&self, wallet: WalletId, txid: Txid) -> bool {
         let (scope, key) = (wallet.to_string(), format!("{ABANDONED_PREFIX}{txid}"));
-        f.abandon_marked = (self.appdb_op(move |db| {
+        (self.appdb_op(move |db| {
             Ok((db.settings_with_prefix_lossy(&scope, &key)?.into_iter()).any(|(k, _)| k == key))
         }))
         .await
-        .unwrap_or(true);
-        Ok((entry, f))
+        .unwrap_or(true)
     }
 
     /// dash-qt detail fields and action enablement for one transaction.
@@ -1066,12 +1168,13 @@ impl NetworkSession {
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let manager = this.manager()?;
             this.require_wallet(&wallet)?;
-            if !manager.spv().is_started() {
+            let spv_running = manager.spv().is_started();
+            if !spv_running {
                 return Err(EngineError::SpvNotRunning);
             }
             let (_, f) = this.tx_facts(&manager, wallet, txid, false).await?;
-            if let Some(r) = f.abandon_refusal() {
-                return Err(EngineError::TxActionRefused(r));
+            if let Some(r) = activity_abandon_refusal(spv_running, &f) {
+                return Err(r.into());
             }
             // Its rewind record stays stored until its rescan starts, as a
             // Remove Unconfirmed batch's does: a sync commit meanwhile
@@ -1739,14 +1842,9 @@ impl NetworkSession {
             let _op = this.enter().await?;
             let manager = this.manager()?;
             let (entry, f) = this.tx_facts(&manager, wallet, txid, false).await?;
-            if let Some(r) = f.resend_refusal() {
-                return Err(EngineError::TxActionRefused(r));
-            }
-            if !manager.spv().is_started() {
-                return Err(EngineError::SpvNotRunning);
-            }
-            if this.hub.tracker().snapshot().connected_peers == 0 {
-                return Err(EngineError::NoPeers);
+            let peers = this.hub.tracker().snapshot().connected_peers;
+            if let Some(r) = activity_resend_refusal(&f, manager.spv().is_started(), peers) {
+                return Err(r.into());
             }
             let handle = this.wallet(&wallet).await?;
             // platform-wallet's only broadcast entry point waits for the
@@ -2300,6 +2398,57 @@ mod tests {
             facts(&entry, &view, &ChainProof::default()).abandon_refusal(),
             Some(TxActionRefusal::InstantLocked)
         );
+    }
+
+    /// Two loaded wallets: A stored only the lock of C, which spends P; B
+    /// holds C's record unlocked. In either order, B's record doesn't clear
+    /// the settled C that A's lock added, so P stays under it.
+    #[test]
+    fn a_lock_only_child_stays_settled_under_another_wallets_unlocked_record() {
+        use dashcore::hashes::Hash;
+        let p = Txid::from_byte_array([1; 32]);
+        let c = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: OutPoint::new(p, 0),
+                ..Default::default()
+            }],
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        let wallet = key_wallet::Wallet::new_random(
+            dashcore::Network::Regtest,
+            key_wallet::wallet::initialization::WalletAccountCreationOptions::Default,
+        )
+        .unwrap();
+        let core = ManagedWalletInfo::from_wallet(&wallet, 0);
+        let mut a = WalletHistory::default();
+        a.lock_parents.insert(c.txid(), vec![p]);
+        let mut b = WalletHistory::default();
+        b.txs.insert(
+            c.txid(),
+            TxEntry {
+                tx: c.clone(),
+                context: TransactionContext::Mempool,
+                instant_locked: false,
+                first_seen: None,
+                own_inputs: Default::default(),
+                abandoned: false,
+            },
+        );
+        let (unlocked, _) = settled_under(&b.txs, &core);
+        assert!(!unlocked.contains(&p), "B alone settles nothing");
+        for order in [[&a, &b], [&b, &a]] {
+            let mut known = HashMap::new();
+            for h in order {
+                add_wallet(&mut known, h, &core);
+            }
+            assert!(known[&c.txid()].settled);
+            let (under, mined) = walk_known(&known);
+            assert!(under.contains(&p));
+            assert!(!mined.contains(&p));
+        }
     }
 
     #[test]

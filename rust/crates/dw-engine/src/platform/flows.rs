@@ -252,6 +252,8 @@ impl NetworkSession {
         self.require_wallet(&wallet_id).map_err(engine)?;
         match (flow, source) {
             (FlowKind::AcceptAndPay, None | Some(PaymentSource::Core)) => {}
+            (FlowKind::ContactPayFromBalance, Some(PaymentSource::Shielded))
+                if super::shielded_payout::enabled_on(&self.network) => {}
             (FlowKind::ContactPayFromBalance, Some(PaymentSource::Platform))
                 if super::contact_payout::refuse_on_mainnet(self).is_ok() => {}
             (FlowKind::AcceptAndPay | FlowKind::ContactPayFromBalance, Some(source)) => {
@@ -264,7 +266,12 @@ impl NetworkSession {
             }
             _ => {}
         }
-        let lease = self.begin_lease(wallet_id, flow, &grants).await?;
+        let lease = match (flow, source) {
+            (FlowKind::ContactPayFromBalance, Some(PaymentSource::Shielded)) => {
+                (self.begin_payout_lease(wallet_id, PaymentSource::Shielded, &grants)).await?
+            }
+            _ => self.begin_lease(wallet_id, flow, &grants).await?,
+        };
         // A removal or Close Wallet holds its barrier until the wallet is
         // gone (§8.6), so a lease that waited it out finds no wallet here.
         // Dropping the owning handle ends it.

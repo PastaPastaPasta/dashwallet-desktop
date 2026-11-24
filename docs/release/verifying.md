@@ -2,10 +2,13 @@
 
 Every file the release workflow publishes carries a GitHub build attestation: a signed statement, made by
 GitHub Actions for this repository, that the file was built by `.github/workflows/release.yml` from a given
-commit. This replaces PGP signatures; there is no signing key until 1.0.
+commit. Signed releases (starting with 1.0, plus any signed release candidate) also carry a detached PGP
+signature (`SHA256SUMS.asc`), Apple Developer ID signing and notarization on macOS, and Windows Authenticode
+signing. Pre-1.0 release candidates, `main` builds, and `continuous` ship keyless: attestations only, with
+ad-hoc macOS and unsigned Windows installers.
 
-It proves **where and from what the file was built**, not that the code is safe. The app is an early release with
-no security review: use small amounts only.
+An attestation proves **where and from what the file was built**, not that the code is safe. For early
+releases without a completed security review, use small amounts only.
 
 ## Check a file
 
@@ -42,7 +45,7 @@ per-build one.
 To see exactly what was attested: `gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop --format json`.
 To pin a file to a commit, add `--source-digest <full commit sha>`.
 
-## Check SHA256SUMS
+## Check SHA256SUMS and its PGP signature
 
 Each release has `SHA256SUMS` (file names only). It is itself attested, so verify it first, then check the files
 against it:
@@ -55,6 +58,71 @@ grep <file name> SHA256SUMS | shasum -a 256 -c  # macOS, one file
 
 `--ignore-missing` skips the downloads you did not fetch. The `continuous` release has its own `SHA256SUMS`, which
 lists its `DashWallet-continuous-…` names.
+
+Signed releases (1.0 and later, plus signed candidates) also publish a detached armored PGP signature,
+`SHA256SUMS.asc`, which is attested alongside `SHA256SUMS`. Import the release public key named in the release
+notes, confirm its full 40-character primary key fingerprint matches the release notes, and verify
+`SHA256SUMS.asc` before checking file hashes:
+
+```sh
+gpg --import <release-public-key.asc>
+gpg --fingerprint <PRIMARY_FINGERPRINT>         # compare every character against the release notes
+gpg --verify SHA256SUMS.asc SHA256SUMS
+```
+
+Look for `gpg: Good signature from …` and confirm that `Primary key fingerprint:` matches the fingerprint
+published in the release notes. (Releases are signed by an online signing subkey while the primary key stays
+offline, so `gpg` prints both the primary key fingerprint and the signing subkey fingerprint.)
+
+## Check the macOS signature and notarization
+
+On signed releases (1.0 and later, plus signed candidates), both the `.dmg` and `Dash Wallet.app` inside it are
+signed with a Developer ID Application certificate and notarized by Apple. After copying `Dash Wallet.app` to
+`/Applications`:
+
+```sh
+codesign --verify --deep --strict --verbose=2 "/Applications/Dash Wallet.app"
+spctl -a -vv --type execute "/Applications/Dash Wallet.app"
+xcrun stapler validate "/Applications/Dash Wallet.app"
+```
+
+You can also check the disk image before opening it:
+
+```sh
+codesign --verify --verbose=2 dash-wallet-<version>-macos-universal.dmg
+xcrun stapler validate dash-wallet-<version>-macos-universal.dmg
+```
+
+`codesign` should report `valid on disk` and `satisfies its Designated Requirement`, `spctl` should report
+`accepted` with `source=Notarized Developer ID`, and `stapler validate` should report `The validate action worked!`.
+
+**Keyless candidates and `main` builds:** pre-1.0 release candidates (`-rc.N` without signing), per-build `main`
+releases, and `continuous` are ad-hoc signed (`Signature=adhoc`) and not notarized. On first launch, macOS
+Gatekeeper blocks the app until you allow it explicitly (right-click the app ▸ **Open**, or allow it under
+**System Settings ▸ Privacy & Security ▸ Open Anyway**; see the release notes' Install section).
+
+## Check the Windows signature
+
+On signed releases (1.0 and later, plus signed candidates), both the NSIS installer
+(`dash-wallet-<version>-windows-x64-setup.exe`) and the installed `dash-wallet.exe` carry an Authenticode
+signature issued via Azure Artifact Signing with an RFC 3161 timestamp.
+
+- **In File Explorer:** right-click the `.exe` ▸ **Properties** ▸ **Digital Signatures** tab ▸ select the
+  signature ▸ **Details**. Confirm it says **This digital signature is OK** and shows a valid timestamp.
+- **In PowerShell:**
+
+```powershell
+Get-AuthenticodeSignature .\dash-wallet-<version>-windows-x64-setup.exe |
+  Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+```
+
+`Status` must be `Valid`. Run the same command against the installed `dash-wallet.exe` to verify the application
+binary inside the installer.
+
+**Keyless candidates and `main` builds:** pre-1.0 release candidates (`-rc.N` without signing), per-build `main`
+releases, and `continuous` are unsigned (`Status: NotSigned`). On first launch, Windows SmartScreen shows
+"Windows protected your PC"; click **More info** ▸ **Run anyway** to install (see the release notes' Install
+section).
 
 ## Check an SBOM
 
@@ -89,8 +157,10 @@ complete; it lists what Cargo and the pnpm lockfile resolve, not code vendored b
   After a burst of pushes it can sit one commit behind until the next push; its notes say which commit it holds.
   While it is being replaced (tens of seconds) a file can be briefly missing, or newer than its `SHA256SUMS`:
   if a download fails or the checksum does not match, fetch the file and `SHA256SUMS` again a minute later.
-- **Tagged releases** (`v0.1.0`) are made by the same workflow from the tag.
-- All of them are marked pre-release. macOS builds are ad-hoc signed and not notarized, Windows builds are unsigned
-  (see the README for the first-launch warnings).
+- **Tagged releases** (`vX.Y.Z` and `vX.Y.Z-rc.N`) are made by the same workflow from the tag. Final 1.0+
+  releases are full releases and ship fully signed (PGP `SHA256SUMS.asc`, macOS Developer ID + notarization,
+  Windows Authenticode, plus GitHub build attestations). Pre-1.0 release candidates (`-rc.N`), `main` builds, and
+  `continuous` are prereleases and ship keyless: ad-hoc signed on macOS and unsigned on Windows (see the release
+  notes and README for the first-launch warnings).
 
 A branch or pull-request build is only a CI artifact on its Actions run and is never attested or published.

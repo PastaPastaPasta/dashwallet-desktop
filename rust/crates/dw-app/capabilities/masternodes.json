@@ -29,6 +29,7 @@
     "allow-mn-shared-sessions",
     "allow-mn-shared-unreadable",
     "allow-mn-shared-abandon",
+    "allow-mn-shared-resend-abandon",
     "allow-mn-shared-abandon-unreadable",
     "allow-mn-shared-session",
     "allow-mn-shared-start",

@@ -11,6 +11,7 @@ import type { CostTable } from "../api/generated/CostTable";
 import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { TopUpFromPlatformOutcome } from "../api/generated/TopUpFromPlatformOutcome";
+import type { TopUpFromPlatformQuote } from "../api/generated/TopUpFromPlatformQuote";
 import type { TopUpOutcome } from "../api/generated/TopUpOutcome";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { CREDITS_PER_DUFF } from "../api/pending";
@@ -145,7 +146,7 @@ export function topUpErrorText(e: unknown, amount: (duffs: number) => string, di
 
 /** T8: Back is offered when another amount may pass (D17). */
 export const amountCanChange = (e: unknown) =>
-  hasCode(e, "credits.funding_insufficient") || hasCode(e, "credits.below_minimum") || hasCode(e, "platform.grant_exceeded");
+  hasCode(e, "credits.funding_insufficient") || hasCode(e, "credits.below_minimum") || hasCode(e, "platform.grant_exceeded") || hasCode(e, "credits.quote_changed");
 
 /** T8: the refusal routes to Tools ▸ Repair (D16). */
 export const routesToRepair = (e: unknown) => hasCode(e, "platform.broadcast_unknown");
@@ -311,8 +312,9 @@ export class TopUpFlow extends Model {
   }
 
   /** Confirm & pay from Platform: the quote's grant, then `top_up_from_platform` of the quoted
-   * credits, Max included, so the engine credits what Confirm showed or refuses. */
-  async payFromPlatform({ credits, grant }: { credits: string; grant: GrantRequest }): Promise<void> {
+   * credits, Max included, with the quote's input 0 (the fee source and its claim), so the engine
+   * credits what Confirm showed and takes the fee as it showed, or refuses. */
+  async payFromPlatform({ credits, grant, inputs }: Pick<TopUpFromPlatformQuote, "credits" | "grant" | "inputs">): Promise<void> {
     const { identity } = this;
     if (this.running || this.rowRunning !== null || identity === null || this.source !== "platform") return;
     let ran = false;
@@ -325,7 +327,7 @@ export class TopUpFlow extends Model {
         ran = true;
         this.step = "running";
         this.changed();
-        return this.api.creditsTopUpFromPlatform(this.walletId, identity, { kind: "credits", credits }, g.id);
+        return this.api.creditsTopUpFromPlatform(this.walletId, identity, { kind: "credits", credits }, inputs[0] ?? null, g.id);
       });
       if (got) {
         this.platformOutcome = got.value;

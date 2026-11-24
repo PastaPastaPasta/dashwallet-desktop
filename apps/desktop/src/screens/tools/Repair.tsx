@@ -42,7 +42,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
   }, [model, model.rescanning]);
 
   const questions: Record<Confirmation, { title: string; text: string; action: string }> = {
-    resetChainData: { title: RepairText.resetChainData, text: RepairText.resetChainDataQuestion, action: t("tools.repair.resetAction") },
+    resetChainData: { title: RepairText.resetChainData, text: RepairText.resetChainDataQuestion, action: RepairText.resetAction },
     dropUnconfirmed: { title: RepairText.dropUnconfirmed, text: RepairText.dropUnconfirmedQuestion, action: t("tools.repair.dropAction") },
     resolveStuck: { title: RepairText.resolveStuck, text: RepairText.resolveStuckQuestion, action: t("tools.repair.resolveAction") },
   };
@@ -124,7 +124,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
             {t("tools.repair.dropUnconfirmedButton")}
           </DashButton>
           <DashButton variant="plainRed" size="small" data-testid="repair-reset-chain" disabled={model.busy} onClick={() => model.ask("resetChainData")}>
-            {t("tools.repair.resetChainDataButton")}
+            {RepairText.resetChainDataButton}
           </DashButton>
         </div>
       </ToolCard>

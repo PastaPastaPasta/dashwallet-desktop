@@ -8,7 +8,7 @@
 
 use dw_engine::platform::{DashPayStartup, PlatformCadence};
 use dw_engine::{
-    ChainLockInfo, EngineWarning, HistoryGap, MasternodeCount, NodeInfo, PeerInfo, PlatformStatus,
+    ChainLockInfo, CoinJoinFailure, EngineError, EngineWarning, HistoryGap, MasternodeCount, NodeInfo, PeerInfo, PlatformStatus,
     RescanFrom, RescanProgress, SpvState, WarningCode,
 };
 use serde::{Deserialize, Serialize};
@@ -488,10 +488,17 @@ commands! {
 
     /// "Rebuild index": deletes the SPV chain data and keeps wallets, vault
     /// and app data. SPV must be stopped; the next `startSpv` syncs headers
-    /// again and rescans each wallet from its birth height.
+    /// again and rescans each wallet from its birth height. Refused with
+    /// `app.network_busy` while mixing, as a network switch is, and with
+    /// `coinjoin.inputs_held` while a signed round's inputs are held.
     #[facade("NetworkSession::reset_chain_data")]
     fn reset_chain_data(state) -> () {
-        Ok(state.session().await?.reset_chain_data().await?)
+        match state.session().await?.reset_chain_data().await {
+            Err(EngineError::CoinJoin(CoinJoinFailure::MixingActive)) => {
+                Err(crate::api::network::mixing_busy_error())
+            }
+            r => Ok(r?),
+        }
     }
 
     /// Edits a wallet's birth height. Lower than its filter checkpoint: a

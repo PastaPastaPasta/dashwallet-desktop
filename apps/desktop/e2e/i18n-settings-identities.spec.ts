@@ -254,6 +254,19 @@ test.describe("usernames and amounts keep their order under ar-XB", () => {
     await inOrder(page.getByTestId("toolbar-chip"), "the registering chip");
   });
 
+  test("the build version reads left to right in About, Settings and Information", async ({ page }) => {
+    const VERSION = /(0)\.1\.0-(d)ev/;
+    await open(page, "funded");
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+    await inOrder(page.getByTestId("about-version"), "the About sheet", VERSION);
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    await page.getByTestId("settings-tabs-about").click();
+    await inOrder(page.getByTestId("settings-about-version"), "Settings ▸ About", VERSION);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "information" }));
+    await inOrder(page.getByTestId("information-general"), "Tools ▸ Information", VERSION);
+  });
+
   test("the toolbar chip's accessible name isolates the whole username", async ({ page }) => {
     await open(page, "dashpay-registered");
     await expect(page.getByTestId("toolbar-chip")).toHaveAttribute("aria-label", /⁨@alice⁩/);

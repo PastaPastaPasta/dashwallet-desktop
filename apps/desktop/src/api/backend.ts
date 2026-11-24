@@ -25,6 +25,7 @@ import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
 import type { NetworkSwitch } from "./generated/NetworkSwitch";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance";
+import type { PlatformAddressRow } from "./generated/PlatformAddressRow";
 import type { LockFinish } from "./generated/LockFinish";
 import type { LockKind } from "./generated/LockKind";
 import type { ShieldedActivity } from "./generated/ShieldedActivity";
@@ -164,6 +165,7 @@ import type { UpdateRegistrarPreview } from "./generated/UpdateRegistrarPreview"
 import type { UpdateRegistrarRequest } from "./generated/UpdateRegistrarRequest";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
+import type { WalletHistoryGap } from "./generated/WalletHistoryGap";
 import type { VerifyMessageResult } from "./generated/VerifyMessageResult";
 import type { AccountXpub } from "./generated/AccountXpub";
 import type { BackupFileHeader } from "./generated/BackupFileHeader";
@@ -305,8 +307,8 @@ export interface Backend {
   /** What "Move to Dash wallet" takes and pays out (`platform_move_to_core_quote`). */
   platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount): Promise<MoveToCoreQuote>;
   /** Moves the Platform addresses' credits to `to`, one of the wallet's own receive addresses (the
-   * quote's), under `grant`. */
-  platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome>;
+   * quote's), under `grant`; `exitOf` is the quote's, the held top-up this move is the exit of. */
+  platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, exitOf: string | null, grant: string): Promise<MoveToCoreOutcome>;
   /** Reads the Platform addresses from the network now (`platform_addresses_sync`). */
   platformAddressesSync(walletId: string): Promise<PlatformAddressBalance>;
   /** The payment account's lowest unused Platform address (`platform_receive_address`), bech32m. */
@@ -558,6 +560,8 @@ export interface Backend {
   startSpv(): Promise<null>;
   /** Deletes the headers and filters; SPV must be stopped (`spv_running`). */
   resetChainData(): Promise<null>;
+  /** Open wallets whose history starts before the stored block data; `null`: none, or no data yet. */
+  historyGap(): Promise<WalletHistoryGap | null>;
   setBirthHeight(walletId: string, height: number): Promise<null>;
   /** Abandons the unconfirmed transactions the network does not have (`null`: every wallet) and
    * schedules a rescan; returns how many. */
@@ -632,7 +636,7 @@ export interface Backend {
   /** C-routes D-C3: what a top-up of `identity` from the Platform addresses gives, its fee and grant; `all` keeps the fee band on the first input. */
   creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote>;
   /** Tops up `identity` from the Platform addresses under the quote's `platformOp` grant. */
-  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome>;
+  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, feeInput: PlatformAddressRow | null, grant: string): Promise<TopUpFromPlatformOutcome>;
   /** The identity's withdrawals on Platform, newest first. */
   creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
@@ -739,9 +743,12 @@ export interface Backend {
   mnSharedApprove(walletId: string, session: string, consentHash: string, grant: string): Promise<SharedOutcome>;
   /** Only while `discardable`; releases the reserved coins. */
   mnSharedDiscard(walletId: string, session: string): Promise<null>;
-  /** Only while `abandonable`: spends one reserved coin back to the wallet under a `masternodeOp`
-   * grant covering `SHARED_ABANDON_FEE`. */
+  /** Only while `abandonCharge` is set: spends every reserved coin back to the wallet under a
+   * `masternodeOp` grant of that charge. */
   mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession>;
+  /** Only while `resendAbandonCharge` is set: the latest spend back's saved bytes again, under a
+   * `masternodeOp` grant of that charge. */
+  mnSharedResendAbandon(walletId: string, session: string, grant: string): Promise<SharedSession>;
   /** The same for a session this wallet can no longer read. */
   mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession>;
   /** Refused on mainnet (`app.shared_send_off`) before the engine. Grant: `masternodeOp{session.debit}`. */

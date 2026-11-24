@@ -4,7 +4,7 @@
 // fixed fake JSON blobs (no keys, documentation IPs, `y…` addresses); an import looks its text up in
 // `SH_TEXT`, so a spec pastes what another party "sent". A change `emit`s `masternodes`.
 
-import { SHARED_ABANDON_FEE, type AppError } from "../api/generated/commands";
+import type { AppError } from "../api/generated/commands";
 import type { SharedCapability } from "../api/generated/SharedCapability";
 import type { SharedImport } from "../api/generated/SharedImport";
 import type { SharedMessage } from "../api/generated/SharedMessage";
@@ -56,6 +56,8 @@ export interface SharedWorld {
   abandoned: string[];
   /** The `last_error` the next registration hand-off leaves: `null` when it went out. */
   handoff: string | null;
+  /** How the next abandon spend's hand-off ends: `null` when it went out and the wallet recorded it. */
+  abandonHandoff: "uncertain" | "refused" | null;
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -99,8 +101,15 @@ const messageCode = (tag: string) => {
   return `${s.slice(0, 4)}-${s.slice(4)}`;
 };
 
+/** The relay minimum of an abandon spend of `inputs` P2PKH coins to one P2PKH output, as the
+ * engine's coin test charges it. */
+export const abandonFee = (inputs: number): number => 45 + 148 * inputs;
+
+/** The recovery read's Abandon charge: every reserved coin spent, while Abandon is offered. */
+const withCharge = <T extends { abandonable: boolean; reserved: string[]; abandonCharge: number | null }>(s: T): T => ({ ...s, abandonCharge: s.abandonable ? abandonFee(s.reserved.length) : null });
+
 function session(id: string, role: SharedSession["role"], patch: Partial<SharedSession>): SharedSession {
-  return {
+  return withCharge({
     id,
     code: code(id),
     messageCode: messageCode(`${id.slice(6, 10)}${patch.revision ?? 1}`),
@@ -128,8 +137,12 @@ function session(id: string, role: SharedSession["role"], patch: Partial<SharedS
     createdAt: NOW - 2 * DAY,
     updatedAt: NOW - DAY,
     lastError: null,
+    overdue: false,
+    abandonCharge: null,
+    abandonSpend: null,
+    resendAbandonCharge: null,
     ...patch,
-  };
+  });
 }
 
 /** Alice (this wallet) coordinates Alice 400 · Bob 300 · Carol 300. `joined` rows are in. */
@@ -257,7 +270,7 @@ const REFUSALS: Partial<Record<string, [string, number | null]>> = {
 };
 
 export function newSharedWorld(): SharedWorld {
-  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [], unreadable: [], abandoned: [], handoff: null };
+  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [], unreadable: [], abandoned: [], handoff: null, abandonHandoff: null };
 }
 
 function find(world: World, id: string): SharedSession {
@@ -287,6 +300,11 @@ function requireSending(world: World) {
 function requireSends(world: World) {
   const n = world.launch.network;
   if (n.kind === "mainnet") throw fail("app.shared_send_off", "this version sends shared-masternode transactions on test networks only", { kind: "sharedSendNetwork", network: n.dirName });
+}
+
+/** The engine's mainnet refusal for every call that locks a coin or takes a grant (`require_protx_sending`). */
+function requireProtxSending(world: World) {
+  if (world.launch.network.kind === "mainnet") throw fail("masternodes.unsupported", "protx sending is off on mainnet", { kind: "unsupported", feature: "protx_sending", field: "mainnet" });
 }
 
 function requireV24(world: World) {
@@ -433,6 +451,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_start: ({ walletId, request }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const n = request.shares.length;
       const labels = request.shares.map((s) => s.label.trim());
@@ -458,6 +477,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_set_fee: ({ walletId, session: id, fee }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       const s = find(world, id);
       if (s.role !== "coordinator" || s.stage.kind !== "draft") throw stageRefusal(s.stage.kind);
       if (s.rows.slice(1).some((r) => r.contributed)) throw stageRefusal("replied");
@@ -471,6 +491,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_join: ({ walletId, session: id, request }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const s = find(world, id);
       if (s.stage.kind !== "invited") throw stageRefusal(s.stage.kind);
@@ -493,6 +514,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       wallet(world, walletId);
       const s = find(world, id);
       if (s.stage.kind === "invited") throw stageRefusal("invited");
+      if (s.abandonSpend) throw stageRefusal("abandoning");
       const m = message(s, messageName(s));
       world.shared.saved.push(m.text);
       return m;
@@ -500,6 +522,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_lock: ({ walletId, session: id, revision, grant: grantId }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const s = find(world, id);
       if (s.role !== "coordinator" || s.stage.kind !== "draft") throw stageRefusal(s.stage.kind);
@@ -532,6 +555,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_approve: ({ walletId, session: id, consentHash, grant: grantId }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const s = find(world, id);
       if (s.role !== "participant" || s.stage.kind !== "signing") throw stageRefusal(s.stage.kind);
@@ -624,10 +648,36 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
         if (s.role !== "coordinator") throw stageRefusal("participant");
         if (st === "confirmed" || st === "conflicted" || st === "dead") throw stageRefusal(st);
       } else if (s.discardable || st === "confirmed" || st === "conflicted") throw stageRefusal(st);
-      if (!s.abandonable) throw stageRefusal(outStage(s.role));
-      capped(world, walletId, grantId, SHARED_ABANDON_FEE);
-      s.abandonable = false;
+      if (!s.abandonable || s.abandonCharge === null) throw stageRefusal(s.abandonSpend ? "abandoning" : outStage(s.role));
+      const fee = s.abandonCharge;
+      capped(world, walletId, grantId, fee);
+      // The engine's recovery read after the spend's hand-off: the spend recorded (its coins spent),
+      // its outcome unknown (no new spend while it may be out), or definitely refused (Try again).
+      const outcome = world.shared.abandonHandoff;
+      world.shared.abandonHandoff = null;
+      const state = outcome ?? "in_history";
+      s.abandonSpend = { txid: h(outcome === "refused" ? "a9" : "a8"), state, overdue: false, code: outcome === "refused" ? "send.broadcast_rejected" : outcome === "uncertain" ? "send.broadcast_unknown" : null };
+      s.abandonable = outcome !== null;
+      s.abandonCharge = outcome === "refused" ? fee : null;
+      s.resendAbandonCharge = state === "refused" ? null : fee;
+      if (s.next === "copy" || s.next === "send" || s.next === "sign" || s.next === "wait") s.next = "nothing";
       if (st === "sent") world.shared.abandoned.push(s.id);
+      const out = put(world, s);
+      changed(ctx);
+      return out;
+    },
+    /** The latest abandon spend's saved bytes again, while it may be out: recorded once it reaches the network. */
+    mn_shared_resend_abandon: ({ walletId, session: id, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      requireSending(world);
+      const s = find(world, id);
+      if (!s.abandonSpend) throw stageRefusal(outStage(s.role));
+      if (s.abandonSpend.state === "refused") throw stageRefusal("abandon_refused");
+      if (s.resendAbandonCharge === null) throw stageRefusal("abandoning");
+      capped(world, walletId, grantId, s.resendAbandonCharge);
+      s.abandonSpend = { ...s.abandonSpend, state: "in_history", code: null };
+      s.abandonable = false;
       const out = put(world, s);
       changed(ctx);
       return out;
@@ -643,8 +693,9 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       if (row.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
       if (!lost) throw fail("invalid_argument", "the session reads: abandon_shared_session");
       if (lost.discardable || !lost.abandonable) throw stageRefusal(outStage(lost.role));
-      capped(world, walletId, grantId, SHARED_ABANDON_FEE);
+      capped(world, walletId, grantId, lost.abandonCharge ?? 0);
       lost.abandonable = false;
+      lost.abandonCharge = null;
       lost.updatedAt = Math.max(lost.updatedAt + 1, NOW);
       changed(ctx);
       return copy(lost);
@@ -713,6 +764,12 @@ export function sharedScenarios(base: Base) {
     "sh-coordinator-send-mainnet": (t: ThemeName | null) => shBase(base, t, (s, w) => (onMainnet(w), (s.sessions = [readyToSend()]))),
     /** Sent, waiting for its confirmation: Send again. */
     "sh-coordinator-sent": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration())),
+    /** Out; the next Abandon's hand-off times out, so the spend back may be on the network. */
+    "sh-close-out-abandon-uncertain": (t: ThemeName | null) => shBase(base, t, (s) => ((s.sessions = [participantSession("funding_signed")]), (s.abandonHandoff = "uncertain"))),
+    /** Out; the network definitely refuses the next Abandon's spend back. */
+    "sh-close-out-abandon-refused": (t: ThemeName | null) => shBase(base, t, (s) => ((s.sessions = [participantSession("funding_signed")]), (s.abandonHandoff = "refused"))),
+    /** Sent three hours of tip time ago and still unconfirmed: the way out opens expanded (D49). */
+    "sh-coordinator-sent-overdue": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ overdue: true }))),
     /** Sent, the hand-off's outcome unknown. */
     "sh-coordinator-sent-unknown": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ lastError: "send.broadcast_unknown" }))),
     /** Sent, then abandoned: Send again is refused. */
@@ -744,14 +801,14 @@ export function sharedScenarios(base: Base) {
     /** Close before out (Keep / Discard) and out (no question). */
     "sh-close-before": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob"]))),
     "sh-close-out": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed"))),
-    /** Out, and its Abandon spend already sent: no coin left to spend, so no Abandon and no line naming it. */
+    /** Out, with no coin left for this wallet to spend: no Abandon and no line naming it. */
     "sh-signed-out-abandoned": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed", { abandonable: false }))),
     /** Sessions this wallet can't read: one it may discard, one that may be out (Abandon), and one
      * out whose locks the follower already released (not listed). */
     "sh-unreadable": (t: ThemeName | null) =>
       shBase(base, t, (s) => {
         s.sessions = [coordinatorSession(["Bob"])];
-        s.unreadable = [unreadable("7c", true, 2), unreadable("9e", false, 3), { ...unreadable("5a", false, 4), abandonable: false, reserved: [] }];
+        s.unreadable = [unreadable("7c", true, 2), unreadable("9e", false, 3), { ...unreadable("5a", false, 4), abandonable: false, abandonCharge: null, reserved: [] }];
       }),
     /** Both sessions, for the In progress list and the badge. */
     "sh-sessions": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob", "Carol"]), participantSession("signing"))),
@@ -796,5 +853,5 @@ function sentRegistration(patch: Partial<SharedSession> = {}): SharedSession {
 
 function unreadable(byte: string, discardable: boolean, ago: number): UnreadableSession {
   const id = h(byte);
-  return { id, code: id.slice(0, 6).toUpperCase(), kind: "registration", role: "participant", discardable, abandonable: !discardable, reserved: [`${h("d" + byte[1])}-0`], updatedAt: NOW - ago * 3_600 };
+  return withCharge({ id, code: id.slice(0, 6).toUpperCase(), kind: "registration", role: "participant", discardable, abandonable: !discardable, abandonCharge: null, reserved: [`${h("d" + byte[1])}-0`], updatedAt: NOW - ago * 3_600 });
 }

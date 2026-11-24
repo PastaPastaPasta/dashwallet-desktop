@@ -25,6 +25,10 @@ export const SOURCE_COPY = withTable(messageTable("dashpay.topUp.payWith", ["tit
   get notOffered() {
     return PAY_WITH_COPY.notOffered;
   },
+  /** The Shielded row's reason, on every network. */
+  get shieldedNotOffered() {
+    return t("dashpay.topUp.source.shieldedNotOffered");
+  },
   /** A move or payment from Platform holds the addresses (the Transfer sheet's copy). */
   get heldByOther() {
     return t("transfer.move.waiting.held");
@@ -50,7 +54,7 @@ export const FROM_PLATFORM_COPY = withTable(messageTable("dashpay.topUp.fromPlat
     },
   }),
   failed: from("failed", ["title", "text"]),
-  error: withTable(from("error", ["short"]), {
+  error: withTable(from("error", ["short", "quoteChanged"]), {
     below: (min: string) => t("dashpay.topUp.fromPlatform.error.below", { min }),
   }),
 });
@@ -83,8 +87,8 @@ export function liveOutcome(o: TopUpFromPlatformOutcome, activity: readonly Plat
 export interface SourceInputs {
   /** The Dash wallet's spendable balance. */
   coreDuffs: number | undefined;
-  /** The Platform addresses; `null` when this network has none (below protocol version 11, or
-   * the commands are absent); `"unread"` when they or Activity could not be read. */
+  /** The Platform addresses; `null` when this network has none (the commands are absent), and not
+   * offered below protocol version 11 (`sendsActive`); `"unread"` when they or Activity could not be read. */
   platform: PlatformAddressBalance | null | undefined | "unread";
   hold: PlatformHold;
   /** Mainnet: a top-up from Platform is off there until its funds ruling. */
@@ -113,7 +117,7 @@ export function topUpSources(i: SourceInputs): SourceRow[] {
       ? SOURCE_COPY.loading
       : p === "unread"
         ? SOURCE_COPY.unread
-        : p === null || i.mainnet
+        : p === null || i.mainnet || !p.sendsActive
         ? SOURCE_COPY.notOffered
         : i.hold !== null && !i.hold.topUp
           ? SOURCE_COPY.heldByOther
@@ -127,7 +131,7 @@ export function topUpSources(i: SourceInputs): SourceRow[] {
   return [
     { source: "core", label: SOURCE_COPY.core, balance: shown(i.coreDuffs), reason: null },
     { source: "platform", label: SOURCE_COPY.platform, balance: shown(typeof p === "object" ? p?.duffs : undefined), reason: platformReason },
-    { source: "shielded", label: SOURCE_COPY.shielded, balance: shown(i.shieldedDuffs), reason: SOURCE_COPY.notOffered },
+    { source: "shielded", label: SOURCE_COPY.shielded, balance: shown(i.shieldedDuffs), reason: SOURCE_COPY.shieldedNotOffered },
   ];
 }
 
@@ -158,6 +162,8 @@ export function fromPlatformErrorText(e: unknown, amount: (duffs: number) => str
       return e.data?.kind === "creditMinimum" ? FROM_PLATFORM_COPY.error.below(amount(creditsToDuffs(e.data.min))) : FROM_PLATFORM_COPY.error.short;
     case "platform.insufficient_credits":
       return FROM_PLATFORM_COPY.error.short;
+    case "credits.quote_changed":
+      return FROM_PLATFORM_COPY.error.quoteChanged;
     case "platform.feature_off":
       return SOURCE_COPY.notOffered;
     default:
