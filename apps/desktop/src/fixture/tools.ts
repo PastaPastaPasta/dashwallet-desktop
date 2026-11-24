@@ -37,6 +37,8 @@ export interface FilesWorld {
   open: OpenedFile | null;
   /** The folder a save dialog picks (the suggested name is kept); `null`: the user cancels. */
   saveDir: string | null;
+  /** The next dialog fails to open (`app.file_dialog`), once. */
+  dialogFails?: boolean;
   /** Every dialog shown, in order. */
   dialogs: { purpose: FilePurpose; save: boolean; suggestedName: string | null }[];
   /** Every file written, in order (data base64). */
@@ -311,7 +313,7 @@ function syncChanged({ world, emit }: Ctx) {
 }
 
 function startRescan(world: World, fromHeight: number) {
-  world.tools.rescan = { fromHeight, currentHeight: fromHeight, targetHeight: world.sync.tipHeight ?? TIP, startedAt: secs(FIXTURE_NOW) };
+  world.tools.rescan = { fromHeight, currentHeight: fromHeight, targetHeight: world.sync.tipHeight ?? TIP, startedAt: secs(FIXTURE_NOW), upgradeWallets: [] };
 }
 
 const book = (world: World, walletId: string) => (world.tools.addressBook[walletId] ??= []);
@@ -612,6 +614,10 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
     choose_file_path: ({ purpose, save, suggestedName }, { world }) => {
       const { files } = world.tools;
       files.dialogs.push({ purpose, save, suggestedName });
+      if (files.dialogFails) {
+        files.dialogFails = false;
+        throw fail("app.file_dialog", "fixture: the dialog failed");
+      }
       return save ? savePath(files, suggestedName) : files.open && `${files.saveDir ?? "/home/user"}/${files.open.name}`;
     },
   };

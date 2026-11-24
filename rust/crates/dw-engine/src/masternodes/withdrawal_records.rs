@@ -57,6 +57,10 @@ pub enum WithdrawalCheckingReason {
     /// one Drive's window pays is in a loaded wallet's history, out of a
     /// block, neither conflicted nor abandoned.
     PayoutChangeUnconfirmed,
+    /// The owner key only: the latest payout in the wallets' history is
+    /// P2SH, and Drive would pay an owner-key withdrawal to the P2PKH of
+    /// its 20 bytes, which nobody can spend.
+    OwnerPayoutP2sh,
     /// (c): the identity read failed rule 5 (P12).
     Unverified,
     /// SPV has no synced header tip to compare with.
@@ -70,6 +74,7 @@ impl WithdrawalCheckingReason {
             Self::PlatformBehind => "platform_behind",
             Self::PayoutChangePending => "payout_change_pending",
             Self::PayoutChangeUnconfirmed => "payout_change_unconfirmed",
+            Self::OwnerPayoutP2sh => "owner_payout_p2sh",
             Self::Unverified => "unverified",
             Self::SpvUnsynced => "spv_unsynced",
         }

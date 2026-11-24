@@ -111,14 +111,14 @@ async fn signed_and_sent(
     // P4: the short wait, outside the lock and before the grant.
     look_until(env, net, &req.pro_tx_hash, env.waits().sign)
         .await?
-        .holds()?;
+        .holds_for(req.key)?;
     let id = identity_of(&req.pro_tx_hash);
     let lock = identity_lock(id);
     let guard = lock.lock().await;
     // The final look, without waiting (P4, r4 n1): a miss is
     // `platform_behind` (or its other reason) and nothing is signed.
     let seen = look(env, net, &req.pro_tx_hash).await?;
-    seen.holds()?;
+    seen.holds_for(req.key)?;
     let identity = seen.identity()?.clone();
     let records = group_records(env, &id).await?;
     match sibling_of {

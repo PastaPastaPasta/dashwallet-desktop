@@ -525,6 +525,14 @@ impl FakeMoves {
         self.tick();
     }
 
+    /// A lagging node: reads prove `address` one nonce behind (`true`), or
+    /// current again (`false`).
+    pub(crate) fn lag(&self, address: PlatformAddress, behind: bool) {
+        let mut state = self.state.lock().unwrap();
+        let nonce = &mut state.get_mut(&address).unwrap().0;
+        *nonce = if behind { *nonce - 1 } else { *nonce + 1 };
+    }
+
     /// Platform's metered fee from now on.
     pub(crate) fn set_fee(&self, fee: u64) {
         self.fee.store(fee, Ordering::SeqCst);
@@ -2973,8 +2981,94 @@ fn only_a_rise_beyond_an_applied_fund_is_incoming() {
     assert_eq!(arriving["a"], 0, "spent");
 }
 
+/// #533: a send planned on a read behind a done move would sign the nonce
+/// the move took, and the next current read would show it "reached" though
+/// nothing was paid. A done move from A, then a send drawing on A and B on
+/// a read behind on A, though quoted on a current one: refused before
+/// anything is signed or recorded, also when submitted again after a
+/// restart. Once the read is current, the same send goes through, signed
+/// once.
+#[test]
+fn a_send_on_a_read_behind_a_done_move_is_refused() {
+    let w = World::new();
+    let (a, b) = (w.address(0), w.address(1));
+    w.net.fee.store(1, Ordering::SeqCst);
+    w.net.fund(a, 5 * DASH);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let moved = w.move_to(one, &w.to.clone(), &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!(moved.state, PlatformActivityState::Done);
+    w.net.fund(b, 5 * DASH);
+    let sent = || w.net.sent.lock().unwrap().len();
+    let before = sent();
+    let (_, to) = w.theirs(9);
+    let seven = WithdrawAmount::Credits { credits: 7 * DASH };
+    let lag = |behind: bool| {
+        let mut state = w.net.state.lock().unwrap();
+        let nonce = &mut state.get_mut(&a).unwrap().0;
+        *nonce = if behind { *nonce - 1 } else { *nonce + 1 };
+    };
+    let records = || {
+        (w.moves().into_iter())
+            .map(|m| (m.id, m.state))
+            .collect::<Vec<_>>()
+    };
+    let recorded = records();
+    // Quoted on a current read, then submitted on a lagging node's proof
+    // that shows A before the move; twice, with a restart between.
+    for _ in 0..2 {
+        let quote = w.send_quote(seven, &to).unwrap();
+        lag(true);
+        let grant = w.f.grant(10 * DASH);
+        assert_eq!(
+            w.confirm(&quote.operation, &grant).unwrap_err().code(),
+            "platform.unavailable"
+        );
+        assert_eq!(sent(), before, "nothing signed");
+        assert!(w.f.unused(&grant));
+        assert_eq!(records(), recorded, "nothing recorded");
+        lag(false);
+        w.f.s.platform.send_ops.reset();
+    }
+    let paid = w.send(seven, &to, &w.f.grant(10 * DASH)).unwrap();
+    assert_eq!(paid.state, PlatformActivityState::Done);
+    assert_eq!(sent(), before + 1, "signed once");
+    let last = w.net.sent.lock().unwrap().last().unwrap().clone();
+    assert!(last.contains_key(&a) && last.contains_key(&b), "{last:?}");
+    assert_eq!(last[&a].0, 2, "the nonce after the move's");
+}
+
+/// A named retry of a send that landed answers that send's outcome on a read
+/// behind it too: it signs nothing, so the stale-read refusal does not apply.
+#[test]
+fn a_retry_of_a_landed_send_on_a_read_behind_it_pays_nothing() {
+    let w = World::new();
+    let a = w.address(0);
+    w.net.fund(a, 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let first = w.held_send(one, &to);
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_eq!(quote.retry_of.as_deref(), Some(first.id.as_str()));
+    w.lands(0);
+    w.activity();
+    assert_eq!(w.moves()[0].state, PlatformActivityState::Done);
+    w.net.state.lock().unwrap().get_mut(&a).unwrap().0 -= 1;
+    let grant = w.f.grant(quote.credits);
+    let out = w.confirm(&quote.operation, &grant).unwrap();
+    assert_eq!(
+        (out.id.as_str(), out.state),
+        (first.id.as_str(), PlatformActivityState::Done)
+    );
+    assert!(w.f.unused(&grant), "nothing redeemed");
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
+    assert_eq!(w.net.credits(them), DASH, "paid once");
+}
+
 #[path = "platform_shield_tests.rs"]
 mod shield;
 
 #[path = "platform_top_up_tests.rs"]
 mod top_up;
+
+#[path = "platform_register_tests.rs"]
+mod register;

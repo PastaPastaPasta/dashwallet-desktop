@@ -14,6 +14,7 @@ import type { MnRegistrationPreview } from "../../api/generated/MnRegistrationPr
 import type { MasternodeTypeName } from "../../api/generated/MasternodeTypeName";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { NetworkKind } from "../../api/generated/NetworkKind";
+import type { ProTxKeys } from "../../api/generated/ProTxKeys";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useBackend } from "../../api/queries";
@@ -95,19 +96,25 @@ export function RegisterSheet({
   const [op, setOp] = useState<ProTxOperation | null>(resume ?? null);
   const [signature, setSignature] = useState("");
   const [inputsSpent, setInputsSpent] = useState(resume?.state.kind === "inputs_spent");
+  // Register is with the network: its own operation already holds the collateral and keys, so a keys
+  // or preview read now would hand out the next keys and refuse the coin this send is using (issue 595).
+  // The keys are held from the call itself, since the send announces its change before React renders.
+  const [sending, setSending] = useState(false);
+  const sendingKeys = useRef<ProTxKeys | null>(null);
   const set = (patch: Partial<RegDraft>) => setD((x) => ({ ...x, ...patch }));
 
-  const keys = useRegistrationKeys(wallet.walletId, d.kind, !resume && step !== "type" && step !== "collateral");
+  const keys = useRegistrationKeys(wallet.walletId, d.kind, !resume && step !== "type" && step !== "collateral" && !sending);
   const coins = useMemo(() => coinsFor(overview.data?.collateralCoins ?? [], d.kind), [overview.data, d.kind]);
   const allCoins: CollateralCoin[] = overview.data?.collateralCoins ?? [];
   const ports = portsOf(network.kind, (k) => t(`network.${k}`));
   const external = d.collateral === "external";
-  const request = useMemo(() => buildRequest(d, keys.data), [d, keys.data]);
+  const keyData = sendingKeys.current ?? keys.data;
+  const request = useMemo(() => buildRequest(d, keyData), [d, keyData]);
   const requestKey = JSON.stringify(request);
   const preview = useQuery({
     queryKey: ["masternodes", "registrationPreview", wallet.walletId, requestKey] as const,
     queryFn: () => b.mnPreviewRegistration(wallet.walletId, request),
-    enabled: step === "review" && keys.isSuccess,
+    enabled: step === "review" && keys.isSuccess && !sending,
     retry: false,
     gcTime: 0,
   });
@@ -127,7 +134,7 @@ export function RegisterSheet({
   };
   const errorText = (e: unknown) => mnErrorText(e) === (isAppError(e) ? e.message : String(e)) ? failureText(e, shown.chain, shown.amountUnit) : mnErrorText(e);
   useEffect(() => {
-    if (step !== "review" || !preview.isError) return;
+    if (step !== "review" || sendingKeys.current || !preview.isError) return;
     if (!refuse(preview.error)) setGeneral(errorText(preview.error));
   }, [preview.isError, preview.error]);
   useEffect(() => {
@@ -210,6 +217,8 @@ export function RegisterSheet({
         void backend.revokeGrant(grant.id).catch(() => null);
         return;
       }
+      sendingKeys.current = keys.data ?? null;
+      setSending(true);
       const sent = await b.mnRegister(wallet.walletId, request, grant.id);
       void refresh();
       if (!mounted.current) return;
@@ -223,7 +232,11 @@ export function RegisterSheet({
       }
       if (!refuse(e)) credential.setError(errorText(e));
     } finally {
-      if (mounted.current) setBusy(false);
+      sendingKeys.current = null;
+      if (mounted.current) {
+        setSending(false);
+        setBusy(false);
+      }
     }
   };
 
@@ -624,7 +637,7 @@ export function RegisterSheet({
             </span>
           </footer>
         ) : (
-          <footer className="mg-sheet-footer">
+          <footer className="mg-sheet-footer mg-sheet-footer-sticky">
             <span className="mg-sheet-footer-note">
               {step !== "done" && t(`${R}.stepOf`, { step: String(proving ? count : index + 1), count: String(count) })}
               {reviewing && figures && <span className="mg-small mg-muted"> {d.collateral === "fund_new" ? t(`${R}.review.withCollateral`) : external ? t(`${R}.review.external`) : t(`${R}.review.onlyFee`)}</span>}
@@ -771,8 +784,10 @@ function Done({ op, self }: { op: ProTxOperation; self: boolean }) {
       {op.proTxHash && (
         <dl className="detail-list card-l1">
           <DetailRow label={t(`${R}.doneScreen.hash`)}>
-            <span className="mono mg-break" data-testid="reg-hash">
-              {op.proTxHash}
+            <span className="mono mg-hash" data-testid="reg-hash">
+              {op.proTxHash.slice(0, 32)}
+              <wbr />
+              {op.proTxHash.slice(32)}
             </span>
           </DetailRow>
         </dl>

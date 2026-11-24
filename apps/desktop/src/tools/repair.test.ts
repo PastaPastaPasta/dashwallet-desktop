@@ -45,6 +45,7 @@ const QUOTE: RegistrationQuote = {
   availableDuffs: 10e8,
   grant: { maxDuffs: 3_002_261, maxCredits: "2000000000" },
   readiness: null,
+  platform: null,
 };
 
 function setup(lock = {}) {
@@ -54,7 +55,7 @@ function setup(lock = {}) {
   const api = {
     rescan: vi.fn(async (from: RescanStart) => {
       calls.push(`rescan ${from.kind}`);
-      progress = { fromHeight: 0, currentHeight: 250, targetHeight: 1000, startedAt: 0 };
+      progress = { fromHeight: 0, currentHeight: 250, targetHeight: 1000, startedAt: 0, upgradeWallets: [] };
       return null;
     }),
     rescanProgress: vi.fn(async () => progress),

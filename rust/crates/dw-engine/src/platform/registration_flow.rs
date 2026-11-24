@@ -57,7 +57,9 @@ use dw_vault::LockState;
 use tokio::time::Instant;
 
 use super::contacts::Eligibility;
-use super::errors::{ContactError, InvitationError, NameError, PlatformError, RegistrationError};
+use super::errors::{
+    ContactError, CreditsError, InvitationError, NameError, PlatformError, RegistrationError,
+};
 use super::flows::{BudgetPurpose, LeaseStateView};
 use super::identity_writes::identity_locks;
 use super::invitation_check::Voucher;
@@ -69,10 +71,11 @@ use super::registration::{RegistrationWait, ShieldedFacts};
 use super::registration_ledger::{
     IndexOwner, Ledger, NoIndex, Owner, Reconcile, Standing, StepClaim, Taker, index_after,
 };
+use super::registration_platform::RegisterPlan;
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
 use super::startup::StartupStatus;
 use crate::coins::CoinFence;
-use crate::{NetworkSession, WalletId};
+use crate::{DashNetwork, NetworkSession, WalletId};
 
 /// The asset lock of a registration with a plain name: 0.03 DASH, as the
 /// iOS wallet locks (`DWDashPayConstants.m`).
@@ -389,6 +392,8 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// without SPV's sync, since no Core funds move: DP3-04's trust gate
     /// and the bring-up's answer about the seed's identity indexes.
     fn claim_hold(&self) -> Option<RegistrationWait>;
+    /// The session's network.
+    fn network(&self) -> DashNetwork;
     /// `NetworkSession::invitation_status` of the stashed link `link_id`,
     /// with the identity a `Valid` link's claim creates (D26).
     fn invitation(
@@ -411,6 +416,13 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// F16, F17): the account's facts once Platform runs and the pool is
     /// active, the platform flag alone otherwise.
     fn shielded_facts(&self) -> impl Future<Output = Result<ShieldedFacts, PlatformError>> + Send;
+    /// A Platform-funded registration's plan (C-funding F9): an identity
+    /// receiving at least `funding` credits, from one proved read of the
+    /// wallet's Platform addresses.
+    fn platform_plan(
+        &self,
+        funding: u64,
+    ) -> impl Future<Output = Result<RegisterPlan, CreditsError>> + Send;
     /// DP2-02's contact request from `identity` to `inviter`, under the
     /// registration's `lease` (DP5-02 §4).
     fn request_inviter(
@@ -1156,9 +1168,9 @@ pub(crate) fn interpret(row: &RegistrationRow) -> Result<(Phase, Funding), &'sta
             feature: String::new(),
         }
         .code()),
-        // No flow step runs it yet (C4b-2): never funded, discarded or
-        // advanced here.
-        Funding::Shielded { .. } => Err(unsupported()),
+        // No flow step runs these yet (C4b-2, C4a-2): never funded,
+        // discarded or advanced here.
+        Funding::Shielded { .. } | Funding::PlatformAddresses { .. } => Err(unsupported()),
         Funding::CoreBalance { .. } | Funding::ExistingIdentity | Funding::Invitation { .. } => {
             Ok((phase, funding))
         }
@@ -3472,6 +3484,10 @@ impl RegistrationLib for PwLib {
         self.claim_hold()
     }
 
+    fn network(&self) -> DashNetwork {
+        self.session.network().clone()
+    }
+
     fn claim_hold(&self) -> Option<RegistrationWait> {
         // DP3-04: no funding or claim while Platform writes wait for
         // masternode sync (`Enforcing`); SPV caught up is another reading
@@ -3548,6 +3564,27 @@ impl RegistrationLib for PwLib {
         super::shielded_pool::registration_facts(&self.session, self.wallet_id, &pool, &mut facts)
             .await?;
         Ok(facts)
+    }
+
+    async fn platform_plan(&self, funding: u64) -> Result<RegisterPlan, CreditsError> {
+        if !self.session.platform.enabled() {
+            return Err(PlatformError::FeatureOff {
+                feature: "platform".into(),
+            }
+            .into());
+        }
+        let net = super::platform_moves::SdkMoves {
+            sdk: Arc::clone(&self.sdk),
+            wallet: Arc::clone(&self.wallet),
+        };
+        super::registration_platform::register_quote(
+            &net,
+            &self.session,
+            &self.wallet,
+            self.wallet_id,
+            funding,
+        )
+        .await
     }
 
     async fn request_inviter(

@@ -118,6 +118,15 @@ describe("routes", () => {
     expect(routeWhy("platformToCore", { ...POOLS, platform: { ...platform, block: "pending" } }, f)).toBe(MOVE_COPY.waiting.text);
   });
 
+  it("hold only Add to Shielded while the wallet's Core sync runs: a shield's funding waits for it", () => {
+    const { shielded, fund, move } = flows();
+    const f = { shielded, fund, move };
+    const coreSyncing = { ...POOLS, coreSyncing: true };
+    expect(routeWhy("coreToShielded", coreSyncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
+    for (const r of ["shieldedToCore", "coreToPlatform", "platformToCore"] as const) expect(routeWhy(r, coreSyncing, f), r).toBeNull();
+    expect(routeWhy("coreToShielded", { ...coreSyncing, shielded: { active: false, syncing: false, duffs: null } }, f)).toBe(SHIELDED_COPY.card.inactive);
+  });
+
   it("share the Shielded flow: another of its moves running holds the other route, not its own", () => {
     const f = flows();
     f.shielded.begin("out");

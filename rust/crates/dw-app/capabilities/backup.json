@@ -12,6 +12,7 @@
     "allow-automatic-backups",
     "allow-automatic-backup-failures",
     "allow-backup-directory",
+    "allow-open-backup-directory",
     "allow-backup-policy",
     "allow-set-backup-policy",
     "allow-read-backup-header",

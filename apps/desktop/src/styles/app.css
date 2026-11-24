@@ -8,7 +8,8 @@
    focusPage), or a sheet focused because nothing in it can be pressed, shows no ring: it is not a
    control. */
 .page h1[tabindex="-1"]:focus,
-.sheet[tabindex="-1"]:focus {
+.sheet[tabindex="-1"]:focus,
+.mg-key-list[tabindex="-1"]:focus {
   outline: none;
 }
 
@@ -1896,6 +1897,14 @@ input[type="radio"]:disabled {
 .detail-value {
   overflow-wrap: anywhere;
   user-select: text;
+}
+
+/* Amounts in a confirm list: tabular digits, aligned on their last digit, so the decimals line up. An amount reads
+ * left to right in any language, so its cell does too, and its end is the right in a right-to-left window as well. */
+.detail-amount {
+  direction: ltr;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
 }
 
 .detail-note {
@@ -4752,6 +4761,11 @@ button.bell-row-open:focus-visible {
   margin: var(--dw-space-m) 0 0;
 }
 
+.pay-shielded-route {
+  display: flex;
+  margin-top: calc(-1 * var(--dw-space-s));
+}
+
 /* ------------------------------------------------------------------ Protocol advisory */
 
 .protocol-advisory-banner {
@@ -5325,6 +5339,20 @@ button.bell-row-open:focus-visible {
   border-color: var(--dw-role-text-link);
 }
 
+/* "Pay with": a source that cannot pay says why under it. */
+.topup-choice[data-disabled] {
+  cursor: default;
+}
+
+.topup-sources {
+  margin-bottom: var(--dw-space-s);
+}
+
+/* A top-up from Platform names the address its fee is taken from: a long run that wraps. */
+.topup-platform-message {
+  overflow-wrap: anywhere;
+}
+
 .topup-choice-amount {
   font-weight: var(--dw-type-subhead-medium-weight);
 }
@@ -5726,6 +5754,39 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-m);
 }
 
+/* Masternode keys (MG-10 §1.5): one row per keypair, the open one with its facts. */
+.mg-key-list {
+  margin: var(--dw-space-m) 0;
+  padding: 0 var(--dw-space-m);
+  list-style: none;
+}
+
+.mg-key-row {
+  padding: var(--dw-space-s) 0;
+}
+
+.mg-key-row + .mg-key-row {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.mg-key-secret {
+  display: grid;
+  gap: var(--dw-space-xs);
+  justify-items: start;
+}
+
+.mg-key-no-copy {
+  user-select: none;
+  -webkit-user-select: none;
+  overflow-wrap: anywhere;
+}
+
+.mg-key-secret-line {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
 /* Votes bar: yes / no / abstain segments by weight, with the funding threshold as a tick. */
 .mg-votebar {
   position: relative;
@@ -6039,6 +6100,20 @@ button.bell-row-open:focus-visible {
 
 .mg-sheet-footer .mg-actions {
   flex-wrap: nowrap;
+}
+
+/* The wizard's long steps keep the footer, and the primary action, in view while they scroll. */
+.sheet .mg-sheet-footer-sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--dw-role-card);
+}
+
+/* A 64-hex hash breaks in the middle (its <wbr>), never before its last character. */
+.mg-hash {
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .sheet .mg-sheet-body {

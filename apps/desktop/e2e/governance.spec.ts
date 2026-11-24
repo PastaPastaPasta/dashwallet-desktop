@@ -214,6 +214,18 @@ test("Show Masternodes On shows the sidebar item and offers governance data", as
   await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
 });
 
+for (const theme of THEMES)
+  test(`Show Masternodes Auto ${theme}: a registration in progress shows the sidebar item`, async ({ page }, info) => {
+    const errors = trackPageErrors(page);
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("mn-registration-only", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`auto-registration-${theme}.png`) });
+    expect(errors).toEqual([]);
+  });
+
 for (const theme of THEMES) {
   test(`create ${theme}: details, payments, review, then pay; Mine shows it`, async ({ page }) => {
     const errors = await open(page, "governance", theme);
