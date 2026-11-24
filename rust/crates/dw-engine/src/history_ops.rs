@@ -706,8 +706,8 @@ impl NetworkSession {
     /// the claim was not restored) is spent by a live payment this app
     /// sent: it leaves the funds accounts, is stored as spent and the
     /// balance is announced. The coins dead transactions' drops hold for
-    /// good (`tx_actions::dropped_holds`) are claimed with no claimant, as
-    /// the drops left them.
+    /// good, as the wallet's open read them (`tx_actions::dropped_holds`),
+    /// are claimed with no claimant, as the drops left them.
     pub(crate) async fn apply_spend_claims(
         &self,
         manager: &Manager,
@@ -720,16 +720,7 @@ impl NetworkSession {
         let Ok(live) = self.live() else {
             return;
         };
-        let holds = self
-            .appdb_op(move |db| crate::tx_actions::dropped_holds(db, wallet))
-            .await
-            .unwrap_or_else(|e| {
-                // The open read them; a failure now leaves the load
-                // incomplete, so nothing is dropped or freed.
-                tracing::warn!(%wallet, error = %e, "could not read the coins dropped payments hold");
-                (self.hub.history).with_wallet(wallet, |h| h.load_incomplete = true);
-                BTreeSet::new()
-            });
+        let holds = self.hub.dropped_holds(wallet);
         #[cfg(test)]
         let pause = self.hub.pause_spend_claims.lock().unwrap().take();
         #[cfg(test)]

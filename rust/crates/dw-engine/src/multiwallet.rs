@@ -415,10 +415,11 @@ impl NetworkSession {
             {
                 let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
                 let db_path = this.data_dir().join(crate::session::WALLET_DB_FILE);
-                tokio::task::spawn_blocking(move || {
+                let holds = tokio::task::spawn_blocking(move || {
                     crate::tx_actions::finish_marked_abandons(&persister, &appdb, &db_path, &[id])
                 })
                 .await??;
+                this.hub.note_dropped_holds(holds);
             }
             let stored = this.stored_spends(id).await?;
             this.hub.admit(id);

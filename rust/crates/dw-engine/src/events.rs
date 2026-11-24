@@ -559,6 +559,9 @@ pub(crate) struct SessionHub {
     /// holds no record of, by wallet, each set with its winner and the
     /// swept payments: dropped at the next reconcile (#170 case 4).
     dead_children: Mutex<Vec<DeadChildren>>,
+    /// The coins each wallet's drops hold for good, as its open read them
+    /// (`tx_actions::finish_marked_abandons`): claimed at its load.
+    dropped_holds: Mutex<crate::tx_actions::DroppedHolds>,
     /// Held through each drop of dead transactions
     /// (`NetworkSession::drop_dead`).
     pub(crate) drop_gate: tokio::sync::Mutex<()>,
@@ -790,6 +793,7 @@ impl SessionHub {
             header_tip: Mutex::new(None),
             final_sends: Mutex::new(Vec::new()),
             dead_children: Mutex::new(Vec::new()),
+            dropped_holds: Mutex::new(HashMap::new()),
             drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
@@ -1003,6 +1007,17 @@ impl SessionHub {
         (mine.into_iter())
             .map(|(_, children, winner, swept)| (children, winner, swept))
             .collect()
+    }
+
+    /// Keeps the drops' holds an open read, by wallet.
+    pub(crate) fn note_dropped_holds(&self, holds: crate::tx_actions::DroppedHolds) {
+        (self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner())).extend(holds);
+    }
+
+    /// The coins wallet `id`'s drops hold for good, as its open read them.
+    pub(crate) fn dropped_holds(&self, id: WalletId) -> BTreeSet<dashcore::OutPoint> {
+        let holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
+        holds.get(&id).cloned().unwrap_or_default()
     }
 
     /// A reconcile of wallet `id` begins: later events start another.

@@ -1721,6 +1721,7 @@ fn finish_now(session: &NetworkSession, id: WalletId) -> Result<(), crate::Engin
     let live = session.live().unwrap();
     let db_path = session.data_dir().join(crate::session::WALLET_DB_FILE);
     crate::tx_actions::finish_marked_abandons(&live.persister, &live.appdb, &db_path, &[id])
+        .map(drop)
 }
 
 pub(super) fn record_stored(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
@@ -2920,6 +2921,50 @@ fn nothing_is_dropped_while_another_wallet_loaded_incomplete() {
     assert!(held(&engine, &session, id).contains(&change));
 
     (session.hub.history).with_wallet(other, |h| h.load_incomplete = false);
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, p.txid()), "the payment goes");
+    assert!(!held(&engine, &session, id).contains(&change));
+}
+
+/// #611 with another wallet part-way through its open: its history is not
+/// read yet, so what it settled is unknown and nothing is dropped until
+/// the open is done.
+#[test]
+fn nothing_is_dropped_while_another_wallet_is_opening() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let a = OutPoint::new(paid.txid(), 0);
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+    wait_stored(&session, id, &[p.txid()]);
+    let other = second_wallet(&engine, &session);
+
+    let session = reopen(&engine, session);
+    engine.block_on(session.unload_wallet(other)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_load.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move { s.load_wallet(other).await })
+    };
+    eventually("the open's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let winner = rival(&engine, &session, id, &paid, 0);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    reconciled(&engine, &session, id);
+    assert!(live_in_history(&session, id, p.txid()), "the payment stays");
+    assert!(held(&engine, &session, id).contains(&change));
+
+    pause.release.notify_one();
+    engine.block_on(load).unwrap().unwrap();
     reconciled(&engine, &session, id);
     assert!(!live_in_history(&session, id, p.txid()), "the payment goes");
     assert!(!held(&engine, &session, id).contains(&change));

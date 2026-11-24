@@ -132,6 +132,9 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// comma-separated), restored as claims at each load ([`dropped_holds`]).
 const DROPPED_PREFIX: &str = "dropped:";
 
+/// The coins each wallet's drops hold for good, as its open read them.
+pub(crate) type DroppedHolds = HashMap<WalletId, BTreeSet<OutPoint>>;
+
 /// A test's fault point on [`dropped_holds`]'s read.
 #[cfg(all(test, debug_assertions))]
 pub(crate) const DROPPED_HOLDS_FAULT: &str = "tx_actions.dropped_holds";
@@ -451,20 +454,22 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Abandoned, boo
 /// does not read back still counts, its coins then taken from its sent
 /// mark. A read that fails (the marks, the drops' holds, a stored record,
 /// the sent marks) or a sweep that cannot be stored fails the load.
+/// Returns each wallet's drops' holds, which its load claims.
 pub(crate) fn finish_marked_abandons(
     persister: &platform_wallet_storage::SqlitePersister,
     appdb: &AppDb,
     db_path: &std::path::Path,
     wallets: &[WalletId],
-) -> Result<(), EngineError> {
+) -> Result<DroppedHolds, EngineError> {
     let storage = |e: &dyn std::fmt::Display| {
         EngineError::Storage(format!("finishing an abandoned payment: {e}"))
     };
-    let mut listed = None;
+    let (mut listed, mut holds) = (None, DroppedHolds::new());
     for &wallet in wallets {
-        // The holds are read again once the wallet loads: one that cannot
-        // be read now fails the load, as the marks do.
-        dropped_holds(appdb, wallet).map_err(|e| storage(&e))?;
+        // Read once, here: one that cannot be read fails the load, as the
+        // marks do, and the load claims what this read.
+        let held = dropped_holds(appdb, wallet).map_err(|e| storage(&e))?;
+        holds.insert(wallet, held);
         // Each mark by its key: one whose copy does not read back still
         // names its payment.
         let rows = (appdb.settings_with_prefix_lossy(&wallet.to_string(), ABANDONED_PREFIX))
@@ -594,7 +599,7 @@ pub(crate) fn finish_marked_abandons(
             .and_then(|()| persister.flush(wallet.0))
             .map_err(|e| storage(&e))?;
     }
-    Ok(())
+    Ok(holds)
 }
 
 /// What decides a transaction's actions.
@@ -814,8 +819,8 @@ fn settled_descendant(
 /// What something settled descends from, walked over every loaded
 /// wallet's transactions at once: what one wallet settled can descend from
 /// another's payment, through transfers between them either way (#611).
-/// `incomplete`: the first of them a stored record of didn't read at its
-/// load.
+/// `incomplete`: the first of them whose history is not whole
+/// ([`NetworkSession::history_unread`]).
 #[derive(Default)]
 struct Settled {
     under: HashSet<Txid>,
@@ -824,17 +829,22 @@ struct Settled {
 }
 
 impl NetworkSession {
+    /// Whether wallet `id`'s history is not whole: a stored record or mark
+    /// didn't read at its load, or it is part-way through opening, its
+    /// history not loaded yet.
+    pub(crate) fn history_unread(&self, id: WalletId) -> bool {
+        (self.hub.history).read_wallet(&id, |h| h.load_incomplete)
+            || self.hub.wallet_state(&id).is_some_and(|s| s.loading)
+    }
+
     fn settled_all<'a>(
         &self,
         infos: impl IntoIterator<Item = (&'a [u8; 32], &'a ManagedWalletInfo)>,
     ) -> Settled {
         let (mut known, mut incomplete) = (HashMap::new(), None);
         for (id, core) in infos {
-            let unread = (self.hub.history).read_wallet(&WalletId(*id), |h| {
-                add_wallet(&mut known, h, core);
-                h.load_incomplete
-            });
-            if unread {
+            (self.hub.history).read_wallet(&WalletId(*id), |h| add_wallet(&mut known, h, core));
+            if self.history_unread(WalletId(*id)) {
                 incomplete.get_or_insert(WalletId(*id));
             }
         }
@@ -1670,18 +1680,19 @@ impl NetworkSession {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
         // What any loaded wallet settled can descend from this one's
-        // payment (#611): nothing goes while another loaded incomplete; this
-        // one's own incomplete load frees nothing (`plan_drop`).
+        // payment (#611): nothing goes while another's history is not whole
+        // (an incomplete load, or an open under way); this one's own
+        // incomplete load frees nothing (`plan_drop`).
+        let other_unread = (wm.get_all_wallet_infos().keys())
+            .filter(|id| **id != wallet.0)
+            .any(|id| self.history_unread(WalletId(*id)));
+        if other_unread {
+            return Ok(BTreeSet::new());
+        }
         let settled = {
             let infos = wm.get_all_wallet_infos().iter();
             self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)))
         };
-        let other_unread = (wm.get_all_wallet_infos().keys())
-            .filter(|id| **id != wallet.0)
-            .any(|id| (self.hub.history).read_wallet(&WalletId(*id), |h| h.load_incomplete));
-        if other_unread {
-            return Ok(BTreeSet::new());
-        }
         let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
             return Ok(BTreeSet::new());
         };

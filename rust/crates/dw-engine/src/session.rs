@@ -508,7 +508,7 @@ impl NetworkSession {
         // Before any wallet loads: an abandon marked but not swept is swept,
         // so its change is never credited. A wallet this start leaves closed
         // is swept when it is opened.
-        {
+        let dropped_holds = {
             let (persister, appdb) = (Arc::clone(&persister), Arc::clone(&appdb));
             let db_path = data_dir.join(WALLET_DB_FILE);
             let closed = unloaded.clone();
@@ -521,9 +521,10 @@ impl NetworkSession {
                     .collect();
                 crate::tx_actions::finish_marked_abandons(&persister, &appdb, &db_path, &wallets)
             })
-            .await??;
-        }
+            .await??
+        };
         let hub = Arc::new(SessionHub::new(network.clone(), Arc::clone(&sink)));
+        hub.note_dropped_holds(dropped_holds);
         let tap = Arc::new(crate::platform::journal::ChangesetTap::new(
             Arc::clone(&hub),
             Arc::clone(&appdb),
