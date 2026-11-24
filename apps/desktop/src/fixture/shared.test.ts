@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as cmd from "../api/generated/commands";
 import type { StartSharedRequest } from "../api/generated/StartSharedRequest";
 import { installFixture } from "./index";
-import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W } from "./scenarios";
-import { SH_TEXT } from "./shared";
+import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "./scenarios";
+import { abandonFee, SH_TEXT } from "./shared";
 
 const PASS = { kind: "passphrase", passphrase: FIXTURE_PASSPHRASE } as const;
 const COIN = 100_000_000;
@@ -71,15 +71,51 @@ describe("fixture shared masternodes", () => {
     expect(await cmd.mnSharedSessions(W)).toHaveLength(1);
   });
 
-  it("abandons a session that may be out under a grant of exactly the fee, then offers it no more", async () => {
+  it("abandons a session that may be out under a grant of exactly its listed charge, then offers it no more", async () => {
     installFixture({ scenario: "sh-close-out" });
     const [s] = await cmd.mnSharedSessions(W);
     expect([s.discardable, s.abandonable]).toEqual([false, true]);
+    const charge = s.abandonCharge!;
+    expect(charge, "every reserved coin spent").toBe(abandonFee(s.reserved.length));
     const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
-    await expect(cmd.mnSharedAbandon(W, s.id, await cap(cmd.SHARED_ABANDON_FEE - 1))).rejects.toMatchObject({ code: "send.grant_exceeded" });
-    const after = await cmd.mnSharedAbandon(W, s.id, await cap(cmd.SHARED_ABANDON_FEE));
-    expect(after).toMatchObject({ id: s.id, stage: { kind: "funding_signed" }, discardable: false, abandonable: false });
-    await expect(cmd.mnSharedAbandon(W, s.id, await cap(cmd.SHARED_ABANDON_FEE))).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "funding_signed" } });
+    await expect(cmd.mnSharedAbandon(W, s.id, await cap(charge - 1))).rejects.toMatchObject({ code: "send.grant_exceeded" });
+    const after = await cmd.mnSharedAbandon(W, s.id, await cap(charge));
+    expect(after).toMatchObject({ id: s.id, stage: { kind: "funding_signed" }, discardable: false, abandonable: false, abandonCharge: null });
+    await expect(cmd.mnSharedAbandon(W, s.id, await cap(charge))).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "abandoning" } });
+  });
+
+  it("once abandoned, hands the message on no more and reads the spend back as recorded", async () => {
+    installFixture({ scenario: "sh-close-out" });
+    const [s] = await cmd.mnSharedSessions(W);
+    expect(s.next).toBe("copy");
+    await cmd.mnSharedMessage(W, s.id);
+    const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
+    const after = await cmd.mnSharedAbandon(W, s.id, await cap(s.abandonCharge!));
+    expect(after).toMatchObject({ next: "nothing", abandonSpend: { state: "in_history", code: null }, resendAbandonCharge: s.abandonCharge });
+    await expect(cmd.mnSharedMessage(W, s.id)).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "abandoning" } });
+  });
+
+  it("an uncertain spend back offers Send again under exactly its charge, and no new spend", async () => {
+    installFixture({ scenario: "sh-close-out-abandon-uncertain" });
+    const [s] = await cmd.mnSharedSessions(W);
+    const fee = s.abandonCharge!;
+    const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
+    const after = await cmd.mnSharedAbandon(W, s.id, await cap(fee));
+    expect(after).toMatchObject({ abandonSpend: { state: "uncertain" }, abandonCharge: null, resendAbandonCharge: fee });
+    await expect(cmd.mnSharedAbandon(W, s.id, await cap(fee)), "no new spend while it may be out").rejects.toMatchObject({ data: { stage: "abandoning" } });
+    await expect(cmd.mnSharedResendAbandon(W, s.id, await cap(fee - 1))).rejects.toMatchObject({ code: "send.grant_exceeded" });
+    expect(await cmd.mnSharedResendAbandon(W, s.id, await cap(fee))).toMatchObject({ abandonSpend: { state: "in_history" } });
+  });
+
+  it("a refused spend back offers a new spend of the same coins, and no Send again", async () => {
+    installFixture({ scenario: "sh-close-out-abandon-refused" });
+    const [s] = await cmd.mnSharedSessions(W);
+    const fee = s.abandonCharge!;
+    const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
+    const after = await cmd.mnSharedAbandon(W, s.id, await cap(fee));
+    expect(after).toMatchObject({ abandonSpend: { state: "refused", code: "send.broadcast_rejected" }, abandonCharge: fee, resendAbandonCharge: null });
+    await expect(cmd.mnSharedResendAbandon(W, s.id, await cap(fee))).rejects.toMatchObject({ data: { stage: "abandon_refused" } });
+    expect(await cmd.mnSharedAbandon(W, s.id, await cap(fee))).toMatchObject({ abandonSpend: { state: "in_history" } });
   });
 
   it("refuses Abandon of a session not out, or settled, as the engine does", async () => {
@@ -95,7 +131,9 @@ describe("fixture shared masternodes", () => {
     installFixture({ scenario: "sh-unreadable" });
     const [free, out] = await cmd.mnSharedUnreadable(W);
     expect([free.abandonable, out.abandonable]).toEqual([false, true]);
-    const cap = async () => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: cmd.SHARED_ABANDON_FEE }, W, PASS)).id;
+    expect([free.abandonCharge, out.abandonCharge]).toEqual([null, abandonFee(out.reserved.length)]);
+    const cap = async (max = out.abandonCharge!) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
+    await expect(cmd.mnSharedAbandonUnreadable(W, out.id, await cap(out.abandonCharge! - 1))).rejects.toMatchObject({ code: "send.grant_exceeded" });
     await expect(cmd.mnSharedAbandonUnreadable(W, free.id, await cap())).rejects.toMatchObject({ code: "masternodes.shared_stage" });
     const [readable] = await cmd.mnSharedSessions(W);
     await expect(cmd.mnSharedAbandonUnreadable(W, readable.id, await cap())).rejects.toMatchObject({ code: "invalid_argument" });
@@ -108,12 +146,12 @@ describe("fixture shared masternodes", () => {
   it("abandons on mainnet as on every network", async () => {
     for (const network of ["mainnet", "testnet", "regtest"] as const) {
       installFixture({ scenario: "sh-close-out", network });
-      const cap = async () => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: cmd.SHARED_ABANDON_FEE }, W, PASS)).id;
+      const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
       const [s] = await cmd.mnSharedSessions(W);
-      expect(await cmd.mnSharedAbandon(W, s.id, await cap())).toMatchObject({ id: s.id, abandonable: false });
+      expect(await cmd.mnSharedAbandon(W, s.id, await cap(s.abandonCharge!))).toMatchObject({ id: s.id, abandonable: false });
       installFixture({ scenario: "sh-unreadable", network });
       const [, out] = await cmd.mnSharedUnreadable(W);
-      expect(await cmd.mnSharedAbandonUnreadable(W, out.id, await cap())).toMatchObject({ id: out.id, abandonable: false });
+      expect(await cmd.mnSharedAbandonUnreadable(W, out.id, await cap(out.abandonCharge!))).toMatchObject({ id: out.id, abandonable: false });
     }
   });
 
@@ -158,6 +196,29 @@ describe("fixture shared masternodes", () => {
     const [s] = await cmd.mnSharedSessions(W);
     const g = await grant(s.debit!);
     await expect(cmd.mnSharedSend(W, s.id, g)).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "abandoned" } });
+  });
+
+  it("refuses Start, Change fee, Join, Lock and Approve on mainnet as the engine does, and discards and abandons there", async () => {
+    const off = { code: "masternodes.unsupported", data: { kind: "unsupported", feature: "protx_sending", field: "mainnet" } };
+    installFixture({ scenario: "sh-capability-active", network: "mainnet" });
+    await expect(cmd.mnSharedStart(W, request())).rejects.toMatchObject(off);
+    const sheet = async (scenario: ScenarioName) => {
+      installFixture({ scenario, network: "mainnet" });
+      return (await cmd.mnSharedSessions(W))[0]!;
+    };
+    let s = await sheet("sh-coordinator-draft");
+    await expect(cmd.mnSharedSetFee(W, s.id, 200_000)).rejects.toMatchObject(off);
+    await cmd.mnSharedDiscard(W, s.id);
+    expect(await cmd.mnSharedSessions(W)).toEqual([]);
+    s = await sheet("sh-participant-invited");
+    await expect(cmd.mnSharedJoin(W, s.id, { shareIndex: null, reward: { kind: "refund" } })).rejects.toMatchObject(off);
+    s = await sheet("sh-coordinator-ready");
+    await expect(cmd.mnSharedLock(W, s.id, s.revision, await grant())).rejects.toMatchObject(off);
+    s = await sheet("sh-participant-approve");
+    await expect(cmd.mnSharedApprove(W, s.id, s.consentHash!, await grant())).rejects.toMatchObject(off);
+    installFixture({ scenario: "sh-coordinator-ready" });
+    s = (await cmd.mnSharedSessions(W))[0]!;
+    expect((await cmd.mnSharedLock(W, s.id, s.revision, await grant())).session.stage).toEqual({ kind: "signing" });
   });
 
   it("refuses Sign and Send on mainnet before the engine, naming the network", async () => {

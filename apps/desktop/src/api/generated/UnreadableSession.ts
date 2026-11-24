@@ -19,7 +19,12 @@ code: string, kind: SharedKindName, role: SharedRoleName,
  */
 discardable: boolean,
 /**
- * `mn_shared_abandon_unreadable` would spend one of its reserved coins
- * back to the wallet now, charged `SHARED_ABANDON_FEE`.
+ * `mn_shared_abandon_unreadable` would spend every reserved coin back
+ * to the wallet now, charged `abandon_charge`.
  */
-abandonable: boolean, reserved: Array<string>, updatedAt: number, };
+abandonable: boolean,
+/**
+ * What that spend charges, exactly its grant cap; `null` while it
+ * isn't `abandonable`.
+ */
+abandonCharge: number | null, reserved: Array<string>, updatedAt: number, };

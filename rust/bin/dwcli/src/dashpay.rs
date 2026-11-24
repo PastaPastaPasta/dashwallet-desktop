@@ -957,6 +957,7 @@ fn contact_params(e: &ContactError) -> Value {
         | C::ScanExpired
         | C::ScanUnverified
         | C::NoUsername => json!({}),
+        C::Shielded(s) => shielded_params(s),
         C::Platform(p) => platform_params(p),
         C::Credits(c) => credits_params(c),
     }
@@ -1744,7 +1745,15 @@ fn platform_addr_cmd(ctx: &Ctx, cmd: PlatformAddrCmd) -> Result<Value, CliError>
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.move_to_core(amount, quote.to.clone(), grant))?;
+            // An exit moves exactly its quoted withdrawal, or nothing.
+            let amount = match quote.exit_of {
+                Some(_) => WithdrawAmount::Credits {
+                    credits: quote.credits - quote.fee_credits,
+                },
+                None => amount,
+            };
+            let ask = (quote.to.clone(), quote.exit_of.clone());
+            let outcome = ctx.block_on(dp.move_to_core(amount, ask.0, ask.1, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         #[cfg(feature = "platform-addr-fund")]

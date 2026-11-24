@@ -100,10 +100,10 @@ export function AboutTab() {
       <SettingsCard title={t("settings.about.title")} testId="settings-about">
         <dl className="detail-list settings-details">
           <DetailRow label={t("settings.about.version")} testId="settings-about-version">
-            {launch.appVersion}
+            <bdi dir="ltr">{launch.buildVersion}</bdi>
           </DetailRow>
           <DetailRow label={t("settings.about.engine")} testId="settings-about-engine">
-            {launch.engineVersion}
+            <bdi dir="ltr">{launch.engineVersion}</bdi>
           </DetailRow>
           <DetailRow label={t("settings.about.network")} testId="settings-about-network">
             {launch.network.dirName}
