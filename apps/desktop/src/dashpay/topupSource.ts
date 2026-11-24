@@ -66,18 +66,9 @@ export function platformHold(activity: readonly PlatformActivity[] | null | unde
   return { state: held.some((a) => a.state === "pending") ? "pending" : "held", topUp: held.every((a) => a.kind === "toIdentity") };
 }
 
-/** Whether "Move to Dash wallet" is offered for a held top-up. Off until the engine binds that move
- * to the held top-up: today, if the top-up lands between the move's quote and its submit, the move
- * is planned afresh as an ordinary withdrawal. Until then a held top-up says it may still go
- * through, without the move. */
-export const HELD_TOP_UP_EXIT: boolean = false;
-
 /** A held top-up from Platform that "Move to Dash wallet" can free: failed by height, able to land
  * still, and nothing else holds the addresses. */
-export const offersMove = (hold: PlatformHold) => HELD_TOP_UP_EXIT && hold?.state === "held" && hold.topUp;
-
-/** A held top-up's text: the move's, or, without it, that it may still go through. */
-const heldText = () => (HELD_TOP_UP_EXIT ? FROM_PLATFORM_COPY.held.text : FROM_PLATFORM_COPY.pending.text);
+export const offersMove = (hold: PlatformHold) => hold?.state === "held" && hold.topUp;
 
 /** In discreet mode a Max top-up's amount is wallet-derived: masked on Confirm and the outcome. */
 export const maxMasked = (discreet: boolean, max: boolean, masked: string): string | null => (discreet && max ? masked : null);
@@ -129,7 +120,7 @@ export function topUpSources(i: SourceInputs): SourceRow[] {
           : i.hold?.state === "pending"
             ? FROM_PLATFORM_COPY.pending.text
             : i.hold?.state === "held"
-              ? heldText()
+              ? FROM_PLATFORM_COPY.held.text
               : BigInt(p.movableCredits) === 0n
               ? SOURCE_COPY.nothing
               : null;
@@ -154,7 +145,7 @@ export function platformOutcomeText(o: TopUpFromPlatformOutcome, balance: (credi
   }
   if (o.state === "pending") return { title: FROM_PLATFORM_COPY.pending.title, text: FROM_PLATFORM_COPY.pending.text, move: false };
   if (o.state === "failed" && !o.mayLand) return { title: FROM_PLATFORM_COPY.failed.title, text: FROM_PLATFORM_COPY.failed.text, move: false };
-  return { title: FROM_PLATFORM_COPY.held.title, text: heldText(), move: HELD_TOP_UP_EXIT };
+  return { title: FROM_PLATFORM_COPY.held.title, text: FROM_PLATFORM_COPY.held.text, move: true };
 }
 
 /** A top-up from Platform's refusal, by code; the rest as a top-up's. */

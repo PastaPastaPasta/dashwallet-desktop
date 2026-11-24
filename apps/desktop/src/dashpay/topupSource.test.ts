@@ -67,7 +67,7 @@ describe("Pay with (C3-8)", () => {
     expect(reasons(inputs({ platform: undefined })).platform).toBe(SOURCE_COPY.loading);
     expect(reasons(inputs({ platform: addresses("0", 0) })).platform).toBe(SOURCE_COPY.nothing);
     expect(reasons(inputs({ hold: { state: "pending", topUp: true } })).platform).toBe(FROM_PLATFORM_COPY.pending.text);
-    expect(reasons(inputs({ hold: { state: "held", topUp: true } })).platform).toBe(FROM_PLATFORM_COPY.pending.text);
+    expect(reasons(inputs({ hold: { state: "held", topUp: true } })).platform).toBe(FROM_PLATFORM_COPY.held.text);
     expect(canPay(topUpSources(inputs({ mainnet: true })), "platform")).toBe(false);
   });
 
@@ -91,8 +91,8 @@ describe("Pay with (C3-8)", () => {
     expect(platformHold([row({ kind: "moveToCore", state: "failed", mayLand: true }), row({ kind: "send", state: "pending", mayLand: true })])).toEqual({ state: "pending", topUp: false });
   });
 
-  it("Move to Dash wallet is not offered for a held top-up until the engine binds it to that top-up", () => {
-    expect(offersMove(platformHold([row({ state: "failed", mayLand: true })]))).toBe(false);
+  it("Move to Dash wallet is offered for a held top-up only, from Activity", () => {
+    expect(offersMove(platformHold([row({ state: "failed", mayLand: true })]))).toBe(true);
     expect(offersMove(platformHold([row({ state: "pending", mayLand: true })]))).toBe(false);
     expect(offersMove(platformHold([row({ state: "failed", mayLand: true }), row({ id: "m-1", kind: "moveToCore", state: "failed", mayLand: true })]))).toBe(false);
     expect(offersMove(null)).toBe(false);
@@ -123,20 +123,20 @@ describe("a top-up from Platform's outcome", () => {
     expect(platformOutcomeText(outcome({ state: "pending", mayLand: true, balance: null }), balance)).toEqual({ ...FROM_PLATFORM_COPY.pending, move: false });
   });
 
-  it("'Nothing left' only when it can never execute; anything else not done is held, and may still go through", () => {
+  it("'Nothing left' only when it can never execute; anything else not done is held, with Move to Dash wallet", () => {
     const never = platformOutcomeText(outcome({ state: "failed", mayLand: false, balance: null }), balance);
     expect(never).toEqual({ title: FROM_PLATFORM_COPY.failed.title, text: FROM_PLATFORM_COPY.failed.text, move: false });
     const held = platformOutcomeText(outcome({ state: "failed", mayLand: true, balance: null }), balance);
-    expect(held).toEqual({ title: FROM_PLATFORM_COPY.held.title, text: FROM_PLATFORM_COPY.pending.text, move: false });
-    expect(platformOutcomeText(outcome({ state: "replaced", mayLand: false, balance: null }), balance).move).toBe(false);
+    expect(held).toEqual({ title: FROM_PLATFORM_COPY.held.title, text: FROM_PLATFORM_COPY.held.text, move: true });
+    expect(platformOutcomeText(outcome({ state: "replaced", mayLand: false, balance: null }), balance).move).toBe(true);
   });
 
-  it("follows its Activity row: a pending top-up later held stays held; one that can never land says nothing left", () => {
+  it("follows its Activity row: a pending top-up later held offers the move; one that can never land says nothing left", () => {
     const sent = outcome({ state: "pending", mayLand: true, balance: null });
     expect(liveOutcome(sent, undefined)).toBe(sent);
     expect(liveOutcome(sent, [row({ id: "other", state: "failed", mayLand: true })])).toEqual(sent);
     const held = liveOutcome(sent, [row({ state: "failed", mayLand: true })]);
-    expect(platformOutcomeText(held, balance)).toEqual({ title: FROM_PLATFORM_COPY.held.title, text: FROM_PLATFORM_COPY.pending.text, move: false });
+    expect(platformOutcomeText(held, balance).move).toBe(true);
     const never = liveOutcome(sent, [row({ state: "failed", mayLand: false })]);
     expect(platformOutcomeText(never, balance)).toEqual({ ...FROM_PLATFORM_COPY.failed, move: false });
   });
