@@ -327,3 +327,20 @@ for (const theme of THEMES) {
     });
   }
 }
+
+test("voters the wallet has a label for are named by it in the pane, the sheet and the result (MG-09 F3)", async ({ page }) => {
+  const errors = await open(page, "names-labelled");
+  const pane = page.getByTestId("name-pane-masternodes");
+  await expect(pane).toContainText("Home node · 203.0.113.7:19999");
+  await expect(pane).toContainText("Evonode b2b2b2b2 · 198.51.100.21:19999");
+  await expect(pane).toContainText("Masternode c3c3c3c3");
+  await page.getByTestId("name-vote").click();
+  const sheet = page.getByTestId("name-vote-sheet");
+  await expect(sheet.getByTestId("name-vote-node-a1a1a1a1")).toContainText("Home node · 203.0.113.7:19999");
+  await expect(sheet.getByTestId("name-vote-node-c3c3c3c3")).toContainText("Masternode c3c3c3c3");
+  await sheet.getByTestId("name-choice-abstain").click();
+  await page.getByTestId("name-vote-passphrase").fill("demo");
+  await page.getByTestId("name-vote-send").click();
+  await expect(page.getByTestId("name-vote-result-a1a1a1a1")).toContainText("Home node · 203.0.113.7:19999");
+  expect(errors).toEqual([]);
+});
