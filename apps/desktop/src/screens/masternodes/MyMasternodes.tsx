@@ -41,7 +41,7 @@ import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefr
 import { conflicted, inProgress } from "../../masternodes/operations";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import { InProgressGroup } from "./InProgress";
-import { REGISTRATION_SENDS, registrationCalls } from "../../masternodes/registration";
+import { registrationCalls, registrationSends } from "../../masternodes/registration";
 import { collateralErrorText, ReleaseSheet } from "./ReleaseSheet";
 import { useT } from "../../i18n";
 import { ChangeKeysSheet, OperatorSheet } from "./ChangeKeysSheet";
@@ -202,11 +202,12 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
   const [renaming, setRenaming] = useState(false);
   const [releasing, setReleasing] = useState(false);
   const [lockError, setLockError] = useState<string | null>(null);
+  const sends = registrationSends(network);
   const holdsCollateral = row.mine && row.roles.collateral && row.status !== "removed" && !wallet.watchOnly;
   const lockAgain = async () => {
     setLockError(null);
     try {
-      await registrationCalls(backend).mnLockCollateral(wallet.walletId, row.proTxHash);
+      await registrationCalls(backend, sends).mnLockCollateral(wallet.walletId, row.proTxHash);
     } catch (e) {
       setLockError(collateralErrorText(e, t));
     }
@@ -241,7 +242,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
         {holdsCollateral && row.collateralReleased && (
           <p className="mg-notice mg-notice-warning mg-notice-row" data-testid="mn-released">
             <span>{t("masternodes.release.released")}</span>
-            {REGISTRATION_SENDS && (
+            {sends && (
               <DashButton variant="tintedBlue" size="small" data-testid="mn-lock-again" onClick={() => void lockAgain()}>
                 {t("masternodes.release.lockAgain")}
               </DashButton>
@@ -294,7 +295,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
               { id: "rename", title: MnText.rename, onSelect: () => setRenaming(true) },
               { id: "copy-hash", title: MnText.copyHash, onSelect: () => void copyWithToast(row.proTxHash) },
               ...(outpoint ? [{ id: "copy-outpoint", title: MnText.copyOutpoint, onSelect: () => void copyWithToast(outpoint) }] : []),
-              ...(holdsCollateral && REGISTRATION_SENDS
+              ...(holdsCollateral && sends
                 ? [
                     row.collateralReleased
                       ? { id: "lock-again", title: t("masternodes.release.lockAgain"), onSelect: () => void lockAgain() }
@@ -307,7 +308,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
         </div>
       </section>
       {renaming && <RenameSheet row={row} onClose={() => setRenaming(false)} />}
-      {releasing && <ReleaseSheet row={row} wallet={wallet} onClose={() => setReleasing(false)} />}
+      {releasing && <ReleaseSheet row={row} wallet={wallet} network={network} onClose={() => setReleasing(false)} />}
       {sheet === "change-keys" && d && canChange && <ChangeKeysSheet wallet={wallet} network={network} row={row} detail={d} onClose={() => setSheet(null)} />}
       {sheet === "operator" && <OperatorSheet row={row} detail={d} onChangeKeys={canChange ? () => setSheet("change-keys") : null} onClose={() => setSheet(null)} />}
     </aside>

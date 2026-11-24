@@ -94,6 +94,49 @@ describe("the spending limit", () => {
     expect(model.pending).toBeNull();
     expect((await b.quickUnlockPolicy()).spendLimitDuffs).toBe(10_000_000);
   });
+
+  it("#173 item 10: a limit the engine can't read shows as such, and the same value can be set again", async () => {
+    fixture.world.spendLimitUnreadable = true;
+    const model = new SpendLimitModel(b);
+    await model.load();
+    // Not the old 0.5 DASH as current: the limit in force is 0, and the engine says why.
+    expect(model.unreadable).toBe(true);
+    expect(model.limit).toBe(0);
+    // The value shown before can be set again (a readable limit ignores asking for itself).
+    model.ask(50_000_000);
+    expect(model.pending).toBe(50_000_000);
+    await model.confirm(PASS);
+    expect(model.unreadable).toBe(false);
+    expect(model.limit).toBe(50_000_000);
+    const policy = await b.quickUnlockPolicy();
+    expect([policy.spendLimitDuffs, policy.spendLimitUnreadable]).toEqual([50_000_000, false]);
+    // Readable again: asking for the current value is no change.
+    model.ask(50_000_000);
+    expect(model.pending).toBeNull();
+  });
+
+  it("an unreadable limit can be set to 0, the value it shows, which keeps every payment asking", async () => {
+    fixture.world.spendLimitUnreadable = true;
+    const model = new SpendLimitModel(b);
+    await model.load();
+    expect([model.limit, model.unreadable]).toEqual([0, true]);
+    model.ask(0);
+    expect(model.pending).toBe(0);
+    await model.confirm(PASS);
+    const policy = await b.quickUnlockPolicy();
+    expect([policy.spendLimitDuffs, policy.spendLimitUnreadable]).toEqual([0, false]);
+    expect([model.limit, model.unreadable]).toEqual([0, false]);
+  });
+
+  it("an unreadable limit is reported in a mixing-only unlock too, and quick unlock pays nothing", async () => {
+    fixture.world.spendLimitUnreadable = true;
+    fixture.world.lock = { ...fixture.world.lock, state: "unlockedMixingOnly", quickUnlockEnrolled: true };
+    const policy = await b.quickUnlockPolicy();
+    expect([policy.spendLimitDuffs, policy.spendLimitUnreadable]).toEqual([0, true]);
+    await expect(b.authorize({ kind: "spend", maxDuffs: 1 }, fixture.world.wallets[0].summary.walletId, { kind: "quickUnlock", wrapKey: "00".repeat(32) })).rejects.toMatchObject({
+      code: "vault.credential_required",
+    });
+  });
 });
 
 describe("payment authentication", () => {

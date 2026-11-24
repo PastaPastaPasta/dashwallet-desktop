@@ -15,6 +15,7 @@ import type { WalletFileInfo } from "../api/generated/WalletFileInfo";
 import { LockModel } from "../onboarding/lock";
 import { failureText, Model } from "../onboarding/model";
 import { passphraseProblem } from "../onboarding/passphrase";
+import { t } from "../i18n";
 import { vaultCredential } from "./security";
 import { optionalName, WalletsText } from "./wallets";
 
@@ -232,6 +233,13 @@ export class ImportFileModel extends Model {
 
   /** Bumped whenever the selection is dropped (Back, reset): a reply for an older one is ignored. */
   generation = 0;
+
+  /** A new path is being chosen: the last one's problem no longer applies. */
+  clearError() {
+    if (this.step !== "path" || this.error === null) return;
+    this.error = null;
+    this.changed();
+  }
 
   async inspect(path: string) {
     if (this.step !== "path") return;
@@ -515,4 +523,11 @@ export class ExportModel extends Model {
     }
     this.changed();
   }
+}
+
+/** Show Folder's refusal: no folder yet, the folder not opening, or anything else. */
+export function folderErrorText(e: unknown): string {
+  if (hasCode(e, "app.backup_folder_missing")) return t("settings.backups.noFolderYet");
+  if (hasCode(e, "app.folder_open")) return t("settings.backups.showFolderFailed");
+  return failureText(e);
 }

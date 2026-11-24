@@ -66,6 +66,10 @@ const dash = (duffs: number) => ({
 });
 
 /** The iOS spending-limit options, in duffs. The signing window and quick unlock share them. */
+/** The engine's default limit (dw-vault `DEFAULT_QUICK_UNLOCK_SPEND_LIMIT`, 0.5 DASH): what "Set limit
+ * again…" offers for a limit that can't be read; the picker offers the others. */
+export const DEFAULT_SPEND_LIMIT = 50_000_000;
+
 export const SPEND_LIMITS: { duffs: number; label: string }[] = [
   dash(0),
   dash(10_000_000),
@@ -272,6 +276,9 @@ export class PaymentAuthModel extends Model {
  * and takes a `changeCredential` grant, the same as the payment setting. */
 export class SpendLimitModel extends Model {
   limit: number | null = null;
+  /** The engine can't read the sealed limit (`spendLimitUnreadable`): `limit` is the 0 in force,
+   * and any value, the one shown before included, can be set again. */
+  unreadable = false;
   /** The limit the prompt is asking to set; `null` while none is. */
   pending: number | null = null;
   error: string | null = null;
@@ -288,7 +295,9 @@ export class SpendLimitModel extends Model {
 
   async load() {
     try {
-      this.limit = (await this.api.quickUnlockPolicy()).spendLimitDuffs;
+      const policy = await this.api.quickUnlockPolicy();
+      this.limit = policy.spendLimitDuffs;
+      this.unreadable = policy.spendLimitUnreadable === true;
     } catch (e) {
       this.error = failureText(e);
     }
@@ -296,7 +305,7 @@ export class SpendLimitModel extends Model {
   }
 
   ask(duffs: number) {
-    if (duffs === this.limit || this.busy) return;
+    if ((duffs === this.limit && !this.unreadable) || this.busy) return;
     this.#round++;
     this.pending = duffs;
     this.error = null;
@@ -334,6 +343,7 @@ export class SpendLimitModel extends Model {
     try {
       const policy = await this.api.setQuickUnlockSpendLimit(grant, limit);
       this.limit = policy.spendLimitDuffs;
+      this.unreadable = policy.spendLimitUnreadable === true;
       this.pending = null;
     } catch (e) {
       this.api.revokeGrant(grant).catch(() => {});

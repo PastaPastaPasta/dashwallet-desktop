@@ -5,6 +5,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
 import type { ContactSortName } from "../api/generated/ContactSortName";
+import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
 import type { Route } from "../api/generated/Route";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { ToolsTab } from "../api/generated/ToolsTab";
@@ -50,7 +51,7 @@ export interface AddContactIntent {
 export type Protection = "off" | "pending" | "on" | "failed";
 
 /** `recoveryPhrase`: Show Recovery Phrase (U-02 D13); `unlock`: the full unlock from mixing only (D12). */
-export type Dialog = "openUri" | "about" | "recoveryPhrase" | "unlock" | "savedLinks" | "sync";
+export type Dialog = "openUri" | "about" | "recoveryPhrase" | "unlock" | "savedLinks" | "sync" | "mnKeys";
 
 /** Activity's filter from Masternodes (MG-10 §1.9): one node's payout txids, or coinbase income. */
 export type ActivityFilter = { kind: "txids"; title: string; txids: string[] } | { kind: "generated" };
@@ -88,6 +89,8 @@ export interface UiState {
   /** The wallet Show Recovery Phrase opens on when Settings ▸ Wallets picked one; `null`: the
    * window's wallet. */
   recoveryWallet: string | null;
+  /** The role Masternode keys opens on (`null`: owner). */
+  mnKeysRole: MasternodeKeyRoleName | null;
   /** Onboarding covers the shell: the first wallet, or Wallet ▸ Add Wallet… (U-02 D1). Only
    * whether it is open; its state stays in its view model. */
   onboarding: boolean;
@@ -154,6 +157,7 @@ let state: UiState = {
   detail: null,
   dialog: null,
   recoveryWallet: null,
+  mnKeysRole: null,
   onboarding: false,
   forgotPassphrase: false,
   wiping: false,

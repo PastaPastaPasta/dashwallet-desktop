@@ -1347,8 +1347,11 @@ a hash's shape (D23).
   `replied` for a fee change after another party's reply (MG-04b D33), `incomplete` for a lock before every row and
   contribution is in, `unsigned` for a send before every participant's input is signed (MG-04b D71), `abandoned` for a resend of an
   abandoned session (MG-04b D72).
-- `masternodes.shared_message{reason, share}`: a pasted or opened message is refused: `not_shared`, `too_large`,
-  `parse`, `network`, `other_session`, `terms_changed`, `older`, `conflict` (also a lock or approval of a copy other
+- `masternodes.shared_message{reason, share}`: a pasted or opened message is refused: `not_shared`, `too_large`
+  (also JSON whose message code would render past 4 MiB), `parse` (also JSON nested past 16 levels, holding over
+  65,536 values, or with a key twice in one object, refused before its code is computed; and a session at revision
+  `i32::MAX`, which `join_shared`, `set_shared_fee` and `unlock_shared_terms` can't advance; a reply merged into one is
+  `conflict`), `network`, `other_session`, `terms_changed`, `older`, `conflict` (also a lock or approval of a copy other
   than the session's current one, MG-04b D56), `bad_signature` (with `share`), `not_participant`, `labels`;
   for a dissolve-together request `not_dissolution`, `other_masternode`, `signed` and `outputs` (MG-04b D92); for a
   key change `not_key_change`, `other_masternode` and `inputs_hash` (MG-04b D104), and `stale` for an approval or send
