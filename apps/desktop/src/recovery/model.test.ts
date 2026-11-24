@@ -83,8 +83,19 @@ describe("unfinished transfers card", () => {
   });
 
   it("checking locks only: Check again, singular and plural", () => {
-    expect(view(list([lock(1, "checking")]))).toMatchObject({ kind: "checking", text: "1 transfer may already be finished. We can't confirm it yet.", actions: ["checkAgain", "details"] });
-    expect(view(list([lock(1, "checking"), lock(2, "checking")]))?.text).toBe("2 transfers may already be finished. We can't confirm it yet.");
+    expect(view(list([lock(1, "checking")]))).toMatchObject({ kind: "checking", text: "1 transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again adds it.", actions: ["checkAgain", "details"] });
+    expect(view(list([lock(1, "checking"), lock(2, "checking")]))?.text).toBe(
+      "2 transfers may already be finished. Choose Check again to confirm them. If an amount wasn't added yet, Check again adds it.",
+    );
+  });
+
+  it("names the Check again button by its own label in each Checking line", () => {
+    const label = C.checkAgain;
+    const lines = [C.checking(1), C.checking(2), C.sheet.done.checking];
+    for (const line of lines) {
+      expect(line).toContain(`Choose ${label} to confirm`);
+      expect(line).toContain(`, ${label} adds it.`);
+    }
   });
 
   it("running says Finishing…, whatever the list", () => {
@@ -141,7 +152,9 @@ describe("unfinished transfers sheet", () => {
 
   it("says what each finish came to", () => {
     expect(resultText({ kind: "applied" }, errorText)).toBe("Added to Shielded");
-    expect(resultText({ kind: "checking" }, errorText)).toBe("Checking: this amount may already be in your balance; we can't confirm it yet.");
+    expect(resultText({ kind: "checking" }, errorText)).toBe(
+      "This transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again adds it.",
+    );
     expect(resultText({ kind: "reportedUsed" }, errorText)).toBe("The network says this was already added. There's nothing left to finish.");
     expect(resultText({ kind: "proofWaiting" }, errorText)).toBe("Waiting for the network to confirm");
     expect(resultText({ kind: "notApplied", error: "platform.unavailable" }, errorText)).toBe("error platform.unavailable");

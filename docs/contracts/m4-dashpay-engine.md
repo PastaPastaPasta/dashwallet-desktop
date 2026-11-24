@@ -2880,7 +2880,7 @@ The shapes are in §3. What they mean, where the name does not say:
 
 - **`UnfinishedLock`, `LockFinish`** (§2.14). `origin` says who signed the lock's funding (`thisDevice`) or that a
   restore read it back (`restored`); nothing in a lock says whether Platform already took it, so `checking` is not a
-  failure: "This amount may already be in your balance; we can't confirm it yet." `unsupported`: "Can't be finished in
+  failure: "This transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again adds it." `unsupported`: "Can't be finished in
   this version"; `tooSmall`: "Too small to finish: worth less than the Platform fee" (neither is offered a Finish).
 - **`DashPayStatus.NoIdentity{reason}`.** `None` means the user can join. `WatchOnly`: the wallet has no keys
   ("This wallet can't use DashPay because it has no keys"). `WaitingForSync`: Core or masternode sync has not finished,
