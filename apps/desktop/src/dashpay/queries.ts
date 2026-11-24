@@ -2,17 +2,21 @@
 // `Platform` signal re-reads them (events.ts); the status and the main identity are the shell's
 // (`useDashPayShell`).
 
+import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import { useDebounced } from "../app/useDebounced";
-import { keys, mainIdentityOf, mainSummaryOf, useBackend, useLockStatus, useSyncStatus } from "../api/queries";
+import { keys, mainIdentityOf, mainSummaryOf, useBackend, useLockStatus, useSyncStatus, useWallets } from "../api/queries";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
 import type { PayWithInputs } from "./payWith";
 import { AVAILABILITY_DEBOUNCE_MS, isRunning } from "./registration";
+import { AvailabilityChecker, suggest } from "./instantName";
+import { useModel } from "../onboarding/model";
+import { contestRow, homographSafe, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
 import { QUOTE_REQUEST, type StatusInputs } from "./status";
 import { coreRequest, invitationRequest, platformRequest } from "./wizard";
 
@@ -21,8 +25,11 @@ export const dashpayKeys = {
   registrations: (walletId: string) => ["dashpay", "registrations", walletId] as const,
   quote: (walletId: string) => ["dashpay", "quote", walletId] as const,
   /** DP1-09: the quote of one label, under `quote`, so a balance change re-reads it too. */
-  labelQuote: (walletId: string, label: string, fromPlatform = false) =>
-    fromPlatform ? (["dashpay", "quote", walletId, label, "platform"] as const) : (["dashpay", "quote", walletId, label] as const),
+  labelQuote: (walletId: string, label: string, fromPlatform = false, temporaryLabel: string | null = null) => {
+    const key = fromPlatform ? (["dashpay", "quote", walletId, label, "platform"] as const) : (["dashpay", "quote", walletId, label] as const);
+    // An instant username beside it is priced too (D4 reversed).
+    return temporaryLabel === null ? key : ([...key, { temporaryLabel }] as const);
+  },
   availability: (walletId: string, label: string) => ["dashpay", "availability", walletId, label] as const,
   nameCredits: (walletId: string, identity: string, label: string) => ["dashpay", "nameCredits", walletId, identity, label] as const,
   /** Pure and offline (`check_username`): no signal changes it, so it is not under `dashpay`. */
@@ -37,6 +44,8 @@ export const dashpayKeys = {
   /** C-funding F16: the Shielded balance's readiness to pay a registration, under `quote`; an
    * object where `labelQuote` has its label, so no username shares its key. */
   shieldedReadiness: (walletId: string) => ["dashpay", "quote", walletId, { funding: "shielded" }] as const,
+  /** The identities read with the time it started, for what became of a temporary name. */
+  namesRead: (walletId: string) => ["dashpay", "namesRead", walletId] as const,
   /** C-funding F19: the "Pay with" step's Platform quote of a plain name, keyed as the readiness. */
   platformSource: (walletId: string) => ["dashpay", "quote", walletId, { funding: "platform" }] as const,
 };
@@ -75,6 +84,21 @@ export function useNameChecks(walletId: string, label: string) {
   return { check: check.data, availability: answer, pending: settled !== label || availability.isFetching };
 }
 
+/** The instant form's reads (D4 reversed): the offline checklist of `candidate` at once, its
+ * availability only once it passed the rules, is not contested and is not `requested`, and the
+ * typing settled; a stale answer is dropped. */
+export function useInstantChecks(walletId: string, requested: string, candidate: string) {
+  const b = useBackend();
+  const check = useUsernameCheck(candidate).data;
+  const checker = useMemo(() => new AvailabilityChecker((label) => b.nameAvailability(walletId, label)), [b, walletId]);
+  useModel(checker);
+  useEffect(() => () => checker.dispose(), [checker]);
+  const eligible = check?.valid && !check.contested && check.normalized !== homographSafe(requested) ? candidate : null;
+  useEffect(() => checker.set(eligible), [checker, eligible]);
+  const current = eligible !== null && checker.label === eligible;
+  return { check, availability: current ? checker.availability : undefined, pending: eligible !== null && (!current || checker.pending) };
+}
+
 /** The engine's offline checklist for `label` (`check_username`). */
 export function useUsernameCheck(label: string) {
   const b = useBackend();
@@ -92,12 +116,13 @@ export function useNameCredits(walletId: string, identity: string | null, label:
   });
 }
 
-/** Step 2's quote for `label`, from the Dash wallet or the Platform balance. */
-export function useLabelQuote(walletId: string, label: string, enabled: boolean, fromPlatform = false) {
+/** Step 2's quote for `label` and the instant username beside it, from the Dash wallet or the
+ * Platform balance. */
+export function useLabelQuote(walletId: string, label: string, enabled: boolean, fromPlatform = false, temporaryLabel: string | null = null) {
   const b = useBackend();
   return useQuery({
-    queryKey: dashpayKeys.labelQuote(walletId, label, fromPlatform),
-    queryFn: () => b.registrationQuote(walletId, fromPlatform ? platformRequest(label) : coreRequest(label)),
+    queryKey: dashpayKeys.labelQuote(walletId, label, fromPlatform, temporaryLabel),
+    queryFn: () => b.registrationQuote(walletId, fromPlatform ? platformRequest(label, undefined, temporaryLabel) : coreRequest(label, temporaryLabel)),
     enabled,
     retry: false,
   });
@@ -169,6 +194,44 @@ export function useUsernameQuote(walletId: string, enabled: boolean) {
   return quote.data;
 }
 
+/** The identities as one read answered, with when it started: a failed read says nothing. */
+export function useNamesRead(walletId: string, enabled: boolean): NamesRead | undefined {
+  const b = useBackend();
+  const read = useQuery({
+    queryKey: dashpayKeys.namesRead(walletId),
+    queryFn: async () => {
+      const startedAt = Date.now();
+      return { startedAt, identities: await b.identities(walletId) };
+    },
+    enabled,
+    retry: false,
+  });
+  return read.isError ? undefined : read.data;
+}
+
+/** What the voting card and the request's details offer while the wallet's own contest is open
+ * (D4 reversed): the Join page's gate, a plain name's credits, and the temporary name its
+ * registration asked for. `undefined` with no open contest. */
+export function useInstantInputs(walletId: string, status: DashPayStatus | undefined): InstantInputs | undefined {
+  const contest = status?.kind === "contestPending" ? status : null;
+  const wallets = useWallets();
+  const rows = useRegistrations(walletId, contest !== null);
+  const read = useNamesRead(walletId, contest !== null);
+  const credits = useNameCredits(walletId, contest?.identity ?? null, contest ? suggest(contest.label) : "");
+  if (!contest) return undefined;
+  const wallet = wallets.data?.find((w) => w.walletId === walletId);
+  const row = contestRow(rows.data, contest.identity, contest.label);
+  return {
+    offered: registrationOffered(wallet),
+    nameCredits: credits.data?.maxCredits ?? null,
+    asked: row?.temporaryLabel ? { label: row.temporaryLabel, outcome: temporaryOutcome(row, read) } : null,
+  };
+}
+
+/** The Join page's gate on registering at all: a wallet that holds its keys (the status's
+ * `watchOnly` reason). Never the network: registration from the Dash wallet is live on mainnet. */
+export const registrationOffered = (wallet: { watchOnly: boolean } | undefined): boolean => wallet !== undefined && !wallet.watchOnly;
+
 /** Everything the Home card and the Join page derive from (`homeCard`, `joinModel`), under the
  * shell's keys, so these reads share its cache. `retry` reads the status again (S2). */
 export function useStatusInputs(walletId: string, network: NetworkInfo): { inputs: StatusInputs; retry: () => void } {
@@ -177,6 +240,7 @@ export function useStatusInputs(walletId: string, network: NetworkInfo): { input
   const main = mainIdentityOf(status.data);
   const identities = useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId), enabled: main !== null });
   const registration = useStatusRegistration(walletId, status.data);
+  const instant = useInstantInputs(walletId, status.data);
   const lock = useLockStatus().data?.state;
   const sync = useSyncStatus().data;
   const display = useDisplay(network);
@@ -193,6 +257,7 @@ export function useStatusInputs(walletId: string, network: NetworkInfo): { input
       date: (secs) => new Date(secs * 1000).toLocaleDateString(b.locale, { year: "numeric", month: "short", day: "numeric" }),
       amount: (duffs) => `${display.compact(duffs)} ${display.name}`,
       discreet,
+      instant,
     },
     retry: () => void status.refetch(),
   };

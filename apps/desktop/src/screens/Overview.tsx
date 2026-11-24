@@ -25,7 +25,7 @@ import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, kno
 import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction, moveToDashWallet } from "./dashpay/DashPayCard";
-import { buyCredits } from "./dashpay/MyProfile";
+import { buyCredits, instantCardAction } from "./dashpay/MyProfile";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
 import { ExportStagingBanner } from "./ExportStagingBanner";
@@ -197,8 +197,12 @@ function HomeDashPayCard({ walletId, network }: { walletId: string; network: Net
   const b = useBackend();
   const { inputs, retry } = useStatusInputs(walletId, network);
   const card = homeCard(inputs);
-  // DP1-10 D8: "Buy credits" opens My Profile with the top-up sheet.
-  const onAction = (kind: CardActionKind) => (kind === "buyCredits" && inputs.main ? buyCredits(b, walletId, inputs.main) : defaultCardAction(kind, retry, () => moveToDashWallet(b, walletId)));
+  // DP1-10 D8: "Buy credits" (and the voting card's Top up) opens My Profile with the top-up sheet.
+  const onAction = (kind: CardActionKind) => {
+    if (kind === "buyCredits" && inputs.main) return buyCredits(b, walletId, inputs.main);
+    if (instantCardAction(b, walletId, inputs.main, kind, card)) return;
+    return defaultCardAction(kind, retry, () => moveToDashWallet(b, walletId));
+  };
   return card && <DashPayCard card={card} onAction={onAction} />;
 }
 

@@ -487,3 +487,67 @@ describe("an invitation's claim (DP5-03 D17)", () => {
     expect(await rowOf(draft)).toMatchObject({ running: true, fromPlatform: true });
   });
 });
+
+describe("a temporary name beside a contested label (DP1-09 D4 reversed)", () => {
+  const contested = (temp: string | null) => coreRequest("alice", temp);
+
+  it("the quote prices both names; the contested lock covers them, so the total does not move", async () => {
+    install();
+    const alone = await cmd.registrationQuote(W, contested(null));
+    const both = await cmd.registrationQuote(W, contested("alice2"));
+    expect(alone.grant.maxCredits).toBe(String(NAME_CREDITS));
+    expect(both.grant.maxCredits).toBe(String(2n * NAME_CREDITS));
+    expect(both.totalDuffs).toBe(alone.totalDuffs);
+    // A plain label takes none (registration.rs `plan`).
+    expect((await cmd.registrationQuote(W, coreRequest(LABEL, "alice2"))).grant.maxCredits).toBe(String(NAME_CREDITS));
+  });
+
+  it("a contested temporary name is refused before any row", async () => {
+    const f = install();
+    await expect(cmd.registrationQuote(W, contested("bobby"))).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(cmd.startRegistration(W, contested("bobby"), await grant(25_002_261, String(2n * NAME_CREDITS)))).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(f.world.dashpay.assetLocks).toBe(0);
+  });
+
+  it("registered right after the contest starts: the identity's main name while the vote runs", async () => {
+    const f = install();
+    const draft = await cmd.startRegistration(W, contested("alice2"), await grant(25_002_261, String(2n * NAME_CREDITS)));
+    expect((await rowOf(draft)).temporaryLabel).toBe("alice2");
+    while (f.advanceRegistration(draft));
+    expect(await rowOf(draft)).toMatchObject({ phase: "done", temporaryLabel: "alice2" });
+    expect(await cmd.dashpayStatus(W)).toMatchObject({ kind: "contestPending", label: "alice" });
+    expect((await cmd.identities(W))[0]).toMatchObject({ names: ["alice2"], mainName: "alice2" });
+    expect((await cmd.contestStatus(W, NEW_IDENTITY, "alice")).temporaryName).toBe("alice2");
+  });
+
+  it("refused: the contest goes on and the identity holds no name (the engine only logs it)", async () => {
+    const f = install();
+    f.world.dashpay.temporaryRefused = true;
+    const draft = await cmd.startRegistration(W, contested("alice2"), await grant(25_002_261, String(2n * NAME_CREDITS)));
+    while (f.advanceRegistration(draft));
+    expect(await cmd.dashpayStatus(W)).toMatchObject({ kind: "contestPending", label: "alice" });
+    expect((await cmd.identities(W))[0]).toMatchObject({ names: [], mainName: null });
+    expect((await cmd.contestStatus(W, NEW_IDENTITY, "alice")).temporaryName).toBeNull();
+  });
+
+  it("the scenarios: registered, refused, won and lost", async () => {
+    for (const [scenario, names] of [
+      ["dashpay-instant-ok", ["alice2"]],
+      ["dashpay-instant-failed", []],
+      ["dashpay-instant-won", ["alice2"]],
+      ["dashpay-instant-lost", ["alice2"]],
+    ] as const) {
+      clearMocks();
+      install(scenario);
+      expect(await cmd.dashpayStatus(W), scenario).toMatchObject({ kind: "contestPending", label: "alice" });
+      expect((await cmd.registrations(W))[0], scenario).toMatchObject({ label: "alice", temporaryLabel: "alice2", phase: "done" });
+      expect((await cmd.identities(W))[0].names, scenario).toEqual(names);
+    }
+    install("dashpay-instant-won");
+    expect(await cmd.contestStatus(W, IDENTITY.alice, "alice")).toMatchObject({ state: { kind: "won" }, temporaryName: "alice2" });
+    install("dashpay-instant-lost");
+    expect(await cmd.contestStatus(W, IDENTITY.alice, "alice")).toMatchObject({ state: { kind: "lost" }, temporaryName: "alice2" });
+    install("dashpay-contest-instant-short");
+    expect(BigInt((await cmd.identities(W))[0].balance!)).toBeLessThan(NAME_CREDITS);
+  });
+});

@@ -14,6 +14,7 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { formatLocale, messageTable, t } from "../i18n";
+import { INSTANT_COPY, instantOffer, VOTE_COPY, type InstantInputs } from "./instantOffer";
 import { REG_COPY } from "./registration";
 import { COPY, homeCard, namesState, withTable, type CardModel, type NamesState, type StatusInputs } from "./status";
 
@@ -277,6 +278,10 @@ export interface RequestModel {
   temporary: string | null;
   /** Offer "Create instant username" (D13). */
   instant: boolean;
+  /** The credits do not cover an instant username: Top up instead (D4 reversed). */
+  short: boolean;
+  /** The temporary name the registration could not register: its line and Try again. */
+  failed: string | null;
   /** R6: `contest_status` failed. */
   readFailed: boolean;
 }
@@ -307,31 +312,44 @@ export function requestModel(
   readFailed: boolean,
   main: IdentitySummary,
   date: (secs: number) => string,
+  /** What the instant username's offer reads (D4 reversed); `undefined` offers nothing. */
+  instant?: InstantInputs,
 ): RequestModel {
   const C = PROFILE_COPY.request;
   const read = contest && contest.label === label ? contest : undefined;
+  const closed = { temporary: null, instant: false, short: false, failed: null, readFailed: false };
   switch (read?.state.kind) {
-    case "won":
-      return { state: "won", title: C.won.title(label), lines: [C.won.text], tally: tallyRows(read), temporary: null, instant: false, readFailed: false };
+    case "won": {
+      // The engine's proved result (a won state), never the tally; the instant name stays owned.
+      const kept = instant?.offered && read.temporaryName ? read.temporaryName : null;
+      return { ...closed, state: "won", title: C.won.title(label), lines: [kept ? VOTE_COPY.wonMain(label, kept) : C.won.text], tally: tallyRows(read) };
+    }
     case "lost":
-      return {
-        state: "lost",
-        title: read.state.winner === null ? C.lostNoWinner(label) : C.lost(label),
-        lines: [],
-        tally: tallyRows(read),
-        temporary: null,
-        instant: false,
-        readFailed: false,
-      };
+      return { ...closed, state: "lost", title: read.state.winner === null ? C.lostNoWinner(label) : C.lost(label), lines: [], tally: tallyRows(read) };
     case "locked":
-      return { state: "locked", title: C.locked.title(label), lines: [C.locked.text], tally: tallyRows(read), temporary: null, instant: false, readFailed: false };
+      return { ...closed, state: "locked", title: C.locked.title(label), lines: [C.locked.text], tally: tallyRows(read) };
     default: {
       const end = read?.endsAt ?? endsAt;
       const fromMain = !main.namesUpdating && main.mainName && main.mainName !== label ? main.mainName : null;
       const temporary = read?.temporaryName ?? fromMain;
       const lines: string[] = [C.deciding, end === null ? C.notify : C.endsOn(date(end))];
-      if (temporary) lines.push(C.temporary(temporary));
-      return { state: "open", title: C.title(label), lines, tally: read ? tallyRows(read) : null, temporary, instant: !temporary, readFailed: readFailed && !read };
+      const asked = instant?.asked;
+      if (temporary && asked?.outcome === "owned" && asked.label === temporary) lines.push(INSTANT_COPY.success(temporary, label));
+      else if (temporary) lines.push(C.temporary(temporary));
+      const offer = instantOffer(main, temporary, instant);
+      if (offer?.kind === "short") lines.push(VOTE_COPY.instantShort);
+      if (offer?.kind === "failed") lines.push(INSTANT_COPY.failure(offer.label));
+      return {
+        state: "open",
+        title: C.title(label),
+        lines,
+        tally: read ? tallyRows(read) : null,
+        temporary,
+        instant: offer?.kind === "create",
+        short: offer?.kind === "short",
+        failed: offer?.kind === "failed" ? offer.label : null,
+        readFailed: readFailed && !read,
+      };
     }
   }
 }

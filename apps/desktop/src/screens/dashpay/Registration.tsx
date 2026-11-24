@@ -16,7 +16,10 @@ import { useBackend, usePoolBalances } from "../../api/queries";
 import { PAY_WITH_COPY, payWithRows } from "../../dashpay/payWith";
 import { timeText } from "../../fiat/rates";
 import { known } from "../../format/homeBalance";
-import { useLabelQuote, useNameChecks, useNameCredits, usePlatformSource, useShieldedReadiness, useUsernameCheck, useUsernameQuote } from "../../dashpay/queries";
+import { useInstantChecks, useLabelQuote, useNameChecks, useNameCredits, usePlatformSource, useShieldedReadiness, useUsernameCheck, useUsernameQuote } from "../../dashpay/queries";
+import { instantCheck, suggest } from "../../dashpay/instantName";
+import { INSTANT_COPY, voteDuration } from "../../dashpay/instantOffer";
+import type { NetworkKind } from "../../api/generated/NetworkKind";
 import {
   availabilityLine,
   canChoose,
@@ -64,8 +67,91 @@ export function ErrorLine({ wiz, inputs, claim = false, fromPlatform = wiz.fromP
   );
 }
 
+/** The instant username's offer (D4 reversed; iOS `CreateInstantUsernameSheet`), over step 1 once
+ * a contested name is chosen: Create instant username is the default, focused, so Enter takes it. */
+export function InstantOfferSheet({ wiz, network }: { wiz: RegistrationWizard; network: NetworkKind }) {
+  useT();
+  const create = () => wiz.createInstant(suggest(wiz.label));
+  return (
+    <Sheet title={INSTANT_COPY.title} width="small" testId="instant-offer" onClose={() => wiz.dismissOffer()}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          create();
+        }}
+      >
+        {INSTANT_COPY.offer(voteDuration(network)).map((text) => (
+          <p key={text} className="sheet-text">
+            {text}
+          </p>
+        ))}
+        <div className="sheet-actions">
+          <DashButton variant="tintedGray" size="large" data-testid="instant-offer-decline" onClick={() => wiz.declineInstant()}>
+            {INSTANT_COPY.decline}
+          </DashButton>
+          <DashButton variant="filledBlue" size="large" type="submit" data-autofocus data-testid="instant-offer-create">
+            {INSTANT_COPY.create}
+          </DashButton>
+        </div>
+      </form>
+    </Sheet>
+  );
+}
+
+/** The instant username's form (D4 reversed): iOS's explainer, the suggestion, and one line for
+ * the checks in iOS's order (`instantCheck`). */
+function InstantStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string }) {
+  useT();
+  const id = useId();
+  const candidate = (wiz.temporaryLabel ?? "").trim();
+  const { check, availability, pending } = useInstantChecks(walletId, wiz.label, candidate);
+  const c = instantCheck(wiz.label, candidate, check, availability, pending);
+  return (
+    <section className="registration card-l1" data-testid="registration-instant" aria-labelledby={`${id}-title`}>
+      <StepHeader n={1} step={REG_COPY.name.step} title={REG_COPY.name.instantTitle} id={`${id}-title`} />
+      <p className="registration-line" data-testid="registration-instant-explainer">
+        {INSTANT_COPY.explainer(wiz.label)}
+      </p>
+      <form
+        className="registration-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (c.ok) wiz.confirmInstant();
+        }}
+      >
+        <label className="form-field">
+          {REG_COPY.name.field}
+          <input
+            data-testid="registration-instant-field"
+            value={wiz.temporaryLabel ?? ""}
+            maxLength={MAX_LABEL}
+            autoFocus
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            aria-invalid={c.line?.tone === "problem"}
+            aria-describedby={`${id}-check`}
+            onChange={(e) => wiz.setTemporaryLabel(e.target.value)}
+          />
+        </label>
+        <p className="registration-availability" id={`${id}-check`} role="status" data-testid="registration-instant-check" data-kind={c.kind} data-tone={c.line?.tone}>
+          {c.line?.text}
+        </p>
+        <div className="registration-actions">
+          <DashButton variant="tintedGray" data-testid="registration-back" onClick={() => wiz.back()}>
+            {REG_COPY.confirm.back}
+          </DashButton>
+          <DashButton variant="filledBlue" type="submit" data-testid="registration-next" disabled={!c.ok}>
+            {REG_COPY.name.next}
+          </DashButton>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 /** Step 1 (IOS-066, F4): the checklist as the user types, then the network's answer. */
-function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string }) {
+function NameStep({ wiz, walletId, network }: { wiz: RegistrationWizard; walletId: string; network: NetworkKind }) {
   useT();
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
@@ -87,7 +173,7 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
         className="registration-form"
         onSubmit={(e) => {
           e.preventDefault();
-          if (ok) wiz.next();
+          if (ok) wiz.next(check?.contested === true);
         }}
       >
         <label className="form-field">
@@ -144,6 +230,7 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
         </div>
       </form>
       {votingInfo && <VotingInfoSheet onClose={() => setVotingInfo(false)} />}
+      {wiz.offer && <InstantOfferSheet wiz={wiz} network={network} />}
     </section>
   );
 }
@@ -251,7 +338,7 @@ function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: Re
  * F9), or what the identity's credits may pay (D6). */
 function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizard; walletId: string; identity: string | null; inputs: StatusInputs }) {
   useT();
-  const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.fromPlatform);
+  const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.fromPlatform, wiz.temporaryLabel);
   const credits = useNameCredits(walletId, identity, wiz.label);
   // Either read failing says so (review r2 L1); a Platform quote's refusal says why.
   const failed = identity !== null ? credits : quote;
@@ -296,7 +383,7 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   const [accepted, setAccepted] = useState(false);
   const identity = wiz.mode.kind === "credits" ? wiz.mode.identity : null;
   // The same reads as CostLines (shared through the query cache).
-  const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.fromPlatform);
+  const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.fromPlatform, wiz.temporaryLabel);
   // F4: a start refused for a changed cost shows the new one; F22: so does a run's.
   const changedCost = hasCode(wiz.error, "registration.quote_changed");
   const stands = wiz.quoteStands(quote.dataUpdatedAt);
@@ -319,6 +406,11 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
     <section className="registration card-l1" data-testid="registration-confirm" aria-labelledby={`${id}-title`}>
       <StepHeader n={2} step={REG_COPY.confirm.step} title={REG_COPY.confirm.title} id={`${id}-title`} />
       <p className="registration-line">{REG_COPY.confirm.message(wiz.label)}</p>
+      {wiz.temporaryLabel !== null && (
+        <p className="registration-line" data-testid="registration-confirm-instant">
+          {INSTANT_COPY.confirm(wiz.temporaryLabel)}
+        </p>
+      )}
       <div className="registration-cost" data-testid="registration-cost">
         <CostLines wiz={wiz} walletId={walletId} identity={identity} inputs={inputs} />
       </div>
@@ -423,13 +515,14 @@ function PayWithStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
 
 /** Steps 1 and 2 (after "Pay with" when it was opened), and the passphrase prompt their grants
  * ask for. */
-export function WizardSteps({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
+export function WizardSteps({ wiz, walletId, inputs, network }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs; network: NetworkKind }) {
   useT();
   useModel(wiz);
   return (
     <>
       {wiz.step === "source" && <PayWithStep wiz={wiz} walletId={walletId} inputs={inputs} />}
-      {wiz.step === "name" && <NameStep wiz={wiz} walletId={walletId} />}
+      {wiz.step === "name" && <NameStep wiz={wiz} walletId={walletId} network={network} />}
+      {wiz.step === "instant" && <InstantStep wiz={wiz} walletId={walletId} />}
       {wiz.step === "confirm" && <ConfirmStep wiz={wiz} walletId={walletId} inputs={inputs} />}
       <GrantSheet grants={wiz.grants} />
     </>

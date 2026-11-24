@@ -47,6 +47,33 @@ export const dashpay = {
     continue: "Continue",
     moveToCore: "Move to Dash wallet",
   },
+  /** The instant username beside a contested request (iOS `CreateInstantUsernameSheet`). Quoted
+   * names are bare labels. */
+  instant: {
+    title: "Create an instant username",
+    /** `duration` is how long the vote runs ("2 weeks"). */
+    offer: "Your requested username will be voted on for {duration}. For immediate contacts and payments, you can create a similar instant username.",
+    offerMore: "If your request is approved, it becomes your main username and the instant one stays yours too, with your contacts and history kept. If not, keep using the instant one without interruption.",
+    create: "Create instant username",
+    decline: "No, thanks",
+    explainer: "While “{username}” is out for a vote it does not belong to you yet and other users cannot find you by it. This username works right away and stays yours whatever the vote decides.",
+    contested: "This username would also need a vote. Add a digit from 2 to 9, or use 20 characters or more.",
+    same: "Your instant username must be different from the contested one",
+    /** `username` is "@" and the name. */
+    confirm: "You chose {username} as an instant username. It can't be changed once it's registered.",
+    success: "In the meantime you are reachable at “{instant}”, which is yours to keep. If the vote awards you “{requested}”, you will be reachable at both usernames.",
+    failure: "The instant username “{username}” could not be registered, so you have no username to use while the vote runs.",
+    retry: "Try again",
+    weeks: { one: "{count} week", other: "{count} weeks" },
+  },
+  /** The own vote's card and details. Quoted names are bare labels. */
+  vote: {
+    instantHint: "While “{requested}” is out for a vote, you can create an instant username to use now.",
+    instantAction: "Create instant username",
+    instantShort: "Not enough credits for an instant username.",
+    topUp: "Top up",
+    wonMain: "“{username}” is now your main username. Your instant username “{instant}” stays yours too.",
+  },
   /** A registration's three steps. `step` is the step's number out of three ("1/3"); `text` is the step. */
   step: {
     shown: "({step}) {text}",

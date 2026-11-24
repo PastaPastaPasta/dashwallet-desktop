@@ -28,7 +28,7 @@ import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import { contestedRow, coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
@@ -540,7 +540,7 @@ function withdrawal(n: number, status: Withdrawal["status"], credits: number, ho
 }
 
 /** The contested world with `contest_status` reading `state` (DP1-10 R3–R5). */
-function withContest(w: World, state: ContestStatus["state"]): World {
+function withContest(w: World, state: ContestStatus["state"], temporaryName = "alice007"): World {
   const s = w.dashpay.status;
   if (s.kind !== "contestPending") return w;
   const contest: ContestStatus = {
@@ -553,10 +553,19 @@ function withContest(w: World, state: ContestStatus["state"]): World {
     ],
     lockVotes: state.kind === "locked" ? 55 : 3,
     abstainVotes: 2,
-    temporaryName: "alice007",
+    temporaryName,
   };
   w.dashpay.credits = newCreditsWorld({ contest });
   return w;
+}
+
+/** "alice" contested by a registration that asked for the temporary "alice2" beside it (DP1-09
+ * D4 reversed): registered (`owned`), or refused, so the identity holds no name. */
+function withInstant(w: World, owned: boolean): World {
+  const c = contestPending(w, 1_900_000_000);
+  c.dashpay.registrations = [contestedRow("alice2")];
+  c.dashpay.identities = c.dashpay.identities.map((i) => (owned ? { ...i, names: ["alice2"], mainName: "alice2" } : { ...i, names: [], mainName: null }));
+  return c;
 }
 
 /** The wallet's DashPay status set to `status`, no identity on file (DP1-08). The bring-up's
@@ -1657,6 +1666,19 @@ const SCENARIOS = {
     w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, names: [], mainName: null }));
     return w;
   },
+  /** "alice" contested with no temporary name and too few credits for one: Top up (D4 reversed). */
+  "dashpay-contest-instant-short": (t) => {
+    const w = contestPending(base(t), 1_900_000_000);
+    w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, names: [], mainName: null, balance: "1000000", creditLevel: "low" }));
+    return w;
+  },
+  /** DP1-09 D4 reversed: the registration's temporary "alice2" registered beside the contested
+   * "alice" (iOS's success line), or refused (its failure line and Try again). */
+  "dashpay-instant-ok": (t) => withInstant(base(t), true),
+  "dashpay-instant-failed": (t) => withInstant(base(t), false),
+  /** The vote on "alice" won (the main name switches, "alice2" kept) or lost ("alice2" stays main). */
+  "dashpay-instant-won": (t) => withContest(withInstant(base(t), true), { kind: "won" }, "alice2"),
+  "dashpay-instant-lost": (t) => withContest(withInstant(base(t), true), { kind: "lost", winner: IDENTITY.mallory }, "alice2"),
   /** The contest read before the status moved on: won (R3), lost to another user (R4), blocked (R5). */
   "dashpay-contest-won": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "won" }),
   "dashpay-contest-lost": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "lost", winner: IDENTITY.mallory }),

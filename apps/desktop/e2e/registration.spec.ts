@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { checkUsername } from "../src/fixture/registration";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
 import { platformRunFails } from "./dashpay";
@@ -36,11 +37,13 @@ const complete = (page: Page, draft: string) =>
     while (window.__dwFixture!.advanceRegistration(d));
   }, draft);
 
-/** Step 1 for `label`, then Continue once the network answered. */
+/** Step 1 for `label`, then Continue once the network answered; a contested label's instant
+ * offer is declined (No, thanks). */
 async function chooseName(page: Page, label: string) {
   await page.getByTestId("registration-name-field").fill(label);
   await expect(page.getByTestId("registration-next")).toBeEnabled();
   await page.getByTestId("registration-next").click();
+  if (checkUsername(label).contested) await page.getByTestId("instant-offer-decline").click();
   await expect(page.getByTestId("registration-step")).toHaveText("Step 2 of 2 · Confirm");
 }
 
@@ -553,3 +556,100 @@ for (const theme of THEMES)
       expect(await seriousAxeViolations(page)).toEqual([]);
       expect(errors).toEqual([]);
     });
+
+// DP1-09 D4 reversed: the instant username beside a contested one.
+test.describe("the instant username beside a contested one", () => {
+  async function offer(page: Page) {
+    await open(page, "dashpay-no-identity");
+    await toJoin(page);
+    await page.getByTestId("join-create").click();
+    await page.getByTestId("registration-name-field").fill("alice");
+    await expect(page.getByTestId("registration-next")).toBeEnabled();
+    await page.getByTestId("registration-next").click();
+    await expect(page.getByTestId("instant-offer")).toBeVisible();
+  }
+  const startRequests = (page: Page) => page.evaluate(() => window.__dwFixture!.world.dashpay.registrations.map((r) => [r.label, r.temporaryLabel]));
+
+  test("the offer: Create instant username is primary and focused, and Enter takes it", async ({ page }) => {
+    await offer(page);
+    const create = page.getByTestId("instant-offer-create");
+    await expect(page.getByTestId("instant-offer")).toContainText("Create an instant username");
+    await expect(page.getByTestId("instant-offer")).toContainText("will be voted on for 1 hour 30 minutes.");
+    await expect(create).toBeFocused();
+    await expect(create).toHaveClass(/dash-button-filledBlue/);
+    await expect(page.getByTestId("instant-offer-decline")).not.toHaveClass(/dash-button-filledBlue/);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("instant-offer")).toHaveCount(0);
+    await expect(page.getByTestId("registration-instant")).toBeVisible();
+    await expect(page.getByTestId("registration-instant-field")).toHaveValue("alice2");
+    await expect(page.getByTestId("registration-instant-explainer")).toContainText("While “alice” is out for a vote");
+  });
+
+  test("the form's checks, then one start carrying the instant name, then iOS's success line", async ({ page }) => {
+    await offer(page);
+    await page.getByTestId("instant-offer-create").click();
+    const field = page.getByTestId("registration-instant-field");
+    const line = page.getByTestId("registration-instant-check");
+    await field.fill("a");
+    await expect(line).toHaveAttribute("data-kind", "rules");
+    await field.fill("alicia");
+    await expect(line).toHaveAttribute("data-kind", "contested");
+    await expect(line).toHaveText("This username would also need a vote. Add a digit from 2 to 9, or use 20 characters or more.");
+    await expect(page.getByTestId("registration-next")).toBeDisabled();
+    await field.fill("alice3");
+    await expect(line).toHaveText("Username taken");
+    await expect(page.getByTestId("registration-next")).toBeDisabled();
+    await field.fill("alice2");
+    await expect(line).toHaveText("Username available");
+    await page.getByTestId("registration-next").click();
+    await expect(page.getByTestId("registration-confirm-instant")).toHaveText("You chose @alice2 as an instant username. It can't be changed once it's registered.");
+    await expect(page.getByTestId("registration-fee")).toHaveText("0.2500226 tDASH");
+    await page.getByTestId("registration-accept").check();
+    await page.getByTestId("registration-pay").click();
+    await authorize(page);
+    expect(await startRequests(page)).toEqual([["alice", "alice2"]]);
+    await complete(page, await draftOf(page));
+    await expect(screen(page)).toHaveAttribute("data-kind", "voting");
+    await expect(page.getByTestId("registration-lines")).toContainText(
+      "In the meantime you are reachable at “alice2”, which is yours to keep. If the vote awards you “alice”, you will be reachable at both usernames.",
+    );
+    expect(await assetLocks(page)).toBe(1);
+  });
+
+  test("No, thanks: Confirm for the contested name alone", async ({ page }) => {
+    await offer(page);
+    await page.getByTestId("instant-offer-decline").click();
+    await expect(page.getByTestId("registration-step")).toHaveText("Step 2 of 2 · Confirm");
+    await expect(page.getByTestId("registration-confirm-instant")).toHaveCount(0);
+    await page.getByTestId("registration-accept").check();
+    await page.getByTestId("registration-pay").click();
+    await authorize(page);
+    expect(await startRequests(page)).toEqual([["alice", null]]);
+  });
+
+  test("refused: the failure line, and Try again opens the instant form with that name", async ({ page }) => {
+    await offer(page);
+    await page.evaluate(() => (window.__dwFixture!.world.dashpay.temporaryRefused = true));
+    await page.getByTestId("instant-offer-create").click();
+    await expect(page.getByTestId("registration-instant-check")).toHaveText("Username available");
+    await page.getByTestId("registration-next").click();
+    await page.getByTestId("registration-accept").check();
+    await page.getByTestId("registration-pay").click();
+    await authorize(page);
+    await complete(page, await draftOf(page));
+    await expect(page.getByTestId("registration-lines")).toContainText(
+      "The instant username “alice2” could not be registered, so you have no username to use while the vote runs.",
+    );
+    await page.getByTestId("registration-instantRetry").click();
+    await expect(page.getByTestId("registration-name")).toContainText("Create instant username");
+    await expect(page.getByTestId("registration-name-field")).toHaveValue("alice2");
+  });
+
+  test("a plain name gets no offer", async ({ page }) => {
+    await open(page, "dashpay-no-identity");
+    await toJoin(page);
+    await page.getByTestId("join-create").click();
+    await chooseName(page, LABEL);
+    await expect(page.getByTestId("instant-offer")).toHaveCount(0);
+  });
+});

@@ -17,6 +17,7 @@ import type { StartupStatus } from "../api/generated/StartupStatus";
 import { RESCAN_TEXT } from "../app/rescan";
 import { oneDecimal } from "../format/sync";
 import { messageTable, t } from "../i18n";
+import { INSTANT_COPY, instantOffer, VOTE_COPY, type InstantInputs } from "./instantOffer";
 
 
 /** Each rendered state of the Home card (the design's state inventory, S2–S17; DP1-10's S19, S20). */
@@ -41,7 +42,20 @@ export type CardState =
   | "emptyCredits";
 
 /** What a card's button does: the screen maps each to its navigation or call. */
-export type CardActionKind = "join" | "retry" | "unlock" | "continue" | "moveToCore" | "repair" | "votingInfo" | "chooseName" | "buyCredits";
+export type CardActionKind =
+  | "join"
+  | "retry"
+  | "unlock"
+  | "continue"
+  | "moveToCore"
+  | "repair"
+  | "votingInfo"
+  | "chooseName"
+  | "buyCredits"
+  /** D13's instant username from the identity's credits; `instantRetry` prefilled with the
+   * temporary name its registration could not register (`CardModel.retryLabel`). */
+  | "instantName"
+  | "instantRetry";
 
 export interface CardAction {
   kind: CardActionKind;
@@ -73,6 +87,8 @@ export interface CardModel {
   action: CardAction | null;
   /** A second button beside `action` (a held Platform payment's Move to Dash wallet). */
   secondary: CardAction | null;
+  /** The temporary name `instantRetry` tries again. */
+  retryLabel?: string;
 }
 
 export interface StatusInputs {
@@ -92,6 +108,8 @@ export interface StatusInputs {
   amount: (duffs: number) => string;
   /** Discreet mode: the card leaves out the wallet's balance. */
   discreet: boolean;
+  /** While the own contest is open: what the instant username's offer reads (D4 reversed). */
+  instant?: InstantInputs;
 }
 
 /** `table` with `rest`'s members, its getters kept (a spread would read them once). */
@@ -385,8 +403,28 @@ export function homeCard(i: StatusInputs): CardModel | null {
       const lines: string[] = [COPY.voting.deciding, s.endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(i.date(s.endsAt))];
       // The temporary name shows on a live read only (DASHPAY F5).
       const temporary = i.main && !i.main.namesUpdating && i.main.mainName !== s.label ? i.main.mainName : null;
-      if (temporary) lines.push(COPY.voting.temporary(temporary));
-      return card("voting", "pending", COPY.voting.title(s.label), lines, { action: action("votingInfo", COPY.voting.action) });
+      const asked = i.instant?.asked;
+      if (temporary && asked?.outcome === "owned" && asked.label === temporary) lines.push(INSTANT_COPY.success(temporary, s.label));
+      else if (temporary) lines.push(COPY.voting.temporary(temporary));
+      const info = action("votingInfo", COPY.voting.action);
+      const offer = instantOffer(i.main, temporary, i.instant);
+      switch (offer?.kind) {
+        case "create":
+          return card("voting", "pending", COPY.voting.title(s.label), [...lines, VOTE_COPY.instantHint(s.label)], {
+            action: action("instantName", VOTE_COPY.instantAction),
+            secondary: info,
+          });
+        case "short":
+          return card("voting", "pending", COPY.voting.title(s.label), [...lines, VOTE_COPY.instantShort], { action: action("buyCredits", VOTE_COPY.topUp), secondary: info });
+        case "failed":
+          return card("voting", "problem", COPY.voting.title(s.label), [...lines, INSTANT_COPY.failure(offer.label)], {
+            action: action("instantRetry", INSTANT_COPY.retry),
+            secondary: info,
+            retryLabel: offer.label,
+          });
+        default:
+          return card("voting", "pending", COPY.voting.title(s.label), lines, { action: info });
+      }
     }
     case "ready": {
       const names = namesState(i.main);
