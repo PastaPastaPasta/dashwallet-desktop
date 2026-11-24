@@ -25,7 +25,9 @@ export const transfer = {
   notEnoughSpendable: "Not enough spendable Dash: {amount} available.",
   why: { amount: "Enter an amount first.", max: "Working out the most you can move…" },
   continue: "Continue",
-  unsupported: "Moving straight between Shielded and Platform isn't available on desktop yet. Move through your Dash wallet.",
+  unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
+  /** Shielded → Platform on a network where it is off (mainnet). */
+  offOnNetwork: "Moving from Shielded to Platform isn't available on this network yet. Move the funds to your Dash wallet first, then to Platform.",
   none: {
     absent: "Transfers move Dash between your Dash wallet, Shielded and Platform. This version has neither Shielded nor Platform addresses.",
     inactive: "Transfers move Dash between your Dash wallet, Shielded and Platform. Shielded is not active on this network yet, and this version has no Platform addresses.",
@@ -42,6 +44,7 @@ export const transfer = {
   routeNames: {
     coreToPlatform: "Add to Platform",
     shieldedToCore: "Move from Shielded to Dash wallet",
+    shieldedToPlatform: "Move from Shielded to Platform",
     platformToCore: "Move from Platform to Dash wallet",
   },
 
@@ -206,6 +209,7 @@ export const transfer = {
       add: "Move Dash from your wallet into Shielded. It is locked first, then Dash Platform adds it to your private balance.",
       send: "Send privately to another Shielded address.",
       out: "Move Shielded funds to your Dash wallet's next receive address.",
+      toPlatform: "Move Shielded funds to your Platform address.",
       to: "To (a Shielded address)",
       memo: "Memo (optional)",
       memoHint: "Up to 36 bytes, visible to the recipient only.",
@@ -253,6 +257,7 @@ export const transfer = {
       send: { title: "Sent", text: "{amount} was sent privately." },
       unconfirmed: { title: "Not confirmed yet", text: "Your payment went out and Dash Platform has not confirmed it yet. Activity shows it as pending until it does. Do not send it again: the wallet checks it itself." },
       out: { title: "Moved", text: "About {amount} is on its way to your Dash wallet. It arrives when Dash Platform's withdrawal is mined." },
+      toPlatform: { text: "Moved to your Platform address {addr}." },
     },
     unrecorded: {
       title: "An earlier payment may still go through",
@@ -265,6 +270,8 @@ export const transfer = {
     close: "Close",
     show: "Show",
     unseen: "Your Shielded move has an update.",
+    /** Sending from Shielded waits until the last move's result is seen. */
+    unseenSend: "Your last Shielded move has an update. Open it before you send from Shielded again.",
     receive: {
       text: "Money sent to this address stays private. Anyone with a Shielded balance can pay it.",
       copy: "Copy address",
@@ -288,6 +295,7 @@ export const transfer = {
       contextUnavailable: "Waiting for the network to sync before Shielded can be used. Try again shortly.",
       trustMismatch: "Your Shielded account could not be verified against the network. Nothing was moved.",
       featureOff: "Shielded is turned off.",
+      toPlatformUnknown: "This move may still go through. Until Dash Wallet knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.",
     },
   },
 } as const satisfies Tree;

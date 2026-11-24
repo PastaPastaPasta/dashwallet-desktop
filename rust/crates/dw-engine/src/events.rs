@@ -648,6 +648,9 @@ pub(crate) struct SessionHub {
     /// ([`Self::detect_truncation`]): a check waits for the heights and
     /// the history of one being applied, not only its heights.
     truncating: Mutex<()>,
+    /// Rescans cancelled in this session: a caller that started one tells
+    /// from it that its rescan was cancelled, even when another replaced it.
+    pub(crate) rescan_cancels: std::sync::atomic::AtomicU64,
     /// The wallets unloaded or removed, and not added again: an event of
     /// one is stale, from before. Held through each event's application
     /// and through a wallet's unload, removal and admission, so an event
@@ -835,6 +838,7 @@ impl SessionHub {
             #[cfg(test)]
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),
+            rescan_cancels: std::sync::atomic::AtomicU64::new(0),
             unloaded: Mutex::new(HashSet::new()),
             abandon_batches: Mutex::new(HashMap::new()),
             #[cfg(test)]

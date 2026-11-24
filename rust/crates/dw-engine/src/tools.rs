@@ -816,6 +816,9 @@ impl NetworkSession {
                     });
                 }
             }
+            // Counted under the lock: a rescan started after the cancel
+            // rewinds under it, so it can't pass for the cancelled one.
+            (this.hub.rescan_cancels).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             drop(wm);
             for id in state.wallets.keys() {
                 this.refresh_wallet_state(&manager, *id).await;

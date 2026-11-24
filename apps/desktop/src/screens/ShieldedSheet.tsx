@@ -96,7 +96,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
         if (kind === "add") flow.next({ kind: "add", duffs: amount });
         else {
           const credits = String(BigInt(amount) * CREDITS_PER_DUFF);
-          flow.next(kind === "send" ? { kind: "send", credits, to, memo: flow.memo.trim() || null } : { kind: "out", credits });
+          flow.next(kind === "send" ? { kind: "send", credits, to, memo: flow.memo.trim() || null } : { kind: kind === "toPlatform" ? "toPlatform" : "out", credits });
         }
       }}
     >
@@ -304,6 +304,9 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
     else ({ title, text } = { title: C.done.notApplied.title, text: C.done.notApplied.text(s.error) });
   } else if (r.outcome.state === "pending") {
     ({ title, text } = C.done.unconfirmed);
+  } else if (flow.kind === "toPlatform") {
+    ({ title } = C.done.toPlatform);
+    text = C.done.toPlatform.text(r.outcome.to);
   } else if (flow.kind === "out") {
     ({ title } = C.done.out);
     text = C.done.out.text(fmt.credits(r.outcome.credits));
@@ -316,7 +319,7 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
       <p className="topup-title" data-testid="shielded-outcome-title">
         {title}
       </p>
-      <p className="sheet-text" data-testid="shielded-outcome-text">
+      <p className="sheet-text shielded-outcome-text" data-testid="shielded-outcome-text">
         {text}
       </p>
       <div className="sheet-actions">
@@ -344,7 +347,7 @@ export function ShieldedBody({ flow, walletId, network, status }: { flow: Shield
             <span className="spinner" aria-hidden="true" />
           </p>
           <p className="sheet-text" data-testid="shielded-progress">
-            {flow.kind === "send" || flow.kind === "out" ? C.running.prove : C.running.lock}
+            {flow.kind === "add" || flow.kind === "resume" ? C.running.lock : C.running.prove}
           </p>
         </div>
       )}
@@ -479,9 +482,10 @@ export function ShieldedSendLink({ walletId, network }: { walletId: string; netw
   );
 }
 
-/** Why Send from Shielded waits: syncing, a call running, or nothing to send; `null` when it can open. */
+/** Why Send from Shielded waits: syncing, a call running, another kind's result not yet seen (a
+ * Transfer move, opened from Transfer), or nothing to send; `null` when it can open. */
 function sendWhy(flow: ShieldedFlow, status: ShieldedStatus): string | null {
-  return shieldedSyncing(status) ? SHIELDED_SYNC_COPY.syncing : flow.running ? C.card.why.busy : !shieldedDuffs(status) ? C.card.why.empty : null;
+  return shieldedSyncing(status) ? SHIELDED_SYNC_COPY.syncing : flow.running ? C.card.why.busy : flow.unseen && flow.kind !== "send" ? C.unseenSend : !shieldedDuffs(status) ? C.card.why.empty : null;
 }
 
 /** Pay's Shielded address: Send from Shielded, opened with the address and amount typed in Pay (the
