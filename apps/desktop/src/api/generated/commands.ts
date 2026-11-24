@@ -1937,6 +1937,7 @@ export function platformShieldQuote(walletId: string, amount: WithdrawAmount): P
 /**
  * Moves `amount` of the Platform addresses' credits to `to` (the
  * quote's: one of the wallet's Core receiving addresses) under `grant`.
+ * `exit_of`: the quote's, the held top-up this move is the exit of.
  */
 export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, exitOf: string | null, grant: string): Promise<MoveToCoreOutcome> {
   return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, exitOf, grant });

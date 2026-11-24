@@ -966,7 +966,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 0ef5d5690d0f4ff2cffffeb1dbf836bfcc71de16d3f42df414c8f91c1f4d9a94 version: 76 -->
+<!-- surface-sha256: 7b8648eb7a940f7c0c6095376c4dbe25e91491863765379317525779f99abfec version: 77 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2007,6 +2007,7 @@ pub struct MoveToCoreQuote {
     pub expected_duffs: u64,
     pub to: String,
     pub grant: GrantRequest,
+    pub #[serde(default)] exit_of: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveToCoreOutcome {
@@ -2105,7 +2106,7 @@ impl DashPay {
     pub async fn platform_activity(&self) -> Result<Vec<PlatformActivity>, CreditsError>;
     pub async fn sync_platform_addresses(&self) -> Result<PlatformAddressBalance, CreditsError>;
     pub async fn move_to_core_quote(&self, amount: WithdrawAmount) -> Result<MoveToCoreQuote, CreditsError>;
-    pub async fn move_to_core(&self, amount: WithdrawAmount, to: String, grant: String) -> Result<MoveToCoreOutcome, CreditsError>;
+    pub async fn move_to_core(&self, amount: WithdrawAmount, to: String, exit_of: Option<String>, grant: String) -> Result<MoveToCoreOutcome, CreditsError>;
     pub async fn platform_receive_address(&self) -> Result<PlatformReceiveAddress, CreditsError>;
     pub async fn platform_send_quote(&self, to: String, amount: WithdrawAmount, retry_of: Option<String>) -> Result<PlatformSendQuote, CreditsError>;
     pub async fn platform_send_grant(&self, operation: String) -> Result<GrantRequest, CreditsError>;

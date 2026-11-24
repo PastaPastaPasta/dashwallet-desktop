@@ -8,7 +8,7 @@ export type MoveToCoreQuote = { credits: string, feeCredits: string, expectedDuf
 /**
  * The wallet's own Core receive address: `platformMoveToCore` pays it.
  */
-to: string, grant: GrantRequest, 
+to: string, grant: GrantRequest,
 /**
  * The held top-up from Platform this move is the exit of: pass it to
  * `platformMoveToCore`.
