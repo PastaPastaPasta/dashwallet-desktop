@@ -93,6 +93,8 @@ export interface MasternodesWorld {
   listState: MasternodeListState;
   /** `mn_list` fails (the list-failed notice). */
   listFails: boolean;
+  /** `mn_masternode` fails (a detail refresh that fails after a cached read). */
+  detailFails?: boolean;
   /** The synced list's entries. */
   listed: Listed[];
   /** The main wallet's masternodes and the tracked ones (tracking is network-wide). */
@@ -864,6 +866,7 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
     mn_masternode: ({ walletId, proTxHash: given }, { world }) => {
       const proTxHash = checkHash(given);
       wallet(world, walletId);
+      if (world.masternodes.detailFails) throw fail("internal", "fixture: the masternode detail read failed");
       const r = withAttached(world, rowOf(world, walletId, proTxHash));
       const m = world.masternodes;
       const held = m.registrations.includes(proTxHash);

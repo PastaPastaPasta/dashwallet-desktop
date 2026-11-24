@@ -189,7 +189,10 @@ function useKnownDetails(walletId: string): { details: MasternodeDetail[]; state
     if (list.isError) void list.refetch();
     for (const d of details) if (d.isError) void d.refetch();
   };
-  return { details: details.flatMap((d) => (d.data ? [d.data] : [])), state: failed ? "failed" : checking ? "checking" : "done", retry };
+  // Only a read whose latest attempt succeeded matches: a failed refresh keeps its old data, and
+  // a failed list may name masternodes that are gone.
+  const current = list.isSuccess ? details.flatMap((d) => (d.isSuccess ? [d.data] : [])) : [];
+  return { details: current, state: failed ? "failed" : checking ? "checking" : "done", retry };
 }
 
 function KeyPanel({ walletId, k, noSeed }: { walletId: string; k: MasternodeKeyInfo; noSeed: boolean }) {

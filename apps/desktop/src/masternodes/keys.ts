@@ -57,7 +57,14 @@ type Api = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "authori
 export type RevealStep = "loading" | "failed" | "hidden" | "working" | "shown";
 
 /** A keys call's error as a catalogued sentence: the masternodes table, else the shared one. */
-export const keysErrorText = (e: unknown) => (isAppError(e) && e.code.startsWith("masternodes.") ? mnErrorText(e) : failureText(e));
+export function keysErrorText(e: unknown): string {
+  if (!isAppError(e)) return failureText(e);
+  if (e.code.startsWith("masternodes.")) return mnErrorText(e);
+  // The keychain's own vault codes read as the vault's.
+  if (e.code === "masternode.grant_invalid") return failureText({ ...e, code: "vault.grant_invalid" });
+  if (e.code === "masternode.vault_locked") return failureText({ ...e, code: "vault.locked" });
+  return failureText(e);
+}
 
 /** The one keypair whose secret may show. Dropped on hide, on another keypair, and on dispose. */
 export class KeyRevealModel extends Model {
@@ -88,6 +95,11 @@ export class KeyRevealModel extends Model {
       if (this.encrypted) await this.lock.load();
     } catch (e) {
       this.error = keysErrorText(e);
+      return this.#go("failed");
+    }
+    // The lock model keeps its own read's failure as a message rather than throwing.
+    if (this.encrypted && this.lock.lockState === null) {
+      this.error = this.lock.message ?? keysErrorText(null);
       return this.#go("failed");
     }
     this.#go("hidden");
@@ -122,12 +134,13 @@ export class KeyRevealModel extends Model {
     this.#go("working");
     try {
       const secret = await this.api.mnRevealKey(this.walletId, this.role, this.index, grant);
-      this.#grant = null;
+      // A newer reveal may hold the slot now; only this reveal's own grant is cleared.
+      if (this.#grant === grant) this.#grant = null;
       if (epoch !== this.#epoch) return;
       this.secret = secret;
       this.#go("shown");
     } catch (e) {
-      this.#grant = null;
+      if (this.#grant === grant) this.#grant = null;
       this.#revoke(grant);
       if (epoch !== this.#epoch) return;
       this.error = keysErrorText(e);
@@ -138,7 +151,11 @@ export class KeyRevealModel extends Model {
   hide() {
     this.#epoch++;
     this.secret = null;
-    if (this.step !== "loading") this.#go("hidden");
+    // A reveal still in flight is dropped, and its grant with it.
+    if (this.#grant) this.#revoke(this.#grant);
+    this.#grant = null;
+    // A failed load stays failed: hiding never turns Reveal on.
+    if (this.step !== "loading" && this.step !== "failed") this.#go("hidden");
   }
 
   /** The keypair closed, the sheet closed or the wallet changed: a reveal in flight is dropped. */

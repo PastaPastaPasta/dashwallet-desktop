@@ -1096,7 +1096,7 @@ export const masternodes = {
     /** A wallet without its recovery phrase (Forgot Passphrase left it watch-only) still lists its public
      * keys. Restoring the phrase brings Reveal back: the keys derive from the phrase alone
      * (dw-engine tests/m3_keychain_offline.rs, test_ios_083_*). */
-    noSeed: "This wallet's recovery phrase is no longer in Dash Wallet, so it shows only the public part of these keys. To reveal a private key, restore the wallet from its recovery phrase.",
+    noSeed: "This wallet's private keys are no longer in Dash Wallet, so it shows only the public part of these keys. To reveal a private key, restore the wallet from a backup, or from its recovery phrase with its recovery passphrase if it has one.",
     /** A key's match line while the known masternodes are still being read, and after a read failed. */
     checking: "Checking…",
     checkFailed: "Couldn't check",

@@ -20,7 +20,7 @@ const open = async (page: Page, theme: Theme, scenario = "mn-list", before?: () 
   await expect(page.getByTestId("mn-keys")).toBeVisible();
 };
 
-test("Masternode keys lists each role, pages, and reveals one secret behind the passphrase", async ({ page }) => {
+test("Masternode keys lists each role, pages, and reveals one secret behind the passphrase", async ({ page, browserName }) => {
   const errors = trackPageErrors(page);
   await open(page, "light");
   const sheet = page.getByTestId("mn-keys");
@@ -48,19 +48,25 @@ test("Masternode keys lists each role, pages, and reveals one secret behind the 
   await expect(sheet.getByTestId("mn-key-secret-wif").getByRole("button")).toHaveCount(0);
   await expect(sheet.getByTestId("mn-key-no-copy")).toContainText("This key can't be copied");
   await expect(sheet.getByTestId("mn-key-copy-warning")).toHaveCount(0);
-  // Ctrl/Cmd-C on the revealed owner key copies nothing.
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.evaluate(() => navigator.clipboard.writeText("before"));
+  // A copy or cut on the revealed owner key is refused, in every engine.
   const wif = sheet.getByTestId("mn-key-secret-wif").locator(".mg-key-no-copy");
-  await wif.evaluate((el) => {
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    const sel = window.getSelection()!;
-    sel.removeAllRanges();
-    sel.addRange(range);
-  });
-  await page.keyboard.press("ControlOrMeta+C");
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("before");
+  for (const type of ["copy", "cut"])
+    expect(await wif.evaluate((el, type) => el.dispatchEvent(new ClipboardEvent(type, { bubbles: true, cancelable: true })), type)).toBe(false);
+  // Ctrl/Cmd-C on the selected key leaves the clipboard as it was. WebKit grants no clipboard-read
+  // permission, so the system clipboard is read on Chromium only.
+  if (browserName === "chromium") {
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.evaluate(() => navigator.clipboard.writeText("before"));
+    await wif.evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+    await page.keyboard.press("ControlOrMeta+C");
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("before");
+  }
   await sheet.getByTestId("mn-key-0-hide-secret").click();
   await expect(sheet.getByTestId("mn-key-secret-wif")).toHaveCount(0);
   await expect(sheet.getByTestId("mn-key-0-hidden")).toBeVisible();
@@ -108,12 +114,28 @@ test("a failed read says Couldn't check, with Try again", async ({ page }) => {
   await expect(sheet.getByTestId("mn-keys-check-failed")).toHaveCount(0);
 });
 
+test("a refresh that fails after a match says Couldn't check, not the old match", async ({ page }) => {
+  await open(page, "light");
+  const sheet = page.getByTestId("mn-keys");
+  await expect(sheet.getByTestId("mn-key-1-match")).toHaveText("Matched to Office node · 203.0.113.9:19999");
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.masternodes.detailFails = true;
+    f.emit({ kind: "vaultLockState", network: f.world.launch.network.dirName, state: "unlocked" });
+  });
+  await expect(sheet.getByTestId("mn-key-1-match")).toHaveText("Couldn't check");
+  await expect(sheet.getByTestId("mn-keys-check-failed")).toBeVisible();
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.detailFails = false));
+  await sheet.getByTestId("mn-keys-check-retry").click();
+  await expect(sheet.getByTestId("mn-key-1-match")).toHaveText("Matched to Office node · 203.0.113.9:19999");
+});
+
 test("a wallet without its seed lists public keys and offers no Reveal", async ({ page }) => {
   await open(page, "light", "mn-watchonly", () =>
     page.evaluate((id) => (window.__dwFixture!.world.masternodes.keysWithoutSeed = [id]), FIXTURE_WALLET_ID),
   );
   const sheet = page.getByTestId("mn-keys");
-  await expect(sheet.getByTestId("mn-keys-no-seed")).toContainText("recovery phrase is no longer in Dash Wallet");
+  await expect(sheet.getByTestId("mn-keys-no-seed")).toContainText("private keys are no longer in Dash Wallet");
   await sheet.getByTestId("mn-key-0-show").click();
   await expect(sheet.getByTestId("mn-key-0-address")).toBeVisible();
   await expect(sheet.getByTestId("mn-key-0-no-seed")).toBeVisible();

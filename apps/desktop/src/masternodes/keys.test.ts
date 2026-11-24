@@ -7,7 +7,7 @@ import type { MasternodeKeyInfo } from "../api/generated/MasternodeKeyInfo";
 import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
 import type { RevealedMasternodeKey } from "../api/generated/RevealedMasternodeKey";
 import { appError, FakeWorld, status, WALLET_A } from "../onboarding/testWorld";
-import { canCopySecret, KeyRevealModel, keyMatches } from "./keys";
+import { canCopySecret, KeyRevealModel, keyMatches, keysErrorText } from "./keys";
 
 const key = (role: MasternodeKeyRoleName, over: Partial<MasternodeKeyInfo> = {}): MasternodeKeyInfo => ({
   role,
@@ -134,8 +134,9 @@ describe("revealing a masternode key", () => {
     await m2.reveal("");
     expect(m2.secret).toBeNull();
     expect(m2.step).toBe("hidden");
-    expect(m2.error).not.toBeNull();
+    expect(m2.error).toBe("The authorization expired. Try again.");
     expect(w.revoked).toEqual(["grant-1", "grant-2"]);
+    expect(keysErrorText(appError("masternode.vault_locked"))).toBe("Unlock the wallet and try again.");
   });
 });
 
@@ -150,6 +151,60 @@ describe("revealing a masternode key when something goes wrong", () => {
     expect(m.step).toBe("failed");
     await m.reveal("right");
     expect(w.authorizations).toEqual([]);
+  });
+
+  it("keeps Reveal off when only the lock policy's own read fails", async () => {
+    const w = world();
+    const first = w.lockStatus.bind(w);
+    let reads = 0;
+    w.lockStatus = async () => {
+      if (++reads > 1) throw appError("storage");
+      return first();
+    };
+    const m = new KeyRevealModel(w, WALLET_A, "owner", 0);
+    await m.load();
+    expect(reads).toBe(2);
+    expect(m.step).toBe("failed");
+    await m.reveal("right");
+    expect(w.authorizations).toEqual([]);
+  });
+
+  it("stays failed when the window loses focus", async () => {
+    const w = world();
+    w.lockStatus = async () => {
+      throw appError("storage");
+    };
+    const m = new KeyRevealModel(w, WALLET_A, "owner", 0);
+    await m.load();
+    m.hide();
+    expect(m.step).toBe("failed");
+    await m.reveal("right");
+    expect(w.authorizations).toEqual([]);
+  });
+
+  it("revokes a newer reveal's grant on close after Hide dropped an older one", async () => {
+    const w = world(false);
+    const releases: (() => void)[] = [];
+    w.mnRevealKey = (_wallet, role, index, grant) =>
+      new Promise((resolve) => {
+        w.reveals.push({ role, index, grant });
+        releases.push(() => resolve(SECRET));
+      });
+    const m = new KeyRevealModel(w, WALLET_A, "owner", 0);
+    await m.load();
+    const first = m.reveal("");
+    await expect.poll(() => w.reveals.length).toBe(1);
+    m.hide();
+    expect(w.revoked).toEqual([w.reveals[0].grant]);
+    const second = m.reveal("");
+    await expect.poll(() => w.reveals.length).toBe(2);
+    releases[0]();
+    await first;
+    m.dispose();
+    expect(w.revoked).toEqual([w.reveals[0].grant, w.reveals[1].grant]);
+    releases[1]();
+    await second;
+    expect(m.secret).toBeNull();
   });
 
   it("revokes the grant of a reveal still running when the panel closes", async () => {
