@@ -271,6 +271,12 @@ export const onboarding = {
         tooSmall: "Too small to finish: worth less than the Platform fee",
         recoverable: "Can be recovered",
       },
+      /** The sheet's lines for transfers to Shielded that Platform refused (never the finish lines above). */
+      introRecover: "Platform refused these transfers to Shielded after charging a penalty. Recover moves what's left of each to your Platform balance, minus Platform's fee.",
+      introRecoverOff: "Platform refused these transfers to Shielded after charging a penalty. What's left is still yours.",
+      footerRecover: "Recovering pays only Platform's fee, taken from what's left.",
+      /** A refused transfer's row: what is left, then its full value for context. */
+      rowLeft: "{left} left of {amount}",
       recoverTooSmall: "The {amount} left on this transfer is less than Platform's fee for moving it, so it can't be recovered.",
       recoverFailed: "Dash Wallet couldn't recover this value. It's still listed here, and you can try again.",
       /** A recover that may have gone through: not a refusal. */

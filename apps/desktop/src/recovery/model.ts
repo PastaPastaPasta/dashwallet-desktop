@@ -107,6 +107,15 @@ export const RECOVERY_COPY = {
     get footer() {
       return t("onboarding.unfinished.sheet.footer");
     },
+    get introRecover() {
+      return t("onboarding.unfinished.sheet.introRecover");
+    },
+    get introRecoverOff() {
+      return t("onboarding.unfinished.sheet.introRecoverOff");
+    },
+    get footerRecover() {
+      return t("onboarding.unfinished.sheet.footerRecover");
+    },
     get close() {
       return t("onboarding.unfinished.sheet.close");
     },
@@ -253,6 +262,29 @@ export function cardView(
     return { kind: "recoverable", text, note, actions: ["details"], lock: null };
   }
   return note === null ? null : { kind: "done", text: note, note: null, actions: ["dismiss"], lock: null };
+}
+
+/** The sheet's intro and footer lines, finishable rows' first: a refused transfer to Shielded never
+ * gets the finish lines, and on mainnet no recover footer. */
+export interface SheetLine {
+  kind: "finish" | "recover";
+  text: string;
+}
+
+export function sheetCopy(locks: readonly UnfinishedLock[], mainnet: boolean): { intros: SheetLine[]; footers: SheetLine[] } {
+  const refused = locks.filter(partlyUsed);
+  const finishable = locks.filter((l) => !partlyUsed(l));
+  const intros: SheetLine[] = [];
+  const footers: SheetLine[] = [];
+  if (finishable.length > 0) {
+    intros.push({ kind: "finish", text: RECOVERY_COPY.sheet.intro(lockKinds(finishable)) });
+    footers.push({ kind: "finish", text: RECOVERY_COPY.sheet.footer });
+  }
+  if (refused.length > 0) {
+    intros.push({ kind: "recover", text: mainnet ? RECOVERY_COPY.sheet.introRecoverOff : RECOVERY_COPY.sheet.introRecover });
+    if (!mainnet) footers.push({ kind: "recover", text: RECOVERY_COPY.sheet.footerRecover });
+  }
+  return { intros, footers };
 }
 
 /** The sheet's rows: the restored locks, and the ones this session applied or Platform reported already

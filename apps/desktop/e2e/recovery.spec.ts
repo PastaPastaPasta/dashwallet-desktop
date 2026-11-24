@@ -69,7 +69,31 @@ test.describe("Unfinished transfers", () => {
     const rows = page.getByTestId("unfinished-row");
     await expect(rows).toHaveCount(2);
     await expect(rows.getByTestId("unfinished-row-state")).toHaveText(["Test networks only", "Test networks only"]);
+    await expect(page.getByTestId("unfinished-intro-recover")).toHaveText("Platform refused these transfers to Shielded after charging a penalty. What's left is still yours.");
+    await expect(page.getByTestId("unfinished-intro")).toHaveCount(0);
+    await expect(page.getByTestId("unfinished-footer")).toHaveCount(0);
+    await expect(page.getByTestId("unfinished-footer-recover")).toHaveCount(0);
+    await expect(rows.getByTestId("unfinished-row-amount")).toHaveText(["0.30 DASH left of 0.50 DASH", "0.20 DASH left of 0.40 DASH"]);
     await expect(page.getByTestId("unfinished-row-recover")).toHaveCount(0);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+  });
+
+  test("recovery-recoverable-mixed: the sheet shows the finish lines then the recover lines, and the refused row what is left", async ({ page }) => {
+    await open(page, "recovery-recoverable-mixed");
+    await page.getByTestId("unfinished-details").click();
+    const sheet = page.getByTestId("unfinished-sheet");
+    await expect(sheet.getByTestId("unfinished-intro")).toHaveText(
+      "These transfers were funded on Core before the restore, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
+    );
+    await expect(sheet.getByTestId("unfinished-intro-recover")).toHaveText(
+      "Platform refused these transfers to Shielded after charging a penalty. Recover moves what's left of each to your Platform balance, minus Platform's fee.",
+    );
+    await expect(sheet.locator("[data-testid^=unfinished-intro]")).toHaveCount(2);
+    expect(await sheet.locator("[data-testid^=unfinished-intro]").evaluateAll((ps) => ps.map((p) => p.getAttribute("data-testid")))).toEqual(["unfinished-intro", "unfinished-intro-recover"]);
+    await expect(sheet.getByTestId("unfinished-footer")).toHaveText("Nothing more is paid: finishing only adds money that's already locked.");
+    await expect(sheet.getByTestId("unfinished-footer-recover")).toHaveText("Recovering pays only Platform's fee, taken from what's left.");
+    const amounts = sheet.getByTestId("unfinished-row-amount");
+    await expect(amounts).toHaveText(["0.25 tDASH", "0.30 tDASH left of 0.50 tDASH"]);
     expect(await seriousAxeViolations(page)).toEqual([]);
   });
 

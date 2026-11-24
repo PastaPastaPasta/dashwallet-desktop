@@ -8,7 +8,8 @@ import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { onMoveSettled } from "../platform/move";
 import type { RecoverQuote } from "../api/generated/RecoverQuote";
-import { cardView, failureStale, lockKey, onRecoverySettled, RECOVERY_COPY as C, RecoveryModel, resultText, sheetRows, withoutPendingShields, type RecoveryState } from "./model";
+import { t } from "../i18n";
+import { cardView, failureStale, lockKey, onRecoverySettled, RECOVERY_COPY as C, RecoveryModel, resultText, sheetCopy, sheetRows, withoutPendingShields, type RecoveryState } from "./model";
 
 const lock = (n: number, state: UnfinishedLock["state"], origin: UnfinishedLock["origin"] = "restored", duffs = 50_000_000): UnfinishedLock => ({
   txid: String(n).repeat(64),
@@ -191,6 +192,46 @@ describe("unfinished transfers card: refused transfers to Shielded (#402)", () =
     expect([C.recoverConfirm.confirm, C.recoverConfirm.cancel]).toEqual(["Recover", "Cancel"]);
     expect(C.sheet.recoverTooSmall("0.0004 DASH")).toBe("The 0.0004 DASH left on this transfer is less than Platform's fee for moving it, so it can't be recovered.");
     expect(C.sheet.recoverFailed).toBe("Dash Wallet couldn't recover this value. It's still listed here, and you can try again.");
+  });
+});
+
+describe("unfinished transfers sheet: lines for each composition", () => {
+  const ready = lock(1, "ready");
+  const refused = partly(2, "recoverable", "30000000000");
+  const small = partly(3, "tooSmall", "40000000");
+  const FINISH_INTRO = "These transfers were funded on Core before the restore, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.";
+  const FINISH_FOOTER = "Nothing more is paid: finishing only adds money that's already locked.";
+  const RECOVER_INTRO = "Platform refused these transfers to Shielded after charging a penalty. Recover moves what's left of each to your Platform balance, minus Platform's fee.";
+  const RECOVER_OFF = "Platform refused these transfers to Shielded after charging a penalty. What's left is still yours.";
+  const RECOVER_FOOTER = "Recovering pays only Platform's fee, taken from what's left.";
+  const texts = (c: ReturnType<typeof sheetCopy>) => [c.intros.map((l) => l.text), c.footers.map((l) => l.text)];
+
+  it("finishable rows only: the finish intro and footer", () => {
+    expect(texts(sheetCopy([ready], false))).toEqual([[FINISH_INTRO], [FINISH_FOOTER]]);
+  });
+
+  it("refused rows only: the recover intro and footer, never the finish lines", () => {
+    expect(texts(sheetCopy([refused, small], false))).toEqual([[RECOVER_INTRO], [RECOVER_FOOTER]]);
+  });
+
+  it("mixed: both pairs, the finishable ones first; the finish intro names only the finishable rows", () => {
+    expect(texts(sheetCopy([refused, ready], false))).toEqual([
+      [FINISH_INTRO, RECOVER_INTRO],
+      [FINISH_FOOTER, RECOVER_FOOTER],
+    ]);
+    expect(sheetCopy([refused, ready], false).intros.map((l) => l.kind)).toEqual(["finish", "recover"]);
+  });
+
+  it("refused rows on mainnet: the off intro and no recover footer", () => {
+    expect(texts(sheetCopy([refused], true))).toEqual([[RECOVER_OFF], []]);
+    expect(texts(sheetCopy([ready, refused], true))).toEqual([
+      [FINISH_INTRO, RECOVER_OFF],
+      [FINISH_FOOTER],
+    ]);
+  });
+
+  it("a refused row says what is left of its full value", () => {
+    expect(t("onboarding.unfinished.sheet.rowLeft", { left: "0.30", amount: "0.50" })).toBe("0.30 left of 0.50");
   });
 });
 

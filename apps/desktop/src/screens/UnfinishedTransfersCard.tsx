@@ -21,14 +21,15 @@ import { moveFor, MOVE_COPY as M } from "../platform/move";
 import {
   cardView,
   lockKey,
-  lockKinds,
   RECOVERY_COPY as C,
   recoveryFor,
   recoverNoteText,
   resultText,
+  sheetCopy,
   sheetRows,
   withoutPendingShields,
   type CardAction,
+  type SheetLine,
   type RecoveryModel,
 } from "../recovery/model";
 import { SHIELDED_COPY as S, shieldedErrorText, shieldedFor } from "../shielded/flow";
@@ -191,9 +192,18 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
   const mainnet = network.kind === "mainnet";
   const rows = sheetRows(query.isSuccess ? withoutPendingShields(query.data, status.data?.pendingShields) : null, model.results);
   const failed = model.state.kind === "failed" ? model.state.error : null;
+  const copy = sheetCopy(
+    rows.map((r) => r.lock),
+    mainnet,
+  );
+  const lineId = (part: "intro" | "footer", kind: SheetLine["kind"]) => `unfinished-${part}${kind === "recover" ? "-recover" : ""}`;
   return (
     <Sheet title={C.sheet.title} width="medium" testId="unfinished-sheet" onClose={onClose}>
-      <p className="sheet-text">{C.sheet.intro(lockKinds(rows.map((r) => r.lock)))}</p>
+      {copy.intros.map((l) => (
+        <p key={l.kind} className="sheet-text" data-testid={lineId("intro", l.kind)}>
+          {l.text}
+        </p>
+      ))}
       {query.data && query.data.unread.length > 0 && (
         <p className="field-hint" role="status" data-testid="unfinished-unread">
           {unreadText(query.data.unread)}
@@ -212,7 +222,19 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
             <div className="detail-row" key={key} data-testid="unfinished-row" data-state={finished ?? lock.state}>
               <dt className="detail-label">{C.sheet.kind[lock.kind]}</dt>
               <dd className="detail-value">
-                <bdi dir="ltr" data-testid="unfinished-row-amount">{fmt.duffs(lock.duffs)}</bdi>{" "}
+                {lock.remainingCredits !== null ? (
+                  // What is left of the full value: the text follows the language, each amount left to right.
+                  <span data-testid="unfinished-row-amount">
+                    {tr.rich("onboarding.unfinished.sheet.rowLeft", {
+                      left: <bdi dir="ltr">{fmt.duffs(creditsToDuffs(lock.remainingCredits))}</bdi>,
+                      amount: <bdi dir="ltr">{fmt.duffs(lock.duffs)}</bdi>,
+                    })}
+                  </span>
+                ) : (
+                  <bdi dir="ltr" data-testid="unfinished-row-amount">
+                    {fmt.duffs(lock.duffs)}
+                  </bdi>
+                )}{" "}
                 <span className="chip" data-testid="unfinished-row-state">
                   {offHere ? C.sheet.testNetworksOnly : C.sheet.state[lock.state]}
                 </span>
@@ -256,9 +278,11 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
           {errorText(failed)}
         </p>
       )}
-      <p className="field-hint" data-testid="unfinished-footer">
-        {C.sheet.footer}
-      </p>
+      {copy.footers.map((l) => (
+        <p key={l.kind} className="field-hint" data-testid={lineId("footer", l.kind)}>
+          {l.text}
+        </p>
+      ))}
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" data-testid="unfinished-close" onClick={onClose}>
           {C.sheet.close}
