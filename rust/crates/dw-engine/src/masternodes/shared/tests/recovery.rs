@@ -352,8 +352,9 @@ fn test_an_unknown_registration_hand_off_is_in_flight_until_restart() {
 }
 
 /// T4 "abandon A unknown" and "accepted, not recorded": A `uncertain`,
-/// `resend_abandon` at A's fee, `abandon` refused `abandoning`; the replay
-/// hands the same bytes off; SPV stopped holds it back.
+/// `resend_abandon` at A's fee, `abandon` refused `abandoning` without
+/// taking its grant (D50); the replay hands the same bytes off; SPV stopped
+/// holds it back.
 #[test]
 fn test_a_spend_back_that_may_be_out_is_only_sent_again() {
     for unknown in [false, true] {
@@ -391,7 +392,7 @@ fn test_a_spend_back_that_may_be_out_is_only_sent_again() {
                 );
             }
         }
-        assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
+        no_second_abandon(&f, &id);
         f.spv(false, 0);
         let r = f.recovery(1, &id);
         assert!(r.actions.is_empty());
@@ -406,7 +407,7 @@ fn test_a_spend_back_that_may_be_out_is_only_sent_again() {
             may_be_out(&f, &id, &a, fee),
             "after a restart"
         );
-        assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
+        no_second_abandon(&f, &id);
         let before = f.net.sent().len();
         grant_exceeded(f.resend_abandon(1, &id, fee - 1));
         f.resend_abandon(1, &id, fee).unwrap();
@@ -417,6 +418,29 @@ fn test_a_spend_back_that_may_be_out_is_only_sent_again() {
         assert_eq!(log.len(), 1, "the same spend");
         assert_eq!(log[0].1.as_deref(), Some("sent"));
     }
+}
+
+/// D50, "no new spend while it may be out": a second abandon is refused
+/// `abandoning` before its lease, so nothing is sent, logged or charged,
+/// and its grant still redeems.
+fn no_second_abandon(f: &Fx, id: &str) {
+    let (sent, log) = (f.net.sent(), abandon_log(&f.row(1, id)));
+    let grant = f.grant(1, COIN);
+    let refused = f.run(
+        f.mn()
+            .abandon_shared_session(f.wallets[1], id.to_string(), grant.clone()),
+    );
+    assert_stage(refused.unwrap_err(), "abandoning");
+    assert_eq!(f.net.sent(), sent, "nothing sent");
+    assert_eq!(abandon_log(&f.row(1, id)), log, "nothing logged");
+    f.session
+        .vault()
+        .redeem_grant(
+            &grant,
+            dw_vault::GrantKind::MasternodeOp,
+            Some(&f.wallets[1].0),
+        )
+        .expect("the grant still redeems");
 }
 
 /// The actions of a spend back `a` that may be out: its replay, and once
