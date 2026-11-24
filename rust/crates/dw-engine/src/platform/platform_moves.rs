@@ -153,6 +153,7 @@ const BASELINE_KEY: &str = "platform_address/baseline";
 const ROW_PREFIX: &str = "platform_address/row/";
 pub(super) const MOVE_PREFIX: &str = "platform_address/move/";
 const FUND_PREFIX: &str = "platform_address/fund/";
+const FROM_SHIELDED_PREFIX: &str = "platform_address/from_shielded/";
 
 /// What a move pays: the wallet's Core address, or a Platform address.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,6 +328,10 @@ pub(crate) struct FundRecord {
     /// recorded (a restored one): only a proved apply completes it.
     #[serde(default)]
     pub(crate) restored: bool,
+    /// When each part of `absorbed` was read: a give-back offers each part
+    /// to the `FromShielded` records armed before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) claims: Vec<Claim>,
     pub(crate) at: u64,
 }
 
@@ -384,6 +389,7 @@ impl FundRecord {
             vout: outpoint.vout,
             armed: false,
             restored: false,
+            claims: Vec::new(),
             at: unix_now(),
         }
     }
@@ -391,8 +397,8 @@ impl FundRecord {
     /// Ended without an apply of this install's (module doc): no rise is
     /// the fund's, and what it absorbed is given back
     /// ([`Self::give_back`]). Its writes.
-    fn close(&mut self) -> Result<Vec<Write>, PlatformError> {
-        let mut writes = self.give_back()?;
+    fn close(&mut self, shielded: &mut [FromShieldedRecord]) -> Result<Vec<Write>, PlatformError> {
+        let mut writes = self.give_back(shielded)?;
         self.state = PlatformActivityState::Failed;
         self.unseen = 0;
         self.armed = false;
@@ -401,29 +407,20 @@ impl FundRecord {
     }
 
     /// What it absorbed of its address's rise (as the fund's, while
-    /// pending), an `incoming` row again, once.
-    fn give_back(&mut self) -> Result<Vec<Write>, PlatformError> {
-        let credits = std::mem::take(&mut self.absorbed);
-        if credits == 0 {
-            return Ok(Vec::new());
-        }
-        let at = unix_now();
-        let row = PlatformActivity {
-            id: format!("released-{at}-{}", self.txid),
-            kind: PlatformActivityKind::Incoming,
-            state: PlatformActivityState::Done,
-            credits,
-            address: Some(self.address.clone()),
-            to: None,
-            expected_duffs: None,
-            fee_credits: None,
-            at,
-            may_land: false,
-            estimated: false,
-            contact: None,
-        };
-        let key = format!("{ROW_PREFIX}{at:020}/released/{}", self.txid);
-        Ok(vec![(key, Some(json(&row)?))])
+    /// pending): first the `FromShielded` records of the address armed
+    /// before each part was read take what they still lack, the rest is an
+    /// `incoming` row again, once.
+    fn give_back(
+        &mut self,
+        shielded: &mut [FromShieldedRecord],
+    ) -> Result<Vec<Write>, PlatformError> {
+        let claims = std::mem::take(&mut self.claims);
+        let left = std::mem::take(&mut self.absorbed).saturating_sub(reclaim(
+            shielded,
+            &self.address,
+            &claims,
+        ));
+        released(&self.address, left, &self.txid)
     }
 
     /// After Platform's unproved "already consumed" of its lock, its
@@ -432,9 +429,13 @@ impl FundRecord {
     /// signed closes; a restored lock's record is removed, as no fund of
     /// this install's is shown to have reached the address. Closed or
     /// removed, what it absorbed is given back.
-    fn reported(&mut self, estimate: u64) -> Result<(Vec<Write>, bool), PlatformError> {
+    fn reported(
+        &mut self,
+        estimate: u64,
+        shielded: &mut [FromShieldedRecord],
+    ) -> Result<(Vec<Write>, bool), PlatformError> {
         if self.restored {
-            let mut writes = self.give_back()?;
+            let mut writes = self.give_back(shielded)?;
             writes.push(fund_delete(&self.txid));
             return Ok((writes, false));
         }
@@ -442,12 +443,388 @@ impl FundRecord {
             self.complete(estimate, true);
             return Ok((vec![fund_write(self)?], true));
         }
-        Ok((self.close()?, true))
+        Ok((self.close(shielded)?, true))
     }
 
     fn outpoint(&self) -> Option<OutPoint> {
         Some(OutPoint::new(self.txid.parse().ok()?, self.vout))
     }
+}
+
+/// Where a [`FromShieldedRecord`]'s credits come from. Tagged, so a later
+/// source can carry its own fields (C-funding F13's registration refund
+/// names its draft).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum FromShieldedSource {
+    /// `unshield_to_platform`: armed by the dispatch hook's accept, settled
+    /// by the spend's artifact.
+    Unshield,
+}
+
+/// Credits on their way from the wallet's shielded notes to one of its
+/// Platform addresses (C-routes C1-9), so the address's rise is no
+/// `incoming` row. Written unarmed before the spend's dispatch artifact
+/// and armed after it, before any send; only an armed record is a row.
+/// Armed, while pending it absorbs a rise of `to` up to `credits`; it is
+/// `done` only once its artifact reads executed (what it did not absorb is
+/// then the first rise's still to read, as an applied fund's), and
+/// `failed` once its artifact reads not executed, what it absorbed going
+/// first to the other records of `to` and the rest given back as
+/// `incoming`. It holds no address nonce and never blocks a move.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FromShieldedRecord {
+    /// The spend's shielded activity id, hex: its dispatch artifact's key.
+    pub(crate) activity: String,
+    /// Platform's hash of the spend's transition, hex.
+    pub(crate) st_hash: String,
+    pub(crate) source: FromShieldedSource,
+    /// bech32m.
+    pub(crate) to: String,
+    /// What the transition credits `to`.
+    pub(crate) credits: u64,
+    pub(crate) state: PlatformActivityState,
+    /// Only an armed record absorbs a rise while pending.
+    pub(crate) armed: bool,
+    /// When it was armed (unix nanoseconds): a rise read before then is
+    /// never its own.
+    #[serde(default)]
+    pub(crate) armed_at: u64,
+    /// The rise of `to` read as its own while pending, part by part.
+    #[serde(default)]
+    pub(crate) claims: Vec<Claim>,
+    /// Once done: the rise of `to` still to be read as the record's, up to
+    /// the first comparable read above `done_height`.
+    #[serde(default)]
+    pub(crate) unseen: u64,
+    /// Once done: what that read did not show as its own (another record
+    /// read it first, or it rose in a net fall). Only a give-back of a
+    /// rise read after it was armed is its own again, never a later rise.
+    #[serde(default)]
+    pub(crate) unclaimed: u64,
+    /// The baseline's height when it was settled done.
+    #[serde(default)]
+    pub(crate) done_height: u64,
+    pub(crate) at: u64,
+}
+
+/// A part of an address's rise a record read as its own, and when
+/// (unix nanoseconds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Claim {
+    pub(crate) at: u64,
+    pub(crate) credits: u64,
+}
+
+fn now_nanos() -> u64 {
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    since.map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
+
+/// Offers each of `claims`, parts of `address`'s rise another record had
+/// read as its own, to the `FromShielded` records of `address` armed
+/// before that part was read, the oldest first ([`FromShieldedRecord::
+/// take_over`]). What they took.
+fn reclaim(shielded: &mut [FromShieldedRecord], address: &str, claims: &[Claim]) -> u64 {
+    let mut took = 0;
+    for claim in claims {
+        let mut left = claim.credits;
+        for record in shielded.iter_mut().filter(|r| r.to == address) {
+            if left == 0 {
+                break;
+            }
+            let n = record.take_over(Claim {
+                at: claim.at,
+                credits: left,
+            });
+            left -= n;
+            took += n;
+        }
+    }
+    took
+}
+
+impl FromShieldedRecord {
+    /// A pending record of the spend `activity` crediting `to`, not yet
+    /// armed.
+    pub(crate) fn staged(
+        source: FromShieldedSource,
+        (activity, st_hash): ([u8; 32], [u8; 32]),
+        to: String,
+        credits: u64,
+    ) -> Self {
+        Self {
+            activity: hex::encode(activity),
+            st_hash: hex::encode(st_hash),
+            source,
+            to,
+            credits,
+            state: PlatformActivityState::Pending,
+            armed: false,
+            armed_at: 0,
+            claims: Vec::new(),
+            unseen: 0,
+            unclaimed: 0,
+            done_height: 0,
+            at: unix_now(),
+        }
+    }
+
+    /// The `id` of its activity row.
+    pub(crate) fn id(&self) -> String {
+        format!("from-shielded-{}", self.activity)
+    }
+
+    fn activity(&self) -> PlatformActivity {
+        PlatformActivity {
+            id: self.id(),
+            kind: PlatformActivityKind::FromShielded,
+            state: self.state,
+            credits: self.credits,
+            address: Some(self.to.clone()),
+            to: None,
+            expected_duffs: None,
+            fee_credits: None,
+            at: self.at,
+            may_land: self.state == PlatformActivityState::Pending,
+            estimated: false,
+            contact: None,
+        }
+    }
+
+    fn absorbed(&self) -> u64 {
+        self.claims.iter().map(|c| c.credits).sum()
+    }
+
+    fn expects(&self) -> u64 {
+        if self.state == PlatformActivityState::Pending && self.armed {
+            self.credits.saturating_sub(self.absorbed())
+        } else {
+            0
+        }
+    }
+
+    /// Reads `credits` of its address's rise as its own, now.
+    fn absorb(&mut self, credits: u64, at: u64) {
+        if credits > 0 {
+            self.claims.push(Claim { at, credits });
+        }
+    }
+
+    fn executed(&mut self, height: u64) {
+        self.state = PlatformActivityState::Done;
+        self.unseen = self.credits.saturating_sub(self.absorbed());
+        self.done_height = height;
+    }
+
+    /// Failed, what it absorbed given back once: to the records of its
+    /// address armed before each part was read, the rest as `incoming`.
+    /// That row's write.
+    fn not_executed(
+        &mut self,
+        others: &mut [FromShieldedRecord],
+    ) -> Result<Vec<Write>, PlatformError> {
+        self.state = PlatformActivityState::Failed;
+        self.unseen = 0;
+        let claims = std::mem::take(&mut self.claims);
+        let total: u64 = claims.iter().map(|c| c.credits).sum();
+        let left = total - reclaim(others, &self.to, &claims);
+        released(&self.to, left, &self.id())
+    }
+
+    /// Takes up to `claim.credits` of a rise of `to` another record had
+    /// read as its own, if armed before it was read: a pending record up
+    /// to what it still expects, a done one up to what it has still to
+    /// read, then what it never read. What it took.
+    fn take_over(&mut self, claim: Claim) -> u64 {
+        if !self.armed || self.armed_at >= claim.at {
+            return 0;
+        }
+        match self.state {
+            PlatformActivityState::Pending => {
+                let n = self.expects().min(claim.credits);
+                self.absorb(n, claim.at);
+                n
+            }
+            PlatformActivityState::Done => {
+                let seen = self.unseen.min(claim.credits);
+                self.unseen -= seen;
+                let late = self.unclaimed.min(claim.credits - seen);
+                self.unclaimed -= late;
+                seen + late
+            }
+            _ => 0,
+        }
+    }
+}
+
+/// `credits` of `address`'s rise that a record had read as its own, an
+/// `incoming` row again (none for 0), its key unique by `tag`.
+fn released(address: &str, credits: u64, tag: &str) -> Result<Vec<Write>, PlatformError> {
+    if credits == 0 {
+        return Ok(Vec::new());
+    }
+    let at = unix_now();
+    let row = PlatformActivity {
+        id: format!("released-{at}-{tag}"),
+        kind: PlatformActivityKind::Incoming,
+        state: PlatformActivityState::Done,
+        credits,
+        address: Some(address.to_owned()),
+        to: None,
+        expected_duffs: None,
+        fee_credits: None,
+        at,
+        may_land: false,
+        estimated: false,
+        contact: None,
+    };
+    let key = format!("{ROW_PREFIX}{at:020}/released/{tag}");
+    Ok(vec![(key, Some(json(&row)?))])
+}
+
+/// Writes `record`, unarmed, from the dispatch hook's accept before the
+/// spend's artifact. A record of the spend already there stands, but for
+/// an unarmed one of another transition (the library armed the activity
+/// again before any artifact). Under the move lock, which the hook takes
+/// after the shielded wallet lock (C-routes §0 lock order).
+pub(crate) async fn stage_from_shielded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    record: FromShieldedRecord,
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    if let Some(old) = store.shielded_record(&record.activity).await?
+        && (old.armed || old.st_hash == record.st_hash)
+    {
+        return Ok(());
+    }
+    #[cfg(test)]
+    if tests::outcome_write_fails(&store.appdb) {
+        return Err(PlatformError::Storage {
+            detail: "injected".into(),
+        });
+    }
+    store.commit(vec![from_shielded_write(&record)?]).await
+}
+
+/// Arms the record of the spend `activity`, after its artifact and before
+/// any send of it: from the dispatch hook's accept, and again from its
+/// admission of a re-send, so a spend whose arming a stop cut off is armed
+/// before it leaves (C-routes C1-9). Whether the spend has a record: one
+/// with none was dispatched before records were kept. A record of another
+/// transition than `st_hash` is an error: that send is not the record's.
+pub(crate) async fn arm_from_shielded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    (activity, st_hash): ([u8; 32], [u8; 32]),
+) -> Result<bool, PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    let Some(mut record) = store.shielded_record(&hex::encode(activity)).await? else {
+        return Ok(false);
+    };
+    if record.st_hash != hex::encode(st_hash) {
+        return Err(PlatformError::Internal {
+            detail: "the FromShielded record is of another transition".into(),
+        });
+    }
+    if !record.armed && record.state == PlatformActivityState::Pending {
+        #[cfg(test)]
+        if tests::arm_write_fails(&store.appdb) {
+            return Err(PlatformError::Storage {
+                detail: "injected".into(),
+            });
+        }
+        record.armed = true;
+        record.armed_at = now_nanos();
+        store.commit(vec![from_shielded_write(&record)?]).await?;
+    }
+    Ok(true)
+}
+
+/// The wallet's `FromShielded` records, each pending one settled by its
+/// spend's artifact as the dispatch journal reads it now: executed by the
+/// library's own proof of it, `done`; not executed, `failed`, what it
+/// absorbed taken over by the other records of its address armed before
+/// it was read, the oldest first, and the rest given back. An artifact
+/// that cannot be read, or reads anything else (an execution the library
+/// could not tie to this spend among them), settles nothing.
+async fn from_shielded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    store: &Store,
+) -> Result<(Vec<FromShieldedRecord>, bool), PlatformError> {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let mut records = store.shielded_records().await?;
+    let before = records.clone();
+    let height = store.baseline().await?.map_or(0, |b| b.height);
+    let mut writes = Vec::new();
+    for i in 0..records.len() {
+        // An unarmed record's spend never left: nothing settles it.
+        if records[i].state != PlatformActivityState::Pending || !records[i].armed {
+            continue;
+        }
+        let Some(activity) = hex32(&records[i].activity) else {
+            continue;
+        };
+        let artifact = match session.leases.shielded_artifact(wallet, activity).await {
+            Ok(Some(a)) if a.st_hash.map(hex::encode).as_deref() == Some(&records[i].st_hash) => a,
+            Ok(_) => continue,
+            Err(e) => {
+                tracing::warn!(%e, "a FromShielded record's artifact could not be read");
+                continue;
+            }
+        };
+        let proved = (artifact.disposition.as_ref()).is_some_and(|(kind, _)| kind == "executed");
+        match artifact.status {
+            ArtifactStatus::Executed if proved => records[i].executed(height),
+            ArtifactStatus::NotExecuted => {
+                let mut record = records[i].clone();
+                records[i].state = PlatformActivityState::Failed;
+                writes.extend(record.not_executed(&mut records)?);
+                records[i] = record;
+            }
+            _ => {}
+        }
+    }
+    writes.extend(shielded_writes(&records, &before)?);
+    let changed = !writes.is_empty();
+    if changed {
+        commit_outcome(store, writes).await?;
+    }
+    Ok((records, changed))
+}
+
+/// The writes of the records of `records` that differ from `before`.
+fn shielded_writes(
+    records: &[FromShieldedRecord],
+    before: &[FromShieldedRecord],
+) -> Result<Vec<Write>, PlatformError> {
+    (records.iter().zip(before))
+        .filter(|(r, was)| r != was)
+        .map(|(r, _)| from_shielded_write(r))
+        .collect()
+}
+
+/// **Test only**: the wallet's `FromShielded` records as stored.
+#[cfg(test)]
+pub(crate) async fn from_shielded_records(
+    session: &NetworkSession,
+    wallet: WalletId,
+) -> Vec<FromShieldedRecord> {
+    Store::of(session, wallet)
+        .unwrap()
+        .shielded_records()
+        .await
+        .unwrap()
+}
+
+fn hex32(text: &str) -> Option<[u8; 32]> {
+    hex::decode(text).ok()?.try_into().ok()
 }
 
 /// What a read knows of the wallet's fund locks
@@ -648,7 +1025,10 @@ pub(crate) async fn fund_used(
     let Some(mut record) = pending_fund(&store, txid).await? else {
         return Ok(());
     };
-    let (writes, _) = record.reported(estimate)?;
+    let mut shielded = store.shielded_records().await?;
+    let before = shielded.clone();
+    let (mut writes, _) = record.reported(estimate, &mut shielded)?;
+    writes.extend(shielded_writes(&shielded, &before)?);
     commit_outcome(&store, writes).await
 }
 
@@ -703,6 +1083,8 @@ async fn reconcile(
 ) -> Result<bool, PlatformError> {
     let mut writes = Vec::new();
     let mut removed = HashSet::new();
+    let mut shielded = store.shielded_records().await?;
+    let shielded_before = shielded.clone();
     for fund in funds.iter_mut() {
         let at = (fund.state == PlatformActivityState::Pending && !held.contains(&fund.address))
             .then(|| fund.outpoint())
@@ -714,15 +1096,16 @@ async fn reconcile(
             fund.complete(fund.credits, true);
             writes.push(fund_write(fund)?);
         } else if ev.reported.contains(&at) {
-            let (ended, kept) = fund.reported(fund.credits)?;
+            let (ended, kept) = fund.reported(fund.credits, &mut shielded)?;
             writes.extend(ended);
             if !kept {
                 removed.insert(fund.txid.clone());
             }
         } else if !fund.armed && ev.caught_up && !ev.tracked.contains(&at) {
-            writes.extend(fund.close()?);
+            writes.extend(fund.close(&mut shielded)?);
         }
     }
+    writes.extend(shielded_writes(&shielded, &shielded_before)?);
     funds.retain(|f| !removed.contains(&f.txid));
     let changed = !writes.is_empty();
     if changed {
@@ -2167,6 +2550,38 @@ impl Store {
             .collect())
     }
 
+    /// The `FromShielded` records, oldest first. One whose activity is not
+    /// the 32-byte id its key names can never be settled: it is left out,
+    /// so it absorbs nothing.
+    async fn shielded_records(&self) -> Result<Vec<FromShieldedRecord>, PlatformError> {
+        let mut records: Vec<FromShieldedRecord> = (self.all(FROM_SHIELDED_PREFIX).await?)
+            .into_iter()
+            .filter_map(|(key, r): (String, FromShieldedRecord)| {
+                let named = key.strip_prefix(FROM_SHIELDED_PREFIX) == Some(r.activity.as_str());
+                if named && hex32(&r.activity).is_some() {
+                    return Some(r);
+                }
+                tracing::warn!(%key, "a FromShielded record with a malformed activity id");
+                None
+            })
+            .collect();
+        records.sort_by(|a, b| (a.at, &a.activity).cmp(&(b.at, &b.activity)));
+        Ok(records)
+    }
+
+    async fn shielded_record(
+        &self,
+        activity: &str,
+    ) -> Result<Option<FromShieldedRecord>, PlatformError> {
+        let key = format!("{FROM_SHIELDED_PREFIX}{activity}");
+        let value = self
+            .blocking(move |db, scope| db.setting(scope, &key))
+            .await?;
+        (value.map(|v| serde_json::from_str(&v)).transpose()).map_err(|e| PlatformError::Storage {
+            detail: format!("an unreadable FromShielded record: {e}"),
+        })
+    }
+
     async fn fund(&self, txid: &str) -> Result<Option<FundRecord>, PlatformError> {
         let key = format!("{FUND_PREFIX}{txid}");
         let value = self
@@ -2208,6 +2623,13 @@ type Write = (String, Option<String>);
 
 fn fund_write(record: &FundRecord) -> Result<Write, PlatformError> {
     Ok((format!("{FUND_PREFIX}{}", record.txid), Some(json(record)?)))
+}
+
+fn from_shielded_write(record: &FromShieldedRecord) -> Result<Write, PlatformError> {
+    Ok((
+        format!("{FROM_SHIELDED_PREFIX}{}", record.activity),
+        Some(json(record)?),
+    ))
 }
 
 fn fund_delete(txid: &str) -> Write {
@@ -2342,12 +2764,17 @@ pub(crate) async fn sync(
 /// compared. Whether anything changed.
 async fn observe(
     store: &Store,
-    (moves, funds): (&mut [MoveRecord], &mut [FundRecord]),
+    (moves, funds, shielded): (
+        &mut [MoveRecord],
+        &mut [FundRecord],
+        &mut [FromShieldedRecord],
+    ),
     held_funds: BTreeSet<String>,
     (seen, exits, docs): (&Seen, &Exits, &Documents),
 ) -> Result<bool, PlatformError> {
     let before = moves.to_vec();
     let funds_before = funds.to_vec();
+    let shielded_before = shielded.to_vec();
     settle_with(moves, seen, exits);
     settle_payouts(moves, seen, docs);
     let baseline = store.baseline().await?;
@@ -2377,8 +2804,11 @@ async fn observe(
             *arriving.entry(fund.address.clone()).or_default() += fund.unseen;
             *expected.entry(fund.address.clone()).or_default() += fund.expects();
         }
+        for record in shielded.iter() {
+            *expected.entry(record.to.clone()).or_default() += record.expects();
+        }
         let mut expecting = expected.clone();
-        let (found, next) = changes(
+        let (mut found, next) = changes(
             baseline.as_ref().map(|b| &b.balances),
             &seen.balances(),
             &held,
@@ -2394,6 +2824,7 @@ async fn observe(
                 (a, e - left)
             })
             .collect();
+        let now = now_nanos();
         let mut pending: Vec<&mut FundRecord> =
             funds.iter_mut().filter(|f| f.expects() > 0).collect();
         pending.sort_by(|a, b| (a.at, &a.txid).cmp(&(b.at, &b.txid)));
@@ -2401,6 +2832,19 @@ async fn observe(
             if let Some(left) = took.get_mut(&fund.address) {
                 let n = fund.expects().min(*left);
                 fund.absorbed += n;
+                if n > 0 && shielded.iter().any(|r| r.to == fund.address) {
+                    fund.claims.push(Claim {
+                        at: now,
+                        credits: n,
+                    });
+                }
+                *left -= n;
+            }
+        }
+        for record in shielded.iter_mut().filter(|r| r.expects() > 0) {
+            if let Some(left) = took.get_mut(&record.to) {
+                let n = record.expects().min(*left);
+                record.absorb(n, now);
                 *left -= n;
             }
         }
@@ -2416,6 +2860,27 @@ async fn observe(
                 fund.unseen = 0;
             }
         }
+        // A done record's rise still to read is what this read found
+        // incoming on its address, as far as it reaches, the oldest
+        // record's first (they are stored in that order). The first read
+        // above the height it was settled done at that compares its
+        // address shows its credit: what that read did not find is no
+        // later rise's.
+        for record in shielded.iter_mut().filter(|r| r.unseen > 0) {
+            let row = (found.iter_mut()).find(|row| {
+                row.kind == PlatformActivityKind::Incoming
+                    && row.address.as_deref() == Some(record.to.as_str())
+            });
+            if let Some(row) = row {
+                let n = record.unseen.min(row.credits);
+                record.unseen -= n;
+                row.credits -= n;
+            }
+            if seen.height > record.done_height && !held.contains(&record.to) {
+                record.unclaimed += std::mem::take(&mut record.unseen);
+            }
+        }
+        found.retain(|row| row.credits > 0);
         for row in &found {
             let address = row.address.as_deref().unwrap_or("");
             let key = format!("{ROW_PREFIX}{:020}/{:020}/{address}", row.at, seen.height);
@@ -2441,6 +2906,11 @@ async fn observe(
     for (f, was) in funds.iter().zip(&funds_before) {
         if f != was {
             writes.push(fund_write(f)?);
+        }
+    }
+    for (r, was) in shielded.iter().zip(&shielded_before) {
+        if r != was {
+            writes.push(from_shielded_write(r)?);
         }
     }
     store.commit(writes).await?;
@@ -2526,17 +2996,13 @@ pub(crate) async fn activity(
         .filter_map(FundRecord::outpoint);
     let ev = super::unfinished_funds::fund_evidence(session, wallet_id, wallet, pending).await;
     let completed = reconcile(&store, &mut funds, &ev, &held).await?;
+    let (mut shielded, settled) = from_shielded(session, wallet_id, &store).await?;
     let observed = match read(session, net, addresses, false).await {
         Ok(seen) => {
             let exits = exits(session, net, &moves, &seen).await;
             let docs = documents(session, net, &moves, &seen).await;
-            observe(
-                &store,
-                (&mut moves, &mut funds),
-                held,
-                (&seen, &exits, &docs),
-            )
-            .await?
+            let records = (&mut moves[..], &mut funds[..], &mut shielded[..]);
+            observe(&store, records, held, (&seen, &exits, &docs)).await?
         }
         Err(e) => {
             // Nothing is known: what is stored stands.
@@ -2544,7 +3010,7 @@ pub(crate) async fn activity(
             false
         }
     };
-    let changed = completed || observed;
+    let changed = completed || settled || observed;
     super::contact_payout::settled(session, wallet_id, &moves).await;
     let mut stored = store.all::<PlatformActivity>(ROW_PREFIX).await?;
     // Keys sort by time: the oldest beyond the kept ones go.
@@ -2561,6 +3027,12 @@ pub(crate) async fn activity(
     let mut out: Vec<PlatformActivity> = (stored.into_iter().map(|(_, r)| r))
         .chain(moves.iter().map(MoveRecord::activity))
         .chain(funds.iter().map(FundRecord::activity))
+        .chain(
+            shielded
+                .iter()
+                .filter(|r| r.armed)
+                .map(FromShieldedRecord::activity),
+        )
         .collect();
     out.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| b.id.cmp(&a.id)));
     super::contact_payout::name_rows(session, wallet, wallet_id, &mut out).await;
@@ -3227,20 +3699,17 @@ pub(crate) async fn run(
     let store = Store::of(session, wallet_id)?;
     let mut moves = store.moves().await?;
     let pool = pool(wallet).await?;
+    // Settled before the read, so a record done here is never expired by
+    // a read taken before it executed.
+    let (mut shielded, _) = from_shielded(session, wallet_id, &store).await?;
     // Rule 5 and the one read every decision below rests on.
     let seen = read(session, net, covered(&pool, &moves), true).await?;
     let mut funds = store.funds().await?;
     let held = fund_holds(session, wallet_id);
     let evidence = exits(session, net, &moves, &seen).await;
     let docs = documents(session, net, &moves, &seen).await;
-    if observe(
-        &store,
-        (&mut moves, &mut funds),
-        held,
-        (&seen, &evidence, &docs),
-    )
-    .await?
-    {
+    let records = (&mut moves[..], &mut funds[..], &mut shielded[..]);
+    if observe(&store, records, held, (&seen, &evidence, &docs)).await? {
         session
             .hub
             .pump

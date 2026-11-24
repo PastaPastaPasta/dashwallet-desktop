@@ -469,6 +469,17 @@ test.describe("Home", () => {
     expect(errors).toEqual([]);
   });
 
+  test("credits moved from Shielded read as From Shielded in Activity, never as sent or received", async ({ page }) => {
+    const errors = await open(page, "paddr-from-shielded");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    const row = page.locator('[data-txid="platform:fromShielded:from-shielded-5a5a"]');
+    await expect(row).toContainText("From Shielded");
+    await expect(row).not.toContainText("Received");
+    await expect(row).not.toContainText("Sent");
+    expect(errors).toEqual([]);
+  });
+
   test("a lock waiting for its proof stays as Pending: Finish applies it", async ({ page }) => {
     const errors = await open(page, "paddr-fund-proof-waiting");
     await expect(page.getByTestId("platform-fund-unfinished")).toContainText("was locked to add to Platform and is not applied yet.");

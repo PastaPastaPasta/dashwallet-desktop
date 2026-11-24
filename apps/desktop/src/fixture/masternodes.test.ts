@@ -41,6 +41,7 @@ import {
   OP_SENT_OVERDUE,
   OP_SIGNED,
   OP_UPDATE,
+  OP_UPDATE_SAVED,
   PENDING_DUP_OPERATOR_KEY,
   REG_COIN,
   REG_COIN_EVO,
@@ -49,6 +50,7 @@ import {
   REG_FEE_DRIFT,
   SPARE,
   TEST_VECTOR_WIF,
+  keyId,
   keyInfo,
 } from "./masternodes";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "./scenarios";
@@ -69,6 +71,8 @@ const SCENARIOS: ScenarioName[] = [
   "mn-track-registration",
   "mn-track-registration-locked",
   "mn-track-locked",
+  "mn-track-voting",
+  "mn-track-voting-locked",
   "mn-keys",
   "reg",
   "reg-preview-changes",
@@ -82,6 +86,9 @@ const SCENARIOS: ScenarioName[] = [
   "mn-ops",
   "mn-released",
   "mn-update-not-sent",
+  "mn-update-saved",
+  "mn-update-sent",
+  "mn-update-saved-behind-sent",
 ];
 
 const install = (scenario: ScenarioName) => installFixture({ scenario });
@@ -276,6 +283,9 @@ describe("fixture masternodes: track and keys", () => {
     await cmd.mnTrack(SPARE, null);
     await cmd.mnTrack(FRIEND, null);
     expect(await cmd.mnAttachKey(CLUB, "payout", KEY_PAYOUT)).toBe("matched");
+    // An attach never replaces a key (tracking.rs `key_exists`): Remove comes first.
+    await expect(cmd.mnAttachKey(CLUB, "payout", KEY_OTHER)).rejects.toMatchObject({ code: "masternodes.key_exists", data: { kind: "masternodeKey", role: "payout" } });
+    expect(await cmd.mnDetachKey(CLUB, "payout")).toBe(true);
     expect(await cmd.mnAttachKey(CLUB, "payout", KEY_OTHER)).toBe("unchecked");
     expect(await cmd.mnAttachKey(CLUB, "voting", KEY_VOTING)).toBe("matched");
     expect(await cmd.mnAttachKey(FRIEND, "owner", KEY_OWNER)).toBe("unchecked");
@@ -285,7 +295,8 @@ describe("fixture masternodes: track and keys", () => {
       [CLUB, "owner", "not a key", "invalid_argument"],
       [CLUB, "owner", KEY_OWNER.toUpperCase().slice(2), "invalid_argument"],
       [HOME, "owner", TEST_VECTOR_WIF, "masternodes.not_tracked"],
-      [CLUB, "voting", TEST_VECTOR_WIF, "masternodes.key_mismatch"],
+      [CLUB, "voting", TEST_VECTOR_WIF, "masternodes.key_exists"],
+      [FRIEND, "voting", TEST_VECTOR_WIF, "masternodes.key_mismatch"],
     ] as const) {
       const e = await cmd.mnAttachKey(hash, role, key).catch((x: cmd.AppError) => x);
       expect(e, `${hash} ${role}`).toMatchObject({ code });
@@ -300,6 +311,46 @@ describe("fixture masternodes: track and keys", () => {
     expect(await cmd.mnDetachKey(CLUB, "voting")).toBe(true);
     expect(await cmd.mnUntrack(CLUB)).toEqual({ keysDeleted: 1 });
     await expect(cmd.mnUntrack(CLUB)).rejects.toMatchObject({ code: "masternodes.not_tracked" });
+  });
+
+  it("mn-track-voting: Club's added voting key matches, so it holds the voting role (records.rs `holds`)", async () => {
+    install("mn-track-voting");
+    const club = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!;
+    expect(club.roles).toMatchObject({ voting: true, attached: [{ role: "voting", check: "matched" }] });
+    expect(await cmd.mnDetachKey(CLUB, "voting")).toBe(true);
+    expect((await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!.roles.voting).toBe(false);
+  });
+
+  it("reads an attached voting key as unchecked while the list has no entry for its masternode", async () => {
+    const f = install("mn-track-voting");
+    f.world.masternodes.listed = f.world.masternodes.listed.filter((l) => l.proTxHash !== CLUB);
+    const club = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!;
+    expect(club.roles).toMatchObject({ voting: false, attached: [{ role: "voting", check: "unchecked" }] });
+  });
+
+  it("refuses an attach while locked or unlocked for mixing only before checking it, keeping the key attached", async () => {
+    const f = install("mn-track-voting-locked");
+    await expect(cmd.mnAttachKey(CLUB, "voting", KEY_OTHER)).rejects.toMatchObject({ code: "vault.locked" });
+    expect(f.world.masternodes.attached[CLUB]).toEqual([{ role: "voting", keyId: keyId(KEY_VOTING), check: "matched" }]);
+    // The world holds key ids only: no attached secret is kept, here or across a relaunch.
+    expect(JSON.stringify(f.world.masternodes).toLowerCase()).not.toContain(KEY_VOTING);
+  });
+
+  it("gives an attached voting key back through no read: list, detail, find, vote and username voters", async () => {
+    install("mn-track");
+    expect(await cmd.mnAttachKey(CLUB, "voting", KEY_VOTING.toUpperCase())).toBe("matched");
+    const reads = await Promise.all(
+      [
+        () => cmd.mnList(W),
+        () => cmd.mnMasternode(W, CLUB),
+        () => cmd.mnFind("198.51.100.21"),
+        () => cmd.governanceVotingMasternodes(W, "ab".repeat(32)),
+        () => cmd.governanceContestedNames(W),
+      ].map((read) => read().catch((e: unknown) => e)),
+    );
+    const text = JSON.stringify(reads).toLowerCase();
+    expect(text).toContain(CLUB);
+    expect(text).not.toContain(KEY_VOTING);
   });
 
   it("matches an owner key only where a loaded wallet holds the registration", async () => {
@@ -338,6 +389,7 @@ describe("fixture masternodes: track and keys", () => {
     // A hex key in either case is one key, stored and shown in lower case.
     expect(await cmd.mnAttachKey(CLUB, "payout", "AB".repeat(32))).toBe("unchecked");
     const upper = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!.roles.attached!.find((k) => k.role === "payout")!.keyId;
+    expect(await cmd.mnDetachKey(CLUB, "payout")).toBe(true);
     expect(await cmd.mnAttachKey(CLUB, "payout", "ab".repeat(32))).toBe("unchecked");
     const lower = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!.roles.attached!.find((k) => k.role === "payout")!.keyId;
     expect(upper).toBe(lower);
@@ -730,7 +782,27 @@ describe("Change keys or payout (MG-10 S3, ProUpRegTx)", () => {
     expect(op).toMatchObject({ kind: "update_registrar", proTxHash: HOME, state: { kind: "sent" }, fee: p.fee });
     expect(seen.some((e) => e.kind === "masternodes")).toBe(true);
     await expect(cmd.mnUpdateRegistrar(W, req(HOME), grant)).rejects.toMatchObject({ code: "masternodes.update_pending" });
-    await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME))).rejects.toMatchObject({ code: "masternodes.update_pending" });
+    await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME))).rejects.toMatchObject({ code: "masternodes.update_pending", data: { kind: "operation", operation: op.id } });
+  });
+
+  it("seeds Home's change saved or sent; either refuses a new one, naming it (#438)", async () => {
+    for (const [scenario, state] of [["mn-update-saved", "not_sent"], ["mn-update-sent", "sent"]] as const) {
+      install(scenario);
+      const [op] = await cmd.mnOperations(W);
+      expect(op).toMatchObject({ id: OP_UPDATE, kind: "update_registrar", proTxHash: HOME, state: { kind: state } });
+      await expect(cmd.mnPreviewUpdateRegistrar(W, req(HOME))).rejects.toMatchObject({ code: "masternodes.update_pending", data: { kind: "operation", operation: OP_UPDATE } });
+      clearMocks();
+    }
+  });
+
+  it("refuses Send again of a change saved behind a sent one, naming it, and keeps the grant (resend_conflict)", async () => {
+    const f = install("mn-update-saved-behind-sent");
+    const grant = (await cmd.authorize({ kind: "masternodeOp", maxDuffs: 100_000_000 }, W, PASS)).id;
+    await expect(cmd.mnResendOperation(W, OP_UPDATE_SAVED, grant)).rejects.toMatchObject({ code: "masternodes.update_pending", data: { kind: "operation", operation: OP_UPDATE } });
+    expect(f.world.grants.find((g) => g.grant.id === grant)!.used).toBe(false);
+    expect(f.world.masternodes.operations.find((o) => o.id === OP_UPDATE_SAVED)!.state).toEqual({ kind: "not_sent" });
+    const again = (await cmd.authorize({ kind: "masternodeOp", maxDuffs: 100_000_000 }, W, PASS)).id;
+    await expect(cmd.mnResendOperation(W, OP_UPDATE, again)).rejects.toMatchObject({ code: "masternodes.update_superseded", data: { kind: "operation", operation: OP_UPDATE_SAVED } });
   });
 
   it("refuses a payout to the owner or voting key's address (bad-protx-payee-reuse)", async () => {

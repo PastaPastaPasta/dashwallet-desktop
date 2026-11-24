@@ -28,8 +28,12 @@ const open = async (page: Page, scenario: string, theme: Theme, lang: string, ex
   await expect(page.getByTestId("page-masternodes")).toBeVisible();
 };
 
+/** Picks a row and waits for its pane's reads (the masternode's detail, an owned one's payouts). */
 const select = async (page: Page, hash: string) => {
-  await page.getByTestId(`mn-row-${hash}`).click();
+  const row = page.getByTestId(`mn-row-${hash}`);
+  await row.click();
+  await expect(row).toHaveAttribute("aria-current", "true");
+  await expect(page.getByTestId("mn-pane")).not.toHaveAttribute("aria-busy");
   await expect(page.getByTestId("mn-facts")).toBeVisible();
 };
 

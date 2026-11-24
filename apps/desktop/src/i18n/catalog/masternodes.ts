@@ -170,10 +170,12 @@ export const masternodes = {
       none: "None",
       banned: "PoSe banned: a banned masternode can't vote",
       recent: "Voted {outcome} {ago} · can change after {time}",
-      eligible: "key in this wallet · voting key {index}",
+      /** The key a masternode votes with: the keychain's, or a key added to a tracked masternode. */
+      keychain: "key in this wallet · voting key {index}",
+      added: "key you added",
       eligibleShared: {
-        one: "key in this wallet · voting key {index} · {count} masternode uses this key",
-        other: "key in this wallet · voting key {index} · {count} masternodes use this key",
+        one: "{custody} · 1 masternode uses this key",
+        other: "{custody} · {count} masternodes use this key",
       },
     },
     /** The vote sheet's footer: the checked masternodes, their weight, and that a vote costs nothing. */
@@ -458,7 +460,8 @@ export const masternodes = {
     rename: "Rename…",
     renameTitle: "Rename masternode",
     renameName: "Name",
-    renameHelp: "Only this wallet sees it. Leave it empty for the default name.",
+    /** A masternode's name is kept for every wallet on this network (app.sqlite's global settings, or the tracked registry). */
+    renameHelp: "Only Dash Wallet on this computer sees it. Leave it empty for the default name.",
     cancel: "Cancel",
     save: "Save",
     copyHash: "Copy ProTx hash",
@@ -503,7 +506,9 @@ export const masternodes = {
     },
     watched: "{role} (watched)",
     registrar: {
-      registration_unavailable:
+      registration_unavailable: "Changing keys needs this masternode's registration, which this wallet doesn't hold.",
+      /** An evonode with an owner or payout key a dwcli import left (the app adds voting keys only). */
+      registrationUnavailableWithdraw:
         "Changing keys needs this masternode's registration, which this wallet doesn't hold. You can still withdraw evonode credits with an added owner or payout key.",
       no_owner_key: "This wallet doesn't hold this masternode's owner key.",
       vault_locked: "Unlock to check the keys you added.",
@@ -627,6 +632,71 @@ export const masternodes = {
         "This wallet holds neither the owner key nor the collateral. Whoever holds the owner key can replace the operator, and whoever holds the collateral can end the masternode.",
       close: "Close",
     },
+    /** Track a masternode (MG-10 §1.3). */
+    track: {
+      menu: "Track a masternode…",
+      title: "Track a masternode",
+      query: "IP address or ProTx hash",
+      queryHelp: "Find any masternode on the network to follow it here.",
+      find: "Find",
+      results: "Masternodes found",
+      votingAddress: "voting address {address}",
+      alreadyTracked: "Already tracked",
+      label: "Name (optional)",
+      /** A tracked masternode's name is the tracked registry's, which every wallet on this network reads. */
+      labelHelp: "Only Dash Wallet on this computer sees it.",
+      submit: "Track",
+      invalid: "Enter an IP address and port, or a 64-character ProTx hash.",
+      none: "No masternode with this address or ProTx hash is in the masternode list.",
+      already: "Already tracked as {name}.",
+      list_unavailable: "The masternode list is still loading. Try again in a moment.",
+    },
+    /** Add keys and Keys you added (MG-10 §1.4; MG-00 D13, amended for 1.0: the voting key only). */
+    keys: {
+      menu: "Add keys…",
+      title: "Add a key",
+      votingHelp: "Lets this wallet vote on proposals and usernames with this masternode.",
+      input: "Private key",
+      inputHelp:
+        "WIF or 64 hex characters. The wallet keeps it encrypted and never shows it again. Backups don't include keys you add here. Keep your own copy.",
+      submit: "Add key",
+      done: "Done",
+      matched: "Matches this masternode's voting key.",
+      unchecked: "Saved. This masternode isn't in the masternode list now, so the key can't be checked. It can vote once the key matches.",
+      mismatch: "This key doesn't belong to this masternode.",
+      invalid: "Enter the private key as a compressed WIF for this network, or as 64 hex characters.",
+      locked: "Unlock to add a key.",
+      /** A key already attached for the role: Add key never replaces one. `role`: a `roleWord`. */
+      exists: "A {role} key is already added for this masternode on this computer. Remove it first.",
+      added: "Keys you added",
+      addedLocked: "Keys you added: unlock to see",
+      /** A key's role, lower case mid-sentence. */
+      roleWord: { voting: "voting", owner: "owner", payout: "payout" },
+      /** An added key's name in Keys you added. */
+      name: { voting: "Voting key", owner: "Owner key", payout: "Payout key" },
+      /** `role`: a `roleWord`. Remove always asks first: the key is deleted for every wallet here. */
+      removeRow: "Remove {role} key",
+      removeTitle: "Remove the {role} key?",
+      removeText:
+        "This deletes it from Dash Wallet on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.",
+      removeConfirm: "Remove key",
+      check: { matched: "matches", unchecked: "not checked", key_mismatch: "doesn't match" },
+      line: "{role} · {check}",
+    },
+    /** Stop tracking (MG-10 §1.2). */
+    untrack: {
+      menu: "Stop tracking",
+      title: "Stop tracking",
+      text: "{name} leaves My masternodes.",
+      keys: {
+        one: "The key you added for it is deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need it again.",
+        other: "The {count} keys you added for it are deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need them again.",
+      },
+      /** While the vault is locked the added keys aren't read, so their count isn't known. */
+      keysUnknown:
+        "Any keys you added for it are deleted from Dash Wallet on this computer, for every wallet. They aren't in your backups, so keep your own copy if you'll need them again.",
+      submit: "Stop tracking",
+    },
     errors: {
       list_unavailable: "The masternode list isn't loaded yet. Try again once the wallet has synced.",
       not_found: "This masternode isn't in the masternode list.",
@@ -638,6 +708,8 @@ export const masternodes = {
       operation_state: "This item changed since you opened it.",
       update_pending:
         "An earlier change to this masternode hasn't reached the masternode list yet. Wait for it, or discard it in In progress if it was never sent.",
+      update_pending_sent:
+        "An earlier change to this masternode was sent but hasn't reached the masternode list yet. Wait for it to confirm. If it never will, because it was replaced or dropped from the network, abandon it in Activity. That frees its coins, and you can make a new change. Don't abandon a change that may still be on the network.",
       update_superseded: "A newer change to this masternode replaced this one.",
       share_not_mine: "This share isn't held by this wallet.",
       shared_too_early: "Available once the masternode list includes the registration.",

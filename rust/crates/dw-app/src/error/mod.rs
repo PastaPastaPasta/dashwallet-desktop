@@ -404,7 +404,8 @@ pub enum ErrorData {
     /// `governance.not_a_contender`: the identity id (base58) the poll does
     /// not list (MG-07 D13).
     Contender { identity: String },
-    /// `masternodes.key_mismatch`: the role the key was given for.
+    /// `masternodes.key_mismatch`, `masternodes.key_exists`: the role the key
+    /// was given for.
     MasternodeKey {
         role: crate::dto::masternodes::AttachedKeyRoleName,
     },

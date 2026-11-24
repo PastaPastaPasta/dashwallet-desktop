@@ -182,7 +182,7 @@ pub use shielded::{
     ShieldRepairCost, ShieldState, ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus,
     ShieldedAddress, ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote,
     ShieldedSpendState, ShieldedStatus, ShieldedSyncWait, StuckShieldFunding, UnrecordedSpend,
-    UnresolvedSpend,
+    UnresolvedSpend, UnshieldToPlatformOutcome,
 };
 pub use signers::{
     CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,
