@@ -13,8 +13,9 @@ coinjoinAddressesScanned: number,
  */
 bip44AddressesScanned: number,
 /**
- * The fully mixed amount after the scan: the CoinJoin screen's Mixed
- * figure.
+ * The fully mixed balance after the scan, uncapped: CoinJoin status's
+ * `balances.fullyMixed`. The CoinJoin card's progress shows it capped
+ * at the mixing target.
  */
 fullyMixed: number,
 /**

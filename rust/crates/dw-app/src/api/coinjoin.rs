@@ -483,8 +483,9 @@ pub struct CoinJoinRecoveryReport {
     pub coinjoin_addresses_scanned: u32,
     /// BIP44 addresses checked (gap 1000, Core-mixed funds).
     pub bip44_addresses_scanned: u32,
-    /// The fully mixed amount after the scan: the CoinJoin screen's Mixed
-    /// figure.
+    /// The fully mixed balance after the scan, uncapped: CoinJoin status's
+    /// `balances.fullyMixed`. The CoinJoin card's progress shows it capped
+    /// at the mixing target.
     pub fully_mixed: u64,
     /// Transactions the scan found that the wallet did not know.
     pub new_transactions: u32,
