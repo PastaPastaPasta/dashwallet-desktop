@@ -2710,6 +2710,7 @@ dependencies = [
  "dashcore",
  "dw-compat",
  "key-wallet",
+ "secp256k1 0.33.1",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
