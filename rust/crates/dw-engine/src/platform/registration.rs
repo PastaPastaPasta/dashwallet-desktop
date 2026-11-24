@@ -105,8 +105,9 @@ pub struct PlatformRegistrationQuote {
     pub fee_credits: u64,
     /// What the first input keeps for that fee (three times the minimum).
     pub fee_reserve_credits: u64,
-    /// `funding_credits + fee_reserve_credits`: the most the addresses may
-    /// lose, the grant's cap, not what the copy shows.
+    /// `funding_credits + fee_reserve_credits`: the planned debit, which
+    /// sizes the grant; not what the copy shows, and not a bound on the
+    /// loss (Platform meters the fee from input 0).
     pub debit_credits: u64,
 }
 
@@ -527,6 +528,9 @@ async fn plan<L: RegistrationLib>(
     if let RegistrationFunding::FaucetAssetLock { .. } = &req.funding {
         return Err(faucet_off().into());
     }
+    if let RegistrationFunding::PlatformAddresses { .. } = &req.funding {
+        registration_platform::refuse_on_mainnet(&lib.network())?;
+    }
     let mut credits = lib.name_credits(&req.label).await?;
     if let Some(temp) = &temp_label {
         credits = credits.saturating_add(lib.name_credits(temp).await?);
@@ -599,7 +603,6 @@ async fn plan<L: RegistrationLib>(
 /// names and profile take, at least dpp's funding minimum; Platform meters
 /// the create's fee from the first input, which keeps the reserve for it.
 async fn platform_plan<L: RegistrationLib>(lib: &L, base: Plan) -> Result<Plan, RegistrationError> {
-    registration_platform::refuse_on_mainnet(&lib.network())?;
     let planned = lib.platform_plan(base.credits).await?;
     let quote = PlatformRegistrationQuote {
         funding_credits: planned.funding_credits,
@@ -868,7 +871,7 @@ pub(crate) async fn quote<L: RegistrationLib>(
         Funding::CoreBalance { .. } => flow::PROOF_AUTHORITY_DUFFS,
         _ => 0,
     };
-    // F5: the notes spent, or what the addresses may lose; then the names
+    // F5: the notes spent, or the addresses' planned debit; then the names
     // and the profile.
     let spent_credits = match &plan.funding {
         Funding::Shielded { denomination, .. } => *denomination,

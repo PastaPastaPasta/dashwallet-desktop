@@ -3,7 +3,7 @@
 //! keeping the fee reserve unclaimed (C-routes §0 "Fee on input 0"), and
 //! the identity those inputs and nonces give. Not part of the facade.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dpp::address_funds::PlatformAddress;
 use dpp::version::PlatformVersion;
@@ -48,7 +48,8 @@ pub(crate) struct RegisterPlan {
 }
 
 impl RegisterPlan {
-    /// What the addresses may lose: the grant's cap, not what the copy shows.
+    /// The planned debit, which sizes the grant: Platform meters the fee
+    /// from input 0 with no ceiling, so it is not a bound on the loss.
     pub(crate) fn debit_credits(&self) -> u64 {
         self.funding_credits
             .saturating_add(self.fee_reserve_credits)
@@ -77,7 +78,7 @@ pub(crate) fn min_funding(version: &PlatformVersion) -> u64 {
 
 /// The input-0 plan of an identity receiving `funding` over the proved
 /// `balances`; with its fee estimate and the reserve input 0 keeps, the
-/// band of the fee for as many inputs as the plan takes. Refused, before
+/// band of the fee for exactly the inputs the plan takes. Refused, before
 /// anything is written, when no plan meets dpp's input and funding minimums.
 fn register_inputs(
     balances: &BTreeMap<PlatformAddress, u64>,
@@ -96,24 +97,43 @@ fn register_inputs(
         min_total: min_funding(version),
         exact: true,
     };
+    let total = balances.values().copied().fold(0, u64::saturating_add);
+    let mut candidates = balances.clone();
+    let mut tried = BTreeSet::new();
     let mut inputs = 1;
     loop {
         rules.reserve = register_fee(version, inputs, keys).saturating_mul(REGISTER_FEE_BAND);
-        let planned = input0::plan(balances, amount, &rules).map_err(|r| match r {
+        let planned = input0::plan(&candidates, amount, &rules).map_err(|r| match r {
             Input0Refused::Short { needed, available } => {
                 PlatformError::InsufficientCredits { needed, available }
             }
-            Input0Refused::ClaimBelow { min } | Input0Refused::TotalBelow { min } => {
-                PlatformError::InsufficientCredits {
-                    needed: min.saturating_add(rules.reserve),
-                    available: balances.values().copied().fold(0, u64::saturating_add),
-                }
-            }
+            Input0Refused::ClaimBelow { min } => PlatformError::InsufficientCredits {
+                needed: min.saturating_add(rules.reserve),
+                available: (candidates.values().copied())
+                    .find(|c| *c > rules.reserve)
+                    .unwrap_or(0),
+            },
+            Input0Refused::TotalBelow { min } => PlatformError::InsufficientCredits {
+                needed: min.saturating_add(rules.reserve),
+                available: total,
+            },
         })?;
         let taken = planned.inputs.len();
-        // A reserve for more inputs than the plan took still covers its fee.
-        if taken <= inputs {
+        if taken == inputs {
             return Ok((planned, register_fee(version, taken, keys), rules.reserve));
+        }
+        // The reserve is three fees for the inputs the plan takes. One sized
+        // for more left the addresses before input 0 out: plan again for
+        // fewer without them, so input 0 stays the same address.
+        if taken < inputs {
+            let (first, _) = planned.input_0();
+            candidates.retain(|a, _| *a >= first);
+        }
+        if !tried.insert((inputs, candidates.len())) {
+            return Err(PlatformError::InsufficientCredits {
+                needed: funding.saturating_add(rules.reserve),
+                available: total,
+            });
         }
         inputs = taken;
     }

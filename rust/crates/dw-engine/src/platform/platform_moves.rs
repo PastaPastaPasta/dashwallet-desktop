@@ -2256,6 +2256,8 @@ pub(crate) async fn proved_read(
     wallet: &PlatformWallet,
     wallet_id: WalletId,
 ) -> Result<ProvedRead, CreditsError> {
+    let lock = wallet_lock(wallet_id);
+    let _one = lock.lock().await;
     let network = session.vault.network();
     let pool = pool(wallet).await?;
     let moves = Store::of(session, wallet_id)?.moves().await?;

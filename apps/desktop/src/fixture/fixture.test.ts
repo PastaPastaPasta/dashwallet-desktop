@@ -232,6 +232,13 @@ describe("fixture backend", () => {
     await expect(
       cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits: "1" }, initialProfile: null }, "g"),
     ).rejects.toMatchObject({ code: "registration.quote_changed" });
+    // A move that may still execute holds the addresses: refused, naming it.
+    clearMocks();
+    backend({ scenario: "platform-send-held" });
+    await expect(quote("dashpaydesktopquote2", { kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" })).rejects.toMatchObject({
+      code: "credits.move_pending",
+      data: { kind: "artifact", artifact: "ps-held" },
+    });
     // Mainnet: off (flag platform_registration).
     clearMocks();
     backend({ scenario: "dashpay-no-identity", network: "mainnet" });

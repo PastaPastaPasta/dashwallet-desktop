@@ -188,7 +188,8 @@ pub struct PlatformRegistrationQuote {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub fee_reserve_credits: u64,
-    /// The most the Platform balance may lose: the grant's cap, not shown.
+    /// The planned debit (the funding and the reserve), which sizes the
+    /// grant; not shown, and not a bound: Platform meters the fee.
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub debit_credits: u64,

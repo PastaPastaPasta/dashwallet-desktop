@@ -17,6 +17,7 @@ feeCredits: string,
  */
 feeReserveCredits: string,
 /**
- * The most the Platform balance may lose: the grant's cap, not shown.
+ * The planned debit (the funding and the reserve), which sizes the
+ * grant; not shown, and not a bound: Platform meters the fee.
  */
 debitCredits: string, };
