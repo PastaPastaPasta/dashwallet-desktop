@@ -513,6 +513,42 @@ test("C-funding F22: a Platform run whose plan changed says so, and Continue goe
   expect(errors).toEqual([]);
 });
 
+test("C-funding F4: a start refused for a changed cost writes nothing, and Pay waits for the new cost", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  await toJoin(page);
+  await page.getByTestId("join-pay-another").click();
+  await page.getByTestId("pay-with-platform").getByRole("radio").check();
+  await page.getByTestId("registration-next").click();
+  await page.getByTestId("registration-name-field").fill(LABEL);
+  await expect(page.getByTestId("registration-next")).toBeEnabled();
+  await page.getByTestId("registration-next").click();
+  await expect(page.getByTestId("registration-cost")).toContainText("a Platform fee of about 0.000415 tDASH.");
+  // The balances change after the quote: no address alone pays now, so the plan takes two inputs.
+  await page.evaluate(() => {
+    const p = window.__dwFixture!.world.pending.platform!;
+    const [a, b] = p.addresses;
+    p.addresses = [
+      { ...a, credits: "1200000000" },
+      { ...b, credits: "1200000000" },
+    ];
+  });
+  await page.getByTestId("registration-pay").click();
+  await authorize(page);
+  await expect(page.getByTestId("registration-error")).toHaveText("The cost changed. Review it and confirm again. Nothing was paid.");
+  // The new cost, read after the refusal, is the one Pay pays.
+  await expect(page.getByTestId("registration-cost")).toContainText(
+    "About 0.02042 tDASH leaves your Platform balance: 0.02 tDASH for your identity and a Platform fee of about 0.00042 tDASH.",
+  );
+  await expect(page.getByTestId("registration-pay")).toBeEnabled();
+  expect(await calls(page, "start_registration")).toBe(1);
+  expect(await page.evaluate(() => window.__dwFixture!.world.dashpay.registrations.length)).toBe(0);
+  await page.getByTestId("registration-pay").click();
+  await authorize(page);
+  await expect(screen(page)).toHaveAttribute("data-kind", "progress");
+  expect(await calls(page, "start_registration")).toBe(2);
+  expect(errors).toEqual([]);
+});
+
 /** Every screen of the wizard, reached from its scenario. */
 const SCREENS: { name: string; scenario: string; reach: (page: Page) => Promise<void> }[] = [
   {
