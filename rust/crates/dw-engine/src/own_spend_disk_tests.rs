@@ -1533,6 +1533,17 @@ fn a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_finalized_un
             && (accounts.iter()).all(|a| !a.transactions().contains_key(&txid))
     });
     assert!(finalized_only, "key-wallet keeps the child's txid alone");
+    let manager = session.manager().unwrap();
+    let under_mined = engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let core = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        (session.hub.history).read(&id, |txs| crate::tx_actions::settled_under(txs, core).1)
+    });
+    assert!(
+        under_mined.contains(&payment.txid()),
+        "the finalized txid alone puts the payment under a mined child"
+    );
     header_chain(&session, &[(TIP + 1, won), (TIP + 2, hash)]);
     refused(
         &engine,

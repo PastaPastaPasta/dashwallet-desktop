@@ -640,7 +640,7 @@ fn override_blocked<'a>(
 /// history (abandoned entries too), key-wallet's records, its locks and the
 /// txids it keeps finalized: first under one InstantSend-locked, in a block
 /// or finalized, then under one in a block or finalized. Reads `txs` once.
-fn settled_under(
+pub(crate) fn settled_under(
     txs: &HashMap<Txid, TxEntry>,
     core: &ManagedWalletInfo,
 ) -> (HashSet<Txid>, HashSet<Txid>) {
