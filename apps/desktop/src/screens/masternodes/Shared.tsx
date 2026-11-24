@@ -40,6 +40,8 @@ import {
   sendOffer,
   sessionsInProgress,
   sharedErrorText,
+  setupOff,
+  setupSteps,
   signedOutText,
   sliceFor,
   spendBackAction,
@@ -92,7 +94,7 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
   useEffect(() => paste.current?.focus(), []);
 
   const v24 = capability.data?.v24 === "active";
-  const startOff = wallet.watchOnly ? t(`${P}.watchOnly`) : capability.data && !v24 ? t(`${P}.capabilityUnknown`, { network: networkName }) : null;
+  const startOff = wallet.watchOnly ? t(`${P}.watchOnly`) : (setupOff(network) ?? (capability.data && !v24 ? t(`${P}.capabilityUnknown`, { network: networkName }) : null));
 
   /** Routes each import by slice (D14): a registration opens its sheet; the rest read "saved". */
   const route = (results: SharedImport[]) => {
@@ -498,6 +500,8 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const offered = sendOffer(s, network, wallet.watchOnly);
   const handoffHeld = disconnected && (offered === "send" || offered === "resend");
   const mainnetOff = mainnetHoldsBack(s, network);
+  const offSetup = setupOff(network);
+  const steps = setupSteps(s, sliceFor(network));
   const showWayOut = wayOutShown(s, v.row);
   const wayOutOpen = wayOut ?? showWayOut === "expanded";
   const refusedSentence = (code: string) => sendErrorText({ code, message: "", data: null }, chainOf(network))?.text ?? null;
@@ -568,8 +572,8 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const counts = { joined: s.rows.filter((r) => r.contributed).length, approved: s.rows.filter((r) => r.approved).length, signed: s.rows.filter((r) => r.fundingSigned).length, total: s.rows.length };
   const rowText = v.row === "abandoning" ? (spendBackLine(s, refusedSentence) ?? "") : rowCopy(v.row, s, { coordinator: coordinatorLabel, dash, funding, counts, t });
   const moreItems = [
-    ...(s.role === "coordinator" && s.stage.kind === "draft" && s.rows.slice(1).every((r) => !r.contributed) ? [{ id: "fee", title: t(`${P}.session.changeFee`), onSelect: () => setFeeOpen(true) }] : []),
-    ...(s.role === "coordinator" && s.stage.kind === "signing" ? [{ id: "unlock", title: t(`${P}.session.unlock`), onSelect: () => setUnlocking(true) }] : []),
+    ...(steps.includes("fee") ? [{ id: "fee", title: t(`${P}.session.changeFee`), onSelect: () => setFeeOpen(true), disabled: !!offSetup }] : []),
+    ...(steps.includes("unlock") ? [{ id: "unlock", title: t(`${P}.session.unlock`), onSelect: () => setUnlocking(true), disabled: !!offSetup }] : []),
   ];
 
   if (closing && s.discardable)
@@ -828,6 +832,11 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
             {t(`${P}.mainnetSignNote`)}
           </Notice>
         )}
+        {offSetup && steps.length > 0 && (
+          <p className="mg-muted mg-small" data-testid="sh-setup-off">
+            {offSetup}
+          </p>
+        )}
         {imported && (
           <div className="mg-notice mg-notice-info" data-testid="sh-import-panel">
             <span>
@@ -853,7 +862,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
             </DashButton>
           </div>
         )}
-        {(v.primary === "lock" || v.primary === "approve") && <CredentialField c={credential} busy={busy} testId="sh-credential" />}
+        {!offSetup && (v.primary === "lock" || v.primary === "approve") && <CredentialField c={credential} busy={busy} testId="sh-credential" />}
         <p className="form-problem" role="alert" data-testid="sh-error">
           {error}
         </p>
@@ -885,14 +894,14 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
                 variant="filledBlue"
                 size="medium"
                 data-testid="sh-join-button"
-                disabled={busy || wallet.watchOnly || joinShare === null}
+                disabled={busy || wallet.watchOnly || !!offSetup || joinShare === null}
                 onClick={() => void act(() => b.mnSharedJoin(wallet.walletId, s.id, { shareIndex: joinShare, reward: { kind: "refund" } }))}
               >
                 {t(`${P}.row.joinButton`, { amount: dash(joinRow?.amount ?? 0) })}
               </DashButton>
             )}
             {v.primary === "lock" && (
-              <DashButton variant="filledBlue" size="medium" data-testid="sh-lock" disabled={busy || !credential.ready || wallet.watchOnly} onClick={() => void signConsent((g) => b.mnSharedLock(wallet.walletId, s.id, s.revision, g))}>
+              <DashButton variant="filledBlue" size="medium" data-testid="sh-lock" disabled={busy || !!offSetup || !credential.ready || wallet.watchOnly} onClick={() => void signConsent((g) => b.mnSharedLock(wallet.walletId, s.id, s.revision, g))}>
                 {t(`${P}.row.lockButton`)}
               </DashButton>
             )}
@@ -901,7 +910,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
                 variant="filledBlue"
                 size="medium"
                 data-testid="sh-approve"
-                disabled={busy || !credential.ready || wallet.watchOnly || !s.consentHash}
+                disabled={busy || !!offSetup || !credential.ready || wallet.watchOnly || !s.consentHash}
                 onClick={() => void signConsent((g) => b.mnSharedApprove(wallet.walletId, s.id, s.consentHash!, g))}
               >
                 {t(`${P}.row.approveButton`)}

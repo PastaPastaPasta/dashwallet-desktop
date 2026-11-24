@@ -41,6 +41,22 @@ export const NO_SENDS: SharedSlice = { sign: false, send: false };
  * approvals, standby create and export, and the maintenance starts stay on. */
 export const sharedSendsOn = (network: Pick<NetworkInfo, "kind">) => network.kind !== "mainnet";
 
+/** Why `network` turns off setting up and joining (Start, Join, Lock, Approve, Change fee, Unlock),
+ * or null where they're on. Reads, Discard and Abandon stay either way. */
+export const setupOff = (network: Pick<NetworkInfo, "kind">) => (sharedSendsOn(network) ? null : t("masternodes.shared.mainnetOff"));
+
+/** A setup step a session sheet shows: its primary Join, Lock or Approve, or the coordinator's Change
+ * fee (a draft nobody has joined) and Unlock (while signing). */
+export type SetupStep = "join" | "lock" | "approve" | "fee" | "unlock";
+
+export function setupSteps(s: SharedSession, slice: SharedSlice): SetupStep[] {
+  const p = renderSession(s, slice).primary;
+  const steps: SetupStep[] = p === "join" || p === "lock" || p === "approve" ? [p] : [];
+  if (s.role === "coordinator" && s.stage.kind === "draft" && s.rows.slice(1).every((r) => !r.contributed)) steps.push("fee");
+  if (s.role === "coordinator" && s.stage.kind === "signing") steps.push("unlock");
+  return steps;
+}
+
 /** The slice the screens render under on `network`. */
 export const sliceFor = (network: Pick<NetworkInfo, "kind">): SharedSlice => (sharedSendsOn(network) ? S5_SLICE : NO_SENDS);
 

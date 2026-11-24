@@ -26,6 +26,8 @@ import {
   S5_SLICE,
   sendOffer,
   sessionNeedsAction,
+  setupOff,
+  setupSteps,
   sharedErrorText,
   sharedSendsOn,
   shareErrors,
@@ -104,6 +106,27 @@ describe("the session's render per network", () => {
       const v = renderSession(s, S5_SLICE);
       expect(v, at).toEqual({ row, primary, copy, known: true });
     }
+  });
+
+  it("turns off setting up and joining on mainnet with one reason, and keeps Discard and Abandon", () => {
+    expect(setupOff(NETWORKS.mainnet)).toBe("This version can set up and join shared masternodes on test networks only.");
+    for (const n of [NETWORKS.testnet, NETWORKS.regtest, NETWORKS.devnet]) expect(setupOff(n), n.kind).toBeNull();
+    const cases: [SharedSession, string[]][] = [
+      [participantSession("invited"), ["join"]],
+      [coordinatorSession(), ["fee"]],
+      [coordinatorSession(["Bob", "Carol"]), ["lock"]],
+      [participantSession("signing"), ["approve"]],
+      [coordinator({ kind: "signing" }, "copy"), ["unlock"]],
+      [participantSession("combined"), []],
+      [participantSession("funding_signed"), []],
+    ];
+    for (const [s, steps] of cases) {
+      const at = `${s.role} ${s.stage.kind} ${s.next}`;
+      expect(setupSteps(s, sliceFor(NETWORKS.mainnet)), at).toEqual(steps);
+      expect(setupSteps(s, sliceFor(NETWORKS.testnet)), at).toEqual(steps);
+    }
+    expect(coordinatorSession().discardable).toBe(true);
+    expect(canAbandon(participantSession("funding_signed"))).toBe(true);
   });
 
   it("keeps mainnet's rows as before sends: no Sign, Send or Send again, and the note says why", () => {

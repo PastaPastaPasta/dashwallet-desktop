@@ -302,6 +302,11 @@ function requireSends(world: World) {
   if (n.kind === "mainnet") throw fail("app.shared_send_off", "this version sends shared-masternode transactions on test networks only", { kind: "sharedSendNetwork", network: n.dirName });
 }
 
+/** The engine's mainnet refusal for every call that locks a coin or takes a grant (`require_protx_sending`). */
+function requireProtxSending(world: World) {
+  if (world.launch.network.kind === "mainnet") throw fail("masternodes.unsupported", "protx sending is off on mainnet", { kind: "unsupported", feature: "protx_sending", field: "mainnet" });
+}
+
 function requireV24(world: World) {
   if (world.shared.capability.v24 !== "active") throw fail("masternodes.unsupported", "v24 is not active", { kind: "unsupported", feature: "v24", field: null });
 }
@@ -446,6 +451,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_start: ({ walletId, request }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const n = request.shares.length;
       const labels = request.shares.map((s) => s.label.trim());
@@ -471,6 +477,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_set_fee: ({ walletId, session: id, fee }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       const s = find(world, id);
       if (s.role !== "coordinator" || s.stage.kind !== "draft") throw stageRefusal(s.stage.kind);
       if (s.rows.slice(1).some((r) => r.contributed)) throw stageRefusal("replied");
@@ -484,6 +491,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_join: ({ walletId, session: id, request }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const s = find(world, id);
       if (s.stage.kind !== "invited") throw stageRefusal(s.stage.kind);
@@ -514,6 +522,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_lock: ({ walletId, session: id, revision, grant: grantId }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const s = find(world, id);
       if (s.role !== "coordinator" || s.stage.kind !== "draft") throw stageRefusal(s.stage.kind);
@@ -546,6 +555,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_approve: ({ walletId, session: id, consentHash, grant: grantId }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const s = find(world, id);
       if (s.role !== "participant" || s.stage.kind !== "signing") throw stageRefusal(s.stage.kind);

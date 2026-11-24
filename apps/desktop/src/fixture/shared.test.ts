@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as cmd from "../api/generated/commands";
 import type { StartSharedRequest } from "../api/generated/StartSharedRequest";
 import { installFixture } from "./index";
-import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W } from "./scenarios";
+import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "./scenarios";
 import { abandonFee, SH_TEXT } from "./shared";
 
 const PASS = { kind: "passphrase", passphrase: FIXTURE_PASSPHRASE } as const;
@@ -196,6 +196,29 @@ describe("fixture shared masternodes", () => {
     const [s] = await cmd.mnSharedSessions(W);
     const g = await grant(s.debit!);
     await expect(cmd.mnSharedSend(W, s.id, g)).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "abandoned" } });
+  });
+
+  it("refuses Start, Change fee, Join, Lock and Approve on mainnet as the engine does, and discards and abandons there", async () => {
+    const off = { code: "masternodes.unsupported", data: { kind: "unsupported", feature: "protx_sending", field: "mainnet" } };
+    installFixture({ scenario: "sh-capability-active", network: "mainnet" });
+    await expect(cmd.mnSharedStart(W, request())).rejects.toMatchObject(off);
+    const sheet = async (scenario: ScenarioName) => {
+      installFixture({ scenario, network: "mainnet" });
+      return (await cmd.mnSharedSessions(W))[0]!;
+    };
+    let s = await sheet("sh-coordinator-draft");
+    await expect(cmd.mnSharedSetFee(W, s.id, 200_000)).rejects.toMatchObject(off);
+    await cmd.mnSharedDiscard(W, s.id);
+    expect(await cmd.mnSharedSessions(W)).toEqual([]);
+    s = await sheet("sh-participant-invited");
+    await expect(cmd.mnSharedJoin(W, s.id, { shareIndex: null, reward: { kind: "refund" } })).rejects.toMatchObject(off);
+    s = await sheet("sh-coordinator-ready");
+    await expect(cmd.mnSharedLock(W, s.id, s.revision, await grant())).rejects.toMatchObject(off);
+    s = await sheet("sh-participant-approve");
+    await expect(cmd.mnSharedApprove(W, s.id, s.consentHash!, await grant())).rejects.toMatchObject(off);
+    installFixture({ scenario: "sh-coordinator-ready" });
+    s = (await cmd.mnSharedSessions(W))[0]!;
+    expect((await cmd.mnSharedLock(W, s.id, s.revision, await grant())).session.stage).toEqual({ kind: "signing" });
   });
 
   it("refuses Sign and Send on mainnet before the engine, naming the network", async () => {

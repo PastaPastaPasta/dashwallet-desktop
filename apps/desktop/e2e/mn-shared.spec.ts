@@ -24,8 +24,8 @@ const open = async (page: Page, scenario: string, theme: Theme, extra = "") => {
   return errors;
 };
 
-const openSession = async (page: Page, scenario: string, theme: Theme) => {
-  const errors = await open(page, scenario, theme);
+const openSession = async (page: Page, scenario: string, theme: Theme, extra = "") => {
+  const errors = await open(page, scenario, theme, extra);
   await page.getByTestId("mn-shared").click();
   await page.getByTestId("sh-in-progress").getByRole("button").first().click();
   await expect(page.getByTestId("sh-session")).toBeVisible();
@@ -385,6 +385,46 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-mainnet-note")).toBeVisible();
     await expect(page.getByTestId("sh-send")).toHaveCount(0);
     if (info.project.name === "chromium") await shot(page, "sh-mainnet-send", theme);
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: mainnet turns off setting up and joining, and keeps Discard and Abandon`, async ({ page }, info) => {
+    const reason = "This version can set up and join shared masternodes on test networks only.";
+    const mainnet = "&network=mainnet";
+    const errors = await open(page, "sh-capability-active", theme, mainnet);
+    await page.getByTestId("mn-shared").click();
+    await expect(page.getByTestId("sh-start-off")).toHaveText(reason);
+    await expect(page.getByTestId("sh-start-button")).toBeDisabled();
+    if (info.project.name === "chromium") await shot(page, "sh-start-mainnet", theme);
+    await openSession(page, "sh-participant-invited", theme, mainnet);
+    await expect(page.getByTestId("sh-setup-off")).toHaveText(reason);
+    await expect(page.getByTestId("sh-join-button")).toBeDisabled();
+    if (info.project.name === "chromium") await shot(page, "sh-join-mainnet", theme);
+    await openSession(page, "sh-coordinator-ready", theme);
+    await expect(page.getByTestId("sh-credential-passphrase")).toBeVisible();
+    await expect(page.getByTestId("sh-setup-off")).toHaveCount(0);
+    await openSession(page, "sh-coordinator-ready", theme, mainnet);
+    await expect(page.getByTestId("sh-setup-off")).toHaveText(reason);
+    await expect(page.getByTestId("sh-lock")).toBeDisabled();
+    await expect(page.getByTestId("sh-credential-passphrase")).toHaveCount(0);
+    await openSession(page, "sh-participant-approve", theme, mainnet);
+    await expect(page.getByTestId("sh-setup-off")).toHaveText(reason);
+    await expect(page.getByTestId("sh-approve")).toBeDisabled();
+    await expect(page.getByTestId("sh-credential-passphrase")).toHaveCount(0);
+    await openSession(page, "sh-coordinator-signing", theme, mainnet);
+    await expect(page.getByTestId("sh-setup-off")).toHaveText(reason);
+    await page.getByTestId("sh-more").click();
+    await expect(page.getByTestId("sh-more-unlock")).toBeDisabled();
+    await openSession(page, "sh-coordinator-draft", theme, mainnet);
+    await expect(page.getByTestId("sh-setup-off")).toHaveText(reason);
+    await page.getByTestId("sh-more").click();
+    await expect(page.getByTestId("sh-more-fee")).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await page.getByTestId("sh-close-button").click();
+    await expect(page.getByTestId("sh-close-discard")).toBeEnabled();
+    await openSession(page, "sh-close-out", theme, mainnet);
+    await expect(page.getByTestId("sh-abandon-button")).toBeEnabled();
+    await expect(page.getByTestId("sh-setup-off")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 

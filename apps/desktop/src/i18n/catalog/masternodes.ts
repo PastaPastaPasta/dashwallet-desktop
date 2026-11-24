@@ -1086,6 +1086,8 @@ export const masternodes = {
     },
     /** On mainnet, where a sign or send row would be. */
     mainnetSignNote: "This version can't sign or send a shared masternode registration on mainnet yet.",
+    /** On mainnet, beside a disabled Start, Join, Lock, Approve, Change fee or Unlock. */
+    mainnetOff: "This version can set up and join shared masternodes on test networks only.",
     /** A session's row: its code, then what it is waiting for. */
     sessionRow: "Session {code}",
     sessionStarted: "started {date}",
