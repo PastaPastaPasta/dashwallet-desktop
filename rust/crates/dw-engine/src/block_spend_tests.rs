@@ -276,3 +276,39 @@ fn a_release_after_the_chain_lock_prune_skips_a_row_spent_coin() {
     );
     assert!(!fx.held());
 }
+
+/// (b) A truncation the hub hears before the store commits it: the
+/// session has dropped W's row, the store still holds it. The abandon's
+/// release reads both and keeps A spent.
+#[test]
+fn a_release_keeps_a_coin_the_store_still_rows_after_the_hub_truncated() {
+    let fx = claimed();
+    let w = w_of(fx.a);
+    mined(&fx.engine, &fx.session, fx.id, TIP + 1, vec![w]);
+    row_stored(&fx, true);
+    fx.session.hub.block_spends.truncate(&fx.id, TIP);
+    assert!(!fx.session.hub.block_spends.has_row(&fx.id, &fx.a));
+    abandon(&fx.engine, &fx.session, fx.id, fx.p.txid());
+    assert_eq!(*fx.session.hub.last_release.lock().unwrap(), Some(vec![]));
+    assert!(!fx.held());
+}
+
+/// (b) The give-back gate on its own: a coin a row names in the session or
+/// in the store, and every coin while a reset's replay is owed, is kept.
+#[test]
+fn the_give_back_gate_keeps_a_coin_either_row_names() {
+    use dashcore::hashes::Hash as _;
+    let coin = |n: u8| OutPoint::new(dashcore::Txid::from_byte_array([n; 32]), 0);
+    let (hub, store) = (
+        std::collections::BTreeSet::from([coin(1)]),
+        std::collections::BTreeSet::from([coin(2)]),
+    );
+    let blocked = |o: &OutPoint| hub.contains(o) || store.contains(o);
+    let release = crate::block_spends::give_back([coin(1), coin(2), coin(3)], blocked, false);
+    assert_eq!(
+        (release.given, release.kept),
+        (vec![coin(3)], vec![coin(1), coin(2)])
+    );
+    let release = crate::block_spends::give_back([coin(3)], blocked, true);
+    assert_eq!((release.given, release.kept), (vec![], vec![coin(3)]));
+}

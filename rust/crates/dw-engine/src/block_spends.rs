@@ -39,6 +39,52 @@ pub(crate) fn restore_spent_claims(
     info.restore_spent_outpoints(claims)
 }
 
+/// What a release of coins to the store may give back and what it keeps
+/// spent ([`give_back`]).
+#[derive(Debug, Default)]
+pub(crate) struct Release {
+    pub given: Vec<OutPoint>,
+    pub kept: Vec<OutPoint>,
+}
+
+/// The one gate of every release of coins to the store: a removal's sweep
+/// (abandon, Remove unconfirmed) and the load's finish of marked abandons.
+/// Of `candidates`, a coin `blocked` names (a block-spend row in the
+/// session or in the store, a spend the one-time check found) is kept
+/// spent, and so is every coin while Reset chain data has cleared the
+/// rows and its replay is owed (`reset`): no row can say yet whether a
+/// block spent it. A test greps that no other code builds the store's
+/// sweep.
+pub(crate) fn give_back(
+    candidates: impl IntoIterator<Item = OutPoint>,
+    blocked: impl Fn(&OutPoint) -> bool,
+    reset: bool,
+) -> Release {
+    let mut release = Release::default();
+    for o in candidates.into_iter().collect::<BTreeSet<_>>() {
+        match reset || blocked(&o) {
+            true => release.kept.push(o),
+            false => release.given.push(o),
+        }
+    }
+    release
+}
+
+/// The sweep a removal stores: `txids` go, attributed to `superseded_by`,
+/// and only the coins [`give_back`] gave back are released.
+pub(crate) fn release_sweep(
+    txids: Vec<dashcore::Txid>,
+    superseded_by: dashcore::Txid,
+    release: &Release,
+) -> platform_wallet::changeset::changeset::SweepBatch {
+    platform_wallet::changeset::changeset::SweepBatch {
+        txids,
+        superseded_by,
+        winner_mined_height: None,
+        released_outpoints: release.given.clone(),
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct BlockSpends {
     rows: RwLock<HashMap<WalletId, BTreeMap<OutPoint, BlockSpend>>>,
@@ -478,6 +524,33 @@ mod tests {
                 out.push(path);
             }
         }
+    }
+
+    /// R1: every release of coins to the store goes through
+    /// [`super::give_back`]: no other code builds the store's sweep.
+    #[test]
+    fn only_the_helper_builds_a_release_sweep() {
+        let call = concat!("Sweep", "Batch {");
+        let helper = Path::new(file!()).file_name().unwrap();
+        let mut files = Vec::new();
+        sources(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let found: Vec<String> = (files.iter())
+            .filter(|f| f.file_name() != Some(helper))
+            .flat_map(|f| {
+                let text = std::fs::read_to_string(f).unwrap();
+                (text.lines().enumerate())
+                    .filter(|(_, l)| l.contains(call))
+                    .map(|(n, l)| format!("{}:{}: {}", f.display(), n + 1, l.trim()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(
+            found.is_empty(),
+            "a release sweep built past the helper: {found:#?}"
+        );
     }
 
     /// C1: no engine code restores spent claims on key-wallet's wallet

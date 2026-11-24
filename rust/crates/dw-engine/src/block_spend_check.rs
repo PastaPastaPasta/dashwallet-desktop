@@ -213,6 +213,36 @@ async fn search(
     Search::Found(found)
 }
 
+/// Whether Reset chain data noted `wallet`'s rows cleared, its replay not
+/// done: read at load, before the session runs.
+pub(crate) fn reset_noted(appdb: &dw_appdb::AppDb, wallet: WalletId) -> dw_appdb::Result<bool> {
+    Ok(appdb.setting(&wallet.to_string(), CLEARED_KEY)?.is_some())
+}
+
+/// Holds `kept` until the reset's replay is done, durably: what the load's
+/// finish of marked abandons did not give back while the rows are
+/// cleared. The funding height is unknown there; a reset's hold never
+/// searches from it.
+pub(crate) fn hold_for_reset(
+    appdb: &dw_appdb::AppDb,
+    wallet: WalletId,
+    kept: &[OutPoint],
+) -> dw_appdb::Result<()> {
+    let scope = wallet.to_string();
+    let mut suspects = (appdb.setting(&scope, CHECK_KEY)?)
+        .as_deref()
+        .map(decode)
+        .unwrap_or_default();
+    for o in kept {
+        suspects.entry(*o).or_insert(0);
+    }
+    let value = encode(&suspects);
+    appdb.set_settings_durable(
+        &scope,
+        &[(CHECK_KEY, Some(&value)), (CHECK_RESCAN_KEY, Some("reset"))],
+    )
+}
+
 impl NetworkSession {
     /// The suspects still held for `wallet`, with their funding heights.
     async fn held_suspects(

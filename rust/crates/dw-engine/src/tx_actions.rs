@@ -22,7 +22,6 @@ use dashcore::consensus::encode::{deserialize, serialize_hex};
 use dashcore::{BlockHash, OutPoint, Transaction, Txid};
 use dw_appdb::{AppDb, LockReason};
 use dw_units::{Chain, Unit};
-use platform_wallet::changeset::changeset::SweepBatch;
 use platform_wallet::changeset::{
     CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
 };
@@ -532,22 +531,26 @@ pub(crate) fn finish_marked_abandons(
         let block_spent = persister
             .block_spent_outpoints(&wallet.0)
             .map_err(|e| storage(&e))?;
-        let released: BTreeSet<OutPoint> = (spent.into_iter())
-            .filter(|o| {
-                !pending.contains_key(&o.txid)
-                    && !spent_by_others.contains(o)
-                    && !block_spent.contains_key(o)
-            })
-            .collect();
+        let reset =
+            crate::block_spend_check::reset_noted(appdb, wallet).map_err(|e| storage(&e))?;
+        let release = crate::block_spends::give_back(
+            (spent.into_iter())
+                .filter(|o| !pending.contains_key(&o.txid) && !spent_by_others.contains(o)),
+            |o| block_spent.contains_key(o),
+            reset,
+        );
+        if reset && !release.kept.is_empty() {
+            crate::block_spend_check::hold_for_reset(appdb, wallet, &release.kept)
+                .map_err(|e| storage(&e))?;
+        }
         tracing::info!(%wallet, payments = pending.len(), "finishing abandoned payments the wallet store still holds");
         let changeset = PlatformWalletChangeSet {
             core: Some(CoreChangeSet {
-                sweeps: vec![SweepBatch {
-                    txids: pending.keys().copied().collect(),
-                    superseded_by: root,
-                    winner_mined_height: None,
-                    released_outpoints: released.into_iter().collect(),
-                }],
+                sweeps: vec![crate::block_spends::release_sweep(
+                    pending.keys().copied().collect(),
+                    root,
+                    &release,
+                )],
                 ..Default::default()
             }),
             ..Default::default()
@@ -1157,6 +1160,7 @@ impl NetworkSession {
         self.start_block_spend_check(manager, wallet, complete)
             .await?;
         self.check_block_spends(manager, wallet).await?;
+        let reset = self.block_spends_cleared(wallet).await?;
         let proof = self.root_proof(manager, wallet, root).await;
         // Planned on a copy under the lock that applies it, so the replay
         // record stored before it covers what is abandoned; held until the
@@ -1265,13 +1269,25 @@ impl NetworkSession {
             });
             debug_assert_eq!(abandoned, planned);
             released.retain(|o| !still_spent.contains(o));
-            if !released.is_empty() && self.block_spends_cleared(wallet).await? {
+            // A row in the session or in the store keeps a coin spent,
+            // whichever of the two a truncation reached first.
+            let persister = Arc::clone(&self.live()?.persister);
+            let stored_rows =
+                tokio::task::spawn_blocking(move || persister.block_spent_outpoints(&wallet.0))
+                    .await?
+                    .map_err(|e| EngineError::Storage(format!("the wallet's block spends: {e}")))?;
+            let release = crate::block_spends::give_back(
+                released,
+                |o| block_spent.contains_key(o) || stored_rows.contains_key(o),
+                reset,
+            );
+            if reset && !release.kept.is_empty() {
                 let birth = info.core_wallet.birth_height();
-                self.hold_released_during_reset(wallet, &released, birth)
+                self.hold_released_during_reset(wallet, &release.kept, birth)
                     .await?;
                 self.hold_block_spends_locked(wallet, info);
             }
-            (abandoned, released, overridden.is_some(), txs, links)
+            (abandoned, release, overridden.is_some(), txs, links)
         };
         #[cfg(test)]
         let pause = self.hub.pause_abandon_sweep.lock().unwrap().take();
@@ -1298,7 +1314,7 @@ impl NetworkSession {
         let persister = Arc::clone(&live.persister);
         #[cfg(test)]
         {
-            *self.hub.last_release.lock().unwrap() = Some(released.clone());
+            *self.hub.last_release.lock().unwrap() = Some(released.given.clone());
         }
         #[cfg(test)]
         let pause = self.hub.pause_sweep.lock().unwrap().take();
@@ -1309,16 +1325,14 @@ impl NetworkSession {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             pause.release.notified().await;
         }
-        let sweep = SweepBatch {
-            // The abandoned transactions passed through are swept again, so
-            // an input of theirs is a dead parent's output, not a claim.
-            txids: abandoned.iter().chain(&links).copied().collect(),
-            // An input not released (a block spent it) stays stored spent,
-            // attributed to the root.
-            superseded_by: root,
-            winner_mined_height: None,
-            released_outpoints: released.clone(),
-        };
+        // The abandoned transactions passed through are swept again, so an
+        // input of theirs is a dead parent's output, not a claim. An input
+        // not given back stays stored spent, attributed to the root.
+        let sweep = crate::block_spends::release_sweep(
+            abandoned.iter().chain(&links).copied().collect(),
+            root,
+            &released,
+        );
         #[cfg(test)]
         if (self.hub.fail_abandon_sweep).swap(false, std::sync::atomic::Ordering::SeqCst) {
             return Err(EngineError::Storage("abandon: test sweep failure".into()));
