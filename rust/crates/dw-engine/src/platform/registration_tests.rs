@@ -4866,6 +4866,48 @@ fn a_drain_lease_starts_no_registration() {
     assert_eq!(lease.available(BudgetPurpose::Funding).unwrap(), 10 * COIN);
 }
 
+/// A contact payout's lease a registration run holds (its grant named it)
+/// is never rebound by a resume: the resume is refused `grant_invalid`, the
+/// fresh grant stays unredeemed and the lease never gets a Platform address
+/// signer, so a later Platform-balance payout with it signs nothing.
+#[test]
+fn a_resume_never_rebinds_a_payout_lease_a_run_holds() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().proof_arrives = false;
+    let draft = adopted_lock_row(&f, &lib, 1, LockStatus::Broadcast);
+    let g = f.grant(0, 1_000, Credential::None);
+    let payout = (f.engine)
+        .block_on(
+            f.session
+                .begin_lease(f.wallet, FlowKind::ContactPayFromBalance, &[g]),
+        )
+        .unwrap();
+    f.spawn(&lib, draft, Some(payout.clone()));
+    eventually("the proof wait", || {
+        f.status(&lib, draft).waiting == Some(RegistrationWait::ChainLock)
+    });
+    payout.park();
+    let fresh = f.grant(COIN, 10 * COIN * 1000, Credential::None);
+    let err = f
+        .engine
+        .block_on(registration::resume(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            &draft.to_string(),
+            Some(fresh.clone()),
+        ))
+        .unwrap_err();
+    assert_eq!(err.code(), "platform.grant_invalid");
+    let unused =
+        (f.session.vault()).check_grant(&fresh, dw_vault::GrantKind::PlatformOp, Some(&f.wallet.0));
+    assert!(unused.is_ok(), "the fresh grant is not redeemed");
+    assert!(payout.call_platform_address_signer().is_err());
+    lib.w().proof_arrives = true;
+    f.settle(draft);
+}
+
 /// #263: the library's identities, for a wallet gone from the manager, fail
 /// (a registration reconciles on them; an empty list would mislead it); no
 /// panic.

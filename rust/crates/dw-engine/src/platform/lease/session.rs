@@ -359,8 +359,13 @@ impl NetworkSession {
             .await
     }
 
-    /// §4.3's rebind of a lease in `NeedsGrant` with fresh grants.
+    /// §4.3's rebind of a lease in `NeedsGrant` with fresh grants. A
+    /// contact payout's lease pays once and is never rebound: `Invalid`
+    /// before the grants are redeemed (a host begins another flow).
     pub async fn rebind_lease(&self, lease: &Lease, grants: &[String]) -> Result<(), LeaseError> {
+        if lease.flow == FlowKind::ContactPayFromBalance {
+            return Err(LeaseError::Invalid);
+        }
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
         let (wallet, flow, grants) = (lease.wallet, lease.flow, grants.to_vec());

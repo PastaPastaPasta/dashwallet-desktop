@@ -1252,6 +1252,53 @@ fn an_epoch_change_through_vault_op_needs_a_grant_and_rebind_restores() {
     l.identity_signer(&[0]).unwrap();
 }
 
+/// A contact payout's lease in `NeedsGrant` is never rebound: `Invalid`
+/// before the fresh grant is redeemed, so the grant stays unused, the lease
+/// stays `NeedsGrant` and it never takes a Platform address signer.
+fn a_payout_lease_is_never_rebound(source: crate::platform::PaymentSource) {
+    let f = fixture(true);
+    let s = &f.session;
+    s.lock_vault_sync().unwrap();
+    let g = f.grant(
+        GrantPurpose::PlatformOp {
+            max_duffs: 0,
+            max_credits: 1_000,
+        },
+        Credential::Passphrase(PASS),
+    );
+    let l = match source {
+        crate::platform::PaymentSource::Shielded => (f.engine)
+            .block_on(s.begin_payout_lease(f.wallet, source, &[g]))
+            .unwrap(),
+        _ => f.lease(FlowKind::ContactPayFromBalance, &[g]).unwrap(),
+    };
+    f.engine
+        .block_on(s.vault_op(|v| v.unlock(PASS, UnlockScope::Full)))
+        .unwrap();
+    assert_eq!(l.state(), Some(LeaseState::NeedsGrant));
+    let fresh = f.platform_op(0, 5_000);
+    assert_eq!(
+        f.engine
+            .block_on(s.rebind_lease(&l, std::slice::from_ref(&fresh))),
+        Err(LeaseError::Invalid)
+    );
+    let unused =
+        (s.vault()).check_grant(&fresh, dw_vault::GrantKind::PlatformOp, Some(&f.wallet.0));
+    assert!(unused.is_ok(), "the fresh grant is not redeemed");
+    assert!(l.call_platform_address_signer().is_err());
+    assert_eq!(l.state(), Some(LeaseState::NeedsGrant));
+}
+
+#[test]
+fn a_shielded_payout_lease_is_never_rebound() {
+    a_payout_lease_is_never_rebound(crate::platform::PaymentSource::Shielded);
+}
+
+#[test]
+fn a_platform_payout_lease_is_never_rebound() {
+    a_payout_lease_is_never_rebound(crate::platform::PaymentSource::Platform);
+}
+
 #[test]
 fn a_wrong_old_passphrase_revokes_no_lease_and_a_correct_one_revokes_every_lease() {
     let f = fixture(true);

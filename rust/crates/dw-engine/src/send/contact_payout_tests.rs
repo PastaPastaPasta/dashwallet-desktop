@@ -580,7 +580,7 @@ fn a_contact_pay_from_balance_lease_pays_once() {
 
 /// A Shielded payout's flow lease holds no Platform address signer: a
 /// Platform payout under it is refused at the signer, before an address,
-/// a payout row or a lock is taken.
+/// a move record, a payout row or a lock is taken.
 #[test]
 fn a_shielded_flow_lease_fails_closed_at_the_platform_signer() {
     let f = fixture(false);
@@ -597,6 +597,7 @@ fn a_shielded_flow_lease_fails_closed_at_the_platform_signer() {
     let refused = f.paid(&net, BOB, PAY, &lease).unwrap_err();
     assert_eq!(code(&refused), "platform.needs_grant", "{refused:?}");
     assert!(net.sent().is_empty(), "nothing signed");
+    assert!(f.move_records().is_empty(), "no move record");
     assert!(f.payout_states().is_empty());
     assert!(f.lock(BOB).is_none());
     assert!(f.reserved(BOB).is_none());
