@@ -64,7 +64,7 @@ export const dashpay = {
     unlock: "Unlock the wallet to continue.",
     authorize: "Waiting for your approval to continue.",
     paymentUnknown: "Checking whether the payment from your Platform balance went through.",
-    paymentHeld: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through, so paying again waits until that's known. Check back later.",
+    paymentHeld: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.",
   },
   /** Why a registration stopped. `needed` and `available` are amounts; `code` is the engine's. */
   failure: {
