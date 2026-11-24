@@ -3472,12 +3472,79 @@ fn test_discardable_reads_the_discard_rule_at_every_stage() {
     assert_discard_refused(&f, 0, &id);
 }
 
+/// A reserving session whose envelope no longer parses is skipped by
+/// `shared_sessions` and refused by `shared_session`, yet listed from its
+/// row by `unreadable_shared_sessions` as discardable; Discard frees its
+/// coins, durably across a restart.
+#[test]
+fn test_an_unreadable_session_is_listed_and_discard_frees_its_coins() {
+    let mut f = fx(3, true);
+    let share = f.credit(0, 1, 400 * COIN + FEE);
+    let req = || request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
+    let id = start(&f, 0, req()).unwrap().session.id;
+    assert_eq!(f.locked(0), HashSet::from([share]));
+    f.rewrite(0, &id, |u| u.envelope = "{\"not\": \"an envelope\"".into());
+    let parsed = f.run(f.mn().shared_sessions(f.wallets[0])).unwrap();
+    assert!(parsed.iter().all(|s| s.id != id));
+    assert!(
+        f.run(f.mn().shared_session(f.wallets[0], id.clone()))
+            .is_err()
+    );
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[0]))
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, id);
+    assert_eq!(listed[0].kind, crate::masternodes::SharedKind::Registration);
+    assert_eq!(listed[0].role, SharedRole::Coordinator);
+    assert!(listed[0].discardable);
+    assert_eq!(listed[0].reserved, vec![share.to_string()]);
+    f.run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
+        .unwrap();
+    assert!(f.locked(0).is_empty());
+    assert!(
+        f.run(f.mn().unreadable_shared_sessions(f.wallets[0]))
+            .unwrap()
+            .is_empty()
+    );
+    f.restart();
+    assert!(f.locked(0).is_empty(), "the unlock survives a restart");
+    start(&f, 0, req()).unwrap();
+    assert_eq!(f.locked(0), HashSet::from([share]));
+}
+
+/// An unreadable session that may be out is listed too, not discardable:
+/// Discard is refused and its coins stay locked.
+#[test]
+fn test_an_unreadable_session_that_may_be_out_is_listed_not_discardable() {
+    let f = fx(2, true);
+    let id = two_joined(&f);
+    let held = f.locked(1);
+    assert!(!held.is_empty());
+    assert!(
+        f.db()
+            .mark_shared_session_out_durable(&f.wallets[1].to_string(), &id, &[7], "tx", 1)
+            .unwrap()
+    );
+    f.rewrite(1, &id, |u| u.envelope = "{\"not\": \"an envelope\"".into());
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[1]))
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(!listed[0].discardable);
+    assert!(
+        f.run(f.mn().discard_shared_session(f.wallets[1], id.clone()))
+            .is_err()
+    );
+    assert_eq!(f.locked(1), held);
+}
+
 /// A fee raised with `set_shared_fee` re-reserves the coordinator's coins;
-/// Discard, which `discardable` allows, releases every one of them, and a
-/// new session selects them again.
+/// Discard, which `discardable` allows, releases every one of them, durably:
+/// after a restart a new session selects them again.
 #[test]
 fn test_a_discard_after_a_fee_change_frees_every_fee_coin() {
-    let f = fx(3, true);
+    let mut f = fx(3, true);
     let share = f.credit(0, 1, 400 * COIN + FEE);
     let extra = f.credit(0, 2, COIN);
     let req = || request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
@@ -3492,6 +3559,8 @@ fn test_a_discard_after_a_fee_change_frees_every_fee_coin() {
     f.run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
         .unwrap();
     assert!(f.locked(0).is_empty());
+    f.restart();
+    assert!(f.locked(0).is_empty(), "the unlock survives a restart");
     let mut again = req();
     again.fee = 2 * FEE;
     let inv = start(&f, 0, again).unwrap();

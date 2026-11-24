@@ -27,7 +27,7 @@ use super::super::MasternodesError;
 use super::super::protx::ops::conflict_height;
 use super::super::shared_records::{
     DeadReason, KeyBase, ShareRow, ShareTermsView, SharedKind, SharedNext, SharedRole,
-    SharedSession, SharedStage, SharedWarning,
+    SharedSession, SharedStage, SharedWarning, UnreadableSession,
 };
 use crate::EngineError;
 use crate::history::TxEntry;
@@ -155,6 +155,32 @@ pub(crate) fn reserved_of(row: &SharedSessionRow) -> Vec<OutPoint> {
 pub(crate) fn json<T: Serialize>(value: &T) -> Result<String, MasternodesError> {
     serde_json::to_string(value)
         .map_err(|e| EngineError::Internal(format!("encoding a shared session: {e}")).into())
+}
+
+/// The `kind` column read back: anything unknown is a registration.
+pub(crate) fn kind_of(column: &str) -> SharedKind {
+    match column {
+        "dissolve_together" => SharedKind::DissolveTogether,
+        "key_change" => SharedKind::KeyChange,
+        _ => SharedKind::Registration,
+    }
+}
+
+/// A row whose envelope no longer parses, listed from its columns (D57).
+/// `discardable` is the rule every discard of an unparsed row applies:
+/// `may_discard` for registrations and key changes, and together's
+/// parse-failure branch, which is the same `out_at` test.
+pub(crate) fn unreadable_view(row: &SharedSessionRow) -> UnreadableSession {
+    let code: String = row.id.chars().take(6).collect();
+    UnreadableSession {
+        id: row.id.clone(),
+        code: code.to_ascii_uppercase(),
+        kind: kind_of(&row.kind),
+        role: role_of(&row.role),
+        discardable: may_discard(row),
+        reserved: serde_json::from_str::<Vec<String>>(&row.reserved).unwrap_or_default(),
+        updated_at: row.updated_at,
+    }
 }
 
 /// The `role` column read back: anything but `coordinator` is a
@@ -467,18 +493,30 @@ pub(crate) fn releasable(
             SharedStage::Conflicted => (session_hash(&l, chain).or(stored), l.own_inputs()),
             _ => return false,
         },
-        Err(_) => {
-            let reserved = reserved_of(row);
-            if stored.is_some_and(|t| chain.confirmed_height(&t).is_some()) {
-                return true;
-            }
-            if row.out_at.is_none() {
-                return reserved.iter().any(|o| !chain.unspent.contains(o));
-            }
-            (stored, reserved)
-        }
+        Err(_) => return releasable_by_columns(row, chain, buried),
     };
     conflict_height(&chain.history, &inputs, txid.as_ref()).is_some_and(buried)
+}
+
+/// A row whose envelope no longer parses, judged by its stored columns
+/// alone (BL-346 (c)): its stored transaction in a block releases it; not
+/// out, a spent reserved coin does (it can no longer be signed); out, a
+/// buried spend of a reserved coin does. Registrations and key changes
+/// alike, so no unreadable session holds its coins with no way out.
+pub(crate) fn releasable_by_columns(
+    row: &SharedSessionRow,
+    chain: &ChainView,
+    buried: impl Fn(u32) -> bool,
+) -> bool {
+    let stored = row.txid.as_deref().and_then(|t| Txid::from_str(t).ok());
+    let reserved = reserved_of(row);
+    if stored.is_some_and(|t| chain.confirmed_height(&t).is_some()) {
+        return true;
+    }
+    if row.out_at.is_none() {
+        return reserved.iter().any(|o| !chain.unspent.contains(o));
+    }
+    conflict_height(&chain.history, &reserved, stored.as_ref()).is_some_and(buried)
 }
 
 /// The registration's txid, once every input is signed: its ProTx hash.
@@ -687,11 +725,7 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
         id: s.session_id.clone(),
         code: s.session_code(),
         message_code: s.message_code(),
-        kind: match l.row.kind.as_str() {
-            "dissolve_together" => SharedKind::DissolveTogether,
-            "key_change" => SharedKind::KeyChange,
-            _ => SharedKind::Registration,
-        },
+        kind: kind_of(&l.row.kind),
         role: l.role,
         stage,
         revision: u32::try_from(s.revision).unwrap_or(0),

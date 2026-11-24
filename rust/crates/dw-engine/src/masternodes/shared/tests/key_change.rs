@@ -1201,11 +1201,70 @@ fn test_QT_127_a_quiet_key_change_hints_abandon() {
     assert!(!approver.contains("abandon_hint"), "{approver}");
 }
 
+/// An unreadable key change is judged by its stored columns, as an
+/// unreadable registration is: before out, a spent reserved coin releases
+/// its locks.
+#[test]
+fn test_an_unreadable_key_change_before_out_releases_once_a_coin_is_spent() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let id = start(&f, 0, rotate(txid), 0).unwrap().session.id;
+    let reserved = reserved_of(&f.row(0, &id));
+    assert!(!reserved.is_empty());
+    f.rewrite(0, &id, |u| u.envelope = "{".into());
+    f.follow();
+    assert!(
+        reserved.iter().all(|o| f.locked(0).contains(o)),
+        "unspent: kept"
+    );
+    f.spend(0, reserved[0]);
+    f.follow();
+    assert!(f.locked(0).is_empty());
+}
+
+/// An unreadable key change that may be out keeps its coins until a spend
+/// of one of them is buried, then releases them: no unreadable session
+/// holds coins with no way out.
+#[test]
+fn test_an_unreadable_out_key_change_releases_on_a_buried_spend() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let id = start(&f, 0, rotate(txid), 0).unwrap().session.id;
+    let reserved = reserved_of(&f.row(0, &id));
+    assert!(
+        f.db()
+            .mark_shared_session_out_durable(&f.wallets[0].to_string(), &id, &[7], "tx", 1)
+            .unwrap()
+    );
+    f.rewrite(0, &id, |u| u.envelope = "{".into());
+    let spend = Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: reserved[0],
+            ..Default::default()
+        }],
+        output: Vec::new(),
+        special_transaction_payload: None,
+    };
+    f.mine(spend, 200);
+    f.tip(200);
+    f.follow();
+    assert!(!f.locked(0).is_empty(), "one deep: kept");
+    f.tip(204);
+    f.follow();
+    assert!(!f.locked(0).is_empty(), "five deep: kept");
+    f.tip(205);
+    f.follow();
+    assert!(f.locked(0).is_empty());
+}
+
 /// A funder's unsent key change reads `discardable`, and Discard releases
-/// every fee coin it locked: a new key change selects them again.
+/// every fee coin it locked, durably: after a restart a new key change
+/// selects them again.
 #[test]
 fn test_a_discarded_key_change_frees_its_fee_coins() {
-    let f = fx(3, true);
+    let mut f = fx(3, true);
     let (_, txid) = keyed(&f);
     let a = start(&f, 0, rotate(txid), 0).unwrap();
     let id = a.session.id.clone();
@@ -1220,4 +1279,8 @@ fn test_a_discarded_key_change_frees_its_fee_coins() {
     assert!(f.net.sent().is_empty());
     let b = start(&f, 0, rotate(txid), 0).unwrap();
     assert_eq!(reserved_of(&f.row(0, &b.session.id)), reserved);
+    f.run(f.mn().discard_shared_session(f.wallets[0], b.session.id))
+        .unwrap();
+    f.restart();
+    assert!(f.locked(0).is_empty(), "the unlock survives a restart");
 }
