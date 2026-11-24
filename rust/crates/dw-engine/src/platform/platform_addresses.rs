@@ -70,6 +70,11 @@ pub enum PlatformActivityKind {
     /// addresses (1.0 C3a): `to` is the identity (base58). Settled as a
     /// move, by its inputs' proved nonces.
     ToIdentity,
+    /// The value left on a transfer to Shielded that Platform refused after
+    /// a penalty, recovered to this wallet's Platform address (`address`)
+    /// (#402); `Pending` until a proved apply, then `Done` with the credits
+    /// it added.
+    Recovered,
 }
 
 /// Where an activity row stands.

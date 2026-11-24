@@ -77,7 +77,10 @@ impl From<engine::PlatformAddressRow> for PlatformAddressRow {
 /// this wallet to a Platform address (`to`); `fromCore`: an "Add from Dash
 /// wallet" of this wallet to its Platform address (`address`), pending
 /// until Platform proves it applied; `toIdentity`: a top-up of one of this
-/// wallet's identities (`to`, base58) from its Platform addresses.
+/// wallet's identities (`to`, base58) from its Platform addresses;
+/// `recovered`: the value left on a transfer to Shielded that Platform
+/// refused after a penalty, recovered to this wallet's Platform address
+/// (`address`), pending until Platform proves it applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityKind {
@@ -87,10 +90,11 @@ pub enum PlatformActivityKind {
     Send,
     FromCore,
     ToIdentity,
+    Recovered,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity
+    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, Recovered
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);

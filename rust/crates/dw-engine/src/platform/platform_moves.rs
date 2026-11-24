@@ -324,14 +324,21 @@ pub(crate) struct FundRecord {
     /// recorded (a restored one): only a proved apply completes it.
     #[serde(default)]
     pub(crate) restored: bool,
+    /// A recover of a partly used shield lock's remaining value
+    /// (`unfinished_remainder`), not an "Add from Dash wallet".
+    #[serde(default)]
+    pub(crate) recovered: bool,
     pub(crate) at: u64,
 }
 
 impl FundRecord {
-    fn activity(&self) -> PlatformActivity {
+    pub(crate) fn activity(&self) -> PlatformActivity {
         PlatformActivity {
             id: format!("fund-{}", self.txid),
-            kind: PlatformActivityKind::FromCore,
+            kind: match self.recovered {
+                true => PlatformActivityKind::Recovered,
+                false => PlatformActivityKind::FromCore,
+            },
             state: self.state,
             credits: self.credits,
             address: Some(self.address.clone()),
@@ -380,6 +387,7 @@ impl FundRecord {
             vout: outpoint.vout,
             armed: false,
             restored: false,
+            recovered: false,
             at: unix_now(),
         }
     }
@@ -575,6 +583,29 @@ pub(crate) async fn arm_fund(
     address: String,
     credits: u64,
 ) -> Result<Arming, PlatformError> {
+    arm(session, wallet, lock, address, credits, false).await
+}
+
+/// [`arm_fund`] for a recover of the partly used shield lock `lock`: a
+/// record it makes is `recovered`.
+pub(crate) async fn arm_recover(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lock: (OutPoint, u64),
+    address: String,
+    credits: u64,
+) -> Result<Arming, PlatformError> {
+    arm(session, wallet, lock, address, credits, true).await
+}
+
+async fn arm(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lock: (OutPoint, u64),
+    address: String,
+    credits: u64,
+    recovered: bool,
+) -> Result<Arming, PlatformError> {
     let one = wallet_lock(wallet);
     let _one = one.lock().await;
     let store = Store::of(session, wallet)?;
@@ -595,6 +626,7 @@ pub(crate) async fn arm_fund(
             let r = FundRecord {
                 armed: true,
                 restored: true,
+                recovered,
                 ..FundRecord::pending(lock, address, credits)
             };
             (r, Arming::Made)

@@ -12,8 +12,13 @@
 //! kept ([`Mark::Used`]): the kind takes it as finished elsewhere, as type 4
 //! does, so it leaves the card. Otherwise, and for this device's own lock
 //! (0.1's Checking, SR1, as its pending shield), the lock reads Checking.
+//! After any signed apply Platform did not prove, the proved state is read:
+//! a lock it shows partly used (a shield refused after a penalty) is kept
+//! with what is left ([`Mark::Remaining`]); it lists Recoverable, or too
+//! small, and is never applied as a shield again
+//! (`unfinished_remainder` moves it).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dashcore::{OutPoint, ScriptBuf, Txid};
@@ -86,6 +91,17 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
         self.marks(Mark::Used).await
     }
 
+    async fn remaining_locks(&self) -> HashMap<OutPoint, u64> {
+        locks::remaining_of(self.session, self.wallet, LockKindId::Shielded).await
+    }
+
+    /// A recover's fee: an address funding of no input and one output, at
+    /// the version the SDK holds.
+    fn remainder_floor(&self) -> Option<u64> {
+        let rules = PlatformVersion::get(self.lib.protocol_version()).ok()?;
+        Some(super::platform_fund::fee_credits(rules))
+    }
+
     async fn mark_unknown(&self, lock: &KindLock) {
         self.record(Mark::Unknown, lock).await;
         if lock.alone() {
@@ -155,30 +171,33 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
     ) -> Result<ApplyReply, PlatformError> {
         let applied = self.lib.apply(outpoint, signer).await;
         (self.session.hub.pump).mark_platform(self.wallet, [PlatformChange::Shielded]);
-        let reply = match applied? {
-            Applied::Done => ApplyReply::Done,
-            Applied::Taken => ApplyReply::AlreadyConsumed,
-            Applied::Unknown => ApplyReply::Unknown,
-        };
-        if reply == ApplyReply::AlreadyConsumed && self.restored(outpoint).await {
-            // After the signature the answer is Platform's, unproved;
-            // before it, the library's own row, which only a proved apply
-            // makes `Consumed`.
-            let spent = match signer.signed() {
-                true => self.lib.spent(outpoint).await,
-                false => SpentRead::Consumed,
-            };
-            match spent {
-                SpentRead::Consumed => {
-                    let (session, wallet, kind) = (self.session, self.wallet, LockKindId::Shielded);
+        let taken = matches!(applied, Ok(Applied::Taken));
+        let (session, wallet, kind) = (self.session, self.wallet, LockKindId::Shielded);
+        if signer.signed() && !matches!(applied, Ok(Applied::Done)) {
+            // Platform's answer after the signature is unproved; its proved
+            // state says whether the lock is used, or partly used (#402).
+            match self.lib.spent(outpoint).await {
+                SpentRead::Remaining { credits } => {
+                    tracing::warn!(%outpoint, credits, "a shield lock Platform proved partly used");
+                    locks::record_remaining(session, wallet, kind, outpoint, credits).await;
+                }
+                SpentRead::Consumed if taken && self.restored(outpoint).await => {
                     locks::record(session, wallet, kind, Mark::Used, outpoint).await;
                 }
                 spent => {
-                    tracing::warn!(%outpoint, ?spent, "Platform's unproved \"already consumed\" for a shield lock: Checking");
+                    tracing::warn!(%outpoint, ?spent, ?taken, "a shield lock's apply unproved: Checking");
                 }
             }
+        } else if taken && self.restored(outpoint).await {
+            // Before the signature, the library's own row, which only a
+            // proved apply makes `Consumed`.
+            locks::record(session, wallet, kind, Mark::Used, outpoint).await;
         }
-        Ok(reply)
+        Ok(match applied? {
+            Applied::Done => ApplyReply::Done,
+            Applied::Taken => ApplyReply::AlreadyConsumed,
+            Applied::Unknown => ApplyReply::Unknown,
+        })
     }
 
     async fn settle(&self, lock: &KindLock) {

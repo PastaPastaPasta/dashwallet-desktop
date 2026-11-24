@@ -114,6 +114,7 @@ mod unfinished_funds;
 pub(crate) mod unfinished_locks;
 #[cfg(test)]
 mod unfinished_locks_tests;
+mod unfinished_remainder;
 mod unfinished_shields;
 mod users;
 #[cfg(test)]
@@ -193,6 +194,6 @@ pub use startup::{
 pub use startup_status::{DashPayStartup, PlatformCadence, SpvState};
 pub use status::PlatformStatus;
 pub use unfinished::{
-    LockFinish, LockKindId, LockOrigin, TransfersReport, UnfinishedLock, UnfinishedState,
-    UnfinishedTransfers,
+    LockFinish, LockKindId, LockOrigin, RecoverQuote, TransfersReport, UnfinishedLock,
+    UnfinishedState, UnfinishedTransfers,
 };

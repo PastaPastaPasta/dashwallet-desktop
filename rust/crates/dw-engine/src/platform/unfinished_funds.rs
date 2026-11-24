@@ -221,14 +221,8 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
         let estimate = fund::estimate(self.lib, duffs);
         // Until the settle says what the rise is (module doc).
         let hold = platform_moves::hold_fund(self.session, self.wallet, address.clone()).await;
-        let signer = ArmingSigner {
-            inner: signer,
-            session: self.session,
-            wallet: self.wallet,
-            lock: (outpoint, duffs),
-            fund: (&address, estimate),
-            arming: tokio::sync::OnceCell::new(),
-        };
+        let signer = ArmingSigner::new(signer, self.session, self.wallet, (outpoint, duffs))
+            .paying(&address, estimate);
         let applied = self.lib.apply(outpoint, to, &signer).await;
         (self.session.hub.pump).mark_platform(self.wallet, [PlatformChange::PlatformAddresses]);
         let gained = applied.as_ref().ok().copied().flatten();
@@ -386,17 +380,55 @@ fn persisted_consumed(
 }
 
 /// The apply's signer: [`LockKeySigner`], arming the fund's record
-/// ([`platform_moves::arm_fund`]) durably before the first signature it
-/// asks for, and refusing to sign when that write fails.
-struct ArmingSigner<'s, 'a> {
-    inner: &'s LockKeySigner<'a>,
+/// ([`platform_moves::arm_fund`], or [`platform_moves::arm_recover`] for a
+/// recover) durably before the first signature it asks for, and refusing
+/// to sign when that write fails.
+pub(crate) struct ArmingSigner<'s, 'a> {
+    pub(crate) inner: &'s LockKeySigner<'a>,
     session: &'s NetworkSession,
     wallet: WalletId,
     lock: (OutPoint, u64),
     /// The address the apply pays and the fund's estimate.
     fund: (&'s str, u64),
+    /// A recover's record, not a fund's.
+    recovered: bool,
     /// What arming did, once it ran.
-    arming: tokio::sync::OnceCell<platform_moves::Arming>,
+    pub(crate) arming: tokio::sync::OnceCell<platform_moves::Arming>,
+}
+
+impl<'s, 'a> ArmingSigner<'s, 'a> {
+    pub(crate) fn new(
+        inner: &'s LockKeySigner<'a>,
+        session: &'s NetworkSession,
+        wallet: WalletId,
+        lock: (OutPoint, u64),
+    ) -> Self {
+        Self {
+            inner,
+            session,
+            wallet,
+            lock,
+            fund: ("", 0),
+            recovered: false,
+            arming: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The record pays `address`, about `credits`.
+    pub(crate) fn paying(self, address: &'s str, credits: u64) -> Self {
+        Self {
+            fund: (address, credits),
+            ..self
+        }
+    }
+
+    /// The record is a recover's ([`platform_moves::arm_recover`]).
+    pub(crate) fn recovering(self) -> Self {
+        Self {
+            recovered: true,
+            ..self
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -423,15 +455,18 @@ impl key_wallet::Signer for ArmingSigner<'_, '_> {
         if self.inner.is_the_lock_key(&key) {
             let (address, credits) = self.fund;
             let arm = || async {
-                platform_moves::arm_fund(
-                    self.session,
-                    self.wallet,
-                    self.lock,
-                    address.into(),
-                    credits,
-                )
-                .await
-                .map_err(|e| SignerError::Vault(VaultError::Storage(e.to_string())))
+                let (session, wallet, lock) = (self.session, self.wallet, self.lock);
+                let armed = match self.recovered {
+                    true => {
+                        platform_moves::arm_recover(session, wallet, lock, address.into(), credits)
+                            .await
+                    }
+                    false => {
+                        platform_moves::arm_fund(session, wallet, lock, address.into(), credits)
+                            .await
+                    }
+                };
+                armed.map_err(|e| SignerError::Vault(VaultError::Storage(e.to_string())))
             };
             self.arming.get_or_try_init(arm).await?;
         }

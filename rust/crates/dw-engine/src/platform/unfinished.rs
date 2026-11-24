@@ -20,6 +20,7 @@ use super::platform_fund::{self, FundLib, PwFund};
 use super::shielded_pool::{PwShielded, on_pool, on_pool_signing};
 use super::unfinished_funds::FundLocks;
 use super::unfinished_locks::{self as locks, LockKind};
+use super::unfinished_remainder as remainder;
 use super::unfinished_shields::ShieldLocks;
 use crate::{NetworkSession, WalletId};
 
@@ -71,8 +72,17 @@ pub enum UnfinishedState {
     /// apply does not re-derive. Never offered a finish.
     Unsupported,
     /// Too small to finish: worth less than the Platform fee its apply
-    /// pays, so the apply would leave nothing. Never offered a finish.
+    /// pays, so the apply would leave nothing. Never offered a finish. A
+    /// partly used lock (`remaining_credits`) whose remaining value is below
+    /// Platform's fee for moving it reads this too, and is never offered a
+    /// recover.
     TooSmall,
+    /// Platform proved the lock partly used (a transfer to Shielded refused
+    /// after a penalty): `remaining_credits` are left, at least Platform's
+    /// fee for moving them. Never applied again as its kind; offered a
+    /// recover to the wallet's own Platform address
+    /// ([`DashPay::recover_transfer`]).
+    Recoverable,
 }
 
 /// A funding lock paying one of the wallet's funding keys whose Platform
@@ -87,6 +97,9 @@ pub struct UnfinishedLock {
     pub duffs: u64,
     pub origin: LockOrigin,
     pub state: UnfinishedState,
+    /// For a lock Platform proved partly used, the credits that proved read
+    /// left; a recover reads them again before it signs.
+    pub remaining_credits: Option<u64>,
 }
 
 /// How finishing one lock ended.
@@ -107,6 +120,24 @@ pub enum LockFinish {
     ProofWaiting,
     /// Refused before the lock's credit key signed anything: nothing reached
     /// Platform. `error` is the refusal's code.
+    NotApplied { error: String },
+}
+
+/// What a recover of a partly used transfer to Shielded would move
+/// ([`DashPay::recover_transfer_quote`]), from Platform's proved state when
+/// asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RecoverQuote {
+    /// `credits` are left, at least `fee_credits`, Platform's fee for moving
+    /// them: a recover's grant carries exactly `credits`.
+    Ready { credits: u64, fee_credits: u64 },
+    /// `credits` are left, less than `fee_credits`: never recovered.
+    TooSmall { credits: u64, fee_credits: u64 },
+    /// Nothing left to move: recovered, or Platform proved it used up.
+    Finished,
+    /// Not recoverable now (the network gate, no proved read, not partly
+    /// used): the refusal's code.
     NotApplied { error: String },
 }
 
@@ -210,6 +241,63 @@ impl DashPay {
             .map_err(credits),
         }
     }
+
+    /// What a recover of the partly used transfer to Shielded at
+    /// `txid`:`vout` would move ([`RecoverQuote`]), read from Platform's
+    /// proved state now; size the recover's grant from it.
+    pub async fn recover_transfer_quote(
+        &self,
+        txid: String,
+        vout: u32,
+    ) -> Result<RecoverQuote, PlatformError> {
+        let wallet = self.wallet_id;
+        let outpoint = lock_outpoint(&txid, vout)?;
+        platform_fund::on_lib(
+            &self.session,
+            wallet,
+            false,
+            move |session, lib| async move {
+                Ok(remainder::quote(&session, wallet, &lib, outpoint).await?)
+            },
+        )
+        .await
+        .map_err(credits)
+    }
+
+    /// Recovers what is left on the partly used transfer to Shielded at
+    /// `txid`:`vout` to the wallet's own Platform receive address (no other
+    /// destination), under a `PlatformAddressFund` lease redeemed from
+    /// `grant`, whose credits cap must be the credits Platform's proved
+    /// state shows left now. Behind the shield flow's network gate; signed
+    /// with the lock's credit key and no other; only a proved apply settles
+    /// it.
+    pub async fn recover_transfer(
+        &self,
+        txid: String,
+        vout: u32,
+        grant: String,
+    ) -> Result<LockFinish, PlatformError> {
+        let wallet = self.wallet_id;
+        let outpoint = lock_outpoint(&txid, vout)?;
+        platform_fund::on_lib(
+            &self.session,
+            wallet,
+            true,
+            move |session, lib| async move {
+                Ok(remainder::recover(&session, wallet, &lib, outpoint, &grant).await?)
+            },
+        )
+        .await
+        .map_err(credits)
+    }
+}
+
+/// The outpoint `txid`:`vout` a call names.
+fn lock_outpoint(txid: &str, vout: u32) -> Result<OutPoint, PlatformError> {
+    let txid: Txid = (txid.trim().parse()).map_err(|_| PlatformError::InvalidArgument {
+        detail: "txid is not a hex txid".into(),
+    })?;
+    Ok(OutPoint { txid, vout })
 }
 
 /// One kind's unfinished locks, and whether its side has caught up.

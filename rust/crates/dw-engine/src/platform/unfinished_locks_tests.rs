@@ -2,7 +2,7 @@
 //! and the engine's evidence, the one reply that reads "already consumed",
 //! and detection over a scripted kind.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -63,6 +63,8 @@ struct Ev {
     used: HashSet<OutPoint>,
     readiness: Readiness,
     minimum: Option<Minimum>,
+    remaining: HashMap<OutPoint, u64>,
+    remainder_floor: Option<u64>,
 }
 
 impl Default for Ev {
@@ -74,8 +76,20 @@ impl Default for Ev {
             used: HashSet::new(),
             readiness: Readiness::Ready,
             minimum: None,
+            remaining: HashMap::new(),
+            remainder_floor: None,
         }
     }
+}
+
+/// The bytes drive stores for a lock of `initial` credits with `remaining`
+/// left (`add_asset_lock_outpoint_operations/v0`).
+pub(super) fn stored_value(initial: u64, remaining: u64) -> Vec<u8> {
+    use dpp::asset_lock::reduced_asset_lock_value::AssetLockValue;
+    use dpp::serialization::PlatformSerializable;
+    let rules = dpp::version::PlatformVersion::latest();
+    let value = AssetLockValue::new(initial, vec![0x76; 25], remaining, Vec::new(), rules).unwrap();
+    value.serialize_to_bytes().unwrap()
 }
 
 impl Ev {
@@ -91,6 +105,8 @@ impl Ev {
             reported_used: &self.used,
             readiness: &self.readiness,
             minimum: self.minimum,
+            remaining: &self.remaining,
+            remainder_floor: self.remainder_floor,
         };
         classify(LockKindId::Shielded, l, &ev).map(|u| (u.origin, u.state))
     }
@@ -1058,7 +1074,7 @@ impl Rig for FakeRig {
         let marks = match mark {
             Mark::Settled => &self.kind.settled,
             Mark::Unknown => &self.kind.unknown,
-            Mark::Used => unreachable!("no record by txid of a proved use"),
+            Mark::Used | Mark::Remaining => unreachable!("no record by txid of a proved read"),
         };
         marks.lock().unwrap().txids.insert(txid);
     }
@@ -1148,9 +1164,10 @@ fn an_error_after_the_signature_is_checking_whatever_the_kind_says() {
 }
 
 /// BL-921: how a verified read of `SpentAssetLockTransactions` is read.
-/// No element is unspent, an empty item consumed, any other item a
-/// remaining value; nothing back, the key missing from the answer, or an
-/// element of another sort is no answer.
+/// No element is unspent, an empty item consumed, an item holding an
+/// `AssetLockValue` partly used with its remaining credits (#402); nothing
+/// back, the key missing from the answer, an item that is not an
+/// `AssetLockValue`, or an element of another sort is no answer.
 #[test]
 fn a_spent_read_follows_drives_asset_lock_tree() {
     use super::unfinished_locks::{SpentRead, read_spent, spent_key};
@@ -1174,8 +1191,22 @@ fn a_spent_read_follows_drives_asset_lock_tree() {
     assert_eq!(read_spent(Some(&answer(None)), &key), SpentRead::Unspent);
     let used = answer(Some(Element::new_item(Vec::new())));
     assert_eq!(read_spent(Some(&used), &key), SpentRead::Consumed);
-    let rest = answer(Some(Element::new_item(vec![0, 1, 2, 3])));
-    assert_eq!(read_spent(Some(&rest), &key), SpentRead::Remaining);
+    let junk = answer(Some(Element::new_item(vec![0, 1, 2, 3])));
+    assert_eq!(read_spent(Some(&junk), &key), SpentRead::Unread);
+    let rest = answer(Some(Element::new_item(stored_value(
+        1_000_000_000,
+        400_000_000,
+    ))));
+    assert_eq!(
+        read_spent(Some(&rest), &key),
+        SpentRead::Remaining {
+            credits: 400_000_000
+        }
+    );
+    let mut trailing = stored_value(1_000_000_000, 400_000_000);
+    trailing.push(0);
+    let trailing = answer(Some(Element::new_item(trailing)));
+    assert_eq!(read_spent(Some(&trailing), &key), SpentRead::Unread);
     let tree = answer(Some(Element::empty_tree()));
     assert_eq!(read_spent(Some(&tree), &key), SpentRead::Unread);
     let other = spent_key(OutPoint::new(at.txid, 8));

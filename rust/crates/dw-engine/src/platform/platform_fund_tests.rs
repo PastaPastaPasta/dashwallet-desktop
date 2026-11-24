@@ -154,6 +154,9 @@ struct FakeFund {
     core_fenced: Mutex<Vec<bool>>,
     /// Platform's proved spent read of each outpoint; unread when unset.
     spent: Mutex<HashMap<OutPoint, SpentRead>>,
+    /// Every recover (`apply_remainder`): the outpoint and the address it
+    /// paid.
+    pub(super) recovered: Mutex<Vec<(OutPoint, PlatformAddress)>>,
 }
 
 impl FakeFund {
@@ -188,6 +191,7 @@ impl FakeFund {
             core_drained: Mutex::default(),
             core_fenced: Mutex::default(),
             spent: Mutex::default(),
+            recovered: Mutex::default(),
         }
     }
 
@@ -247,6 +251,44 @@ impl FakeFund {
             AssetLockStatus::ChainLocked,
             true,
         );
+    }
+}
+
+impl FakeFund {
+    /// The next scripted apply: signs with `key` first when scripted to,
+    /// then ends as its answer.
+    async fn scripted<S>(
+        &self,
+        outpoint: OutPoint,
+        signer: &S,
+    ) -> Result<Option<u64>, PlatformWalletError>
+    where
+        S: key_wallet::Signer<Error = dw_vault::SignerError> + Send + Sync,
+    {
+        let (sign, answer) = (self.answers.lock().unwrap().pop_front()).expect("a scripted apply");
+        if sign {
+            if self.lock_vault_in_apply.swap(false, Ordering::SeqCst) {
+                self.session.vault.lock();
+            }
+            let path = self.key.lock().unwrap().clone();
+            let signed = key_wallet::Signer::sign_ecdsa(signer, &path, [7; 32]).await;
+            self.signed.lock().unwrap().push(signed.is_ok());
+        }
+        match answer {
+            Answer::Done(gained) => Ok(gained),
+            Answer::Consumed { of } => Err(PlatformWalletError::AssetLockAlreadyConsumed(
+                of.unwrap_or(outpoint),
+            )),
+            Answer::Unrecorded => Err(conformance::unrecorded_consumed(&self.session)),
+            Answer::PersistFailed => Err(PlatformWalletError::Persistence(
+                "database is locked".into(),
+            )),
+            Answer::Failed => Err(PlatformWalletError::TransactionBroadcast(
+                "broadcast failed".into(),
+            )),
+            Answer::Panics => panic!("the apply panics"),
+            Answer::RetriedConsumed => Err(PlatformWalletError::AssetLockAlreadyConsumed(outpoint)),
+        }
     }
 }
 
@@ -391,30 +433,39 @@ impl FundLib for FakeFund {
             + Sync,
     {
         self.applied.lock().unwrap().push((outpoint, to));
-        let (sign, answer) = (self.answers.lock().unwrap().pop_front()).expect("a scripted apply");
-        if sign {
-            if self.lock_vault_in_apply.swap(false, Ordering::SeqCst) {
-                self.session.vault.lock();
+        self.scripted(outpoint, signer).await
+    }
+
+    async fn shield_lock_rows(&self) -> Vec<KindLock> {
+        (self.tracked.lock().unwrap().iter())
+            .filter(|l| l.funding_type == AssetLockFundingType::AssetLockShieldedAddressTopUp)
+            .map(KindLock::of_row)
+            .collect()
+    }
+
+    /// As the library's: a proved apply records the tracked lock
+    /// `Consumed`.
+    async fn apply_remainder<S>(
+        &self,
+        outpoint: OutPoint,
+        to: PlatformAddress,
+        signer: &S,
+    ) -> Result<Option<u64>, PlatformWalletError>
+    where
+        S: key_wallet::ExtendedPubKeySigner
+            + key_wallet::Signer<Error = dw_vault::SignerError>
+            + Send
+            + Sync,
+    {
+        self.recovered.lock().unwrap().push((outpoint, to));
+        let applied = self.scripted(outpoint, signer).await;
+        if applied.is_ok() {
+            let mut tracked = self.tracked.lock().unwrap();
+            if let Some(row) = tracked.iter_mut().find(|l| l.out_point == outpoint) {
+                row.status = AssetLockStatus::Consumed;
             }
-            let path = self.key.lock().unwrap().clone();
-            let signed = key_wallet::Signer::sign_ecdsa(signer, &path, [7; 32]).await;
-            self.signed.lock().unwrap().push(signed.is_ok());
         }
-        match answer {
-            Answer::Done(gained) => Ok(gained),
-            Answer::Consumed { of } => Err(PlatformWalletError::AssetLockAlreadyConsumed(
-                of.unwrap_or(outpoint),
-            )),
-            Answer::Unrecorded => Err(conformance::unrecorded_consumed(&self.session)),
-            Answer::PersistFailed => Err(PlatformWalletError::Persistence(
-                "database is locked".into(),
-            )),
-            Answer::Failed => Err(PlatformWalletError::TransactionBroadcast(
-                "broadcast failed".into(),
-            )),
-            Answer::Panics => panic!("the apply panics"),
-            Answer::RetriedConsumed => Err(PlatformWalletError::AssetLockAlreadyConsumed(outpoint)),
-        }
+        applied
     }
 
     async fn sync_now(&self) {
@@ -971,6 +1022,7 @@ fn the_recovery_finishes_a_lock_no_fund_step_signed() {
             duffs: 1_000_000,
             origin: LockOrigin::Restored,
             state: UnfinishedState::Checking,
+            remaining_credits: None,
         }]
     );
     assert!(pending_of(&fx, &lib).is_empty());
@@ -1828,6 +1880,7 @@ fn a_kind_that_cannot_be_read_does_not_hide_the_others() {
         duffs: 1_000_000,
         origin: LockOrigin::Restored,
         state: UnfinishedState::Ready,
+        remaining_credits: None,
     };
     let fund = lock(LockKindId::PlatformAddress, 2);
     let shield = lock(LockKindId::Shielded, 1);
@@ -2817,6 +2870,9 @@ fn a_persistence_failure_leaves_a_restored_fund_lock_unfinished() {
 #[path = "core_max_fund_tests.rs"]
 mod core_max_fund_tests;
 
+#[path = "unfinished_remainder_tests.rs"]
+mod unfinished_remainder_tests;
+
 /// BL-921: Platform's "already consumed" for a restored fund lock is not
 /// taken without Platform's proof. With no proved answer (an error, no
 /// proof, a timeout) or a proof that it is unspent, the lock reads
@@ -2859,7 +2915,7 @@ fn a_proved_remaining_fund_lock_stays_checking_and_check_again_applies_it() {
     let row = lib.lock(4, 1_000_000, AssetLockStatus::RecoveredFromChain, true);
     let at = row.out_point;
     lib.track(row);
-    lib.proves(at, SpentRead::Remaining);
+    lib.proves(at, SpentRead::Remaining { credits: 1 });
     lib.answer(Answer::Unrecorded);
     assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::Checking);
     assert_eq!(state_of(&fx, &lib), [(at, UnfinishedState::Checking)]);
