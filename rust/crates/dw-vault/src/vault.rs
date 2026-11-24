@@ -3290,7 +3290,17 @@ impl Vault {
         self.gated(VaultError::Locked, |op| {
             let dek = self.key_for(op, &token)?;
             let floor = self.inner().policy_floor;
-            let policy = open_policy(&next, &dek, floor)?.unwrap_or_default();
+            // A sealed limit that no longer authenticates counts as none (payments
+            // ask), so it is replaced rather than refused, the grant having checked
+            // the passphrase (#173 item 10). A manifest that does not
+            // authenticate is still `Corrupt`.
+            let policy = match open_policy(&next, &dek, floor) {
+                Ok(policy) => policy.unwrap_or_default(),
+                Err(VaultError::Corrupt(_)) if verify_manifest(&next, &dek, 0).is_ok() => {
+                    PolicyPayload::withdrawn()
+                }
+                Err(e) => return Err(e),
+            };
             let lowered = spend_limit_duffs < policy.spend_limit_duffs;
             let high_water = self.inner().high_water;
             let generation = put_policy(
