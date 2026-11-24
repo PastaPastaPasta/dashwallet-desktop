@@ -690,7 +690,10 @@ for (const theme of ["light", "dark"] as const)
   test(`mainnet ${theme}: the held wizard reads only keys and the preview (issue 635)`, async ({ page }, info) => {
     const errors = await open(page, "reg", theme, "mainnet");
     await expect(page.getByTestId("mn-set-up")).toBeVisible();
-    await page.waitForTimeout(500);
+    // The page's own polls have started, so a late first one isn't taken for the sheet's.
+    await expect
+      .poll(() => page.evaluate(() => ["governance_info", "governance_my_proposals"].every((c) => window.__dwFixture!.calls.includes(c))))
+      .toBe(true);
     const opened = await page.evaluate(() => [...window.__dwFixture!.calls]);
     const from = opened.length;
     // A poll counts as the page's only if the page made it before the sheet opened.
