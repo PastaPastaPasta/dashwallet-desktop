@@ -419,6 +419,8 @@ export const masternodes = {
     loading: "Loading the masternode list…",
     listSyncing: "list syncing",
     failed: "Couldn't read your masternodes.",
+    opsLoading: "Loading the registrations and key changes in progress…",
+    opsFailed: "Couldn't read the registrations and key changes in progress.",
     payoutsFailed: "Couldn't read this masternode's payouts.",
     payoutsFailedWith: "Couldn't read this masternode's payouts. {reason}",
     tryAgain: "Try again",

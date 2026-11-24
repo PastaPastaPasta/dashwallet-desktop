@@ -40,7 +40,7 @@ import {
 import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh, useMasternodeOperations } from "../../masternodes/queries";
 import { conflicted, inProgress } from "../../masternodes/operations";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
-import { InProgressGroup } from "./InProgress";
+import { InProgressGroup, useInProgressActions, type InProgressActions } from "./InProgress";
 import { registrationCalls, registrationSends } from "../../masternodes/registration";
 import { collateralErrorText, ReleaseSheet } from "./ReleaseSheet";
 import { useT } from "../../i18n";
@@ -51,17 +51,26 @@ const DAY = 86_400;
 /** mn-engine's `MAX_MASTERNODE_LABEL`. */
 const MAX_LABEL = 64;
 
-export function MyMasternodes({
-  wallet,
-  network,
-  onVote,
-  onContinue,
-}: {
+interface MyMasternodesProps {
   wallet: WalletSummary;
   network: NetworkInfo;
   onVote: () => void;
   onContinue: (op: ProTxOperation) => void;
-}) {
+}
+
+/** In progress's open sheet lives here, beside the list's layouts: a list read that switches them
+ * (failed to loaded, or back) keeps it open. */
+export function MyMasternodes(props: MyMasternodesProps) {
+  const actions = useInProgressActions(props.wallet, props.network, props.onContinue);
+  return (
+    <>
+      <MyMasternodesBody {...props} actions={actions} />
+      {actions.sheets}
+    </>
+  );
+}
+
+function MyMasternodesBody({ wallet, network, onVote, actions }: MyMasternodesProps & { actions: InProgressActions }) {
   const list = useMasternodes(wallet.walletId);
   const ops = useMasternodeOperations(wallet.walletId);
   const refresh = useMasternodesRefresh();
@@ -70,20 +79,43 @@ export function MyMasternodes({
   const [selected, setSelected] = useState<string | null>(null);
   const [retiredOpen, setRetiredOpen] = useState(false);
 
+  const work = ops.data ?? [];
+  // A failed or pending read is not an empty one: saved work stays named until the read answers.
+  const progress = (
+    <>
+      {ops.isError && (
+        <Notice
+          tone="warning"
+          testId="mn-ops-failed"
+          action={
+            <DashButton variant="filledBlue" size="small" data-testid="mn-ops-retry" onClick={() => void ops.refetch()}>
+              {MnText.tryAgain}
+            </DashButton>
+          }
+        >
+          <strong>{MnText.opsFailed}</strong> {mnErrorText(ops.error)}
+        </Notice>
+      )}
+      {ops.isPending ? <LoadingState testId="mn-ops-loading" text={MnText.opsLoading} /> : <InProgressGroup ops={work} wallet={wallet} network={network} actions={actions} />}
+    </>
+  );
   if (list.isPending) return <LoadingState testId="mn-loading" text={MnText.loading} />;
   if (list.isError)
     return (
-      <Notice
-        tone="warning"
-        testId="mn-list-failed"
-        action={
-          <DashButton variant="filledBlue" size="small" data-testid="mn-retry" onClick={() => void refresh()}>
-            {MnText.tryAgain}
-          </DashButton>
-        }
-      >
-        <strong>{MnText.failed}</strong> {mnErrorText(list.error)}
-      </Notice>
+      <>
+        <Notice
+          tone="warning"
+          testId="mn-list-failed"
+          action={
+            <DashButton variant="filledBlue" size="small" data-testid="mn-retry" onClick={() => void refresh()}>
+              {MnText.tryAgain}
+            </DashButton>
+          }
+        >
+          <strong>{MnText.failed}</strong> {mnErrorText(list.error)}
+        </Notice>
+        {progress}
+      </>
     );
   const o = list.data;
   const watchNotice = wallet.watchOnly && (
@@ -91,12 +123,11 @@ export function MyMasternodes({
       <strong>{MnText.watchOnly}</strong> {MnText.watchOnlyText}
     </Notice>
   );
-  const work = ops.data ?? [];
-  const progress = <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />;
   if (isEmpty(o) && inProgress(work).length === 0 && conflicted(work).length === 0)
     return (
       <>
         {watchNotice}
+        {!ops.isSuccess && progress}
         <section className="mg-empty card-l1" data-testid="mn-empty">
           <h2>{MnText.emptyTitle}</h2>
           <p>{MnText.emptyText}</p>

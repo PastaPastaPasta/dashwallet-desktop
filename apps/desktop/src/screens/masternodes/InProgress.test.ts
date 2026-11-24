@@ -25,7 +25,7 @@ const render = (kind: NetworkInfo["kind"]) => {
     ops: [op("reg", "registration"), op("upd", "update_registrar")],
     wallet: { walletId: "w", watchOnly: false } as WalletSummary,
     network: { kind, dirName: kind, unitName: kind === "mainnet" ? "DASH" : "tDASH" } as NetworkInfo,
-    onContinue: () => undefined,
+    actions: { act: () => undefined, error: null, sheets: null },
   });
   const client = new QueryClient();
   return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(BackendContext.Provider, { value: {} as Backend }, group)));
