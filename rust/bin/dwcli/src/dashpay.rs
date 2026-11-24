@@ -944,6 +944,7 @@ fn contact_params(e: &ContactError) -> Value {
         | C::ScanUnverified
         | C::NoUsername => json!({}),
         C::Platform(p) => platform_params(p),
+        C::Credits(c) => credits_params(c),
     }
 }
 
