@@ -2646,7 +2646,10 @@ fn a_recovery_scan_whose_write_fails_stores_neither_its_replay_nor_its_lookahead
         tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
     });
 
-    assert!(matches!(recovered, Ok(Ok(Ok(_)))), "runs once the write works: {recovered:?}");
+    assert!(
+        matches!(recovered, Ok(Ok(Ok(_)))),
+        "runs once the write works: {recovered:?}"
+    );
     assert_eq!(
         engine.block_on(session.stored_lookahead(id)).unwrap(),
         Some(crate::coinjoin::RECOVERY_LOOKAHEAD)
@@ -4267,4 +4270,91 @@ fn a_recovery_scan_quit_mid_rescan_resumes_at_the_next_start() {
         matches!(guard, Err(EngineError::RescanInProgress)),
         "{guard:?}"
     );
+}
+
+/// CoinJoin Recovery's two settings go in one transaction: with the
+/// database refusing the wide-scan marker, written after the lookahead in
+/// that write, the lookahead does not stay either.
+#[test]
+fn a_recovery_scan_whose_marker_write_is_refused_keeps_no_lookahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let marker = wide_scan(&engine, &session, id);
+    let scope = dw_appdb::local_scope(&id.to_string());
+    let db = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    for (name, event) in [
+        ("no_marker_insert", "INSERT"),
+        ("no_marker_update", "UPDATE"),
+    ] {
+        db.execute_batch(&format!(
+            "CREATE TRIGGER {name} BEFORE {event} ON settings_kv \
+             WHEN NEW.scope = '{scope}' AND NEW.key = '{key}' \
+             BEGIN SELECT RAISE(ABORT, 'test: marker refused'); END;",
+            key = crate::keys::WIDE_SCAN_SETTING,
+        ))
+        .unwrap();
+    }
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            session.coinjoin_recovery_scan(id),
+        )
+        .await
+    });
+
+    db.execute_batch("DROP TRIGGER no_marker_insert; DROP TRIGGER no_marker_update;")
+        .unwrap();
+    assert!(
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("test: marker refused")),
+        "refused by the database: {recovered:?}"
+    );
+    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    assert_eq!(wide_scan(&engine, &session, id), marker);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
+/// CoinJoin Recovery whose in-memory raise fails after its write is
+/// refused, and both settings stay: the next open raises the BIP44 range to
+/// the stored lookahead and replays from the wallet's birth.
+#[test]
+fn a_recovery_scan_whose_raise_fails_after_its_write_replays_with_its_lookahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let birth = birth_height(&engine, &session, id).saturating_sub(1);
+    insert_unraisable_account(&engine, &session, id);
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            session.coinjoin_recovery_scan(id),
+        )
+        .await
+    });
+
+    assert!(
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("BIP44 #1")),
+        "refused at the raise: {recovered:?}"
+    );
+    let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(raised)
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(birth))
+    );
+    let session = reopen(&engine, session);
+    assert_eq!(gap(&engine, &session, id, bip44()), raised);
+    assert_eq!(synced_height(&engine, &session, id), birth);
+    assert_eq!(replay_record(&engine, &session, id), Some((birth, HEIGHT)));
 }
