@@ -301,6 +301,7 @@ export const tools = {
       heightOutOfRange: "The height is above the current chain tip.",
       noPeers: "No peers are connected. Try again once the wallet is online.",
       notImplemented: "This feature is not available yet.",
+      inputsHeld: "A CoinJoin round that just finished is still settling, so chain data can't be reset yet. This takes up to an hour. Try again then.",
     },
     stuckRefusal: {
       rowsUnknown: "The wallet does not know this funding's coins yet.",

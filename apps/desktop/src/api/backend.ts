@@ -165,6 +165,7 @@ import type { UpdateRegistrarPreview } from "./generated/UpdateRegistrarPreview"
 import type { UpdateRegistrarRequest } from "./generated/UpdateRegistrarRequest";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
+import type { WalletHistoryGap } from "./generated/WalletHistoryGap";
 import type { VerifyMessageResult } from "./generated/VerifyMessageResult";
 import type { AccountXpub } from "./generated/AccountXpub";
 import type { BackupFileHeader } from "./generated/BackupFileHeader";
@@ -559,6 +560,8 @@ export interface Backend {
   startSpv(): Promise<null>;
   /** Deletes the headers and filters; SPV must be stopped (`spv_running`). */
   resetChainData(): Promise<null>;
+  /** Open wallets whose history starts before the stored block data; `null`: none, or no data yet. */
+  historyGap(): Promise<WalletHistoryGap | null>;
   setBirthHeight(walletId: string, height: number): Promise<null>;
   /** Abandons the unconfirmed transactions that aren't InstantSend-locked (`null`: every wallet) and
    * schedules a rescan; returns how many. */
