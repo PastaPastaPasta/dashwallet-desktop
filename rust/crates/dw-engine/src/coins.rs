@@ -1297,7 +1297,8 @@ impl NetworkSession {
     /// outpoint that is neither locked nor an unspent output is
     /// `OutpointNotFound`; one a masternode
     /// row holds (a ProTx operation's inputs, a shared session's
-    /// reservation, MG-04b BL-346) is refused and nothing is unlocked. Under
+    /// reservation, MG-04b BL-346) is refused and nothing is unlocked; an
+    /// operation abandoned in Activity holds nothing (MG-10 §1.10, D49). Under
     /// the coin fence, as "Lock unspent": rows take coins only under it.
     pub async fn unlock_outpoints(
         self: &Arc<Self>,
@@ -1330,6 +1331,11 @@ impl NetworkSession {
                 .map(|(o, _)| *o)
                 .collect();
             this.require_unspent(wallet_id, &unlisted).await?;
+            // An operation whose transaction was abandoned holds nothing
+            // (MG-10 §1.10, D49): settled first, also after a restart.
+            if let Err(e) = this.settle_operation_locks(wallet_id).await {
+                tracing::warn!(%wallet_id, error = %e, "settling ProTx operation locks");
+            }
             this.appdb_op(move |db| {
                 let held = db.held_outpoints(&id, dw_appdb::Holder::None)?;
                 if keys.iter().any(|k| held.contains(k)) {

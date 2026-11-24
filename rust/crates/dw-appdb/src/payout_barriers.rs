@@ -2,9 +2,11 @@
 //! payout-change barriers, one per signed ProUpRegTx whose terms change the
 //! payout. A barrier is written in the transaction that writes its
 //! operation's signed bytes (`masternode_ops`, [`crate::protx_ops`]), deleted
-//! by a clearing term ([`AppDb::clear_payout_barrier_durable`]) or with its
+//! by a clearing term ([`AppDb::clear_payout_barrier_durable`]), with its
 //! unsent operation in one transaction
-//! ([`AppDb::discard_unsent_masternode_op_durable`], in `protx_ops`), and
+//! ([`AppDb::discard_unsent_masternode_op_durable`], in `protx_ops`) or with
+//! the fee inputs of its operation abandoned in Activity
+//! ([`AppDb::release_abandoned_masternode_op_durable`]), and
 //! never by a wallet
 //! removal (fail closed). This crate does not read `terms`: the upgrade's
 //! backfill from existing operations is the engine's

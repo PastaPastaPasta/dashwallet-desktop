@@ -372,6 +372,20 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Abandoned, boo
     (out, true)
 }
 
+/// The txids `wallet`'s abandoned marks name, each by its key (an Abandon's
+/// commit point): one whose copy does not read back still counts.
+pub(crate) fn abandoned_txids(
+    appdb: &AppDb,
+    wallet: WalletId,
+) -> Result<HashSet<Txid>, dw_appdb::AppDbError> {
+    Ok(
+        (appdb.settings_with_prefix_lossy(&wallet.to_string(), ABANDONED_PREFIX)?)
+            .into_iter()
+            .filter_map(|(key, _)| Txid::from_str(&key[ABANDONED_PREFIX.len()..]).ok())
+            .collect(),
+    )
+}
+
 /// Finishes in the wallet store the abandons whose marks are stored but
 /// whose sweeps are not (the mark is the commit point): of `wallets`, each
 /// payment marked abandoned that is still stored out of a block and
@@ -839,6 +853,12 @@ impl NetworkSession {
         let changed: Vec<Txid> = abandoned.iter().copied().collect();
         self.hub.pump.mark_history(wallet, Some(&changed));
         self.hub.pump.mark_balances(wallet);
+        // A masternode operation whose transaction this abandoned holds its
+        // coins no longer (MG-10 §1.10, D49). The mark is durable, so a
+        // release that fails here runs again at the next settling.
+        if let Err(e) = self.settle_operation_locks(wallet).await {
+            tracing::warn!(%wallet, error = %e, "releasing an abandoned ProTx operation's coins");
+        }
         Ok(abandoned)
     }
 

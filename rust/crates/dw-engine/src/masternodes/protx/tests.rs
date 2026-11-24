@@ -31,6 +31,7 @@ use crate::send::test_support::{FOREIGN, pay, send_failure};
 use crate::send::{SendFailure, SpendOwner, TestBroadcaster};
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
 
+mod abandon;
 mod barriers;
 
 const PHRASE: &str =

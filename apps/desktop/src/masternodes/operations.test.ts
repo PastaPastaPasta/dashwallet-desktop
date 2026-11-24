@@ -50,10 +50,11 @@ const every = [
   op("st", { kind: "sent" }),
   op("cf", { kind: "confirmed", height: 7 }),
   op("cx", { kind: "conflicted" }),
+  op("ab", { kind: "abandoned" }),
 ];
 describe("In progress (§1.10)", () => {
   it("lists every unsettled operation and shows conflicted ones apart", () => {
-    expect(inProgress(every).map((o) => o.id)).toEqual(["ns", "is", "sg", "nt", "st"]);
+    expect(inProgress(every).map((o) => o.id)).toEqual(["ns", "is", "sg", "nt", "st", "ab"]);
     expect(conflicted(every).map((o) => o.id)).toEqual(["cx"]);
   });
 
@@ -64,6 +65,16 @@ describe("In progress (§1.10)", () => {
     expect(opRow(every[3]).status).toBe(t(`${I}.status.notSent`, { reason: lastErrorText("send.no_peers")! }));
     expect(opRow(every[4])).toMatchObject({ primary: null, more: [], overdueLine: null, activityTxid: null });
     expect(opRow(every[6])).toMatchObject({ primary: null, more: [] });
+  });
+
+  it("keeps an abandoned row listed with no Send again or Discard, and points at Activity (D49)", () => {
+    expect(opRow(every[7])).toMatchObject({
+      status: t(`${I}.status.abandoned`, { title: t(`${I}.title.registration`) }),
+      overdueLine: t(`${I}.abandoned`),
+      activityTxid: "aa".repeat(32),
+      primary: null,
+      more: [],
+    });
   });
 
   it("acts on a registration row only while registrations send (D14), and keeps Discard", () => {

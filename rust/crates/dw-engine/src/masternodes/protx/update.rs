@@ -28,7 +28,7 @@ use super::build::{
     to_sign,
 };
 use super::keys::{Claim, p2pkh_id, parse_operator_key};
-use super::ops::state_of;
+use super::ops::{abandon_settled, state_of};
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::send::l1_address;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -103,7 +103,9 @@ fn key_address(key_id: [u8; 20], network: Network) -> Address {
 impl NetworkSession {
     /// Every loaded wallet's operations on masternode `shown` (display
     /// order), newest first, with their states: an attached owner key
-    /// updates a masternode from any loaded wallet (D24, D43).
+    /// updates a masternode from any loaded wallet (D24, D43). One whose
+    /// transaction its wallet abandoned reads `abandoned` and holds no
+    /// later update (MG-10 §1.10, D49).
     async fn ops_on(
         &self,
         shown: &str,
@@ -127,8 +129,10 @@ impl NetworkSession {
                 w => w?,
             };
             let (history, unspent) = self.op_view_of(wallet, &w).await?;
+            let abandoned = self.abandoned_txids(wallet).await?;
             out.extend(rows.into_iter().map(|r| {
                 let state = state_of(&r, &history, &unspent);
+                let state = abandon_settled(&r, state, &history, &abandoned);
                 (r, state)
             }));
         }

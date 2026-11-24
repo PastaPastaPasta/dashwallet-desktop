@@ -3287,11 +3287,12 @@ fn key_with(k: IdentityPublicKey, data: &[u8]) -> IdentityPublicKey {
 // The fault sweep (MG-13 §3, DEC-998).
 
 /// The dw-appdb points no withdrawal step writes: MG-04's barrier write and
-/// discard (commit 3) and the open's backfill (commit 2) have their own
-/// sweeps there.
-const NOT_IN_A_WITHDRAWAL: [&str; 3] = [
+/// discard (commit 3), an abandoned operation's release (MG-10 D49) and the
+/// open's backfill (commit 2) have their own sweeps there.
+const NOT_IN_A_WITHDRAWAL: [&str; 4] = [
     dw_appdb::fault::MN_BARRIER_WRITE,
     dw_appdb::fault::MN_BARRIER_DISCARD,
+    dw_appdb::fault::MN_BARRIER_ABANDON,
     dw_appdb::fault::MN_BARRIER_BACKFILL,
 ];
 
