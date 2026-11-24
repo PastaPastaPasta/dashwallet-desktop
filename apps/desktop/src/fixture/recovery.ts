@@ -55,9 +55,11 @@ export interface RecoveryWorld {
   checksBeforeApply: number | null;
   /** The finishes of a checking lock so far. */
   checks: number;
+  /** The txids of listed locks Platform already took: their apply is answered already used. */
+  consumed: string[];
 }
 
-export const newRecoveryWorld = (): RecoveryWorld => ({ locks: [], complete: true, unread: [], failures: 0, checksBeforeApply: null, checks: 0 });
+export const newRecoveryWorld = (): RecoveryWorld => ({ locks: [], complete: true, unread: [], failures: 0, checksBeforeApply: null, checks: 0, consumed: [] });
 
 /** A restored Core → Shielded lock for a scenario. */
 export const restoredLock = (n: number, duffs: number, state: UnfinishedLock["state"] = "ready"): UnfinishedLock => ({
@@ -98,21 +100,55 @@ function announce(ctx: Ctx, walletId: string, kind: LockKind) {
   ctx.emit({ kind: "platform", network: ctx.world.launch.network.dirName, walletId, change: { domain: kind === "platformAddress" ? "platformAddresses" : "shielded" } });
 }
 
+/** A lock's apply past the lease (engine `run`): one Platform already took is reported used and leaves
+ * the list; a checking one answers checking until `checksBeforeApply` finishes; any other is applied. */
+function tryLock(world: World, r: RecoveryWorld, lock: UnfinishedLock): LockFinish {
+  if (r.consumed.includes(lock.txid)) {
+    r.locks = r.locks.filter((l) => l !== lock);
+    return { kind: "reportedUsed" };
+  }
+  if (lock.state === "checking") {
+    r.checks++;
+    if (r.checksBeforeApply === null || r.checks <= r.checksBeforeApply) return { kind: "checking" };
+  }
+  apply(world, r, lock);
+  return { kind: "applied" };
+}
+
 /** `finish_asset_locks`' part, counted as the engine does, one row per kind that lists a lock: a ready
- * lock is tried and applied; a checking, confirming, not-active, unsupported or too-small one is not
- * tried and stays pending (a checking one's own Check again tries it). */
-export function finishRestored(ctx: Ctx, walletId: string): TransfersReport[] {
+ * lock and a restored checking one are tried (one Platform already took counts in `alreadyUsed`); this
+ * install's checking lock and a confirming, not-active, unsupported or too-small one are not tried and
+ * stay pending (a checking one's own Check again tries it). */
+export function finishRestored(ctx: Ctx, walletId: string): RestoredReport {
   const r = ctx.world.pending.recovery;
   const kinds: LockKind[] = ["shielded", "platformAddress"];
-  return kinds.flatMap((kind) => {
+  let alreadyUsed = 0;
+  const byKind = kinds.flatMap((kind) => {
     if (r.unread.includes(kind)) return [];
     const listed = r.locks.filter((l) => l.kind === kind);
     if (listed.length === 0) return [];
-    const ready = listed.filter((l) => l.state === "ready");
-    for (const lock of ready) apply(ctx.world, r, lock);
-    if (ready.length > 0) announce(ctx, walletId, kind);
-    return [{ kind, resumed: ready.length, completed: ready.length, stillPending: listed.length - ready.length }];
+    const row: TransfersReport = { kind, resumed: 0, completed: 0, stillPending: 0 };
+    for (const lock of listed) {
+      if (lock.state !== "ready" && !(lock.state === "checking" && lock.origin === "restored")) {
+        row.stillPending++;
+        continue;
+      }
+      const got = tryLock(ctx.world, r, lock);
+      row.resumed++;
+      if (got.kind === "applied") row.completed++;
+      else if (got.kind === "reportedUsed") alreadyUsed++;
+      else row.stillPending++;
+    }
+    if (row.completed > 0) announce(ctx, walletId, kind);
+    return [row];
   });
+  return { byKind, alreadyUsed };
+}
+
+/** The restored locks' part of Finish transfers. */
+export interface RestoredReport {
+  byKind: TransfersReport[];
+  alreadyUsed: number;
 }
 
 export const RECOVERY_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
@@ -135,30 +171,23 @@ export const RECOVERY_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     if (g?.grant.purpose.kind !== "platformOp") return raise("platform.grant_invalid", "grant invalid");
     if (g.grant.purpose.maxDuffs < 1) return raise("platform.needs_grant", "needs a grant", { kind: "needsGrant", purpose: "funding" });
     useGrant(ctx.world, grant);
-    if (lock.state === "checking") {
-      r.checks++;
-      if (r.checksBeforeApply === null || r.checks <= r.checksBeforeApply) return { kind: "checking" };
-      apply(ctx.world, r, lock);
-      announce(ctx, walletId, lock.kind);
-      return { kind: "applied" };
-    }
-    if (lock.state !== "ready") return { kind: "checking" };
-    if (r.failures > 0) {
+    if (lock.state !== "ready" && lock.state !== "checking") return { kind: "checking" };
+    if (lock.state === "ready" && r.failures > 0) {
       r.failures--;
       return { kind: "notApplied", error: "platform.unavailable" };
     }
-    apply(ctx.world, r, lock);
-    announce(ctx, walletId, lock.kind);
-    return { kind: "applied" };
+    const got = tryLock(ctx.world, r, lock);
+    if (got.kind === "applied") announce(ctx, walletId, lock.kind);
+    return got;
   },
 };
 
 /** Finish transfers' report: the registrations' counts and the restored locks' (`byKind` has a row for a kind with any listed lock). */
-export const reportOf = (rows: { resumed: number; completed: number; stillPending: number }, restored: TransfersReport[], unread: LockKind[] = []): FinishReport => ({
-  resumed: rows.resumed + restored.reduce((n, k) => n + k.resumed, 0),
-  completed: rows.completed + restored.reduce((n, k) => n + k.completed, 0),
-  stillPending: rows.stillPending + restored.reduce((n, k) => n + k.stillPending, 0),
-  alreadyUsed: 0,
-  byKind: restored,
+export const reportOf = (rows: { resumed: number; completed: number; stillPending: number }, restored: RestoredReport, unread: LockKind[] = []): FinishReport => ({
+  resumed: rows.resumed + restored.byKind.reduce((n, k) => n + k.resumed, 0),
+  completed: rows.completed + restored.byKind.reduce((n, k) => n + k.completed, 0),
+  stillPending: rows.stillPending + restored.byKind.reduce((n, k) => n + k.stillPending, 0),
+  alreadyUsed: restored.alreadyUsed,
+  byKind: restored.byKind,
   unread,
 });
