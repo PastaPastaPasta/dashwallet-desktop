@@ -4975,8 +4975,34 @@ button.bell-row-open:focus-visible {
 }
 
 .coinjoin-subtitle {
-  margin: 0 0 var(--dw-space-l);
+  margin: 0 0 var(--dw-space-s);
   color: var(--dw-role-text-secondary);
+}
+
+.coinjoin-explainer-link {
+  align-self: flex-start;
+  margin-bottom: var(--dw-space-l);
+}
+
+.coinjoin-explainer p {
+  margin: 0 0 var(--dw-space-m);
+  overflow-wrap: anywhere;
+}
+
+.license-text {
+  max-height: 12rem;
+  overflow: auto;
+  margin: var(--dw-space-s) 0;
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-secondary);
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  user-select: text;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .coinjoin-notes,
