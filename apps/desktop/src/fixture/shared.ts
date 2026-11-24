@@ -270,6 +270,11 @@ const bump = (s: SharedSession) => {
   s.messageCode = messageCode(`${s.id.slice(6, 10)}${s.revision}`);
 };
 
+/** `abandon_shared_session`'s `unsupported` while sending is off. */
+function requireSending(world: World) {
+  if (!world.shared.capability.canSend) throw fail("masternodes.unsupported", "shared sending is off", { kind: "unsupported", feature: "shared_masternodes", field: null });
+}
+
 function requireV24(world: World) {
   if (world.shared.capability.v24 !== "active") throw fail("masternodes.unsupported", "v24 is not active", { kind: "unsupported", feature: "v24", field: null });
 }
@@ -546,8 +551,12 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     /** The engine's order: the session, its kind, its stage, a coin to spend, then the grant. */
     mn_shared_abandon: ({ walletId, session: id, grant: grantId }, ctx) => {
       const { world } = ctx;
+      if (!HEX64.test(id)) throw fail("invalid_argument", "a session id is 64 lower-case hex");
       wallet(world, walletId);
-      if (world.shared.unreadable.some((x) => x.id === id)) throw fail("internal", "a stored shared session does not parse");
+      requireSending(world);
+      const lost = world.shared.unreadable.find((x) => x.id === id);
+      if (lost?.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
+      if (lost) throw fail("internal", "a stored shared session does not parse");
       const s = find(world, id);
       if (s.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
       const st = s.stage.kind;
@@ -564,8 +573,9 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     },
     mn_shared_abandon_unreadable: ({ walletId, session: id, grant: grantId }, ctx) => {
       const { world } = ctx;
-      wallet(world, walletId);
       if (!HEX64.test(id)) throw fail("invalid_argument", "a session id is 64 lower-case hex");
+      wallet(world, walletId);
+      requireSending(world);
       const lost = world.shared.unreadable.find((x) => x.id === id);
       if (!lost) {
         if (world.shared.sessions.some((x) => x.id === id)) throw fail("invalid_argument", "the session reads: abandon_shared_session");
@@ -660,11 +670,12 @@ export function sharedScenarios(base: Base) {
     "sh-close-out": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed"))),
     /** Out, and its Abandon spend already sent: no coin left to spend, so no Abandon and no line naming it. */
     "sh-signed-out-abandoned": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed", { abandonable: false }))),
-    /** Two sessions this wallet can't read: one it may discard, one that may be out (Abandon). */
+    /** Sessions this wallet can't read: one it may discard, one that may be out (Abandon), and one
+     * out whose locks the follower already released (not listed). */
     "sh-unreadable": (t: ThemeName | null) =>
       shBase(base, t, (s) => {
         s.sessions = [coordinatorSession(["Bob"])];
-        s.unreadable = [unreadable("7c", true, 2), unreadable("9e", false, 3)];
+        s.unreadable = [unreadable("7c", true, 2), unreadable("9e", false, 3), { ...unreadable("5a", false, 4), abandonable: false, reserved: [] }];
       }),
     /** Both sessions, for the In progress list and the badge. */
     "sh-sessions": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob", "Carol"]), participantSession("signing"))),

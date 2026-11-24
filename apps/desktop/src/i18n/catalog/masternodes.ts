@@ -914,11 +914,15 @@ export const masternodes = {
       /** The button `row.signedOut`'s `{abandon}` names, and the unreadable row's. */
       abandon: "Abandon",
     },
-    /** Abandon's confirm (§9.3): the fee is exactly what the call charges. */
+    /** Abandon's confirm (MG-10 §2.3.3): `{charge}` is exactly what the call charges, its grant cap. */
     abandon: {
-      title: "Abandon session {code}?",
-      text: "This wallet spends one of the coins reserved for this session back to itself, so the session's transaction can't confirm. The network fee is {fee}. The other coins come back about 15 minutes after that spend confirms.",
+      question: "Abandon this registration? The wallet spends your reserved coins back to itself, paying a {charge} network fee, so the registration can't confirm.",
+      after: "Your coins come back only after that spend confirms. If the registration confirms first, the masternode stands and your share is in it.",
+      understand: "I understand this can't be undone",
       ask: "Enter your passphrase to abandon this session.",
+      /** Refused: the wallet's own transaction spends the coins first. */
+      ownFirst: "To get your coins back: first abandon the registration transaction in Activity, then abandon here to spend your coins back to this wallet.",
+      openActivity: "Open in Activity",
     },
     importPanel: {
       received: "You pasted message {code}. Ask the sender to read their code: it should be {code}.",

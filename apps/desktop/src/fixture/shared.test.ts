@@ -63,7 +63,9 @@ describe("fixture shared masternodes", () => {
     expect([free.discardable, out.discardable]).toEqual([true, false]);
     await expect(cmd.mnSharedDiscard(W, out.id)).rejects.toMatchObject({ code: "masternodes.shared_stage" });
     await cmd.mnSharedDiscard(W, free.id);
-    expect((await cmd.mnSharedUnreadable(W)).map((s) => s.id)).toEqual([out.id]);
+    const left = (await cmd.mnSharedUnreadable(W)).map((s) => s.id);
+    expect(left).toContain(out.id);
+    expect(left).not.toContain(free.id);
     expect(await cmd.mnSharedSessions(W)).toHaveLength(1);
   });
 
@@ -99,6 +101,18 @@ describe("fixture shared masternodes", () => {
     const after = await cmd.mnSharedAbandonUnreadable(W, out.id, await cap());
     expect(after).toMatchObject({ id: out.id, discardable: false, abandonable: false });
     expect((await cmd.mnSharedUnreadable(W)).find((x) => x.id === out.id)?.abandonable).toBe(false);
+  });
+
+  it("abandons on mainnet as on every network", async () => {
+    for (const network of ["mainnet", "testnet", "regtest"] as const) {
+      installFixture({ scenario: "sh-close-out", network });
+      const cap = async () => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: cmd.SHARED_ABANDON_FEE }, W, PASS)).id;
+      const [s] = await cmd.mnSharedSessions(W);
+      expect(await cmd.mnSharedAbandon(W, s.id, await cap())).toMatchObject({ id: s.id, abandonable: false });
+      installFixture({ scenario: "sh-unreadable", network });
+      const [, out] = await cmd.mnSharedUnreadable(W);
+      expect(await cmd.mnSharedAbandonUnreadable(W, out.id, await cap())).toMatchObject({ id: out.id, abandonable: false });
+    }
   });
 
   it("refuses Discard once the session may be out", async () => {

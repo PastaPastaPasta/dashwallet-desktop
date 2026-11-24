@@ -4,10 +4,10 @@
 // (§3.8). The engine decides every stage and every exit; nothing here infers one.
 
 import { isAppError } from "../api/backend";
-import { SHARED_ABANDON_FEE } from "../api/generated/commands";
 import type { ShareTermsView } from "../api/generated/ShareTermsView";
 import type { SharedSession } from "../api/generated/SharedSession";
 import type { SharedWarning } from "../api/generated/SharedWarning";
+import type { UnreadableSession } from "../api/generated/UnreadableSession";
 import { t } from "../i18n";
 
 export const COIN = 100_000_000;
@@ -119,6 +119,10 @@ export function sessionNeedsAction(s: SharedSession, slice: SharedSlice = S5_SLI
 export const sharedBadgeCount = (sessions: readonly SharedSession[] | undefined, slice: SharedSlice = S5_SLICE) =>
   (sessions ?? []).filter((s) => sessionNeedsAction(s, slice)).length;
 
+/** The unreadable rows "Sessions in progress" lists: one it may discard, or one still holding
+ * reserved coins. Once the follower released its locks nothing of it is left to show. */
+export const unreadableInProgress = (rows: readonly UnreadableSession[] | undefined): UnreadableSession[] => (rows ?? []).filter((s) => s.discardable || s.reserved.length > 0);
+
 /** "Sessions in progress" (§2.1): not settled, newest first. Confirmed and conflicted sessions
  * leave the list; a dead one stays until it is discarded. */
 export function sessionsInProgress(sessions: readonly SharedSession[] | undefined): SharedSession[] {
@@ -167,13 +171,17 @@ export function grantCap(action: Exclude<SharedAction, "copy" | "join">, s: Shar
   return debitParts(s)?.debit ?? null;
 }
 
-/** What Abandon charges, exactly: one reserved coin spent back to this wallet at the relay
- * minimum (`abandon_shared_session`). The grant cap and the confirm's fee line. */
-export const ABANDON_FEE = SHARED_ABANDON_FEE;
-
 /** `row.signedOut` with its `{abandon}` filled by the Abandon button's own label. Shown only
  * where `canAbandon` holds: the line tells the user to choose a button that must be there. */
 export const signedOutText = () => t("masternodes.shared.row.signedOut", { abandon: t("masternodes.shared.session.abandon") });
+
+/** Abandon's refusal for want of a coin to spend (`shared_stage` naming the out stage): the
+ * wallet's own transaction spends the reserved coins first and is abandoned in Activity. */
+export function abandonNeedsOwnFirst(e: unknown): boolean {
+  if (!isAppError(e) || e.code !== "masternodes.shared_stage") return false;
+  const stage = (e.data as SharedErrorData | null)?.stage;
+  return stage === "sent" || stage === "funding_signed";
+}
 
 /** Whether the sheet offers Abandon (§9.3): the engine's refusal rule. A registration that may
  * be out (`discardable` false), not settled, with a reserved coin this wallet still holds
@@ -300,7 +308,9 @@ export function warningText(w: SharedWarning, s: SharedSession | null): string |
     case "edited_message":
       return t("masternodes.shared.warning.edited_message");
     case "unvalued_inputs":
-      return t(s?.discardable === false ? "masternodes.shared.warning.unvalued_inputs_out" : "masternodes.shared.warning.unvalued_inputs", { labels: shareLabels(s, w.shares) });
+      // Out, the line tells the user to abandon: only where Abandon is offered.
+      if (s?.discardable === false) return canAbandon(s) ? t("masternodes.shared.warning.unvalued_inputs_out", { labels: shareLabels(s, w.shares) }) : null;
+      return t("masternodes.shared.warning.unvalued_inputs", { labels: shareLabels(s, w.shares) });
     case "empty_service":
       return t("masternodes.shared.warning.empty_service");
     case "zero_penalty":

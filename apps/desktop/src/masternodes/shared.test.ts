@@ -5,7 +5,8 @@ import { coordinatorSession, participantSession } from "../fixture/shared";
 import { en } from "../i18n/en";
 import { flatten } from "../i18n/core";
 import { t } from "../i18n";
-import { ABANDON_FEE, canAbandon, COIN, isIpv4Service, warningText, operatorKeyProblem, parseDash, parsePercent, penaltyError, renderSession, S5_SLICE, sessionNeedsAction, shareErrors, signedOutText, stageStep } from "./shared";
+import { SHARED_ABANDON_FEE } from "../api/generated/commands";
+import { abandonNeedsOwnFirst, canAbandon, COIN, isIpv4Service, warningText, operatorKeyProblem, parseDash, parsePercent, penaltyError, renderSession, S5_SLICE, sessionNeedsAction, shareErrors, signedOutText, stageStep, unreadableInProgress } from "./shared";
 
 const shares = (...amounts: number[]) => amounts.map((a, i) => ({ label: `P${i}`, amount: a * COIN }));
 
@@ -83,7 +84,10 @@ describe("a session whose funding signature may be out", () => {
     expect(renderSession({ ...out, discardable: true }).row).toBe("signLater");
     const w = { kind: "unvalued_inputs" as const, shares: [0], count: 1 };
     expect(warningText(w, out)).not.toContain("Discard");
+    expect(warningText(w, out)).toContain("abandon");
     expect(warningText(w, { ...out, discardable: true })).toContain("Discard");
+    expect(warningText(w, { ...out, abandonable: false }), "no Abandon to point at").toBeNull();
+    expect(warningText(w, { ...participantSession("confirmed"), discardable: false })).toBeNull();
   });
 });
 
@@ -110,7 +114,26 @@ describe("Abandon", () => {
     for (const k of ["invited", "draft", "signing", "combined", "confirmed", "dead"] as const) expect(canAbandon(participantSession(k)), k).toBe(false);
   });
 
+  it("reads a refusal for want of a coin as the wallet's own transaction coming first", () => {
+    const refusal = (stage: string) => ({ code: "masternodes.shared_stage", message: "m", data: { kind: "sharedStage", stage } });
+    expect(abandonNeedsOwnFirst(refusal("sent"))).toBe(true);
+    expect(abandonNeedsOwnFirst(refusal("funding_signed"))).toBe(true);
+    expect(abandonNeedsOwnFirst(refusal("conflicted"))).toBe(false);
+    expect(abandonNeedsOwnFirst({ code: "send.grant_exceeded", message: "m", data: null })).toBe(false);
+    expect(abandonNeedsOwnFirst(new Error("x"))).toBe(false);
+  });
+
   it("caps its grant at the engine's exact fee", () => {
-    expect(ABANDON_FEE).toBe(193);
+    expect(SHARED_ABANDON_FEE).toBe(193);
+  });
+});
+
+describe("unreadable sessions in progress", () => {
+  const row = { id: "a".repeat(64), code: "AAAAAA", kind: "registration" as const, role: "participant" as const, discardable: false, abandonable: false, reserved: ["x-0"], updatedAt: 1 };
+  it("lists one it may discard or one still holding coins, and drops one whose locks were released", () => {
+    expect(unreadableInProgress([row])).toHaveLength(1);
+    expect(unreadableInProgress([{ ...row, discardable: true, reserved: [] }])).toHaveLength(1);
+    expect(unreadableInProgress([{ ...row, reserved: [] }])).toEqual([]);
+    expect(unreadableInProgress(undefined)).toEqual([]);
   });
 });
