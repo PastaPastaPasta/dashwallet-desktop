@@ -563,7 +563,10 @@ fn reset_chain_data_after_a_removal_keeps_the_coin_spent() {
     let fx = removed(false, Removal::Remove, true);
     fx.engine.block_on(fx.session.reset_chain_data()).unwrap();
     assert_eq!(fx.synced(), BIRTH - 1, "Reset rewinds below the birth");
-    assert!(stored_rows(&fx.session, fx.id).is_empty(), "Reset clears the rows");
+    assert!(
+        stored_rows(&fx.session, fx.id).is_empty(),
+        "Reset clears the rows"
+    );
     assert!(
         matches!(fx.prepare_from_a(), Err(EngineError::RescanInProgress)),
         "the reset's scan is owed"
@@ -615,7 +618,10 @@ fn an_abandon_after_reset_chain_data_holds_the_coin_until_the_replay_spends_it()
         fx.session.hub.block_spends.checking(&fx.id).contains(&fx.a),
         "the abandon holds A while the reset's replay is owed"
     );
-    assert!(!spendable(&fx.engine, &fx.session, fx.id, fx.a), "A is offered");
+    assert!(
+        !spendable(&fx.engine, &fx.session, fx.id, fx.a),
+        "A is offered"
+    );
     assert!(fx.prepare_from_a().is_err());
     let fx = fx.reopen();
     assert!(

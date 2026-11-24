@@ -215,7 +215,10 @@ async fn search(
 
 impl NetworkSession {
     /// The suspects still held for `wallet`, with their funding heights.
-    async fn held_suspects(&self, wallet: WalletId) -> Result<BTreeMap<OutPoint, u32>, EngineError> {
+    async fn held_suspects(
+        &self,
+        wallet: WalletId,
+    ) -> Result<BTreeMap<OutPoint, u32>, EngineError> {
         let scope = wallet.to_string();
         let text = self
             .appdb_op(move |db| db.setting(&scope, CHECK_KEY))
@@ -277,7 +280,9 @@ impl NetworkSession {
         })
         .await?;
         if !read {
-            return Err(EngineError::Storage("the abandoned or sent marks do not read".into()));
+            return Err(EngineError::Storage(
+                "the abandoned or sent marks do not read".into(),
+            ));
         }
         // A mark whose copy does not read back still gave its coins back:
         // the sent mark names them.
@@ -326,9 +331,11 @@ impl NetworkSession {
         let mut suspects = self.held_suspects(wallet).await?;
         if suspects.is_empty() {
             let persister = Arc::clone(&live.persister);
-            let done = tokio::task::spawn_blocking(move || persister.block_spends_migration_done(&wallet.0))
-                .await?
-                .map_err(|e| EngineError::Storage(format!("the block-spend check mark: {e}")))?;
+            let done = tokio::task::spawn_blocking(move || {
+                persister.block_spends_migration_done(&wallet.0)
+            })
+            .await?
+            .map_err(|e| EngineError::Storage(format!("the block-spend check mark: {e}")))?;
             #[cfg(test)]
             let done = done
                 && !(self.hub.block_spends.ignore_mark)
@@ -343,9 +350,11 @@ impl NetworkSession {
             suspects = self.block_spend_suspects(manager, wallet).await?;
             self.store_suspects(wallet, &suspects).await?;
             let persister = Arc::clone(&live.persister);
-            tokio::task::spawn_blocking(move || persister.mark_block_spends_migration_done(&wallet.0))
-                .await?
-                .map_err(|e| EngineError::Storage(format!("the block-spend check mark: {e}")))?;
+            tokio::task::spawn_blocking(move || {
+                persister.mark_block_spends_migration_done(&wallet.0)
+            })
+            .await?
+            .map_err(|e| EngineError::Storage(format!("the block-spend check mark: {e}")))?;
             if !suspects.is_empty() {
                 tracing::info!(%wallet, suspects = suspects.len(), "checking coins given back before block spends were kept");
             }
@@ -359,7 +368,10 @@ impl NetworkSession {
 
     /// Notes, before Reset chain data clears `wallet`'s rows, that they are
     /// gone until its replay finishes.
-    pub(crate) async fn note_block_spends_cleared(&self, wallet: WalletId) -> Result<(), EngineError> {
+    pub(crate) async fn note_block_spends_cleared(
+        &self,
+        wallet: WalletId,
+    ) -> Result<(), EngineError> {
         let scope = wallet.to_string();
         self.appdb_op(move |db| db.set_setting_durable(&scope, CLEARED_KEY, Some("1")))
             .await
@@ -483,9 +495,11 @@ impl NetworkSession {
                 continue;
             }
             let persister = Arc::clone(&live.persister);
-            tokio::task::spawn_blocking(move || persister.record_found_block_spend(&wallet.0, spend))
-                .await?
-                .map_err(|e| EngineError::Storage(format!("a found block spend: {e}")))?;
+            tokio::task::spawn_blocking(move || {
+                persister.record_found_block_spend(&wallet.0, spend)
+            })
+            .await?
+            .map_err(|e| EngineError::Storage(format!("a found block spend: {e}")))?;
             self.hub.block_spends.insert(wallet, spend);
             tracing::info!(%wallet, outpoint = %o, height = spend.height, spender = %spend.spender_txid,
                 "found the block that spent a coin given back");

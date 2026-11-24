@@ -12,8 +12,7 @@ use platform_wallet::changeset::BlockSpend;
 
 use super::own_spend_disk_tests::{
     COIN, COINS, FUNDED_AT, TIP, abandon, chain_lock, coins, eventually, foreign, fresh_address,
-    funding,
-    header_chain, send, spendable, wait_stored,
+    funding, header_chain, send, spendable, wait_stored,
 };
 use super::{block_with, elsewhere, engine_wallet, mempool, mined, reopen};
 use crate::send::CoinSource;
@@ -242,7 +241,8 @@ fn the_wallet_store_attests_block_spends() {
     let (_dir, _engine, session, _id) = engine_wallet();
     let live = session.live().unwrap();
     assert!(
-        (live.store.persistence_capabilities()).contains(PersistenceCapabilities::CORE_BLOCK_SPENDS)
+        (live.store.persistence_capabilities())
+            .contains(PersistenceCapabilities::CORE_BLOCK_SPENDS)
     );
 }
 

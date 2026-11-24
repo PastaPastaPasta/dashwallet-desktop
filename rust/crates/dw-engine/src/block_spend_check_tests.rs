@@ -13,8 +13,8 @@ use dashcore::{Address, Block, BlockHash, OutPoint, ScriptBuf, Transaction};
 use futures_util::future::BoxFuture;
 
 use super::own_spend_disk_tests::{
-    COIN, COINS, FUNDED_AT, TIP, abandon, chain_lock, coins, foreign, fresh_address, funding,
-    prepare, send, spendable, wait_stored, Accept,
+    Accept, COIN, COINS, FUNDED_AT, TIP, abandon, chain_lock, coins, foreign, fresh_address,
+    funding, prepare, send, spendable, wait_stored,
 };
 use super::{block_with, elsewhere, engine_wallet, mempool, mined, reopen};
 use crate::block_spend_check::{CheckPass, StoredChain};
@@ -61,12 +61,17 @@ impl StoredChain for FakeChain {
     }
 
     fn filters(&self, range: Range<u32>) -> BoxFuture<'_, Result<Vec<Vec<u8>>, ()>> {
-        let out = range.filter_map(|h| self.filters.get(&h).cloned()).collect();
+        let out = range
+            .filter_map(|h| self.filters.get(&h).cloned())
+            .collect();
         Box::pin(async move { Ok(out) })
     }
 
     fn block(&self, height: u32) -> BoxFuture<'_, Result<Option<(BlockHash, Block)>, ()>> {
-        let block = self.blocks.get(&height).map(|b| (b.block_hash(), b.clone()));
+        let block = self
+            .blocks
+            .get(&height)
+            .map(|b| (b.block_hash(), b.clone()));
         Box::pin(async move { Ok(block) })
     }
 
@@ -133,12 +138,16 @@ impl Given {
         (self.session.hub.block_spends.ignore_mark)
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let id = self.id;
-        self.run(move |s, m| Box::pin(async move { s.start_block_spend_check(&m, id, true).await.unwrap() }));
+        self.run(move |s, m| {
+            Box::pin(async move { s.start_block_spend_check(&m, id, true).await.unwrap() })
+        });
     }
 
     fn pass(&self) -> CheckPass {
         let id = self.id;
-        self.run(move |s, m| Box::pin(async move { s.block_spend_check_pass(&m, id).await.unwrap() }))
+        self.run(move |s, m| {
+            Box::pin(async move { s.block_spend_check_pass(&m, id).await.unwrap() })
+        })
     }
 
     fn with_chain(&self, chain: FakeChain) {
@@ -148,7 +157,12 @@ impl Given {
     /// The stored chain from `from` to TIP + 1, W in the block at `w_at`.
     fn chain(&self, w_at: Option<u32>, from: u32) -> FakeChain {
         let prevouts: HashMap<OutPoint, ScriptBuf> = (self.funded.output.iter().enumerate())
-            .map(|(v, o)| (OutPoint::new(self.funded.txid(), v as u32), o.script_pubkey.clone()))
+            .map(|(v, o)| {
+                (
+                    OutPoint::new(self.funded.txid(), v as u32),
+                    o.script_pubkey.clone(),
+                )
+            })
             .collect();
         let mut map = BTreeMap::new();
         for h in from..=TIP + 1 {
@@ -278,8 +292,15 @@ fn a_coin_an_abandon_gave_back_is_found_spent_in_a_stored_block() {
     lock_w(&fx);
     fx.start_unchecked();
     assert!(fx.checking(), "A is held for the check, and listed");
-    assert_eq!(fx.locked_in_key_wallet(), Some(true), "locked in key-wallet");
-    assert!(!spendable(&fx.engine, &fx.session, fx.id, fx.a), "A is not offered");
+    assert_eq!(
+        fx.locked_in_key_wallet(),
+        Some(true),
+        "locked in key-wallet"
+    );
+    assert!(
+        !spendable(&fx.engine, &fx.session, fx.id, fx.a),
+        "A is not offered"
+    );
     assert!(fx.other_coin_spendable(), "other coins stay spendable");
     fx.with_chain(fx.chain(Some(TIP + 1), FUNDED_AT));
     assert_eq!(fx.pass(), CheckPass::Done);
@@ -303,7 +324,11 @@ fn a_suspect_no_stored_block_spent_is_released_at_the_tip() {
     fx.with_chain(fx.chain(None, FUNDED_AT));
     assert_eq!(fx.pass(), CheckPass::Done);
     assert!(fx.listed() && !fx.checking(), "A is listed, not held");
-    assert_eq!(fx.locked_in_key_wallet(), Some(false), "the hold lifts its lock");
+    assert_eq!(
+        fx.locked_in_key_wallet(),
+        Some(false),
+        "the hold lifts its lock"
+    );
     assert!(spendable(&fx.engine, &fx.session, fx.id, fx.a));
 }
 

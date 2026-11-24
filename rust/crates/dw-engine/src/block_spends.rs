@@ -21,8 +21,8 @@ use std::sync::{Arc, RwLock};
 
 use dashcore::OutPoint;
 use key_wallet::Utxo;
-use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWalletInfo;
 use platform_wallet::changeset::{BlockSpend, CoreChangeSet};
 
@@ -177,7 +177,12 @@ impl BlockSpends {
     /// ones.
     pub(crate) fn held(&self, wallet: &WalletId) -> BTreeSet<OutPoint> {
         let mut held = self.checking(wallet);
-        held.extend(read(&self.rows).get(wallet).into_iter().flat_map(|r| r.keys()));
+        held.extend(
+            read(&self.rows)
+                .get(wallet)
+                .into_iter()
+                .flat_map(|r| r.keys()),
+        );
         held
     }
 
@@ -298,9 +303,10 @@ impl crate::NetworkSession {
         for _ in 0..3 {
             let generation = self.hub.block_spends.generation();
             let persister = Arc::clone(&live.persister);
-            let rows = tokio::task::spawn_blocking(move || persister.block_spent_outpoints(&wallet.0))
-                .await?
-                .map_err(|e| storage(&e))?;
+            let rows =
+                tokio::task::spawn_blocking(move || persister.block_spent_outpoints(&wallet.0))
+                    .await?
+                    .map_err(|e| storage(&e))?;
             let heights: BTreeSet<u32> = (rows.values())
                 .map(|s| s.height)
                 .filter(|h| *h > chain_lock)
@@ -323,7 +329,11 @@ impl crate::NetworkSession {
                 .map_err(|e| storage(&e))?
             };
             let before = self.hub.block_spends.rows(&wallet);
-            if self.hub.block_spends.set_rows_read_at(wallet, rows.clone(), generation) {
+            if self
+                .hub
+                .block_spends
+                .set_rows_read_at(wallet, rows.clone(), generation)
+            {
                 return Ok(before != rows);
             }
         }
@@ -336,15 +346,19 @@ impl crate::NetworkSession {
     pub(crate) fn attach_block_spend_hold(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         let rt = self.rt.clone();
-        self.hub.block_spends.attach_on_rows(Box::new(move |wallet| {
-            let weak = weak.clone();
-            rt.spawn(async move {
-                let Some(session) = weak.upgrade() else { return };
-                if let Ok(manager) = session.manager() {
-                    session.hold_block_spends(&manager, wallet).await;
-                }
-            });
-        }));
+        self.hub
+            .block_spends
+            .attach_on_rows(Box::new(move |wallet| {
+                let weak = weak.clone();
+                rt.spawn(async move {
+                    let Some(session) = weak.upgrade() else {
+                        return;
+                    };
+                    if let Ok(manager) = session.manager() {
+                        session.hold_block_spends(&manager, wallet).await;
+                    }
+                });
+            }));
     }
 
     /// [`BlockSpends::apply_hold`] on `info`, held under the manager's write
@@ -406,7 +420,11 @@ impl crate::NetworkSession {
 
     /// [`Self::hold_block_spends_locked`] under the manager's write lock,
     /// storing the coins it takes out as spent.
-    pub(crate) async fn hold_block_spends(&self, manager: &crate::session::Manager, wallet: WalletId) {
+    pub(crate) async fn hold_block_spends(
+        &self,
+        manager: &crate::session::Manager,
+        wallet: WalletId,
+    ) {
         let Ok(live) = self.live() else {
             return;
         };
@@ -420,10 +438,8 @@ impl crate::NetworkSession {
             return;
         }
         let persister = Arc::clone(&live.persister);
-        let stored = tokio::task::spawn_blocking(move || {
-            store_spent(&persister, wallet, removed)
-        })
-        .await;
+        let stored =
+            tokio::task::spawn_blocking(move || store_spent(&persister, wallet, removed)).await;
         drop(wm);
         if !matches!(stored, Ok(Ok(()))) {
             tracing::warn!(%wallet, ?stored, "could not store the block-spent coins as spent");
@@ -473,7 +489,10 @@ mod tests {
         let call = concat!(".restore_spent", "_outpoints(");
         let helper = Path::new(file!()).file_name().unwrap();
         let mut files = Vec::new();
-        sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        sources(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
         let mut found = Vec::new();
         for file in &files {
             let text = std::fs::read_to_string(file).unwrap();
@@ -488,6 +507,9 @@ mod tests {
                 }
             }
         }
-        assert!(found.is_empty(), "spent claims restored past the helper: {found:#?}");
+        assert!(
+            found.is_empty(),
+            "spent claims restored past the helper: {found:#?}"
+        );
     }
 }

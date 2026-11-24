@@ -509,8 +509,8 @@ impl NetworkSession {
             );
             held_lock_input(&psbt.unsigned_tx, &held)?;
             let hold = &this.hub.block_spends;
-            if let Some(i) = (psbt.unsigned_tx.input.iter())
-                .find(|i| hold.holds(&wallet_id, &i.previous_output))
+            if let Some(i) =
+                (psbt.unsigned_tx.input.iter()).find(|i| hold.holds(&wallet_id, &i.previous_output))
             {
                 return Err(PsbtFailure::Invalid(format!(
                     "input {} is held: a block may have spent it",

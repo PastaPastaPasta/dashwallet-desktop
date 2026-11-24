@@ -225,11 +225,12 @@ impl PlatformWalletPersistence for WalletStore {
             .unwrap_or_default();
         let mut changeset = changeset;
         drop_uncredited(&mut changeset);
-        let block_spends = (changeset.core.as_ref()).map(|c| platform_wallet::changeset::CoreChangeSet {
-            block_spends: c.block_spends.clone(),
-            block_spends_truncated_above: c.block_spends_truncated_above,
-            ..Default::default()
-        });
+        let block_spends =
+            (changeset.core.as_ref()).map(|c| platform_wallet::changeset::CoreChangeSet {
+                block_spends: c.block_spends.clone(),
+                block_spends_truncated_above: c.block_spends_truncated_above,
+                ..Default::default()
+            });
         if let Err(e) = self.inner.store(wallet_id, changeset) {
             if core && let Some(replay) = replay() {
                 replay.note_store_failed(WalletId(wallet_id));
