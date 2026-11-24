@@ -203,6 +203,12 @@ export const WAITS = {
   needsFinish: null,
 } satisfies Record<RegistrationWaitName, string | null>;
 
+/** A held Platform payment's line where Continue and Move to Dash wallet are both offered: it
+ * names them, so nothing else shows it. */
+export function heldWithBoth() {
+  return t("dashpay.wait.paymentHeldActions");
+}
+
 /** DP1-09 D21/D26: the row waits for Continue's grant. It says `authorize`, or nothing runs it
  * (`running`) and it waits for a proof or the network: the engine reports an idle row's first
  * missing piece (`idle_wait`) whether or not a run waits for it, and nothing resumes such a row
@@ -320,7 +326,7 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
   // F22: a Platform payment that may still go through: Continue retries it, Move to Dash
   // wallet frees the balance instead.
   if (r.waiting === "paymentHeld" && !r.failure)
-    return card("creatingHeld", "problem", title, [WAITS.paymentHeld], {
+    return card("creatingHeld", "problem", title, [heldWithBoth()], {
       step,
       action: action("continue", COPY.continue),
       secondary: action("moveToCore", COPY.moveToCore),
