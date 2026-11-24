@@ -145,6 +145,33 @@ fn unshield_to_platform_refuses_a_foreign_to() {
     assert!(lib.spent().is_empty(), "no key left the vault");
 }
 
+/// Off on mainnet: the quote and the call refuse `platform.feature_off`
+/// before any read, grant or write; on elsewhere.
+#[test]
+fn unshield_to_platform_is_off_on_mainnet() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        network: Network::Mainnet,
+        ..FakeShielded::default()
+    });
+    *lib.platform.lock().unwrap() = None;
+    let quote = run(&fx, &lib, |_, lib| async move {
+        pool::unshield_to_platform_quote(&*lib, NOTE, None).await
+    });
+    let ShieldedError::Platform(PlatformError::FeatureOff { feature }) = quote.unwrap_err() else {
+        panic!("the quote is not feature_off");
+    };
+    assert_eq!(feature, pool::UNSHIELD_TO_PLATFORM);
+    let grant = fx.grant(10 * NOTE);
+    assert_eq!(
+        code(unshield(&fx, &lib, NOTE, None, &grant, true)),
+        "platform.feature_off"
+    );
+    assert!(fx.unused(&grant), "the grant is not redeemed");
+    assert_eq!(lib.refreshes.load(Ordering::SeqCst), 0, "nothing quoted");
+    assert!(lib.spent().is_empty(), "no key left the vault");
+}
+
 /// Without the dispatch hook nothing is quoted, read or signed: never the
 /// seed path, which the library would send unhooked.
 #[test]

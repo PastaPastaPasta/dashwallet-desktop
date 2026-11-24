@@ -1074,11 +1074,28 @@ async fn unshield_to_platform_plan(
     Ok(spend_quote(credits, fee, None))
 }
 
+/// The flag of `unshield_to_platform`: off on mainnet, on elsewhere, until
+/// its funds ruling.
+pub(crate) const UNSHIELD_TO_PLATFORM: &str = "unshield_to_platform";
+
+/// `platform.feature_off{feature: UNSHIELD_TO_PLATFORM}` on mainnet, before
+/// any read, grant or write.
+fn refuse_on_mainnet(network: Network) -> Result<(), ShieldedError> {
+    if network == Network::Mainnet {
+        return Err(PlatformError::FeatureOff {
+            feature: UNSHIELD_TO_PLATFORM.into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 pub(crate) async fn unshield_to_platform_quote(
     lib: &impl ShieldedLib,
     credits: u64,
     to: Option<&str>,
 ) -> Result<ShieldedSpendQuote, ShieldedError> {
+    refuse_on_mainnet(lib.network())?;
     if let Some(to) = to {
         gate(lib).await?;
         own_platform_address(lib, Some(to)).await?;
@@ -1464,6 +1481,7 @@ pub(crate) async fn unshield_to_platform(
     grant: &str,
     confirmed: bool,
 ) -> Result<ShieldedSpendOutcome, ShieldedError> {
+    refuse_on_mainnet(lib.network())?;
     unhooked(lib).await?;
     let lock = wallet_lock(session, wallet);
     let _spending = lock.lock().await;

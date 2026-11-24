@@ -253,6 +253,7 @@ struct FakeShielded {
     /// The wallet's Platform payment account; its pool read fails when
     /// `None`.
     platform: Mutex<Option<pool::PlatformPool>>,
+    network: Network,
     /// The next spend's failure, after the keys are out.
     fails: Mutex<Option<PlatformWalletError>>,
     spent: Mutex<Vec<Spent>>,
@@ -448,6 +449,7 @@ impl Default for FakeShielded {
                 receive: own_platform(0),
                 addresses: (0..3).map(own_platform).collect(),
             })),
+            network: Network::Regtest,
             fails: Mutex::new(None),
             spent: Mutex::new(Vec::new()),
             unresolved: Mutex::default(),
@@ -672,7 +674,7 @@ fn unresolved(n: u8) -> UnresolvedSpend {
 
 impl ShieldedLib for FakeShielded {
     fn network(&self) -> Network {
-        Network::Regtest
+        self.network
     }
 
     fn protocol_version(&self) -> u32 {
