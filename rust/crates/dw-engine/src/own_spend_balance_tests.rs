@@ -3346,7 +3346,22 @@ fn child_dropped_holding_d() -> (
 ) {
     let (dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
-    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    swept_by_an_unknown_winner(&engine, &session, id, &paid, a, &p);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
+    (dir, engine, session, id, d, paid)
+}
+
+/// P swept by a winner of A the history doesn't hold (an InstantSend-locked
+/// sweep), then reconciled: its child goes with nothing freed.
+fn swept_by_an_unknown_winner(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    paid: &Transaction,
+    a: OutPoint,
+    p: &Transaction,
+) {
+    let winner = foreign_winner(engine, session, id, paid, &[a]);
     session
         .hub
         .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
@@ -3358,9 +3373,46 @@ fn child_dropped_holding_d() -> (
             balance: Default::default(),
             account_balances: Default::default(),
         });
-    reconciled(&engine, &session, id);
-    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
-    (dir, engine, session, id, d, paid)
+    reconciled(engine, session, id);
+}
+
+/// #749 (Q81 C1): a drop key-wallet refuses holds nothing: its marks go,
+/// and D is neither in the session's holds nor in the held total.
+#[test]
+fn a_drop_key_wallet_refuses_holds_nothing() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, _)) = payment_and_child_after_a_restart();
+    session
+        .hub
+        .refuse_drops
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    swept_by_an_unknown_winner(&engine, &session, id, &paid, a, &p);
+    assert!(live_in_history(&session, id, c.txid()), "C is kept");
+    let appdb = session.live().unwrap().appdb;
+    let noted = crate::tx_actions::dropped_holds(&appdb, id).unwrap();
+    assert!(noted.is_empty(), "no hold noted: {noted:?}");
+    let holds = session.hub.dropped_holds(id);
+    assert!(!holds.contains(&d), "D is not held: {holds:?}");
+    let b = balances(&session, id);
+    assert_eq!((b.held_unfinished, b.held_unvalued), (0, 0), "{b:?}");
+}
+
+/// #749 (Q81 C1): a refused drop takes nothing from what an earlier drop
+/// holds: D, held already, stays held and counted.
+#[test]
+fn a_refused_drop_keeps_what_an_earlier_drop_holds() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, _)) = payment_and_child_after_a_restart();
+    session.hub.add_dropped_holds(id, [d]);
+    session
+        .hub
+        .refuse_drops
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    swept_by_an_unknown_winner(&engine, &session, id, &paid, a, &p);
+    assert!(live_in_history(&session, id, c.txid()), "C is kept");
+    let holds = session.hub.dropped_holds(id);
+    assert!(holds.contains(&d), "D is still held: {holds:?}");
+    let x = paid.output[d.vout as usize].value;
+    let b = balances(&session, id);
+    assert_eq!((b.held_unfinished, b.held_unvalued), (x, 0), "{b:?}");
 }
 
 /// #749 (MG): a held coin of value X shows X in the held total, and never

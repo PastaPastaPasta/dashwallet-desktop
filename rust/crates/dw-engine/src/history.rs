@@ -645,9 +645,11 @@ pub(crate) fn orphaned_unmined(
 /// (`observed`) or a mined transaction of the history spent is settled, not
 /// held. A coin's value comes from the output that made it when the
 /// history holds that transaction and the wallet owns the output (`owns`),
-/// else from a held payment's record of its own inputs; an output the
-/// wallet does not own is not its coin. One known neither way is counted
-/// as of unknown value, never guessed.
+/// else from a held payment's record of its own inputs. A coin known
+/// neither way is counted as of unknown value, never guessed, and only
+/// when an input spending it in the history is signed with a key of the
+/// wallet ([`p2pkh_signer`]): a beaten incoming payment, or the other
+/// inputs of a beaten mix, hold coins that are not the wallet's.
 pub(crate) fn held_total(
     holds: &BTreeSet<OutPoint>,
     txs: &HashMap<Txid, TxEntry>,
@@ -656,9 +658,15 @@ pub(crate) fn held_total(
 ) -> (u64, u32) {
     let mut spent = HashSet::new();
     let mut own_inputs: HashMap<OutPoint, u64> = HashMap::new();
+    let mut signed_by_own = HashSet::new();
     for e in txs.values() {
         if e.context.block_info().is_some() {
             spent.extend(e.tx.input.iter().map(|i| i.previous_output));
+        }
+        for i in &e.tx.input {
+            if p2pkh_signer(&i.script_sig).is_some_and(|s| owns(&s)) {
+                signed_by_own.insert(i.previous_output);
+            }
         }
         for (index, (value, _)) in &e.own_inputs {
             if let Some(i) = e.tx.input.get(*index as usize) {
@@ -674,12 +682,26 @@ pub(crate) fn held_total(
         let output = (txs.get(&o.txid)).and_then(|e| e.tx.output.get(o.vout as usize));
         match (output, own_inputs.get(o)) {
             (Some(out), _) if owns(&out.script_pubkey) => sum = sum.saturating_add(out.value),
-            (Some(_), _) => {}
-            (None, Some(value)) => sum = sum.saturating_add(*value),
-            (None, None) => unvalued += 1,
+            (_, Some(value)) => sum = sum.saturating_add(*value),
+            (Some(_), None) => {}
+            (None, None) if signed_by_own.contains(o) => unvalued += 1,
+            (None, None) => {}
         }
     }
     (sum, unvalued)
+}
+
+/// The P2PKH script of the key a `[signature, key]` input script pushes.
+fn p2pkh_signer(script: &dashcore::Script) -> Option<ScriptBuf> {
+    use dashcore::blockdata::script::Instruction;
+    let mut pushes = script.instructions();
+    let (Some(Ok(Instruction::PushBytes(_))), Some(Ok(Instruction::PushBytes(key))), None) =
+        (pushes.next(), pushes.next(), pushes.next())
+    else {
+        return None;
+    };
+    let key = dashcore::PublicKey::from_slice(key.as_bytes()).ok()?;
+    Some(ScriptBuf::new_p2pkh(&key.pubkey_hash()))
 }
 
 /// Whether the history knows an InstantSend lock of `e`: its flag or its
@@ -2197,6 +2219,27 @@ mod tests {
         input(Txid::from_byte_array([n; 32]), 0)
     }
 
+    fn test_key(n: u8) -> dashcore::PublicKey {
+        let secret = dashcore::secp256k1::SecretKey::from_slice(&[n; 32]).unwrap();
+        let secp = dashcore::secp256k1::Secp256k1::signing_only();
+        dashcore::PublicKey::new(secret.public_key(&secp))
+    }
+
+    fn key_script(n: u8) -> ScriptBuf {
+        ScriptBuf::new_p2pkh(&test_key(n).pubkey_hash())
+    }
+
+    /// An input spending `o` whose script pushes a signature-shaped blob
+    /// and key `n`'s public key, as a P2PKH spend does.
+    fn signed_input(o: OutPoint, n: u8) -> TxIn {
+        let mut i = input(o.txid, o.vout);
+        i.script_sig = dashcore::blockdata::script::Builder::new()
+            .push_slice([0x30; 71])
+            .push_key(&test_key(n))
+            .into_script();
+        i
+    }
+
     #[test]
     fn receive_is_one_record_per_owned_output() {
         let mut f = Fixture::new();
@@ -3239,8 +3282,9 @@ mod tests {
 
     /// #749: the held total sums the held coins whose value the wallet
     /// knows (from the output that made them, or a held payment's record
-    /// of its own inputs) and counts apart the one it doesn't; a coin a
-    /// block spent since, and an output the wallet doesn't own, are left.
+    /// of its own inputs) and counts apart the one it doesn't but spent
+    /// with its own key; a coin a block spent since, and an output the
+    /// wallet doesn't own, are left.
     #[test]
     fn held_total_sums_the_valued_coins_and_counts_the_unvalued() {
         let mut txs = HashMap::new();
@@ -3273,7 +3317,7 @@ mod tests {
         let recorded = OutPoint::new(Txid::from_byte_array([9; 32]), 1);
         let mut held = entry(
             tx(
-                vec![input(unknown.txid, 0), input(recorded.txid, 1)],
+                vec![signed_input(unknown, 4), input(recorded.txid, 1)],
                 vec![out(10, &hash_addr(3))],
             ),
             TransactionContext::Mempool,
@@ -3282,6 +3326,7 @@ mod tests {
         add(held);
         let observed_coin = OutPoint::new(Txid::from_byte_array([7; 32]), 0);
         let owned: HashSet<ScriptBuf> = [1, 2].map(|n| hash_addr(n).script_pubkey()).into();
+        let owned: HashSet<ScriptBuf> = owned.into_iter().chain([key_script(4)]).collect();
         let holds = BTreeSet::from([valued, foreign, settled, unknown, recorded, observed_coin]);
         let observed = BTreeMap::from([(observed_coin, 12)]);
 
@@ -3295,6 +3340,47 @@ mod tests {
             }),
             (700, 1),
             "one valued and one unvalued"
+        );
+    }
+
+    /// #749 (Q81 C2): the coins a beaten incoming payment, or the other
+    /// inputs of a beaten mix, held are other people's: neither valued nor
+    /// counted. The mix's own input still counts by its record.
+    #[test]
+    fn held_total_leaves_out_coins_others_spent() {
+        let owned: HashSet<ScriptBuf> =
+            HashSet::from([hash_addr(1).script_pubkey(), key_script(4)]);
+        let mut txs = HashMap::new();
+        let (theirs, unsigned) = (
+            OutPoint::new(Txid::from_byte_array([8; 32]), 0),
+            OutPoint::new(Txid::from_byte_array([8; 32]), 1),
+        );
+        let incoming = entry(
+            tx(
+                vec![signed_input(theirs, 5), input(unsigned.txid, 1)],
+                vec![out(500, &hash_addr(1))],
+            ),
+            TransactionContext::Mempool,
+        );
+        txs.insert(incoming.tx.txid(), incoming);
+        let (mine, other) = (
+            OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+            OutPoint::new(Txid::from_byte_array([9; 32]), 1),
+        );
+        let mut mix = entry(
+            tx(
+                vec![signed_input(mine, 4), signed_input(other, 6)],
+                vec![out(100, &hash_addr(1)), out(100, &hash_addr(3))],
+            ),
+            TransactionContext::Mempool,
+        );
+        mix.own_inputs.insert(0, (100, hash_addr(1)));
+        txs.insert(mix.tx.txid(), mix);
+        let holds = BTreeSet::from([theirs, unsigned, mine, other]);
+
+        assert_eq!(
+            held_total(&holds, &txs, &BTreeMap::new(), |s| owned.contains(s)),
+            (100, 0)
         );
     }
 

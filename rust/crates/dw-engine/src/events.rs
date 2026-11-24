@@ -656,6 +656,10 @@ pub(crate) struct SessionHub {
     /// an exit right after the sweep.
     #[cfg(test)]
     pub(crate) skip_dead_hook: std::sync::atomic::AtomicBool,
+    /// Tests: key-wallet refuses every drop of a payment that can never
+    /// confirm, as when it settled the root meanwhile.
+    #[cfg(test)]
+    pub(crate) refuse_drops: std::sync::atomic::AtomicBool,
     /// Tests: the next abandon returns after its sweep, without its rescan.
     #[cfg(test)]
     pub(crate) quit_before_rescan: std::sync::atomic::AtomicBool,
@@ -888,6 +892,8 @@ impl SessionHub {
             skip_unsigned_check: Default::default(),
             #[cfg(test)]
             skip_dead_hook: Default::default(),
+            #[cfg(test)]
+            refuse_drops: Default::default(),
             #[cfg(test)]
             quit_before_rescan: Default::default(),
             #[cfg(test)]

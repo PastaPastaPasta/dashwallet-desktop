@@ -2180,12 +2180,18 @@ impl NetworkSession {
             })
             .collect();
         self.write_abandoned_marks(wallet, marks).await?;
-        self.hub.add_dropped_holds(wallet, noted);
         let mut dead = plan.dead.iter().copied();
         let root = dead.next().expect("a plan drops something");
         let rest: Vec<Txid> = dead.collect();
         let core = &mut info.core_wallet;
-        let abandoned = abandon_with(core, root, &rest);
+        #[cfg(test)]
+        let refused = (self.hub.refuse_drops).load(std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let refused = false;
+        let abandoned = match refused {
+            true => BTreeSet::new(),
+            false => abandon_with(core, root, &rest),
+        };
         if abandoned.is_empty() {
             // key-wallet refused (it settled the root meanwhile): the marks
             // go, so no hold outlives a drop that did not happen.
@@ -2206,6 +2212,8 @@ impl NetworkSession {
             .await?;
             return Ok(abandoned);
         }
+        // Only a drop that happened holds: what another drop holds stays.
+        self.hub.add_dropped_holds(wallet, noted);
         debug_assert_eq!(abandoned, plan.dead);
         // key-wallet took another than planned: nothing comes back.
         let freed = match abandoned == plan.dead {
