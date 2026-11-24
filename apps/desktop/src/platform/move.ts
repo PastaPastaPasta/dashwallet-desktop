@@ -78,6 +78,15 @@ export const MOVE_COPY = {
     text: (amount: string) => t("transfer.move.pending.text", { amount }),
     debitOnly: (taken: string) => t("transfer.move.pending.debitOnly", { taken }),
   },
+  /** A move that cannot execute: its held top-up executed in its place. */
+  failed: {
+    get title() {
+      return t("transfer.move.failed.title");
+    },
+    get text() {
+      return t("transfer.move.failed.text");
+    },
+  },
   /** A move the engine superseded with a retry: not a loss, and nothing to wait for. */
   replaced: {
     get title() {
@@ -175,6 +184,8 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return t("transfer.move.error.signerUnavailable");
     case "platform.grant_exceeded":
       return t("transfer.move.error.grantExceeded");
+    case "credits.quote_changed":
+      return t("transfer.move.error.quoteChanged");
     case "platform.feature_off":
       return t("transfer.move.error.featureOff");
     case "invalid_argument":
@@ -185,7 +196,7 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
 }
 
 /** Back is offered when a new quote may pass. */
-export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits");
+export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits") || hasCode(e, "credits.quote_changed");
 
 /** A move, send or top-up from Platform that Platform has not answered (`pending`) or that may still
  * execute (`mayLand`: also a `failed` one by height). They share one hold on the wallet's Platform addresses. */
@@ -295,8 +306,8 @@ export class PlatformMoveFlow extends Model {
   }
 
   /** Confirm & move: the quote's grant, then `platformMoveToCore` for everything to the quote's `to`, one
-   * of the wallet's own receiving addresses (one call at a time). */
-  async move(grant: GrantRequest, to: string): Promise<void> {
+   * of the wallet's own receiving addresses, as the exit of the quote's `exitOf` (one call at a time). */
+  async move(grant: GrantRequest, to: string, exitOf: string | null): Promise<void> {
     if (this.running) return;
     let ran = false;
     this.running = true;
@@ -307,7 +318,7 @@ export class PlatformMoveFlow extends Model {
         ran = true;
         this.step = "running";
         this.changed();
-        return this.api.platformMoveToCore(this.walletId, { kind: "all" }, to, g.id);
+        return this.api.platformMoveToCore(this.walletId, { kind: "all" }, to, exitOf, g.id);
       });
       if (got) {
         this.outcome = got.value;

@@ -82,7 +82,7 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
             data-testid="platform-move-go"
             why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? moveErrorText(quote.error, credits, activity.data) : flow.running ? C.running.title : C.quoting}
             disabled={block !== null || !q || quote.isError || quote.isFetching || flow.running}
-            onClick={() => block === null && q && void flow.move(q.grant, q.to)}
+            onClick={() => block === null && q && void flow.move(q.grant, q.to, q.exitOf)}
           >
             {C.go}
           </DashButton>
@@ -102,6 +102,8 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
   const amount = (duffs: number) => (discreet ? shown.masked() : `${shown.full(duffs)} ${shown.name}`);
   const credits = (c: string) => amount(creditsToDuffs(c));
   const { step, outcome } = flow;
+  // A failed move that may still execute is shown as not confirmed; one that cannot moved nothing.
+  const failed = outcome?.state === "failed" && !activity.data?.find((a) => a.id === outcome.id)?.mayLand;
   return (
     <div data-testid="platform-move-body" data-step={step}>
       {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} credits={credits} amount={amount} block={block} />}
@@ -117,11 +119,13 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
       {step === "done" && outcome && (
         <div role="status">
           <p className="topup-title" data-testid="platform-move-outcome-title">
-            {outcome.state === "done" ? C.done.title : outcome.state === "replaced" ? C.replaced.title : C.pending.title}
+            {outcome.state === "done" ? C.done.title : outcome.state === "replaced" ? C.replaced.title : failed ? C.failed.title : C.pending.title}
           </p>
           <p className="sheet-text" data-testid="platform-move-outcome-text">
             {outcome.state === "replaced"
               ? C.replaced.text
+              : failed
+              ? C.failed.text
               : outcome.state === "done"
               ? outcome.expectedDuffs === null
                 ? C.done.debitOnly(credits(outcome.credits))

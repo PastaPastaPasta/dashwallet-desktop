@@ -41,8 +41,9 @@ const SEND_MIN_CREDITS = 500_000n;
 
 /** What the next `platform_move_to_core` comes to: Platform's proved answer, an answer that says
  * nothing (the move stays `pending`), a refusal, a move whose debit is proved but not what
- * arrives (`unproved`: `expectedDuffs` is null), or the refusal of too many separate coins. */
-export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins";
+ * arrives (`unproved`: `expectedDuffs` is null), the refusal of too many separate coins, or the exit of a
+ * held top-up that executed in its place (`lost`: the move is `failed` and moves nothing). */
+export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins" | "lost";
 
 /** What the next `platform_fund` comes to: applied, locked with its proof still missing, locked and
  * possibly already applied (`checking`), locked and refused by Platform (`notApplied`), or locked
@@ -237,9 +238,15 @@ function moveWorld(world: World, to: ChosenNetwork) {
 const sum = (addresses: PlatformWorld["addresses"]) => addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
 const total = (p: PlatformWorld) => sum(p.addresses);
 
+/** A held top-up from Platform whose inputs the fixture knows: a move is its exit (C3-9). */
+function heldTopUp(p: PlatformWorld): PlatformActivity | null {
+  const held = p.activity.find((a) => a.kind === "toIdentity" && isHeldOp(a));
+  return held && p.heldInputs?.[held.id] ? held : null;
+}
+
 /** The inputs of a held top-up from Platform: its exit (C3-9) moves those only. `null`: no such hold. */
 function exitInputs(p: PlatformWorld): string[] | null {
-  const held = p.activity.find((a) => a.kind === "toIdentity" && isHeldOp(a));
+  const held = heldTopUp(p);
   return held ? (p.heldInputs?.[held.id] ?? null) : null;
 }
 
@@ -280,7 +287,7 @@ function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQu
   if (sending) throw moveHeld(sending.id);
   const credits = moveCredits(p, amount);
   const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
-  return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) } };
+  return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) }, exitOf: heldTopUp(p)?.id ?? null };
 }
 
 /** The engine's recipient check (m4 §2.12): a Platform address of this network that is not one of
@@ -632,7 +639,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     return { txid, state: { kind: "applied", credits: String(credits) } };
   },
   platform_move_to_core_quote: ({ walletId, amount }: { walletId: string; amount: WithdrawAmount }, ctx: Ctx) => quote(ctx, walletId, amount),
-  platform_move_to_core: ({ walletId, amount, to, grant }: { walletId: string; amount: WithdrawAmount; to: string; grant: string }, ctx: Ctx): MoveToCoreOutcome => {
+  platform_move_to_core: ({ walletId, amount, to, exitOf, grant }: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string }, ctx: Ctx): MoveToCoreOutcome => {
     const { world } = ctx;
     const q = quote(ctx, walletId, amount);
     // Only to one of the wallet's own receiving addresses (the quote's).
@@ -642,6 +649,8 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     // settles). A move that failed by height does not: the next one signs at the same inputs and frees it.
     const holding = p.activity.find((a) => isHeldOp(a) && (a.kind === "send" || a.state === "pending"));
     if (holding) throw moveHeld(holding.id);
+    // As the engine: the exit of a top-up that no longer holds is not the move Confirm showed.
+    if (exitOf != null && exitOf !== q.exitOf) throw fail("credits.quote_changed", "the held top-up settled since this move was quoted");
     const supersedes = p.activity.filter((a) => a.kind === "moveToCore" && isHeldOp(a)).map((a) => a.id);
     const g = checkGrant(world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
@@ -650,7 +659,8 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     useGrant(world, grant);
     if (p.nextMove === "refused") throw fail("platform.unavailable", "the fixture refuses the move");
     if (p.nextMove === "tooManyCoins") throw fail("invalid_argument", "more than 50 separate balances", { kind: "reason", reason: "Your Platform addresses hold too many separate balances to move at once. Consolidate coins first" });
-    const state = p.nextMove === "pending" ? "pending" : "done";
+    // `lost`: the held top-up it exits executed in its place, so the move fails and moves nothing.
+    const state = p.nextMove === "pending" ? "pending" : p.nextMove === "lost" ? "failed" : "done";
     const expectedDuffs = p.nextMove === "unproved" ? null : q.expectedDuffs;
     const id = `pm-${p.activity.length + 1}`;
     const feeCredits = state === "done" ? q.feeCredits : null;
@@ -665,11 +675,14 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
           ? { ...a, state: "replaced" as const, mayLand: false }
           : state === "done" && a.kind === "toIdentity" && isHeldOp(a)
             ? { ...a, state: "failed" as const, mayLand: false }
-            : a,
+            : state === "failed" && a.kind === "toIdentity" && isHeldOp(a)
+              ? { ...a, state: "done" as const, mayLand: false }
+              : a,
       ),
     ];
-    // A move that is `done` has emptied the addresses it took from; a `pending` one has not been seen yet.
-    if (state === "done") p.addresses = exit ? p.addresses.filter((a) => !exit.includes(a.address)) : [];
+    // A move that is `done` has emptied the addresses it took from, and a lost exit's top-up took its
+    // inputs; a `pending` one has not been seen yet.
+    if (state === "done" || (state === "failed" && exit)) p.addresses = exit ? p.addresses.filter((a) => !exit.includes(a.address)) : [];
     return { id, credits: q.credits, expectedDuffs, to: q.to, state, feeCredits };
   },
 };

@@ -20,9 +20,9 @@ function setup(lock = { encrypted: false }) {
   const api = {
     ...vault.api,
     platformMoveToCore: vi.fn(
-      (_walletId: string, amount: { kind: string }, to: string, grant: string) =>
+      (_walletId: string, amount: { kind: string }, to: string, exitOf: string | null, grant: string) =>
         new Promise<MoveToCoreOutcome>((resolve) => {
-          calls.push(`move ${amount.kind} ${to} ${grant}`);
+          calls.push(`move ${amount.kind} ${to}${exitOf === null ? "" : ` exit of ${exitOf}`} ${grant}`);
           answer = resolve;
         }),
     ),
@@ -40,11 +40,11 @@ describe("Move to Dash wallet", () => {
     const stop = onMoveSettled(settled);
     flow.begin();
     expect([flow.open, flow.step]).toEqual([true, "confirm"]);
-    const going = flow.move(GRANT, TO);
+    const going = flow.move(GRANT, TO, null);
     await vi.waitFor(() => expect(flow.step).toBe("running"));
     expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "40000000000" }, walletId: WALLET_A });
     // One call at a time.
-    await flow.move(GRANT, TO);
+    await flow.move(GRANT, TO, null);
     expect(calls).toEqual([`move all ${TO} grant-1`]);
     flow.close();
     expect(flow.unseen).toBe(false);
@@ -65,7 +65,7 @@ describe("Move to Dash wallet", () => {
     const { flow, answer } = setup();
     const row = (state: PlatformActivity["state"]): PlatformActivity => ({ id: OUTCOME.id, kind: "moveToCore", state, credits: OUTCOME.credits, address: null, to: TO, expectedDuffs: OUTCOME.expectedDuffs, feeCredits: null, at: 1, mayLand: state === "pending", estimated: false });
     flow.begin();
-    const going = flow.move(GRANT, TO);
+    const going = flow.move(GRANT, TO, null);
     await vi.waitFor(() => expect(flow.step).toBe("running"));
     answer({ ...OUTCOME, state: "pending" });
     await going;
@@ -145,7 +145,7 @@ describe("Move to Dash wallet", () => {
     const settled = vi.fn();
     const stop = onMoveSettled(settled);
     flow.begin();
-    const going = flow.move(GRANT, TO);
+    const going = flow.move(GRANT, TO, null);
     await vi.waitFor(() => expect(flow.grants.pending).not.toBeNull());
     flow.grants.cancel();
     await going;
@@ -154,16 +154,33 @@ describe("Move to Dash wallet", () => {
     stop();
   });
 
+  it("passes the quote's exitOf back, and a refusal for a changed quote offers Back", async () => {
+    const { flow, api, calls, answer } = setup();
+    flow.begin();
+    const going = flow.move(GRANT, TO, "move-7-0");
+    await vi.waitFor(() => expect(flow.step).toBe("running"));
+    expect(calls).toEqual([`move all ${TO} exit of move-7-0 grant-1`]);
+    answer(OUTCOME);
+    await going;
+    api.platformMoveToCore.mockRejectedValueOnce(appError("credits.quote_changed"));
+    flow.back();
+    flow.close();
+    flow.begin();
+    await flow.move(GRANT, TO, "move-7-0");
+    expect([flow.step, moveCanRetry(flow.error)]).toEqual(["refused", true]);
+    expect(moveErrorText(flow.error, credits)).toBe("Your Platform addresses changed since you reviewed this move. Review it again.");
+  });
+
   it("a refusal keeps its error; Back only when a new quote may pass", async () => {
     const { flow, api } = setup();
     api.platformMoveToCore.mockRejectedValueOnce(appError("platform.grant_exceeded"));
     flow.begin();
-    await flow.move(GRANT, TO);
+    await flow.move(GRANT, TO, null);
     expect([flow.step, moveCanRetry(flow.error)]).toEqual(["refused", true]);
     flow.back();
     expect([flow.step, flow.error]).toEqual(["confirm", null]);
     api.platformMoveToCore.mockRejectedValueOnce(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "x" }));
-    await flow.move(GRANT, TO);
+    await flow.move(GRANT, TO, null);
     // An unknown outcome is never offered again from here: the move could happen twice.
     expect([flow.step, moveCanRetry(flow.error)]).toEqual(["refused", false]);
   });
