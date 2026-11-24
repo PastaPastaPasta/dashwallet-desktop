@@ -2118,6 +2118,26 @@ input[type="radio"]:disabled {
   border-radius: var(--dw-radius-card);
 }
 
+/* Pay ▸ added recipients (QT-052). */
+.pay-more-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pay-more-title {
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.pay-more-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
 .pay-scan-row {
   display: flex;
   flex-wrap: wrap;
@@ -4975,8 +4995,34 @@ button.bell-row-open:focus-visible {
 }
 
 .coinjoin-subtitle {
-  margin: 0 0 var(--dw-space-l);
+  margin: 0 0 var(--dw-space-s);
   color: var(--dw-role-text-secondary);
+}
+
+.coinjoin-explainer-link {
+  align-self: flex-start;
+  margin-bottom: var(--dw-space-l);
+}
+
+.coinjoin-explainer p {
+  margin: 0 0 var(--dw-space-m);
+  overflow-wrap: anywhere;
+}
+
+.license-text {
+  max-height: 12rem;
+  overflow: auto;
+  margin: var(--dw-space-s) 0;
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-secondary);
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  user-select: text;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .coinjoin-notes,
@@ -6050,6 +6096,7 @@ button.bell-row-open:focus-visible {
 
 .mg-node-name {
   font-weight: var(--dw-type-footnote-medium-weight);
+  overflow-wrap: anywhere;
 }
 
 .mg-node-sub {
@@ -6242,13 +6289,17 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-text-tertiary);
 }
 
+/* A group, not a fieldset, as on Restore options (issue 108): a flex fieldset's legend could move
+   the centred sheet under the first click on WebKitGTK. */
 .mg-choices {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-xxs);
+}
+
+.mg-choices > .mg-section-title {
   margin: 0;
-  padding: 0;
-  border: 0;
+  padding-inline: 2px;
 }
 
 .mg-choice {
