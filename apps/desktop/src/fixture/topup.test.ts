@@ -9,7 +9,7 @@ import { IDENTITY } from "./dashpay";
 import { installFixture } from "./index";
 import { FIXTURE_WALLET_ID, type ScenarioName } from "./scenarios";
 import { plannedWithdrawalCredits } from "../platform/move";
-import { TOP_UP_FEE_DUFFS, topUpStep, WITHDRAW_RULES, withdrawalId } from "./topup";
+import { FROM_PLATFORM_RULES, TOP_UP_FEE_DUFFS, topUpStep, WITHDRAW_RULES, withdrawalId } from "./topup";
 
 const W = FIXTURE_WALLET_ID;
 const A = IDENTITY.alice;
@@ -230,6 +230,35 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     const moved = await cmd.platformMoveToCore(W, exact, move.to, move.exitOf, g);
     expect(moved.state).toBe("done");
     expect([moved.credits, moved.expectedDuffs]).toEqual([move.credits, move.expectedDuffs]);
+  });
+
+  it("an exit its held top-up beat lands that top-up: the identity gets its credits, input 0 keeps the rest less the fee", async () => {
+    const fx = install("dashpay-registered");
+    const p = fx.world.pending.platform!;
+    p.nextTopUp = "held";
+    const before = BigInt((await cmd.identities(W))[0].balance!);
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("40000000000"));
+    const [input0] = p.heldTopUps![out.id].inputs;
+    const kept = BigInt(p.addresses.find((a) => a.address === input0.address)!.credits) - 1_000_000_000n - FROM_PLATFORM_RULES.fee;
+    const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
+    const g = (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;
+    p.nextMove = "lost";
+    expect((await cmd.platformMoveToCore(W, { kind: "all" }, move.to, move.exitOf, g)).state).toBe("failed");
+    expect(p.activity.find((a) => a.id === out.id)).toMatchObject({ state: "done", mayLand: false, credits: String(1_000_000_000n + FROM_PLATFORM_RULES.fee), feeCredits: String(FROM_PLATFORM_RULES.fee) });
+    expect(BigInt((await cmd.identities(W))[0].balance!)).toBe(before + 1_000_000_000n);
+    expect(p.addresses.find((a) => a.address === input0.address)?.credits).toBe(String(kept));
+  });
+
+  it("an exit amount fewer of a two-input top-up's inputs carry is refused at the quote", async () => {
+    const fx = install("dashpay-registered");
+    const p = fx.world.pending.platform!;
+    p.nextTopUp = "held";
+    const [first] = [...p.addresses].sort((a, b) => (a.address < b.address ? -1 : 1));
+    const amount = BigInt(first.credits) - FROM_PLATFORM_RULES.band + 1_000_000_000n;
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits(String(amount)), await fromPlatformGrant("40000000000"));
+    expect(p.heldInputs![out.id]).toHaveLength(2);
+    expect(await code(cmd.platformMoveToCoreQuote(W, credits("100000000")))).toBe("credits.move_pending");
+    expect((await cmd.platformMoveToCoreQuote(W, { kind: "all" })).exitOf).toBe(out.id);
   });
 
   it("a pending exit leaves the held top-up able to land", async () => {

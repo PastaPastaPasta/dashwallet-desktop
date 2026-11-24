@@ -17,6 +17,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { NetworkSwitch } from "../api/generated/NetworkSwitch";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { PlatformAddressBalance } from "../api/generated/PlatformAddressBalance";
+import type { PlatformAddressRow } from "../api/generated/PlatformAddressRow";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
 import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
@@ -24,7 +25,7 @@ import type { PlatformSendOutcome } from "../api/generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, fundDuffs, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, fundDuffs, HANDLERS, landHeldTopUp, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
@@ -114,6 +115,8 @@ export interface PlatformWorld {
   nextTopUp: "done" | "pending" | "held" | "failed";
   /** The addresses each top-up from Platform not done yet signed at (by id): its exit moves those. */
   heldInputs?: Record<string, string[]>;
+  /** What each of those claimed for which identity: it lands with that if it executes in its exit's place. */
+  heldTopUps?: Record<string, { walletId: string; identity: string; inputs: PlatformAddressRow[]; credits: string }>;
   /** What the next Finish of one of those adds comes to. */
   nextResume: ResumeResult;
   /** The locks of "Add from Dash wallet" not applied yet. */
@@ -287,6 +290,13 @@ function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQu
   const sending = p.activity.find((a) => a.kind === "send" && isHeldOp(a));
   if (sending) throw moveHeld(sending.id);
   const credits = moveCredits(p, amount);
+  // An exit signs exactly its top-up's inputs: an amount the largest of fewer of them carry is refused.
+  const held = heldTopUp(p);
+  if (held && amount.kind === "credits") {
+    const sources = moveSources(p).map((a) => BigInt(a.credits)).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+    let carried = 0n;
+    if (sources.slice(0, -1).some((c) => (carried += c) >= credits)) throw moveHeld(held.id);
+  }
   const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
   return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) }, exitOf: heldTopUp(p)?.id ?? null };
 }
@@ -674,6 +684,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const id = `pm-${p.activity.length + 1}`;
     const feeCredits = state === "done" ? q.feeCredits : null;
     const exit = exitInputs(p);
+    const lost = state === "failed" ? heldTopUp(p)?.id : undefined;
     // Of a group of moves at the same inputs at most one executes: the new one replaces the held ones.
     p.activity = [
       { id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: state === "pending", estimated: false },
@@ -689,9 +700,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
               : a,
       ),
     ];
-    // A move that is `done` has emptied the addresses it took from, and a lost exit's top-up took its
-    // inputs; a `pending` one has not been seen yet.
-    if (state === "done" || (state === "failed" && exit)) p.addresses = exit ? p.addresses.filter((a) => !exit.includes(a.address)) : [];
+    // A move that is `done` has emptied the addresses it took from; a lost exit's top-up landed as a done
+    // one does; a `pending` one has not been seen yet.
+    if (state === "done") p.addresses = exit ? p.addresses.filter((a) => !exit.includes(a.address)) : [];
+    if (lost) landHeldTopUp(ctx, lost);
     return { id, credits: q.credits, expectedDuffs, to: q.to, state, feeCredits };
   },
 };
