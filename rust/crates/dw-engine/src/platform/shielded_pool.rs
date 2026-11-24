@@ -1901,6 +1901,10 @@ pub(super) async fn open_for_funding(
     lib: &impl ShieldedLib,
 ) -> Result<(), ShieldedError> {
     gate(lib).await?;
+    let on_startup = || lib.funding_hold() == Some(RegistrationWait::Startup);
+    if on_startup() {
+        session.platform.await_bring_up(wallet, on_startup).await;
+    }
     if let Some(wait) = lib.funding_hold() {
         let refusal = held(lib, wait);
         if wait == RegistrationWait::Startup {

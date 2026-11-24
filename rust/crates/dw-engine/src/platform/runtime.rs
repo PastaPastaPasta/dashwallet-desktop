@@ -124,6 +124,9 @@ pub(crate) struct PlatformRuntime {
     startup: RwLock<HashMap<WalletId, DashPayStartup>>,
     /// Where a changed bring-up outcome is signalled ([`StartupWrite`]).
     hub: Arc<SessionHub>,
+    /// Bumped when a wallet's bring-up outcome changes or a rerun a flow
+    /// asked for ends: what [`Self::await_bring_up`] waits on.
+    startup_seen: watch::Sender<u64>,
     cadence: Mutex<PlatformCadence>,
     pub(super) lock: watch::Sender<LockView>,
     /// Each wallet's bring-up or unlock task in flight, ended when the
@@ -293,6 +296,7 @@ pub(super) struct StartupWrite<'a> {
     map: Option<RwLockWriteGuard<'a, HashMap<WalletId, DashPayStartup>>>,
     before: HashMap<WalletId, (StartupStatus, Option<String>)>,
     hub: &'a SessionHub,
+    seen: &'a watch::Sender<u64>,
 }
 
 impl std::ops::Deref for StartupWrite<'_> {
@@ -318,6 +322,9 @@ impl Drop for StartupWrite<'_> {
             .collect();
         changed.extend(self.before.keys().filter(|id| !map.contains_key(id)));
         drop(map);
+        if !changed.is_empty() {
+            self.seen.send_modify(|n| *n = n.wrapping_add(1));
+        }
         for id in changed {
             self.hub.pump.mark_platform(id, [PlatformChange::Startup]);
         }
@@ -435,6 +442,8 @@ struct StartupRetry {
     runs: u32,
     /// None is requested before this.
     next: Instant,
+    /// The last rerun asked for has not ended.
+    asked: bool,
 }
 
 /// The pause after the `runs`th rerun of a bring-up before the next:
@@ -498,6 +507,7 @@ impl PlatformRuntime {
             lifecycle: tokio::sync::Mutex::new(()),
             startup: RwLock::new(HashMap::new()),
             hub,
+            startup_seen: watch::Sender::new(0),
             cadence: Mutex::new(PlatformCadence::default()),
             lock: watch::Sender::new(LockView {
                 state: lock,
@@ -755,6 +765,7 @@ impl PlatformRuntime {
             map: Some(map),
             before,
             hub: &self.hub,
+            seen: &self.startup_seen,
         }
     }
 
@@ -767,10 +778,65 @@ impl PlatformRuntime {
     }
 
     pub(super) fn record(&self, id: WalletId, startup: DashPayStartup) {
-        if !startup.startup.awaits_rerun() {
-            guard(&self.startup_retries).remove(&id);
+        {
+            let mut retries = guard(&self.startup_retries);
+            if !startup.startup.awaits_rerun() {
+                retries.remove(&id);
+            } else if let Some(retry) = retries.get_mut(&id) {
+                retry.asked = false;
+            }
         }
         self.write_startup().insert(id, startup);
+    }
+
+    /// The rerun of wallet `id`'s bring-up that a flow asked for ended, or
+    /// the supervisor dropped it: whatever it recorded, it no longer runs.
+    pub(super) fn rerun_ended(&self, id: WalletId) {
+        if let Some(retry) = guard(&self.startup_retries).get_mut(&id) {
+            retry.asked = false;
+        }
+        self.startup_seen.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
+    /// A rerun of wallet `id`'s bring-up was asked for and has not ended,
+    /// or a bring-up of it runs.
+    fn bring_up_pending(&self, id: &WalletId) -> bool {
+        guard(&self.startup_retries)
+            .get(id)
+            .is_some_and(|r| r.asked)
+            || self
+                .startup_of(id)
+                .is_some_and(|s| s.startup == StartupStatus::Starting)
+    }
+
+    /// A funding held on wallet `id`'s bring-up (`held`): asks for the
+    /// rerun ([`Self::retry_startup`]) and waits while one is asked for or
+    /// runs, until `held` lifts, the library's budget has passed or the
+    /// supervisor stops. Nothing while SPV is stopped. The caller reads its
+    /// hold again after: this decides nothing.
+    pub(crate) async fn await_bring_up(&self, id: WalletId, held: impl Fn() -> bool) {
+        // Subscribed before any read below: a change from here on wakes it.
+        let mut seen = self.startup_seen.subscribe();
+        let Some(mut cancel) = guard(&self.supervisor)
+            .as_ref()
+            .filter(|s| s.running)
+            .map(|s| s.cancel.subscribe())
+        else {
+            return;
+        };
+        let deadline = Instant::now() + super::bringup::FLOW_WAIT;
+        self.retry_startup(id);
+        while held() && self.bring_up_pending(&id) && !*cancel.borrow() {
+            tokio::select! {
+                biased;
+                () = super::bringup::until(&mut cancel, |c| *c) => return,
+                changed = tokio::time::timeout_at(deadline.into(), seen.changed()) => {
+                    if !matches!(changed, Ok(Ok(()))) {
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /// A flow is held on wallet `id`'s bring-up (`StartupStatus::awaits_rerun`;
@@ -800,14 +866,17 @@ impl PlatformRuntime {
         }
         {
             let mut retries = guard(&self.startup_retries);
-            let retry = retries
-                .entry(id)
-                .or_insert(StartupRetry { runs: 0, next: now });
+            let retry = retries.entry(id).or_insert(StartupRetry {
+                runs: 0,
+                next: now,
+                asked: false,
+            });
             if now < retry.next {
                 return false;
             }
             retry.runs += 1;
             retry.next = now + startup_retry_pause(retry.runs);
+            retry.asked = true;
         }
         tracing::info!(wallet_id = %id, "a flow waits on the DashPay bring-up: running it again");
         self.signal(PlatformSignal::RetryStartup(id));

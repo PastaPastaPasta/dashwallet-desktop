@@ -487,6 +487,10 @@ pub(crate) async fn fund(
     amount: FundAmount,
     grant: &str,
 ) -> Result<PlatformFundOutcome, CreditsError> {
+    let on_startup = || lib.funding_hold() == Some(RegistrationWait::Startup);
+    if on_startup() {
+        session.platform.await_bring_up(wallet, on_startup).await;
+    }
     if let Some(wait) = lib.funding_hold() {
         if wait == RegistrationWait::Startup {
             session.platform.retry_startup(wallet);

@@ -54,6 +54,9 @@ pub const CREATED_HERE_BUDGET: Duration = Duration::from_secs(3);
 /// library bounds its awaits by the budget, not its synchronous work (the
 /// vault's derivations, a few milliseconds each).
 const BUDGET_SLACK: Duration = Duration::from_millis(500);
+/// How long a funding held on a bring-up waits for the rerun it asked for
+/// (`PlatformRuntime::await_bring_up`): a rerun's budget and its slack.
+pub(super) const FLOW_WAIT: Duration = DEFAULT_STARTUP_BUDGET.saturating_add(BUDGET_SLACK);
 
 /// How often a start retries starting the loops while a pass of an earlier
 /// start is still in flight.
@@ -404,6 +407,7 @@ impl NetworkSession {
                     if !this.platform.awaits_rerun(&id)
                         || manager.get_wallet(&id.0).await.is_none() =>
                 {
+                    this.platform.rerun_ended(id);
                     continue;
                 }
                 PlatformSignal::RetryStartup(id) => {
@@ -583,6 +587,9 @@ impl NetworkSession {
                     };
                     let Some(id) = owners.remove(&task) else { continue };
                     self.platform.untrack(id, task);
+                    if matches!(job, Job::Retry) {
+                        self.platform.rerun_ended(id);
+                    }
                     if let Some(e) = failed
                         && e.is_panic()
                     {
@@ -600,6 +607,9 @@ impl NetworkSession {
         };
         for (task, id) in owners {
             self.platform.untrack(id, task);
+            if matches!(job, Job::Retry) {
+                self.platform.rerun_ended(id);
+            }
         }
         done
     }

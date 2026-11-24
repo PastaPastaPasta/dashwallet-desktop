@@ -2527,6 +2527,166 @@ fn a_rerun_runs_the_discovery_a_proven_absence_skipped() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// A session whose restored wallet's bring-up Platform's proof of no
+/// identity skipped at its second start (`NotRun`), as after a restart.
+fn skipped_at_restart(
+    dir: &std::path::Path,
+) -> (Engine, Arc<NetworkSession>, WalletId, Arc<Platform>) {
+    let platform = Arc::new(Platform::default());
+    let (engine, s) = session(dir, Arc::clone(&platform));
+    let id = restore(&engine, &s);
+    start(&engine, &s);
+    wait_until("the bring-up", || {
+        startup(&s, id) == StartupStatus::NoIdentity
+    });
+    stop(&engine, &s);
+    start(&engine, &s);
+    wait_until("the skipped bring-up", || {
+        startup(&s, id) == StartupStatus::NotRun
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
+    (engine, s, id, platform)
+}
+
+/// A Platform transfer of 0.001 Dash from a wallet with no coins: past the
+/// hold, it is refused for its funds.
+async fn fund_once(
+    s: &Arc<NetworkSession>,
+    id: WalletId,
+) -> Result<super::PlatformFundOutcome, super::CreditsError> {
+    let lib = super::platform_fund::PwFund::open(s, id).await.unwrap();
+    let amount = super::FundAmount::Duffs { duffs: 100_000 };
+    super::platform_fund::fund(s, id, &lib, amount, "no grant").await
+}
+
+/// #585: after a restart, the first shield or Platform transfer of a wallet
+/// whose bring-up the proof skipped was held at `Startup`: it asked for the
+/// rerun and was refused ("Shielded is still syncing"), and only a second
+/// press went through. Now it waits for the rerun it asks for, which
+/// answers at once here, and goes on from the hold.
+#[test]
+fn a_first_funding_after_a_skipped_bring_up_waits_for_its_rerun() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, platform) = skipped_at_restart(dir.path());
+
+    let funded = engine.block_on(fund_once(&s, id));
+    let code = funded
+        .as_ref()
+        .map(|_| "funded")
+        .unwrap_or_else(|e| e.code());
+    assert_ne!(
+        code, "platform.unavailable",
+        "held at the bring-up: {funded:?}"
+    );
+    assert_eq!(startup(&s, id), StartupStatus::NoIdentity);
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+
+    // The shield's gate, on the next start's skipped bring-up.
+    stop(&engine, &s);
+    start(&engine, &s);
+    wait_until("the skipped bring-up", || {
+        startup(&s, id) == StartupStatus::NotRun
+    });
+    let opened = engine.block_on(async {
+        let lib = super::shielded_pool::PwShielded::open(&s, id)
+            .await
+            .unwrap();
+        super::shielded_pool::open_for_funding(&s, id, &lib).await
+    });
+    assert_ne!(
+        opened,
+        Err(super::ShieldedError::not_synced(
+            super::errors::ShieldedSyncWait::Startup
+        )),
+        "held at the bring-up"
+    );
+    assert_ne!(
+        opened.as_ref().map_err(|e| e.code()),
+        Err("platform.unavailable"),
+        "{opened:?}"
+    );
+    assert_eq!(startup(&s, id), StartupStatus::NoIdentity);
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 3);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #585: two presses held on one rerun both go on when it answers; neither
+/// waits out the budget because the other was woken first.
+#[test]
+fn two_fundings_held_on_one_rerun_both_go_on() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, platform) = skipped_at_restart(dir.path());
+    let pause = Arc::new(TestPause {
+        reached: AtomicBool::new(false),
+        release: Notify::new(),
+    });
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    let started = Instant::now();
+    let (a, b) = engine.block_on(async {
+        let release = async {
+            while !pause.reached.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            // Both presses are waiting on the rerun, which holds here.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            pause.release.notify_one();
+        };
+        let (a, b, ()) = tokio::join!(fund_once(&s, id), fund_once(&s, id), release);
+        (a, b)
+    });
+    for funded in [&a, &b] {
+        let code = funded
+            .as_ref()
+            .map(|_| "funded")
+            .unwrap_or_else(|e| e.code());
+        assert_ne!(
+            code, "platform.unavailable",
+            "held at the bring-up: {funded:?}"
+        );
+    }
+    assert!(
+        started.elapsed() < super::bringup::FLOW_WAIT,
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2, "one rerun");
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #585: a press waiting on a rerun ends when SPV stops, as held, and does
+/// not wait out the budget.
+#[test]
+fn a_funding_waiting_on_a_rerun_ends_when_spv_stops() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, _platform) = skipped_at_restart(dir.path());
+    let pause = Arc::new(TestPause {
+        reached: AtomicBool::new(false),
+        release: Notify::new(),
+    });
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    let started = Instant::now();
+    let funded = engine.block_on(async {
+        let stopping = async {
+            while !pause.reached.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let _ = s.stop_spv().await;
+        };
+        tokio::join!(fund_once(&s, id), stopping).0
+    });
+    assert_eq!(
+        funded.as_ref().map_err(|e| e.code()).err(),
+        Some("platform.unavailable"),
+        "{funded:?}"
+    );
+    assert!(
+        started.elapsed() < super::bringup::FLOW_WAIT,
+        "{:?}",
+        started.elapsed()
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// ROADMAP DP1-05 on public testnet. `DW_DP105_TESTNET_FIXTURE` names the
 /// fixture directory: `A.mnemonic`, `B.mnemonic` and `fixture.json` with
 /// each party's identity, names and expected main name, and B's incoming
