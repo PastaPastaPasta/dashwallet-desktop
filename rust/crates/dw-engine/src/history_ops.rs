@@ -651,7 +651,10 @@ impl NetworkSession {
             .appdb_op(move |db| crate::tx_actions::dropped_holds(db, wallet))
             .await
             .unwrap_or_else(|e| {
+                // The open read them; a failure now leaves the load
+                // incomplete, so nothing is dropped or freed.
                 tracing::warn!(%wallet, error = %e, "could not read the coins dropped payments hold");
+                (self.hub.history).with_wallet(wallet, |h| h.load_incomplete = true);
                 BTreeSet::new()
             });
         #[cfg(test)]

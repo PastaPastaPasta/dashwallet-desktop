@@ -123,12 +123,18 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// comma-separated), restored as claims at each load ([`dropped_holds`]).
 const DROPPED_PREFIX: &str = "dropped:";
 
+/// A test's fault point on [`dropped_holds`]'s read.
+#[cfg(all(test, debug_assertions))]
+pub(crate) const DROPPED_HOLDS_FAULT: &str = "tx_actions.dropped_holds";
+
 /// The coins the drops of `wallet` hold for good ([`DROPPED_PREFIX`]); a
-/// note that does not read holds nothing.
+/// note whose value does not parse holds nothing.
 pub(crate) fn dropped_holds(
     appdb: &AppDb,
     wallet: WalletId,
 ) -> Result<BTreeSet<OutPoint>, dw_appdb::AppDbError> {
+    #[cfg(all(test, debug_assertions))]
+    appdb.fault_point(DROPPED_HOLDS_FAULT, dw_appdb::fault::Stage::Before)?;
     let rows = appdb.settings_with_prefix_lossy(&wallet.to_string(), DROPPED_PREFIX)?;
     Ok((rows.into_iter())
         .filter_map(|(_, value)| value)
@@ -434,8 +440,8 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Abandoned, boo
 /// again and is left. Run before the wallets load, so a swept payment's
 /// change is never credited. A mark is known by its key, so one whose copy
 /// does not read back still counts, its coins then taken from its sent
-/// mark. A read that fails (the marks, a stored record, the sent marks)
-/// or a sweep that cannot be stored fails the load.
+/// mark. A read that fails (the marks, the drops' holds, a stored record,
+/// the sent marks) or a sweep that cannot be stored fails the load.
 pub(crate) fn finish_marked_abandons(
     persister: &platform_wallet_storage::SqlitePersister,
     appdb: &AppDb,
@@ -447,6 +453,9 @@ pub(crate) fn finish_marked_abandons(
     };
     let mut listed = None;
     for &wallet in wallets {
+        // The holds are read again once the wallet loads: one that cannot
+        // be read now fails the load, as the marks do.
+        dropped_holds(appdb, wallet).map_err(|e| storage(&e))?;
         // Each mark by its key: one whose copy does not read back still
         // names its payment.
         let rows = (appdb.settings_with_prefix_lossy(&wallet.to_string(), ABANDONED_PREFIX))
@@ -871,6 +880,11 @@ struct DropPlan {
     /// that no processed block spent: nothing mined takes them yet, so they
     /// are held at each load.
     locked_spent: HashSet<OutPoint>,
+    /// The winner's inputs were known: otherwise every coin no processed
+    /// block spent is held at each load.
+    known: bool,
+    /// Of `inputs`, those a processed block spent.
+    observed: HashSet<OutPoint>,
 }
 
 /// Plans dropping `roots` and what descends from them in the history `txs`
@@ -983,6 +997,10 @@ fn plan_drop(
         .copied()
         .collect();
     kept.extend(inputs.iter().filter(|o| !freed.contains(*o)));
+    let inputs_observed = (inputs.iter())
+        .filter(|o| observed.contains_key(*o))
+        .copied()
+        .collect();
     Some(DropPlan {
         dead,
         links,
@@ -991,6 +1009,8 @@ fn plan_drop(
         freed,
         kept,
         locked_spent,
+        known,
+        observed: inputs_observed,
     })
 }
 
@@ -1518,7 +1538,9 @@ impl NetworkSession {
         stored: Option<&HashSet<Txid>>,
     ) {
         let _gate = self.hub.drop_gate.lock().await;
-        let mut work = self.hub.take_dead_children(wallet);
+        let mut work: Vec<_> = (self.hub.take_dead_children(wallet).into_iter())
+            .map(|(roots, winner, swept)| (roots, winner, swept, false))
+            .collect();
         {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
@@ -1545,16 +1567,17 @@ impl NetworkSession {
                     {
                         beaten.entry(w).or_default().push(t);
                     }
-                    work.extend(beaten.into_iter().map(|(w, ts)| (ts, w, BTreeSet::new())));
+                    work.extend((beaten.into_iter()).map(|(w, ts)| (ts, w, BTreeSet::new(), true)));
                     let orphans = stored.map(|s| orphaned_unmined(&h.txs, s));
                     if let Some(orphans) = orphans.filter(|o| !o.is_empty()) {
-                        work.push((orphans, Winner::default(), BTreeSet::new()));
+                        work.push((orphans, Winner::default(), BTreeSet::new(), false));
                     }
                 });
             }
         }
-        for (roots, winner, links) in work {
-            match (self.drop_dead_unmined(manager, wallet, &roots, winner, &links)).await {
+        for (roots, winner, links, recheck) in work {
+            let dropped = self.drop_dead_unmined(manager, wallet, &roots, winner, &links, recheck);
+            match dropped.await {
                 Ok(dropped) if !dropped.is_empty() => {
                     tracing::info!(%wallet, ?dropped, ?winner, "dropped transactions that can never confirm")
                 }
@@ -1581,6 +1604,7 @@ impl NetworkSession {
         roots: &[Txid],
         winner: Winner,
         links: &BTreeSet<Txid>,
+        recheck: bool,
     ) -> Result<BTreeSet<Txid>, EngineError> {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
@@ -1591,6 +1615,35 @@ impl NetworkSession {
             let complete = h.loaded && !h.load_incomplete;
             let chainlock = self.chainlock_height(&info.core_wallet);
             let facts = (complete, chainlock);
+            // A beaten root is beaten still under this lock: a truncation
+            // since its detection may have undone its winner.
+            let rechecked: Vec<Txid>;
+            let roots = match recheck {
+                false => roots,
+                true => {
+                    let core = &info.core_wallet;
+                    let recorded = |t: &Txid| {
+                        (core.accounts.all_accounts().into_iter()).any(|a| a.has_transaction(t))
+                    };
+                    let owned = crate::history_ops::owned_scripts(info);
+                    let pays = |tx: &Transaction| {
+                        (tx.output.iter()).any(|o| owned.contains_key(&o.script_pubkey))
+                    };
+                    let observed = core.observed_spent_outpoints();
+                    let beaten: HashSet<Txid> =
+                        beaten_unrecorded(&h.txs, recorded, observed, chainlock, pays)
+                            .into_iter()
+                            .filter(|(_, w)| *w == winner)
+                            .map(|(t, _)| t)
+                            .collect();
+                    rechecked = roots
+                        .iter()
+                        .filter(|t| beaten.contains(*t))
+                        .copied()
+                        .collect();
+                    &rechecked
+                }
+            };
             plan_drop(
                 &h.txs,
                 &h.swept,
@@ -1620,10 +1673,13 @@ impl NetworkSession {
         let persister = Arc::clone(&self.live()?.persister);
         // A mined winner's block spends its coins again in any rescan; the
         // coins an unmined or unknown winner, or a locked transaction out of
-        // a block, may spend are held at each load.
+        // a block, may spend, and every coin no processed block spent when
+        // the winner's inputs are unknown, are held at each load.
         let holds = |tx: &Transaction| {
             let held = (tx.input.iter()).map(|i| i.previous_output).filter(|o| {
-                (winner.mined.is_none() || plan.locked_spent.contains(o))
+                (winner.mined.is_none()
+                    || plan.locked_spent.contains(o)
+                    || (!plan.known && !plan.observed.contains(o)))
                     && plan.inputs.contains(o)
                     && !plan.freed.contains(o)
             });
@@ -1644,6 +1700,23 @@ impl NetworkSession {
         let core = &mut info.core_wallet;
         let abandoned = abandon_with(core, root, &rest);
         if abandoned.is_empty() {
+            // key-wallet refused (it settled the root meanwhile): the marks
+            // go, so no hold outlives a drop that did not happen.
+            let keys: Vec<String> = (plan.copies.iter())
+                .flat_map(|(t, _)| {
+                    [
+                        format!("{ABANDONED_PREFIX}{t}"),
+                        format!("{DROPPED_PREFIX}{t}"),
+                    ]
+                })
+                .collect();
+            let scope = wallet.to_string();
+            self.appdb_op(move |db| {
+                let writes: Vec<(&str, Option<&str>)> =
+                    keys.iter().map(|k| (k.as_str(), None)).collect();
+                db.set_settings_durable(&scope, &writes)
+            })
+            .await?;
             return Ok(abandoned);
         }
         debug_assert_eq!(abandoned, plan.dead);

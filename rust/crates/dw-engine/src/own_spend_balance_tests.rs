@@ -2729,9 +2729,89 @@ fn a_child_dropped_while_the_history_load_is_incomplete_frees_nothing() {
     mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
     reconciled(&engine, &session, id);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned");
+
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned again");
+}
+
+/// #170 case 4 with a lock key-wallet heard of for a transaction neither
+/// it nor the history holds: the sweep's winner is mined and spends only
+/// A, yet that lock may spend D, so C goes and D stays out, through a
+/// restart and a rescan too.
+#[test]
+fn a_child_dropped_beside_an_unknown_lock_frees_nothing() {
+    use dashcore::hashes::Hash;
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    echo(&engine, &session, id, &p);
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&id.0).unwrap();
+        let unknown = dashcore::Txid::from_byte_array([42; 32]);
+        info.core_wallet
+            .mark_instant_send_utxos(&unknown, &dashcore::InstantLock::default());
+    });
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    reconciled(&engine, &session, id);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
+
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);
     mined(&engine, &session, id, TIP + 1, vec![winner]);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned");
+}
+
+/// #170 case 4: the holds of a drop cannot be read when the wallet opens.
+/// The open fails, as for unreadable abandoned marks, rather than load
+/// the wallet with D unclaimed; the next open holds D through a rescan.
+#[test]
+fn an_open_that_cannot_read_a_drops_holds_fails() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: winner.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "swept");
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::Before;
+    dw_appdb::fault::arm(&path, crate::tx_actions::DROPPED_HOLDS_FAULT, stage);
+    let loaded = engine.block_on(session.load_wallet(id));
+    dw_appdb::fault::disarm(&path);
+    if loaded.is_ok() {
+        mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+        assert!(
+            !held(&engine, &session, id).contains(&d),
+            "loaded without its holds: D"
+        );
+    }
+    assert!(loaded.is_err(), "the open went ahead");
+
+    engine.block_on(session.load_wallet(id)).unwrap();
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "loaded again");
 }
 
 /// #170 case 4: the app stops after a drop of C wrote its marks, before
