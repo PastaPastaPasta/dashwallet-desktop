@@ -312,7 +312,7 @@ export const pay = {
       /** `name` the payee, `amount` and `received` with their unit, `source` a row's label. */
       confirm: "Pay {name} {amount} from your {source}. They receive about {received}. Network fee {fee}.",
       /** `total` the amount and the network fee, with its unit. */
-      total: "About {total} leaves your {source}.",
+      total: "About {total} leaves your {source}: {amount} to {contact} and about {fee} in Platform fees.",
       sent: "Payment sent. It arrives in {name}’s wallet once the Dash network processes it. This can take a while.",
       unknown: "We could not confirm this payment. It may still go through. Do not pay again until this is settled.",
       notSent: "The payment was not sent. You can pay this contact again.",

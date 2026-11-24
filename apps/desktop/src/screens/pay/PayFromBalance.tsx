@@ -17,7 +17,7 @@ import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 import { FormField, type usePayAmount } from "./form";
-import { contactPayFor, fromErrorText, outcomeText, sourceLabel, type ContactPayFlow, type FromRow, type PaySource } from "./fromBalance";
+import { contactPayFor, fromErrorText, outcomeText, sourceLabel, totalText, type ContactPayFlow, type FromRow, type PaySource } from "./fromBalance";
 
 /** The sources, each with its balance and, when it cannot pay, its reason (P16). */
 export function FromStep({ rows, source, onChange }: { rows: readonly FromRow[]; source: PaySource; onChange: (s: PaySource) => void }) {
@@ -185,7 +185,7 @@ export function BalancePaySheet({
                 {t("pay.contact.from.confirm", { name, amount: credit(quote.credits), source: sourceLabel(quote.source), received: amount(quote.expectedDuffs), fee: credit(quote.feeCredits) })}
               </p>
               <p className="sheet-text" data-testid="pay-balance-total">
-                {t("pay.contact.from.total", { source: sourceLabel(quote.source), total: credit(String(BigInt(quote.credits) + BigInt(quote.feeCredits))) })}
+                {totalText(quote, name, credit)}
               </p>
               <div className="sheet-actions">
                 <DashButton variant="tintedGray" size="large" data-testid="pay-balance-cancel" disabled={flow.running} onClick={() => onClose(false)}>

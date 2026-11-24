@@ -83,6 +83,13 @@ export function fromRows(i: FromInputs): FromRow[] {
  * source by itself: a balance that empties or is read late holds Review with this reason. */
 export const chosenReason = (rows: readonly FromRow[], chosen: PaySource): string | null => rows.find((r) => r.source === chosen)?.reason ?? null;
 
+/** What leaves the balance in all: the amount and the quoted Platform fee (the engine takes the fee
+ * on top, D-C5). `credit` formats credits with the unit. */
+export function totalText(quote: ContactPayQuoteInfo, contact: string, credit: (credits: string) => string): string {
+  const total = String(BigInt(quote.credits) + BigInt(quote.feeCredits));
+  return t("pay.contact.from.total", { total: credit(total), source: sourceLabel(quote.source), amount: credit(quote.credits), contact, fee: credit(quote.feeCredits) });
+}
+
 /** A quote's or a payment's refusal, as the D-C5 Copy table says it. `credits` is what was asked. */
 export function fromErrorText(e: unknown, credits: string | null, amount: (credits: string) => string): string {
   if (!isAppError(e)) return failureText(e);

@@ -3,7 +3,7 @@ import type { ContactPayQuoteInfo } from "../../api/generated/ContactPayQuoteInf
 import { appError, WALLET_A } from "../../onboarding/testWorld";
 import { fakeVault } from "../../tools/testApi";
 import type { PlatformActivity } from "../../api/generated/PlatformActivity";
-import { chosenReason, ContactPayFlow, fromErrorText, fromRows, liveSources, outcomeText, type FromInputs } from "./fromBalance";
+import { chosenReason, ContactPayFlow, fromErrorText, fromRows, liveSources, outcomeText, totalText, type FromInputs } from "./fromBalance";
 
 const amount = (d: number) => `${d / 1e8} tDASH`;
 const credits = (c: string) => amount(Number(BigInt(c) / 1000n));
@@ -179,5 +179,13 @@ describe("a payment from a balance's flow", () => {
     await paying;
     expect([flow.step, flow.running]).toEqual(["confirm", false]);
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("the confirm's total", () => {
+  it("is the amount and the quoted Platform fee, each named", () => {
+    const quote = { ...QUOTE, credits: "10000000000", feeCredits: "2000000" };
+    const shown = (c: string) => `${c} cr`;
+    expect(totalText(quote, "Bob", shown)).toBe(`About ${String(10_000_000_000n + 2_000_000n)} cr leaves your Platform balance: 10000000000 cr to Bob and about 2000000 cr in Platform fees.`);
   });
 });

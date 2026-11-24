@@ -65,7 +65,7 @@ test("PAY-FROM pays a contact from the Platform balance", async ({ page }) => {
   );
   // What tells two contacts of one name apart, and the whole debit: the amount and the fee.
   await expect(page.getByTestId("pay-balance-payee")).toHaveText("Bob Builder@bob");
-  await expect(page.getByTestId("pay-balance-total")).toHaveText("About 0.10002000 tDASH leaves your Platform balance.");
+  await expect(page.getByTestId("pay-balance-total")).toHaveText("About 0.10002000 tDASH leaves your Platform balance: 0.10000000 tDASH to Bob Builder and about 0.00002000 tDASH in Platform fees.");
   await page.getByTestId("pay-balance-go").click();
   await authorize(page);
   await expect(page.getByTestId("pay-balance-outcome-title")).toHaveText("Payment sent");
