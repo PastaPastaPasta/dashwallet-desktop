@@ -44,6 +44,7 @@ import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld }
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { newSharedWorld, sharedScenarios, type SharedWorld } from "./shared";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -158,6 +159,8 @@ export interface World {
   governance: GovernanceWorld;
   /** My masternodes: the SPV list, own and tracked masternodes, attached keys (masternodes.ts, MG-10). */
   masternodes: MasternodesWorld;
+  /** Shared masternodes: the capability and the main wallet's sessions (shared.ts, MG-10b). */
+  shared: SharedWorld;
   /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
   rates: RatesWorld;
   /** Updates: what this copy can do, the feed and the install (updates.ts, PK-03). */
@@ -263,6 +266,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
     masternodes: noMasternodesWorld(),
+    shared: newSharedWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
     pending: newPendingWorld(),
@@ -734,6 +738,43 @@ const SCENARIOS = {
     };
     wallet.rows = [row, ...wallet.rows];
     w.send.settledChild = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment of the first of two open wallets, whose saved transaction doesn't read:
+   * Abandon is offered and refused, and so is Remove Unconfirmed; both name the wallet and say to
+   * close it, or remove and restore it. */
+  "abandon-record-unreadable-two-wallets": (t) => {
+    const w = twoWallets(base(t));
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
+  /** As `abandon-record-unreadable-two-wallets`, with only that wallet open: the refusal doesn't
+   * say to close it. */
+  "abandon-record-unreadable": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
     return w;
   },
   /** An unconfirmed payment a later payment spends from, already locked when the detail opens:
@@ -1618,6 +1659,8 @@ const SCENARIOS = {
   ...governanceScenarios(base),
   // My masternodes (MG-10): masternodes.ts.
   ...masternodesScenarios(base),
+  // Shared masternodes (MG-10b): shared.ts.
+  ...sharedScenarios(base),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesScenarios(base),
   // Transfer (POLISH 25): transfer.ts.

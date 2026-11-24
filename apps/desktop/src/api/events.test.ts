@@ -57,6 +57,9 @@ describe("event bridge", () => {
       ["coins", "w"],
       ["dashpay", "contacts", "w"],
       ["masternodes", "payouts", "w"],
+      ["masternodes", "sharedSessions", "w"],
+      ["masternodes", "sharedSession", "w"],
+      ["masternodes", "sharedUnreadable", "w"],
     ]);
     expect(invalidationsFor({ kind: "balances", network: "testnet", walletId: "w", balances: null })).toEqual([
       keys.balance("w"),

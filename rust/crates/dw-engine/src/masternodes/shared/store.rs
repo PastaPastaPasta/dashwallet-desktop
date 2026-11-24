@@ -29,6 +29,7 @@ use super::super::shared_records::{
     DeadReason, KeyBase, ShareRow, ShareTermsView, SharedKind, SharedNext, SharedRole,
     SharedSession, SharedStage, SharedWarning, UnreadableSession,
 };
+use super::{key_change, together};
 use crate::EngineError;
 use crate::history::TxEntry;
 
@@ -166,18 +167,39 @@ pub(crate) fn kind_of(column: &str) -> SharedKind {
     }
 }
 
+/// Whether the row's envelope parses as its kind's session (D57).
+pub(crate) fn parses(row: &SharedSessionRow, network: dashcore::Network) -> bool {
+    let row = row.clone();
+    match row.kind.as_str() {
+        together::KIND => together::Together::of(row, network).is_ok(),
+        key_change::KIND => key_change::KeyChange::of(row, network).is_ok(),
+        _ => Loaded::of(row, network).is_ok(),
+    }
+}
+
+/// `shared_session`'s refusal of a row whose envelope no longer parses.
+pub(crate) fn unparsed() -> MasternodesError {
+    EngineError::Internal("a stored shared session does not parse".into()).into()
+}
+
 /// A row whose envelope no longer parses, listed from its columns (D57).
 /// `discardable` is the rule every discard of an unparsed row applies:
 /// `may_discard` for registrations and key changes, and together's
-/// parse-failure branch, which is the same `out_at` test.
-pub(crate) fn unreadable_view(row: &SharedSessionRow) -> UnreadableSession {
+/// parse-failure branch, which is the same `out_at` test. `abandonable`
+/// is the rule `abandon_unreadable_shared_session` spends by.
+pub(crate) fn unreadable_view(row: &SharedSessionRow, chain: &ChainView) -> UnreadableSession {
     let code: String = row.id.chars().take(6).collect();
+    let kind = kind_of(&row.kind);
     UnreadableSession {
         id: row.id.clone(),
         code: code.to_ascii_uppercase(),
-        kind: kind_of(&row.kind),
+        kind,
         role: role_of(&row.role),
         discardable: may_discard(row),
+        abandonable: row.out_at.is_some()
+            && kind != SharedKind::DissolveTogether
+            && settled_by_columns(row, chain).is_none()
+            && chain.holds_any(&reserved_of(row)),
         reserved: serde_json::from_str::<Vec<String>>(&row.reserved).unwrap_or_default(),
         updated_at: row.updated_at,
     }
@@ -414,9 +436,19 @@ fn overlay_own_signatures(session: &mut Session, rec: &Recorded, signed: &[u8]) 
 pub(crate) struct ChainView {
     pub history: HashMap<Txid, TxEntry>,
     pub unspent: HashSet<OutPoint>,
+    /// The coins this wallet's pending spends hold, an abandon's among them.
+    pub pending: HashSet<OutPoint>,
 }
 
 impl ChainView {
+    /// Whether one of `coins` is unspent and free of every pending spend:
+    /// a coin `abandon_session` may spend.
+    pub(crate) fn holds_any(&self, coins: &[OutPoint]) -> bool {
+        coins
+            .iter()
+            .any(|o| self.unspent.contains(o) && !self.pending.contains(o))
+    }
+
     pub(crate) fn confirmed_height(&self, txid: &Txid) -> Option<u32> {
         self.history
             .get(txid)
@@ -508,7 +540,7 @@ pub(crate) fn releasable_by_columns(
     chain: &ChainView,
     buried: impl Fn(u32) -> bool,
 ) -> bool {
-    let stored = row.txid.as_deref().and_then(|t| Txid::from_str(t).ok());
+    let stored = stored_txid(row);
     let reserved = reserved_of(row);
     let confirmed = stored.and_then(|t| chain.confirmed_height(&t));
     if kind_of(&row.kind) == SharedKind::KeyChange {
@@ -522,6 +554,22 @@ pub(crate) fn releasable_by_columns(
         return reserved.iter().any(|o| !chain.unspent.contains(o));
     }
     conflict_height(&chain.history, &reserved, stored.as_ref()).is_some_and(buried)
+}
+
+/// A row whose envelope no longer parses, settled by its stored columns:
+/// its stored transaction in a block (`confirmed`), or a reserved coin
+/// spent in a block by another (`conflicted`).
+pub(crate) fn settled_by_columns(row: &SharedSessionRow, chain: &ChainView) -> Option<SharedStage> {
+    let stored = stored_txid(row);
+    if let Some(height) = stored.and_then(|t| chain.confirmed_height(&t)) {
+        return Some(SharedStage::Confirmed { height });
+    }
+    conflict_height(&chain.history, &reserved_of(row), stored.as_ref())
+        .map(|_| SharedStage::Conflicted)
+}
+
+fn stored_txid(row: &SharedSessionRow) -> Option<Txid> {
+    row.txid.as_deref().and_then(|t| Txid::from_str(t).ok())
 }
 
 /// The registration's txid, once every input is signed: its ProTx hash.
@@ -748,6 +796,12 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
             .collect(),
         next: next_of(l, stage),
         discardable: may_discard(&l.row),
+        abandonable: l.out()
+            && !matches!(
+                stage,
+                SharedStage::Confirmed { .. } | SharedStage::Conflicted
+            )
+            && chain.holds_any(&reserved_of(&l.row)),
         warnings: warnings(l),
         approved_terms: l.approved.as_ref().map(|a| a.terms.clone()),
         base_keys: l
