@@ -348,6 +348,21 @@ fn a_create_failed_in_a_block_is_refunded_unless_the_index_holds_one() {
     assert_eq!(f.row(draft).identity, Some(found));
 }
 
+/// A row restored from a backup older than its create, whose identity the
+/// seed already holds at its index, takes that identity and plans nothing.
+#[test]
+fn an_identity_found_at_the_index_is_taken_before_any_plan() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let found = flow::b58(&dpp::prelude::Identifier::from([0x53u8; 32]));
+    lib.w().identities.push((0, found.clone()));
+    let draft = f.insert(platform_row(None));
+    f.drive(&lib, draft, Some(f.lease()), false);
+    assert!(lib.w().platform_asks.is_empty());
+    let row = f.row(draft);
+    assert_eq!((row.identity, plan_of(&row)), (Some(found), None));
+}
+
 /// F10: a create that can never execute clears the plan and the row plans
 /// again; one that released no signature also takes its refusal's step.
 #[test]
@@ -449,4 +464,12 @@ fn mainnet_refuses_a_platform_registration_before_anything_is_written() {
     f.drive(&lib, draft, Some(f.lease()), false);
     assert_eq!(plan_of(&f.row(draft)), Some(platform_plan_of(FUNDING)));
     assert!(lib.w().platform_asks.is_empty(), "no pass ran on mainnet");
+    // A row past its create (from another build) runs no step there.
+    let draft = f.insert(NewRegistration {
+        identity: Some(platform_identity()),
+        phase: Phase::IdentityRegistered.as_str().into(),
+        ..platform_row(Some(platform_plan_of(FUNDING)))
+    });
+    f.drive(&lib, draft, Some(f.lease()), false);
+    assert_eq!(f.row(draft).phase, Phase::IdentityRegistered.as_str());
 }

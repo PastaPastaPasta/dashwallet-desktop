@@ -4713,17 +4713,24 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     exit's withdrawal document present clears the plan and fails the row `registration.quote_changed`, not retryable
     (back to Confirm); the nonces taken with the identity proved absent and no exit executed adopts an identity of
     the seed at the row's index, else fails the row with the new `registration.refunded`, not retryable, plan
-    cleared (Platform took a penalty; what is left stays on the addresses); a create that released no signature in
-    the process that made the call, or that the structure check refused, or whose inputs' nonces another transition
-    took in part, clears the plan and the row plans again (a refusal that released nothing takes its own step: a
-    park for authority, a network wait or a retryable failure). A failed or behind identity read decides nothing. A
-    re-sign of a held create that releases no signature or is refused by the structure check leaves that create held
-    and the row parked on it. Nonces taken by a create that no record of this draft able to land made plan again
-    when another draft's record names the same identity; otherwise the identity proved present is adopted only as
-    the seed's identity at the row's index, else the row plans again. A stored plan that repeats an address, claims
-    nothing at an input or names nonce 0 is refused (`internal`) before anything is recorded or signed. While a plan
-    is stored and no identity is adopted, `funds_committed` is true and `discard_registration` is refused. A parked
-    row's status reads `payment_held` from its stored record, else `payment_unknown`. The `register` record shows in
-    `platform_activity` as `to_identity`. The registration planner (quote, start and step alike) leaves out any
-    address at the last nonce (`u32::MAX`), and before refusing `platform.insufficient_credits` it tries every input
-    count up to dpp's maximum and every input 0, fewest inputs first, each with the reserve for exactly that count.
+    cleared (Platform took a penalty; what is left stays on the addresses); a create of a plan this pass made that
+    released no signature in the process that made the call, or whose inputs' nonces another transition took in
+    part, clears the plan and the row plans again (a refusal that released nothing takes its own step: a park for
+    authority, a network wait or a retryable failure). A failed or behind identity read decides nothing. A re-sign
+    of a held create that releases no signature or is refused by the structure check leaves that create held and the
+    row parked on it. Nonces taken by a create that no record of this draft able to land made plan again when
+    another draft's record names the same identity; otherwise the identity proved present is adopted only as the
+    seed's identity at the row's index (else the row plans again), and the identity proved absent fails the row
+    `registration.refunded`, since a restored plan may have been signed by another install. A create refused after a
+    signature left (the structure check included) keeps its hold, as does a stored plan this install holds no record
+    of that releases no signature. A row with no plan whose index already holds an identity of the seed takes it
+    (`IdentityRegistered`) before anything is planned. On mainnet `resume_registration` of a Platform-funded row is
+    `platform.feature_off` before any grant is redeemed, Finish transfers skips it, and no step past `KeysPrepared`
+    runs. A read behind a done `register` record refuses the plans of sends and withdrawals too. A stored plan that
+    repeats an address, claims nothing at an input or names nonce 0 is refused (`internal`) before anything is
+    recorded or signed. While a plan is stored and no identity is adopted, `funds_committed` is true and
+    `discard_registration` is refused. A parked row's status reads `payment_held` from its stored record, else
+    `payment_unknown`. The `register` record shows in `platform_activity` as `to_identity`. The registration planner
+    (quote, start and step alike) leaves out any address at the last nonce (`u32::MAX`), and before refusing
+    `platform.insufficient_credits` it tries every input count up to dpp's maximum and every input 0, fewest inputs
+    first, each with the reserve for exactly that count.

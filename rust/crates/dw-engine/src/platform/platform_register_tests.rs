@@ -379,6 +379,35 @@ fn another_drafts_create_of_the_same_identity_is_not_this_rows() {
     assert_eq!(w.net.sent.lock().unwrap().len(), 1);
 }
 
+/// A create a node refused after its signature left keeps its hold: the
+/// answer cannot prove it never reached another node. A restored plan
+/// (no record here) that releases nothing holds too: another install may
+/// have signed it.
+#[test]
+fn a_released_or_restored_create_keeps_its_hold() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let mut row = w.row(1);
+    w.net.then(Act::Invalid);
+    assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Unknown);
+    assert!(row.plan.is_some());
+    let r = &w.registers()[0];
+    assert_eq!((r.state, r.can_land), (PlatformActivityState::Pending, true));
+
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let mut first = w.row(1);
+    first.lease = Some(w.register_lease(FUNDING, true));
+    assert!(w.pass(&mut first, true).is_err(), "over the lease's budget");
+    let mut restored = w.row(1);
+    restored.plan = first.plan.clone();
+    w.net.then(Act::Unsigned);
+    assert_eq!(w.pass(&mut restored, true).unwrap(), RegisterOutcome::Unknown);
+    assert_eq!(restored.plan, first.plan, "kept");
+    let r = &w.registers()[0];
+    assert_eq!((r.state, r.can_land), (PlatformActivityState::Pending, true));
+}
+
 /// A stored plan signs only as it was made: one that repeats an address,
 /// claims nothing or names nonce 0 is refused before anything is recorded
 /// or signed.

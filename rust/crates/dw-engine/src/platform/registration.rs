@@ -1495,8 +1495,11 @@ pub(crate) async fn resume<L: RegistrationLib + 'static>(
         return Ok(());
     }
     // D8 on every grant a claim is given, not only the start's; F5 on a
-    // Platform-funded row's.
+    // Platform-funded row's. Off on mainnet before any grant is redeemed.
     let platform = from_platform(&row);
+    if platform {
+        registration_platform::refuse_on_mainnet(&lib.network())?;
+    }
     if let (Ok((_, Funding::Invitation { .. } | Funding::PlatformAddresses { .. })), Some(grant)) =
         (flow::interpret(&row), &grant)
         && grant_funds(session, wallet, grant).await?
@@ -1675,8 +1678,12 @@ async fn finish_under<L: RegistrationLib>(
             continue;
         };
         // DP5-02 D8: a claim holds no lock to finish, and runs only under a
-        // grant its resume checked for duffs.
-        if matches!(funding, Funding::Invitation { .. }) {
+        // grant its resume checked for duffs. A Platform-funded row never
+        // runs on mainnet.
+        if matches!(funding, Funding::Invitation { .. })
+            || (matches!(funding, Funding::PlatformAddresses { .. })
+                && registration_platform::refuse_on_mainnet(&lib.network()).is_err())
+        {
             continue;
         }
         let funded = row.asset_lock_outpoint.is_some() || !phase.unfunded();

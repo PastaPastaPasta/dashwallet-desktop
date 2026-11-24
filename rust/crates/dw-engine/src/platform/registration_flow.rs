@@ -1884,6 +1884,14 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         let Ok((phase, funding)) = interpret(row) else {
             return Ok(Step::Stop);
         };
+        // Off on mainnet: a Platform-funded row runs no step there but the
+        // funding step's own refusal.
+        if matches!(funding, Funding::PlatformAddresses { .. })
+            && phase != Phase::KeysPrepared
+            && registration_platform::refuse_on_mainnet(&self.lib.network()).is_err()
+        {
+            return Ok(Step::Stop);
+        }
         // §5.2: terminal evidence for the row first; a write steps again.
         if matches!(
             phase,
@@ -2698,6 +2706,19 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         };
         if let Some(wait) = self.lib.claim_hold() {
             return Ok(hold_step(wait));
+        }
+        // An identity the seed already holds at the row's index (a row from a
+        // backup older than its create) is the row's: planning again would
+        // pay Platform's duplicate-key penalty.
+        if plan.is_none()
+            && let Some(identity) = self.identity_at(index).await?
+        {
+            let change = RegistrationChange {
+                phase: Some(Phase::IdentityRegistered.as_str().into()),
+                identity: Some(identity),
+                ..Default::default()
+            };
+            return self.advance(row, change).await;
         }
         // A stored plan is settled by reads alone; a new one or a signature
         // needs the run's lease.

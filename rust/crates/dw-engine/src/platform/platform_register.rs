@@ -251,7 +251,7 @@ fn new_plan(
     {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    behind(moves, seen)?;
+    behind(moves, seen, true)?;
     let balances = proved_balances(pool, seen, network);
     let nonces = (pool.keys())
         .filter_map(|a| Some((*a, seen.nonce(&bech32m(a, network))?)))
@@ -362,9 +362,11 @@ async fn unsigned(
     if others {
         return RegisterOutcome::Replan(None);
     }
+    // A stored plan may have been signed by another install of the wallet
+    // (a restored row): nonces taken with the identity absent are paid.
     match identity(session, net, id, seen).await {
         Some(true) => RegisterOutcome::Adopt,
-        Some(false) => RegisterOutcome::Replan(None),
+        Some(false) => RegisterOutcome::PaidFailure,
         None => RegisterOutcome::Unknown,
     }
 }
@@ -481,13 +483,18 @@ async fn sign(
     record.answered = call.is_ok();
     // In the process that made the call: no signature left it, or the
     // structure check refused it before any block (C-funding F10).
-    let cannot_land = released == 0 || call.as_ref().err().is_some_and(structure_refused);
+    // A released signature may have reached a node whatever came back: only
+    // a create that released none can never execute.
+    let cannot_land = released == 0;
     if let Err(e) = &call {
         tracing::info!(id = %record.id, cannot_land, "a registration's create failed: {e}");
     }
     // A shortfall in this signing says nothing about the held one it
     // replaced: that one still holds, and the row waits on it (F22).
     let keep_prior = cannot_land && mine.is_some_and(|at| moves[at].holds());
+    // A stored plan this install holds no record of (a restored row) may
+    // have been signed elsewhere: its record holds as signed may.
+    let keep_new = cannot_land && mine.is_none() && ask.plan.is_some();
     let at = match mine {
         Some(at) => {
             if !keep_prior {
@@ -501,7 +508,7 @@ async fn sign(
         }
     };
     if cannot_land {
-        if !keep_prior {
+        if !keep_prior && !keep_new {
             moves[at].state = PlatformActivityState::Failed;
             moves[at].can_land = false;
         }
@@ -535,6 +542,7 @@ async fn sign(
             return Err(internal("the create answered another identity").into());
         }
         Err(_) if keep_prior => RegisterOutcome::Held,
+        Err(_) if keep_new => RegisterOutcome::Unknown,
         Err(e) if cannot_land => RegisterOutcome::Replan(Some(PlatformError::from(e))),
         Err(_) => RegisterOutcome::Unknown,
     })

@@ -1578,7 +1578,7 @@ fn exit_possible(
 fn behind(moves: &[MoveRecord], seen: &Seen, every: bool) -> Result<(), PlatformError> {
     let stale = (moves.iter())
         .filter(|m| m.state == PlatformActivityState::Done)
-        .filter(|m| every || m.kind == MoveKind::ToIdentity)
+        .filter(|m| every || m.kind.credits_identity())
         .flat_map(|m| &m.inputs)
         .any(|i| seen.nonce(&i.address).is_some_and(|n| n < i.nonce));
     if stale {
