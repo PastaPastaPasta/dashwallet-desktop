@@ -772,6 +772,25 @@ mod tests {
             service.track_blocking(HASH, None).unwrap();
             drop(service);
             assert_eq!(attach(&engine, &s, a).unwrap(), KeyCheck::Unchecked);
+            // The record's bytes as the vault holds them, read under a
+            // RevealSecret grant (the only read path, which nothing in the
+            // app calls).
+            let stored = || {
+                let w = wallet.0;
+                engine
+                    .block_on(s.vault_op(move |v| {
+                        let grant = v.authorize(
+                            dw_vault::GrantPurpose::RevealSecret,
+                            Some(&w),
+                            dw_vault::Credential::None,
+                        )?;
+                        v.masternode_key(&w, &grant.id, &HASH, "owner")
+                    }))
+                    .unwrap()
+                    .map(|k| k.to_vec())
+            };
+            let before = stored();
+            assert_eq!(before.as_deref(), Some(&a[..]));
 
             let e = attach(&engine, &s, b).unwrap_err();
             assert!(
@@ -784,6 +803,11 @@ mod tests {
                 "{e:?}"
             );
             assert_eq!(e.code(), "masternodes.key_exists");
+            assert_eq!(
+                stored(),
+                before,
+                "the refused attach left the key byte for byte"
+            );
             let key = owner_key(&engine, &s, wallet);
             assert_eq!(key.key_id, Some(id_of(a)));
             assert!(key.holds());
@@ -894,10 +918,17 @@ mod tests {
             arm(&s.data_dir().join(VAULT_DIR), fault);
             assert!(attach(&engine, &s, b).is_err(), "the injected failure");
             for _ in 0..2 {
-                let key = owner_key(&engine, &s, wallet);
-                assert_eq!(key.key_id, None, "no id after an ambiguous write");
-                assert_eq!(key.check, KeyCheck::Unchecked);
-                assert!(!key.holds());
+                // The vault's memory may hold B or, with A removed first,
+                // nothing yet; either way no id is recorded and no role held.
+                let overview = engine.block_on(s.masternodes().list(wallet)).unwrap();
+                let row = (overview.masternodes.iter())
+                    .find(|r| r.pro_tx_hash == display_hex(&HASH))
+                    .expect("the tracked row");
+                for key in row.roles.attached.clone().expect("an unlocked vault") {
+                    assert_eq!(key.key_id, None, "no id after an ambiguous write");
+                    assert_eq!(key.check, KeyCheck::Unchecked);
+                    assert!(!key.holds());
+                }
             }
 
             drop(s);
@@ -944,6 +975,15 @@ mod tests {
             arm(&appdb, skip_barrier);
             let engine = new_engine(dir.path(), &store);
             let s = session(&engine);
+            // An attach never replaces a key: A goes first.
+            assert!(
+                engine
+                    .block_on(
+                        s.masternodes()
+                            .detach_key(display_hex(&HASH), AttachedKeyRole::Owner)
+                    )
+                    .unwrap()
+            );
             attach(&engine, &s, [9; 32]).unwrap();
             drop(s);
             engine.block_on(engine.shutdown()).unwrap();
