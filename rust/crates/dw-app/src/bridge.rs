@@ -316,12 +316,18 @@ pub enum NoticeCodeName {
     /// proof citing it is refused with `platform.trust_mismatch`. Once per
     /// quorum and session; the detail names the quorum.
     PlatformTrustMismatch,
+    /// A Dash Core export that did not end had left its unencrypted staging
+    /// file; the session's open deleted it. The detail is its path.
+    ExportStagingDeleted,
+    /// As `exportStagingDeleted`, but it could not be deleted: the detail is
+    /// its path, for the user to delete. Again at each open until deleted.
+    ExportStagingNotDeleted,
 }
 
 mirror_enum!(NoticeCode => NoticeCodeName {
     PlatformContextUnavailable, SpvError, UncleanShutdown, SyncStalled, BackupFailed,
     WalletSecretNotDeleted, DashPayStartupIncomplete, DispatchRecordMissing, UnscopedDispatch,
-    DispatchJournalUnavailable, PlatformTrustMismatch
+    DispatchJournalUnavailable, PlatformTrustMismatch, ExportStagingDeleted, ExportStagingNotDeleted
 });
 
 impl From<EngineEvent> for AppEvent {

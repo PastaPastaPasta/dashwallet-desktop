@@ -28,6 +28,7 @@ import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
 import { buyCredits } from "./dashpay/MyProfile";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
+import { ExportStagingBanner } from "./ExportStagingBanner";
 import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
@@ -277,6 +278,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
       </div>
       <div className="page-column">
         <ProtocolAdvisoryBanner network={network} />
+        <ExportStagingBanner />
         <RatesConsentCard network={network} />
         <HomeDashPayCard walletId={walletId} network={network} />
         <UnfinishedTransfersCard walletId={walletId} network={network} />
