@@ -614,6 +614,7 @@ jobs:
           DIST: ${{ runner.temp }}/release
           DW_ALLOW_UNSIGNED_STABLE: ${{ vars.DW_ALLOW_UNSIGNED_STABLE }}
           DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
+          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
         run: |
           rc=0
           ci/github/release-publish.sh prepare || rc=$?
@@ -629,5 +630,6 @@ jobs:
           DIST: ${{ runner.temp }}/release
           DW_ALLOW_UNSIGNED_STABLE: ${{ vars.DW_ALLOW_UNSIGNED_STABLE }}
           DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
+          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
           GH_TOKEN: ${{ github.token }}
         run: ci/github/release-publish.sh publish

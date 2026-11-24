@@ -1442,6 +1442,25 @@ PY
     '[[ $ro_rc -eq 0 && $ro_verify_rc -eq 0 ]] && grep -q "warning:" "$e2e/ro-cleanup.stderr" && grep -q "\.tmp-backup-" "$e2e/ro-cleanup.stderr"'
   chmod -R u+w "$e2e/work/ro-cleanup" 2>/dev/null || true
 
+  # r4688012535: extract and apply refuse an existing regular file or symlink at the output path, leaving original bytes intact
+  printf 'do-not-overwrite-me\n' > "$e2e/work/precious-file.txt"
+  ln -s "$e2e/work/precious-file.txt" "$e2e/work/precious-link"
+  ext_file_rc=0
+  python3 "$here/macos-detached-sig.py" extract "$e2e/work/unsigned-app/Dash Wallet.app" \
+    "$e2e/work/signed-app/Dash Wallet.app" "$e2e/work/precious-file.txt" > "$e2e/ext-file.out" 2>&1 || ext_file_rc=$?
+  check "r4688012535: macos-detached-sig.py extract refuses existing regular file at sigs_dir and preserves its bytes" \
+    '[[ $ext_file_rc -ne 0 && "$(cat "$e2e/work/precious-file.txt")" == "do-not-overwrite-me" ]] && grep -q "non-directory" "$e2e/ext-file.out"'
+  app_file_rc=0
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
+    "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/precious-file.txt" > "$e2e/app-file.out" 2>&1 || app_file_rc=$?
+  check "r4688012535: macos-detached-sig.py apply refuses existing regular file at out_app and preserves its bytes" \
+    '[[ $app_file_rc -ne 0 && "$(cat "$e2e/work/precious-file.txt")" == "do-not-overwrite-me" ]] && grep -q "non-directory" "$e2e/app-file.out"'
+  app_sym_rc=0
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
+    "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/precious-link" > "$e2e/app-sym.out" 2>&1 || app_sym_rc=$?
+  check "r4688012535: macos-detached-sig.py apply refuses symlink at out_app and preserves target bytes" \
+    '[[ $app_sym_rc -ne 0 && -L "$e2e/work/precious-link" && "$(cat "$e2e/work/precious-file.txt")" == "do-not-overwrite-me" ]] && grep -q "symlink" "$e2e/app-sym.out"'
+
   # H2/M4: verify-dmg-layout accepts exact {Dash Wallet.app, Applications -> /Applications} and refuses extras/mode tamper
   mkdir -p "$e2e/work/dmg-ok"
   cp -R "$e2e/work/signed-app/Dash Wallet.app" "$e2e/work/dmg-ok/"
@@ -1520,6 +1539,7 @@ case "$1 ${2:-}" in
       prev=$a
     done
     cp "$FU_SRC_DIR"/* "$dest/"
+    [[ -z "${FU_DROP_HIDDEN:-}" ]] || printf 'unattested-hidden\n' > "$dest/.sneaky"
     ;;
   "attestation verify")
     [[ -z "${FU_FAIL_ATTEST:-}" ]] || { echo "attestation mismatch" >&2; exit 1; }
@@ -1558,6 +1578,14 @@ FGH
     --unsigned-dir "$fu/out-badatt" --sigs-dir "$fu/sigs-badatt" > "$fu/badatt.out" 2>&1 || fu_rc=$?
   check "Blocker #7: fetch-unsigned.sh refuses attestation failure without exposing staged files" \
     '[[ $fu_rc -ne 0 && ! -d "$fu/out-badatt" ]]'
+
+  # r4688012530: hidden file in downloaded artifacts is refused from the single inventory before writing anything
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/unsigned" FU_REMOTE_SHA="$fu_sha" FU_DROP_HIDDEN=1 \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/out-hidden" --sigs-dir "$fu/sigs-hidden" > "$fu/hidden.out" 2>&1 || fu_rc=$?
+  check "r4688012530: fetch-unsigned.sh refuses hidden file in downloaded artifacts without copying anything" \
+    '[[ $fu_rc -ne 0 && ! -d "$fu/out-hidden" && ! -d "$fu/sigs-hidden" ]] && grep -q "hidden file" "$fu/hidden.out"'
 
   # Safety: fetch-unsigned.sh refuses non-empty --unsigned-dir / --sigs-dir or symlinks, leaving existing files untouched
   mkdir -p "$fu/reused-unsigned"
@@ -1639,6 +1667,49 @@ FGH
       '[[ $sm_rc -ne 0 ]] && grep -q "changed since fetch" "$l3/sm.out"'
   fi
 fi
+
+# --- r4688012522: verify .github/workflows/release.yml publish job maps DW_UPDATER_REQUIRED (and signing vars) on both prepare & publish steps
+wiring_rc=0
+python3 - "$here/../../.github/workflows/release.yml" > "$work/wiring.out" 2>&1 <<'PY' || wiring_rc=$?
+import re, sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+m = re.search(r"(?m)^  publish:\n([\s\S]*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", text)
+assert m, "publish job not found in release.yml"
+steps = re.split(r"(?m)^      - ", m.group(1))[1:]
+want_steps = {
+    "prepare": "ci/github/release-publish.sh prepare",
+    "publish": "ci/github/release-publish.sh publish",
+}
+required_env = {
+    "DW_ALLOW_UNSIGNED_STABLE": "${{ vars.DW_ALLOW_UNSIGNED_STABLE }}",
+    "DW_SIGNING_REQUIRED": "${{ vars.DW_SIGNING_REQUIRED }}",
+    "DW_UPDATER_REQUIRED": "${{ vars.DW_UPDATER_REQUIRED }}",
+}
+found = set()
+for step in steps:
+    for label, cmd in want_steps.items():
+        if cmd in step:
+            found.add(label)
+            env_m = re.search(r"(?m)^        env:\n((?:          [^\n]*\n)+)", step)
+            assert env_m, f"{label} step missing env block"
+            env_map = {}
+            for line in env_m.group(1).splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                k, _, v = line.partition(":")
+                env_map[k.strip()] = v.strip()
+            for k, want_v in required_env.items():
+                got_v = env_map.get(k)
+                if got_v != want_v:
+                    raise SystemExit(f"release.yml publish/{label} step env missing {k}: {want_v} (got {got_v!r})")
+assert found == set(want_steps), f"did not find all release-publish.sh steps: {found}"
+PY
+check "r4688012522: release.yml publish job maps DW_UPDATER_REQUIRED, DW_SIGNING_REQUIRED, and DW_ALLOW_UNSIGNED_STABLE on both prepare and publish steps" \
+  '[[ $wiring_rc -eq 0 ]]'
+if [[ $wiring_rc -ne 0 ]]; then cat "$work/wiring.out" >&2; fi
 
 # --- release-version.sh
 cd "$here/../.."

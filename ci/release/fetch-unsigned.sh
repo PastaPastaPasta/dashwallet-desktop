@@ -105,17 +105,44 @@ gh run download "$run_id" --repo "$repo" -n "unsigned-signing-inputs-$tag" -D "$
 
 [[ -s "$stage/unsigned.SHA256SUMS" ]] || die "downloaded artifacts missing unsigned.SHA256SUMS"
 
+# Build a single validated inventory of every entry in $stage (including dotfiles) BEFORE attestation
+# and copy, refusing hidden entries, symlinks, subdirectories, or non-regular files so nothing can
+# slip past `gh attestation verify` into --unsigned-dir.
+inventory="$work/inventory.txt"
+python3 - "$stage" "$inventory" <<'PY' || exit 1
+import os, stat, sys
+from pathlib import Path
+
+stage, inv_path = Path(sys.argv[1]), Path(sys.argv[2])
+names = []
+for entry in sorted(stage.iterdir(), key=lambda p: p.name):
+    name = entry.name
+    if name.startswith("."):
+        raise SystemExit(f"fetch-unsigned: refusing unexpected hidden file in downloaded artifacts: {name}")
+    if "\n" in name or "\r" in name or "/" in name:
+        raise SystemExit(f"fetch-unsigned: refusing invalid filename in downloaded artifacts: {name!r}")
+    st = os.lstat(entry)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise SystemExit(f"fetch-unsigned: refusing non-regular or symlink entry in downloaded artifacts: {name}")
+    names.append(name)
+if "unsigned.SHA256SUMS" not in names:
+    raise SystemExit("fetch-unsigned: downloaded artifacts missing unsigned.SHA256SUMS")
+if len(names) < 9:
+    raise SystemExit(f"fetch-unsigned: expected at least 9 regular unsigned files, found {len(names)}")
+inv_path.write_text("\n".join(names) + "\n")
+PY
+
 echo "fetch-unsigned: verifying Sigstore build provenance attestation on every downloaded file"
 count=0
-for f in "$stage"/*; do
-  [[ -f "$f" ]] || continue
-  gh attestation verify "$f" \
+while IFS= read -r fname; do
+  [[ -n "$fname" ]] || continue
+  gh attestation verify "$stage/$fname" \
     --repo "$repo" \
     --signer-workflow "$repo/.github/workflows/release.yml" \
     --source-ref "refs/tags/$tag" \
     --source-digest "$want_sha"
   count=$((count + 1))
-done
+done < "$inventory"
 [[ $count -ge 9 ]] || die "expected at least 9 attested unsigned files, verified $count"
 
 echo "fetch-unsigned: verifying unsigned.SHA256SUMS"
@@ -133,24 +160,29 @@ mkdir -p "$unsigned_dir" "$sigs_dir"
 chmod 700 "$unsigned_dir" "$sigs_dir"
 [[ "$(cd "$unsigned_dir" && pwd -P)" != "$(cd "$sigs_dir" && pwd -P)" ]] ||
   die "--unsigned-dir and --sigs-dir resolve to the same directory"
-python3 - "$stage" "$unsigned_dir" "$sigs_dir" <<'PY'
+python3 - "$stage" "$inventory" "$unsigned_dir" "$sigs_dir" <<'PY'
 import os, shutil, stat, sys
 from pathlib import Path
 
-stage, u_dir, s_dir = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+stage, inv_path, u_dir, s_dir = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+names = [line for line in inv_path.read_text().splitlines() if line]
+actual = sorted(p.name for p in stage.iterdir())
+if actual != names:
+    raise SystemExit(f"fetch-unsigned: staged directory contents changed after attestation ({actual!r} != {names!r})")
+
 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
 
 def safe_copy(src: Path, dst: Path) -> None:
     st = os.lstat(src)
-    if not stat.S_ISREG(st.st_mode):
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
         raise SystemExit(f"fetch-unsigned: unexpected non-regular entry in staged download: {src}")
     mode = 0o700 if (st.st_mode & 0o100) else 0o600
     fd = os.open(str(dst), flags, mode)
     with os.fdopen(fd, "wb") as out_f, src.open("rb") as in_f:
         shutil.copyfileobj(in_f, out_f)
 
-for entry in sorted(stage.iterdir(), key=lambda p: p.name):
-    safe_copy(entry, u_dir / entry.name)
+for name in names:
+    safe_copy(stage / name, u_dir / name)
 safe_copy(stage / "unsigned.SHA256SUMS", s_dir / "unsigned.SHA256SUMS")
 PY
 echo "fetch-unsigned: verified $count attested unsigned files for $tag ($want_sha) into $unsigned_dir"

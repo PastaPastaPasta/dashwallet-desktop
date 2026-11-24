@@ -358,30 +358,37 @@ def _paths_overlap(a: Path, b: Path) -> bool:
     return ra == rb or ra in rb.parents or rb in ra.parents
 
 
+def _require_dir_or_absent(path: Path, label: str) -> None:
+    """Refuse an existing symlink or non-directory file at a directory output path."""
+    if path.is_symlink():
+        raise SystemExit(f"macos-detached-sig: refusing symlink output path {label} ({path})")
+    if path.exists() and not path.is_dir():
+        raise SystemExit(f"macos-detached-sig: refusing to overwrite existing non-directory file {label} ({path})")
+
+
 def _replace_dir_via_backup(stage_dir: Path, target_dir: Path) -> None:
     """Replace target_dir by renaming any existing dir aside first, then renaming stage_dir into place.
 
     Not atomic across concurrent readers (target_dir is briefly absent between the two renames).
+    Refuses an existing symlink or non-directory file at target_dir before renaming anything.
     If the second rename fails before committing, the prior target_dir is restored; once committed,
     a failure while removing the old backup emits a stderr warning and succeeds.
     """
+    _require_dir_or_absent(target_dir, "target_dir")
     backup_dir: Path | None = None
-    if target_dir.exists() or target_dir.is_symlink():
+    if target_dir.exists():
         backup_dir = Path(tempfile.mkdtemp(prefix=".tmp-backup-", dir=str(target_dir.parent)))
         backup_dir.rmdir()
         os.rename(target_dir, backup_dir)
     try:
         os.rename(stage_dir, target_dir)
     except Exception:
-        if backup_dir is not None and (backup_dir.exists() or backup_dir.is_symlink()):
+        if backup_dir is not None and backup_dir.exists():
             os.rename(backup_dir, target_dir)
         raise
     if backup_dir is not None:
         try:
-            if backup_dir.is_symlink() or backup_dir.is_file():
-                backup_dir.unlink()
-            else:
-                shutil.rmtree(backup_dir)
+            shutil.rmtree(backup_dir)
         except OSError as exc:
             print(
                 f"macos-detached-sig: warning: replaced {target_dir}, but failed to remove "
@@ -399,6 +406,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
         raise SystemExit("extract: both unsigned_app and signed_app must be .app directories")
     if _paths_overlap(sigs_dir, unsigned_app) or _paths_overlap(sigs_dir, signed_app):
         raise SystemExit(f"extract: refusing sigs_dir {sigs_dir} overlapping an input .app bundle")
+    _require_dir_or_absent(sigs_dir, "sigs_dir")
 
     u_files = walk_bundle(unsigned_app)
     s_files = walk_bundle(signed_app)
@@ -516,6 +524,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         raise SystemExit(
             f"apply: refusing out_app {out_app} overlapping unsigned_app ({unsigned_app}) or sigs_dir ({sigs_dir})"
         )
+    _require_dir_or_absent(out_app, "out_app")
 
     assert_no_symlinks(sigs_dir)
     manifest_path = safe_subpath(sigs_dir, "manifest.json")
