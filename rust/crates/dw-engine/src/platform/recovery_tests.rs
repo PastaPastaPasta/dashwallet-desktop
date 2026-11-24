@@ -2889,33 +2889,56 @@ fn a_press_refused_after_the_wait_leaves_its_grant_unused() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// #585 (Q63): the session closing mid-wait ends the wait; the press is
-/// refused and close is not held by it.
+/// #585 (Q63): the session closing mid-wait ends the wait. A Finish waits
+/// as a press does, holding the session's gate and close preflight; close
+/// cancels the wait first, returns promptly, and the grant stays unused.
 #[test]
-fn a_press_waiting_on_a_rerun_ends_when_the_session_closes() {
+fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
     let dir = dw_testutil::private_tempdir();
     let (engine, s, id, _platform) = skipped_at_restart(dir.path());
     *guard(&s.platform.bring_up_waits) = Some((Duration::from_secs(120), Duration::from_secs(120)));
     let pause = test_pause();
     *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    let g = grant(
+        &engine,
+        &s,
+        id,
+        GrantPurpose::PlatformOp {
+            max_duffs: 1,
+            max_credits: 0,
+        },
+    );
+    let zero = "0000000000000000000000000000000000000000000000000000000000000000";
     let started = Instant::now();
-    let funded = engine.block_on(async {
-        let lib = super::platform_fund::PwFund::open(&s, id).await.unwrap();
+    let (finished, closed_in) = engine.block_on(async {
+        let finish = s.dashpay(id).finish_transfer(
+            super::LockKindId::PlatformAddress,
+            zero.into(),
+            0,
+            g.clone(),
+        );
         let closing = async {
             while !pause.reached.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
+            let at = Instant::now();
             s.close().await;
+            at.elapsed()
         };
-        let amount = super::FundAmount::Duffs { duffs: 100_000 };
-        let fund = super::platform_fund::fund(&s, id, &lib, amount, "no grant");
-        tokio::join!(fund, closing).0
+        tokio::join!(finish, closing)
     });
-    assert!(funded.is_err(), "{funded:?}");
+    assert!(finished.is_err(), "{finished:?}");
+    assert!(closed_in < Duration::from_secs(10), "{closed_in:?}");
     assert!(
         started.elapsed() < Duration::from_secs(20),
         "{:?}",
         started.elapsed()
+    );
+    assert!(
+        (s.vault)
+            .grant_purpose(&g, dw_vault::GrantKind::PlatformOp, Some(&id.0))
+            .is_ok(),
+        "the grant is unused"
     );
     pause.release.notify_one();
     engine.block_on(engine.shutdown()).unwrap();
@@ -2936,9 +2959,11 @@ fn unfinished_transfers_after_a_skipped_bring_up_ask_for_and_wait_on_its_rerun()
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
 
     let zero = "0000000000000000000000000000000000000000000000000000000000000000";
-    for (kind, runs) in [
-        (super::LockKindId::PlatformAddress, 3),
-        (super::LockKindId::Shielded, 4),
+    // A shielded Finish reads no funding hold, so it does not wait: the
+    // rerun stays unasked.
+    for (kind, waits, runs) in [
+        (super::LockKindId::PlatformAddress, true, 3),
+        (super::LockKindId::Shielded, false, 3),
     ] {
         stop(&engine, &s);
         start(&engine, &s);
@@ -2955,7 +2980,12 @@ fn unfinished_transfers_after_a_skipped_bring_up_ask_for_and_wait_on_its_rerun()
             matches!(finished, Err(PlatformError::InvalidArgument { .. })),
             "{kind:?}: {finished:?}"
         );
-        assert_eq!(startup(&s, id), StartupStatus::NoIdentity, "{kind:?}");
+        let want = if waits {
+            StartupStatus::NoIdentity
+        } else {
+            StartupStatus::NotRun
+        };
+        assert_eq!(startup(&s, id), want, "{kind:?}");
         assert_eq!(platform.bring_ups.load(Ordering::SeqCst), runs, "{kind:?}");
     }
     engine.block_on(engine.shutdown()).unwrap();

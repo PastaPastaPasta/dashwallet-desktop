@@ -17,7 +17,7 @@ use super::errors::{CreditsError, PlatformError, ShieldedError};
 use super::flows::FlowKind;
 use super::lease::Lease;
 use super::platform_fund::{self, FundLib, PwFund};
-use super::shielded_pool::{PwShielded, ShieldedLib, on_pool, on_pool_signing};
+use super::shielded_pool::{PwShielded, on_pool, on_pool_signing};
 use super::unfinished_funds::FundLocks;
 use super::unfinished_locks::{self as locks, LockKind};
 use super::unfinished_shields::ShieldLocks;
@@ -190,9 +190,6 @@ impl DashPay {
             LockKindId::Shielded => {
                 on_pool_signing(&self.session, wallet, move |session, lib| async move {
                     let outpoint = outpoint()?;
-                    (session.platform)
-                        .settle_startup_hold(wallet, || lib.funding_hold())
-                        .await;
                     let kind = ShieldLocks::new(&session, wallet, &lib);
                     let lease = || authority(&session, wallet, &grant, kind.flow());
                     Ok(locks::finish(&kind, outpoint, lease).await?)
@@ -285,11 +282,16 @@ pub(crate) async fn finish_all(
     lease: &Lease,
     report: &mut super::FinishReport,
 ) {
+    // One wait for both kinds, under the one lease: only the fund side's
+    // readiness reads the hold.
+    let fund = PwFund::open(session, wallet).await;
+    if let Ok(lib) = &fund {
+        (session.platform)
+            .settle_startup_hold(wallet, || lib.funding_hold())
+            .await;
+    }
     match PwShielded::open(session, wallet).await {
         Ok(lib) => {
-            (session.platform)
-                .settle_startup_hold(wallet, || lib.funding_hold())
-                .await;
             locks::finish_kind(&ShieldLocks::new(session, wallet, &lib), lease, report).await
         }
         Err(e) => {
@@ -297,13 +299,8 @@ pub(crate) async fn finish_all(
             report.unread.push(LockKindId::Shielded);
         }
     }
-    match PwFund::open(session, wallet).await {
-        Ok(lib) => {
-            (session.platform)
-                .settle_startup_hold(wallet, || lib.funding_hold())
-                .await;
-            locks::finish_kind(&FundLocks::new(session, wallet, &lib), lease, report).await
-        }
+    match fund {
+        Ok(lib) => locks::finish_kind(&FundLocks::new(session, wallet, &lib), lease, report).await,
         Err(e) => {
             tracing::warn!(error = %e, "Finish transfers could not open the Platform address side");
             report.unread.push(LockKindId::PlatformAddress);

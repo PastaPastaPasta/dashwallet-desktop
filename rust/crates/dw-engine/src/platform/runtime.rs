@@ -796,15 +796,20 @@ impl PlatformRuntime {
     }
 
     pub(super) fn record(&self, id: WalletId, startup: DashPayStartup) {
-        {
+        let unasked = {
             let mut retries = guard(&self.startup_retries);
             if !startup.startup.awaits_rerun() {
-                retries.remove(&id);
+                retries.remove(&id).is_some_and(|r| r.asked)
             } else if let Some(retry) = retries.get_mut(&id) {
-                retry.asked = false;
+                std::mem::replace(&mut retry.asked, false)
+            } else {
+                false
             }
-        }
+        };
         self.write_startup().insert(id, startup);
+        if unasked {
+            self.startup_seen.send_modify(|n| *n = n.wrapping_add(1));
+        }
     }
 
     /// The rerun of wallet `id`'s bring-up that a flow asked for ended, or
@@ -951,10 +956,13 @@ impl PlatformRuntime {
             }
             retry.runs += 1;
             retry.next = now + startup_retry_pause(retry.runs);
+            // Before the send: a rerun that ends at once clears it after.
             retry.asked = true;
         }
         tracing::info!(wallet_id = %id, "a flow waits on the DashPay bring-up: running it again");
-        self.signal(PlatformSignal::RetryStartup(id));
+        if !self.send_signal(self.stamp(), PlatformSignal::RetryStartup(id)) {
+            self.rerun_ended(id);
+        }
         true
     }
 

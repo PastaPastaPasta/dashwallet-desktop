@@ -1,4 +1,4 @@
-// A transfer's call can first wait for the wallet's start-up to finish (up to about 20 s after a
+// A transfer's call can first wait for the wallet's start-up to run again (up to about 50 s after a
 // restart): once it has been pending for `PREPARING_AFTER_MS`, its progress says it is preparing.
 // The usual call answers sooner and shows nothing.
 
