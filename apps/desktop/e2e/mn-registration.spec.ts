@@ -364,8 +364,16 @@ test("closing after Type asks to discard; Keep editing stays", async ({ page }) 
   await next(page);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("reg-discard")).toContainText("Discard this registration? Nothing was sent.");
+  await expect(page.getByTestId("reg-keep")).toBeFocused();
   await page.getByTestId("reg-keep").click();
   await expect(step(page, "collateral")).toBeVisible();
+  // On a step with an autofocused field, the prompt still takes the focus, and Keep editing gives it back.
+  await next(page);
+  await expect(step(page, "operator")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("reg-keep")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("reg-operator-key")).toBeFocused();
   await page.keyboard.press("Escape");
   await page.getByTestId("reg-discard-confirm").click();
   await expect(sheet(page)).toHaveCount(0);

@@ -428,7 +428,7 @@ export function RegisterSheet({
               </span>
             ) : (
               <>
-                <input data-testid="reg-operator-key" className="mono" value={d.operatorKey} autoComplete="off" spellCheck={false} data-autofocus onChange={(e) => set({ operatorKey: e.target.value })} {...fieldProps("operatorKey")} />
+                <input data-testid="reg-operator-key" className="mono" value={d.operatorKey} autoComplete="off" spellCheck={false} data-autofocus={askDiscard ? undefined : true} onChange={(e) => set({ operatorKey: e.target.value })} {...fieldProps("operatorKey")} />
                 {self && (
                   <DashButton variant="plainBlue" size="small" data-testid="reg-operator-use-wallet" onClick={() => set({ operatorFromWallet: true, operatorKey: "" })}>
                     {t(`${R}.operator.useWallet`)}
@@ -567,7 +567,7 @@ export function RegisterSheet({
         ) : (
           <label className={`mg-field mg-span ${errors.signature ? "has-error" : ""}`}>
             {t(`${R}.prove.signature`)}
-            <textarea data-testid="reg-signature" className="mono" rows={3} value={signature} autoComplete="off" spellCheck={false} data-autofocus onChange={(e) => setSignature(e.target.value)} {...fieldProps("signature")} />
+            <textarea data-testid="reg-signature" className="mono" rows={3} value={signature} autoComplete="off" spellCheck={false} data-autofocus={askDiscard ? undefined : true} onChange={(e) => setSignature(e.target.value)} {...fieldProps("signature")} />
             <span className="mg-field-help">{t(`${R}.prove.signatureHelp`)}</span>
             {fieldError("signature")}
           </label>
@@ -626,7 +626,7 @@ export function RegisterSheet({
               <strong>{t(`${R}.discardTitle`)}</strong> {t(`${R}.discardText`)}
             </span>
             <span className="mg-actions">
-              <DashButton variant="tintedGray" size="medium" data-testid="reg-keep" onClick={() => setAskDiscard(false)}>
+              <DashButton variant="tintedGray" size="medium" data-testid="reg-keep" data-autofocus onClick={() => setAskDiscard(false)}>
                 {t(`${R}.keepEditing`)}
               </DashButton>
               <DashButton variant="plainRed" size="medium" data-testid="reg-discard-confirm" onClick={onClose}>
