@@ -298,6 +298,8 @@ export function RegisterSheet({
     setBusy(true);
     try {
       const fresh = await b.mnRefreshExternalRegistration(wallet.walletId, op.id);
+      // In progress reopens the saved row as the engine returned it, even before the list is read again.
+      queryClient.setQueryData<ProTxOperation[]>(mnKeys.operations(wallet.walletId), (rows) => rows?.map((o) => (o.id === fresh.id ? fresh : o)));
       if (!mounted.current) return;
       setOp(fresh);
       setSignature("");

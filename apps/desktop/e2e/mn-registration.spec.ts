@@ -574,9 +574,20 @@ test("fee coins spent while Prove is open: the refusal hides the old message and
   await page.getByTestId(`mn-op-refresh-${OP_PREPARED}`).click();
   await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
   await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+  // The new message, then closed to sign it elsewhere while the list can't be read again (each read
+  // fails, so none brings the new row): In progress reopens the row the engine returned, with that
+  // message and the signature field.
+  await page.evaluate(() => window.__dwFixture!.fail("mn_operations", "rpc"));
   await page.getByTestId("reg-new-message").click();
   await expect(page.getByTestId("reg-sign-request")).toBeVisible();
-  expect(errors).toEqual([]);
+  const message = await page.getByTestId("reg-sign-message").textContent();
+  await page.getByTestId("reg-cancel").click();
+  await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
+  await expect(page.getByTestId("reg-sign-message")).toHaveText(message!);
+  await expect(page.getByTestId("reg-signature")).toBeVisible();
+  await expect(page.getByTestId("reg-inputs-spent")).toHaveCount(0);
+  await page.evaluate(() => window.__dwFixture!.fail("mn_operations", null));
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
 });
 
 test("a refused Send again from In progress revokes its grant (issue 460)", async ({ page }) => {
