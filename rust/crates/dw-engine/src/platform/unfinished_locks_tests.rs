@@ -1058,7 +1058,7 @@ impl Rig for FakeRig {
         let marks = match mark {
             Mark::Settled => &self.kind.settled,
             Mark::Unknown => &self.kind.unknown,
-            Mark::Reported => unreachable!("no record by txid of a report"),
+            Mark::Used => unreachable!("no record by txid of a proved use"),
         };
         marks.lock().unwrap().txids.insert(txid);
     }
@@ -1145,4 +1145,39 @@ fn an_error_after_the_signature_is_checking_whatever_the_kind_says() {
     assert!(rig.marks().1.outpoints.contains(&at));
     let listed = rig.list().unwrap();
     assert_eq!(listed[0].state, UnfinishedState::Checking);
+}
+
+/// BL-921: how a verified read of `SpentAssetLockTransactions` is read.
+/// No element is unspent, an empty item consumed, any other item a
+/// remaining value; nothing back, the key missing from the answer, or an
+/// element of another sort is no answer.
+#[test]
+fn a_spent_read_follows_drives_asset_lock_tree() {
+    use super::unfinished_locks::{SpentRead, read_spent, spent_key};
+    use dash_sdk::query_types::Elements;
+    use drive::grovedb::Element;
+    let at = OutPoint::new(Txid::from_byte_array([0x5A; 32]), 7);
+    let key = spent_key(at);
+    assert_eq!(key.len(), 36);
+    assert_eq!(&key[..32], &[0x5A; 32]);
+    assert_eq!(&key[32..], &7u32.to_le_bytes());
+    let answer = |element: Option<Element>| {
+        let mut elements = Elements::default();
+        elements.insert(key.clone(), element);
+        elements
+    };
+    assert_eq!(read_spent(None, &key), SpentRead::Unread);
+    assert_eq!(
+        read_spent(Some(&Elements::default()), &key),
+        SpentRead::Unread
+    );
+    assert_eq!(read_spent(Some(&answer(None)), &key), SpentRead::Unspent);
+    let used = answer(Some(Element::new_item(Vec::new())));
+    assert_eq!(read_spent(Some(&used), &key), SpentRead::Consumed);
+    let rest = answer(Some(Element::new_item(vec![0, 1, 2, 3])));
+    assert_eq!(read_spent(Some(&rest), &key), SpentRead::Remaining);
+    let tree = answer(Some(Element::empty_tree()));
+    assert_eq!(read_spent(Some(&tree), &key), SpentRead::Unread);
+    let other = spent_key(OutPoint::new(at.txid, 8));
+    assert_eq!(read_spent(Some(&answer(None)), &other), SpentRead::Unread);
 }

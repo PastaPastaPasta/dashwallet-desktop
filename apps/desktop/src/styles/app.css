@@ -8,7 +8,8 @@
    focusPage), or a sheet focused because nothing in it can be pressed, shows no ring: it is not a
    control. */
 .page h1[tabindex="-1"]:focus,
-.sheet[tabindex="-1"]:focus {
+.sheet[tabindex="-1"]:focus,
+.mg-key-list[tabindex="-1"]:focus {
   outline: none;
 }
 

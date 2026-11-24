@@ -3044,7 +3044,6 @@ mod pay;
 #[path = "contact_payout_tests.rs"]
 mod payout;
 
-#[cfg(unix)]
 mod kill9;
 
 impl Fixture {
