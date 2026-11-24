@@ -6017,6 +6017,7 @@ button.bell-row-open:focus-visible {
 
 .mg-node-name {
   font-weight: var(--dw-type-footnote-medium-weight);
+  overflow-wrap: anywhere;
 }
 
 .mg-node-sub {
@@ -6209,13 +6210,17 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-text-tertiary);
 }
 
+/* A group, not a fieldset, as on Restore options (issue 108): a flex fieldset's legend could move
+   the centred sheet under the first click on WebKitGTK. */
 .mg-choices {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-xxs);
+}
+
+.mg-choices > .mg-section-title {
   margin: 0;
-  padding: 0;
-  border: 0;
+  padding-inline: 2px;
 }
 
 .mg-choice {
