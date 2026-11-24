@@ -4246,18 +4246,8 @@ fn an_upgrade_replay_names_its_wallet_until_it_is_done() {
 /// Stores one block header at `height` under the session's chain data, as
 /// dash-spv anchors its headers there.
 fn store_header_anchor(engine: &Engine, session: &NetworkSession, height: u32) {
-    use dash_spv::storage::{BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage};
     let dir = session.data_dir().join(crate::session::SPV_DIR);
-    let header = dashcore::blockdata::constants::genesis_block(dashcore::Network::Regtest).header;
-    engine.block_on(async {
-        let mut storage = PersistentBlockHeaderStorage::open(&dir).await.unwrap();
-        let hashed = dash_spv::types::HashedBlockHeader::from(header);
-        storage
-            .store_headers_at_height(&[hashed], height)
-            .await
-            .unwrap();
-        storage.persist(&dir).await.unwrap();
-    });
+    engine.block_on(crate::tools::store_test_headers(&dir, height, 1));
 }
 
 /// A wallet whose birth is below the first stored block header is reported
@@ -4319,8 +4309,6 @@ fn a_wallet_born_below_the_stored_headers_is_reported_until_the_chain_data_is_re
     );
 }
 
-/// A wallet born at the first stored header is covered: no gap is
-/// reported.
 #[test]
 fn a_wallet_born_at_the_first_stored_header_is_not_reported() {
     let (_dir, engine, session, _) = engine_wallet();

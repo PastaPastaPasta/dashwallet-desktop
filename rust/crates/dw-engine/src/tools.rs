@@ -1185,6 +1185,21 @@ pub(crate) fn stored_header_start(spv_dir: &std::path::Path) -> std::io::Result<
     Ok(first.and_then(|offset| id.checked_mul(SLOTS)?.checked_add(offset as u32)))
 }
 
+/// Tests: stores `count` copies of the regtest genesis header from `height`
+/// under `spv_dir`, as dash-spv does.
+#[cfg(test)]
+pub(crate) async fn store_test_headers(spv_dir: &std::path::Path, height: u32, count: usize) {
+    use dash_spv::storage::{BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage};
+    let header = dashcore::blockdata::constants::genesis_block(dashcore::Network::Regtest).header;
+    let headers = vec![dash_spv::types::HashedBlockHeader::from(header); count];
+    let mut storage = PersistentBlockHeaderStorage::open(spv_dir).await.unwrap();
+    storage
+        .store_headers_at_height(&headers, height)
+        .await
+        .unwrap();
+    storage.persist(spv_dir).await.unwrap();
+}
+
 /// Tests: wallets whose birth height cannot be stored.
 #[cfg(test)]
 pub(crate) static FAIL_BIRTH_STORE: std::sync::Mutex<Vec<[u8; 32]>> =
@@ -1217,21 +1232,11 @@ mod tests {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let header =
-            dashcore::blockdata::constants::genesis_block(dashcore::Network::Regtest).header;
         for height in [0, 9_999, 200_000, 1_234_567] {
             let dir = tempfile::tempdir().unwrap();
             assert_eq!(stored_header_start(dir.path()).unwrap(), None);
             let read = rt.block_on(async {
-                let mut storage = PersistentBlockHeaderStorage::open(dir.path())
-                    .await
-                    .unwrap();
-                let hashed = dash_spv::types::HashedBlockHeader::from(header);
-                storage
-                    .store_headers_at_height(&[hashed.clone(), hashed], height)
-                    .await
-                    .unwrap();
-                storage.persist(dir.path()).await.unwrap();
+                store_test_headers(dir.path(), height, 2).await;
                 let reopened = PersistentBlockHeaderStorage::open(dir.path())
                     .await
                     .unwrap();
