@@ -36,6 +36,7 @@ function setup(lock = { encrypted: false }) {
     ),
     unshieldToCore: vi.fn(async (_w: string, c: string, to: string | null, grant: string, _confirm: boolean) => (calls.push(`out ${c} ${to} ${grant}`), SPEND)),
     unshieldToPlatform: vi.fn(async (_w: string, c: string, to: string | null, grant: string, confirm: boolean) => (calls.push(`toPlatform ${c} ${to} ${grant} ${confirm}`), SPEND)),
+    platformAddressesSync: vi.fn(async (_w: string) => (calls.push("platformSync"), { credits: "0", movableCredits: "0", duffs: 0, addresses: [], syncedAt: null, syncing: false })),
   };
   const flow = new ShieldedFlow(api, WALLET_A);
   return { flow, api, vault, calls, answer: (o: ShieldedSpendOutcome) => answer!(o) };
@@ -87,13 +88,44 @@ describe("the shielded flow", () => {
     flow.begin("toPlatform");
     flow.next({ kind: "toPlatform", credits: "10000000000" });
     await flow.run(GRANT);
-    expect(calls).toEqual(["toPlatform 10000000000 null grant-1 false"]);
+    expect(calls).toEqual(["toPlatform 10000000000 null grant-1 false", "platformSync"]);
     expect([flow.step, flow.result]).toEqual(["done", { kind: "spend", outcome: SPEND }]);
     flow.close();
     flow.begin("toPlatform");
     flow.next({ kind: "toPlatform", credits: "10000000000" });
     await flow.run(GRANT, true);
-    expect(calls.at(-1)).toBe("toPlatform 10000000000 null grant-2 true");
+    expect(calls.slice(-2)).toEqual(["toPlatform 10000000000 null grant-2 true", "platformSync"]);
+  });
+
+  it("reads the Platform addresses once a move to Platform is done, so Home's total follows it", async () => {
+    const { flow, api, calls } = setup();
+    const settled = vi.fn();
+    const stop = onShieldedSettled(settled);
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT);
+    await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(2));
+    expect(api.platformAddressesSync).toHaveBeenCalledWith(WALLET_A);
+    // A pending move, or a move out to the Dash wallet, reads nothing more.
+    api.unshieldToPlatform.mockResolvedValueOnce({ ...SPEND, state: "pending" });
+    flow.close();
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT);
+    flow.close();
+    flow.begin("out");
+    flow.next({ kind: "out", credits: "10000000000" });
+    await flow.run(GRANT);
+    expect(calls.filter((c) => c === "platformSync")).toHaveLength(1);
+    // A failed read leaves the done move as it was.
+    api.platformAddressesSync.mockRejectedValueOnce(appError("platform.unavailable", null as never));
+    flow.close();
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT);
+    await Promise.resolve();
+    expect([flow.step, flow.result]).toEqual(["done", { kind: "spend", outcome: SPEND }]);
+    stop();
   });
 
   it("finishes a lock that was not applied with one duff of grant and no confirm step", async () => {

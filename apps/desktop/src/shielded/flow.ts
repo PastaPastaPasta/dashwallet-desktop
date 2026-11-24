@@ -22,7 +22,7 @@ import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 
 export type ShieldedApi = Pick<
   Backend,
-  "shieldFromCore" | "resumeShield" | "shieldedSend" | "unshieldToCore" | "unshieldToPlatform" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
+  "shieldFromCore" | "resumeShield" | "shieldedSend" | "unshieldToCore" | "unshieldToPlatform" | "platformAddressesSync" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
 >;
 
 /** What a sheet is for: the moves, and finishing a lock that was not applied. `toPlatform` moves to the
@@ -486,6 +486,7 @@ export class ShieldedFlow extends Model {
       if (got) {
         this.result = got.value;
         this.step = "done";
+        if (request.kind === "toPlatform" && got.value.kind === "spend" && got.value.outcome.state === "done") this.readPlatform();
       } else if (request.kind === "resume") {
         // A cancelled passphrase: there is no form to go back to.
         this.open = false;
@@ -500,6 +501,12 @@ export class ShieldedFlow extends Model {
       if (ran) shieldedSettled();
       this.changed();
     }
+  }
+
+  /** The Platform address a done move credited is read now, not at the next pass: Home's total
+   * follows it. A failed read changes nothing of the move. */
+  private readPlatform() {
+    this.api.platformAddressesSync(this.walletId).then(shieldedSettled, () => undefined);
   }
 
   private async call(r: ShieldedRequest, grant: string, confirmUnrecorded: boolean): Promise<ShieldedResult> {

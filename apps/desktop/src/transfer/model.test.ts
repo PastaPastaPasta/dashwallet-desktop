@@ -64,6 +64,7 @@ function flows() {
     shieldedSend: vi.fn(),
     unshieldToCore: vi.fn(),
     unshieldToPlatform: vi.fn(),
+    platformAddressesSync: vi.fn(),
     platformFund: vi.fn(),
     resumePlatformFund: vi.fn(),
     platformMoveToCore: vi.fn(),
