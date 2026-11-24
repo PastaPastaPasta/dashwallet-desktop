@@ -1555,11 +1555,9 @@ fn exit_possible(
 /// A read behind one this wallet already settled on: an input's nonce
 /// below one a done record signed. Planning on it would sign a nonce
 /// Platform already took, and the next read would show it "reached".
-/// `every`: any done record counts; else only a top-up from Platform's.
-fn behind(moves: &[MoveRecord], seen: &Seen, every: bool) -> Result<(), PlatformError> {
+fn behind(moves: &[MoveRecord], seen: &Seen) -> Result<(), PlatformError> {
     let stale = (moves.iter())
         .filter(|m| m.state == PlatformActivityState::Done)
-        .filter(|m| every || m.kind == MoveKind::ToIdentity)
         .flat_map(|m| &m.inputs)
         .any(|i| seen.nonce(&i.address).is_some_and(|n| n < i.nonce));
     if stale {
@@ -2263,6 +2261,39 @@ fn covered(
         .collect()
 }
 
+/// One proved read of the payment account's addresses under rule 5, for a
+/// plan that signs no other record's terms: `credits.move_pending` while a
+/// move of the wallet holds nonces the read shows unused.
+pub(crate) struct ProvedRead {
+    pub(crate) balances: BTreeMap<PlatformAddress, u64>,
+    /// Platform's stored nonce of each address it holds.
+    pub(crate) nonces: BTreeMap<PlatformAddress, u32>,
+}
+
+pub(crate) async fn proved_read(
+    net: &impl MoveNet,
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+) -> Result<ProvedRead, CreditsError> {
+    let lock = wallet_lock(wallet_id);
+    let _one = lock.lock().await;
+    let network = session.vault.network();
+    let pool = pool(wallet).await?;
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    if let Some(m) = (moves.iter()).find(|m| m.holds() && !m.reached(&seen)) {
+        return Err(CreditsError::MovePending { id: m.id.clone() });
+    }
+    let nonces = (pool.keys())
+        .filter_map(|a| Some((*a, seen.nonce(&bech32m(a, network))?)))
+        .collect();
+    Ok(ProvedRead {
+        balances: proved_balances(&pool, &seen, network),
+        nonces,
+    })
+}
+
 /// The proved balances of the payment account's addresses.
 fn proved_balances(
     pool: &BTreeMap<PlatformAddress, DerivationPath>,
@@ -2748,7 +2779,7 @@ pub(crate) async fn top_up_quote(
     if let Some(h) = moves.iter().find(|m| m.holds()) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    behind(&moves, &seen, true)?;
+    behind(&moves, &seen)?;
     let limits = Limits::top_up_at(version);
     let balances = proved_balances(&pool, &seen, network);
     let planned = top_up_plan(&balances, amount, &limits)?;
@@ -2948,7 +2979,8 @@ async fn run(
     let version = net.version();
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
-    behind(&moves, &seen, matches!(target, Target::Identity(_)))?;
+    // Every spend, before anything is planned (#533).
+    behind(&moves, &seen)?;
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
     // only its exact retry, and a retry of one that landed pays nothing.
