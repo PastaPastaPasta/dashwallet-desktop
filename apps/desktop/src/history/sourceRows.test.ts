@@ -67,6 +67,16 @@ describe("platform activity rows", () => {
     expect(pending.status.kind).toBe("unconfirmed");
   });
 
+  it("shows an unshield to an own Platform address as From Shielded, a receipt there", () => {
+    const done = platformRow(act("s", { kind: "fromShielded", credits: "25000000000" }));
+    expect([sourceRowTitle(done), done.category, done.txType, done.amount, done.address]).toEqual(["From Shielded", "received", "recvWithAddress", 25_000_000, "tdash1abc"]);
+    const pending = platformRow(act("t", { kind: "fromShielded", state: "pending", mayLand: true }));
+    expect(pending.status).not.toBe(done.status);
+    expect(isMayLandRow(pending)).toBe(false);
+    const failed = platformRow(act("u", { kind: "fromShielded", state: "failed" }));
+    expect([sourceRowTitle(failed), failed.status.kind]).toEqual(["From Shielded", "notAccepted"]);
+  });
+
   it("maps incoming, outgoing and a move to history rows", () => {
     const incoming = platformRow(act("a"));
     expect(incoming).toMatchObject({ txid: "platform:incoming:a", txType: "recvWithAddress", category: "received", amount: 30_000_000, address: "tdash1abc" });

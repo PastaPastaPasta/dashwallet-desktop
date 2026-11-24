@@ -73,6 +73,10 @@ pub enum PlatformActivityKind {
     /// A payment to a DashPay contact (`contact`) from the Platform balance
     /// (C-funding P10): a withdrawal to the contact's Core address (`to`).
     ContactPayment,
+    /// An unshield of this wallet's to its Platform address (`address`,
+    /// C-routes C1-9): `Pending` from the dispatch hook's accept until its
+    /// artifact reads executed (`Done`) or not executed (`Failed`).
+    FromShielded,
     /// The value left on a transfer to Shielded that Platform refused after
     /// a penalty, recovered to this wallet's Platform address (`address`)
     /// (#402); `Pending` until a proved apply, then `Done` with the credits

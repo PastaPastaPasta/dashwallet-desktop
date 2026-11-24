@@ -287,6 +287,9 @@ export function useShieldedQuote(walletId: string, request: ShieldedRequest | nu
         case "out": {
           return { kind: "spend", quote: await b.unshieldQuote(walletId, request.credits, null) };
         }
+        case "toPlatform": {
+          return { kind: "spend", quote: await b.unshieldToPlatformQuote(walletId, request.credits, null) };
+        }
         default:
           throw new Error("nothing to quote");
       }

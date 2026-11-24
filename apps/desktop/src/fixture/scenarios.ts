@@ -868,6 +868,13 @@ const SCENARIOS = {
     w.pending.platform!.nextFund = "done";
     return w;
   },
+  /** Credits moved from Shielded to the receive address: a "From Shielded" row, done. */
+  "paddr-from-shielded": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    p.activity = [{ id: "from-shielded-5a5a", kind: "fromShielded", state: "done", credits: "25000000000", address: p.receive.address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 600, mayLand: false, estimated: false }, ...p.activity];
+    return w;
+  },
   /** A lock of "Add from Dash wallet" waiting for its proof: the card shows Finish. */
   "paddr-fund-proof-waiting": (t) => {
     const w = base(t);

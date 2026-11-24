@@ -2,6 +2,9 @@
 // summary, the pane's role and payout lines, credits, and the errors as sentences.
 
 import { isAppError } from "../api/backend";
+import type { AttachedKeyRoleName } from "../api/generated/AttachedKeyRoleName";
+import type { KeyCheckName } from "../api/generated/KeyCheckName";
+import type { LockStateName } from "../api/generated/LockStateName";
 import type { MasternodeDetail } from "../api/generated/MasternodeDetail";
 import type { MasternodeOverview } from "../api/generated/MasternodeOverview";
 import type { MasternodePayout } from "../api/generated/MasternodePayout";
@@ -170,10 +173,117 @@ export function voteBlocked(r: MasternodeRow, watchOnly: boolean): string | null
   return r.roles.voting ? null : MnText.voteNoKey;
 }
 
+// ---------------------------------------------------------------- track and keys (§1.3, §1.4)
+
+const K = `${P}.keys`;
+
+/** "Voting key" for the offer, the name "In this wallet" uses. */
+const roleTitle = (role: AttachedKeyRoleName) => t(`${P}.role.${role}`);
+/** "voting", "owner", "payout": a key's role mid-sentence. */
+const roleWord = (role: AttachedKeyRoleName) => t(`${K}.roleWord.${role}`);
+
+export interface KeyRoleView {
+  role: AttachedKeyRoleName;
+  title: string;
+  help: string;
+}
+
+/** The keys Add keys offers: the voting key only (MG-00 D13, amended for 1.0 by MG's ruling of 11-24), and not
+ * while one is attached: Add key never replaces a key; the pane's Remove comes first. Owner, operator and
+ * payout keys are never imported here. While the vault is locked the attached keys are unread: the sheet
+ * asks for the unlock first. */
+export function keyRoles(r: Pick<MasternodeRow, "roles">): KeyRoleView[] {
+  // Unread (locked): nothing is offered until the attached keys are known.
+  if (r.roles.attached === null || r.roles.attached.some((k) => k.role === "voting")) return [];
+  return [{ role: "voting", title: roleTitle("voting"), help: t(`${K}.votingHelp`) }];
+}
+
+/** More ▸ Add keys… on a tracked row: while a key can be added, or the vault must be unlocked to tell. */
+export const offersAddKey = (r: MasternodeRow) => r.tracked && (r.roles.attached === null || keyRoles(r).length > 0);
+
+/** Stop tracking's line about the added keys: their count, or, while they're unread, that any are deleted. */
+export function untrackKeysText(r: Pick<MasternodeRow, "roles">): string | null {
+  if (r.roles.attached === null) return t(`${P}.untrack.keysUnknown`);
+  return r.roles.attached.length > 0 ? t(`${P}.untrack.keys`, { count: r.roles.attached.length }) : null;
+}
+
+/** Why an Add key sheet the vault could write shows no field: the added keys aren't read yet, or a voting key
+ * was added meanwhile and must be removed first. */
+export function addKeyWaitText(r: Pick<MasternodeRow, "roles">): string | null {
+  if (r.roles.attached === null) return t("masternodes.keys.loading");
+  return keyRoles(r).length === 0 ? t(`${K}.exists`, { role: roleWord("voting") }) : null;
+}
+
+/** The vault holds its full-scope key: an attach can be written (tracking.rs refuses `locked` and mixing-only). */
+export const canAttach = (state: LockStateName | undefined) => state !== "locked" && state !== "unlockedMixingOnly";
+
+/** What `mn_attach_key` answered for a voting key, as §1.4's result line. */
+export function keyResultText(check: KeyCheckName): string {
+  if (check === "matched") return t(`${K}.matched`);
+  if (check === "key_mismatch") return t(`${K}.mismatch`);
+  return t(`${K}.unchecked`);
+}
+
+/** An attach refusal as a sentence: a key that isn't this masternode's, a malformed key, a locked vault. */
+export function keyErrorText(e: unknown): string {
+  if (isAppError(e)) {
+    if (e.code === "masternodes.key_mismatch") return t(`${K}.mismatch`);
+    if (e.code === "masternodes.key_exists") {
+      const role = e.data?.kind === "masternodeKey" ? e.data.role : "voting";
+      return t(`${K}.exists`, { role: roleWord(role) });
+    }
+    if (e.code === "invalid_argument") return t(`${K}.invalid`);
+    if (e.code === "vault.locked") return t(`${K}.locked`);
+  }
+  return mnErrorText(e);
+}
+
+export const isVaultLocked = (e: unknown) => isAppError(e) && e.code === "vault.locked";
+
+export interface AttachedKeyLine {
+  role: AttachedKeyRoleName;
+  text: string;
+  /** "Remove payout key": it deletes a private key, so it says so. */
+  remove: string;
+  /** The confirmation every Remove asks first. */
+  confirmTitle: string;
+}
+
+/** The pane's "Keys you added", every role (voting included); `null` while the vault is locked. */
+export function attachedLines(r: MasternodeRow): AttachedKeyLine[] | null {
+  if (r.roles.attached === null) return null;
+  return r.roles.attached.map((k) => ({
+    role: k.role,
+    text: t(`${K}.line`, { role: t(`${K}.name.${k.role}`), check: t(`${K}.check.${k.check}`) }),
+    remove: t(`${K}.removeRow`, { role: roleWord(k.role) }),
+    confirmTitle: t(`${K}.removeTitle`, { role: roleWord(k.role) }),
+  }));
+}
+
+/** Tickets for a search whose answers may arrive out of order: only the latest started, not dropped since,
+ * is current, so an answer to an earlier query never shows (or offers Track) under a later one. */
+export function latestRequest() {
+  let n = 0;
+  return { start: () => ++n, isCurrent: (ticket: number) => ticket === n, drop: () => void n++ };
+}
+
+/** A Track refusal as §1.3's sentence; `name` is the already-tracked masternode's. */
+export function trackErrorText(e: unknown, name: string | null): string {
+  if (isAppError(e)) {
+    if (e.code === "invalid_argument") return t(`${P}.track.invalid`);
+    if (e.code === "masternodes.list_unavailable") return t(`${P}.track.list_unavailable`);
+    if (e.code === "masternodes.already_tracked" && name) return t(`${P}.track.already`, { name });
+  }
+  return mnErrorText(e);
+}
+
 /** §1.7's line in place of Change keys or payout, which shows only while the registrar is `available`. */
 export function registrarLine(d: MasternodeDetail): { text: string; unlock: boolean } | null {
   switch (d.registrar.kind) {
-    case "registration_unavailable":
+    case "registration_unavailable": {
+      const withdraw = d.row.kind === "evonode" && (d.row.roles.attached ?? []).some((k) => (k.role === "owner" || k.role === "payout") && k.check === "matched");
+      return { text: t(`${P}.registrar.${withdraw ? "registrationUnavailableWithdraw" : "registration_unavailable"}`), unlock: false };
+    }
     case "no_owner_key":
       return { text: t(`${P}.registrar.${d.registrar.kind}`), unlock: false };
     case "vault_locked":

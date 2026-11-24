@@ -2607,7 +2607,8 @@ fn a_restored_backup_raises_its_lookahead_before_the_wallet_is_registered() {
 /// larger lookahead in one write: when that write fails, neither is stored,
 /// so no replay is owed without the range it needs. Before, the replay was
 /// stored first, and a failure or a quit before the lookahead left it owed
-/// with the narrow BIP44 range.
+/// with the narrow BIP44 range. Once the write works, Recovery runs to its
+/// end and leaves the lookahead stored and the wallet marked done.
 #[test]
 fn a_recovery_scan_whose_write_fails_stores_neither_its_replay_nor_its_lookahead() {
     let dir = tempfile::tempdir().unwrap();
@@ -2635,6 +2636,25 @@ fn a_recovery_scan_whose_write_fails_stores_neither_its_replay_nor_its_lookahead
     assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
     assert_eq!(wide_scan(&engine, &session, id), marker);
     assert_eq!(replay_record(&engine, &session, id), None);
+
+    let recovery = recovery_running(&engine, &session, id);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+
+    assert!(
+        matches!(recovered, Ok(Ok(Ok(_)))),
+        "runs once the write works: {recovered:?}"
+    );
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(crate::coinjoin::RECOVERY_LOOKAHEAD)
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
 }
 
 /// CoinJoin Recovery that stops right after its write, as a quit there
@@ -4313,6 +4333,300 @@ fn keys_attached_show_no_replay_spv_already_finished() {
     );
 }
 
+/// Starts CoinJoin Recovery of wallet `id` on the engine's runtime and
+/// returns it once its rescan runs.
+fn recovery_running(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+) -> tokio::task::JoinHandle<Result<crate::coinjoin::RecoveryReport, EngineError>> {
+    let s = Arc::clone(session);
+    let runtime = engine.block_on(async { tokio::runtime::Handle::current() });
+    let recovery = runtime.spawn(async move { s.coinjoin_recovery_scan(id).await });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while session.rescan_progress().unwrap().is_none() {
+        if recovery.is_finished() {
+            panic!("Recovery ended first: {:?}", engine.block_on(recovery));
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Recovery's rescan did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    recovery
+}
+
+/// CoinJoin Recovery started after a rescan that finished with nobody
+/// reading its progress runs: a finished rescan is no rescan running.
+#[test]
+fn a_recovery_scan_after_a_finished_rescan_nobody_read_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT);
+
+    let s = Arc::clone(&session);
+    let runtime = engine.block_on(async { tokio::runtime::Handle::current() });
+    let recovery = runtime.spawn(async move { s.coinjoin_recovery_scan(id).await });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !recovery.is_finished()
+        && engine.block_on(session.stored_lookahead(id)).unwrap()
+            != Some(crate::coinjoin::RECOVERY_LOOKAHEAD)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Recovery did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !recovery.is_finished(),
+        "Recovery ended at its start: {:?}",
+        engine.block_on(recovery)
+    );
+    while session.rescan_progress().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Recovery's rescan did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+
+    assert!(matches!(recovered, Ok(Ok(Ok(_)))), "{recovered:?}");
+}
+
+/// A wallet born at its creation, scanned to `HEIGHT`, whose CoinJoin
+/// Recovery was cancelled while its rescan ran: Recovery returns
+/// `RescanInterrupted`, not a report.
+fn cancelled_recovery(dir: &std::path::Path) -> (Engine, Arc<NetworkSession>, WalletId) {
+    let (engine, session) = open_spv_engine(dir.join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let recovery = recovery_running(&engine, &session, id);
+
+    assert!(engine.block_on(session.cancel_rescan()).unwrap());
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+    assert!(
+        matches!(recovered, Ok(Ok(Err(EngineError::RescanInterrupted)))),
+        "{recovered:?}"
+    );
+    (engine, session, id)
+}
+
+/// A cancelled CoinJoin Recovery is not reported as finished: it returns
+/// `RescanInterrupted`, and sends stay held as interrupted.
+#[test]
+fn a_cancelled_recovery_scan_is_not_reported_as_finished() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session, id) = cancelled_recovery(dir.path());
+
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInterrupted)),
+        "{guard:?}"
+    );
+}
+
+/// After a cancelled CoinJoin Recovery, a plain rescan from the wallet's
+/// birth lifts the cancel's hold and scans with Recovery's 1,000-address
+/// range on both chains; once it reaches the old checkpoint, sends go.
+#[test]
+fn a_cancelled_recovery_then_a_rescan_from_the_birth_keeps_its_range_and_lifts_the_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session, id) = cancelled_recovery(dir.path());
+
+    (engine.block_on(session.rescan(crate::RescanFrom::WalletBirth))).unwrap();
+
+    let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
+    assert_eq!(gap(&engine, &session, id, bip44()), raised);
+    assert_eq!(gap(&engine, &session, id, cj()), raised);
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(raised)
+    );
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInProgress)),
+        "{guard:?}"
+    );
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(guard.is_ok(), "{guard:?}");
+}
+
+/// A cancelled CoinJoin Recovery whose rescan is replaced at once by a
+/// rescan from the birth, before Recovery looks again and with nobody
+/// reading progress, still returns `RescanInterrupted`: the replacement
+/// finishing is not Recovery's.
+#[test]
+fn a_cancelled_recovery_replaced_at_once_by_a_rescan_is_not_reported_as_finished() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let recovery = recovery_running(&engine, &session, id);
+
+    assert!(engine.block_on(session.cancel_rescan()).unwrap());
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+
+    assert!(
+        matches!(recovered, Ok(Ok(Err(EngineError::RescanInterrupted)))),
+        "{recovered:?}"
+    );
+}
+
+/// A quit while CoinJoin Recovery's rescan runs: the next start resumes the
+/// replay from the wallet's birth with the 1,000-address range, shows it as
+/// a rescan, and holds sends until it ends.
+#[test]
+fn a_recovery_scan_quit_mid_rescan_resumes_at_the_next_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let birth = birth_height(&engine, &session, id).saturating_sub(1);
+    let recovery = recovery_running(&engine, &session, id);
+
+    let session = reopen(&engine, session);
+
+    let ended = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+    assert!(
+        matches!(
+            ended,
+            Ok(Ok(Err(EngineError::CoinJoin(
+                crate::coinjoin::CoinJoinFailure::SpvNotRunning
+            ) | EngineError::NetworkNotOpen(_))))
+        ),
+        "{ended:?}"
+    );
+    let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
+    assert_eq!(gap(&engine, &session, id, bip44()), raised);
+    assert_eq!(synced_height(&engine, &session, id), birth);
+    assert_eq!(replay_record(&engine, &session, id), Some((birth, HEIGHT)));
+    assert!(session.rescan_progress().unwrap().is_some());
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInProgress)),
+        "{guard:?}"
+    );
+}
+
+/// CoinJoin Recovery's two settings go in one transaction: with the
+/// database refusing the wide-scan marker, written after the lookahead in
+/// that write, the lookahead does not stay either.
+#[test]
+fn a_recovery_scan_whose_marker_write_is_refused_keeps_no_lookahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let marker = wide_scan(&engine, &session, id);
+    let scope = dw_appdb::local_scope(&id.to_string());
+    let db = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+    for (name, event) in [
+        ("no_marker_insert", "INSERT"),
+        ("no_marker_update", "UPDATE"),
+    ] {
+        db.execute_batch(&format!(
+            "CREATE TRIGGER {name} BEFORE {event} ON settings_kv \
+             WHEN NEW.scope = '{scope}' AND NEW.key = '{key}' \
+             BEGIN SELECT RAISE(ABORT, 'test: marker refused'); END;",
+            key = crate::keys::WIDE_SCAN_SETTING,
+        ))
+        .unwrap();
+    }
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            session.coinjoin_recovery_scan(id),
+        )
+        .await
+    });
+
+    db.execute_batch("DROP TRIGGER no_marker_insert; DROP TRIGGER no_marker_update;")
+        .unwrap();
+    assert!(
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("test: marker refused")),
+        "refused by the database: {recovered:?}"
+    );
+    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    assert_eq!(wide_scan(&engine, &session, id), marker);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
+/// CoinJoin Recovery whose in-memory raise fails after its write is
+/// refused, and both settings stay: the next open raises the BIP44 range to
+/// the stored lookahead and replays from the wallet's birth.
+#[test]
+fn a_recovery_scan_whose_raise_fails_after_its_write_replays_with_its_lookahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let birth = birth_height(&engine, &session, id).saturating_sub(1);
+    insert_unraisable_account(&engine, &session, id);
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            session.coinjoin_recovery_scan(id),
+        )
+        .await
+    });
+
+    assert!(
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("BIP44 #1")),
+        "refused at the raise: {recovered:?}"
+    );
+    let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(raised)
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(birth))
+    );
+    let session = reopen(&engine, session);
+    assert_eq!(gap(&engine, &session, id, bip44()), raised);
+    assert_eq!(synced_height(&engine, &session, id), birth);
+    assert_eq!(replay_record(&engine, &session, id), Some((birth, HEIGHT)));
+}
+
 /// Keys attached alone (no Dash Core range, no lookahead) with a birth
 /// height below a synced watch-only wallet's lower its birth and replay
 /// from there.
@@ -4758,4 +5072,78 @@ fn an_upgrade_replay_names_its_wallet_until_it_is_done() {
     let session = reopen(&engine, session);
     assert_eq!(upgrading(&session), None);
     assert_eq!(engine.block_on(session.upgrade_replay(id)), None);
+}
+
+/// Stores one block header at `height` under the session's chain data, as
+/// dash-spv anchors its headers there.
+fn store_header_anchor(engine: &Engine, session: &NetworkSession, height: u32) {
+    let dir = session.data_dir().join(crate::session::SPV_DIR);
+    engine.block_on(crate::tools::store_test_headers(&dir, height, 1));
+}
+
+/// A wallet whose birth is below the first stored block header is reported
+/// until "Reset chain data and resync". The reset replays it from its
+/// birth, and the next SPV start anchors its headers at or below that
+/// birth, so nothing is reported with headers stored again. A payment in a
+/// block below the old header start then shows once the replay reaches it.
+#[test]
+fn a_wallet_born_below_the_stored_headers_is_reported_until_the_chain_data_is_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = import_from_genesis(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+    store_header_anchor(&engine, &session, HEIGHT);
+    let to = bip44_address(&engine, &session, id, 3);
+    let tx = pays(1, &to);
+
+    let gap = engine.block_on(session.history_gap()).unwrap();
+
+    assert_eq!(
+        gap,
+        Some(crate::tools::HistoryGap {
+            start_height: HEIGHT,
+            wallets: vec![id],
+        })
+    );
+    engine.block_on(session.reset_chain_data()).unwrap();
+    assert_eq!(engine.block_on(session.history_gap()).unwrap(), None);
+    let birth = birth_height(&engine, &session, id);
+    assert_eq!(
+        synced_height(&engine, &session, id),
+        birth.saturating_sub(1)
+    );
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((birth.saturating_sub(1), HEIGHT + 100))
+    );
+    start_offline_spv(&engine, &session);
+    engine.block_on(session.stop_spv()).unwrap();
+    let spv = session.data_dir().join(crate::session::SPV_DIR);
+    let start = crate::tools::stored_header_start(&spv).unwrap();
+    assert!(start.is_some_and(|h| h <= birth), "{start:?}");
+    assert_eq!(engine.block_on(session.history_gap()).unwrap(), None);
+    replay_at(
+        &engine,
+        &session,
+        id,
+        std::slice::from_ref(&tx),
+        HEIGHT - 400,
+    );
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[(OutPoint::new(tx.txid(), 0), to)],
+        bip44(),
+        VALUE,
+    );
+}
+
+#[test]
+fn a_wallet_born_at_the_first_stored_header_is_not_reported() {
+    let (_dir, engine, session, _) = engine_wallet();
+    store_header_anchor(&engine, &session, 0);
+
+    assert_eq!(engine.block_on(session.history_gap()).unwrap(), None);
 }

@@ -9,8 +9,11 @@
  * wallet's identities (`to`, base58) from its Platform addresses;
  * `contactPayment`: a payment to a DashPay contact (`contact`) from the
  * Platform balance, to its Core address (`to`);
+ * `fromShielded`: an unshield of this wallet to its Platform address
+ * (`address`), pending until Platform executed it (`done`) or did not
+ * (`failed`);
  * `recovered`: the value left on a transfer to Shielded that Platform
  * refused after a penalty, recovered to this wallet's Platform address
  * (`address`), pending until Platform proves it applied.
  */
-export type PlatformActivityKind = "incoming" | "outgoing" | "moveToCore" | "send" | "fromCore" | "toIdentity" | "contactPayment" | "recovered";
+export type PlatformActivityKind = "incoming" | "outgoing" | "moveToCore" | "send" | "fromCore" | "toIdentity" | "contactPayment" | "fromShielded" | "recovered";
