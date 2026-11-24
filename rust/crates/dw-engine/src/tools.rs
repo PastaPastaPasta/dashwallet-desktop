@@ -1181,9 +1181,7 @@ pub(crate) fn stored_header_start(spv_dir: &std::path::Path) -> std::io::Result<
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let first = bytes
-        .chunks_exact(SLOT_BYTES)
-        .position(|slot| slot[..80] != empty);
+    let first = (bytes.as_chunks::<SLOT_BYTES>().0.iter()).position(|slot| slot[..80] != empty);
     Ok(first.and_then(|offset| id.checked_mul(SLOTS)?.checked_add(offset as u32)))
 }
 
