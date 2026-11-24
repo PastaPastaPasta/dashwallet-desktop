@@ -37,10 +37,6 @@ const HOOK_PHRASE: &[u8] =
 const MARKER_READ_PHRASE: &[u8] =
     b"jelly better achieve collect unaware mountain thought cargo oxygen act hood bridge";
 
-/// As [`HOOK_PHRASE`], for the test that cannot read a wallet's CoinJoin use.
-const READ_PHRASE: &[u8] =
-    b"letter advice cage absurd amount doctor acoustic avoid letter advice cage above";
-
 struct Silent;
 
 impl crate::EventSink for Silent {
@@ -1123,7 +1119,7 @@ fn a_raised_lookahead_keeps_a_coin_past_a_spent_bridge_counted_once() {
 /// past the spent bridge, left in BIP44, and an account the raise can't
 /// reach. The other accounts are raised, the restore still takes the coin
 /// home, the hub reads the wallet before the error (naming that account)
-/// returns, no lookahead is stored, and a replay counts the coin once.
+/// returns, and a replay counts the coin once.
 #[test]
 fn a_partial_recovery_raise_still_takes_a_coin_past_a_spent_bridge_home_counted_once() {
     let (_dir, engine, session, id) = engine_wallet();
@@ -1139,7 +1135,6 @@ fn a_partial_recovery_raise_still_takes_a_coin_past_a_spent_bridge_home_counted_
     let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
     assert_eq!(gap(&engine, &session, id, cj()), raised);
     assert_eq!(gap(&engine, &session, id, bip44()), raised);
-    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
     assert_home(&engine, &session, id, &coin);
     replay(&engine, &session, id, &history);
     assert_home(&engine, &session, id, &coin);
@@ -1147,8 +1142,8 @@ fn a_partial_recovery_raise_still_takes_a_coin_past_a_spent_bridge_home_counted_
 
 /// Sol r1 M1 through the recovery scan's raise, its restore failing: the
 /// coin past the spent bridge stays where the load left it (BIP44), counted
-/// once; the hub reads the wallet before the error returns; no lookahead is
-/// stored. A replay copies it into CoinJoin; the replay's block event starts
+/// once; the hub reads the wallet before the error returns. A replay copies
+/// it into CoinJoin; the replay's block event starts
 /// the reconcile, which leaves one copy, at home. The next load keeps it
 /// there.
 #[test]
@@ -1165,7 +1160,6 @@ fn a_failed_recovery_restore_keeps_a_coin_past_a_spent_bridge_counted_once() {
 
     assert!(error.contains("restoring coins past the gap"), "{error}");
     assert!(!error.contains("raising the lookahead"), "{error}");
-    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
     assert_eq!(
         session.hub.wallet_state(&id).unwrap().balance.total(),
         VALUE
@@ -1203,7 +1197,6 @@ fn a_recovery_raise_failing_twice_names_both_failures() {
     assert!(error.contains("restoring coins past the gap"), "{error}");
     assert!(error.contains("raising the lookahead to 1000"), "{error}");
     assert!(error.contains("BIP44 #1"), "{error}");
-    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
 }
 
 /// Signs, through the session, a PSBT spending `outpoint` of `prev`: whether
@@ -1588,7 +1581,7 @@ fn an_import_marks_the_wallet_before_it_is_published_and_done_once_widened() {
 
     let id = import_from_genesis(&engine, &session);
 
-    assert_eq!(seen.lock().unwrap().as_deref(), Some("birth"));
+    assert_eq!(seen.lock().unwrap().as_deref(), Some("2:birth"));
     assert_eq!(
         wide_scan(&engine, &session, id),
         Some(crate::keys::WideScan::Done)
@@ -1692,10 +1685,10 @@ fn a_wallet_an_older_build_scanned_is_replayed_once_from_its_birth() {
     assert_eq!(replay_record(&engine, &session, id), None);
 }
 
-/// A wallet created here, with no marker, is marked without a replay: its
-/// CoinJoin keys are only those its own mixing derived.
+/// A wallet created here, with no marker, is replayed once from its birth:
+/// the same seed may have been mixed by another app, past the narrow pool.
 #[test]
-fn a_wallet_created_here_without_a_marker_is_not_replayed() {
+fn a_wallet_created_here_without_a_marker_is_replayed_from_its_birth() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, session) = open_engine(dir.path().join("data"));
     create_vault(&engine, &session);
@@ -1705,11 +1698,12 @@ fn a_wallet_created_here_without_a_marker_is_not_replayed() {
         .wallet_id;
     store_checkpoint(&engine, &session, id, HEIGHT);
     set_wide_scan(&engine, &session, id, None);
+    let birth = birth_height(&engine, &session, id).saturating_sub(1);
 
     let session = reopen(&engine, session);
 
-    assert_eq!(synced_height(&engine, &session, id), HEIGHT);
-    assert_eq!(replay_record(&engine, &session, id), None);
+    assert_eq!(synced_height(&engine, &session, id), birth);
+    assert_eq!(replay_record(&engine, &session, id), Some((birth, HEIGHT)));
     assert_eq!(
         wide_scan(&engine, &session, id),
         Some(crate::keys::WideScan::Done)
@@ -2609,17 +2603,20 @@ fn a_restored_backup_raises_its_lookahead_before_the_wallet_is_registered() {
     assert_eq!(gap(&engine, &session, id, bip44()), 200);
 }
 
-/// Review r7 finding 3: CoinJoin Recovery whose larger lookahead cannot be
-/// stored is refused, rather than rescanning with a range a restart would
-/// lose.
+/// CoinJoin Recovery stores the replay it owes from the birth and its
+/// larger lookahead in one write: when that write fails, neither is stored,
+/// so no replay is owed without the range it needs. Before, the replay was
+/// stored first, and a failure or a quit before the lookahead left it owed
+/// with the narrow BIP44 range.
 #[test]
-fn a_recovery_scan_whose_lookahead_cannot_be_stored_is_refused() {
+fn a_recovery_scan_whose_write_fails_stores_neither_its_replay_nor_its_lookahead() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, session) = open_spv_engine(dir.path().join("data"));
     create_vault(&engine, &session);
     let id = created(&engine, &session);
     store_checkpoint(&engine, &session, id, HEIGHT);
     start_offline_spv(&engine, &session);
+    let marker = wide_scan(&engine, &session, id);
 
     let recovered = failing(&crate::keys::FAIL_LOOKAHEAD_WRITE, id, || {
         engine.block_on(async {
@@ -2632,10 +2629,73 @@ fn a_recovery_scan_whose_lookahead_cannot_be_stored_is_refused() {
     });
 
     assert!(
-        matches!(recovered, Ok(Err(_))),
-        "refused at once: {recovered:?}"
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("test: lookahead not stored")),
+        "refused at the write: {recovered:?}"
     );
     assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    assert_eq!(wide_scan(&engine, &session, id), marker);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
+/// CoinJoin Recovery that stops right after its write, as a quit there
+/// would: the next open raises the BIP44 range to the stored lookahead and
+/// replays from the wallet's birth, which finds a payment to BIP44 index
+/// 150 below the old checkpoint.
+#[test]
+fn a_recovery_scan_that_quits_after_its_write_replays_with_its_lookahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let birth = birth_height(&engine, &session, id).saturating_sub(1);
+    let to = bip44_address(&engine, &session, id, 150);
+    let tx = pays(1, &to);
+    let data = session.data_dir().to_path_buf();
+    (crate::coinjoin::QUIT_AFTER_RECOVERY_WRITE_IN
+        .lock()
+        .unwrap())
+    .push(data);
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            session.coinjoin_recovery_scan(id),
+        )
+        .await
+    });
+    assert!(
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("test: quit after the write")),
+        "{recovered:?}"
+    );
+    assert!(gap(&engine, &session, id, bip44()) < crate::coinjoin::RECOVERY_LOOKAHEAD);
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(crate::coinjoin::RECOVERY_LOOKAHEAD)
+    );
+    assert_eq!(
+        gap(&engine, &session, id, bip44()),
+        crate::coinjoin::RECOVERY_LOOKAHEAD
+    );
+    assert_eq!(synced_height(&engine, &session, id), birth);
+    assert_eq!(replay_record(&engine, &session, id), Some((birth, HEIGHT)));
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+    replay(&engine, &session, id, std::slice::from_ref(&tx));
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[(OutPoint::new(tx.txid(), 0), to)],
+        bip44(),
+        VALUE,
+    );
 }
 
 /// Review r7 finding 2: a wallet scanned to 1,000 holds a cancelled replay
@@ -3006,12 +3066,49 @@ fn a_rescan_that_cannot_mark_a_wallet_it_cannot_widen_is_refused() {
     assert_eq!(synced_height(&engine, &session, w), HEIGHT);
 }
 
-/// A wallet an older build restored and scanned, whose CoinJoin account has
-/// nothing used: no coin sits past a gap, so it is marked done without a
-/// replay, as a wallet created here is.
+/// A wallet an older build restored and scanned, whose only CoinJoin use
+/// is a payment to index 100 in a block that matched nothing else of it:
+/// nothing on disk shows that use, and its first open still replays it once
+/// from its birth, which finds the coin.
 #[test]
-fn an_older_build_wallet_with_an_unused_coinjoin_account_is_not_replayed() {
+fn an_older_build_wallet_whose_only_coinjoin_payment_left_no_trace_is_replayed() {
     let (_dir, engine, session, id) = engine_wallet();
+    let to = coinjoin_addresses(&engine, &session, id, &[100]).remove(0);
+    let tx = pays(1, &to);
+    store_checkpoint(&engine, &session, id, HEIGHT + 300);
+    set_wide_scan(&engine, &session, id, None);
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((0, HEIGHT + 300))
+    );
+    replay(&engine, &session, id, std::slice::from_ref(&tx));
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[(OutPoint::new(tx.txid(), 0), to)],
+        cj(),
+        VALUE,
+    );
+}
+
+/// A watch-only wallet an older build scanned, with no CoinJoin account
+/// and no stored lookahead, has no pool a narrow scan could have missed:
+/// it is marked done without a replay.
+#[test]
+fn an_older_build_watch_only_wallet_without_coinjoin_or_lookahead_is_not_replayed() {
+    use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+    let (_dir, engine, session, _) = engine_wallet();
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[9; 64]).unwrap();
+    let path: DerivationPath = "m/44'/1'/0'".parse().unwrap();
+    let xpub = ExtendedPubKey::from_priv(&master.derive_priv(&path).unwrap());
+    let id = engine
+        .block_on(session.import_watch_only(xpub.to_string(), Default::default()))
+        .unwrap();
     store_checkpoint(&engine, &session, id, HEIGHT + 300);
     set_wide_scan(&engine, &session, id, None);
 
@@ -3025,41 +3122,140 @@ fn an_older_build_wallet_with_an_unused_coinjoin_account_is_not_replayed() {
     );
 }
 
-/// A wallet an older build scanned whose CoinJoin use cannot be read is
-/// replayed from its birth and keeps no marker; the next open reads it
-/// again.
+/// A wallet an older build scanned, left off the start-up list, is loaded;
+/// SPV commits a batch with its narrow pools and the app quits before they
+/// are widened. The next open replays it from its birth, below that batch.
 #[test]
-fn an_older_build_wallet_whose_coinjoin_use_cannot_be_read_stays_pending() {
-    let dir = tempfile::tempdir().unwrap();
-    let (engine, session) = open_engine(dir.path().join("data"));
-    create_vault(&engine, &session);
-    let id = engine
-        .block_on(session.import_wallet(
-            zeroize::Zeroizing::new(READ_PHRASE.to_vec()),
-            zeroize::Zeroizing::new(Vec::new()),
-            crate::ImportOptions {
-                birth_height: Some(0),
-                ..Default::default()
-            },
-        ))
-        .unwrap();
-    store_checkpoint(&engine, &session, id, HEIGHT + 300);
+fn an_older_build_wallet_loaded_then_quit_before_widening_is_replayed_from_its_birth() {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let (_dir, engine, session, id) = engine_wallet();
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    engine.block_on(session.unload_wallet(id)).unwrap();
     set_wide_scan(&engine, &session, id, None);
+    {
+        let live = session.live().unwrap();
+        let wm = live.manager.wallet_manager_arc();
+        *session.hub.on_published.lock().unwrap() = Some(Box::new(move |wallet| {
+            let mut wm = wm.try_write().expect("published, the manager unlocked");
+            wm.update_wallet_synced_height(&wallet.0, HEIGHT + 50);
+            wm.update_wallet_last_processed_height(&wallet.0, HEIGHT + 50);
+            true
+        }));
+    }
 
-    let session = failing(&crate::keys::FAIL_COINJOIN_USE_READ, id, || {
-        reopen(&engine, session)
-    });
+    let quit = engine.block_on(session.load_wallet(id)).unwrap_err();
+    assert!(
+        quit.to_string().contains("quit after the publish"),
+        "{quit}"
+    );
+    store_synced_only(&session, id, HEIGHT + 50);
+    let session = reopen(&engine, session);
+    if session.live().unwrap().store.is_unloaded(&id.0) {
+        engine.block_on(session.load_wallet(id)).unwrap();
+    }
+
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    assert_eq!(replay_record(&engine, &session, id), Some((0, HEIGHT + 50)));
+}
+
+/// #172: 0.3.0 could store `done` for a wallet an older build scanned
+/// without replaying it. That marker reads as none: the open replays the
+/// wallet once from its birth and stores this build's `done`.
+#[test]
+fn a_done_marker_an_older_build_stored_is_decided_again() {
+    let (_dir, engine, session, id) = engine_wallet();
+    store_checkpoint(&engine, &session, id, HEIGHT + 300);
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(session.appdb_op(move |db| {
+            db.set_setting(&scope, crate::keys::WIDE_SCAN_SETTING, Some("done"))
+        }))
+        .unwrap();
+    assert_eq!(wide_scan(&engine, &session, id), None);
+
+    let session = reopen(&engine, session);
 
     assert_eq!(synced_height(&engine, &session, id), 0);
     assert_eq!(
         replay_record(&engine, &session, id),
         Some((0, HEIGHT + 300))
     );
-    assert_eq!(wide_scan(&engine, &session, id), None);
-    let session = reopen(&engine, session);
     assert_eq!(
         wide_scan(&engine, &session, id),
         Some(crate::keys::WideScan::Done)
+    );
+}
+
+fn store_marker(engine: &Engine, session: &NetworkSession, id: WalletId, value: &'static str) {
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(session.appdb_op(move |db| {
+            db.set_setting(&scope, crate::keys::WIDE_SCAN_SETTING, Some(value))
+        }))
+        .unwrap();
+}
+
+/// #172: an unload turned 0.3.0's `done` into a bare height above the
+/// birth. That height is owed from no higher than the birth.
+#[test]
+fn a_height_marker_an_older_build_stored_is_owed_from_the_birth() {
+    let (_dir, engine, session, id) = engine_wallet();
+    store_checkpoint(&engine, &session, id, HEIGHT + 300);
+    store_marker(&engine, &session, id, "1200");
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Legacy(1200))
+    );
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((0, HEIGHT + 300))
+    );
+}
+
+/// #172: a load notes the wallet's narrow start over an older build's bare
+/// height without trusting it: under a cancelled replay holding at 800,
+/// the wallet stays owed from its birth, not marked done.
+#[test]
+fn a_load_keeps_an_older_build_height_marker_owed_from_the_birth() {
+    let (_dir, engine, session, id) = engine_wallet();
+    store_checkpoint(&engine, &session, id, HEIGHT + 300);
+    store_setting(&engine, &session, id, "replay", "2:1300:800:1:0");
+    let session = reopen(&engine, session);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    store_marker(&engine, &session, id, "1200");
+
+    engine.block_on(session.load_wallet(id)).unwrap();
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Legacy(800))
+    );
+}
+
+/// #172: an older-build wallet owed a replay from its birth, under a
+/// cancelled replay that holds at 800, stays owed from the birth when its
+/// pools cannot widen, not from the checkpoint.
+#[test]
+fn a_failed_widening_under_a_cancelled_hold_keeps_the_birth_owed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    set_wide_scan(&engine, &session, id, None);
+    store_setting(&engine, &session, id, "replay", "2:1000:800:1:0");
+    let birth = birth_height(&engine, &session, id).saturating_sub(1);
+    assert!(birth < 800, "{birth}");
+
+    let session = failing(&crate::keys::FAIL_WIDEN, id, || reopen(&engine, session));
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(birth))
     );
 }
 
@@ -3205,10 +3401,10 @@ fn an_attach_stores_its_replay_before_its_lookahead() {
     );
 }
 
-/// Review r2 finding 2, CoinJoin Recovery: one whose replay obligation
-/// cannot be stored is refused before it stores its larger lookahead.
+/// CoinJoin Recovery whose wide-scan marker cannot be read is refused
+/// before it stores anything.
 #[test]
-fn a_recovery_scan_stores_its_replay_before_its_lookahead() {
+fn a_recovery_scan_whose_marker_cannot_be_read_stores_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, session) = open_spv_engine(dir.path().join("data"));
     create_vault(&engine, &session);
@@ -3226,8 +3422,12 @@ fn a_recovery_scan_stores_its_replay_before_its_lookahead() {
         })
     });
 
-    assert!(matches!(recovered, Ok(Err(_))), "refused at once");
+    assert!(
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("test: marker not read")),
+        "refused at the read: {recovered:?}"
+    );
     assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    assert_eq!(replay_record(&engine, &session, id), None);
 }
 
 /// Review r2 finding 4: a birth height that cannot be stored leaves the
@@ -3480,62 +3680,6 @@ fn an_older_build_wallet_with_a_raised_lookahead_is_replayed() {
     );
 }
 
-/// The upgrade rule's stored evidence, read from wallet.sqlite: generated
-/// CoinJoin pools and a spent BIP44 coin (with its funding transaction's
-/// row) are no use; a spent coin paying a CoinJoin address is, and so are a
-/// coin whose script no pool row owns and a transaction stored without a
-/// record or a coin.
-#[test]
-fn the_stored_coinjoin_use_counts_positive_evidence_only() {
-    let (_dir, engine, session, id) = engine_wallet();
-    let other = created(&engine, &session);
-    let live = session.live().unwrap();
-    let db_path = session.data_dir().join(crate::session::WALLET_DB_FILE);
-    let used = |wallet: WalletId| {
-        crate::store::coinjoin_used(&db_path, &wallet.0, &live.persister).unwrap()
-    };
-    assert!(!used(id), "generated pools only");
-
-    let ordinary = bip44_address(&engine, &session, id, 2);
-    let paid = pays(5, &ordinary);
-    store_coins(
-        &session,
-        id,
-        Vec::new(),
-        vec![confirmed_coin(&paid, &ordinary)],
-    );
-    assert!(!used(id), "a spent BIP44 coin");
-
-    let mixed = coinjoin_addresses(&engine, &session, id, &[7]).remove(0);
-    let tx = pays(6, &mixed);
-    store_coins(&session, id, Vec::new(), vec![confirmed_coin(&tx, &mixed)]);
-    assert!(used(id), "a spent coin paying a CoinJoin address");
-
-    let foreign = bip44_address(&engine, &session, id, 3);
-    let tx = pays(7, &foreign);
-    store_coins(
-        &session,
-        other,
-        vec![confirmed_coin(&tx, &foreign)],
-        Vec::new(),
-    );
-    assert!(used(other), "a coin no pool row of the wallet owns");
-
-    let third = created(&engine, &session);
-    assert!(!used(third), "a new wallet");
-    let db = rusqlite::Connection::open(&db_path).unwrap();
-    db.execute(
-        "INSERT INTO core_transactions (wallet_id, txid, height, finalized) \
-         VALUES (?1, ?2, 5, 0)",
-        rusqlite::params![&third.0[..], &[9u8; 32][..]],
-    )
-    .unwrap();
-    assert!(
-        used(third),
-        "a transaction stored without a record or a coin"
-    );
-}
-
 /// Review r2 finding 1, on a load: a wallet opened unloaded whose replay
 /// from 0 is unfinished, and whose store still reads 1,000, is marked from
 /// the replay's start before the load publishes it. A quit right after the
@@ -3711,18 +3855,16 @@ fn an_undecodable_marker_is_owed_from_genesis() {
     let (engine, session) = open_engine(dir.path().join("data"));
     create_vault(&engine, &session);
     let id = created(&engine, &session);
-    let scope = dw_appdb::local_scope(&id.to_string());
-    engine
-        .block_on(
-            session.appdb_op(move |db| {
-                db.set_setting(&scope, crate::keys::WIDE_SCAN_SETTING, Some("x"))
-            }),
-        )
-        .unwrap();
 
+    store_marker(&engine, &session, id, "2:x");
     assert_eq!(
         wide_scan(&engine, &session, id),
         Some(crate::keys::WideScan::From(0))
+    );
+    store_marker(&engine, &session, id, "x");
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Legacy(0))
     );
 }
 

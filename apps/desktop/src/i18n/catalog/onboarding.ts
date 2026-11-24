@@ -224,9 +224,10 @@ export const onboarding = {
     severalToPlatformAddress: "{count} transfers to your Platform address ({total}) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
     severalToShielded: "{count} transfers to Shielded ({total}) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
     running: "Finishing…",
+    /** "Check again" in these lines names the `checkAgain` button: keep the two the same. */
     checking: {
-      one: "{count} transfer may already be finished. We can't confirm it yet.",
-      other: "{count} transfers may already be finished. We can't confirm it yet.",
+      one: "{count} transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
+      other: "{count} transfers may already be finished. Choose Check again to confirm them. If an amount wasn't added yet, Check again tries to add it. If any still show Checking, try again later.",
     },
     finish: "Finish",
     finishAll: "Finish all",
@@ -256,7 +257,8 @@ export const onboarding = {
       done: {
         appliedPlatformAddress: "Added to your Platform address",
         appliedShielded: "Added to Shielded",
-        checking: "Checking: this amount may already be in your balance; we can't confirm it yet.",
+        /** "Check again" names the row's `checkAgain` button: keep the two the same. */
+        checking: "This transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
         proofWaiting: "Waiting for the network to confirm",
         reportedUsed: "The network says this was already added. There's nothing left to finish.",
       },

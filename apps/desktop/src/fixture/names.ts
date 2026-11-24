@@ -41,8 +41,9 @@ export const FIXTURE_NAMES: ContestedNames = {
       label: "a11ce",
       endsAt: 1_800_003_600,
       contenders: [
-        { identity: ID_1, votes: 9 },
-        { identity: ID_2, votes: 4 },
+        { identity: ID_1, votes: 9, name: "Alice" },
+        // No document came back for it: it shows by its id (MG-11 F1).
+        { identity: ID_2, votes: 4, name: null },
       ],
       lockVotes: 5,
       abstainVotes: 0,
@@ -51,7 +52,7 @@ export const FIXTURE_NAMES: ContestedNames = {
     {
       label: "dash-pay",
       endsAt: 1_800_090_000,
-      contenders: [{ identity: ID_2, votes: 0 }],
+      contenders: [{ identity: ID_2, votes: 0, name: "Dash-Pay" }],
       lockVotes: 0,
       abstainVotes: 4,
       contendersComplete: true,

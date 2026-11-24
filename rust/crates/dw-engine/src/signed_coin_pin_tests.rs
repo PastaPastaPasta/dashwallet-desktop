@@ -425,3 +425,102 @@ fn pin_377_b_a_move_the_network_refuses_leaves_the_coin_offered_until_the_round_
         "the round mined"
     );
 }
+
+/// What a session asks of the real wallet before it submits or signs a
+/// coin (`any_withdrawn`, `unspent_outpoints`): a coin it locked itself is
+/// still its own and still unspent; a user's "Lock unspent", or another
+/// owner's claim, withdraws it. Every 1:1 session runs these, so a coin
+/// read that dropped reserved coins would refuse every honest round.
+#[test]
+fn a_sessions_own_coin_stays_its_own_and_a_lock_or_claim_withdraws_it() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let coin = denomination(&engine, &session, id);
+    let (wallet, _owner) = session.mixing_wallet_for_test(id);
+    let wallet = Arc::new(wallet);
+    let ask = || {
+        let w = Arc::clone(&wallet);
+        engine
+            .block_on(session.on_runtime(async move {
+                let withdrawn = w.any_withdrawn(&[coin]).await.unwrap();
+                let unspent = w.unspent_outpoints().await.unwrap().contains(&coin);
+                Ok((withdrawn, unspent))
+            }))
+            .unwrap()
+    };
+    wallet.lock_coins(&[coin]);
+    assert_eq!(ask(), (false, true), "locked by the session itself");
+
+    let other = crate::send::SpendOwner::mixing_session();
+    session.spends.reserve(id, other, [coin]);
+    assert!(ask().0, "another owner's claim");
+    session.spends.release_some(&id, other, [coin]);
+    assert!(!ask().0, "the claim released");
+
+    engine
+        .block_on(session.lock_outpoints(id, vec![coin]))
+        .unwrap();
+    assert!(ask().0, "the user locked it");
+    wallet.unlock_coins(&[coin]);
+}
+
+/// A "Lock unspent" that lands after the session's last check and before
+/// its signature (the fence is first come, first served) still keeps the
+/// coin from being signed: the signer checks again under its own fence.
+#[test]
+fn a_coin_the_user_locks_after_the_check_is_not_signed() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let coin = denomination(&engine, &session, id);
+    let (wallet, _owner) = session.mixing_wallet_for_test(id);
+    let wallet = Arc::new(wallet);
+    let w = Arc::clone(&wallet);
+    let (script, ours) = engine
+        .block_on(session.on_runtime(async move {
+            let ready = w.ready_to_mix(DENOM).await.unwrap();
+            let picked = (ready.into_iter()).find(|c| c.outpoint == coin).unwrap();
+            let ours = w.reserve_scripts(1).await.unwrap().remove(0);
+            w.lock_coins(&[coin]);
+            assert!(!w.any_withdrawn(&[coin]).await.unwrap());
+            Ok((picked.script_pubkey, ours))
+        }))
+        .unwrap();
+    engine
+        .block_on(session.lock_outpoints(id, vec![coin]))
+        .unwrap();
+    let round = Transaction {
+        version: 1,
+        lock_time: 0,
+        input: vec![
+            TxIn {
+                previous_output: coin,
+                sequence: u32::MAX,
+                ..Default::default()
+            },
+            TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([0xf0; 32]), 3),
+                sequence: u32::MAX,
+                ..Default::default()
+            },
+        ],
+        output: vec![
+            TxOut {
+                value: DENOM,
+                script_pubkey: ours,
+            },
+            TxOut {
+                value: DENOM,
+                script_pubkey: ScriptBuf::from_bytes(
+                    [&[0x76, 0xa9, 0x14][..], &[0xf0; 20], &[0x88, 0xac]].concat(),
+                ),
+            },
+        ],
+        special_transaction_payload: None,
+    };
+    let w = Arc::clone(&wallet);
+    let signed = engine
+        .block_on(
+            session.on_runtime(async move { Ok(w.sign_inputs(&round, &[(0, script)]).await) }),
+        )
+        .unwrap();
+    assert!(signed.is_err(), "a coin the user locked was signed");
+    wallet.unlock_coins(&[coin]);
+}

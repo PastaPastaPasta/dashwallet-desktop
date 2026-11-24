@@ -268,7 +268,7 @@ async function main() {
   const cj = await invoke<Record<string, unknown>>("coinjoin_settings");
   await invoke("set_coinjoin_settings", { settings: { ...cj, multiSession: true, maxSessions: 3, rounds: 6, targetAmountDash: 25 } });
   await invoke("set_ui_settings", {
-    settings: { theme: "dark", unit: "milliDash", decimalDigits: 4, autohideBalance: true, autoLockSecs: 900, subtractFeeByDefault: true, showMasternodes: true, preReleaseNoticeDismissed: true },
+    settings: { theme: "dark", unit: "milliDash", decimalDigits: 4, autohideBalance: true, autoLockSecs: 900, subtractFeeByDefault: true, showMasternodes: true, masternodesItem: "on", preReleaseNoticeDismissed: true },
   });
   const height = chain.height();
   await poll(LOAD_WAIT_MS, "the wallets at dashd's tip", async () => {

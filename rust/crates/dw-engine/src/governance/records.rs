@@ -366,6 +366,11 @@ pub struct NameContender {
     pub identity: String,
     /// Its weighted votes; `None` when Platform gave no tally.
     pub votes: Option<u32>,
+    /// Its own spelling of the name (`Alice` for `a11ce`), from its DPNS
+    /// document on the poll's page; `None` when that is missing or does
+    /// not decode, or was read through the trusted-service fallback (MG-11
+    /// F1, H-09).
+    pub name: Option<String>,
 }
 
 /// An open DPNS contest (MG-07 §1).

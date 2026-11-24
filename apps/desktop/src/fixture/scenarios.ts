@@ -43,7 +43,7 @@ import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinj
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
-import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -119,6 +119,10 @@ export interface World {
   explorerOpened?: string[];
   /** How many times `open_releases_page` was called. */
   releasesOpened?: number;
+  /** `open_project_link` calls, in order (the fixture opens nothing). */
+  linksOpened?: string[];
+  /** `open_project_link` fails as when no browser opens. */
+  linkOpenFails?: boolean;
   /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
   protocolCompatibility?: ProtocolCompatibility;
   /** "Ask for my passphrase for every payment". The funded scenario leaves it on, so the
@@ -126,6 +130,9 @@ export interface World {
   paymentAuth: boolean;
   /** Quick-unlock and signing-window spend limit, in duffs. Default 0.5 DASH. */
   spendLimitDuffs: number;
+  /** The sealed limit no longer authenticates (issue 173, item 10): while unlocked the engine reports
+   * it, the limit in force is 0, and setting the limit again clears it. */
+  spendLimitUnreadable?: boolean;
   /** When the post-unlock signing window ends (ms). `null` when it is closed. The funded
    * scenario starts unlocked, so the window is open. */
   signingUntil: number | null;
@@ -255,7 +262,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
-    masternodes: newMasternodesWorld(),
+    masternodes: noMasternodesWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
     pending: newPendingWorld(),
@@ -711,6 +718,42 @@ const SCENARIOS = {
     w.send.rescanFirst = [row.txid];
     return w;
   },
+  /** An unconfirmed payment whose later payment locked while its detail was open: Abandon is
+   * offered and refused, and the detail says why. */
+  "abandon-settled-child": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5c".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChild = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment a later payment spends from, already locked when the detail opens:
+   * Abandon isn't offered. */
+  "abandon-settled-child-hidden": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5d".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChildHidden = [row.txid];
+    return w;
+  },
   /** A payment this wallet made on another device, seen only by its change before the coins it
    * spent are known: its debit is unknown, so Abandon warns about paying twice. */
   "abandon-debit-unknown": (t) => {
@@ -858,6 +901,12 @@ const SCENARIOS = {
     w.sync = { ...s, caughtUp: false, activePhase: "filters", phases: s.phases.map((p) => ({ ...p, currentHeight: p.targetHeight! - 1, done: false })) };
     return w;
   },
+  /** Shielded ready and funded while the wallet's Core sync still runs: a shield's funding waits. */
+  "shielded-core-syncing": (t) => {
+    const w = base(t);
+    w.sync = syncing();
+    return w;
+  },
   /** Shielded is on and its account is not established yet: its actions wait and say why. */
   "shielded-syncing": (t) => {
     const w = base(t);
@@ -937,6 +986,13 @@ const SCENARIOS = {
   "recovery-checking": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 1;
+    return w;
+  },
+  /** Two restored locks that may already be applied: the card's plural Checking line. */
+  "recovery-checking-two": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking"), restoredLock(2, 25_000_000, "checking")];
     w.pending.recovery.checksBeforeApply = 1;
     return w;
   },

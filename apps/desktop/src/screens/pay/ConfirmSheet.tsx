@@ -39,6 +39,7 @@ import {
   failureText,
   isContact,
   keepsPromise,
+  mixedSendNotes,
   paysWithUnmixed,
   receivedAmounts,
   settleNotSent,
@@ -163,6 +164,7 @@ export function ConfirmSheet({
   const subtracting = payer >= 0 && deducted > 0 ? many![payer] : null;
   // The fee against what the payee gets (after a subtract-fee share; the change is not in it).
   const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
+  const mixed = mixedSendNotes(coins.coins, estimate);
   const toast = useActionToast(walletId);
   const normal = coins.coins !== "mixed";
   const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: normal });
@@ -461,7 +463,26 @@ export function ConfirmSheet({
                 {t("pay.confirm.subtractNoteMany", { amount: `${shown.full(deducted)} ${unit}`, address: ("label" in subtracting && subtracting.label) || ("address" in subtracting ? subtracting.address : "") })}
               </p>
             )
-          : subtractsFee(recipient) && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
+          : subtractsFee(recipient) &&
+            // Only when the fee took something: a remainder can pay it all (a fully mixed payment).
+            estimate.totalSent < recipient.amount && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
+        {mixed && (
+          <>
+            <p className="placeholder-note" data-testid="pay-confirm-mixed-coins">
+              {t("pay.confirm.mixed.coins", { count: mixed.inputCount })}
+            </p>
+            {mixed.manyCoins && (
+              <p className="fee-warning" role="alert" data-testid="pay-confirm-mixed-warning">
+                {t("pay.confirm.mixed.manyCoins")}
+              </p>
+            )}
+            {mixed.leftOver !== null && (
+              <p className="placeholder-note" data-testid="pay-confirm-mixed-change">
+                {t.rich("pay.confirm.mixed.noChange", { amount: <AmountText text={shown.full(mixed.leftOver)} unitName={unit} glyph={false} /> })}
+              </p>
+            )}
+          </>
+        )}
         {changeAddress !== null && <p className="placeholder-note">{t("pay.confirm.changeNote")}</p>}
         {unmixed && (
           <p className="placeholder-note" data-testid="pay-confirm-unmixed">

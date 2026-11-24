@@ -540,7 +540,7 @@ async function main() {
     // Masternodes, once Settings ▸ General shows them: each tab and Create proposal.
     shortcut("ctrl+comma");
     await wd.press(tid("settings-tabs-general"));
-    await wd.press(tid("settings-show-masternodes"));
+    await wd.press(tid("settings-show-masternodes-on"));
     // Governance data is off on regtest: the setting asks whether to load it; no, stay offline.
     await walkAt("settings: load governance data?", tid("settings-governance-ask"));
     await closeSheet();

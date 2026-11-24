@@ -230,14 +230,14 @@ describe("IOS-050 Accept and pay: one credential, one lease (D10, D11)", () => {
 
 describe("IOS-050 U-03's promise and refusals for a contact (D9, D13)", () => {
   const pay: ContactRecipient = { identity: ME, contact: BOB, amount: 1_000_000, subtractFee: false, note: "Lunch" };
-  const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 1_000_000 };
+  const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 1_000_000, leftOver: 0 };
   const confirmed = confirmedOf(pay, estimate, { kind: "auto" });
   const prepared = (outputs: PreparedTxSummary["outputs"], over: Partial<PreparedTxSummary> = {}): PreparedTxSummary => ({
     txid: "ab".repeat(32),
     fee: 226,
     feeRatePerKb: 1000,
     sizeBytes: 226,
-    inputs: [],
+    inputs: [{ outpoint: { txid: "cd".repeat(32), vout: 0 }, address: null, amount: 1_000_236 }],
     outputs,
     totalSent: 1_000_000,
     totalDebit: 1_000_226,

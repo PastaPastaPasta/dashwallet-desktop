@@ -6,11 +6,13 @@
       "contenders": [
         {
           "identity": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P",
-          "votes": 9
+          "votes": 9,
+          "name": "Alice"
         },
         {
           "identity": "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",
-          "votes": 4
+          "votes": 4,
+          "name": null
         }
       ],
       "lock_votes": 5,
@@ -23,7 +25,8 @@
       "contenders": [
         {
           "identity": "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",
-          "votes": 0
+          "votes": 0,
+          "name": "Dash-Pay"
         }
       ],
       "lock_votes": 0,

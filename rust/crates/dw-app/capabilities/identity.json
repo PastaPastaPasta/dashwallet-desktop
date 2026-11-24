@@ -46,6 +46,8 @@
     "allow-credits-withdraw",
     "allow-credits-withdraw-to-platform-quote",
     "allow-credits-withdraw-to-platform",
+    "allow-credits-top-up-from-platform-quote",
+    "allow-credits-top-up-from-platform",
     "allow-credits-withdrawals",
     "allow-platform-addresses",
     "allow-platform-activity",

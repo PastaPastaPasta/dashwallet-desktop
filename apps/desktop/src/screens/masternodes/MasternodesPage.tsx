@@ -15,7 +15,7 @@ import type { VotingMasternode } from "../../api/generated/VotingMasternode";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useBackend } from "../../api/queries";
 import { useLaunch } from "../../app/App";
-import { useUi } from "../../app/ui";
+import { ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton, Icon } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
@@ -164,6 +164,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           <h1 className="top-intro-title">{GovText.title}</h1>
           {tab === "myMasternodes" && (
             <span className="mg-header-actions" data-testid="mn-actions">
+              <MoreMenu testId="mn-page-more" items={[{ id: "keys", title: t("masternodes.keys.open"), onSelect: () => ui.set({ dialog: "mnKeys", mnKeysRole: null }) }]} />
               <DashButton
                 variant="filledBlue"
                 size="small"

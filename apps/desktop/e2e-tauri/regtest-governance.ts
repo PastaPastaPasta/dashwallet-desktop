@@ -114,7 +114,7 @@ async function main() {
     // Masternodes is hidden until Show Masternodes is on, whatever the wallet holds (the 0.1
     // release plan): save the setting and reload, which reads it again.
     const prefs = await invoke<Record<string, unknown>>("ui_settings");
-    await invoke("set_ui_settings", { settings: { ...prefs, showMasternodes: true } });
+    await invoke("set_ui_settings", { settings: { ...prefs, masternodesItem: "on" } });
     await wd.script("location.reload()");
     await wd.waitFor(tid("sidebar-masternodes"), "Masternodes in the sidebar (Show Masternodes on)", LOAD_WAIT_MS);
     await wd.press(tid("sidebar-masternodes"));

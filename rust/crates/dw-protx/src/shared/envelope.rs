@@ -10,6 +10,8 @@
 //! the masternode's share table or the session's terms. Signature
 //! verification and the comparisons with a held session are the caller's.
 
+use std::collections::HashSet;
+
 use dashcore::Network;
 use dashcore::hashes::{Hash, sha256};
 
@@ -32,7 +34,8 @@ pub const SIGS_VERSION: i32 = 1;
 pub enum EnvelopeError {
     #[error("this isn't a shared-masternode message")]
     NotShared,
-    #[error("the message is larger than 2 MiB")]
+    /// Over 2 MiB, or a code that would render past [`MAX_CODE_BYTES`].
+    #[error("the message is too large")]
     TooLarge,
     #[error("the message is malformed ({0})")]
     Parse(&'static str),
@@ -398,6 +401,71 @@ pub fn decode_tx_hex(h: &str) -> Option<SpecialTx> {
     SpecialTx::from_bytes(&hex::decode(h).ok()?).ok()
 }
 
+/// The deepest nesting a message may have. dash-qt's envelopes nest five
+/// levels (session, `contributions`, a contribution, `inputs`, an input);
+/// UniValue reads 512.
+pub const MAX_MESSAGE_DEPTH: usize = 16;
+/// The most values a message may hold: containers and the members and
+/// elements after each `,`. A standard funding transaction's inputs take a
+/// few thousand.
+pub const MAX_MESSAGE_VALUES: usize = 1 << 16;
+/// The most bytes [`fingerprint`] may render: a message dash-qt wrote is
+/// already in that form and at most [`MAX_ENVELOPE_BYTES`].
+pub const MAX_CODE_BYTES: usize = 2 * MAX_ENVELOPE_BYTES;
+
+/// Counts the nesting and the values of JSON text before it is read, so a
+/// message past [`MAX_MESSAGE_DEPTH`] or [`MAX_MESSAGE_VALUES`] builds no
+/// tree. For valid JSON the depth is exact and the count a bound; whatever
+/// it passes the reader still judges.
+fn check_text_shape(text: &[u8]) -> Result<(), EnvelopeError> {
+    let (mut depth, mut values) = (0usize, 1usize);
+    let (mut in_string, mut escaped) = (false, false);
+    for &b in text {
+        if in_string {
+            match (escaped, b) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                values += 1;
+                if depth > MAX_MESSAGE_DEPTH {
+                    return Err(EnvelopeError::Parse("depth"));
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' => values += 1,
+            _ => continue,
+        }
+        if values > MAX_MESSAGE_VALUES {
+            return Err(EnvelopeError::Parse("size"));
+        }
+    }
+    Ok(())
+}
+
+/// A key twice in one object, at any level. UniValue keeps both, `find`
+/// reads the first and [`without_fingerprint`] the last, so the two can
+/// disagree on what the code covers; no writer emits one.
+fn has_duplicate_key(json: &Json) -> bool {
+    match json {
+        Json::Arr(values) => values.iter().any(has_duplicate_key),
+        Json::Obj(entries) => {
+            let mut seen = HashSet::with_capacity(entries.len());
+            entries
+                .iter()
+                .any(|(k, v)| !seen.insert(k.as_slice()) || has_duplicate_key(v))
+        }
+        _ => false,
+    }
+}
+
 /// One pasted or opened message, told apart as `SharedMnImport::Detect`
 /// does (MG-04b §2.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,10 +485,13 @@ pub enum SharedMessage {
 }
 
 /// Reads a message: input over 2 MiB is refused unread
-/// (`sharedmnwidgets.h:158`), the text is trimmed; a JSON object with one of
-/// the two types is that envelope, any other object is refused; a JSON
-/// array is a bare signature list; otherwise hex of a type-10 transaction is
-/// a standby, and anything else is refused.
+/// (`sharedmnwidgets.h:158`), the text is trimmed; JSON past
+/// [`MAX_MESSAGE_DEPTH`] or [`MAX_MESSAGE_VALUES`], with a key twice in an
+/// object, or whose code would render past [`MAX_CODE_BYTES`] is refused
+/// before its code is computed; a JSON object with one of the two types is
+/// that envelope, any other object is refused; a JSON array is a bare
+/// signature list; otherwise hex of a type-10 transaction is a standby, and
+/// anything else is refused.
 pub fn decode_message(text: &str, network: Network) -> Result<SharedMessage, EnvelopeError> {
     if text.len() > MAX_ENVELOPE_BYTES {
         return Err(EnvelopeError::TooLarge);
@@ -429,7 +500,16 @@ pub fn decode_message(text: &str, network: Network) -> Result<SharedMessage, Env
     if trimmed.is_empty() {
         return Err(EnvelopeError::NotShared);
     }
+    if trimmed.starts_with(['[', '{']) {
+        check_text_shape(trimmed.as_bytes())?;
+    }
     if let Some(json) = Json::read(trimmed.as_bytes()) {
+        if has_duplicate_key(&json) {
+            return Err(EnvelopeError::Parse("duplicate key"));
+        }
+        if json.written_len(2) > MAX_CODE_BYTES {
+            return Err(EnvelopeError::TooLarge);
+        }
         if let Some(entries) = json.as_array() {
             return Ok(SharedMessage::BareSigs(read_sig_entries(entries)));
         }
@@ -684,6 +764,78 @@ mod tests {
                 .entries,
             Some(None)
         );
+    }
+
+    #[test]
+    fn test_QT_126_a_key_twice_at_any_level_is_refused() {
+        let net = Network::Regtest;
+        let sigs = String::from_utf8(sigs_json(|_| {}).write(2)).unwrap();
+        let refused = |text: &str| {
+            assert_eq!(
+                decode_message(text, net),
+                Err(EnvelopeError::Parse("duplicate key")),
+                "{text}"
+            )
+        };
+        refused(&sigs.replacen("\"kind\"", "\"kind\": \"registrar\",\n  \"kind\"", 1));
+        refused(&sigs.replacen("\"shareIndex\"", "\"shareIndex\": 5,\"shareIndex\"", 1));
+        refused(r#"[{"shareIndex":0,"signature":"","signature":""}]"#);
+        assert!(matches!(
+            decode_message(&sigs, net),
+            Ok(SharedMessage::Sigs(_))
+        ));
+    }
+
+    /// Under 2 MiB, but deep or wide enough that its code would render
+    /// to many times that: refused before the code is computed.
+    #[test]
+    fn test_QT_126_a_message_past_the_budget_is_refused_before_its_code() {
+        let net = Network::Regtest;
+        let nest = |depth: usize, inner: &str| {
+            format!(
+                "{{\"type\":\"{SESSION_TYPE}\",\"x\":{}{inner}{}}}",
+                "[".repeat(depth - 1),
+                "]".repeat(depth - 1)
+            )
+        };
+        let ones = |n: usize| format!("[{}1]", "1,".repeat(n - 1));
+        // 400 levels over 20,000 values: about 16 MB of indentation.
+        let deep = nest(400, &ones(20_000));
+        assert_eq!(
+            decode_message(&deep, net),
+            Err(EnvelopeError::Parse("depth"))
+        );
+        assert_eq!(
+            decode_message(&nest(MAX_MESSAGE_DEPTH + 1, "1"), net),
+            Err(EnvelopeError::Parse("depth"))
+        );
+        // Within the depth, a session without its members reads as one.
+        assert_eq!(
+            decode_message(&nest(MAX_MESSAGE_DEPTH, "1"), net),
+            Err(EnvelopeError::Parse("version"))
+        );
+        assert_eq!(
+            decode_message(&ones(MAX_MESSAGE_VALUES), net),
+            Err(EnvelopeError::Parse("size"))
+        );
+        // Within both counts, a long string beside 65,000 values indented
+        // 16 levels deep renders past the code's budget.
+        let wide = format!(
+            "[\"{}\",{}{}{}]",
+            "a".repeat(1_950_000),
+            "[".repeat(MAX_MESSAGE_DEPTH - 2),
+            ones(65_000),
+            "]".repeat(MAX_MESSAGE_DEPTH - 2)
+        );
+        assert!(wide.len() <= MAX_ENVELOPE_BYTES);
+        assert!(Json::read(wide.as_bytes()).unwrap().written_len(2) > MAX_CODE_BYTES);
+        assert_eq!(decode_message(&wide, net), Err(EnvelopeError::TooLarge));
+        // Brackets inside strings are text, not nesting.
+        let quoted = format!("[\"{}\"]", "[{".repeat(MAX_MESSAGE_VALUES));
+        assert!(matches!(
+            decode_message(&quoted, net),
+            Ok(SharedMessage::BareSigs(_))
+        ));
     }
 
     #[test]

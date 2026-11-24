@@ -415,6 +415,19 @@ pub enum IdentityCmd {
         #[arg(long)]
         quote_only: bool,
     },
+    /// Top up an identity's credits from the wallet's Platform addresses.
+    TopUpFromPlatform {
+        #[command(flatten)]
+        who: Who,
+        #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+        credits: Option<u64>,
+        /// The usable balance less what the first input keeps for the fee.
+        #[arg(long)]
+        all: bool,
+        /// Print the quote only.
+        #[arg(long)]
+        quote_only: bool,
+    },
     /// Top-up asset locks Platform has not taken yet.
     TopUpPending,
     /// Top-up fundings whose outcome is unknown (Tools ▸ Repair resolves
@@ -912,6 +925,7 @@ fn registration_params(e: &RegistrationError) -> Value {
         R::Recoverable { draft } => json!({"draft": draft}),
         R::Name(n) => name_params(n),
         R::Invitation(i) => invitation_params(i),
+        R::Credits(c) => credits_params(c),
         R::Platform(p) => platform_params(p),
     }
 }
@@ -1977,6 +1991,24 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             let outcome = ctx.block_on(dp.top_up(identity, duffs, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
+        IdentityCmd::TopUpFromPlatform {
+            who,
+            credits,
+            all: _,
+            quote_only,
+        } => {
+            let identity = who.or_main(&dp)?;
+            let amount = credits.map_or(WithdrawAmount::All, |credits| WithdrawAmount::Credits {
+                credits,
+            });
+            let quote = ctx.block_on(dp.top_up_from_platform_quote(identity.clone(), amount))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome = ctx.block_on(dp.top_up_from_platform(identity, amount, grant))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
         IdentityCmd::TopUpPending => out(ctx.block_on(dp.pending_top_ups())?),
         IdentityCmd::TopUpStuck => out(ctx.block_on(dp.stuck_top_up_fundings())?),
         IdentityCmd::TopUpResume { txid } => {
@@ -2800,6 +2832,10 @@ mod tests {
             NOT_IDENTIFIER,
         ),
         ("identity withdrawals --identity I", NOT_IDENTIFIER),
+        (
+            "identity top-up-from-platform --identity I --credits 5 --quote-only",
+            NOT_IDENTIFIER,
+        ),
         ("identity top-up-stuck", r#"{"ok":true,"result":[]}"#),
         (
             "identity top-up-resume abababababababababababababababababababababababababababababababab",
@@ -2977,6 +3013,10 @@ mod tests {
         ),
         ("identity costs", "DashPay.cost_table"),
         ("identity withdrawals --identity I", "DashPay.withdrawals"),
+        (
+            "identity top-up-from-platform --identity I --credits 5 --quote-only",
+            "DashPay.top_up_from_platform_quote",
+        ),
         ("identity top-up-pending", "DashPay.pending_top_ups"),
         ("identity top-up-stuck", "DashPay.stuck_top_up_fundings"),
         (

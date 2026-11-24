@@ -9,7 +9,7 @@ import type { CollateralCoin } from "../api/generated/CollateralCoin";
 import type { MnRegistrationPreview } from "../api/generated/MnRegistrationPreview";
 import type { ProTxKeys } from "../api/generated/ProTxKeys";
 import { t } from "../i18n";
-import { collateralNote, HELD_CALLS, REGISTRATION_SENDS, SENDING_CALLS, buildRequest, registrationCalls, coinsFor, finalAction, newDraft, normalOutpoint, refusalOf, registerCap, samePreview, serviceError, shareBasisPoints, stepErrors, type Ports, type RegDraft } from "./registration";
+import { collateralNote, HELD_CALLS, registrationSends, SENDING_CALLS, buildRequest, registrationCalls, coinsFor, finalAction, newDraft, normalOutpoint, refusalOf, registerCap, samePreview, serviceError, shareBasisPoints, stepErrors, type Ports, type RegDraft } from "./registration";
 
 const R = "masternodes.register";
 const COIN = 100_000_000;
@@ -168,19 +168,29 @@ describe("refusals go to their step and field (§1.6)", () => {
   });
 });
 
-describe("sending is off (D14)", () => {
-  it("has no Register at Review or Prove while REGISTRATION_SENDS is off", () => {
-    expect(REGISTRATION_SENDS).toBe(false);
-    expect(finalAction("review", false)).toBe("sendOff");
-    expect(finalAction("prove", true)).toBe("sendOff");
-    expect(finalAction("review", true)).toBe("sendOff");
-    expect(finalAction("keys", false)).toBe("continue");
+describe("sending follows the network (D14)", () => {
+  it("is off on mainnet and while the network is still loading, and on for testnet, regtest and devnet", () => {
+    expect(registrationSends(null)).toBe(false);
+    expect(registrationSends(undefined)).toBe(false);
+    expect(registrationSends({ kind: "mainnet" })).toBe(false);
+    expect(registrationSends({ kind: "testnet" })).toBe(true);
+    expect(registrationSends({ kind: "regtest" })).toBe(true);
+    expect(registrationSends({ kind: "devnet" })).toBe(true);
   });
 
-  it("brings Register back when the constant turns on", () => {
-    expect(finalAction("review", false, true)).toBe("register");
-    expect(finalAction("prove", true, true)).toBe("submit");
-    expect(finalAction("review", true, true)).toBe("continue");
+  it("has no Register at Review or Prove on mainnet", () => {
+    const sends = registrationSends({ kind: "mainnet" });
+    expect(finalAction("review", false, sends)).toBe("sendOff");
+    expect(finalAction("prove", true, sends)).toBe("sendOff");
+    expect(finalAction("review", true, sends)).toBe("sendOff");
+    expect(finalAction("keys", false, sends)).toBe("continue");
+  });
+
+  it("offers Register on testnet", () => {
+    const sends = registrationSends({ kind: "testnet" });
+    expect(finalAction("review", false, sends)).toBe("register");
+    expect(finalAction("prove", true, sends)).toBe("submit");
+    expect(finalAction("review", true, sends)).toBe("continue");
   });
 });
 
@@ -190,19 +200,19 @@ describe("a held wizard only reads (D14)", () => {
     return b as unknown as Backend & Record<string, ReturnType<typeof vi.fn>>;
   };
 
-  it("reaches the backend with keys and preview, and with nothing else", async () => {
-    expect(REGISTRATION_SENDS).toBe(false);
+  it("reaches the backend with keys and preview, and with nothing else, on mainnet", async () => {
+    expect(registrationSends({ kind: "mainnet" })).toBe(false);
     const b = backend();
-    const calls = registrationCalls(b) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    const calls = registrationCalls(b, registrationSends({ kind: "mainnet" })) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
     for (const k of HELD_CALLS) await calls[k]("w");
     for (const k of SENDING_CALLS) await expect(calls[k]("w")).rejects.toThrow();
     for (const k of HELD_CALLS) expect(b[k]).toHaveBeenCalledOnce();
     for (const k of SENDING_CALLS) expect(b[k]).not.toHaveBeenCalled();
   });
 
-  it("passes every call through once sending is on", async () => {
+  it("passes every call through on testnet", async () => {
     const b = backend();
-    const calls = registrationCalls(b, true) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    const calls = registrationCalls(b, registrationSends({ kind: "testnet" })) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
     for (const k of SENDING_CALLS) await calls[k]("w");
     for (const k of SENDING_CALLS) expect(b[k]).toHaveBeenCalledOnce();
   });
@@ -218,7 +228,7 @@ describe("a held wizard only reads (D14)", () => {
         if (!gated) expect(src.match(new RegExp(`\\bb\\.${k}\\(`)), `${f} calls ${k} on the backend`).toBeNull();
       }
     }
-    expect(readFileSync(join(dir, "RegisterSheet.tsx"), "utf8")).toMatch(/const b = registrationCalls\(backend\);/);
+    expect(readFileSync(join(dir, "RegisterSheet.tsx"), "utf8")).toMatch(/const b = registrationCalls\(backend, sends\);/);
   });
 });
 

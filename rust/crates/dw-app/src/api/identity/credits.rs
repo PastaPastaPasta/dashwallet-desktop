@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::flows::GrantRequest;
+use super::platform_addresses::{PlatformActivityState, PlatformAddressRow};
 use crate::dto::mirror_enum;
 use crate::dto::platform::DispatchStateName;
 
@@ -418,6 +419,93 @@ impl From<engine::WithdrawToPlatformOutcome> for WithdrawToPlatformOutcome {
             to,
             remaining_credits,
             transition,
+        }
+    }
+}
+
+/// What topping an identity up from the Platform addresses takes. Show
+/// `credits + feeCredits` ("about"); `debitCredits` is the grant's cap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TopUpFromPlatformQuote {
+    /// What the identity gains.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    /// The fee estimate, taken from the first input.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_credits: u64,
+    /// `credits` and what the first input keeps for the fee.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub debit_credits: u64,
+    /// Each address with its claim, the fee's address first.
+    pub inputs: Vec<PlatformAddressRow>,
+    pub grant: GrantRequest,
+}
+
+impl From<engine::TopUpFromPlatformQuote> for TopUpFromPlatformQuote {
+    fn from(q: engine::TopUpFromPlatformQuote) -> Self {
+        let engine::TopUpFromPlatformQuote {
+            credits,
+            fee_credits,
+            debit_credits,
+            inputs,
+            grant,
+        } = q;
+        TopUpFromPlatformQuote {
+            credits,
+            fee_credits,
+            debit_credits,
+            inputs: inputs.into_iter().map(Into::into).collect(),
+            grant: grant.into(),
+        }
+    }
+}
+
+/// A top-up from the Platform addresses as the call left it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TopUpFromPlatformOutcome {
+    /// Its `toIdentity` activity row's id.
+    pub id: String,
+    /// What the identity gains.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    /// Once done, the fee its inputs' proved balances show.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub fee_credits: Option<u64>,
+    /// `done` only on the inputs' proved nonces; `pending` holds the next
+    /// move.
+    pub state: PlatformActivityState,
+    /// It may still go through: it holds the Platform balance.
+    pub may_land: bool,
+    /// The identity's balance from Platform's answer; shown only.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub balance: Option<u64>,
+}
+
+impl From<engine::TopUpFromPlatformOutcome> for TopUpFromPlatformOutcome {
+    fn from(o: engine::TopUpFromPlatformOutcome) -> Self {
+        let engine::TopUpFromPlatformOutcome {
+            id,
+            credits,
+            fee_credits,
+            state,
+            may_land,
+            balance,
+        } = o;
+        TopUpFromPlatformOutcome {
+            id,
+            credits,
+            fee_credits,
+            state: state.into(),
+            may_land,
+            balance,
         }
     }
 }

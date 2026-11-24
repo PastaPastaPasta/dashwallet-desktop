@@ -80,6 +80,12 @@ impl Plan {
     pub fn total_sent(&self) -> u64 {
         self.amounts.iter().sum()
     }
+
+    /// The fee beyond `rate` for the transaction's size: a dust remainder,
+    /// and a CoinJoin payment's change (U-06b).
+    pub fn left_over(&self, rate: FeeRate) -> u64 {
+        fee_for(rate, self.estimated_size).map_or(0, |f| self.fee.saturating_sub(f))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -156,13 +162,29 @@ fn shapes(outputs: &[usize], change_len: usize, inputs: usize) -> Shapes {
 
 /// Plans a payment of `outputs` from `choice` at `rate`, with change to a
 /// script of `change_len` bytes. `height` is the wallet's processed height
-/// (coinbase maturity).
+/// (coinbase maturity). Tests only: the engine plans with [`plan_with`].
+#[cfg(test)]
 pub(crate) fn plan(
     choice: InputChoice<'_>,
     outputs: &[PlanOutput],
     rate: FeeRate,
     change_len: usize,
     height: u32,
+) -> Result<Plan, PlanError> {
+    plan_with(choice, outputs, rate, change_len, height, false)
+}
+
+/// Plans a payment, with `no_change` for a payment that makes no change output (a
+/// CoinJoin payment): its remainder is fee from the start, so with
+/// subtract fee it pays the fee first and the recipients only what is left
+/// of it (Dash Core's CoinJoin send page).
+pub(crate) fn plan_with(
+    choice: InputChoice<'_>,
+    outputs: &[PlanOutput],
+    rate: FeeRate,
+    change_len: usize,
+    height: u32,
+    no_change: bool,
 ) -> Result<Plan, PlanError> {
     let total_out = outputs
         .iter()
@@ -227,7 +249,9 @@ pub(crate) fn plan(
             count: inputs.len(),
         });
     }
-    use_all(inputs, outputs, &lens, total_out, rate, change_len)
+    use_all(
+        inputs, outputs, &lens, total_out, rate, change_len, no_change,
+    )
 }
 
 /// Plans spending every coin of `inputs`.
@@ -238,6 +262,7 @@ fn use_all(
     total_out: u64,
     rate: FeeRate,
     change_len: usize,
+    no_change: bool,
 ) -> Result<Plan, PlanError> {
     let total_in = inputs
         .iter()
@@ -253,7 +278,7 @@ fn use_all(
         if let Some(change) = total_in
             .checked_sub(total_out)
             .and_then(|r| r.checked_sub(fee_with))
-            .filter(|c| *c > dust)
+            .filter(|c| *c > dust && !no_change)
         {
             return Ok(Plan {
                 inputs,
@@ -288,7 +313,7 @@ fn use_all(
         .ok_or(PlanError::AmountExceedsBalance {
             available: total_in,
         })?;
-    let (fee_share, change, size) = if remainder > dust {
+    let (fee_share, change, size) = if remainder > dust && !no_change {
         (fee_with, Some(remainder), s.with_change)
     } else {
         (
@@ -664,6 +689,56 @@ mod tests {
             (p.inputs.len(), p.amounts, p.fee),
             (1, vec![9_999_908], 192)
         );
+    }
+
+    /// U-06b: a mixed payment's change and its output's fee are the fee
+    /// beyond the rate; an exact payment and a normal one leave none.
+    #[test]
+    fn the_left_over_is_the_fee_beyond_the_rate() {
+        const NO_CHANGE: u64 = 148 * 2 + 34 + 10;
+        let coins = [coin(1, 1_000_010), coin(2, 1_000_010)];
+        let finished = |amount, subtract, coinjoin| {
+            let p = plan_with(
+                InputChoice::UseAll(&coins),
+                &[out(9, amount, subtract)],
+                rate1(),
+                P2PKH,
+                1000,
+                coinjoin,
+            )
+            .unwrap();
+            super::super::finish(p, coinjoin, P2PKH).unwrap()
+        };
+        let normal = finished(1_500_000, false, false);
+        let change = normal.change.unwrap();
+        assert_eq!(normal.left_over(rate1()), 0);
+        let mixed = finished(1_500_000, false, true);
+        assert_eq!(mixed.change, None);
+        assert_eq!(mixed.left_over(rate1()), change + 34);
+        assert_eq!(mixed.fee, mixed.left_over(rate1()) + NO_CHANGE);
+        let exact = finished(2_000_020 - NO_CHANGE, false, true);
+        assert_eq!((exact.change, exact.left_over(rate1())), (None, 0));
+        // A dust remainder is fee beyond the rate, with or without subtract fee.
+        let dust = finished(2_000_020 - NO_CHANGE - 100, false, false);
+        assert_eq!((dust.change, dust.left_over(rate1())), (None, 100));
+        let dust_subtract = finished(2_000_020 - 400, true, false);
+        assert_eq!(
+            (dust_subtract.change, dust_subtract.left_over(rate1())),
+            (None, 400 - NO_CHANGE)
+        );
+        // Subtract fee from mixed coins: the remainder pays the fee first,
+        // so the payee is charged nothing here and no change output is
+        // priced (#464); the left-over is the same as without subtract fee.
+        let mixed_subtract = finished(1_500_000, true, true);
+        assert_eq!(mixed_subtract.amounts, vec![1_500_000]);
+        assert_eq!(mixed_subtract.fee, 500_020);
+        assert_eq!(mixed_subtract.left_over(rate1()), change + 34);
+        // A remainder short of the fee: the payee pays only the rest of it.
+        let short = finished(2_000_020 - 100, true, true);
+        assert_eq!(short.amounts, vec![2_000_020 - 100 - (NO_CHANGE - 100)]);
+        assert_eq!(short.fee, NO_CHANGE);
+        // Subtract fee with change kept leaves none.
+        assert_eq!(finished(1_500_000, true, false).left_over(rate1()), 0);
     }
 
     #[test]
