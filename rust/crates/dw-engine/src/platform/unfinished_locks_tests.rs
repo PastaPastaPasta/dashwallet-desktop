@@ -121,13 +121,35 @@ fn every_kind_names_its_funding_type_and_no_other_type_is_a_kind() {
 }
 
 /// A lock a restore read back from the chain that no funding step here
-/// signed is unfinished and ready to try: nothing tells whether Platform
-/// took it.
+/// signed may already have been added on Platform, and nothing the wallet
+/// reads tells whether it was: it reads Checking, as this device's own
+/// recovered lock does, never Ready ("this wallet hasn't seen it added").
 #[test]
-fn a_restored_chain_locked_lock_is_ready() {
+fn a_restored_chain_locked_lock_is_checking() {
     let l = lock(1, LockStatus::RecoveredFromChain);
     let state = Ev::default().state(&l);
-    assert_eq!(state, Some((LockOrigin::Restored, UnfinishedState::Ready)));
+    assert_eq!(
+        state,
+        Some((LockOrigin::Restored, UnfinishedState::Checking))
+    );
+}
+
+/// A restore's lock below the apply's minimum could not have been added:
+/// it reads TooSmall, read back from the chain or not.
+#[test]
+fn a_restored_chain_locked_lock_below_the_minimum_is_too_small() {
+    let l = lock(1, LockStatus::RecoveredFromChain);
+    let ev = Ev {
+        minimum: Some(Minimum {
+            duffs: l.amount + 1,
+            code: "shielded.below_minimum",
+        }),
+        ..Ev::default()
+    };
+    assert_eq!(
+        ev.state(&l),
+        Some((LockOrigin::Restored, UnfinishedState::TooSmall))
+    );
 }
 
 /// A lock of this device's the library holds "consumption unknown" reads
@@ -187,7 +209,7 @@ fn a_lock_without_a_proof_is_confirming() {
 
 #[test]
 fn an_apply_that_may_have_executed_is_checking() {
-    let l = lock(1, LockStatus::RecoveredFromChain);
+    let l = lock(1, LockStatus::ChainLocked);
     let ev = Ev {
         unknown: txids([l.outpoint.txid]),
         ..Ev::default()
@@ -203,7 +225,7 @@ fn an_apply_that_may_have_executed_is_checking() {
 /// sibling outpoint's report says nothing of it.
 #[test]
 fn a_lock_reported_used_is_finished_and_only_at_its_outpoint() {
-    let l = lock(1, LockStatus::RecoveredFromChain);
+    let l = lock(1, LockStatus::ChainLocked);
     let ev = Ev {
         used: HashSet::from([l.outpoint]),
         ..Ev::default()
@@ -483,7 +505,7 @@ fn detection_lists_the_unfinished_locks_only_sorted() {
                 restored.outpoint.txid.to_string(),
                 2_000_000,
                 LockOrigin::Restored,
-                UnfinishedState::Ready
+                UnfinishedState::Checking
             ),
             (
                 own.outpoint.txid.to_string(),
@@ -661,7 +683,7 @@ fn a_txid_of_two_locks_is_told_apart_by_outpoint() {
 fn a_sibling_of_another_kind_settled_by_txid_hides_nothing() {
     let shield = KindLock {
         credit_outputs: 2,
-        ..alone(&lock(1, LockStatus::RecoveredFromChain))
+        ..alone(&lock(1, LockStatus::ChainLocked))
     };
     let txid = shield.info.outpoint.txid;
     let kind = FakeKind {

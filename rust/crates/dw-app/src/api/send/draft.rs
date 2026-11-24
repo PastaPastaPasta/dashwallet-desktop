@@ -176,6 +176,9 @@ pub struct TxEstimate {
     pub change: Option<u64>,
     /// What the recipients receive, after any subtract-fee share.
     pub total_sent: u64,
+    /// The part of `fee` beyond the draft's rate for `sizeBytes`: a
+    /// CoinJoin payment's change and a dust remainder (U-06b).
+    pub left_over: u64,
 }
 
 impl From<EngineTxEstimate> for TxEstimate {
@@ -186,6 +189,7 @@ impl From<EngineTxEstimate> for TxEstimate {
             input_count,
             change,
             total_sent,
+            left_over,
         } = e;
         TxEstimate {
             fee,
@@ -193,6 +197,7 @@ impl From<EngineTxEstimate> for TxEstimate {
             input_count,
             change,
             total_sent,
+            left_over,
         }
     }
 }

@@ -27,7 +27,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("name-row-a11ce")).toContainText("2 contenders");
     await expect(page.getByTestId("name-row-a11ce")).toContainText("You: 2 of 3 voted");
     await expect(page.getByTestId("name-row-a11ce")).toContainText("18 votes");
-    await expect(page.getByTestId("name-pane-lead")).toHaveText("8ZtW…R97P leads with 9 of 18 votes");
+    await expect(page.getByTestId("name-pane-lead")).toHaveText("Alice (8ZtW…R97P) leads with 9 of 18 votes");
     await expect(page.getByTestId("name-tally").locator("li")).toHaveCount(4);
     await expect(page.getByTestId("name-pane-masternodes")).toContainText("Votes Lock · No votes left");
     await expect(page.getByTestId("name-pane-masternodes")).toContainText("No vote yet · 5 votes left");
@@ -58,7 +58,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("name-vote-selection")).toHaveText("2 masternodes · weight 2 · no fee");
     // The present choice is off for the voter already on it.
     await sheet.getByTestId("name-choice-id:8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P").click();
-    await expect(sheet.getByTestId("name-vote-node-a1a1a1a1")).toContainText("Votes 8ZtW…R97P already");
+    await expect(sheet.getByTestId("name-vote-node-a1a1a1a1")).toContainText("Votes Alice (8ZtW…R97P) already");
     await expect(page.getByTestId("name-vote-selection")).toHaveText("1 masternode · weight 1 · no fee");
     await sheet.getByTestId("name-choice-abstain").click();
     await expect(page.getByTestId("name-vote-send")).toHaveText("Vote Abstain");
@@ -92,7 +92,7 @@ test("a counted vote moves the tally and the row's You:", async ({ page }) => {
   await expect(page.getByTestId("name-vote-result-title")).toHaveText("2 of 2 votes counted");
   await expect(page.getByTestId("name-vote-check")).toHaveCount(0);
   await page.getByTestId("name-vote-done").click();
-  await expect(page.getByTestId("name-pane-lead")).toHaveText("8ZtW…R97P leads with 8 of 19 votes");
+  await expect(page.getByTestId("name-pane-lead")).toHaveText("Alice (8ZtW…R97P) leads with 8 of 19 votes");
   await expect(page.getByTestId("name-tally-id:4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF")).toContainText("6");
   await expect(page.getByTestId("name-row-a11ce")).toContainText("You: 3 of 3 voted");
 });
@@ -327,3 +327,38 @@ for (const theme of THEMES) {
     });
   }
 }
+
+test("voters the wallet has a label for are named by it in the pane, the sheet and the result (MG-09 F3)", async ({ page }) => {
+  const errors = await open(page, "names-labelled");
+  const pane = page.getByTestId("name-pane-masternodes");
+  await expect(pane).toContainText("Home node · 203.0.113.7:19999");
+  await expect(pane).toContainText("Evonode b2b2b2b2 · 198.51.100.21:19999");
+  await expect(pane).toContainText("Masternode c3c3c3c3");
+  await page.getByTestId("name-vote").click();
+  const sheet = page.getByTestId("name-vote-sheet");
+  await expect(sheet.getByTestId("name-vote-node-a1a1a1a1")).toContainText("Home node · 203.0.113.7:19999");
+  await expect(sheet.getByTestId("name-vote-node-c3c3c3c3")).toContainText("Masternode c3c3c3c3");
+  await sheet.getByTestId("name-choice-abstain").click();
+  await page.getByTestId("name-vote-passphrase").fill("demo");
+  await page.getByTestId("name-vote-send").click();
+  await expect(page.getByTestId("name-vote-result-a1a1a1a1")).toContainText("Home node · 203.0.113.7:19999");
+  expect(errors).toEqual([]);
+});
+
+test("contenders read by their own spelling of the name with the id, and by the id alone without one (F1)", async ({ page }) => {
+  const errors = await open(page, "names");
+  const ID_1 = "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P";
+  await expect(page.getByTestId(`name-tally-id:${ID_1}`)).toContainText("Alice (8ZtW…R97P)");
+  await expect(page.getByTestId(`name-tally-id:${ID_2}`)).toContainText("4EfA…iSeF");
+  await expect(page.getByTestId(`name-tally-id:${ID_2}`)).not.toContainText("(");
+  await expect(page.getByTestId("name-pane-masternodes")).toContainText("Votes Alice (8ZtW…R97P)");
+  await page.getByTestId("name-vote").click();
+  const choice = page.getByTestId(`name-choice-id:${ID_1}`);
+  await expect(choice).toContainText("Alice (8ZtW…R97P)");
+  await choice.click();
+  await expect(page.getByTestId("name-vote-send")).toHaveText("Vote for Alice (8ZtW…R97P)");
+  await page.getByTestId("name-vote-cancel").click();
+  await page.getByTestId("name-row-dash-pay").click();
+  await expect(page.getByTestId(`name-tally-id:${ID_2}`)).toContainText("Dash-Pay (4EfA…iSeF)");
+  expect(errors).toEqual([]);
+});

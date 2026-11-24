@@ -196,6 +196,8 @@ import type { SyncLoopStatus } from "./SyncLoopStatus";
 import type { SyncPassReport } from "./SyncPassReport";
 import type { SyncStatus } from "./SyncStatus";
 import type { TimedHistoryRows } from "./TimedHistoryRows";
+import type { TopUpFromPlatformOutcome } from "./TopUpFromPlatformOutcome";
+import type { TopUpFromPlatformQuote } from "./TopUpFromPlatformQuote";
 import type { TopUpOutcome } from "./TopUpOutcome";
 import type { TopUpQuote } from "./TopUpQuote";
 import type { TxDetailExtrasInfo } from "./TxDetailExtrasInfo";
@@ -1000,10 +1002,23 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
 }
 
 /**
- * dash-qt "Abandon transaction": marks it abandoned, releases its
- * inputs and excludes it from balances. SPV cannot prove it is in no
- * mempool, so it may still confirm; the history then shows it
- * confirmed again.
+ * dash-qt "Abandon transaction": marks it abandoned, releases the
+ * inputs no processed block spent and excludes it from balances. SPV
+ * cannot prove it is in no mempool, so it may still confirm; the
+ * history then shows it confirmed again. An InstantSend-locked
+ * transaction is refused (`instantLocked`) unless a transaction in a
+ * ChainLocked block of the SPV header chain spends one of its inputs,
+ * nothing descending from it is in a block, locked or finalized, the
+ * wallet holds no record of it in a block or locked (in the session it
+ * was locked in, until a restart; #329), the history load was complete
+ * and the scan has passed the ChainLock with no replay pending; then
+ * only inputs proven unspent are released.
+ * `rescanFirst` instead when all of that holds and the only inputs
+ * missing are held by its own spend claim restored at load: a restart
+ * and a rescan give that evidence.
+ * Any transaction is refused (`instantLocked`, or `confirmed`) when
+ * abandoning it would also take one the history holds as InstantSend-
+ * locked (or in a block).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1019,9 +1034,12 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
 }
 
 /**
- * "Remove unconfirmed": abandons every unconfirmed, not
- * InstantSend-locked transaction of the wallet (every wallet when
- * `walletId` is `null`) and rescans from the lowest funding height.
+ * "Remove unconfirmed": abandons every unconfirmed transaction of the
+ * wallet (every wallet when `walletId` is `null`) that Abandon would,
+ * InstantSend-locked ones only under its ChainLock exception, then
+ * rescans once, from the lowest funding height of them all. One the
+ * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says)
+ * is skipped.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
@@ -1832,6 +1850,22 @@ export function creditsWithdrawToPlatformQuote(walletId: string, identity: strin
  */
 export function creditsWithdrawToPlatform(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawToPlatformOutcome> {
   return invoke<WithdrawToPlatformOutcome>("credits_withdraw_to_platform", { walletId, identity, to, amount, grant });
+}
+
+/**
+ * What topping the identity up with `amount` of the Platform
+ * addresses' credits takes.
+ */
+export function creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote> {
+  return invoke<TopUpFromPlatformQuote>("credits_top_up_from_platform_quote", { walletId, identity, amount });
+}
+
+/**
+ * Tops the identity up with `amount` of the Platform addresses'
+ * credits under `grant`.
+ */
+export function creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome> {
+  return invoke<TopUpFromPlatformOutcome>("credits_top_up_from_platform", { walletId, identity, amount, grant });
 }
 
 /**
@@ -3300,6 +3334,8 @@ export type CommandArgs = {
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_withdraw_to_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw_to_platform: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
+  credits_top_up_from_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
+  credits_top_up_from_platform: { walletId: string; identity: string; amount: WithdrawAmount; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
   platform_addresses: { walletId: string };
   platform_activity: { walletId: string };
@@ -3651,6 +3687,8 @@ export type CommandResults = {
   credits_withdraw: WithdrawOutcome;
   credits_withdraw_to_platform_quote: WithdrawToPlatformQuote;
   credits_withdraw_to_platform: WithdrawToPlatformOutcome;
+  credits_top_up_from_platform_quote: TopUpFromPlatformQuote;
+  credits_top_up_from_platform: TopUpFromPlatformOutcome;
   credits_withdrawals: Array<Withdrawal>;
   platform_addresses: PlatformAddressBalance;
   platform_activity: Array<PlatformActivity>;
@@ -4004,6 +4042,8 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_withdraw: "identity",
   credits_withdraw_to_platform_quote: "identity",
   credits_withdraw_to_platform: "identity",
+  credits_top_up_from_platform_quote: "identity",
+  credits_top_up_from_platform: "identity",
   credits_withdrawals: "identity",
   platform_addresses: "identity",
   platform_activity: "identity",
@@ -4294,6 +4334,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "compat.invalid_key_material",
   "compat.watch_only",
   "compat.destination_unwritable",
+  "compat.wallet_too_large",
+  "compat.extra_hd_account",
   "backup.vault_locked",
   "backup.passphrase_required",
   "backup.wrong_passphrase",
