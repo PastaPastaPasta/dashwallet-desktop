@@ -1158,7 +1158,7 @@ export const masternodes = {
     /** B7 where sends are on: without its last sentence. */
     reservationNoteSends:
       "Your share is paid from whole coins, and every coin chosen for it stays unavailable for other payments until you discard the session, even the part above your share.",
-    /** Where this wallet holds the registration: collapsed until the session is `overdue` (D49), then expanded; expanded it shows `abandon.ownFirst`. */
+    /** Where this wallet holds the registration: collapsed until the session is `overdue` (D49), then expanded; expanded it shows `abandon.ownFirst`. Under the spend back's row it shows a `spendBack.wayOut*` sentence instead, expanded once the spend back is overdue. */
     wayOut: {
       title: "Changed your mind? Ways to get your coins back ▸",
     },
@@ -1260,6 +1260,14 @@ export const masternodes = {
       sendAgain: "Send again",
       tryAgain: "Try again",
       abandonAgain: "Abandon again",
+      /** The way out under the spend back's row, by what Activity offers for the spend back; `{action}` is the sheet's next button. */
+      wayOutBoth: "Activity can send this spend back again or abandon it. Once it's abandoned there, {action} here makes a new spend of the same coins.",
+      wayOutAbandon: "You can abandon this spend back in Activity. Once it's abandoned there, {action} here makes a new spend of the same coins.",
+      wayOutResend: "Activity can send this spend back again.",
+      /** Cancelled in Activity, but Activity still offers its Abandon: that abandon didn't finish. */
+      wayOutFinish: "Activity didn't finish abandoning this spend back. Open it there and abandon it again.",
+      /** Activity holds this wallet's own transaction spending the coins, not the spend back. */
+      wayOutOwn: "First abandon this wallet's transaction that spends these coins in Activity, then choose {action} here.",
       /** Send again's confirm: `{charge}` is the replay's grant cap. */
       resendConfirm: "Send the same spend again. It's the same transaction, so it costs at most {charge}, once.",
       /** Try again's and Abandon again's confirm adds this to `abandon.question`. */
