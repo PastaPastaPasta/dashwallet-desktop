@@ -588,7 +588,7 @@ export function RegisterSheet({
   const title = d.kind === "evonode" || op?.terms.masternodeType === "evonode" ? t(`${R}.titleEvonode`) : t(`${R}.titleRegular`);
   const count = external || proving ? STEPS.length + 1 : STEPS.length;
   return (
-    <Sheet title={title} width="large" testId="reg-sheet" closable={!busy} focusKey={step} onClose={close}>
+    <Sheet title={title} width="large" testId="reg-sheet" closable={!busy} focusKey={askDiscard ? "discard" : step} onClose={close}>
       <form
         className="mg-sheet-body"
         onSubmit={(e) => {
@@ -610,12 +610,10 @@ export function RegisterSheet({
           <div className="mg-step" data-testid={`reg-step-${step}`}>
             <h3 className="mg-step-title">{stepHeading(step, d.kind, d.runner === "self", t)}</h3>
             {body}
-            {sendOff ? (
+            {sendOff && (
               <p className="mg-notice mg-notice-warning" data-testid="reg-send-off">
                 {t(`${R}.sendOff`)}
               </p>
-            ) : (
-              (reviewing || proving || notSent) && <CredentialField c={credential} busy={busy} testId="reg" />
             )}
             <p className="form-problem" role="alert" data-testid="reg-general">
               {general}
@@ -638,6 +636,7 @@ export function RegisterSheet({
           </footer>
         ) : (
           <footer className="mg-sheet-footer mg-sheet-footer-sticky">
+            {!sendOff && (reviewing || proving || notSent) && <CredentialField c={credential} busy={busy} testId="reg" className="mg-sheet-footer-credential" />}
             <span className="mg-sheet-footer-note">
               {step !== "done" && t(`${R}.stepOf`, { step: String(proving ? count : index + 1), count: String(count) })}
               {reviewing && figures && <span className="mg-small mg-muted"> {d.collateral === "fund_new" ? t(`${R}.review.withCollateral`) : external ? t(`${R}.review.external`) : t(`${R}.review.onlyFee`)}</span>}

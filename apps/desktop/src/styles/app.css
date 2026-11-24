@@ -6092,7 +6092,19 @@ button.bell-row-open:focus-visible {
   position: sticky;
   bottom: 0;
   z-index: 1;
+  flex-wrap: wrap;
   background: var(--dw-role-card);
+}
+
+/* The passphrase rides in the sticky footer, on its own row above the note and the actions. */
+.mg-sheet-footer-credential {
+  flex: 1 0 100%;
+}
+
+/* Under it, the note shrinks so the actions keep the right end of the same row. */
+.mg-sheet-footer-sticky .mg-sheet-footer-note {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 /* A 64-hex hash breaks in the middle (its <wbr>), never before its last character. */
