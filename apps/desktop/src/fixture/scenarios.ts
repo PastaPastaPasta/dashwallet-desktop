@@ -126,6 +126,9 @@ export interface World {
   paymentAuth: boolean;
   /** Quick-unlock and signing-window spend limit, in duffs. Default 0.5 DASH. */
   spendLimitDuffs: number;
+  /** The sealed limit no longer authenticates (issue 173, item 10): while unlocked the engine reports
+   * it, the limit in force is 0, and setting the limit again clears it. */
+  spendLimitUnreadable?: boolean;
   /** When the post-unlock signing window ends (ms). `null` when it is closed. The funded
    * scenario starts unlocked, so the window is open. */
   signingUntil: number | null;
@@ -858,6 +861,12 @@ const SCENARIOS = {
     w.sync = { ...s, caughtUp: false, activePhase: "filters", phases: s.phases.map((p) => ({ ...p, currentHeight: p.targetHeight! - 1, done: false })) };
     return w;
   },
+  /** Shielded ready and funded while the wallet's Core sync still runs: a shield's funding waits. */
+  "shielded-core-syncing": (t) => {
+    const w = base(t);
+    w.sync = syncing();
+    return w;
+  },
   /** Shielded is on and its account is not established yet: its actions wait and say why. */
   "shielded-syncing": (t) => {
     const w = base(t);
@@ -937,6 +946,13 @@ const SCENARIOS = {
   "recovery-checking": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 1;
+    return w;
+  },
+  /** Two restored locks that may already be applied: the card's plural Checking line. */
+  "recovery-checking-two": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking"), restoredLock(2, 25_000_000, "checking")];
     w.pending.recovery.checksBeforeApply = 1;
     return w;
   },

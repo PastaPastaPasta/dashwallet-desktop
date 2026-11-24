@@ -196,6 +196,8 @@ import type { SyncLoopStatus } from "./SyncLoopStatus";
 import type { SyncPassReport } from "./SyncPassReport";
 import type { SyncStatus } from "./SyncStatus";
 import type { TimedHistoryRows } from "./TimedHistoryRows";
+import type { TopUpFromPlatformOutcome } from "./TopUpFromPlatformOutcome";
+import type { TopUpFromPlatformQuote } from "./TopUpFromPlatformQuote";
 import type { TopUpOutcome } from "./TopUpOutcome";
 import type { TopUpQuote } from "./TopUpQuote";
 import type { TxDetailExtrasInfo } from "./TxDetailExtrasInfo";
@@ -1129,6 +1131,15 @@ export function backupDirectory(): Promise<string> {
 }
 
 /**
+ * Shows the network's automatic-backup folder in the system file
+ * manager (Settings ▸ Backups ▸ Show folder). The folder is the
+ * session's own, never an argument; one not written yet is refused.
+ */
+export function openBackupDirectory(): Promise<null> {
+  return invoke<null>("open_backup_directory");
+}
+
+/**
  * How many automatic backups are kept per wallet, and where.
  */
 export function backupPolicy(): Promise<BackupPolicyInfo> {
@@ -1848,6 +1859,22 @@ export function creditsWithdrawToPlatformQuote(walletId: string, identity: strin
  */
 export function creditsWithdrawToPlatform(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawToPlatformOutcome> {
   return invoke<WithdrawToPlatformOutcome>("credits_withdraw_to_platform", { walletId, identity, to, amount, grant });
+}
+
+/**
+ * What topping the identity up with `amount` of the Platform
+ * addresses' credits takes.
+ */
+export function creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote> {
+  return invoke<TopUpFromPlatformQuote>("credits_top_up_from_platform_quote", { walletId, identity, amount });
+}
+
+/**
+ * Tops the identity up with `amount` of the Platform addresses'
+ * credits under `grant`.
+ */
+export function creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome> {
+  return invoke<TopUpFromPlatformOutcome>("credits_top_up_from_platform", { walletId, identity, amount, grant });
 }
 
 /**
@@ -3226,6 +3253,7 @@ export type CommandArgs = {
   automatic_backups: { walletId: string | null };
   automatic_backup_failures: {  };
   backup_directory: {  };
+  open_backup_directory: {  };
   backup_policy: {  };
   set_backup_policy: { keep: number };
   read_backup_header: { path: string };
@@ -3316,6 +3344,8 @@ export type CommandArgs = {
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_withdraw_to_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw_to_platform: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
+  credits_top_up_from_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
+  credits_top_up_from_platform: { walletId: string; identity: string; amount: WithdrawAmount; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
   platform_addresses: { walletId: string };
   platform_activity: { walletId: string };
@@ -3577,6 +3607,7 @@ export type CommandResults = {
   automatic_backups: Array<BackupSummary>;
   automatic_backup_failures: Array<AutomaticBackupFailure>;
   backup_directory: string;
+  open_backup_directory: null;
   backup_policy: BackupPolicyInfo;
   set_backup_policy: BackupPolicyInfo;
   read_backup_header: BackupFileHeader;
@@ -3667,6 +3698,8 @@ export type CommandResults = {
   credits_withdraw: WithdrawOutcome;
   credits_withdraw_to_platform_quote: WithdrawToPlatformQuote;
   credits_withdraw_to_platform: WithdrawToPlatformOutcome;
+  credits_top_up_from_platform_quote: TopUpFromPlatformQuote;
+  credits_top_up_from_platform: TopUpFromPlatformOutcome;
   credits_withdrawals: Array<Withdrawal>;
   platform_addresses: PlatformAddressBalance;
   platform_activity: Array<PlatformActivity>;
@@ -3930,6 +3963,7 @@ export const COMMANDS: Record<CommandName, string> = {
   automatic_backups: "backup",
   automatic_backup_failures: "backup",
   backup_directory: "backup",
+  open_backup_directory: "backup",
   backup_policy: "backup",
   set_backup_policy: "backup",
   read_backup_header: "backup",
@@ -4020,6 +4054,8 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_withdraw: "identity",
   credits_withdraw_to_platform_quote: "identity",
   credits_withdraw_to_platform: "identity",
+  credits_top_up_from_platform_quote: "identity",
+  credits_top_up_from_platform: "identity",
   credits_withdrawals: "identity",
   platform_addresses: "identity",
   platform_activity: "identity",
@@ -4199,6 +4235,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.network_switch_failed",
   "app.explorer_open",
   "app.browser_open",
+  "app.backup_folder_missing",
+  "app.folder_open",
   "app.updates_unavailable",
   "app.update_check",
   "app.update_not_published",

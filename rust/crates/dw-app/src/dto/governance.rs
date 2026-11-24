@@ -612,18 +612,28 @@ impl From<NameChoice> for engine::NameChoice {
 }
 
 /// One contender of a contested name, with its weighted votes (`null`:
-/// Platform gave no tally).
+/// Platform gave no tally) and its own spelling of the name (`null`: its
+/// DPNS document was missing or did not decode).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NameContender {
     pub identity: String,
     pub votes: Option<u32>,
+    pub name: Option<String>,
 }
 
 impl From<engine::NameContender> for NameContender {
     fn from(c: engine::NameContender) -> Self {
-        let engine::NameContender { identity, votes } = c;
-        NameContender { identity, votes }
+        let engine::NameContender {
+            identity,
+            votes,
+            name,
+        } = c;
+        NameContender {
+            identity,
+            votes,
+            name,
+        }
     }
 }
 

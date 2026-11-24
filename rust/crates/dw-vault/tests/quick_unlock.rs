@@ -582,7 +582,21 @@ fn a_damaged_limit_on_an_enrolled_vault_can_be_set_again() {
         v.authorize(spend(1), Some(&w), Credential::QuickUnlock(&key))
             .is_err()
     );
-    // The passphrase still checks, and Settings' grant is issued.
+    // The passphrase still checks; while unlocked the policy says the limit
+    // can't be read, and reports 0, the limit in force, not the plain copy.
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    let policy = v.quick_unlock_policy();
+    assert!(policy.limit_unreadable);
+    assert_eq!(policy.spend_limit_duffs, 0);
+    // A passphrase unlock alone repairs nothing: after a reopen without
+    // setting the limit, quick unlock is still refused (Q17 T1).
+    drop(v);
+    let v = fx.open();
+    assert!(
+        v.authorize(spend(1), Some(&w), Credential::QuickUnlock(&key))
+            .is_err()
+    );
+    // Settings' grant is issued, and the limit is set again.
     v.unlock(PASS, UnlockScope::Full).unwrap();
     let limit = QUICK_UNLOCK_SPEND_LIMITS
         .iter()
@@ -592,6 +606,7 @@ fn a_damaged_limit_on_an_enrolled_vault_can_be_set_again() {
     v.set_quick_unlock_spend_limit(&change_credential_grant(&v), limit)
         .unwrap();
     assert_eq!(v.quick_unlock_policy().spend_limit_duffs, limit);
+    assert!(!v.quick_unlock_policy().limit_unreadable);
     drop(v);
 
     // After a reopen the new limit is the one enforced.

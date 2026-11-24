@@ -215,7 +215,11 @@ fn a_tampered_spend_limit_does_not_raise_the_window() {
     let v = fx.open();
     allow_window(&v);
     v.unlock(PASS, UnlockScope::Full).unwrap();
-    assert_eq!(v.quick_unlock_policy().spend_limit_duffs, 500_000_000);
+    // The tampered plain copy is not shown as the limit: it can't be read,
+    // and the limit in force is 0 (#173 item 10, Q17 F1).
+    let policy = v.quick_unlock_policy();
+    assert!(policy.limit_unreadable);
+    assert_eq!(policy.spend_limit_duffs, 0);
     assert!(matches!(
         v.authorize(spend(1), Some(&w), Credential::None),
         Err(VaultError::CredentialRequired)
