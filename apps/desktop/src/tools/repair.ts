@@ -213,6 +213,9 @@ export function resetChainAndResync(api: ResyncApi): Promise<void> {
 /** The reset under way per backend: Home and Repair asking at once share it. */
 const resets = new WeakMap<object, Promise<void>>();
 
+/** A reset of `api`'s chain data runs: its own stop of sync is not a stopped sync to read for. */
+export const resetUnderway = (api: object): boolean => resets.has(api);
+
 async function runReset(api: ResyncApi) {
   try {
     await api.stopSpv();

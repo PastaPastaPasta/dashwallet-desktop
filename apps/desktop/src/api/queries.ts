@@ -25,6 +25,7 @@ import { heroQuietEnds, heroSync, newHeroWatch, watchHero, type HeroReading, typ
 import { reconcileLockReport } from "./lockReport";
 import { isChangingUsernameInRequests } from "./username";
 import { catchUpArrival } from "../components/emptyStates";
+import { resetUnderway } from "../tools/repair";
 
 /** A history query without its paging fields. */
 export type HistoryFilter = Omit<HistoryRequest, "cursor" | "limit">;
@@ -666,7 +667,7 @@ export function useHistoryGapReads(running: boolean, wallets: string) {
   const b = useBackend();
   const client = useQueryClient();
   useEffect(() => {
-    if (!wallets) return;
+    if (!wallets || (!running && resetUnderway(b))) return;
     const timers = (running ? HISTORY_GAP_READS_MS : [0]).map((ms) =>
       setTimeout(() => {
         if (ms > 0 && client.getQueryData(keys.historyGap) != null) return;
