@@ -554,6 +554,7 @@ impl NetworkSession {
             Arc::clone(&persister),
             unloaded,
             Arc::clone(&tap),
+            Arc::clone(&hub.block_spends),
         ));
         let replay = crate::replay_record::ReplayRecords::new(Arc::clone(&appdb));
         store.install_replay(&replay);
@@ -765,6 +766,7 @@ impl NetworkSession {
         session.attach_reconcile();
         session.attach_sweep_resend();
         session.attach_balance_reread();
+        session.attach_block_spend_hold();
         session.attach_sweep_news();
         // Only a header the SPV store holds is evidence for a sweep record:
         // absent, unreadable or no SPV, its chunk stays pending.

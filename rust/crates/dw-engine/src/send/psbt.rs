@@ -508,6 +508,16 @@ impl NetworkSession {
                     .map(|c| c.utxo.outpoint),
             );
             held_lock_input(&psbt.unsigned_tx, &held)?;
+            let hold = &this.hub.block_spends;
+            if let Some(i) = (psbt.unsigned_tx.input.iter())
+                .find(|i| hold.holds(&wallet_id, &i.previous_output))
+            {
+                return Err(PsbtFailure::Invalid(format!(
+                    "input {} is held: a block may have spent it",
+                    i.previous_output
+                ))
+                .into());
+            }
             let vault = this.vault.clone();
             let signer = tokio::task::spawn_blocking(move || {
                 let token = vault.redeem_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))?;

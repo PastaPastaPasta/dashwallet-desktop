@@ -36,6 +36,9 @@ pub struct Utxo {
     pub coinjoin_rounds: Option<u32>,
     /// Spendable now: mature, not locked or reserved, keys available.
     pub spendable: bool,
+    /// Held while the wallet checks whether a block spent it elsewhere:
+    /// not spendable until the check clears it. Never a user lock.
+    pub checking: bool,
 }
 
 impl From<CoinInfo> for Utxo {
@@ -57,6 +60,7 @@ impl From<CoinInfo> for Utxo {
             coinjoin_denominated,
             coinjoin_rounds,
             spendable,
+            checking,
         } = c;
         Utxo {
             outpoint: outpoint.into(),
@@ -75,6 +79,7 @@ impl From<CoinInfo> for Utxo {
             coinjoin_denominated,
             coinjoin_rounds,
             spendable,
+            checking,
         }
     }
 }

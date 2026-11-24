@@ -163,6 +163,7 @@ pub(crate) fn coins_of(
             held: c.user_locked
                 || c.reserved
                 || c.unresolved_lock
+                || c.checking
                 || c.counted_denomination
                 || path.is_none(),
             path: path.unwrap_or_default(),

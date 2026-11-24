@@ -16,6 +16,7 @@
 //! foreign executor, `block_on`, another tokio runtime).
 
 pub mod backup;
+mod block_spends;
 pub mod coinjoin;
 mod coins;
 pub mod compat;

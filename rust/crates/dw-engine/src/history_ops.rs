@@ -421,6 +421,11 @@ impl NetworkSession {
                 .collect::<Vec<_>>()
         })
         .await?;
+        for wallet in &ids {
+            if let Err(e) = self.check_block_spends(&live.manager, *wallet).await {
+                tracing::warn!(%wallet, error = %e, "could not check the wallet's block spends at load");
+            }
+        }
 
         #[cfg(test)]
         let pause = self.hub.pause_history.lock().unwrap().take();
@@ -533,6 +538,7 @@ impl NetworkSession {
     ) {
         if !claims {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
+            self.hold_block_spends(manager, wallet).await;
             return;
         }
         let (mut candidates, mut own) = (Vec::new(), None);
@@ -652,24 +658,25 @@ impl NetworkSession {
         let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
             return;
         };
-        let core = &mut info.core_wallet;
-        let (claims, locked) = select(core, chainlock);
+        let (claims, locked) = select(&info.core_wallet, chainlock);
         let claims = claims.as_slice();
-        if claims.is_empty() {
-            return;
-        }
+        let mut removed = self.hold_block_spends_locked(wallet, info);
+        let block_spent = self.hub.block_spends.rows(&wallet);
+        let core = &mut info.core_wallet;
         (self.hub.history).with_wallet(wallet, |h| {
             h.claimed_at_load.extend(claims.iter().map(|c| c.1))
         });
         // A block this process saw spend a claimed coin mined the payment or
         // beat it: either way it claims nothing. Only a block the ChainLock
         // covers beats an InstantSend-locked one.
+        // A stored block-spend row is the same evidence, kept past the
+        // ChainLock's prune of the observed note.
         let observed = core.observed_spent_outpoints();
         let beaten: BTreeSet<Txid> = (claims.iter())
             .filter(|(o, t)| {
-                observed
-                    .get(o)
-                    .is_some_and(|h| !locked.contains(t) || chainlock.is_some_and(|cl| cl >= *h))
+                (observed.get(o).copied())
+                    .or_else(|| block_spent.get(o).map(|s| s.height))
+                    .is_some_and(|h| !locked.contains(t) || chainlock.is_some_and(|cl| cl >= h))
             })
             .map(|(_, t)| *t)
             .collect();
@@ -677,22 +684,26 @@ impl NetworkSession {
             .filter(|(_, t)| !beaten.contains(t))
             .map(|(o, t)| (*o, Some(*t)))
             .collect();
-        let held = core.restore_spent_outpoints(&restore);
+        let held = match restore.is_empty() {
+            true => Vec::new(),
+            false => crate::block_spends::restore_spent_claims(info, &restore),
+        };
+        let core = &mut info.core_wallet;
         (self.hub.history).with_wallet(wallet, |h| {
             h.claimed
                 .extend(restore.iter().filter_map(|(o, t)| Some((*o, (*t)?))))
         });
-        if held.is_empty() {
-            return;
-        }
-        let mut removed: Vec<key_wallet::Utxo> = Vec::new();
+        let claimed_from = removed.len();
         for account in core.accounts.all_funding_accounts_mut() {
             removed.extend(held.iter().filter_map(|o| account.utxos.remove(o)));
+        }
+        if removed.is_empty() {
+            return;
         }
         core.update_balance();
         self.hub
             .publish_core_balance(wallet, &core.balance(), &core.account_balances());
-        for utxo in &removed {
+        for utxo in &removed[claimed_from..] {
             let spenders: Vec<Txid> = (claims.iter())
                 .filter(|(o, _)| *o == utxo.outpoint)
                 .map(|(_, t)| *t)
@@ -700,22 +711,11 @@ impl NetworkSession {
             tracing::warn!(%wallet, outpoint = %utxo.outpoint, value = utxo.value(), ?spenders,
                 "dropped a coin an unmined own transaction spends");
         }
-        if removed.is_empty() {
-            return;
-        }
         // Stored under the lock that dropped them, so no write of a later
         // change to the same coins lands before this one.
         let persister = Arc::clone(&live.persister);
         let stored = tokio::task::spawn_blocking(move || {
-            let changeset = platform_wallet::changeset::PlatformWalletChangeSet {
-                core: Some(platform_wallet::changeset::CoreChangeSet {
-                    spent_utxos: removed,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            persister.store(wallet.0, changeset)?;
-            persister.flush(wallet.0)
+            crate::block_spends::store_spent(&persister, wallet, removed)
         })
         .await;
         drop(wm);

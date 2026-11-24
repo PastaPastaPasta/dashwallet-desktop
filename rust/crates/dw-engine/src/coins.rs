@@ -7,6 +7,15 @@
 //! `app.sqlite` and applies them when it lists coins and builds candidate
 //! sets for a payment.
 //!
+//! Two holders set key-wallet's flag: a fence's temporary locks, and the
+//! block-spend hold (`crate::block_spends`), which locks the coins the
+//! one-time block-spend check holds and the row-spent coins key-wallet
+//! still has, at every load and before any build. A fence's sweep of stale
+//! locks passes over the hold's coins and locks again any of them it finds
+//! unlocked, under the same write guard; a fence's release of its own
+//! temporary locks passes over them too. The hold lifts only the locks it
+//! set itself, never a fence's.
+//!
 //! The inputs of the wallet's tracked `Built` and `Broadcast` asset locks
 //! read as reserved (E0-04 §2a.3's F7 mitigation, H6 part 1 in Mode B):
 //! such a lock may already be on the wire, and the catch-up resends it, so
@@ -204,6 +213,9 @@ pub(crate) struct WalletCoin {
     /// Reserved while its transaction's event hasn't reached the history
     /// ([`NetworkSession::coin_snapshot`]).
     pub awaiting_history: bool,
+    /// Held while the one-time check looks for a block that spent it
+    /// (`crate::block_spends`): never offered, whoever selects.
+    pub checking: bool,
 }
 
 impl WalletCoin {
@@ -216,7 +228,11 @@ impl WalletCoin {
     /// Spendable now without coin control: trusted, neither locked nor
     /// reserved, a denomination included.
     pub(crate) fn trusted_spendable(&self, height: u32) -> bool {
-        self.utxo.is_spendable(height) && self.trusted() && !self.user_locked && !self.reserved
+        self.utxo.is_spendable(height)
+            && self.trusted()
+            && !self.user_locked
+            && !self.reserved
+            && !self.checking
     }
 
     /// Eligible for automatic ordinary selection. A denomination is not:
@@ -228,14 +244,17 @@ impl WalletCoin {
     /// Eligible when picked by hand (coin control may spend untrusted
     /// unconfirmed coins, never locked, reserved or immature ones).
     pub(crate) fn chosen_selectable(&self, height: u32) -> bool {
-        self.utxo.is_spendable(height) && !self.user_locked && !self.reserved
+        self.utxo.is_spendable(height) && !self.user_locked && !self.reserved && !self.checking
     }
 
     /// Eligible for Repair's self-spend when the draft exempts it (E0-04
     /// §6.5): as when picked by hand, except that a tracked asset lock's
     /// reservation does not hold it back.
     pub(crate) fn self_spend_selectable(&self, height: u32) -> bool {
-        self.utxo.is_spendable(height) && !self.user_locked && (!self.reserved || self.lock_input)
+        self.utxo.is_spendable(height)
+            && !self.user_locked
+            && !self.checking
+            && (!self.reserved || self.lock_input)
     }
 }
 
@@ -284,7 +303,7 @@ impl CoinSnapshot {
     pub(crate) fn free_outpoints(&self) -> HashSet<OutPoint> {
         (self.coins.iter())
             .filter(|c| {
-                !(c.reserved || c.user_locked || c.dust_locked || c.unresolved_lock)
+                !(c.reserved || c.user_locked || c.dust_locked || c.unresolved_lock || c.checking)
                     && !(c.send_account && c.counted_denomination)
             })
             .map(|c| c.utxo.outpoint)
@@ -303,7 +322,7 @@ impl CoinSnapshot {
     pub(crate) fn held_funding_coins(&self) -> impl Iterator<Item = HeldCoin> + '_ {
         self.coins
             .iter()
-            .filter(|c| c.send_account)
+            .filter(|c| c.send_account && !c.checking)
             .filter_map(|c| {
                 let hold = if c.awaiting_history {
                     CoinHold::AwaitingHistory
@@ -386,8 +405,13 @@ impl TempUtxoLocks {
             platform_wallet::PlatformWalletInfo,
         >,
     ) {
-        if let Some((balance, accounts)) = unlock_temp_utxos(wm, &self.wallet_id, &self.outpoints) {
-            (self.hub).apply_balance_read(WalletId(self.wallet_id), &balance, &accounts);
+        let wallet = WalletId(self.wallet_id);
+        let outpoints: Vec<OutPoint> = (self.outpoints.iter())
+            .filter(|o| !self.hub.block_spends.holds(&wallet, o))
+            .copied()
+            .collect();
+        if let Some((balance, accounts)) = unlock_temp_utxos(wm, &self.wallet_id, &outpoints) {
+            (self.hub).apply_balance_read(wallet, &balance, &accounts);
         }
     }
 }
@@ -735,6 +759,8 @@ pub struct CoinInfo {
     /// other coins and unknown chains ("n/a").
     pub coinjoin_rounds: Option<u32>,
     pub spendable: bool,
+    /// Held while the one-time check looks for a block that spent it.
+    pub checking: bool,
 }
 
 /// `(txid display hex, vout)`, the dw-appdb key of an outpoint.
@@ -791,6 +817,7 @@ fn collect(
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
+            checking: false,
         });
     }
 }
@@ -1007,17 +1034,23 @@ impl NetworkSession {
             let info = guard
                 .get_wallet_info_mut(&fence.wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(fence.wallet.to_string()))?;
-            // Only a fence's temporary locks set this flag, and a fence
-            // holder meets none of its own: one left is a coin a spend
-            // elsewhere took while it was locked, given back since.
+            // Only a fence's temporary locks and the block-spend hold set
+            // this flag, and a fence holder meets none of its own: one left
+            // outside the hold is a coin a spend elsewhere took while it was
+            // locked, given back since.
+            let hold = &self.hub.block_spends;
             let mut stale = false;
             for account in funding_accounts_mut(&mut info.core_wallet.accounts) {
-                for utxo in account.utxos.values_mut().filter(|u| u.is_locked) {
-                    utxo.unlock();
-                    stale = true;
+                for (o, utxo) in account.utxos.iter_mut().filter(|(_, u)| u.is_locked) {
+                    if !hold.holds(&fence.wallet, o) {
+                        utxo.unlock();
+                        hold.disown(&fence.wallet, o);
+                        stale = true;
+                    }
                 }
             }
-            if stale {
+            let relocked = hold.lock_held(fence.wallet, &mut info.core_wallet);
+            if stale || relocked {
                 let (balance, accounts) = recompute_balances(&mut info.core_wallet);
                 self.hub
                     .apply_balance_read(fence.wallet, &balance, &accounts);
@@ -1175,6 +1208,14 @@ impl NetworkSession {
             coin.reserved = spend_reserved || lock_held;
             coin.awaiting_history = unseen.contains(&o);
         }
+        let hold = &self.hub.block_spends;
+        snapshot
+            .coins
+            .retain(|c| !hold.has_row(&wallet_id, &c.utxo.outpoint));
+        let checking = hold.checking(&wallet_id);
+        for coin in &mut snapshot.coins {
+            coin.checking = checking.contains(&coin.utxo.outpoint);
+        }
         fence.record_checked(snapshot.free_outpoints());
         Ok(snapshot)
     }
@@ -1226,6 +1267,7 @@ impl NetworkSession {
                         coinjoin_rounds: (m.denominated() && m.rounds >= 0)
                             .then_some(m.rounds as u32),
                         spendable: has_keys && c.chosen_selectable(height),
+                        checking: c.checking,
                     }
                 })
                 .filter(|row| {
@@ -1648,6 +1690,7 @@ mod tests {
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
+            checking: false,
         }
     }
 

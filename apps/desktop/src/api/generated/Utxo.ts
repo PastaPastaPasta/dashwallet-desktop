@@ -28,4 +28,9 @@ coinjoinRounds: number | null,
 /**
  * Spendable now: mature, not locked or reserved, keys available.
  */
-spendable: boolean, };
+spendable: boolean,
+/**
+ * Held while the wallet checks whether a block spent it elsewhere:
+ * not spendable until the check clears it. Never a user lock.
+ */
+checking: boolean, };

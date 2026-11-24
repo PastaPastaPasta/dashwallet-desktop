@@ -529,8 +529,15 @@ pub(crate) fn finish_marked_abandons(
                 }
             }
         }
+        let block_spent = persister
+            .block_spent_outpoints(&wallet.0)
+            .map_err(|e| storage(&e))?;
         let released: BTreeSet<OutPoint> = (spent.into_iter())
-            .filter(|o| !pending.contains_key(&o.txid) && !spent_by_others.contains(o))
+            .filter(|o| {
+                !pending.contains_key(&o.txid)
+                    && !spent_by_others.contains(o)
+                    && !block_spent.contains_key(o)
+            })
             .collect();
         tracing::info!(%wallet, payments = pending.len(), "finishing abandoned payments the wallet store still holds");
         let changeset = PlatformWalletChangeSet {
@@ -1144,6 +1151,7 @@ impl NetworkSession {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             pause.release.notified().await;
         }
+        self.check_block_spends(manager, wallet).await?;
         let proof = self.root_proof(manager, wallet, root).await;
         // Planned on a copy under the lock that applies it, so the replay
         // record stored before it covers what is abandoned; held until the
@@ -1160,6 +1168,7 @@ impl NetworkSession {
             let info = wm
                 .get_wallet_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
+            self.store_pending_block_spends(wallet, info).await?;
             let (descendants, links) = (self.hub.history).read(&wallet, |txs| {
                 unmined_descendants(txs, &info.core_wallet, root)
             });
@@ -1200,6 +1209,8 @@ impl NetworkSession {
                 .filter(|(t, _)| !planned.contains(*t))
                 .flat_map(|(_, r)| r.transaction.input.iter().map(|i| i.previous_output))
                 .collect();
+            let block_spent = self.hub.block_spends.rows(&wallet);
+            still_spent.extend(block_spent.keys().copied());
             (self.hub.history).read(&wallet, |txs| {
                 let left = (txs.iter()).filter(|(t, e)| {
                     !e.is_abandoned() && !planned.contains(*t) && !links.contains(*t)
@@ -1233,6 +1244,9 @@ impl NetworkSession {
             let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
             if !abandoned.is_empty() {
                 info.core_wallet.update_balance();
+                // A coin a block spent stays out: the sweep keeps it stored
+                // spent, as the release leaves it.
+                self.hold_block_spends_locked(wallet, info);
             }
             let mut released = overridden.clone().unwrap_or_else(|| {
                 self.released(
@@ -1241,6 +1255,7 @@ impl NetworkSession {
                     &links,
                     &copies,
                     info.core_wallet.observed_spent_outpoints(),
+                    &block_spent,
                 )
             });
             debug_assert_eq!(abandoned, planned);
@@ -1639,8 +1654,9 @@ impl NetworkSession {
     /// The coins abandoning `abandoned` releases: the inputs of each (from
     /// the history, or key-wallet's copy of one it has not heard of) that
     /// none of them nor of the abandoned `links` between them created and
-    /// no processed block spent (`observed`): key-wallet keeps the claim on
-    /// a coin a block spent.
+    /// no processed block spent (`observed`, or a stored block-spend row
+    /// that outlives the observed note's ChainLock prune): key-wallet keeps
+    /// the claim on a coin a block spent.
     fn released(
         &self,
         wallet: WalletId,
@@ -1648,6 +1664,7 @@ impl NetworkSession {
         links: &BTreeSet<Txid>,
         copies: &HashMap<Txid, Transaction>,
         observed: &BTreeMap<OutPoint, u32>,
+        block_spent: &BTreeMap<OutPoint, platform_wallet::changeset::BlockSpend>,
     ) -> Vec<OutPoint> {
         (abandoned.iter())
             .filter_map(|t| {
@@ -1658,6 +1675,7 @@ impl NetworkSession {
                 !abandoned.contains(&o.txid)
                     && !links.contains(&o.txid)
                     && !observed.contains_key(o)
+                    && !block_spent.contains_key(o)
             })
             .collect::<BTreeSet<_>>()
             .into_iter()

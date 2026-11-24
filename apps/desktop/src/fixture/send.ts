@@ -172,6 +172,7 @@ export function buildCoins(variant: HistoryVariant, pendingTxid?: string): Utxo[
     coinjoinDenominated: false,
     coinjoinRounds: null,
     spendable: confirmations > 0,
+    checking: false,
     ...extra,
   });
   return [

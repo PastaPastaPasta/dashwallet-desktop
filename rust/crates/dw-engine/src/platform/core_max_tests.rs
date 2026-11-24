@@ -421,6 +421,7 @@ fn core_max_leaves_other_accounts() {
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
+            checking: false,
         }
     };
     let mut pending = coin(2, true);

@@ -469,6 +469,9 @@ impl NetworkSession {
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 pause.release.notified().await;
             }
+            if let Err(e) = this.check_block_spends(&live.manager, id).await {
+                tracing::warn!(wallet_id = %id, error = %e, "could not check the wallet's block spends at load");
+            }
             this.apply_stored_spends(&live.manager, id, stored).await;
             this.admit_loaded(&live.manager, id).await;
             if live.manager.get_wallet(&id.0).await.is_none() {

@@ -29,6 +29,7 @@ pub(crate) struct WalletStore {
     /// Wallets `load` leaves out.
     unloaded: RwLock<HashSet<RawWalletId>>,
     tap: Arc<ChangesetTap>,
+    block_spends: Arc<crate::block_spends::BlockSpends>,
     /// The session's lease table, whose journal keeps the shielded spend
     /// markers (DEC-1057): installed once the session is assembled (the
     /// table is made after this store). Weak: the table outlives no store.
@@ -64,11 +65,13 @@ impl WalletStore {
         inner: Arc<SqlitePersister>,
         unloaded: HashSet<RawWalletId>,
         tap: Arc<ChangesetTap>,
+        block_spends: Arc<crate::block_spends::BlockSpends>,
     ) -> Self {
         Self {
             inner,
             unloaded: RwLock::new(unloaded),
             tap,
+            block_spends,
             leases: std::sync::OnceLock::new(),
             replay: std::sync::OnceLock::new(),
             loaded_at: Default::default(),
@@ -222,11 +225,19 @@ impl PlatformWalletPersistence for WalletStore {
             .unwrap_or_default();
         let mut changeset = changeset;
         drop_uncredited(&mut changeset);
+        let block_spends = (changeset.core.as_ref()).map(|c| platform_wallet::changeset::CoreChangeSet {
+            block_spends: c.block_spends.clone(),
+            block_spends_truncated_above: c.block_spends_truncated_above,
+            ..Default::default()
+        });
         if let Err(e) = self.inner.store(wallet_id, changeset) {
             if core && let Some(replay) = replay() {
                 replay.note_store_failed(WalletId(wallet_id));
             }
             return Err(e);
+        }
+        if let Some(core) = &block_spends {
+            self.block_spends.applied(WalletId(wallet_id), core);
         }
         if let Some(height) = committed
             && let Some(replay) = replay()

@@ -384,6 +384,7 @@ mod tests {
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
+            checking: false,
         }
     }
 

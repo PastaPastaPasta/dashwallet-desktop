@@ -663,7 +663,7 @@ impl MixViewCoin {
     }
 
     fn free(&self) -> bool {
-        !self.coin.user_locked && !self.coin.reserved
+        !self.coin.user_locked && !self.coin.reserved && !self.coin.checking
     }
 
     /// A denomination Dash Core would count: the CoinJoin account, or a
@@ -4673,6 +4673,7 @@ mod tests {
                 lock_input: false,
                 unresolved_lock: false,
                 awaiting_history: false,
+                checking: false,
             },
             path: Some(path.parse().unwrap()),
             rounds,

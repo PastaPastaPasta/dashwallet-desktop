@@ -140,6 +140,7 @@ describe("Coin Selection's Tree mode rows", () => {
     coinjoinDenominated: false,
     coinjoinRounds: null,
     spendable: true,
+    checking: false,
   });
   const ONE = "yAddressOne0000000000000000000001";
   const TWO = "yAddressTwo0000000000000000000002";

@@ -4547,7 +4547,7 @@ impl Fixture {
             .block_on(session.on_runtime(async move {
                 let wallet = inner.wallet(&id).await?;
                 let mut state = wallet.state_mut().await;
-                state.core_wallet.restore_spent_outpoints(&claims);
+                crate::block_spends::restore_spent_claims(&mut state, &claims);
                 Ok(())
             }))
             .unwrap();
@@ -7508,4 +7508,23 @@ fn pin_377_a_signed_psbts_coin_locked_by_hand_is_not_spent_and_the_psbt_still_br
             .unwrap(),
         vec![coin]
     );
+}
+
+/// #268: a PSBT input the block-spend hold keeps (a coin under the
+/// one-time check, or one a block-spend row names) is never signed; the
+/// same PSBT signs once the hold is lifted.
+#[test]
+fn psbt_signing_refuses_a_coin_the_block_spend_hold_keeps() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(0x68, COIN);
+    let coin = OutPoint::new(prev.txid(), 0);
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN - 1_000)]);
+    let hold = &f.session.hub.block_spends;
+    hold.set_checking(f.wallet, std::collections::BTreeSet::from([coin]));
+    assert!(matches!(
+        psbt_failure(f.sign_psbt(&psbt, f.spend_grant(COIN))),
+        PsbtFailure::Invalid(_)
+    ));
+    hold.set_checking(f.wallet, std::collections::BTreeSet::new());
+    f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
 }

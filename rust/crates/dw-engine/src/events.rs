@@ -505,6 +505,8 @@ pub(crate) struct SessionHub {
     pub tracker: Mutex<SyncTracker>,
     pub pump: EventPump,
     pub history: HistoryStore,
+    /// The wallets' block-spend rows and the hold (`crate::block_spends`).
+    pub block_spends: Arc<crate::block_spends::BlockSpends>,
     /// The session's app database, once the session is open and until it
     /// closes: a sweep drops the sent marks of the payments it removed.
     pub appdb: std::sync::OnceLock<std::sync::Weak<dw_appdb::AppDb>>,
@@ -763,6 +765,7 @@ impl SessionHub {
             tracker: Mutex::new(SyncTracker::default()),
             pump: EventPump::default(),
             history: HistoryStore::default(),
+            block_spends: Default::default(),
             appdb: std::sync::OnceLock::new(),
             wallets: RwLock::new(BTreeMap::new()),
             names: RwLock::new(HashMap::new()),
@@ -1205,6 +1208,7 @@ impl SessionHub {
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
         self.history.remove_wallet(id);
+        self.block_spends.forget(id);
     }
 
     pub(crate) fn set_spv_running(&self, running: bool) {
@@ -1355,6 +1359,7 @@ impl SessionHub {
             release.wait();
         }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
+        self.block_spends.truncate(&id, height);
         let changed = self
             .history
             .with_wallet(id, |h| h.truncate(found.removed, found.unconfirmed));
