@@ -88,7 +88,7 @@ function CoinRow({ u, shown, selected, onToggle, detail }: Omit<Props, "coins"> 
         <td title={u.address}>{party}</td>
       )}
       <td className="num">{u.confirmations}</td>
-      <td>{status(u)}</td>
+      <td className="coin-status">{status(u)}</td>
       {detail && <td className="coin-actions">{detail.actions(u)}</td>}
     </tr>
   );

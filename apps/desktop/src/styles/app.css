@@ -3738,6 +3738,11 @@ input[type="radio"]:disabled {
   white-space: nowrap;
 }
 
+.coin-table-detail td.coin-status {
+  white-space: normal;
+  min-width: 12em;
+}
+
 .coin-group td {
   background: var(--dw-role-neutral-tint);
   font-weight: var(--dw-type-footnote-medium-weight);

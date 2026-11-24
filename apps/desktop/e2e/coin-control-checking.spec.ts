@@ -64,6 +64,11 @@ for (const theme of THEMES) {
     const errors = await open(page, theme);
     await openToolsTab(page, "coinSelection");
     const row = await expectRows(page);
+    const fits = await row.locator("td.coin-status").evaluate((cell) => {
+      const panel = cell.closest("[data-testid=tools-coinSelection]")!.getBoundingClientRect();
+      return cell.getBoundingClientRect().right <= panel.right + 0.5 && cell.scrollWidth <= cell.clientWidth;
+    });
+    expect(fits).toBe(true);
     await page.getByTestId("coins-select-all").click();
     await expect(row.locator("input[type=checkbox]").first()).not.toBeChecked();
     await expect(page.getByTestId("coin-summary")).toContainText("Quantity3");
