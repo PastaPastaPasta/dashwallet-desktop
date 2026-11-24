@@ -968,7 +968,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 35422c0b0aa5bd7e3697566f669ec3198c1680b197802922f44dc146d64af487 version: 85 -->
+<!-- surface-sha256: f6e703e47fea2ee2a3761ad98a3cffc1e3b95ccce24b8f29ab4f51e37c259105 version: 86 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -4859,7 +4859,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     while the identity is not created its stored `funding_credits` plus `fee_reserve_credits`, then the names'
     credits and a pending profile's, with no other headroom. A row whose stored funding misses a field, whose plan
     is half stored, or whose plan is not one the funding step makes (an address twice, nonce 0, a zero claim, the
-    claims other than the stored funding) is `invalid_argument`, sized from no default. On mainnet it is
+    claims other than the stored funding, an address or an identity that does not parse) is `invalid_argument`, sized
+    from no default. On mainnet it is
     `platform.feature_off`, sized not at all. `resume_registration` is unchanged: on mainnet it is
     `platform.feature_off` before the grant is redeemed, a grant with duffs is
     `platform.grant_invalid`, and a held row signs only its stored plan, once more. A grant is not bound to the
