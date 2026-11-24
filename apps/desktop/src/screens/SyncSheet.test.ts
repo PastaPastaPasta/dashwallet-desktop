@@ -22,5 +22,8 @@ describe("sync phases", () => {
     expect(stalledMinutes({ ...s, secondsSinceProgress: 125 })).toBe(2);
     expect(stalledMinutes({ ...s, secondsSinceProgress: 125, caughtUp: true })).toBeNull();
     expect(stalledMinutes({ ...s, secondsSinceProgress: 125, running: false })).toBeNull();
+    // The engine's one-time stall reading at 45 s, then no event: the sheet's own clock carries it on.
+    expect(stalledMinutes({ ...s, secondsSinceProgress: 45 }, 10)).toBeNull();
+    expect(stalledMinutes({ ...s, secondsSinceProgress: 45 }, 20)).toBe(1);
   });
 });
