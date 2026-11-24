@@ -4752,6 +4752,11 @@ button.bell-row-open:focus-visible {
   margin: var(--dw-space-m) 0 0;
 }
 
+.pay-shielded-route {
+  display: flex;
+  margin-top: calc(-1 * var(--dw-space-s));
+}
+
 /* ------------------------------------------------------------------ Protocol advisory */
 
 .protocol-advisory-banner {

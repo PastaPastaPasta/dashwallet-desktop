@@ -11,6 +11,8 @@ export const pay = {
   mixedFeeUnknown: "Fully mixed coins are spent in whole denominations, so what is left over would go to fees.",
   address: {
     shielded: "This is a shielded address. This wallet cannot pay shielded addresses yet.",
+    /** A Shielded address while the wallet can send from Shielded: the button below opens that sheet with it. */
+    shieldedRoute: "This is a shielded address. Pay it from your Shielded balance with Send from Shielded.",
     otherNetwork: "This address is not valid on this network.",
   },
   available: {
@@ -103,6 +105,7 @@ export const pay = {
     recipient: "Recipient {number}",
     remove: "Remove",
     platform: "A Dash Platform address can't be added to a payment. Pay it on its own.",
+    shielded: "A shielded address can't be added to a payment. Pay it on its own with Send from Shielded.",
     /** Shown under Add recipient while the feature is testnet-only. */
     testnetOnly: "Paying several recipients at once is available on test networks only in this version.",
   },
