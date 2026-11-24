@@ -638,6 +638,67 @@ fn remove_unconfirmed_retires_a_damaged_payment_and_frees_its_coin() {
     );
 }
 
+/// As above, but another record of the wallet doesn't read at its load:
+/// what descends from the damaged payment is unknown, so Remove
+/// Unconfirmed keeps its mark and its coin out, and fails with
+/// `RecordUnreadable` naming the wallet (#611).
+#[test]
+fn remove_unconfirmed_keeps_a_damaged_payment_while_a_record_does_not_read() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let kept = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![b]),
+        COIN / 2,
+        false,
+    );
+    let damaged = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &kept);
+    super::instant_lock(&engine, &session, id, &kept);
+    wait_stored_locked(&session, id, kept.txid());
+    {
+        let (appdb, scope) = (&session.live().unwrap().appdb, id.to_string());
+        let txid = damaged.txid();
+        appdb
+            .set_setting(&scope, &format!("senttx:{txid}"), Some("zz"))
+            .unwrap();
+        appdb
+            .set_setting(&scope, &format!("sent:{txid}"), Some(&format!("{a},{b}")))
+            .unwrap();
+    }
+    let session = reopen(&engine, session);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    session.hub.unreadable_record.lock().unwrap().0 = Some(kept.txid());
+    engine.block_on(session.load_wallet(id)).unwrap();
+
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id)));
+    assert!(
+        matches!(
+            dropped,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::RecordUnreadable(w)
+            )) if w == id
+        ),
+        "{dropped:?}"
+    );
+    assert!(
+        sent_marks(&session, id).contains(&damaged.txid()),
+        "the damaged payment's mark stays"
+    );
+    assert!(!held(&engine, &session, id).contains(&a), "A is counted");
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+}
+
 /// A restored payment of a coin funded without a record, relayed back
 /// (its record names no input), in the next session: listed as the
 /// payment it is, and abandoning it rescans from the birth height.

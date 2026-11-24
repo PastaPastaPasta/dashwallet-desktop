@@ -28,6 +28,10 @@ pub enum MasternodesError {
     /// The key isn't the masternode's key for `role` (MG-00 D13).
     #[error("the key does not belong to this masternode ({role:?})")]
     KeyMismatch { role: AttachedKeyRole },
+    /// A key is already attached for `role`: `attach_key` never replaces one
+    /// (`detach_key` first).
+    #[error("a key is already attached for this role ({role:?})")]
+    KeyExists { role: AttachedKeyRole },
     #[error("not an evonode")]
     NotEvonode,
     /// Platform has no identity for the evonode.
@@ -208,6 +212,7 @@ impl MasternodesError {
             Self::AlreadyTracked => "masternodes.already_tracked",
             Self::NotTracked => "masternodes.not_tracked",
             Self::KeyMismatch { .. } => "masternodes.key_mismatch",
+            Self::KeyExists { .. } => "masternodes.key_exists",
             Self::NotEvonode => "masternodes.not_evonode",
             Self::NoIdentity => "masternodes.no_identity",
             Self::PlatformUnavailable { .. } => "masternodes.platform_unavailable",

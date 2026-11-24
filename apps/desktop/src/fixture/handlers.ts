@@ -44,7 +44,7 @@ import { activityPage, contactList, coreActivity, eventOf, fixtureLoops, relatio
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
-import { masternodesHandlers } from "./masternodes";
+import { addedVoters, masternodesHandlers, staleAddedVoter } from "./masternodes";
 import { sharedHandlers } from "./shared";
 import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedQuote } from "./registration";
 import { intake, routeLink, stashRoute } from "./links";
@@ -749,7 +749,7 @@ export const HANDLERS: Handlers = {
   // CoinJoin (U-06): coinjoin.ts.
   ...coinjoinHandlers({ wallet, grant: checkGrant, useGrant }),
   // Governance (MG-09): governance.ts.
-  ...governanceHandlers({ wallet, grant: checkGrant, useGrant }),
+  ...governanceHandlers({ wallet, grant: checkGrant, useGrant, addedVoters, staleAddedVoter }),
   // My masternodes (MG-10): masternodes.ts.
   ...masternodesHandlers({ wallet, useGrant }),
   // Shared masternodes (MG-10b): shared.ts.

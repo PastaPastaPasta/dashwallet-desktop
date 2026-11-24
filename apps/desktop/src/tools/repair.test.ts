@@ -11,7 +11,7 @@ import type { RescanStatus } from "../api/generated/RescanStatus";
 import type { StuckShieldFunding } from "../api/generated/StuckShieldFunding";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { DEFAULT_PREFS, ui } from "../app/ui";
-import { appError, WALLET_A } from "../onboarding/testWorld";
+import { appError, summary, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "./testApi";
 import { GrantModel } from "./grant";
 import { RepairModel, RepairText, shieldBlockedText, stuckFundingText } from "./repair";
@@ -72,6 +72,7 @@ function setup(lock = {}) {
       return null;
     }),
     dropUnconfirmed: vi.fn(async () => 2),
+    listWallets: vi.fn(async () => [summary(WALLET_A, "Savings"), summary("b2".repeat(32), "Spending")]),
     registrations: vi.fn(async () => [reg("r1", "fundingUnknown"), reg("r2", "instantSend")]),
     resolveStuckFunding: vi.fn(async (walletId: string, step: string, grant: string) => {
       calls.push(`resolve ${walletId.slice(0, 2)} ${step} ${grant}`);
@@ -168,6 +169,17 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(RepairText.dropUnconfirmedQuestion).toContain(
       "It also ends masternode registrations and key changes that haven't confirmed yet, even one sent moments ago. Their coins are released, and they're never sent again.",
     );
+  });
+
+  it("a Remove Unconfirmed refused while a saved transaction doesn't read says what to do (#611)", async () => {
+    const { model, api } = setup();
+    api.dropUnconfirmed.mockRejectedValueOnce(appError("tx_action_refused", { kind: "txAction", refusal: "recordUnreadable", walletId: WALLET_A }, "engine text"));
+    model.ask("dropUnconfirmed");
+    await model.confirm();
+    expect(model.state).toEqual({
+      kind: "failed",
+      text: "Dash Wallet can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Savings and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
+    });
   });
 
   it("IOS113_birthHeightAboveTipIsRefused", async () => {

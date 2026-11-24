@@ -334,8 +334,11 @@ Errors:
 - **Owner key**, regular masternode: "Lets you change its keys from here once a wallet loaded here holds its
   registration."
 - **Payout key** (evonodes only): "Lets you withdraw this evonode's credits to any address."
-- **Voting key**: not offered (Q3). Voting keys already attached (dwcli) are listed under the pane's "Keys you
-  added", with Remove.
+- **Voting key**: "Lets this wallet vote on proposals and usernames with this masternode." (Q3 as amended for 1.0;
+  the 0.3 build didn't offer it.) Listed under the pane's "Keys you added", with Remove.
+- *Amended for 1.0 (MG ruling 11-24):* Add key offers the Voting key only; the owner and payout entries above are not
+  built, and owner, operator and payout key import stay out of the app. Keys already attached (dwcli) of any role are
+  still listed under "Keys you added" with Remove.
 
 Input is WIF or 64 hex, in a masked field, never echoed in an error (mn §4).
 
@@ -2446,7 +2449,7 @@ Every merge gate is COMMON's gate, plus the rows below.
 |---|---|---|
 | Q1 | (b): the recorded payout with provenance and the caveat ("yPay8…Wm4c, from this wallet's registration records; a change made elsewhere wouldn't show here"). Own rows only; tracked rows have none. | §1.2 |
 | Q2 | (a), plus Opus m11 and Sol m2. "Payments to this payout address (may include shared-masternode payouts)" lists the flagged records; `last_payout` is qualified; "coinbase income", not "masternode rewards", for unattributed; the wallet-wide Generated filter is the aggregate Activity source. | §1.2, §1.9 |
-| Q3 | (a). Track offers Owner and Payout keys. Voting keys already attached are listed under "Keys you added" with Remove. G5 corrected: a tracked node with a derived voting key can already vote. | §0.1 G5, §1.2, §1.4 |
+| Q3 | (a). Track offers Owner and Payout keys. Voting keys already attached are listed under "Keys you added" with Remove. G5 corrected: a tracked node with a derived voting key can already vote. *Amended for 1.0 (MG ruling 11-24):* `voting_masternodes` lists a matched attached voting key (`key: attached`); Add key offers the Voting key only, and owner, operator and payout key import stay out of the app (MG-00 D13). | §0.1 G5, §1.2, §1.4 |
 | Q4 | (a). Preselect "{recorded payout} (the address this wallet registered)" only when `payout_changes == Some(false)`; with `None`, no default. The final review shows the recorded destination and "If the payout was changed elsewhere, this sets it back." | §1.7 |
 | Q5 | (b), with an On/Auto/Off setting, shipped with **S2**. The discovery reads come in S1, without navigation. | §3.6, §6 S1/S2 |
 | Q6 | (a) stands: Abandon is an immediate secondary action behind the full confirmation, which says the coins come back only after a conflicting spend confirms. No timer. With R1: the two-step exit when the transaction is recorded (D16), and the `pending` / `confirming` / `settled` states. EP 4 supplies its facts and charges. Round 3: the two-step exit is offered only when Activity's Abandon would accept the transaction, and badges only once `overdue`; the buttons stay timer-free; no second abandon while the first may still confirm. Round 4 (D17): the spend back is stored before dispatch and only sent again while it may be out; a new spend back takes every reserved coin, after a recorded refusal, an Activity abandon, or (legacy) once overdue with its own confirmation; the spend back has its own two-step exit once overdue. Round 5: the legacy replacement and its "only one can confirm" promise need the shared coin test's inclusion proof; a refused replay never reads "didn't go out"; terminal state comes first. Round 6: a legacy replacement needs the whole original reservation (a durable mark until the first spend that takes it all); inherited refusal codes read unknown; the rescanning line wins over `coin_elsewhere` while the coins are on their way back. | §2.3.3, §4.4 |

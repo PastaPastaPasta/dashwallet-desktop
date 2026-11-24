@@ -51,6 +51,8 @@ export interface OpRowView {
   more: OpAction[];
 }
 
+const WAITS_FOR_BLOCK: ReadonlySet<ProTxOperationKindName> = new Set(["registration", "update_registrar"]);
+
 /** One row of §1.10's table, by state. `sends` defaults to an unknown network: registrations and registrar updates stay off. */
 export function opRow(o: ProTxOperation, sends: Partial<Record<ProTxOperationKindName, boolean>> = proTxSends(null)): OpRowView {
   const title = opTitle(o.kind);
@@ -71,7 +73,8 @@ export function opRow(o: ProTxOperation, sends: Partial<Record<ProTxOperationKin
         status: t(`${P}.status.sent`, { title }),
         overdueLine: o.overdue ? t(hasFeeInputs(o) ? `${P}.overdue` : `${P}.overdueDissolve`) : null,
         activityTxid: o.overdue && hasFeeInputs(o) ? o.txid : null,
-        primary: on ? "resend" : null,
+        // A registration or registrar update just sent waits for its block: Send again only once overdue.
+        primary: on && (o.overdue || !WAITS_FOR_BLOCK.has(o.kind)) ? "resend" : null,
         more: [],
       };
     case "abandoned":

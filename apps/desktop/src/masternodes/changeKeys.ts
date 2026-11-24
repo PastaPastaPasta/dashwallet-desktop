@@ -131,12 +131,12 @@ export function reviewLines(p: UpdateRegistrarPreview): ReviewLine[] {
 export const signerLine = (p: UpdateRegistrarPreview) => t(p.ownerKey.kind === "keychain" ? `${P}.review.signerKeychain` : `${P}.review.signerAttached`);
 
 /** A preview or send refusal as a sentence (§1.7's list, then §3.8's table). */
-export function changeKeysErrorText(e: unknown): string {
+export function changeKeysErrorText(e: unknown, ops?: readonly ProTxOperation[]): string {
   if (isAppError(e) && e.code === "masternodes.protx_refused" && e.data?.kind === "reason") {
     if (e.data.reason === PAYEE_REUSE) return t(`${P}.payeeReuse`);
     if (e.data.reason === PENDING_DUP) return t(`${P}.keyInUse`);
     if (e.data.reason === DUP_KEY) return t(`${P}.keyListed`);
   }
   if (feeWentUp(e)) return t(`${P}.feeChanged`);
-  return mnErrorText(e);
+  return mnErrorText(e, ops);
 }
