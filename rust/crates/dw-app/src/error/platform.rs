@@ -62,6 +62,7 @@ codes! {
         FundingUnknownRecent = "registration.funding_unknown_recent",
         ShieldedNotReady = "registration.shielded_not_ready",
         QuoteChanged = "registration.quote_changed",
+        Refunded = "registration.refunded",
     }
 }
 
@@ -361,6 +362,7 @@ impl From<RegistrationError> for AppError {
                 }),
             ),
             R::QuoteChanged => (RegistrationCode::QuoteChanged, None),
+            R::Refunded => (RegistrationCode::Refunded, None),
             R::Name(e) => return e.into(),
             R::Invitation(e) => return e.into(),
             R::Credits(e) => return e.into(),
@@ -424,6 +426,7 @@ impl From<ContactError> for AppError {
                 ContactCode::DetailsTooLong,
                 Some(ErrorData::Size { bytes, max }),
             ),
+            C::Shielded(e) => return e.into(),
             C::Credits(e) => return (*e).into(),
             C::Platform(e) => return e.into(),
         };
@@ -615,6 +618,7 @@ mod tests {
                 ready_at: Some(1),
             },
             RegistrationError::QuoteChanged,
+            RegistrationError::Refunded,
             RegistrationError::Name(NameError::Taken),
             RegistrationError::Invitation(InvitationError::Expired),
             RegistrationError::Credits(CreditsError::MovePending { id: s() }),

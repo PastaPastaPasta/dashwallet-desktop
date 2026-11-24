@@ -259,6 +259,12 @@ pub enum RegistrationError {
     /// nothing was written or signed; quote again.
     #[error("the cost changed since the quote")]
     QuoteChanged,
+    /// A row's failure, never returned by a call: its create from the
+    /// Platform addresses failed inside a block (C-funding F10), which took
+    /// their nonces and a penalty and made no identity. What is left stays
+    /// on the addresses; nothing retries.
+    #[error("the registration's payment was taken without an identity")]
+    Refunded,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -286,6 +292,7 @@ impl RegistrationError {
             Self::FundingUnknownRecent { .. } => "registration.funding_unknown_recent",
             Self::ShieldedNotReady { .. } => "registration.shielded_not_ready",
             Self::QuoteChanged => "registration.quote_changed",
+            Self::Refunded => "registration.refunded",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Credits(e) => e.code(),
@@ -403,12 +410,27 @@ pub enum ContactError {
     /// `contactInfo` holds (DIP-15 `privateData`, DP2-04).
     #[error("private details too long: {bytes} bytes, at most {max}")]
     DetailsTooLong { bytes: u32, max: u32 },
+    /// A payment from the Shielded balance refused by the pool's side (its
+    /// gate, its notes, its floor), with the pool's code (C-funding P3).
+    #[error(transparent)]
+    Shielded(ShieldedError),
     /// A payment from the Platform balance refused by the move's own rules
     /// (C-funding P3): another move pending, the withdrawal range.
     #[error(transparent)]
     Credits(Box<CreditsError>),
     #[error(transparent)]
     Platform(#[from] PlatformError),
+}
+
+/// The pool's `Platform` variant becomes this enum's own, so one code has
+/// one representation.
+impl From<ShieldedError> for ContactError {
+    fn from(e: ShieldedError) -> Self {
+        match e {
+            ShieldedError::Platform(p) => Self::Platform(p),
+            other => Self::Shielded(other),
+        }
+    }
 }
 
 impl From<CreditsError> for ContactError {
@@ -433,6 +455,7 @@ impl ContactError {
             Self::ScanUnverified => "contact.scan_unverified",
             Self::NoUsername => "contact.no_username",
             Self::DetailsTooLong { .. } => "contact.details_too_long",
+            Self::Shielded(e) => e.code(),
             Self::Credits(e) => e.code(),
             Self::Platform(e) => e.code(),
         }
@@ -440,6 +463,7 @@ impl ContactError {
 
     pub fn platform(&self) -> Option<&PlatformError> {
         match self {
+            Self::Shielded(e) => e.platform(),
             Self::Platform(e) => Some(e),
             _ => None,
         }

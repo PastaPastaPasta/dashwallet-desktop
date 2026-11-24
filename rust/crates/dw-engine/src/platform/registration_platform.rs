@@ -101,7 +101,7 @@ fn register_inputs(
     let mut candidates = balances.clone();
     let mut tried = BTreeSet::new();
     let mut inputs = 1;
-    loop {
+    let walked = loop {
         rules.reserve = register_fee(version, inputs, keys).saturating_mul(REGISTER_FEE_BAND);
         let planned = input0::plan(&candidates, amount, &rules).map_err(|r| match r {
             Input0Refused::Short { needed, available } => {
@@ -117,10 +117,14 @@ fn register_inputs(
                 needed: min.saturating_add(rules.reserve),
                 available: total,
             },
-        })?;
+        });
+        let planned = match planned {
+            Ok(planned) => planned,
+            Err(e) => break Err(e),
+        };
         let taken = planned.inputs.len();
         if taken == inputs {
-            return Ok((planned, register_fee(version, taken, keys), rules.reserve));
+            break Ok((planned, register_fee(version, taken, keys), rules.reserve));
         }
         // The reserve is three fees for the inputs the plan takes. One sized
         // for more left the addresses before input 0 out: plan again for
@@ -130,13 +134,32 @@ fn register_inputs(
             candidates.retain(|a, _| *a >= first);
         }
         if !tried.insert((inputs, candidates.len())) {
-            return Err(PlatformError::InsufficientCredits {
+            break Err(PlatformError::InsufficientCredits {
                 needed: funding.saturating_add(rules.reserve),
                 available: total,
             });
         }
         inputs = taken;
+    };
+    if walked.is_ok() {
+        return walked;
     }
+    // The walk follows one input 0 and one count; before refusing, any
+    // count the band allows and any input 0 that pays with exactly that
+    // count's reserve, fewest inputs first.
+    for inputs in 1..=rules.max_inputs {
+        rules.reserve = register_fee(version, inputs, keys).saturating_mul(REGISTER_FEE_BAND);
+        for first in balances.keys() {
+            let from: BTreeMap<_, _> = (balances.range(*first..)).map(|(a, c)| (*a, *c)).collect();
+            match input0::plan(&from, amount, &rules) {
+                Ok(planned) if planned.inputs.len() == inputs => {
+                    return Ok((planned, register_fee(version, inputs, keys), rules.reserve));
+                }
+                _ => {}
+            }
+        }
+    }
+    walked
 }
 
 /// The plan of a registration whose identity receives at least `funding`
@@ -151,12 +174,18 @@ pub(crate) fn register_plan(
     version: &PlatformVersion,
 ) -> Result<RegisterPlan, PlatformError> {
     let funding = funding.max(min_funding(version));
+    // An address at the last nonce can sign nothing more.
+    let usable: BTreeMap<_, _> = (balances.iter())
+        .filter(|(a, _)| nonces.get(*a) != Some(&u32::MAX))
+        .map(|(a, c)| (*a, *c))
+        .collect();
     let (planned, fee_credits, fee_reserve_credits) =
-        register_inputs(balances, funding, keys, version)?;
+        register_inputs(&usable, funding, keys, version)?;
     let inputs: BTreeMap<_, _> = (planned.inputs.into_iter())
         .map(|(address, credits)| {
             let nonce = nonces.get(&address).ok_or(PlatformError::Unavailable)?;
-            Ok((address, (nonce.saturating_add(1), credits)))
+            let next = nonce.checked_add(1).ok_or(PlatformError::Unavailable)?;
+            Ok((address, (next, credits)))
         })
         .collect::<Result<_, PlatformError>>()?;
     let funding_credits = inputs

@@ -326,10 +326,19 @@ pub enum RegistrationWaitName {
     /// which identity indexes the seed uses: "Waiting for DashPay to
     /// start". The engine runs it again meanwhile.
     Startup,
+    /// A registration paid from the Platform balance may still go through
+    /// and nothing proves it did yet: the next check settles it ("Check
+    /// again").
+    PaymentUnknown,
+    /// A registration paid from the Platform balance did not go through in
+    /// time and still may: "Move to Dash wallet" frees the balance, and a
+    /// resume tries it once more.
+    PaymentHeld,
 }
 
 mirror_enum!(engine::RegistrationWait => RegistrationWaitName {
-    Unlock, Authorize, Sync, InstantSend, ChainLock, Network, FundingUnknown, NeedsFinish, Startup
+    Unlock, Authorize, Sync, InstantSend, ChainLock, Network, FundingUnknown, NeedsFinish, Startup,
+    PaymentUnknown, PaymentHeld
 });
 
 /// Why a registration is `failed`.
