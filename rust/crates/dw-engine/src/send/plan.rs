@@ -162,7 +162,8 @@ fn shapes(outputs: &[usize], change_len: usize, inputs: usize) -> Shapes {
 
 /// Plans a payment of `outputs` from `choice` at `rate`, with change to a
 /// script of `change_len` bytes. `height` is the wallet's processed height
-/// (coinbase maturity).
+/// (coinbase maturity). Tests only: the engine plans with [`plan_with`].
+#[cfg(test)]
 pub(crate) fn plan(
     choice: InputChoice<'_>,
     outputs: &[PlanOutput],
@@ -173,7 +174,7 @@ pub(crate) fn plan(
     plan_with(choice, outputs, rate, change_len, height, false)
 }
 
-/// [`plan`], with `no_change` for a payment that makes no change output (a
+/// Plans a payment, with `no_change` for a payment that makes no change output (a
 /// CoinJoin payment): its remainder is fee from the start, so with
 /// subtract fee it pays the fee first and the recipients only what is left
 /// of it (Dash Core's CoinJoin send page).

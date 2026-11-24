@@ -463,7 +463,9 @@ export function ConfirmSheet({
                 {t("pay.confirm.subtractNoteMany", { amount: `${shown.full(deducted)} ${unit}`, address: ("label" in subtracting && subtracting.label) || ("address" in subtracting ? subtracting.address : "") })}
               </p>
             )
-          : subtractsFee(recipient) && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
+          : subtractsFee(recipient) &&
+            // Only when the fee took something: a remainder can pay it all (a fully mixed payment).
+            estimate.totalSent < recipient.amount && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
         {mixed && (
           <>
             <p className="placeholder-note" data-testid="pay-confirm-mixed-coins">
