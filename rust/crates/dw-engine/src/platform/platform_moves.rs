@@ -955,12 +955,15 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
         let Some(newest) = group.iter().copied().max_by_key(|&i| order(i)) else {
             continue;
         };
-        let of = |kind: MoveKind| -> Vec<usize> {
+        let of = |pick: fn(MoveKind) -> bool| -> Vec<usize> {
             (group.iter().copied())
-                .filter(|&i| moves[i].kind == kind)
+                .filter(|&i| pick(moves[i].kind))
                 .collect()
         };
-        let (top_ups, exit_moves) = (of(MoveKind::ToIdentity), of(MoveKind::ToCore));
+        let (top_ups, exit_moves) = (
+            of(MoveKind::credits_identity),
+            of(|k| k == MoveKind::ToCore),
+        );
         if !top_ups.is_empty() && !exit_moves.is_empty() {
             let present: Vec<usize> = (exit_moves.iter().copied())
                 .filter(|&i| exits.get(&moves[i].id) == Some(&true))
@@ -1804,7 +1807,7 @@ async fn exits(
     let network = session.vault.network();
     let mut out = Exits::new();
     let beside_top_up = |m: &MoveRecord| {
-        (moves.iter()).any(|t| t.kind == MoveKind::ToIdentity && t.holds() && t.key() == m.key())
+        (moves.iter()).any(|t| t.kind.credits_identity() && t.holds() && t.key() == m.key())
     };
     for exit in (moves.iter())
         .filter(|m| m.kind == MoveKind::ToCore && m.holds() && m.reached(seen) && beside_top_up(m))
@@ -2165,7 +2168,7 @@ async fn observe(
         // A pending move's inputs, and those of a top-up's group whose
         // nonces are taken while no evidence names its member yet (C3-9).
         let top_ups: BTreeSet<_> = (moves.iter())
-            .filter(|m| m.kind == MoveKind::ToIdentity)
+            .filter(|m| m.kind.credits_identity())
             .map(MoveRecord::key)
             .collect();
         let deciding = |m: &MoveRecord| m.holds() && m.reached(seen) && top_ups.contains(&m.key());
