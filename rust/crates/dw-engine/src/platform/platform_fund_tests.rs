@@ -244,6 +244,7 @@ impl FakeFund {
 
     /// The next scripted apply: signs with `key` first when scripted to,
     /// then ends as its answer.
+    #[allow(clippy::result_large_err)]
     async fn scripted<S>(
         &self,
         outpoint: OutPoint,
