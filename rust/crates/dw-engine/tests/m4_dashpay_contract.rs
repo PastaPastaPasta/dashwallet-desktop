@@ -1659,7 +1659,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.platform_activity().await.map(drop),
             dp.sync_platform_addresses().await.map(drop),
             dp.move_to_core_quote(WithdrawAmount::All).await.map(drop),
-            dp.move_to_core(WithdrawAmount::All, s(), s())
+            dp.move_to_core(WithdrawAmount::All, s(), None, s())
                 .await
                 .map(drop),
             dp.platform_shield_quote(WithdrawAmount::All)

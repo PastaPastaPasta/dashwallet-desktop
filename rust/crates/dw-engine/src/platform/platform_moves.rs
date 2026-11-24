@@ -1359,9 +1359,9 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
         let Some(newest) = group.iter().copied().max_by_key(|&i| order(i)) else {
             continue;
         };
-        let of = |kind: fn(MoveKind) -> bool| -> Vec<usize> {
+        let of = |pick: fn(MoveKind) -> bool| -> Vec<usize> {
             (group.iter().copied())
-                .filter(|&i| kind(moves[i].kind))
+                .filter(|&i| pick(moves[i].kind))
                 .collect()
         };
         let (top_ups, exit_moves) = (
@@ -3357,6 +3357,17 @@ pub(crate) async fn quote(
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
     let planned = plan_beside(&target, balances, amount, &limits, top_up, network)?;
+    // Its exit signs exactly its inputs, so a plan of only some of them
+    // (an amount) is refused here, as the move would refuse it.
+    if let Some(h) = top_up {
+        let held: BTreeSet<&str> = h.inputs.iter().map(|i| i.address.as_str()).collect();
+        let addresses: Vec<String> = (planned.inputs.keys())
+            .map(|a| bech32m(a, network))
+            .collect();
+        if addresses.len() != held.len() || !addresses.iter().all(|a| held.contains(a.as_str())) {
+            return Err(CreditsError::MovePending { id: h.id.clone() });
+        }
+    }
     let to = session
         .current_receiving_address(wallet_id)
         .await
@@ -3371,6 +3382,7 @@ pub(crate) async fn quote(
             max_duffs: 0,
             max_credits: credits,
         },
+        exit_of: top_up.map(|h| h.id.clone()),
     })
 }
 
@@ -3642,7 +3654,7 @@ pub(crate) async fn move_to_core(
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (amount, to): (WithdrawAmount, &str),
+    (amount, to, exit_of): (WithdrawAmount, &str, Option<&str>),
     grant: &str,
 ) -> Result<MoveToCoreOutcome, CreditsError> {
     let (record, _) = run(
@@ -3650,7 +3662,7 @@ pub(crate) async fn move_to_core(
         session,
         wallet,
         wallet_id,
-        (amount, Target::Core(to), None, None),
+        (amount, Target::Core(to), exit_of, None),
         grant,
         None,
     )
@@ -3750,16 +3762,17 @@ fn retried<'m>(
 }
 
 /// One move to `target` (module doc, Moves); the record as it stands when
-/// the call returns, and a top-up's answered identity balance. `contact`: a
-/// contact payout's leg (`Target::Contact` only), which reserves and claims
-/// its address and writes its payout row after the lease and before the
-/// record (C-funding P2).
+/// the call returns, and a top-up's answered identity balance. `named`: the
+/// held send a send retries, or the held top-up a move is the exit of.
+/// `contact`: a contact payout's leg (`Target::Contact` only), which
+/// reserves and claims its address and writes its payout row after the
+/// lease and before the record (C-funding P2).
 pub(crate) async fn run(
     net: &impl MoveNet,
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (amount, target, retry_of, quoted): (WithdrawAmount, Target<'_>, Option<&str>, Option<&Plan>),
+    (amount, target, named, quoted): (WithdrawAmount, Target<'_>, Option<&str>, Option<&Plan>),
     grant: &str,
     mut contact: Option<&mut super::contact_payout::ContactLeg>,
 ) -> Result<(MoveRecord, Option<u64>), CreditsError> {
@@ -3796,17 +3809,30 @@ pub(crate) async fn run(
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
     // A retry of a send that landed pays nothing and signs nothing.
-    if let (Target::Platform(to), Some(id)) = (target, retry_of)
+    if let (Target::Platform(to), Some(id)) = (target, named)
         && let Some(settled) = retry_decision(&moves, id, (&bech32m(&to, network), amount))?
     {
         return Ok((settled.clone(), None));
     }
-    // Every spend that may sign, before anything is planned (#533).
-    behind(&moves, &seen)?;
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
     // only its exact retry.
-    let (held, planned) = match (target, retry_of) {
+    let retry_of = named.filter(|_| matches!(target, Target::Platform(_)));
+    let exit_of = named.filter(|_| matches!(target, Target::Core(_)));
+    // The exit's quote was planned beside that record: once it no longer
+    // holds, this is not the move Confirm showed, whatever else holds now,
+    // and a lagging read does not hide that.
+    let exited = match exit_of {
+        Some(id) => Some(
+            (moves.iter())
+                .find(|m| m.id == id && m.kind.credits_identity() && m.holds())
+                .ok_or(CreditsError::QuoteChanged)?,
+        ),
+        None => None,
+    };
+    // Every spend that may sign, before anything is planned (#533).
+    behind(&moves, &seen)?;
+    let (held, planned) = match (target, named) {
         (Target::Platform(_), Some(id)) => {
             let held = (moves.iter()).find(|m| m.id == id);
             let planned =
@@ -3821,7 +3847,7 @@ pub(crate) async fn run(
                     id: pending.id.clone(),
                 });
             }
-            let held = moves.iter().find(|m| m.holds());
+            let held = exited.or_else(|| moves.iter().find(|m| m.holds()));
             if let (Target::Platform(_) | Target::Contact | Target::Identity(_), Some(h)) =
                 (target, held)
             {
@@ -3830,7 +3856,17 @@ pub(crate) async fn run(
                 // (C-routes §0, C3-9).
                 return Err(CreditsError::MovePending { id: h.id.clone() });
             }
-            let planned = plan_beside(&target, balances.clone(), amount, &limits, held, network)?;
+            let planned = plan_beside(&target, balances.clone(), amount, &limits, held, network)
+                .map_err(|e| match e {
+                    // The exit sends its quoted amount: inputs that no
+                    // longer carry it are not the move Confirm showed.
+                    CreditsError::Platform(PlatformError::InsufficientCredits { .. })
+                        if exited.is_some() =>
+                    {
+                        CreditsError::QuoteChanged
+                    }
+                    e => e,
+                })?;
             // A new send signs the fee its Confirm showed or nothing: the
             // read since the quote may pick another fee source.
             if quoted.is_some_and(|q| !q.takes_fee_as(&planned)) {
@@ -3910,7 +3946,12 @@ pub(crate) async fn run(
             || ((h.kind == MoveKind::Transfer || record.kind == MoveKind::Transfer)
                 && h.terms() != record.terms())
     };
-    if let Some(held) = held.filter(blocks) {
+    if exit_of.is_some() && held.is_some_and(|h| h.key() != record.key()) {
+        return Err(CreditsError::QuoteChanged);
+    }
+    // Beside an exit, any other hold blocks it as it would block a move.
+    let mut others = (moves.iter()).filter(|m| m.holds() && exit_of.is_some_and(|id| m.id != id));
+    if let Some(held) = held.filter(blocks).or_else(|| others.find(blocks)) {
         return Err(CreditsError::MovePending {
             id: held.id.clone(),
         });

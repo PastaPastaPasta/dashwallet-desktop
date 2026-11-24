@@ -544,6 +544,10 @@ export const dashpay = {
       nothing: "Your Platform addresses don't hold enough for a top-up and its fee.",
       max: "Max",
     },
+    /** Why a "Pay with" source cannot pay, where it differs from the other sheets' reasons. */
+    source: {
+      shieldedNotOffered: "Paying from Shielded isn't available here yet.",
+    },
     /** A top-up from the Platform addresses. `identity` is the username or "your identity"; `amount`,
      * `total` and `fee` are amounts; `address` is the address the fee is taken from. */
     fromPlatform: {

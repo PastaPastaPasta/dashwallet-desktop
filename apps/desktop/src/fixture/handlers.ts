@@ -51,7 +51,7 @@ import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
-import { topUpHandlers } from "./topup";
+import { landHeldTopUp as landTopUp, topUpHandlers, type TopUpDeps } from "./topup";
 import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
@@ -738,6 +738,11 @@ function frequent(dp: DashPayWorld, limit: number): ContactSummaryInfo[] {
   return [...sent, ...rest].slice(0, Math.min(20, Math.max(1, limit)));
 }
 
+const TOP_UP_DEPS: TopUpDeps = { wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE };
+
+/** A held top-up from Platform executed in its exit's place (platform_move_to_core's `lost`). */
+export const landHeldTopUp = (ctx: Ctx, id: string) => landTopUp(TOP_UP_DEPS, ctx, id);
+
 export const HANDLERS: Handlers = {
   // Pay and Receive (U-03): send.ts.
   ...sendHandlers(sendDeps),
@@ -756,7 +761,7 @@ export const HANDLERS: Handlers = {
   ...sharedHandlers({ wallet, grant: checkGrant, useGrant }),
   // Username registration (DP1-09): registration.ts.
   ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
-  ...topUpHandlers({ wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE }),
+  ...topUpHandlers(TOP_UP_DEPS),
   // Settings ▸ Advanced ▸ Identities (DP6-01): identities.ts.
   ...identitiesHandlers({ dashpay, grant: checkGrant, useGrant }),
   // Prices in fiat (MP-01): rates.ts.
