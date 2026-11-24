@@ -1,5 +1,5 @@
-//! H-03 rows R5a and R5b: a contact payment to Bob killed with SIGKILL in a
-//! child process.
+//! H-03 rows R5a and R5b: a contact payment to Bob killed in a child
+//! process.
 //!
 //! R5a: after its gate passed and his address was reserved, before anything
 //! marks it sent; after the relaunch the contact is not locked, no lock row
@@ -8,8 +8,7 @@
 //! R5b (#170 case 1): once its lock row is stored, at three points: before
 //! its sent mark (`recorded`), after it and before the library is entered
 //! (`marked`), and handed to the library with its outcome awaited
-//! (`handed`). Unix only, as the harness is: before they moved onto it the
-//! `marked` and `handed` rows also ran on Windows.
+//! (`handed`).
 
 use super::*;
 use crate::kill9;
@@ -107,19 +106,32 @@ fn kill9_r5a_payment_killed_after_its_reservation_leaves_bob_payable() {
 const SENT_ROW: &str = "contact_payment_sent";
 const SENT_CHILD: &str = "send::contact_tests::kill9::sent_payment_child";
 
-/// The child's broadcaster: it parks the payment at the child's point.
+/// The points a payment passes, in order, each named for its seam.
+const POINTS: [&str; 3] = ["recorded", "marked", "handed"];
+
+/// The child's broadcaster: it notes each seam the payment passes and
+/// parks it at the child's point.
 struct Park {
     point: String,
-    reached: std::sync::atomic::AtomicBool,
+    passed: std::sync::Mutex<Vec<&'static str>>,
 }
 
 impl Park {
-    fn park_at(&self, point: &str) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
-        if self.point != point {
-            return Box::pin(async {});
+    fn pass(&self, point: &'static str) -> bool {
+        self.passed.lock().unwrap().push(point);
+        self.point == point
+    }
+
+    fn park_at(&self, point: &'static str) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+        if self.pass(point) {
+            Box::pin(std::future::pending())
+        } else {
+            Box::pin(async {})
         }
-        self.reached.store(true, Ordering::SeqCst);
-        Box::pin(std::future::pending())
+    }
+
+    fn reached(&self) -> bool {
+        self.passed.lock().unwrap().last() == Some(&self.point.as_str())
     }
 }
 
@@ -137,9 +149,18 @@ impl TestBroadcaster for Park {
         _tx: &Transaction,
         _first: bool,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Txid, PlatformWalletError>> + Send>> {
-        self.reached.store(true, Ordering::SeqCst);
+        assert!(self.pass("handed"), "handed off before {}", self.point);
         Box::pin(std::future::pending())
     }
+}
+
+/// Whether `wallet`'s sent mark for `txid` is stored.
+fn marked(f: &Fixture, txid: &str) -> bool {
+    (f.session.live().unwrap().appdb)
+        .settings_with_prefix(&f.wallet.to_string(), crate::tx_actions::SENT_PREFIX)
+        .unwrap()
+        .iter()
+        .any(|(k, _)| k.ends_with(txid))
 }
 
 /// Run by [`sent_payment`] in a child process: the fixture's coin stored, a
@@ -164,9 +185,10 @@ fn sent_payment_child() {
         ..Default::default()
     });
     let d = f.draft(BOB);
+    let at = POINTS.iter().position(|p| *p == child.point).unwrap();
     let park = Arc::new(Park {
         point: child.point.clone(),
-        reached: Default::default(),
+        passed: Default::default(),
     });
     *d.broadcaster.lock().unwrap() = Some(park.clone());
     let p = (f.engine)
@@ -176,16 +198,22 @@ fn sent_payment_child() {
     let inputs: Vec<String> = (p.summary().inputs.iter())
         .map(|i| i.outpoint.to_string())
         .collect();
-    f.session.rt.spawn({
+    let sending = f.session.rt.spawn({
         let (d, p) = (Arc::clone(&d), Arc::clone(&p));
-        async move {
-            let _ = d.broadcast(p).await;
-        }
+        async move { d.broadcast(p).await.map(drop) }
     });
     kill9::eventually("the payment reached its point", || {
-        park.reached.load(Ordering::SeqCst)
+        assert!(!sending.is_finished(), "the payment ended before its point");
+        park.reached()
     });
+    assert_eq!(*park.passed.lock().unwrap(), POINTS[..=at]);
     assert_eq!(f.rows(), vec![(b58(BOB), txid.clone())]);
+    assert_eq!(
+        marked(&f, &txid),
+        at > 0,
+        "the sent mark at {}",
+        child.point
+    );
     kill9::reached(
         &child,
         &format!("{}\n{txid}\n{}\n", f.wallet, inputs.join(",")),
@@ -294,13 +322,12 @@ fn kill9_r5b_contact_payment_killed_before_its_sent_mark_frees_its_coin() {
         f.session.hub.history.get(&f.wallet, &txid).is_none(),
         "a payment never handed off is listed"
     );
-    let marks = (f.session.live().unwrap().appdb)
-        .settings_with_prefix(&f.wallet.to_string(), crate::tx_actions::SENT_PREFIX)
-        .unwrap();
-    assert_eq!(marks, Vec::new(), "no sent mark");
+    assert!(!marked(&f, &txid_s), "no sent mark");
     assert!(f.reserved(BOB).is_none(), "no address reserved");
     assert_eq!(f.lock(BOB).map(|l| l.txid), Some(txid_s.clone()));
     assert_eq!(f.rows(), vec![(b58(BOB), txid_s)], "the lock's row");
+    // #485: Bob stays locked though nothing went out; this pins today's
+    // behaviour until that issue's fix lands.
     assert_eq!(f.resolve(BOB), LockResolution::Unknown);
 
     let self_send = own_payment_of(&f, coin);
@@ -350,6 +377,21 @@ fn own_payment_of(f: &Fixture, coin: OutPoint) -> Transaction {
     let p = f.engine.block_on(d.prepare(grant)).unwrap();
     let tx = p.transaction().unwrap();
     f.engine.block_on(d.broadcast(p)).unwrap();
+    let seen = tx.clone();
+    f.deliver(move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            wm.process_mempool_transaction(&seen, None).await;
+        })
+    });
+    let entry = f.session.hub.history.get(&f.wallet, &tx.txid());
+    assert!(
+        matches!(
+            entry.map(|e| e.context),
+            Some(key_wallet::transaction_checking::TransactionContext::Mempool)
+        ),
+        "the wallet sees its own payment in the mempool"
+    );
     tx
 }
 
@@ -364,6 +406,7 @@ fn own_payment_of(f: &Fixture, coin: OutPoint) -> Transaction {
 fn kill9_r5b_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock() {
     let (f, parsed, inputs) = sent_payment("handed");
     let txid = parsed.to_string();
+    assert!(marked(&f, &txid), "the sent mark is stored");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !listed(&f).is_disjoint(&inputs) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(250));
@@ -425,6 +468,7 @@ fn kill9_r5b_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lo
 fn kill9_r5b_contact_payment_killed_before_the_hand_off_keeps_its_lock_after_an_abandon() {
     let (f, txid, _) = sent_payment("marked");
     let txid_s = txid.to_string();
+    assert!(marked(&f, &txid_s), "the sent mark is stored");
     assert_eq!(f.lock(BOB).map(|l| l.txid), Some(txid_s.clone()));
     f.abandon(txid);
     assert_eq!(

@@ -87,7 +87,7 @@ describe("a refused abandon", () => {
 
   it("says why a payment with a locked or confirmed later payment can't be abandoned, from the catalog", () => {
     expect(actionProblem(refused("settledDescendant", "engine text"))).toBe(
-      "This transaction can't be abandoned. A later transaction that spends from it is already locked or confirmed, so this one will confirm too.",
+      "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
     );
   });
 

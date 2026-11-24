@@ -410,8 +410,21 @@ pub enum ContactError {
     /// `contactInfo` holds (DIP-15 `privateData`, DP2-04).
     #[error("private details too long: {bytes} bytes, at most {max}")]
     DetailsTooLong { bytes: u32, max: u32 },
+    /// A payment from the Platform balance refused by the move's own rules
+    /// (C-funding P3): another move pending, the withdrawal range.
+    #[error(transparent)]
+    Credits(Box<CreditsError>),
     #[error(transparent)]
     Platform(#[from] PlatformError),
+}
+
+impl From<CreditsError> for ContactError {
+    fn from(e: CreditsError) -> Self {
+        match e {
+            CreditsError::Platform(p) => Self::Platform(p),
+            e => Self::Credits(Box::new(e)),
+        }
+    }
 }
 
 impl ContactError {
@@ -427,6 +440,7 @@ impl ContactError {
             Self::ScanUnverified => "contact.scan_unverified",
             Self::NoUsername => "contact.no_username",
             Self::DetailsTooLong { .. } => "contact.details_too_long",
+            Self::Credits(e) => e.code(),
             Self::Platform(e) => e.code(),
         }
     }

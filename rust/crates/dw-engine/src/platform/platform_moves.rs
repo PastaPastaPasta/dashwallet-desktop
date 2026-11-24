@@ -164,6 +164,9 @@ pub(crate) enum MoveKind {
     ToCore,
     /// A send to a Platform address (an address funds transfer, 0.2).
     Transfer,
+    /// A payment to a DashPay contact's Core address (an address credit
+    /// withdrawal, C-funding P4), built only by `contact_pay`.
+    ToContact,
     /// A top-up of one of the wallet's identities (1.0 C3a, an identity
     /// top-up from addresses): `to` is the identity (base58), the fee comes
     /// from input 0 and the claims are what the identity gains.
@@ -354,6 +357,7 @@ impl FundRecord {
             at: self.at,
             may_land: false,
             estimated: self.estimated,
+            contact: None,
         }
     }
 
@@ -429,6 +433,7 @@ impl FundRecord {
             at,
             may_land: false,
             estimated: false,
+            contact: None,
         };
         let key = format!("{ROW_PREFIX}{at:020}/released/{}", self.txid);
         Ok(vec![(key, Some(json(&row)?))])
@@ -746,7 +751,8 @@ impl MoveRecord {
             None => (
                 self.debit(),
                 Some(self.to.clone()),
-                (self.kind == MoveKind::ToCore).then_some(self.expected_duffs),
+                matches!(self.kind, MoveKind::ToCore | MoveKind::ToContact)
+                    .then_some(self.expected_duffs),
             ),
         };
         PlatformActivity {
@@ -754,6 +760,7 @@ impl MoveRecord {
             kind: match self.kind {
                 MoveKind::ToCore => PlatformActivityKind::MoveToCore,
                 MoveKind::Transfer => PlatformActivityKind::Send,
+                MoveKind::ToContact => PlatformActivityKind::ContactPayment,
                 MoveKind::ToIdentity | MoveKind::Register => PlatformActivityKind::ToIdentity,
             },
             state: self.state,
@@ -765,6 +772,7 @@ impl MoveRecord {
             at: self.at,
             may_land: self.holds(),
             estimated: self.estimated(),
+            contact: None,
         }
     }
 
@@ -773,12 +781,12 @@ impl MoveRecord {
         self.inputs.iter().map(|i| i.credits).sum()
     }
 
-    /// What it shows as taken: a move what it may take; a send or a
-    /// top-up its amount until it is done, then what it took: its inputs
+    /// What it shows as taken: a move or a contact payout what it may take;
+    /// a send or a top-up its amount until it is done, then what it took: its inputs
     /// and, unless the output paid it, the fee the balances show or else
     /// the estimate.
     fn debit(&self) -> u64 {
-        if self.kind == MoveKind::ToCore {
+        if matches!(self.kind, MoveKind::ToCore | MoveKind::ToContact) {
             return self.credits;
         }
         if self.state != PlatformActivityState::Done || self.fee_from_output {
@@ -791,7 +799,7 @@ impl MoveRecord {
     /// A done send or top-up whose fee the balances did not show: its debit
     /// counts the estimate.
     fn estimated(&self) -> bool {
-        self.kind != MoveKind::ToCore
+        matches!(self.kind, MoveKind::Transfer | MoveKind::ToIdentity)
             && self.state == PlatformActivityState::Done
             && self.group.is_none()
             && !self.fee_from_output
@@ -866,13 +874,19 @@ impl MoveRecord {
     }
 
     /// It may still execute and is not known done.
-    fn holds(&self) -> bool {
+    pub(crate) fn holds(&self) -> bool {
         self.can_land && self.state != PlatformActivityState::Done
     }
 
     /// `seen` shows every input at or past its signed nonce.
     fn reached(&self, seen: &Seen) -> bool {
         (self.inputs.iter()).all(|i| seen.nonce(&i.address).is_some_and(|n| n >= i.nonce))
+    }
+
+    /// `seen` shows some input at or past its signed nonce: the move has
+    /// executed, or it never can (another write took that nonce).
+    fn touched(&self, seen: &Seen) -> bool {
+        (self.inputs.iter()).any(|i| seen.nonce(&i.address).is_some_and(|n| n >= i.nonce))
     }
 
     /// `seen` shows every input still below its signed nonce.
@@ -952,7 +966,9 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
         .filter(|m| m.holds() && m.reached(seen))
         .map(MoveRecord::key)
         .collect();
-    for key in landed {
+    // A payout's group settles on its withdrawals' documents (P8).
+    let paying = paying_keys(moves);
+    for key in landed.into_iter().filter(|k| !paying.contains(k)) {
         let group: Vec<usize> = (0..moves.len())
             .filter(|&i| moves[i].holds() && moves[i].key() == key)
             .collect();
@@ -1028,7 +1044,10 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
                     // as failed (0.1).
                     moves[i].state = match moves[i].kind {
                         MoveKind::Transfer => PlatformActivityState::Replaced,
-                        MoveKind::ToCore | MoveKind::ToIdentity | MoveKind::Register => {
+                        MoveKind::ToCore
+                        | MoveKind::ToContact
+                        | MoveKind::ToIdentity
+                        | MoveKind::Register => {
                             PlatformActivityState::Failed
                         }
                     };
@@ -1069,6 +1088,162 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
                 }
             }
         }
+    }
+    changed
+}
+
+/// The keys of the holding contact payouts (C-funding P8): their groups
+/// settle on documents, never on nonces alone.
+fn paying_keys(moves: &[MoveRecord]) -> BTreeSet<Vec<(String, u32)>> {
+    (moves.iter())
+        .filter(|m| m.kind == MoveKind::ToContact && m.holds())
+        .map(MoveRecord::key)
+        .collect()
+}
+
+/// Each withdrawal's document by move id (C-funding P8): `true` present,
+/// `false` absent in a proof at or above the nonce proof's height. A move
+/// with no entry is unknown.
+pub(crate) type Documents = BTreeMap<String, bool>;
+
+/// The id of the withdrawal document Drive writes when `record` executes:
+/// from its first input's nonce and address, and its output script
+/// (`rs-drive` `address_credit_withdrawal/v0/transformer.rs:66-82`).
+pub(crate) fn withdrawal_id(
+    record: &MoveRecord,
+    network: Network,
+) -> Option<dpp::prelude::Identifier> {
+    use dpp::document::Document;
+    use dpp::system_data_contracts::withdrawals_contract;
+    use dpp::system_data_contracts::withdrawals_contract::v1::document_types::withdrawal as doc;
+    let inputs: BTreeMap<PlatformAddress, u32> = (record.inputs.iter())
+        .map(|i| parse(&i.address).map(|a| (a, i.nonce)))
+        .collect::<Option<_>>()?;
+    let (first, nonce) = inputs.first_key_value()?;
+    let script = withdrawal::destination(network, &record.to).ok()?;
+    let mut entropy = nonce.to_be_bytes().to_vec();
+    entropy.extend_from_slice(&first.to_bytes());
+    entropy.extend_from_slice(script.as_bytes());
+    Some(Document::generate_document_id_v0(
+        &withdrawals_contract::ID,
+        &withdrawals_contract::OWNER_ID,
+        doc::NAME,
+        &entropy,
+    ))
+}
+
+/// A payout's withdrawal document id (hex), kept in its row before it is
+/// signed, so a wallet restored without the move record can still find
+/// the payout executed.
+pub(crate) fn payout_document(record: &MoveRecord, network: Network) -> Option<String> {
+    withdrawal_id(record, network).map(|id| hex::encode(id.to_buffer()))
+}
+
+/// A restored payout's document `id` (hex) read under rule 5: `Some(true)`
+/// once Platform proves it, else `None` (absence proves nothing without
+/// the nonce it was signed at).
+pub(crate) async fn restored_payout(
+    session: &NetworkSession,
+    net: &impl MoveNet,
+    id: &str,
+) -> Option<bool> {
+    let bytes: [u8; 32] = hex::decode(id).ok()?.try_into().ok()?;
+    let id = dpp::prelude::Identifier::from(bytes);
+    let provenance = session.live().ok().map(|l| l.provenance);
+    let (read, tally) = trust::scoped(net.withdrawal(id)).await;
+    let gated = session.trust.rule_5() == Rule5::Enforce
+        && provenance.as_ref().is_some_and(|p| p.fallback_used());
+    match read {
+        Ok((true, _)) if !gated || tally.verified() => Some(true),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::info!("reading a restored payout's document: {e}");
+            None
+        }
+    }
+}
+
+/// The documents [`settle_payouts`] needs at `seen`: those of every member
+/// of a holding payout's group with a nonce `seen` shows taken. A read that
+/// fails or does not verify under rule 5 adds nothing, nor does an absence
+/// older than `seen`; a document present is final (the withdrawals
+/// contract owns it, so no user removes it).
+async fn documents(
+    session: &NetworkSession,
+    net: &impl MoveNet,
+    moves: &[MoveRecord],
+    seen: &Seen,
+) -> Documents {
+    let network = session.vault.network();
+    let provenance = session.live().ok().map(|l| l.provenance);
+    let mut docs = Documents::new();
+    for key in paying_keys(moves) {
+        let group = (moves.iter()).filter(|m| m.holds() && m.key() == key);
+        if !group.clone().any(|m| m.touched(seen)) {
+            continue;
+        }
+        for m in group {
+            let Some(id) = withdrawal_id(m, network) else {
+                continue;
+            };
+            let (read, tally) = trust::scoped(net.withdrawal(id)).await;
+            let gated = session.trust.rule_5() == Rule5::Enforce
+                && provenance.as_ref().is_some_and(|p| p.fallback_used());
+            match read {
+                Ok(_) if gated && !tally.verified() => {}
+                Ok((present, height)) if present || height >= seen.height => {
+                    docs.insert(m.id.clone(), present);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::info!(id = %m.id, "reading a withdrawal's document: {e}"),
+            }
+        }
+    }
+    docs
+}
+
+/// Settles each holding payout's group with a nonce `seen` shows taken, on
+/// `docs` (C-funding P8): the payout's document present, it is `done` and
+/// the others `failed`; absent, the member whose document is present is
+/// `done`, or with none present every member is `failed`. While a document
+/// it needs is unknown, the group holds. The indices it changed.
+pub(crate) fn settle_payouts(
+    moves: &mut [MoveRecord],
+    seen: &Seen,
+    docs: &Documents,
+) -> BTreeSet<usize> {
+    let mut changed = BTreeSet::new();
+    for key in paying_keys(moves) {
+        let group: Vec<usize> = (0..moves.len())
+            .filter(|&i| moves[i].holds() && moves[i].key() == key)
+            .collect();
+        if !group.iter().any(|&i| moves[i].touched(seen)) {
+            continue;
+        }
+        let doc = |i: usize| docs.get(&moves[i].id).copied();
+        let Some(payout) = group
+            .iter()
+            .copied()
+            .find(|&i| moves[i].kind == MoveKind::ToContact)
+        else {
+            continue;
+        };
+        let present = group.iter().copied().find(|&i| doc(i) == Some(true));
+        let winner = match (doc(payout), present) {
+            (Some(true), _) => Some(payout),
+            (_, Some(exit)) => Some(exit),
+            (Some(false), None) if group.iter().all(|&i| doc(i) == Some(false)) => None,
+            _ => continue,
+        };
+        for &i in &group {
+            if Some(i) == winner {
+                moves[i].done(seen);
+            } else {
+                moves[i].state = PlatformActivityState::Failed;
+                moves[i].can_land = false;
+            }
+        }
+        changed.extend(group);
     }
     changed
 }
@@ -1131,6 +1306,7 @@ pub(crate) fn changes(
             at,
             may_land: false,
             estimated: false,
+            contact: None,
         };
         if is > was {
             let rose = is - was;
@@ -1197,6 +1373,15 @@ impl Limits {
             fee_base: fees.address_credit_withdrawal,
             fee_per_input: fees.address_funds_transfer_input_cost,
             band: 1,
+        })
+    }
+
+    /// A contact payout's (C-funding P8): a withdrawal's, its fee source
+    /// keeping [`TRANSFER_FEE_BAND`] times the estimate.
+    pub(crate) fn to_contact_at(version: &PlatformVersion) -> Result<Self, PlatformError> {
+        Ok(Self {
+            band: TRANSFER_FEE_BAND,
+            ..Self::at(version)?
         })
     }
 
@@ -1312,10 +1497,12 @@ impl Refused {
             (Refused::Short { needed, available }, _) => {
                 PlatformError::InsufficientCredits { needed, available }.into()
             }
-            (Refused::OutOfRange, MoveKind::ToCore) => CreditsError::WithdrawalOutOfRange {
-                min: limits.min,
-                max: limits.max,
-            },
+            (Refused::OutOfRange, MoveKind::ToCore | MoveKind::ToContact) => {
+                CreditsError::WithdrawalOutOfRange {
+                    min: limits.min,
+                    max: limits.max,
+                }
+            }
             (
                 Refused::OutOfRange,
                 MoveKind::Transfer | MoveKind::ToIdentity | MoveKind::Register,
@@ -1658,6 +1845,12 @@ pub(crate) trait MoveNet: Send + Sync {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> impl Future<Output = Result<(), PlatformWalletError>> + Send;
+    /// The withdrawal document `id`: whether Platform holds it, and the
+    /// proof's height (C-funding P8).
+    fn withdrawal(
+        &self,
+        id: dpp::prelude::Identifier,
+    ) -> impl Future<Output = Result<(bool, u64), PlatformError>> + Send;
     /// Signs the transfer of `inputs` to the one output `to` with `signer`
     /// and broadcasts it; `Ok` once Platform answered with the addresses'
     /// state.
@@ -1750,6 +1943,14 @@ impl MoveNet for SdkMoves {
             )
             .await
             .map(drop)
+    }
+
+    async fn withdrawal(&self, id: dpp::prelude::Identifier) -> Result<(bool, u64), PlatformError> {
+        use dash_sdk::platform::Fetch;
+        let query = withdrawal::withdrawal_query(&id)?;
+        let (document, at) =
+            dpp::document::Document::fetch_with_metadata(&self.sdk, query, None).await?;
+        Ok((document.is_some(), at.height))
     }
 
     async fn transfer(
@@ -2220,11 +2421,12 @@ async fn observe(
     store: &Store,
     (moves, funds): (&mut [MoveRecord], &mut [FundRecord]),
     held_funds: BTreeSet<String>,
-    (seen, exits): (&Seen, &Exits),
+    (seen, exits, docs): (&Seen, &Exits, &Documents),
 ) -> Result<bool, PlatformError> {
     let before = moves.to_vec();
     let funds_before = funds.to_vec();
     settle_with(moves, seen, exits);
+    settle_payouts(moves, seen, docs);
     let baseline = store.baseline().await?;
     let mut writes = Vec::new();
     let mut rows = 0;
@@ -2404,7 +2606,14 @@ pub(crate) async fn activity(
     let observed = match read(session, net, addresses, false).await {
         Ok(seen) => {
             let exits = exits(session, net, &moves, &seen).await;
-            observe(&store, (&mut moves, &mut funds), held, (&seen, &exits)).await?
+            let docs = documents(session, net, &moves, &seen).await;
+            observe(
+                &store,
+                (&mut moves, &mut funds),
+                held,
+                (&seen, &exits, &docs),
+            )
+            .await?
         }
         Err(e) => {
             // Nothing is known: what is stored stands.
@@ -2413,6 +2622,7 @@ pub(crate) async fn activity(
         }
     };
     let changed = completed || observed;
+    super::contact_payout::settled(session, wallet_id, &moves).await;
     let mut stored = store.all::<PlatformActivity>(ROW_PREFIX).await?;
     // Keys sort by time: the oldest beyond the kept ones go.
     while stored.len() > ROWS_KEPT {
@@ -2430,16 +2640,20 @@ pub(crate) async fn activity(
         .chain(funds.iter().map(FundRecord::activity))
         .collect();
     out.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| b.id.cmp(&a.id)));
+    super::contact_payout::name_rows(session, wallet, wallet_id, &mut out).await;
     Ok(out)
 }
 
 /// Where a move pays.
 #[derive(Debug, Clone, Copy)]
-enum Target<'a> {
+pub(crate) enum Target<'a> {
     /// One of the wallet's Core receiving addresses (a withdrawal).
     Core(&'a str),
     /// A Platform address, checked by [`recipient`] (a transfer).
     Platform(PlatformAddress),
+    /// A DashPay contact's Core address, reserved by the contact leg
+    /// inside the same call, never given by the host (C-funding P4).
+    Contact,
     /// One of the wallet's own identities (a top-up, C-routes C3-2).
     Identity(&'a Identity),
 }
@@ -2449,26 +2663,28 @@ impl Target<'_> {
         match self {
             Target::Core(_) => MoveKind::ToCore,
             Target::Platform(_) => MoveKind::Transfer,
+            Target::Contact => MoveKind::ToContact,
             Target::Identity(_) => MoveKind::ToIdentity,
         }
     }
 
-    fn limits(&self, version: &PlatformVersion) -> Result<Limits, PlatformError> {
+    pub(crate) fn limits(&self, version: &PlatformVersion) -> Result<Limits, PlatformError> {
         match self {
             Target::Core(_) => Limits::at(version),
             Target::Platform(_) => Ok(Limits::transfer_at(version)),
+            Target::Contact => Limits::to_contact_at(version),
             Target::Identity(_) => Ok(Limits::top_up_at(version)),
         }
     }
 
-    fn plan(
+    pub(crate) fn plan(
         &self,
         balances: &BTreeMap<PlatformAddress, u64>,
         amount: WithdrawAmount,
         limits: &Limits,
     ) -> Result<Plan, CreditsError> {
         match self {
-            Target::Core(_) => plan(balances, amount, limits),
+            Target::Core(_) | Target::Contact => plan(balances, amount, limits),
             Target::Platform(_) => transfer_plan(balances, amount, limits),
             Target::Identity(_) => return top_up_plan(balances, amount, limits),
         }
@@ -2688,6 +2904,40 @@ pub(crate) async fn quote(
     })
 }
 
+/// A contact payout's plan for `credits` and what the contact receives
+/// (C-funding P13, P14), from one proved read under rule 5; refused beside
+/// any record that holds, as the payout will be (C-routes §0).
+pub(crate) async fn contact_quote(
+    net: &impl MoveNet,
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    credits: u64,
+) -> Result<(Plan, u64), CreditsError> {
+    let network = session.vault.network();
+    let pool = pool(wallet).await?;
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    if let Some(h) = (moves.iter()).find(|m| m.holds() && !m.reached(&seen)) {
+        return Err(CreditsError::MovePending { id: h.id.clone() });
+    }
+    let version = net.version();
+    let target = Target::Contact;
+    let limits = target.limits(version)?;
+    let amount = WithdrawAmount::Credits { credits };
+    let planned = target.plan(&proved_balances(&pool, &seen, network), amount, &limits)?;
+    let duffs = withdrawal::expected_duffs(planned.credits(), version)?;
+    Ok((planned, duffs))
+}
+
+/// The wallet's move records as stored.
+pub(crate) async fn records(
+    session: &NetworkSession,
+    wallet_id: WalletId,
+) -> Result<Vec<MoveRecord>, PlatformError> {
+    Store::of(session, wallet_id)?.moves().await
+}
+
 /// `DashPay::platform_send_quote`.
 pub(crate) async fn send_quote(
     net: &impl MoveNet,
@@ -2852,7 +3102,9 @@ pub(crate) async fn top_up_quote(
     // A top-up signs no other record's terms, so any hold refuses it, as
     // the submit will decide it: settled by this read and its evidence.
     let evidence = exits(session, net, &moves, &seen).await;
+    let docs = documents(session, net, &moves, &seen).await;
     settle_with(&mut moves, &seen, &evidence);
+    settle_payouts(&mut moves, &seen, &docs);
     if let Some(h) = moves.iter().find(|m| m.holds()) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
@@ -2902,7 +3154,7 @@ pub(crate) async fn top_up(
     let (_, me) = withdrawal::own(wallet, id).await?;
     sends_active(net.sends_version().await)?;
     let ask = (amount, Target::Identity(&me), None, None);
-    let (record, balance) = run(net, session, wallet, wallet_id, ask, grant).await?;
+    let (record, balance) = run(net, session, wallet, wallet_id, ask, grant, None).await?;
     let row = record.activity();
     Ok(TopUpFromPlatformOutcome {
         id: record.id.clone(),
@@ -2930,6 +3182,7 @@ pub(crate) async fn move_to_core(
         wallet_id,
         (amount, Target::Core(to), None, None),
         grant,
+        None,
     )
     .await?;
     let row = record.activity();
@@ -2963,7 +3216,7 @@ pub(crate) async fn send(
         op.retry_of.as_deref(),
         Some(&op.plan),
     );
-    let (record, _) = run(net, session, wallet, wallet_id, ask, grant).await?;
+    let (record, _) = run(net, session, wallet, wallet_id, ask, grant, None).await?;
     let row = record.activity();
     Ok(PlatformSendOutcome {
         id: record.id.clone(),
@@ -3027,15 +3280,25 @@ fn retried<'m>(
 }
 
 /// One move to `target` (module doc, Moves); the record as it stands when
-/// the call returns, and a top-up's answered identity balance.
-async fn run(
+/// the call returns, and a top-up's answered identity balance. `contact`: a
+/// contact payout's leg (`Target::Contact` only), which reserves and claims
+/// its address and writes its payout row after the lease and before the
+/// record (C-funding P2).
+pub(crate) async fn run(
     net: &impl MoveNet,
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
     (amount, target, retry_of, quoted): (WithdrawAmount, Target<'_>, Option<&str>, Option<&Plan>),
     grant: &str,
+    mut contact: Option<&mut super::contact_payout::ContactLeg>,
 ) -> Result<(MoveRecord, Option<u64>), CreditsError> {
+    if matches!(target, Target::Contact) != contact.is_some() {
+        return Err(PlatformError::Internal {
+            detail: "a contact payout is the contact target with its leg".into(),
+        }
+        .into());
+    }
     let lock = wallet_lock(wallet_id);
     let _one = lock.lock().await;
     let network = session.vault.network();
@@ -3047,26 +3310,37 @@ async fn run(
     let mut funds = store.funds().await?;
     let held = fund_holds(session, wallet_id);
     let evidence = exits(session, net, &moves, &seen).await;
-    if observe(&store, (&mut moves, &mut funds), held, (&seen, &evidence)).await? {
+    let docs = documents(session, net, &moves, &seen).await;
+    if observe(
+        &store,
+        (&mut moves, &mut funds),
+        held,
+        (&seen, &evidence, &docs),
+    )
+    .await?
+    {
         session
             .hub
             .pump
             .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
     }
+    super::contact_payout::settled(session, wallet_id, &moves).await;
     let version = net.version();
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
-    // Every spend, before anything is planned (#533).
+    // A retry of a send that landed pays nothing and signs nothing.
+    if let (Target::Platform(to), Some(id)) = (target, retry_of)
+        && let Some(settled) = retry_decision(&moves, id, (&bech32m(&to, network), amount))?
+    {
+        return Ok((settled.clone(), None));
+    }
+    // Every spend that may sign, before anything is planned (#533).
     behind(&moves, &seen)?;
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
-    // only its exact retry, and a retry of one that landed pays nothing.
+    // only its exact retry.
     let (held, planned) = match (target, retry_of) {
-        (Target::Platform(to), Some(id)) => {
-            let to = bech32m(&to, network);
-            if let Some(settled) = retry_decision(&moves, id, (&to, amount))? {
-                return Ok((settled.clone(), None));
-            }
+        (Target::Platform(_), Some(id)) => {
             let held = (moves.iter()).find(|m| m.id == id);
             let planned =
                 (held.and_then(|h| h.replan(&balances))).ok_or(PlatformError::Unavailable)?;
@@ -3081,9 +3355,12 @@ async fn run(
                 });
             }
             let held = moves.iter().find(|m| m.holds());
-            if let (Target::Platform(_) | Target::Identity(_), Some(h)) = (target, held) {
-                // A new send: the hold came after its quote. A top-up signs
-                // no other record's terms (C-routes C3-9).
+            if let (Target::Platform(_) | Target::Contact | Target::Identity(_), Some(h)) =
+                (target, held)
+            {
+                // A new send: the hold came after its quote. A contact
+                // payout or a top-up signs no other record's terms
+                // (C-routes §0, C3-9).
                 return Err(CreditsError::MovePending { id: h.id.clone() });
             }
             let planned = plan_beside(&target, balances.clone(), amount, &limits, held, network)?;
@@ -3111,10 +3388,21 @@ async fn run(
             withdrawal::expected_duffs(planned.credits(), version)?,
         ),
         Target::Platform(address) => (bech32m(&address, network), 0),
+        // The leg names the address once it is reserved.
+        Target::Contact => (
+            String::new(),
+            withdrawal::expected_duffs(planned.credits(), version)?,
+        ),
         Target::Identity(identity) => (identity.id().to_string(Encoding::Base58), 0),
     };
+    let mut id = format!("move-{}-{}", seen.height, moves.len());
+    // A payout's row may outlive a record never written (P6), and a reference
+    // is never reused.
+    if matches!(target, Target::Contact) {
+        id = format!("{id}-{:016x}", rand::random::<u64>());
+    }
     let mut record = MoveRecord {
-        id: format!("move-{}-{}", seen.height, moves.len()),
+        id,
         kind: target.kind(),
         inputs: (inputs.iter())
             .map(|(a, (nonce, credits))| {
@@ -3160,9 +3448,9 @@ async fn run(
             id: held.id.clone(),
         });
     }
-    let script = match target {
+    let mut script = match target {
         Target::Core(to) => Some(own_core_destination(session, wallet_id, network, to).await?),
-        Target::Platform(_) | Target::Identity(_) => None,
+        Target::Platform(_) | Target::Contact | Target::Identity(_) => None,
     };
     // The authority before anything is redeemed: a refusal keeps the grant.
     // A send pays someone else: only a fresh grant, redeemed into a lease
@@ -3170,11 +3458,16 @@ async fn run(
     let flow = match target {
         Target::Core(_) | Target::Identity(_) => FlowKind::PlatformAddressMove,
         Target::Platform(_) => FlowKind::PlatformAddressSend,
+        Target::Contact => FlowKind::ContactPayFromBalance,
     };
     let authority = match session.lease_for(&wallet_id, grant) {
         Some(lease) => {
             let lease = lease.map_err(PlatformError::from)?;
-            if flow != FlowKind::PlatformAddressMove || lease.flow() != flow {
+            let leased_flow = matches!(
+                flow,
+                FlowKind::PlatformAddressMove | FlowKind::ContactPayFromBalance
+            );
+            if !leased_flow || lease.flow() != flow {
                 return Err(PlatformError::GrantInvalid.into());
             }
             NameAuthority::Lease(lease)
@@ -3198,6 +3491,7 @@ async fn run(
     let label = match target {
         Target::Core(_) => "move_to_core",
         Target::Platform(_) => "platform_send",
+        Target::Contact => "contact_pay",
         Target::Identity(_) => "top_up_from_platform",
     };
     let permit = write_permit(&lease, label, record.credits)?;
@@ -3208,10 +3502,29 @@ async fn run(
             return Err(PlatformError::from(e).into());
         }
     };
+    // The contact's address, reserved, claimed and its payout row on disk
+    // before the record (C-funding P2, P6).
+    if let Some(leg) = contact.as_deref_mut() {
+        match leg.claim(&mut record).await {
+            Ok(to) => script = Some(to),
+            Err(e) => {
+                drop(signer);
+                permit.finish(false);
+                return Err(e);
+            }
+        }
+    }
     // Recorded and read back before anything is signed.
-    if let Err(e) = store.commit(vec![move_write(&record)?]).await {
+    let recorded = match move_write(&record) {
+        Ok(write) => store.commit(vec![write]).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = recorded {
         drop(signer);
         permit.finish(false);
+        if let Some(leg) = contact.as_deref_mut() {
+            leg.unrecorded(&record).await;
+        }
         return Err(e.into());
     }
     session
@@ -3225,10 +3538,12 @@ async fn run(
             let output = (address, planned.credits());
             leased(&lease, net.transfer(inputs, output, strategy, &signer)).await
         }
-        (Target::Core(_), Some(script)) => {
+        (Target::Core(_) | Target::Contact, Some(script)) => {
             leased(&lease, net.withdraw(inputs, script, strategy, &signer)).await
         }
-        (Target::Core(_), None) => unreachable!("a withdrawal has its destination"),
+        (Target::Core(_) | Target::Contact, None) => {
+            unreachable!("a withdrawal has its destination")
+        }
         (Target::Identity(identity), _) => {
             // dpp fixes the fee on input 0, the plan's fee source.
             let answered = leased(&lease, net.top_up(identity, inputs, &signer)).await;
@@ -3247,11 +3562,15 @@ async fn run(
     permit.finish(call.is_ok());
     record.signed = released > 0;
     record.answered = call.is_ok();
+    // A payout's signed bytes may have reached a node, and a consensus error
+    // can come from a node's answer rather than the SDK's own check: only
+    // evidence settles it (P7, P8), never the call's error.
     let definitive = |e: &PlatformWalletError| match target {
         // A top-up signs no identity key: only the SDK's structure check,
         // before the broadcast, says it never executes. A signature error
         // can come back from a node and proves nothing.
         Target::Identity(_) => structure_refused(e),
+        Target::Contact => false,
         _ => never_valid(e),
     };
     let cannot_land =
@@ -3286,7 +3605,9 @@ async fn run(
         match read(session, net, signed.collect(), false).await {
             Ok(after) => {
                 let evidence = exits(session, net, &moves, &after).await;
+                let docs = documents(session, net, &moves, &after).await;
                 settle_with(&mut moves, &after, &evidence);
+                settle_payouts(&mut moves, &after, &docs);
             }
             Err(e) => tracing::info!(id = %moves[at].id, "reading a move's nonces: {e}"),
         }
@@ -3297,10 +3618,19 @@ async fn run(
         // land: the next read settles it by its nonces.
         tracing::warn!(id = %moves[at].id, "storing a move's outcome: {e}");
     }
+    // A payout this move's evidence settled (a "Move to Dash wallet" at a
+    // held payout's inputs and nonces, P8).
+    super::contact_payout::settled(session, wallet_id, &moves).await;
     session
         .hub
         .pump
         .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
+    if let Some(leg) = contact {
+        // Refused before any signature: the address goes back to the pair
+        // (P5). Once one left, it is consumed.
+        let give_back = released == 0;
+        leg.outcome(&moves[at], give_back).await;
+    }
     if cannot_land && let Err(e) = call {
         return Err(PlatformError::from(e).into());
     }

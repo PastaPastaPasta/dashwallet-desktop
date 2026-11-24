@@ -1238,6 +1238,15 @@ const SCENARIOS = {
     main.rows = [];
     return w;
   },
+  /** The first start after an update from 0.1 or 0.2: the funded wallet is replayed once from its
+   * birth, so Home and Pay say why sends wait. The replay does not move on while the scenario is up. */
+  "upgrade-replay": (t) => {
+    const w = base(t);
+    const tip = w.sync.tipHeight!;
+    w.tools.rescan = { fromHeight: tip - 200_000, currentHeight: tip - 150_000, targetHeight: tip, startedAt: secs(FIXTURE_NOW), upgradeWallets: [w.wallets[0].summary.walletId] };
+    w.tools.rescanStep = 0;
+    return w;
+  },
   /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */
   "wallet-behind-stopped": (t) => walletBehind(t, true, false),
   /** The same with nothing found yet: Home shows 0. */

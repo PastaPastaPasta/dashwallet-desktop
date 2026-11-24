@@ -19,6 +19,7 @@ mod banner;
 mod banner_tests;
 mod bringup;
 mod contact_names;
+pub(crate) mod contact_payout;
 mod contacts;
 pub(crate) mod contacts_model;
 #[cfg(all(test, target_os = "linux"))]
@@ -65,7 +66,7 @@ mod platform_addresses;
 mod platform_fund;
 #[cfg(test)]
 mod platform_fund_tests;
-mod platform_moves;
+pub(crate) mod platform_moves;
 mod private_details;
 #[cfg(test)]
 mod private_details_tests;
@@ -122,7 +123,6 @@ pub(crate) mod withdrawal;
 
 pub(crate) use avatar::{Locks, keyed_lock};
 pub use bringup::CREATED_HERE_BUDGET;
-pub(crate) use bringup::CREATED_HERE_KEY;
 pub use contacts::{
     ChannelState, ContactDetail, ContactQuery, ContactSection, ContactSectionPage, ContactSort,
     ContactSummary, ContactsPage, Eligibility, PrivateDetails, PublishState, Relation,
