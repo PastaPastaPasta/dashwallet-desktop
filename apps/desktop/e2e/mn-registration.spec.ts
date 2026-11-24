@@ -425,7 +425,6 @@ test("a saved registration offers Continue, and Prove can submit; Discard still 
   const errors = await open(page, "reg-prepared");
   await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
   await expect(page.getByTestId(`mn-op-continue-${OP_PREPARED}`)).toBeVisible();
-  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("Needs signature");
   await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
   await expect(step(page, "prove")).toBeVisible();
   await expect(page.getByTestId("reg-submit")).toBeVisible();
@@ -597,8 +596,10 @@ test("a released collateral offers Lock it again on testnet", async ({ page }) =
   expect(errors).toEqual([]);
 });
 
-/** All a held wizard reads, from opening to Review. The list comes from the page's own read. */
+/** All a held wizard reads, from opening to Review. The list comes from the page's own read; the
+ * page's governance clock polls on its own timer, which the sheet doesn't own. */
 const HELD_READS = ["mn_preview_registration", "mn_registration_keys"];
+const pagePoll = (c: string) => c.startsWith("governance_");
 
 for (const theme of ["light", "dark"] as const)
   test(`mainnet ${theme}: the held wizard reads only keys and the preview (issue 635)`, async ({ page }, info) => {
@@ -613,7 +614,7 @@ for (const theme of ["light", "dark"] as const)
     await fontsReady(page);
     await page.screenshot({ path: info.outputPath(`reg-held-review-${theme}.png`) });
     const made = await page.evaluate((n) => window.__dwFixture!.calls.slice(n), from);
-    expect([...new Set(made)].sort()).toEqual(HELD_READS);
+    expect([...new Set(made.filter((c) => !pagePoll(c)))].sort()).toEqual(HELD_READS);
     await expect(page.getByTestId("reg-passphrase")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
