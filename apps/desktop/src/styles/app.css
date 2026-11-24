@@ -1485,6 +1485,14 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-xs);
 }
 
+.tx-row-party {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tx-row-party,
 .tx-row-time {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
