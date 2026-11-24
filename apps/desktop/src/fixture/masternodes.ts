@@ -360,7 +360,7 @@ function planUpdate(world: World, walletId: string, request: UpdateRegistrarRequ
   if (cap.kind === "vault_locked") throw fail("vault.locked", "vault locked");
   if (cap.kind !== "available") throw fail("masternodes.no_owner_key", "this wallet holds no owner key of this masternode");
   const pending = m.operations.find((u) => u.proTxHash === hash && (u.state.kind === "sent" || u.state.kind === "signed" || u.state.kind === "not_sent"));
-  if (pending) throw fail("masternodes.update_pending", `operation ${pending.id} on this masternode is not in the list yet`);
+  if (pending) throw fail("masternodes.update_pending", `operation ${pending.id} on this masternode is not in the list yet`, { kind: "operation", operation: pending.id });
   const listedOperator = basicKey(listed.facts.operatorPublicKey);
   const operatorKey = request.operator.kind === "keep" ? listedOperator : request.operator.kind === "given" ? request.operator.publicKey.toLowerCase() : keyInfo("operator", request.operator.kind === "keychain" ? request.operator.index : NEXT_UNUSED).publicKeyHex;
   const operatorIndex = request.operator.kind === "keychain" ? request.operator.index : request.operator.kind === "next_unused" ? NEXT_UNUSED : null;
@@ -440,6 +440,7 @@ export const OP_DISSOLVE_FOREIGN = opId(9);
 export const OP_UPDATE = opId(10);
 export const OP_CONFLICTED = opId(11);
 export const OP_CONFIRMED = opId(12);
+export const OP_UPDATE_SAVED = opId(13);
 /** A dissolve row's penalty: its `debit` is this plus the fee. */
 export const DISSOLVE_PENALTY = 25 * COIN;
 
@@ -810,6 +811,13 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
       const o = opOf(world, walletId, operation);
       const state = readState(m, o).kind;
       if (state !== "signed" && state !== "not_sent" && state !== "sent") throw stateError(state);
+      // `resend_conflict` (D43, D49): a later update of the masternode that is or may go out would be undone by this
+      // one; an earlier one out and not in a block could be mined after it.
+      const others = o.kind === "update_registrar" ? m.operations.filter((x) => x !== o && x.kind === o.kind && x.proTxHash === o.proTxHash) : [];
+      const later = others.find((x) => x.createdAt >= o.createdAt && ["signed", "not_sent", "sent", "confirmed"].includes(readState(m, x).kind));
+      if (later) throw fail("masternodes.update_superseded", `operation ${later.id} replaces this one`, { kind: "operation", operation: later.id });
+      const earlier = others.find((x) => x.createdAt < o.createdAt && readState(m, x).kind === "sent");
+      if (earlier) throw fail("masternodes.update_pending", `operation ${earlier.id} on this masternode is not in the list yet`, { kind: "operation", operation: earlier.id });
       charge(lease(world, walletId, grant, useGrant), o.debit);
       sendOp(m, o, false);
       changed(ctx);
@@ -1200,6 +1208,15 @@ function prepared(m: MasternodesWorld, state: ProTxOperation["state"]) {
 const external = (n: number) => scenarioTerms(n, { collateral: "external", collateralOutpoint: `${h(`e${n.toString(16)}`)}-0`, collateralAddress: addr(`xE${n}`) });
 const signRequest = (n: number) => ({ address: addr(`xE${n}`), message: `${addr(`pO${n}`)}|0|${keyInfo("owner", 5 + n).address}|${keyInfo("voting", 5 + n).address}|${h(`5${n.toString(16)}`)}` });
 
+/** Home's registrar update in `state`, saved before the scenario opens (issue 438). */
+const homeUpdate = (state: ProTxOperation["state"], id = OP_UPDATE, n = 9) =>
+  scenarioOp(id, n, state, {
+    kind: "update_registrar",
+    proTxHash: HOME,
+    lastError: state.kind === "not_sent" ? "send.no_peers" : null,
+    terms: scenarioTerms(n, { service: "198.51.100.7:19999", ownerAddress: keyInfo("owner", 0).address!, ownerIndex: 0, collateral: null, collateralOutpoint: null, collateralAddress: null }),
+  });
+
 /** `mn-ops`: one operation in each state and of each kind, newest first (MG-10 §5.1). */
 function ops(m: MasternodesWorld) {
   const dissolve = (n: number, debit: number) => ({ kind: "dissolve" as const, proTxHash: h("5d"), debit, terms: scenarioTerms(n, { collateral: null, collateralOutpoint: null, collateralAddress: null }) });
@@ -1212,11 +1229,7 @@ function ops(m: MasternodesWorld) {
     scenarioOp(OP_SENT_OVERDUE, 6, { kind: "sent" }, { overdue: true }),
     scenarioOp(OP_DISSOLVE, 7, { kind: "sent" }, { ...dissolve(7, DISSOLVE_PENALTY + REG_FEE.regular), overdue: true }),
     scenarioOp(OP_DISSOLVE_FOREIGN, 8, { kind: "sent" }, dissolve(8, 0)),
-    scenarioOp(OP_UPDATE, 9, { kind: "sent" }, {
-      kind: "update_registrar",
-      proTxHash: HOME,
-      terms: scenarioTerms(9, { service: "198.51.100.7:19999", ownerAddress: keyInfo("owner", 0).address!, ownerIndex: 0, collateral: null, collateralOutpoint: null, collateralAddress: null }),
-    }),
+    homeUpdate({ kind: "sent" }),
     scenarioOp(OP_CONFLICTED, 10, { kind: "conflicted" }),
     scenarioOp(OP_CONFIRMED, 11, { kind: "confirmed", height: HEIGHT - 40 }),
   ];
@@ -1277,6 +1290,12 @@ export function masternodesScenarios(base: Base) {
       }),
     /** `mn-list`, where the next registrar update finds no peers and is saved `not_sent`. */
     "mn-update-not-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.nextUpdateNotSent = true)),
+    /** `mn-list` with a change to Home saved and not sent: Change keys opens on Send again or Discard. */
+    "mn-update-saved": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" })])),
+    /** `mn-list` with a change to Home sent and not in the list yet: a new change is refused `update_pending`. */
+    "mn-update-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "sent" })])),
+    /** `mn-update-sent` with a later change to Home saved and not sent: its Send again is refused `update_pending`. */
+    "mn-update-saved-behind-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" }, OP_UPDATE_SAVED, 2), homeUpdate({ kind: "sent" })])),
     /** The keychain: Home's operator key matched in the basic form, Office's in the legacy form, Lab evonode's platform node id. */
     "mn-keys": (t: ThemeName | null) =>
       mnBase(base, t, (m) => {
