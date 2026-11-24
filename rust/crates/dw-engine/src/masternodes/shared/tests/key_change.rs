@@ -1318,3 +1318,90 @@ fn test_a_discarded_key_change_frees_its_fee_coins() {
     f.restart();
     assert!(f.locked(0).is_empty(), "the unlock survives a restart");
 }
+
+/// F2: an unreadable key change whose hand-off went out has an exit.
+/// `abandon_shared_session` refuses it before spending anything (its
+/// record can't be returned); `unreadable_shared_sessions` lists it
+/// `abandonable`, and `abandon_unreadable_shared_session`, under a grant of
+/// exactly `shared_abandon_fee`, spends a fee input back to the wallet. Its
+/// locks stay until that spend is buried: kept one and five deep, released
+/// six deep.
+#[test]
+fn test_an_unreadable_out_key_change_is_abandoned_and_released_once_buried() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    send(&f, 0, &id, COIN).unwrap();
+    let reserved = reserved_of(&f.row(0, &id));
+    assert!(!reserved.is_empty());
+    f.rewrite(0, &id, |u| u.envelope = "{".into());
+    let fee = crate::masternodes::shared_abandon_fee();
+    assert!(abandon(&f, 0, &id, COIN).is_err());
+    assert_eq!(f.net.sent().len(), 1, "refused before any spend");
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[0]))
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].kind, SharedKind::KeyChange);
+    assert!(!listed[0].discardable);
+    assert!(listed[0].abandonable);
+    let short = f.run(f.mn().abandon_unreadable_shared_session(
+        f.wallets[0],
+        id.clone(),
+        f.grant(0, fee - 1),
+    ));
+    assert_eq!(send_code(&short.unwrap_err()), "send.grant_exceeded");
+    assert_eq!(f.net.sent().len(), 1);
+    let after = f
+        .run(
+            f.mn()
+                .abandon_unreadable_shared_session(f.wallets[0], id.clone(), f.grant(0, fee)),
+        )
+        .unwrap();
+    assert_eq!(after.id, id);
+    let out = f.net.sent();
+    assert_eq!(out.len(), 2);
+    let spend = out[1].clone();
+    assert_eq!(spend.input.len(), 1);
+    assert!(reserved.contains(&spend.input[0].previous_output));
+    // The wallet's record of the spend (the test network records none).
+    f.spend(0, spend.input[0].previous_output);
+    let listed = f
+        .run(f.mn().unreadable_shared_sessions(f.wallets[0]))
+        .unwrap();
+    assert_eq!(
+        listed[0].abandonable,
+        reserved.len() > 1,
+        "a coin left to spend"
+    );
+    assert_eq!(spend.output.len(), 1);
+    assert_eq!(
+        f.row(0, &id).abandon_txid.as_deref(),
+        Some(spend.txid().to_string().as_str())
+    );
+    let log: serde_json::Value =
+        serde_json::from_str(f.row(0, &id).abandon_log.as_deref().unwrap()).unwrap();
+    assert_eq!(log[0]["fee"].as_u64(), Some(fee));
+    assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
+    f.mine(spend, 200);
+    f.tip(200);
+    f.follow();
+    assert!(!f.locked(0).is_empty(), "one deep: kept");
+    assert_eq!(
+        code(
+            f.run(f.mn().abandon_unreadable_shared_session(
+                f.wallets[0],
+                id.clone(),
+                f.grant(0, fee)
+            ))
+            .unwrap_err()
+        ),
+        "masternodes.shared_stage"
+    );
+    f.tip(204);
+    f.follow();
+    assert!(!f.locked(0).is_empty(), "five deep: kept");
+    f.tip(205);
+    f.follow();
+    assert!(f.locked(0).is_empty());
+}

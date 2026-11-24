@@ -228,25 +228,49 @@ fn remaining(bytes: &[u8]) -> SpentRead {
     }
 }
 
+/// The path of drive's spent asset-lock tree, built as drive builds it
+/// (`RootTree`'s `&[u8; 1]`, `drive/asset_lock/mod.rs`).
+pub(crate) fn spent_path() -> Vec<Vec<u8>> {
+    let byte: &'static [u8; 1] = drive::drive::RootTree::SpentAssetLockTransactions.into();
+    vec![byte.to_vec()]
+}
+
 /// Platform's proved answer for the lock at `outpoint`
 /// ([`SPENT_READ_TIMEOUT`]); [`SpentRead::Unread`] on any failure, and
 /// from an SDK that does not ask for proofs.
 pub(crate) async fn proved_spent(sdk: &dash_sdk::Sdk, outpoint: OutPoint) -> SpentRead {
     use dash_sdk::platform::FetchMany;
     use dash_sdk::query_types::KeysInPath;
-    use drive::drive::RootTree;
     use drive::grovedb::Element;
-    if !sdk.prove() {
+    let key = spent_key(outpoint);
+    let query = KeysInPath {
+        path: spent_path(),
+        keys: vec![key.clone()],
+    };
+    let fetch = || Element::fetch_many(sdk, query);
+    read_fetched(sdk.prove(), outpoint, &key, SPENT_READ_TIMEOUT, fetch).await
+}
+
+/// [`proved_spent`] around its `fetch`: not made without proofs, bounded
+/// by `limit`, and any error or timeout is [`SpentRead::Unread`].
+pub(crate) async fn read_fetched<F, Fut, E>(
+    prove: bool,
+    outpoint: OutPoint,
+    key: &[u8],
+    limit: std::time::Duration,
+    fetch: F,
+) -> SpentRead
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<dash_sdk::query_types::Elements, E>>,
+    E: std::fmt::Display,
+{
+    if !prove {
         tracing::warn!(%outpoint, "the SDK does not ask for proofs: a lock's spent read is not made");
         return SpentRead::Unread;
     }
-    let key = spent_key(outpoint);
-    let query = KeysInPath {
-        path: vec![vec![RootTree::SpentAssetLockTransactions as u8]],
-        keys: vec![key.clone()],
-    };
-    match tokio::time::timeout(SPENT_READ_TIMEOUT, Element::fetch_many(sdk, query)).await {
-        Ok(Ok(elements)) => read_spent(Some(&elements), &key),
+    match tokio::time::timeout(limit, fetch()).await {
+        Ok(Ok(elements)) => read_spent(Some(&elements), key),
         Ok(Err(e)) => {
             tracing::warn!(%outpoint, error = %e, "a lock's spent read failed");
             SpentRead::Unread

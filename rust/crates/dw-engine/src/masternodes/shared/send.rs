@@ -346,8 +346,7 @@ impl NetworkSession {
             .await
             .map_err(EngineError::from)?;
         let script = address.script_pubkey();
-        let fee = fee_for(FeeRate::new(MIN_FEE_PER_KB), tx_size(1, &[script.len()], 0))
-            .ok_or(EngineError::Send(SendFailure::TxTooLarge))?;
+        let fee = abandon_fee(script.len()).ok_or(EngineError::Send(SendFailure::TxTooLarge))?;
         let value = utxo
             .value()
             .checked_sub(fee)
@@ -410,6 +409,12 @@ impl NetworkSession {
         lease.end();
         result
     }
+}
+
+/// The abandon spend's fee: one P2PKH input spent whole to one output of
+/// `script_len` bytes, at the relay minimum.
+pub(super) fn abandon_fee(script_len: usize) -> Option<u64> {
+    fee_for(FeeRate::new(MIN_FEE_PER_KB), tx_size(1, &[script_len], 0))
 }
 
 /// `signed` as the pin's typed transaction, which the hand-off and the

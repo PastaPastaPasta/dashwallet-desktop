@@ -120,6 +120,8 @@ export const onboarding = {
     startsAtFirst: "The scan starts at the first block.",
     finish: "Restore wallet",
     birthDateInFuture: "The wallet creation date cannot be in the future.",
+    birthDateMissing: "Enter a valid wallet creation date, or choose The beginning.",
+    firstBlockSlow: "This can take a long time. If this recovery phrase belongs to a watch-only wallet already in Dash Wallet, sending from that wallet is unavailable until the scan finishes.",
   },
   phrase: {
     wordCount: "Recovery phrases have 12, 15, 18, 21 or 24 words.",

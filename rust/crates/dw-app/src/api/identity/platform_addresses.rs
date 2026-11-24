@@ -78,6 +78,8 @@ impl From<engine::PlatformAddressRow> for PlatformAddressRow {
 /// wallet" of this wallet to its Platform address (`address`), pending
 /// until Platform proves it applied; `toIdentity`: a top-up of one of this
 /// wallet's identities (`to`, base58) from its Platform addresses;
+/// `contactPayment`: a payment to a DashPay contact (`contact`) from the
+/// Platform balance, to its Core address (`to`);
 /// `recovered`: the value left on a transfer to Shielded that Platform
 /// refused after a penalty, recovered to this wallet's Platform address
 /// (`address`), pending until Platform proves it applied.
@@ -90,11 +92,12 @@ pub enum PlatformActivityKind {
     Send,
     FromCore,
     ToIdentity,
+    ContactPayment,
     Recovered,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, Recovered
+    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, ContactPayment, Recovered
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);
@@ -137,6 +140,10 @@ pub struct PlatformActivity {
     pub may_land: bool,
     /// A done send whose debit counts the fee estimate.
     pub estimated: bool,
+    /// A `contactPayment`'s contact; absent for every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub contact: Option<crate::dto::history::TxCounterparty>,
 }
 
 impl From<engine::PlatformActivity> for PlatformActivity {
@@ -153,6 +160,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             at,
             may_land,
             estimated,
+            contact,
         } = a;
         PlatformActivity {
             id,
@@ -166,6 +174,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             at,
             may_land,
             estimated,
+            contact: contact.map(Into::into),
         }
     }
 }

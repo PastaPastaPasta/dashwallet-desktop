@@ -187,9 +187,11 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
 /** Back is offered when a new quote may pass. */
 export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits");
 
-/** A move, send or top-up from Platform that Platform has not answered (`pending`) or that may still
- * execute (`mayLand`: also a `failed` one by height). They share one hold on the wallet's Platform addresses. */
-export const isHeldOp = (a: PlatformActivity): boolean => (a.kind === "moveToCore" || a.kind === "send" || a.kind === "toIdentity") && (a.state === "pending" || a.mayLand);
+/** A move, send, contact payment or top-up from Platform that Platform has not answered (`pending`) or
+ * that may still execute (`mayLand`: also a `failed` one by height). They share one hold on the wallet's
+ * Platform addresses. */
+const holdingKind = (a: PlatformActivity) => a.kind === "moveToCore" || a.kind === "send" || a.kind === "contactPayment" || a.kind === "toIdentity";
+export const isHeldOp = (a: PlatformActivity): boolean => holdingKind(a) && (a.state === "pending" || a.mayLand);
 
 /** Whether a move or send of this wallet holds the Platform addresses: recorded `pending` or able to
  * execute still (it settles within minutes: the engine's `platform_activity` settles it). While one
@@ -199,7 +201,7 @@ export const hasPendingMove = (activity: readonly PlatformActivity[] | null | un
 /** Whether a move or send is recorded `pending`: Platform has not answered, so not even its retry
  * is taken yet. */
 export const hasUnansweredOp = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
-  !!activity?.some((a) => (a.kind === "moveToCore" || a.kind === "send" || a.kind === "toIdentity") && a.state === "pending");
+  !!activity?.some((a) => holdingKind(a) && a.state === "pending");
 
 /** Whether a payment (a `send`, not a move) holds the Platform addresses and no move does: the Move card says so. */
 export const sendHolds = (activity: readonly PlatformActivity[] | null | undefined): boolean =>

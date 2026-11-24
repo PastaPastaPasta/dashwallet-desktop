@@ -39,6 +39,8 @@ import { SyncSheet } from "../screens/SyncSheet";
 import { SavedLinksSheet } from "../screens/SavedLinks";
 import { Transactions } from "../screens/Transactions";
 import { TxDetailSheet } from "../screens/TxDetailSheet";
+import { SourceDetailSheet } from "../screens/SourceDetailSheet";
+import { rowSource } from "../history/sourceRows";
 import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
 import { useDisplay } from "../format/display";
 import { SecurityText } from "../settings/security";
@@ -243,7 +245,12 @@ function WalletChrome({
       </div>
       {/* Sheets opened inside the shell (Pay, Receive): above it, below onboarding, which covers it (U-02 D31). */}
       <div className="sheet-layer" ref={setLayer} inert={layerInert} />
-      {sheet && <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />}
+      {sheet &&
+        (rowSource({ txid: detail! }) ? (
+          <SourceDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />
+        ) : (
+          <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />
+        ))}
     </>
   );
 }
