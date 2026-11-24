@@ -9,12 +9,14 @@ import { isAppError } from "../../api/backend";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { ContactPayOutcomeInfo } from "../../api/generated/ContactPayOutcomeInfo";
 import type { ContactPayQuoteInfo } from "../../api/generated/ContactPayQuoteInfo";
+import type { LockResolutionName } from "../../api/generated/LockResolutionName";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { PaymentSourceName } from "../../api/generated/PaymentSourceName";
+import type { PlatformActivity } from "../../api/generated/PlatformActivity";
 import type { PoolReading } from "../../format/homeBalance";
 import { t } from "../../i18n";
 import { failureText, Model } from "../../onboarding/model";
-import { moveErrorText, onMoveSettledNotify } from "../../platform/move";
+import { isHeldOp, moveErrorText, onMoveSettledNotify } from "../../platform/move";
 import { GrantModel, PAYMENT_PROMPT } from "../../tools/grant";
 
 export type PaySource = PaymentSourceName;
@@ -77,8 +79,9 @@ export function fromRows(i: FromInputs): FromRow[] {
   return [{ source: "core", label: LABEL.core, balance: shown(i.coreDuffs), reason: null }, pool("shielded", i.shielded), pool("platform", i.platform)];
 }
 
-/** The source a form pays from: the chosen one while it can pay, else the Dash wallet. */
-export const payingSource = (rows: readonly FromRow[], chosen: PaySource): PaySource => (rows.find((r) => r.source === chosen)?.reason === null ? chosen : "core");
+/** Why the chosen source cannot pay now, or `null`. The form never moves a choice to another
+ * source by itself: a balance that empties or is read late holds Review with this reason. */
+export const chosenReason = (rows: readonly FromRow[], chosen: PaySource): string | null => rows.find((r) => r.source === chosen)?.reason ?? null;
 
 /** A quote's or a payment's refusal, as the D-C5 Copy table says it. `credits` is what was asked. */
 export function fromErrorText(e: unknown, credits: string | null, amount: (credits: string) => string): string {
@@ -122,6 +125,11 @@ const definitive = (e: unknown) => isAppError(e) && e.code !== "internal";
 export class ContactPayFlow extends Model {
   step: FromStep = "confirm";
   outcome: ContactPayOutcomeInfo | null = null;
+  /** A payment whose reply was lost: the contact stays held, after the sheet closes too, until a
+   * read taken after the loss settles it (`reconcile`). `known`: the payout rows to this contact
+   * the last read before the attempt listed (none of them is this payment); `null` when there was no
+   * such read, and then a row from `since` on (seconds) counts. `lostAt`: when the reply was lost (ms). */
+  unresolved: { known: ReadonlySet<string> | null; since: number; lostAt: number } | null = null;
   error: unknown = null;
   running = false;
   readonly grants: GrantModel;
@@ -138,7 +146,23 @@ export class ContactPayFlow extends Model {
     this.grants.subscribe(() => this.changed());
   }
 
-  /** Back to the form: drops a seen result or refusal (not a running call). */
+  /** Settles a lost reply from a Platform activity read made at `readAt` (ms): a payout to this
+   * contact since the attempt that is done was sent, and one that failed and can no longer land,
+   * or none at all, was not (the engine records a payout before it signs). While one may still
+   * land, or the read is older than the loss or failed, the contact stays held: `null`. */
+  reconcile(rows: readonly PlatformActivity[] | null | undefined, readAt: number): Exclude<LockResolutionName, "unknown"> | null {
+    const u = this.unresolved;
+    if (u === null || !rows || readAt <= u.lostAt) return null;
+    const mine = rows.filter((r) => this.isMine(r) && (u.known ? !u.known.has(r.id) : r.at >= u.since));
+    if (mine.some(isHeldOp)) return null;
+    this.unresolved = null;
+    this.changed();
+    return mine.some((r) => r.state === "done") ? "sent" : "notSent";
+  }
+
+  private isMine = (r: PlatformActivity) => r.kind === "contactPayment" && r.contact?.identity === this.contact;
+
+  /** Back to the form: drops a seen result or refusal (not a running call). A lost reply's hold stays. */
   reset() {
     if (this.running) return;
     this.step = "confirm";
@@ -148,9 +172,12 @@ export class ContactPayFlow extends Model {
     this.changed();
   }
 
-  async pay(quote: ContactPayQuoteInfo, note: string | null): Promise<void> {
+  /** `before`: the Platform activity as last read, to tell this payment's row from earlier ones. */
+  async pay(quote: ContactPayQuoteInfo, note: string | null, before?: readonly PlatformActivity[] | null): Promise<void> {
     if (this.running) return;
     let ran = false;
+    const known = before ? new Set(before.filter(this.isMine).map((r) => r.id)) : null;
+    const since = Math.floor(Date.now() / 1000) - 1;
     this.running = true;
     this.error = null;
     this.changed();
@@ -169,6 +196,7 @@ export class ContactPayFlow extends Model {
     } catch (e) {
       this.error = e;
       this.step = ran && !definitive(e) ? "lost" : "refused";
+      if (this.step === "lost") this.unresolved = { known, since, lostAt: Date.now() };
     } finally {
       this.running = false;
       // Balances, Activity and the contact's lock follow a payment as they follow a move.

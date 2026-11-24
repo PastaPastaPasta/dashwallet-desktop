@@ -3,8 +3,9 @@
 // about what the contact receives and the fee (P13). No Max, no "subtract fee", no coin control.
 
 import { useEffect, useId, useState, type Ref } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ContactPayQuoteInfo } from "../../api/generated/ContactPayQuoteInfo";
+import type { PlatformActivity } from "../../api/generated/PlatformActivity";
 import { CREDITS_PER_DUFF, creditsToDuffs } from "../../api/pending";
 import { useBackend } from "../../api/queries";
 import { navigate, useUi } from "../../app/ui";
@@ -80,6 +81,8 @@ export function useBalancePay({
   duffs,
   settled,
   shown,
+  blocked,
+  basis,
 }: {
   walletId: string;
   identity: string;
@@ -88,28 +91,36 @@ export function useBalancePay({
   duffs: number | null | undefined;
   settled: boolean;
   shown: Shown;
+  /** Why the chosen source cannot pay now: Review waits with it, and nothing is quoted. */
+  blocked: string | null;
+  /** What the quote depends on besides the amount (the balance, the transfers that hold it): a
+   * change reads a new quote for the form. An open confirmation keeps the quote it showed. */
+  basis: string;
 }) {
   const b = useBackend();
+  const client = useQueryClient();
+  const discreet = useUi((s) => s.discreet);
   const flow = useModel(contactPayFor(b, walletId, identity, contact));
   const [confirmed, setConfirmed] = useState<ContactPayQuoteInfo | null>(null);
   const active = source !== "core";
-  const credits = active && settled && typeof duffs === "number" && duffs > 0 ? String(BigInt(duffs) * CREDITS_PER_DUFF) : null;
+  const credits = active && blocked === null && settled && typeof duffs === "number" && duffs > 0 ? String(BigInt(duffs) * CREDITS_PER_DUFF) : null;
   const open = confirmed !== null || flow.step !== "confirm" || flow.running;
   const quote = useQuery({
-    queryKey: ["contactPayQuote", walletId, identity, contact, source, credits] as const,
+    queryKey: ["contactPayQuote", walletId, identity, contact, source, credits, basis] as const,
     queryFn: () => b.contactPayQuote(walletId, identity, contact, credits!, source),
     enabled: credits !== null && !open,
     retry: false,
   });
-  const credit = (c: string) => shown.withUnit(creditsToDuffs(c));
-  const problem = !active || credits === null ? null : quote.isError ? fromErrorText(quote.error, credits, credit) : null;
+  // A refusal names amounts: discreet mode masks them as the confirm does.
+  const credit = (c: string) => (discreet ? shown.masked() : shown.withUnit(creditsToDuffs(c)));
+  const problem = !active ? null : blocked !== null ? blocked : credits === null ? null : quote.isError ? fromErrorText(quote.error, credits, credit) : null;
   const q = quote.data && quote.data.credits === credits && quote.data.source === source ? quote.data : null;
   return {
     active,
     flow,
     confirmed,
     problem,
-    incomplete: credits === null,
+    incomplete: credits === null && blocked === null,
     ready: q !== null && !quote.isFetching && problem === null,
     fee: q ? creditsToDuffs(q.feeCredits) : null,
     review: () => {
@@ -118,6 +129,8 @@ export function useBalancePay({
     close: () => {
       setConfirmed(null);
       flow.reset();
+      // After an attempt the form quotes again: a refused grant or a settled hold changes it.
+      void client.invalidateQueries({ queryKey: ["contactPayQuote", walletId, identity, contact] });
     },
   };
 }
@@ -127,13 +140,19 @@ export function BalancePaySheet({
   flow,
   quote,
   name,
+  sub,
   note,
   shown,
+  before,
   onClose,
 }: {
   flow: ContactPayFlow;
   quote: ContactPayQuoteInfo | null;
+  /** The Platform activity as last read: a lost reply is settled against what is new since. */
+  before: readonly PlatformActivity[] | null | undefined;
   name: string;
+  /** What tells two contacts of one name apart: the `@username`, or the identity's short id. */
+  sub: string;
   note: string | null;
   shown: Shown;
   /** `paid`: the payment went or may have, so the form clears. */
@@ -155,14 +174,21 @@ export function BalancePaySheet({
         <div data-testid="pay-balance-body" data-step={step}>
           {step === "confirm" && quote && (
             <>
+              <p className="pay-payee-names" data-testid="pay-balance-payee">
+                <span className="pay-payee-name">{name}</span>
+                <span className="contact-row-username">{sub}</span>
+              </p>
               <p className="sheet-text" data-testid="pay-balance-confirm">
                 {t("pay.contact.from.confirm", { name, amount: credit(quote.credits), source: sourceLabel(quote.source), received: amount(quote.expectedDuffs), fee: credit(quote.feeCredits) })}
+              </p>
+              <p className="sheet-text" data-testid="pay-balance-total">
+                {t("pay.contact.from.total", { source: sourceLabel(quote.source), total: credit(String(BigInt(quote.credits) + BigInt(quote.feeCredits))) })}
               </p>
               <div className="sheet-actions">
                 <DashButton variant="tintedGray" size="large" data-testid="pay-balance-cancel" disabled={flow.running} onClick={() => onClose(false)}>
                   {t("common.cancel")}
                 </DashButton>
-                <DashButton variant="filledBlue" size="large" data-testid="pay-balance-go" disabled={flow.running} onClick={() => void flow.pay(quote, note)}>
+                <DashButton variant="filledBlue" size="large" data-testid="pay-balance-go" disabled={flow.running} onClick={() => void flow.pay(quote, note, before)}>
                   {t("pay.confirm.send")}
                 </DashButton>
               </div>

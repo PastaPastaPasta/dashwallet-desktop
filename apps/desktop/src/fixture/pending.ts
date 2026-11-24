@@ -9,6 +9,7 @@ import type { CommandArgs } from "../api/generated/commands";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FundAmount } from "../api/generated/FundAmount";
+import type { PaymentSourceName } from "../api/generated/PaymentSourceName";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
@@ -138,6 +139,8 @@ export interface PlatformWorld {
   dust: string;
   /** What the next payment to a contact from this balance comes to (C-funding D-C5). */
   nextPayout: PayoutStateName;
+  /** The next payment's reply is lost after the engine recorded it (an `internal` error). */
+  loseReply?: boolean;
 }
 
 export interface PendingWorld {
@@ -269,7 +272,8 @@ export function contactPayoutQuote(world: Ctx["world"], walletId: string, credit
   const c = BigInt(credits);
   if (c < PAYOUT_MIN_CREDITS || c > PAYOUT_MAX_CREDITS)
     throw fail("credits.withdrawal_out_of_range", "out of range", { kind: "creditRange", min: String(PAYOUT_MIN_CREDITS), max: String(PAYOUT_MAX_CREDITS) });
-  if (c + PAYOUT_FEE_CREDITS > total(p)) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(c + PAYOUT_FEE_CREDITS), available: String(total(p)) });
+  // As the engine's `Limits::to_contact_at`: the amount and three fee estimates.
+  if (c + 3n * PAYOUT_FEE_CREDITS > total(p)) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(c + 3n * PAYOUT_FEE_CREDITS), available: String(total(p)) });
   const expectedDuffs = Math.max(0, Number(c / CREDITS_PER_DUFF) - UNLOCK_FEE_DUFFS);
   return { source: "platform", credits: String(c), expectedDuffs, feeCredits: String(PAYOUT_FEE_CREDITS), grant: { maxDuffs: 0, maxCredits: String(c + 3n * PAYOUT_FEE_CREDITS) } };
 }
@@ -484,20 +488,32 @@ function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): Pla
   return { duffs, feeDuffs: FUND_LOCK_FEE_DUFFS, totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(duffs)), to: p.receive.address, grant: { maxDuffs: totalDuffs, maxCredits: "0" }, max: null };
 }
 
+/** As the engine's `refuse_on_mainnet`: a payment from a balance is off on mainnet, before anything else. */
+function refusePayoutOnMainnet(world: Ctx["world"], source: PaymentSourceName) {
+  if (source === "platform" && world.launch.network.kind === "mainnet") throw fail("platform.feature_off", "platform_contact_payment", { kind: "feature", feature: "platform_contact_payment" });
+}
+
 export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
   // DashPay::contact_pay_quote and contact_pay (C-funding D-C5): the payee as a draft checks it,
   // then the source: Shielded is off until its slice; Platform pays one address withdrawal.
   contact_pay_quote: ({ walletId, identity, contact, credits, source }: CommandArgs["contact_pay_quote"], { world }: Ctx) => {
+    refusePayoutOnMainnet(world, source);
     payeeOfPayout(world, walletId, { identity, contact }, credits, source);
     return contactPayoutQuote(world, walletId, credits);
   },
   contact_pay: ({ walletId, identity, contact, payment, grant }: CommandArgs["contact_pay"], ctx: Ctx) => {
     const pair = { identity, contact };
+    refusePayoutOnMainnet(ctx.world, payment.source);
     if (grant === "") throw fail("invalid_argument", "empty grant");
     const c = payeeOfPayout(ctx.world, walletId, pair, payment.credits, payment.source);
     const counterparty = { identity: contact, username: c.summary.username, displayName: c.summary.displayName, avatarUrl: c.profile?.avatarUrl ?? null };
     const out = contactPayout(ctx.world, walletId, payment.credits, grant, counterparty);
     payoutOnContact(ctx, walletId, pair, c, out, payment.credits);
+    const p = ctx.world.pending.platform;
+    if (p?.loseReply) {
+      p.loseReply = false;
+      throw fail("internal", "the reply was lost after the payout was recorded");
+    }
     return out;
   },
   get_network_choice: (_: unknown, { world }: Ctx) => {

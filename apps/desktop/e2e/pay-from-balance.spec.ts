@@ -63,6 +63,9 @@ test("PAY-FROM pays a contact from the Platform balance", async ({ page }) => {
   await expect(page.getByTestId("pay-balance-confirm")).toHaveText(
     "Pay Bob Builder 0.10000000 tDASH from your Platform balance. They receive about 0.09999774 tDASH. Network fee 0.00002000 tDASH.",
   );
+  // What tells two contacts of one name apart, and the whole debit: the amount and the fee.
+  await expect(page.getByTestId("pay-balance-payee")).toHaveText("Bob Builder@bob");
+  await expect(page.getByTestId("pay-balance-total")).toHaveText("About 0.10002000 tDASH leaves your Platform balance.");
   await page.getByTestId("pay-balance-go").click();
   await authorize(page);
   await expect(page.getByTestId("pay-balance-outcome-title")).toHaveText("Payment sent");
@@ -71,7 +74,102 @@ test("PAY-FROM pays a contact from the Platform balance", async ({ page }) => {
   await expect(page.getByTestId("pay-amount")).toHaveValue("");
   // The next payment opens on the Dash wallet again (P16).
   await expect(page.getByTestId("pay-from").getByRole("radio", { name: /Dash wallet/ })).toBeChecked();
+  // Activity names who was paid, on the row itself (P10).
+  await page.getByTestId("sidebar-activity").click();
+  const row = page.locator('[data-txid^="platform:contactPayment:"]').first();
+  await expect(row.locator(".tx-row-title")).toHaveText("Paid from Platform");
+  await expect(row.locator(".tx-row-party")).toHaveText("Bob Builder");
+  await expect(row.locator(".tx-row-party")).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test("PAY-FROM a lost reply keeps the contact held until a later read settles it", async ({ page }) => {
+  const errors = await openBob(page);
+  await reviewFromPlatform(page);
+  // The payout is recorded and sent, but its reply is lost, and the reads that would settle it fail.
+  await world(page, (w) => {
+    w.pending.platform!.loseReply = true;
+  });
+  await page.evaluate(() => window.__dwFixture!.fail("platform_activity", "feature"));
+  await page.getByTestId("pay-balance-go").click();
+  await authorize(page);
+  await expect(page.getByTestId("pay-balance-outcome-title")).toHaveText("Payment status unknown");
+  await page.getByTestId("pay-balance-done").click();
+  // No reference and no engine lock: the form still holds the contact, and Check again with the
+  // read still failing settles nothing.
+  await expect(page.getByTestId("pay-banner-text")).toHaveText("A payment to this contact from your Platform balance may have been sent.");
+  await expect(page.getByTestId("pay-from")).toHaveCount(0);
+  await expect(page.getByTestId("pay-amount")).toHaveCount(0);
+  await page.getByTestId("pay-banner-check").click();
+  await expect(page.getByTestId("pay-banner-check")).toBeEnabled();
+  await expect(page.getByTestId("pay-banner")).toBeVisible();
+  await expect(page.getByTestId("pay-from")).toHaveCount(0);
+  // Check again after the read answers: the payout was recorded sent.
+  await page.evaluate(() => window.__dwFixture!.fail("platform_activity", null));
+  await page.getByTestId("pay-banner-check").click();
+  await expect(page.getByTestId("pay-lock-resolve")).toHaveText("The payment was sent. You can pay this contact again.");
+  await expect(page.getByTestId("pay-banner")).toHaveCount(0);
+  await expect(page.getByTestId("pay-from")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("PAY-FROM a chosen balance that empties holds Review with its reason, never pays from the Dash wallet", async ({ page }) => {
+  const errors = await openBob(page);
+  await page.getByTestId("pay-from-platform").locator("input").check();
+  await page.getByTestId("pay-amount").fill("0.1");
+  await page.getByTestId("pay-fee-line").waitFor();
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.pending.platform!.addresses = f.world.pending.platform!.addresses.map((a) => ({ ...a, credits: "0" }));
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "startup" } });
+  });
+  await expect(page.getByTestId("pay-from-platform-reason")).toHaveText("No balance to pay with.");
+  await expect(page.getByTestId("pay-from").getByRole("radio", { name: /Platform balance/ })).toBeChecked();
+  await expect(page.getByTestId("pay-problem")).toHaveText("No balance to pay with.");
+  await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  // Still the Platform form: no Max or coin control of the Dash wallet's.
+  await expect(page.getByTestId("pay-max")).toHaveCount(0);
+  await expect(page.getByTestId("pay-amount")).toHaveValue("0.1");
+  expect(errors).toEqual([]);
+});
+
+test("PAY-FROM the form quotes again after a refused attempt and once a held transfer settles", async ({ page }) => {
+  await openBob(page);
+  const quotes = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "contact_pay_quote").length);
+  // A transfer holds the balance: the quote is refused until it settles, with no edit of the amount.
+  await world(page, (w) => {
+    const p = w.pending.platform!;
+    p.activity = [{ id: "held-1", kind: "moveToCore", state: "pending", credits: "1000000000", address: null, to: "yheld", expectedDuffs: null, feeCredits: null, at: 1, mayLand: true, estimated: false }, ...p.activity];
+  });
+  await page.getByTestId("pay-from-platform").locator("input").check();
+  await page.getByTestId("pay-amount").fill("0.1");
+  await expect(page.getByTestId("pay-problem")).toHaveText("Another Platform transfer is still being confirmed. Try again when it is done.");
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.pending.platform!.activity = f.world.pending.platform!.activity.filter((a) => a.id !== "held-1");
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "startup" } });
+  });
+  await expect(page.getByTestId("pay-continue")).toBeEnabled();
+  // A refused attempt (a grant too small) closes to a new quote, not the one it was refused under.
+  await page.evaluate(() => window.__dwFixture!.fail("contact_pay", "budget"));
+  await page.getByTestId("pay-continue").click();
+  await page.getByTestId("pay-balance-go").click();
+  await authorize(page);
+  await expect(page.getByTestId("pay-balance-refusal")).toBeVisible();
+  const before = await quotes();
+  await page.getByTestId("pay-balance-close").click();
+  await expect.poll(quotes).toBeGreaterThan(before);
+  await expect(page.getByTestId("pay-continue")).toBeEnabled();
+});
+
+test("PAY-FROM discreet mode masks the amounts a refusal names", async ({ page }) => {
+  await openBob(page);
+  await page.getByTestId("toolbar-discreet").click();
+  await page.getByTestId("pay-from-platform").locator("input").check();
+  await page.getByTestId("pay-amount").fill("0.5");
+  await expect(page.getByTestId("pay-problem")).toBeVisible();
+  await expect(page.getByTestId("pay-problem")).not.toContainText("0.4");
+  await expect(page.getByTestId("pay-problem")).not.toContainText("0.5");
 });
 
 test("PAY-FROM below the minimum names it and points to the Dash wallet", async ({ page }) => {

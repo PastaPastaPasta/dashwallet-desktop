@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ContactPayQuoteInfo } from "../../api/generated/ContactPayQuoteInfo";
 import { appError, WALLET_A } from "../../onboarding/testWorld";
 import { fakeVault } from "../../tools/testApi";
-import { ContactPayFlow, fromErrorText, fromRows, liveSources, outcomeText, payingSource, type FromInputs } from "./fromBalance";
+import type { PlatformActivity } from "../../api/generated/PlatformActivity";
+import { chosenReason, ContactPayFlow, fromErrorText, fromRows, liveSources, outcomeText, type FromInputs } from "./fromBalance";
 
 const amount = (d: number) => `${d / 1e8} tDASH`;
 const credits = (c: string) => amount(Number(BigInt(c) / 1000n));
@@ -28,7 +29,7 @@ describe("the From step (C-funding P16)", () => {
   it("keeps the balances off on mainnet", () => {
     const rows = fromRows({ ...base, live: liveSources("mainnet") });
     expect(rows.map((r) => r.reason)).toEqual([null, "Not available on this network yet.", "Not available on this network yet."]);
-    expect(payingSource(rows, "platform")).toBe("core");
+    expect(chosenReason(rows, "platform")).toBe("Not available on this network yet.");
     expect(fromRows({ ...base, live: liveSources("testnet") }).find((r) => r.source === "platform")?.reason).toBeNull();
   });
 
@@ -46,10 +47,13 @@ describe("the From step (C-funding P16)", () => {
     expect(fromRows({ ...base, platform: "loading" }).find((r) => r.source === "platform")).toMatchObject({ balance: null, reason: null });
   });
 
-  it("pays from the Dash wallet when the chosen source cannot pay", () => {
-    expect(payingSource(fromRows(base), "platform")).toBe("platform");
-    expect(payingSource(fromRows({ ...base, platform: 0 }), "platform")).toBe("core");
-    expect(payingSource(fromRows(base), "shielded")).toBe("core");
+  it("never moves a choice to the Dash wallet: a source that can no longer pay gives its reason", () => {
+    expect(chosenReason(fromRows(base), "platform")).toBeNull();
+    // A balance read late, or refreshed to nothing, after Platform was chosen.
+    expect(chosenReason(fromRows({ ...base, platform: "loading" }), "platform")).toBeNull();
+    expect(chosenReason(fromRows({ ...base, platform: 0 }), "platform")).toBe("No balance to pay with.");
+    expect(chosenReason(fromRows(base), "shielded")).toBe("Not available on this network yet.");
+    expect(chosenReason(fromRows({ ...base, platform: 0 }), "core")).toBeNull();
   });
 });
 
@@ -65,6 +69,14 @@ describe("a payment from a balance's copy (D-C5 Copy)", () => {
     expect(fromErrorText(range, "1000", credits)).toBe("The smallest payment from here is 0.0000119 tDASH. Pay a smaller amount from your Dash wallet.");
     expect(fromErrorText({ code: "credits.move_pending", message: "", data: null }, "1", credits)).toBe("Another Platform transfer is still being confirmed. Try again when it is done.");
     expect(fromErrorText({ code: "platform.feature_off", message: "", data: null }, "1", credits)).toBe("Not available on this network yet.");
+  });
+
+  it("names no amount a masked formatter hides (discreet mode)", () => {
+    const short = { code: "platform.insufficient_credits", message: "", data: { kind: "credits", needed: "10002000000", available: "4000000000" } };
+    expect(fromErrorText(short, "10000000000", credits)).toContain("0.04 tDASH");
+    const masked = fromErrorText(short, "10000000000", () => "••••");
+    expect(masked).not.toMatch(/\d\.\d/);
+    expect(masked).toContain("••••");
   });
 });
 
@@ -85,10 +97,41 @@ describe("a payment from a balance's flow", () => {
     expect(internal.step).toBe("lost");
   });
 
+  it("a lost reply keeps the contact held after the sheet closes, until a later read settles it", async () => {
+    const flow = payFlow(() => Promise.reject(appError("internal")));
+    await flow.pay(QUOTE, null);
+    flow.reset();
+    expect([flow.step, flow.unresolved !== null]).toEqual(["confirm", true]);
+    const { lostAt, since } = flow.unresolved!;
+    const row = (over: Partial<PlatformActivity>): PlatformActivity =>
+      ({ id: "move-9", kind: "contactPayment", state: "done", credits: "10002000000", address: null, to: null, expectedDuffs: 9_999_774, feeCredits: "2000000", at: since + 1, mayLand: false, estimated: false, contact: { identity: "bob", username: null, displayName: null, avatarUrl: null }, ...over }) as PlatformActivity;
+    // A read from before the loss, a failed read, or a payout that may still land: still held.
+    expect(flow.reconcile([row({})], lostAt)).toBeNull();
+    expect(flow.reconcile(undefined, lostAt + 1)).toBeNull();
+    expect(flow.reconcile([row({ state: "pending", mayLand: true })], lostAt + 1)).toBeNull();
+    expect(flow.reconcile([row({ state: "failed", mayLand: true })], lostAt + 1)).toBeNull();
+    expect(flow.unresolved).not.toBeNull();
+    // Recorded as sent: it was. An older payout, or another contact's, says nothing of this one.
+    expect(flow.reconcile([row({})], lostAt + 1)).toBe("sent");
+    expect(flow.unresolved).toBeNull();
+    const again = payFlow(() => Promise.reject(new Error("closed")));
+    await again.pay(QUOTE, null);
+    const at = again.unresolved!.lostAt + 1;
+    const older = row({ at: again.unresolved!.since - 60 });
+    const other = row({ contact: { identity: "carol", username: null, displayName: null, avatarUrl: null } });
+    expect(again.reconcile([older, other, row({ state: "failed", mayLand: false })], at)).toBe("notSent");
+  });
+
+  it("a payout the engine never recorded was not sent", async () => {
+    const flow = payFlow(() => Promise.reject(appError("internal")));
+    await flow.pay(QUOTE, null);
+    expect(flow.reconcile([], flow.unresolved!.lostAt + 1)).toBe("notSent");
+  });
+
   it("a coded refusal is one: nothing was paid", async () => {
     const refused = payFlow(() => Promise.reject(appError("credits.move_pending")));
     await refused.pay(QUOTE, null);
-    expect(refused.step).toBe("refused");
+    expect([refused.step, refused.unresolved]).toEqual(["refused", null]);
   });
 
   it("a prompt cancelled (the sheet went with a lock) leaves the flow idle, nothing sent", async () => {

@@ -20,7 +20,7 @@ import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowConte
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
 import { filterExtra, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
-import { DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
+import { contactName, DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 250;
@@ -30,8 +30,10 @@ const decorateSource = (row: TxRow): RowDecor => {
   const source = rowSource(row);
   if (!source) return {};
   const replaced = isReplacedRow(row);
+  const party = contactName(row.counterparty);
   return {
     title: sourceRowTitle(row),
+    ...(party ? { party } : {}),
     tag: SOURCE_TAG[source],
     readOnly: true,
     ...(replaced ? { note: SourceRowText.replaced, hideAmount: true } : isMayLandRow(row) ? { note: SourceRowText.mayLand } : {}),

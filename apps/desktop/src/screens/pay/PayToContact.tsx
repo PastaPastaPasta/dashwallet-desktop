@@ -11,7 +11,7 @@ import type { ContactRecipient } from "../../api/generated/ContactRecipient";
 import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { UserHit } from "../../api/generated/UserHit";
-import { keys, useLockStatus, usePoolBalances, useWallets } from "../../api/queries";
+import { keys, useLockStatus, usePlatformActivity, usePoolBalances, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
@@ -19,7 +19,7 @@ import { EMPTY } from "../../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
-import { NETWORK_DEBOUNCE_MS, networkPrefix, SEARCH_DEBOUNCE_MS } from "../../contacts/model";
+import { NETWORK_DEBOUNCE_MS, networkPrefix, SEARCH_DEBOUNCE_MS, shortId } from "../../contacts/model";
 import { refreshAfter, useContactDetail, useContactsOwner, useHasKeys, useNetworkSearch } from "../../contacts/queries";
 import { Outcome as ActionLine } from "../tools/common";
 import { Avatar } from "../contacts/Avatar";
@@ -29,7 +29,8 @@ import { FoundUser } from "./FoundUser";
 import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { BalanceAmount, BalancePaySheet, FromStep, useBalancePay } from "./PayFromBalance";
-import { fromRows, liveSources, payingSource, type PaySource } from "./fromBalance";
+import { chosenReason, fromRows, liveSources, type PaySource } from "./fromBalance";
+import { isHeldOp } from "../../platform/move";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
@@ -329,7 +330,7 @@ function ContactForm({
     hasKeys,
     accepted,
   });
-  const held = blocks(banner);
+  const lockHeld = blocks(banner);
   // What Check again found (D7), kept once the lock it resolved (and the banner) went, but not
   // under a new lock: it spoke of another payment.
   const resolve = useResolveLock(walletId, identity, contact);
@@ -368,8 +369,26 @@ function ContactForm({
   const [chosen, setChosen] = useState<PaySource>("core");
   const coreAvailable = useAvailable(walletId, advanced, sheets.held);
   const rows = fromRows({ coreDuffs: coreAvailable, shielded: pools.shielded, platform: pools.platform, amount: (d) => shown.withUnit(d), discreet, acceptsToo: acceptsToo(detail.data, accepted), live: liveSources(network.kind) });
-  const source = payingSource(rows, chosen);
-  const balance = useBalancePay({ walletId, identity, contact, source, duffs, settled: amount.settled && !amount.fiat.error, shown });
+  // The choice stays the user's: a source that can no longer pay holds Review with its reason.
+  const source = chosen;
+  const activity = usePlatformActivity(walletId);
+  const basis = `${String(pools.platform)}|${(activity.data ?? []).filter(isHeldOp).map((a) => a.id).join(",")}`;
+  const balance = useBalancePay({ walletId, identity, contact, source, duffs, settled: amount.settled && !amount.fiat.error, shown, blocked: chosenReason(rows, chosen), basis });
+  // A payment whose reply was lost holds the contact until a later read settles it (P6).
+  const [lostFound, setLostFound] = useState<{ text: string; resolved: boolean } | null>(null);
+  const { flow } = balance;
+  useEffect(() => {
+    const r = flow.reconcile(activity.data, activity.dataUpdatedAt);
+    if (r) setLostFound(resolveText(r));
+  }, [flow, flow.unresolved, activity.data, activity.dataUpdatedAt]);
+  const lostHeld = !lockHeld && flow.unresolved !== null;
+  const held = lockHeld || lostHeld;
+  const shownBanner: Banner | null = lostHeld ? { kind: "paymentLock", text: t("pay.contact.banner.paymentLockPlatform"), txid: "", source: "platform" } : banner;
+  const recheck = () => {
+    setLostFound(null);
+    void activity.refetch();
+    void detail.refetch();
+  };
   const recipient: ContactRecipient | null =
     typeof duffs === "number" && duffs > 0 ? { identity, contact, amount: duffs, subtractFee, note: note.trim() || null } : null;
   const spec = draftSpec(recipient, advanced);
@@ -411,8 +430,8 @@ function ContactForm({
             {t("pay.contact.change")}
           </DashButton>
         </section>
-        {banner && <PayBanner banner={banner} contact={contact} checking={resolve.isPending} onCheck={check} retry={() => void detail.refetch()} />}
-        <ActionLine ok={found?.resolved ?? true} text={found?.text ?? null} testId="pay-lock-resolve" />
+        {shownBanner && <PayBanner banner={shownBanner} contact={contact} checking={lostHeld ? activity.isFetching : resolve.isPending} onCheck={lostHeld ? recheck : check} retry={() => void detail.refetch()} />}
+        <ActionLine ok={(found ?? lostFound)?.resolved ?? true} text={(found ?? lostFound)?.text ?? null} testId="pay-lock-resolve" />
         {!held && (
           <section className="pay-card card-l1">
             <FromStep rows={rows} source={source} onChange={setChosen} />
@@ -480,6 +499,8 @@ function ContactForm({
           flow={balance.flow}
           quote={balance.confirmed}
           name={payee.name}
+          sub={payee.sub ?? shortId(payee.contact)}
+          before={activity.data}
           note={note.trim() || null}
           shown={shown}
           onClose={(paid) => {

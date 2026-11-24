@@ -77,6 +77,31 @@ describe("fixture contact payment from a balance", () => {
     expect((await cmd.dashpayContact(W, ME, BOB))?.paymentLock).toBeNull();
   });
 
+  it("is off on mainnet before anything else, as the engine's refuse_on_mainnet", async () => {
+    fixture.world.launch.network = { kind: "mainnet", dirName: "mainnet", unitName: "DASH" };
+    expect(await refusal(cmd.contactPayQuote(W, ME, BOB, CREDITS, "platform"))).toBe("platform.feature_off");
+    expect(await refusal(cmd.contactPay(W, ME, BOB, { credits: CREDITS, source: "platform", note: null, confirmUnrecorded: false }, ""))).toBe("platform.feature_off");
+  });
+
+  it("needs the amount and three fee estimates on the balance, as the engine's reserve", async () => {
+    const p = fixture.world.pending.platform!;
+    p.addresses = [{ address: p.addresses[0].address, credits: String(BigInt(CREDITS) + 2n * 2_000_000n) }];
+    const short = await cmd.contactPayQuote(W, ME, BOB, CREDITS, "platform").then(
+      () => null,
+      (e: cmd.AppError) => e,
+    );
+    expect(short).toMatchObject({ code: "platform.insufficient_credits", data: { needed: String(BigInt(CREDITS) + 3n * 2_000_000n) } });
+    p.addresses = [{ address: p.addresses[0].address, credits: String(BigInt(CREDITS) + 3n * 2_000_000n) }];
+    expect((await cmd.contactPayQuote(W, ME, BOB, CREDITS, "platform")).credits).toBe(CREDITS);
+  });
+
+  it("a lost reply: the payout was recorded and the call still fails as internal", async () => {
+    fixture.world.pending.platform!.loseReply = true;
+    expect(await refusal(pay())).toBe("internal");
+    const [row] = (await cmd.platformActivity(W))!;
+    expect(row).toMatchObject({ kind: "contactPayment", state: "done", contact: { identity: BOB } });
+  });
+
   it("refuses a grant smaller than the quote's", async () => {
     const [grant] = await cmd.authorizeSet([{ kind: "platformOp", maxDuffs: 0, maxCredits: CREDITS }], W, PASS);
     expect(await refusal(cmd.contactPay(W, ME, BOB, { credits: CREDITS, source: "platform", note: null, confirmUnrecorded: false }, grant.id))).toBe("platform.grant_exceeded");
