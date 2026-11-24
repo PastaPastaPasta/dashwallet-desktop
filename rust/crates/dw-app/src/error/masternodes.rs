@@ -35,6 +35,7 @@ codes! {
         NoOwnerKey = "masternodes.no_owner_key",
         UpdatePending = "masternodes.update_pending",
         UpdateSuperseded = "masternodes.update_superseded",
+        UpdateAbandonedPending = "masternodes.update_abandoned_pending",
         SharedSessionNotFound = "masternodes.shared_session_not_found",
         SharedStage = "masternodes.shared_stage",
         SharedMessage = "masternodes.shared_message",
@@ -101,6 +102,10 @@ impl From<MasternodesError> for AppError {
             }
             M::UpdateSuperseded { operation } => (
                 C::UpdateSuperseded,
+                Some(ErrorData::Operation { operation }),
+            ),
+            M::UpdateAbandonedPending { operation } => (
+                C::UpdateAbandonedPending,
                 Some(ErrorData::Operation { operation }),
             ),
             M::SharedSessionNotFound => (C::SharedSessionNotFound, None),
@@ -182,6 +187,7 @@ mod tests {
             M::NoOwnerKey,
             M::UpdatePending { operation: s() },
             M::UpdateSuperseded { operation: s() },
+            M::UpdateAbandonedPending { operation: s() },
             M::SharedSessionNotFound,
             M::SharedStage { stage: s() },
             M::SharedMessage {

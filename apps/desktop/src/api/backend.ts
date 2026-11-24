@@ -563,7 +563,7 @@ export interface Backend {
   /** Open wallets whose history starts before the stored block data; `null`: none, or no data yet. */
   historyGap(): Promise<WalletHistoryGap | null>;
   setBirthHeight(walletId: string, height: number): Promise<null>;
-  /** Abandons the unconfirmed transactions the network does not have (`null`: every wallet) and
+  /** Abandons the unconfirmed transactions that aren't InstantSend-locked (`null`: every wallet) and
    * schedules a rescan; returns how many. */
   dropUnconfirmed(walletId: string | null): Promise<number>;
   registrations(walletId: string): Promise<RegistrationStatus[]>;

@@ -1424,6 +1424,24 @@ const SCENARIOS = {
     w.dashpay.runs = [];
     return w;
   },
+  /** Paid from the Platform balance, and Platform has not said whether the payment went through:
+   * Continue pays it again, Move to Dash wallet frees the balance (F22). */
+  "dashpay-registering-held": (t) => {
+    const w = base(t);
+    w.dashpay = registering();
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "keysPrepared",
+      waiting: "paymentHeld",
+      txid: null,
+      holdsKey: false,
+      running: false,
+      fundsCommitted: true,
+      fromPlatform: true,
+    };
+    w.dashpay.runs = [];
+    return w;
+  },
   // DP1-09: a registration's screens (R2, R5, R8). Its run ended with the last launch.
   /** Funded, after a relaunch: no proof yet, so it reads `chainLock` with no key held, and waits for Continue (R2, D21). */
   "dashpay-registration-paused": (t) => {

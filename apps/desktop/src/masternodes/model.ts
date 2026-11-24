@@ -342,6 +342,7 @@ const ERROR_KEYS = [
   "operation_state",
   "update_pending",
   "update_superseded",
+  "update_abandoned_pending",
   "share_not_mine",
   "shared_too_early",
   "shared_registration_unknown",

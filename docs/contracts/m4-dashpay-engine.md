@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 84
+Contract-Version: 86
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -216,10 +216,10 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, what the funding can spend now (`available_duffs`, item 52), and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. A `Shielded` request's quote also carries `readiness`, and ignores the request's `denomination` (§7 item 94). A `PlatformAddresses` request's quote carries `platform`, from one proved read of the Platform addresses, and ignores the request's numbers; on mainnet it is `platform.feature_off{feature: "platform_registration"}` (§7 item 97). | `RegistrationError` |
-| `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. `Shielded` is checked again before anything is written and refused (§7 item 94): a readiness check that does not hold is `registration.shielded_not_ready{reason, ready_at}` (no override), another denomination than the quote's is `registration.quote_changed`, and a ready one is `platform.feature_off{feature: "shielded_registration"}` until its flow step lands. `PlatformAddresses` is planned again before anything is written: other numbers than the plan's are `registration.quote_changed`, and the quoted ones are `platform.feature_off{feature: "platform_registration"}` until its flow step lands (§7 item 97). | `RegistrationError` |
+| `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. `Shielded` is checked again before anything is written and refused (§7 item 94): a readiness check that does not hold is `registration.shielded_not_ready{reason, ready_at}` (no override), another denomination than the quote's is `registration.quote_changed`, and a ready one is `platform.feature_off{feature: "shielded_registration"}` until its flow step lands. `PlatformAddresses` is planned again before anything is written: other numbers than the plan's are `registration.quote_changed`; the quoted ones write the row, whose funding step plans, records, signs and settles the create (§7 items 97 and 98; on mainnet `platform.feature_off{feature: "platform_registration"}` before anything is read or written). | `RegistrationError` |
 | `start_registration_past_unknown_funding(req, grant, past)` | async | `start_registration` past earlier registrations whose funding is unknown (DEC-197, "In progress" below). `past` names each blocker the user confirmed, as `registration.in_progress` names it. Call it only after the user confirmed the wedge copy. A named blocker passes only if every funding step it waits on is wedged; anything else still returns `registration.in_progress`. SPV must be synced (`registration.not_synced`), and each passed step's funding must have been released at least an hour ago (`registration.funding_unknown_recent { draft, wait_secs }`). A malformed name is `invalid_argument`; a well-formed one that blocks nothing is ignored. | `RegistrationError` |
 | `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5), and, read-only, every outstanding funding step whose row is gone (draft `registration/<n>/funding`; §2.2 "The registration ledger"). | `RegistrationError` |
-| `registration_resume_grant(draft)` | async | An invitation claim row's resume grant (item 64): no duffs, and the credits of the steps it has left (the identity's creation while it has no identity, the name until it is registered, a pending profile, and the request while one is asked), from the row alone: never from `invitation_status`, which reads `Claimed` once the row's own claim landed. Another row is `invalid_argument`. | `RegistrationError` |
+| `registration_resume_grant(draft)` | async | An invitation claim row's or a Platform-funded row's resume grant (items 64 and 105): no duffs, and the credits of the steps it has left (the identity's creation while it has no identity: a claim's fee, a Platform row's stored funding and fee reserve; the name until it is registered, a pending profile, and the request while one is asked), from the row alone: never from `invitation_status`, which reads `Claimed` once the row's own claim landed. Another row is `invalid_argument`. | `RegistrationError` |
 | `resume_registration(draft, grant)` | async | Advances a parked flow; it acts on any state (§4.1). `grant` is required exactly when the row's `waiting` is `Unlock` or `Authorize`, and ignored otherwise. | `RegistrationError` |
 | `discard_registration(draft)` | async | Refused (`invalid_argument`) while the row is committed by the registration ledger (§2.2): it holds a lock not yet consumed, a funding step of its own may still deliver a lock, or its funding call runs; and for a row this build cannot read. A `Done` row, or one whose identity exists with nothing of its funding outstanding, may be discarded although its `funds_committed` reads `true`; so may a `Cancelled` one (`registration.funded_elsewhere`, `registration.funding_cancelled`). An invitation's claim row (item 64) is refused too, unless `Done` without a failure: once its identity is recorded (its name is not registered yet), and once its identity step has released a signature (the step reads `Marked` or `Sent`), unless a refusal proved the claim did not land (`invitation.already_has_identity` or `invitation.claimed`, failed for good); and one failed for good with `invitation.already_has_identity` while the wallet holds no identity (item 64, D24). | `RegistrationError` |
 | `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. Not gated by the journal: it resumes committed locks and builds none. It also applies the wallet's proved top-up locks (DP1-06, §2.8 `resume_top_up`), which needs a grant with `max_duffs` ≥ 1 (none spent); without one they count as `still_pending`. `FinishReport` sums registrations, top-ups and, last, the unfinished transfers (§2.14): every kind's unfinished lock that is `ready` is finished once, one at a time and in txid order, under this call's lease (`checking`, `confirming`, `notActive`, `unsupported` and `tooSmall` ones count `still_pending`, not tried: a `checking` lock's apply may already have executed, and `finish_transfer` "Check again" tries it; one found finished when read again, by another finish meanwhile, counts in no field); `by_kind` holds a `TransfersReport{kind, resumed, completed, still_pending}` for each kind that had any, and `unread` names each kind whose transfers could not be read (the dispatch journal unread, its side not open), none of whose locks is counted. `already_used` counts the type-4 locks, and the restored type-5 ones, Platform answered "already consumed" for their exact outpoint (unproved): taken as finished elsewhere, no longer listed, not settled (§7 item 79, §2.14). The whole call is admitted as a signing call (as `resume_shield` is), registrations and top-ups included: an in-app close is refused while any of it runs (a change from 0.1, where its registrations and top-ups did not hold a close back). Its shields run last, one apply at a time, so the Join page's "Finish transfers" returns after them: each can take an Orchard proof, Platform's broadcast-and-wait and, when Platform refuses the lock's InstantSend proof, up to 300 s for a ChainLock proof; Join shows only its busy button meanwhile, no per-lock progress. Platform's unproved "already consumed" for a pending top-up lock counts it `resumed` and `still_pending` (it stays pending); for a settled one (historical or resolved, §7 item 44) it counts in none of the fields. | `RegistrationError` |
@@ -968,7 +968,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 9da80d1f27e1f6f3cb5b3ddda7b826fea792885727b26ad3a7367c1f2300bdd0 version: 84 -->
+<!-- surface-sha256: f6e703e47fea2ee2a3761ad98a3cffc1e3b95ccce24b8f29ab4f51e37c259105 version: 86 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1353,6 +1353,7 @@ pub enum RegistrationError {
     FundingUnknownRecent { draft: String, wait_secs: Option<u64> },
     ShieldedNotReady { reason: ShieldedCheck, ready_at: Option<u64> },
     QuoteChanged,
+    Refunded,
     Name(NameError),
     Invitation(InvitationError),
     Credits(CreditsError),
@@ -2302,6 +2303,7 @@ pub struct RegistrationStatus {
     pub name_failure: Option<String>,
     pub profile_failure: Option<String>,
     pub invitation: Option<RegistrationInvitation>,
+    pub from_platform: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -2338,6 +2340,8 @@ pub enum RegistrationWait {
     FundingUnknown,
     NeedsFinish,
     Startup,
+    PaymentUnknown,
+    PaymentHeld,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrationFailure {
@@ -2714,7 +2718,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_interrupted`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
 | `ProfileError` | `profile.conflict`, `profile.empty`, `profile.too_long`, `profile.unsupported_contract` |
-| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent`, `registration.shielded_not_ready`, `registration.quote_changed` |
+| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent`, `registration.shielded_not_ready`, `registration.quote_changed`, `registration.refunded` |
 | `NameError` | `name.invalid`, `name.taken`, `name.contest_open`, `name.locked`, `name.unavailable_for_invite` |
 | `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username`, `contact.details_too_long` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
@@ -4801,3 +4805,65 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     move beside a held top-up is refused as beside any hold. The host passes an exit the quote's planned
     withdrawal, never `All`. A failed exit can keep its credits (another device took the nonce first); the host
     says so and points at the Platform balance, with no engine flag.
+
+104. **Registration from the Platform addresses: the funding step (C4a-2; F5–F10, F22; version 85).**
+    `start_registration` with `PlatformAddresses` whose numbers are the plan's now writes the row (on mainnet it is
+    still `platform.feature_off{feature: "platform_registration"}` before anything is read, written or redeemed, and
+    the flow step refuses there too). The grant must carry no duffs (`platform.grant_invalid`, as a claim's); a
+    vault grant is redeemed into a `Registration` lease that also carries the Platform-address signer, and a lease
+    named as the grant that does not carry it is `platform.grant_invalid`. A contact payout's lease (`ContactPayFromBalance`)
+    named as the grant is `platform.grant_invalid` before that check, nothing redeemed. A row of the `platform_addresses` kind is
+    run: at `KeysPrepared` the step takes the move lock, reads the addresses once under rule 5, settles the wallet's
+    moves, and with no plan stored refuses while any move is pending or holds (`credits.move_pending`, a wait),
+    plans again (numbers other than the stored ones fail the row `registration.quote_changed`, not retryable,
+    nothing written), writes the plan (`inputs`, `identity`) into the row's `funding`, then a move record of kind
+    `register` naming the draft, `pending` and able to land, read back, and only then signs the identity create from
+    addresses at the plan's nonces (Platform's + 1) with the registration keys of the row's index, input 0 paying
+    the fee (`put_with_address_funding`). The permit charges `funding_credits + fee_reserve_credits` to the lease's
+    Credits budget. A row with a plan settles by evidence alone, with no lease: the SDK's proved result, or every
+    input at or past its signed nonce with the planned identity proved present at or above that read's height, is
+    `IdentityRegistered` with that identity; the plan's nonces all unused with its record pending is `waiting:
+    payment_unknown` (new `RegistrationWait::PaymentUnknown`; the run reads again on its own); failed by height and
+    able to land is `waiting: payment_held` (new `RegistrationWait::PaymentHeld`): a "Move to Dash wallet" at the
+    record's inputs and nonces may run beside it, and a resume signs the same plan once more (once per run); the
+    exit's withdrawal document present clears the plan and fails the row `registration.quote_changed`, not retryable
+    (back to Confirm); the nonces taken with the identity proved absent and no exit executed adopts an identity of
+    the seed at the row's index, else fails the row with the new `registration.refunded`, not retryable, plan
+    cleared (Platform took a penalty; what is left stays on the addresses); a create of a plan this pass made that
+    released no signature in the process that made the call, or whose inputs' nonces another transition took in
+    part, clears the plan and the row plans again (a refusal that released nothing takes its own step: a park for
+    authority, a network wait or a retryable failure). A failed or behind identity read decides nothing. A re-sign
+    of a held create that releases no signature or is refused by the structure check leaves that create held and the
+    row parked on it. Nonces taken by a create that no record of this draft able to land made plan again when
+    another draft's record names the same identity; otherwise the identity proved present is adopted only as the
+    seed's identity at the row's index (else the row plans again), and the identity proved absent fails the row
+    `registration.refunded`, since a restored plan may have been signed by another install. A create refused after a
+    signature left (the structure check included) keeps its hold, as does a stored plan this install holds no record
+    of that releases no signature. A row with no plan whose index already holds an identity of the seed takes it
+    (`IdentityRegistered`) before anything is planned. On mainnet `resume_registration` of a Platform-funded row is
+    `platform.feature_off` before any grant is redeemed, Finish transfers skips it, and no step past `KeysPrepared`
+    runs. A read behind a done `register` record refuses the plans of sends and withdrawals too. A stored plan that
+    repeats an address, claims nothing at an input, names nonce 0 or claims other than its stored funding is refused
+    (`internal`) before anything is recorded or signed. While a plan is stored and no identity is adopted,
+    `funds_committed` is true and
+    `discard_registration` is refused. A parked row's status reads `payment_held` from its stored record, else
+    `payment_unknown`. The `register` record shows in `platform_activity` as `to_identity`. The registration planner
+    (quote, start and step alike) leaves out any address at the last nonce (`u32::MAX`), and before refusing
+    `platform.insufficient_credits` it tries every input count up to dpp's maximum and every input 0, fewest inputs
+    first, each with the reserve for exactly that count. A held `register` record has the way out item 103 gives
+    a held top-up: `exit_of` may name it, on its inputs only, and the two settle by F10's evidence.
+
+105. **Continue on a Platform-funded registration (#685; F5, F22; version 86).** `RegistrationStatus` gains
+    `from_platform`, true for a row whose stored funding is `platform_addresses`, read from the row alone.
+    `registration_resume_grant` sizes such a row's grant as it sizes a claim's, from the row alone and never from a
+    quote (a quote of the addresses refuses `credits.move_pending` while the row's create holds them): no duffs, and
+    while the identity is not created its stored `funding_credits` plus `fee_reserve_credits`, then the names'
+    credits and a pending profile's, with no other headroom. A row whose stored funding misses a field, whose plan
+    is half stored, or whose plan is not one the funding step makes (an address twice, nonce 0, a zero claim, the
+    claims other than the stored funding, an address or an identity that does not parse) is `invalid_argument`, sized
+    from no default. On mainnet it is
+    `platform.feature_off`, sized not at all. `resume_registration` is unchanged: on mainnet it is
+    `platform.feature_off` before the grant is redeemed, a grant with duffs is
+    `platform.grant_invalid`, and a held row signs only its stored plan, once more. A grant is not bound to the
+    row it was sized for: like every `PlatformOp` grant it caps what any one redemption may take, which the user
+    approves.

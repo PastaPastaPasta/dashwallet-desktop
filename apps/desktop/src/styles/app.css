@@ -4104,6 +4104,13 @@ button.bell-row-open:focus-visible {
   align-self: center;
 }
 
+.dashpay-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-self: center;
+  gap: var(--dw-space-xs);
+}
+
 .join-intro {
   display: flex;
   flex-direction: column;

@@ -38,8 +38,10 @@ import {
   warningText,
   feeRowValue,
   spendBackAction,
+  spendBackWayOut,
   spendBackLine,
   wayOutShown,
+  wayOutTxids,
 } from "./shared";
 
 const shares = (...amounts: number[]) => amounts.map((a, i) => ({ label: `P${i}`, amount: a * COIN }));
@@ -373,6 +375,30 @@ describe("Abandon", () => {
     expect(handoffLine(sentAbandoned, refused), "lastError is the spend back's").toBeNull();
     expect(renderSession(sentAbandoned, S5_SLICE).row).toBe("abandoning");
     expect(wayOutShown(sentAbandoned, "abandoning"), "the spend back's row has its own action").toBeNull();
+    const a8 = "a8".repeat(32);
+    const recorded = spend("in_history", { activityAbandonTxids: [a8] });
+    expect(wayOutShown(recorded, "abandoning"), "Activity offers the spend back's exit").toBe("collapsed");
+    expect(wayOutTxids(recorded, "abandoning"), "routed to the spend back, not the registration").toEqual([a8]);
+    expect(spendBackWayOut(recorded)).toBe("You can abandon this spend back in Activity. Once it's abandoned there, Abandon again here makes a new spend of the same coins.");
+    const overdueRecorded = { ...recorded, abandonSpend: { ...recorded.abandonSpend!, overdue: true } };
+    expect(wayOutShown(overdueRecorded, "abandoning"), "expanded once the spend back is overdue").toBe("expanded");
+    // An older version's spend back the wallet recorded: no saved bytes, so no sheet action; Activity has both.
+    const recordedLegacy = spend("in_history", { resendAbandonCharge: null, activityAbandonTxids: [a8], activityResendTxids: [a8] });
+    expect(spendBackAction(recordedLegacy), "no sheet action").toBeNull();
+    expect(wayOutShown(recordedLegacy, "abandoning"), "but Activity's exits are shown").toBe("collapsed");
+    expect(wayOutTxids(recordedLegacy, "abandoning"), "once").toEqual([a8]);
+    expect(spendBackWayOut(recordedLegacy)).toBe("Activity can send this spend back again or abandon it. Once it's abandoned there, Abandon again here makes a new spend of the same coins.");
+    expect(spendBackWayOut(spend("in_history", { resendAbandonCharge: null, activityResendTxids: [a8] }))).toBe("Activity can send this spend back again.");
+    const marked = spend("abandoned_in_activity", { activityAbandonTxids: [a8] });
+    expect(spendBackWayOut(marked), "Activity's abandon didn't finish").toBe("Activity didn't finish abandoning this spend back. Open it there and abandon it again.");
+    // A refused spend back is never recorded: Activity holds this wallet's own transaction spending the coins.
+    const own = "0f".repeat(32);
+    const blocked = spend("refused", { activityAbandonTxids: [own] });
+    expect(wayOutTxids(blocked, "abandoning"), "routed to the own transaction").toEqual([own]);
+    expect(spendBackWayOut(blocked)).toBe("First abandon this wallet's transaction that spends these coins in Activity, then choose Try again here.");
+    expect(spendBackWayOut(spend("abandoned_in_activity", { activityAbandonTxids: [own] }))).toBe("First abandon this wallet's transaction that spends these coins in Activity, then choose Abandon again here.");
+    expect(wayOutShown(spend("legacy"), "abandoning"), "nothing in Activity, no way out").toBeNull();
+    expect(wayOutTxids(sentAbandoned, "sent"), "elsewhere the registration").toEqual(["7e".repeat(32)]);
     expect(wayOutShown({ ...sentAbandoned, abandonSpend: null, next: "wait" }, "sent")).toBe("collapsed");
     for (const state of ["uncertain", "in_history", "abandoned_in_activity", "legacy"] as const) {
       expect(spendBackLine(spend(state), refused), state).not.toMatch(/didn't go out/);

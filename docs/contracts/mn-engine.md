@@ -1,6 +1,6 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 30
+Contract-Version: 31
 
 Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32; version 4 adds MG-04's ProTx owner flows, §2.3, citing
 [`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on; version 7, after the slice's validator review, binds `lock_shared_terms` to a revision and `approve_shared` to a consent hash, and adds `SharedSession.consent_hash`, MG-04b D56; version 8 adds `sign_shared_funding`'s consent-hash refusal, MG-04b D65; version 9 adds slice 1b's sending: `can_send` true, `send_shared_registration`, `abandon_shared_session`, `update_share` and `ProTxOperationKind::UpdateShare`, `SharedSession.debit`, `MasternodeRow.shares`, MG-04b D68–D75; version 10, after its review r1, puts sending behind one switch that is off until slice 1c, `can_send` false and the four sending calls refusing `unsupported`, DEC-678, MG-04b D71); version 11, after its review r2, says where `resend_operation` of an `update_share` row refuses (MG-04b D71); version 12 turns sending on (slice 1c: D39 closed by MG-04b D75, M9 by D78); version 13 adds `ShareTermsView.service_read`, Core's reading of a service written in another form (MG-04b D78); version 14 adds MG-04b slice 2a's dissolve now: `preview_dissolve`, `dissolve`, `ProTxOperationKind::Dissolve`, `DissolveRequest`, `DissolvePreview` and `ShareReturn`, a `dissolve` row's resend and state, MG-04b D79–D83; version 15 adds MG-04b slice 2b's standby: `create_standby`, `standby`, `export_standby`, `send_standby`, `Standby`, `StandbyDescription`, `StandbyFile`, `StandbySource`, `StandbyVariant`, `SharedImport::Standby` (and `SharedImport::Session`'s session boxed, its JSON unchanged), `SharedNext::CreateStandby`, a `dissolve` row of another share's standby, MG-04b D84–D91; version 16 adds MG-04b slice 2c's dissolve together: `start_dissolve_together`, `approve_maintenance`, `send_maintenance`, `masternodes.shared_actor_fee{fee}`, `SharedWarning::SkippedSignatures` and `NoApprovals`, the import of a `dissolve` sigs envelope and of a targeted bare array, a dissolve-together session's stages, and a `dissolve` row it sends, MG-04b D92–D98; version 17 adds MG-04b slice 2d's key change: `start_key_change`, `KeyChangeRequest`, `KeyChangeView` and `SharedSession.key_change`, `SharedWarning::OperatorReset` and `UsableByFunder`, `DeadReason::Abandoned`, the import of a `registrar` sigs envelope and of a bare array targeting a key change, a key-change session's stages, its abandon before `out_at`, `shared_message{reason}`'s `not_key_change`, `inputs_hash` and `stale`, and `update_pending{operation}` naming a key-change session; and it breaks `send_maintenance`, which returned a `ProTxOperation` and now returns `MaintenanceSent` (`operation` for a dissolution, `session` for a key change, each boxed, which the JSON doesn't show), MG-04b D99–D105. Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
@@ -21,6 +21,15 @@ Version 28 adds `abandon_unreadable_shared_session`, `shared_abandon_fee`, `Shar
 Version 29 adds `MasternodesError::KeyExists { role }` (`masternodes.key_exists`): `attach_key` never writes over a key already attached for the role; it refuses under the mutation lock, after the lock refusal and before any id is cleared or the vault written (MG-00 D13 as amended 11-24: Remove comes first).
 
 Version 30 adds MG-10 EP 4's shared recovery (MG-10 §4.4, D12, D17): `SharedSession.recovery` (`SharedRecovery`, with `Settlement`, `SettledBy`, `HandoffError`, `HandoffTx`, `HandoffErrorOutcome`, `AbandonSpend`, `AbandonSpendState`, `Blocked`, `BlockedReason` and `RecoveryAction`), filled by `shared_sessions`, `shared_session`, `abandon_shared_session` and the new `resend_shared_abandon`, which hands the latest abandon spend's saved bytes off again; `abandon_shared_session` now runs the shared coin test: it spends every reserved coin the wallet holds unspent (an n-input spend at its relay minimum), only when they include every input an earlier abandon spend took (the whole reservation for a session an older build abandoned), and refuses while a pending spend holds a reserved coin or one held has no ownership path; it refuses `shared_stage{stage: "abandoning"}` while the latest abandon spend may be out; and `import_shared_message` marks a session that isn't out as out, its outcome unknown, when it refuses a copy carrying this wallet's valid signature over one of the session's own inputs. With #457's abandon exits it removes `shared_abandon_fee`: `abandon_unreadable_shared_session` runs the same coin test and the same `abandoning` refusal, so `UnreadableSession.abandonable` also requires both to pass and the new `UnreadableSession.abandon_charge` is its fee, the call's exact grant cap; a readable session's charge is its `recovery` `abandon` action's. Once this wallet signed an abandon spend, `next` reads `nothing` where it would hand the session's message or transaction on, and `shared_message` refuses `shared_stage{stage: "abandoning"}`. `SharedWarning::ZeroPenalty` warns only of an early period with no penalty.
+
+Version 31 adds `ProTxOperationState::Abandoned` (`abandoned`, MG-10 §1.10's D49 way out): a `sent` registration or
+key change whose transaction the wallet abandoned (its abandoned mark, written by `abandon_transaction` or Tools ▸
+Repair ▸ Remove unconfirmed transactions) holds its fee inputs no longer (released in one transaction), so
+`unlock_outpoints` frees the coins, and is never resent (`operation_state{state: "abandoned"}`; a resend checks the
+mark whatever the row reads, held against an abandon through its hand-off). Core may still mine it, so a key change's
+payout-change barrier stays until P16 clears it (the withdrawal quote reads `checking{payout_change_abandoned}`), and
+a preview of the masternode's next update goes through but its signing, and the resend of another, is refused
+`masternodes.update_abandoned_pending{operation}` until the abandoned one is `conflicted`.
 
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
@@ -246,7 +255,9 @@ that signed), and a signed record is never deleted (P5).
 **Consent comes after every wait.** The quote reads once and returns at once; a destination it can't fix yet reads
 `checking{reason}` (P4): `spv_unsynced` (no synced header tip), `unverified` (rule 5 under `Enforce`, P12),
 `payout_change_pending` (a payout-change barrier of the masternode is pending, or the barriers' backfill hasn't run,
-P16), `payout_change_unconfirmed` (a ProUpRegTx of the masternode in any loaded wallet's history, out of a block,
+P16), `payout_change_abandoned` (every pending barrier is an operation its wallet abandoned in Activity, which Core may
+still mine; it clears once the operation is `conflicted`, one of its coins spent in a block, MG-10 §1.10),
+`payout_change_unconfirmed` (a ProUpRegTx of the masternode in any loaded wallet's history, out of a block,
 abandoned in none of them and conflicted by no block in any of them (an InstantSend-locked one only by a ChainLocked
 block), whose payout Drive's window doesn't pay, or whose payload this version doesn't decode: another installation's
 change, which has no barrier here), `platform_behind` (the identity proof's Core chain-locked height is below the synced header tip, or such a
@@ -312,7 +323,7 @@ Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BL
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: 32a6df33fe5b0865ace21ce88598e9640de0e424b97ef9d559401ccde7b8ad94 version: 30 -->
+<!-- surface-sha256: 5f9bc8fb6ce15bbb72ac35b76d9dffcdbf6951c003710544f23ec68842363f84 version: 31 -->
 
 ```rust
 // src/masternodes/errors.rs
@@ -339,6 +350,7 @@ pub enum MasternodesError {
     NoOwnerKey,
     UpdatePending { operation: String },
     UpdateSuperseded { operation: String },
+    UpdateAbandonedPending { operation: String },
     SharedSessionNotFound,
     SharedStage { stage: String },
     SharedMessage { reason: String, share: Option<u16> },
@@ -557,6 +569,7 @@ pub enum ProTxOperationState {
     Sent,
     Confirmed { height: u32 },
     Conflicted,
+    Abandoned,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignRequest {
@@ -1280,6 +1293,7 @@ pub struct HeldWithdrawalKey {
 pub enum WithdrawalCheckingReason {
     PlatformBehind,
     PayoutChangePending,
+    PayoutChangeAbandoned,
     PayoutChangeUnconfirmed,
     OwnerPayoutP2sh,
     Unverified,
@@ -1402,7 +1416,7 @@ impl Masternodes {
 
 | Error enum | Codes |
 |---|---|
-| `MasternodesError` | `masternodes.list_unavailable`, `masternodes.not_found`, `masternodes.already_tracked`, `masternodes.not_tracked`, `masternodes.key_mismatch`, `masternodes.key_exists`, `masternodes.not_evonode`, `masternodes.no_identity`, `masternodes.platform_unavailable`, `masternodes.unsupported`, `masternodes.not_implemented`, `masternodes.protx_refused`, `masternodes.collateral_unavailable`, `masternodes.signature_mismatch`, `masternodes.operation_not_found`, `masternodes.operation_state`, `masternodes.in_flight`, `masternodes.keys_exhausted`, `masternodes.no_owner_key`, `masternodes.update_pending`, `masternodes.update_superseded`, `masternodes.shared_session_not_found`, `masternodes.shared_stage`, `masternodes.shared_message`, `masternodes.shared_funding_mismatch`, `masternodes.share_not_mine`, `masternodes.shared_too_early`, `masternodes.shared_registration_unknown`, `masternodes.shared_actor_fee`, `masternodes.withdrawal_key_missing`, `masternodes.withdrawal_shared`, `masternodes.withdrawal_no_payout_key`, `masternodes.withdrawal_destination_checking`, `masternodes.withdrawal_pending`, `masternodes.withdrawal_unverified`, `masternodes.withdrawal_retry_state`, `masternodes.withdraw_target_mismatch`, `masternodes.withdrawal_mark_state`, `masternodes.withdrawal_not_found`, `masternodes.withdrawal_amount_out_of_range`, `masternodes.withdrawal_amount_insufficient` |
+| `MasternodesError` | `masternodes.list_unavailable`, `masternodes.not_found`, `masternodes.already_tracked`, `masternodes.not_tracked`, `masternodes.key_mismatch`, `masternodes.key_exists`, `masternodes.not_evonode`, `masternodes.no_identity`, `masternodes.platform_unavailable`, `masternodes.unsupported`, `masternodes.not_implemented`, `masternodes.protx_refused`, `masternodes.collateral_unavailable`, `masternodes.signature_mismatch`, `masternodes.operation_not_found`, `masternodes.operation_state`, `masternodes.in_flight`, `masternodes.keys_exhausted`, `masternodes.no_owner_key`, `masternodes.update_pending`, `masternodes.update_superseded`, `masternodes.update_abandoned_pending`, `masternodes.shared_session_not_found`, `masternodes.shared_stage`, `masternodes.shared_message`, `masternodes.shared_funding_mismatch`, `masternodes.share_not_mine`, `masternodes.shared_too_early`, `masternodes.shared_registration_unknown`, `masternodes.shared_actor_fee`, `masternodes.withdrawal_key_missing`, `masternodes.withdrawal_shared`, `masternodes.withdrawal_no_payout_key`, `masternodes.withdrawal_destination_checking`, `masternodes.withdrawal_pending`, `masternodes.withdrawal_unverified`, `masternodes.withdrawal_retry_state`, `masternodes.withdraw_target_mismatch`, `masternodes.withdrawal_mark_state`, `masternodes.withdrawal_not_found`, `masternodes.withdrawal_amount_out_of_range`, `masternodes.withdrawal_amount_insufficient` |
 
 - `masternodes.list_unavailable`: the call needs the synced SPV list and there is none yet (or it is still syncing).
 No code carries a hash, a key or a wallet id the caller passed, and no message repeats one: a pasted private key has
@@ -1441,11 +1455,16 @@ a hash's shape (D23).
   yet, and two updates out at once may be mined in either order. Also a resend of an update while an earlier one is
   sent and not in a block. Wait for the list, or discard `operation` while it is not sent; for a resend, discarding
   the row being resent (while it is not sent) also ends the refusal. One that never lists (dropped): abandon its
-  transaction (`abandon_transaction`), unlock one of its inputs and spend it; once that spend is in a block
-  `operation` reads `conflicted` and blocks nothing (MG-04 D43, D49). Also an `update_share` or a `dissolve` while an
+  transaction (`abandon_transaction`): the operation then reads `abandoned` and its inputs are released, and the
+  refusal becomes `update_abandoned_pending` (below) for a signing; spending one of its inputs makes sure it is never
+  mined, and once that spend is in a block `operation` reads `conflicted` (MG-04 D43, D49). Also an `update_share` or a `dissolve` while an
   `update_share` or a `dissolve` of the same masternode is signed, not sent or sent (MG-04b D73, D80). For those and
   a key change's start, approval and send, `operation` may instead name a key-change session of the masternode sent
   from this wallet, `sent` or `stale` (Core may still mine it), or `confirmed` in a block not yet buried (MG-04b D105).
+- `masternodes.update_abandoned_pending{operation}`: a ProUpRegTx's signing, or the resend of an update, while
+  `operation` (an update of the same masternode in a loaded wallet) reads `abandoned`: Core may still mine it after
+  this one, and it would undo it. A preview isn't refused. It ends once `operation` reads `conflicted` (one of its
+  coins spent in a block) or `confirmed` (MG-10 §1.10, D49).
 - `masternodes.update_superseded{operation}`: `resend_operation` of a ProUpRegTx that `operation`, a later update of
   the same masternode (maybe another loaded wallet's) that is or may go out, would undo. Discard this row while it is
   not sent; a sent one ends as `update_pending` says (MG-04 D43, D49). `update_pending`'s `operation` may also be
@@ -1578,6 +1597,7 @@ ProTx operations (§2.3, MG-04 §5): `ProTxOperationState`, derived on every rea
 | `inputs_spent` | The same, a fee input since spent: refresh it. |
 | `confirmed{height}` | Its transaction is in a block of the wallet's history; or a `sent` `dissolve` that pays this wallet nothing (its actor output omitted) once its masternode is out of the synced list, the wallet's filter-scan checkpoint has reached a height the list can't be above, and the registration is in a block at or below it, at that height (MG-04b D81). |
 | `conflicted` | Another transaction in a block spends one of its inputs. |
+| `abandoned` | A `registration` or `update_registrar` that would read `sent`, whose txid the wallet's abandoned marks name (`abandon_transaction`, or Tools ▸ Repair ▸ Remove unconfirmed transactions; the mark is durable). Terminal: its fee inputs are released in one transaction (by the abandon; `unlock_outpoints` and the follower settle them again if that failed, and `unlock_outpoints` refuses a coin it still holds with that failure), and `resend_operation` and `discard_operation` refuse it. Core may still mine it, so until it is `confirmed` or `conflicted` it still claims its keys as `sent` does (MG-04 D51), its payout-change barrier stays (MG-13 P16), and the signing of another update of its masternode, or the resend of one, is refused `update_abandoned_pending` (MG-04 D49). An InstantSend lock seen since makes it `sent` again; `resend_operation` still refuses it, as it does any row whose txid carries the mark. |
 | `sent` | Signed, `sent_at` set: handed to the network or may have been (`last_error` keeps an unknown outcome's code). |
 | `not_sent` | Signed, its attempts definitely not sent (`last_error`: a `send.*` code). |
 | `signed` | Signed and saved, no hand-off started (a crash between the save and the hand-off). |

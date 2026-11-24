@@ -5,7 +5,10 @@
 
 use std::collections::BTreeMap;
 
-use dashcore::Address;
+use dashcore::blockdata::script::{Builder, Instruction, PushBytes};
+use dashcore::secp256k1::{Message, SecretKey, ecdsa};
+use dashcore::{Address, PublicKey, ScriptBuf};
+use dw_protx::shared::SpecialTx;
 use key_wallet::transaction_checking::TransactionContext;
 
 use super::super::recovery::{SIGNER_RUNS, spend_fee};
@@ -1385,6 +1388,109 @@ fn test_a_refused_copy_carrying_our_signature_reads_possibly_out() {
         .run(f.mn().discard_shared_session(f.wallets[1], id.clone()))
         .unwrap_err();
     assert_eq!(code(e), "masternodes.shared_stage");
+}
+
+/// `copy` one revision on, each signed input's scriptSig rewritten by `edit`
+/// from its signature (hash type last) and key pushes, with the input's
+/// index and the transaction.
+fn tampered(copy: &Session, edit: impl Fn(&SpecialTx, usize, &[u8], &[u8]) -> ScriptBuf) -> String {
+    let mut copy = copy.clone();
+    copy.revision += 1;
+    let mut tx = decode_frozen(&copy).unwrap().tx;
+    let signed: Vec<usize> = (0..tx.input.len())
+        .filter(|&i| !tx.input[i].script_sig.is_empty())
+        .collect();
+    assert!(!signed.is_empty());
+    for i in signed {
+        let mut pushes = tx.input[i].script_sig.instructions();
+        let (Some(Ok(Instruction::PushBytes(sig))), Some(Ok(Instruction::PushBytes(key)))) =
+            (pushes.next(), pushes.next())
+        else {
+            panic!("not a P2PKH scriptSig");
+        };
+        let (sig, key) = (sig.as_bytes().to_vec(), key.as_bytes().to_vec());
+        tx.input[i].script_sig = edit(&tx, i, &sig, &key);
+    }
+    copy.protx = hex::encode(tx.to_bytes());
+    copy.to_text()
+}
+
+fn p2pkh_sig(sig: &[u8], key: &[u8]) -> ScriptBuf {
+    Builder::new()
+        .push_slice(<&PushBytes>::try_from(sig).unwrap())
+        .push_slice(<&PushBytes>::try_from(key).unwrap())
+        .into_script()
+}
+
+/// MG-10 EP 4's negative control: a refused copy whose scriptSigs hold no
+/// valid `SIGHASH_ALL` signature by this wallet over its own inputs (a
+/// broken signature, another hash type, none, or a valid one by a key the
+/// wallet doesn't hold) leaves the session not out, Discard listed. The
+/// genuine copy, refused the same way, then reads out.
+#[test]
+fn test_a_refused_copy_without_our_valid_signature_stays_discardable() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.imported(1, &f.message(0, &id));
+    let before = f.row(1, &id);
+    let signed = f.sign(1, &id, 301 * COIN).unwrap();
+    restore(&f, 1, &id, &before);
+    f.spv(true, 1);
+    let copy = parse(&signed.message.text);
+    let stage = f.session_of(1, &id).stage;
+    let foreign = SecretKey::from_secret_bytes([0x11; 32]).unwrap();
+    let foreign_key = PublicKey::new(foreign.public_key());
+    let copies = [
+        (
+            "broken signature",
+            tampered(&copy, |_, _, sig, key| {
+                let mut sig = sig.to_vec();
+                let last_s = sig.len() - 2;
+                sig[last_s] ^= 1;
+                p2pkh_sig(&sig, key)
+            }),
+        ),
+        (
+            "another hash type",
+            tampered(&copy, |_, _, sig, key| {
+                let mut sig = sig.to_vec();
+                *sig.last_mut().unwrap() = 0x81;
+                p2pkh_sig(&sig, key)
+            }),
+        ),
+        (
+            "no signature",
+            tampered(&copy, |_, _, _, _| ScriptBuf::new()),
+        ),
+        (
+            "a key the wallet doesn't hold",
+            tampered(&copy, |tx, i, _, _| {
+                let code = ScriptBuf::new_p2pkh(&foreign_key.pubkey_hash());
+                let hash = tx.signature_hash_all(i, &code).unwrap();
+                let mut sig = ecdsa::sign(Message::from_digest(hash), &foreign)
+                    .serialize_der()
+                    .to_vec();
+                sig.push(0x01);
+                p2pkh_sig(&sig, &foreign_key.to_bytes())
+            }),
+        ),
+    ];
+    for (case, text) in copies {
+        assert_message(f.import(1, &text).unwrap_err(), "conflict");
+        let row = f.row(1, &id);
+        assert!(row.out_at.is_none(), "{case}: {row:?}");
+        assert_eq!(row.last_error, before.last_error, "{case}");
+        assert_eq!(f.session_of(1, &id).stage, stage, "{case}");
+        assert!(
+            (f.recovery(1, &id).actions.iter())
+                .any(|a| matches!(a, RecoveryAction::Discard { .. })),
+            "{case}"
+        );
+    }
+    let mut genuine = copy;
+    genuine.revision += 1;
+    assert_message(f.import(1, &genuine.to_text()).unwrap_err(), "conflict");
+    assert!(f.row(1, &id).out_at.is_some());
 }
 
 /// A coordinator whose database was restored from a backup of its draft

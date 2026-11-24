@@ -29,7 +29,10 @@ use self::build::{
     Collateral, Funding, decode_signature, existing_coin, finish_registration, plan_funding,
     sign_message, summarize, to_sign, unsigned_registration,
 };
-use self::ops::{Delivery, encode_inputs, kind_name, kind_of, operation_of, state_name, state_of};
+use self::ops::{
+    Delivery, abandon_settled, encode_inputs, kind_name, kind_of, operation_of, state_name,
+    state_of,
+};
 use super::protx_records::{
     CollateralChoice, ProTxKeys, ProTxOperation, ProTxOperationKind, ProTxOperationState,
     RegistrationPreview, RegistrationRequest, UpdateRegistrarPreview, UpdateRegistrarRequest,
@@ -687,12 +690,14 @@ impl Masternodes {
             let w = wallet.to_string();
             let rows = s.appdb_op(move |db| db.masternode_ops(&w)).await?;
             let (history, unspent) = s.op_view(wallet).await?;
+            let abandoned = s.abandoned_txids(wallet).await?;
             let view = s.dissolution_view(wallet, &rows).await;
             rows.iter()
                 .map(|r| {
+                    let state = list_settled(r, state_of(r, &history, &unspent), &view);
                     operation_of(
                         r,
-                        list_settled(r, state_of(r, &history, &unspent), &view),
+                        abandon_settled(r, state, &history, &abandoned),
                         &s.hub.tracker(),
                     )
                 })
@@ -737,17 +742,7 @@ impl Masternodes {
                 true => Some(s.masternodes.update_lock().await),
                 false => None,
             };
-            let state = s.op_state(wallet, &row).await?;
-            if !matches!(
-                state,
-                ProTxOperationState::Signed
-                    | ProTxOperationState::NotSent
-                    | ProTxOperationState::Sent
-            ) {
-                return Err(MasternodesError::OperationState {
-                    state: state_name(state).into(),
-                });
-            }
+            s.require_resendable(wallet, &row).await?;
             if update && let Some(conflict) = s.resend_conflict(&row).await? {
                 return Err(conflict);
             }
@@ -778,6 +773,11 @@ impl Masternodes {
                 let (charge, _) = charge_fee(&lease, debit)?;
                 let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
                 let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await?;
+                // Read again, held against an abandon through the hand-off:
+                // one since the check released its coins, and its bytes stay
+                // unsent (D49).
+                let _gate = s.abandon_gate(wallet).read_owned().await;
+                s.require_resendable(wallet, &row).await?;
                 s.deliver(
                     wallet,
                     Delivery {

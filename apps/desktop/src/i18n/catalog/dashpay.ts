@@ -45,6 +45,7 @@ export const dashpay = {
     buyCredits: "Buy credits",
     unlock: "Unlock",
     continue: "Continue",
+    moveToCore: "Move to Dash wallet",
   },
   /** A registration's three steps. `step` is the step's number out of three ("1/3"); `text` is the step. */
   step: {
@@ -63,6 +64,10 @@ export const dashpay = {
     startup: "Waiting for DashPay to start.",
     unlock: "Unlock the wallet to continue.",
     authorize: "Waiting for your approval to continue.",
+    paymentUnknown: "Checking whether the payment from your Platform balance went through.",
+    paymentHeld: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through, so paying again waits until that's known. Check back later.",
+    /** Shown only beside both Continue and Move to Dash wallet, which it names. */
+    paymentHeldActions: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.",
   },
   /** Why a registration stopped. `needed` and `available` are amounts; `code` is the engine's. */
   failure: {

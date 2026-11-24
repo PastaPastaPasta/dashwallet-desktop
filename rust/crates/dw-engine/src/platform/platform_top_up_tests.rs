@@ -650,7 +650,12 @@ fn several_present_exits_settle_one() {
 /// done record was.
 #[test]
 fn a_read_behind_a_settled_move_is_refused() {
-    for kind in [MoveKind::ToIdentity, MoveKind::ToCore, MoveKind::Transfer] {
+    for kind in [
+        MoveKind::ToIdentity,
+        MoveKind::ToCore,
+        MoveKind::Transfer,
+        MoveKind::Register,
+    ] {
         let mut done = record_of(kind, "t", 1);
         done.state = PlatformActivityState::Done;
         let moves = [done];

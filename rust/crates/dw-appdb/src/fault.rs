@@ -24,7 +24,7 @@ use rusqlite::Connection;
 pub use crate::fault_points::*;
 
 /// Every dw-appdb point.
-pub const POINTS: [&str; 13] = [
+pub const POINTS: [&str; 14] = [
     MN_WITHDRAW_INSERT,
     MN_WITHDRAW_SENT_AT,
     MN_WITHDRAW_STATE,
@@ -37,6 +37,7 @@ pub const POINTS: [&str; 13] = [
     MN_BARRIER_WRITE,
     MN_BARRIER_CLEAR,
     MN_BARRIER_DISCARD,
+    MN_OP_ABANDON,
     MN_BARRIER_BACKFILL,
 ];
 

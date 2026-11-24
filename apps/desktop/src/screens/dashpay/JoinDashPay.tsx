@@ -24,7 +24,7 @@ import { useModel } from "../../onboarding/model";
 import { Page } from "../Routes";
 import { DashPayFaqSheet, VotingInfoSheet } from "./AboutDashPay";
 import { ClaimConfirmStep, ClaimScreen, InvitationPasteSheet } from "./Claim";
-import { DashPayCard, defaultCardAction } from "./DashPayCard";
+import { DashPayCard, defaultCardAction, moveToDashWallet } from "./DashPayCard";
 import { RegistrationScreen, WizardSteps } from "./Registration";
 
 function Intro() {
@@ -85,9 +85,10 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     };
   }, [wiz, missing, refetch]);
 
+  const moveToCore = () => moveToDashWallet(b, walletId);
   const onAction = (kind: CardActionKind) => {
     if (kind === "chooseName" && inputs.main) return wiz.begin({ kind: "credits", identity: inputs.main.identity });
-    return defaultCardAction(kind, retry);
+    return defaultCardAction(kind, retry, moveToCore);
   };
   // A claim seen through leaves the claim screen too.
   const leave = () => {
@@ -100,7 +101,8 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
         return navigate("home");
       case "unlock":
       case "repair":
-        return defaultCardAction(kind, retry);
+      case "moveToCore":
+        return defaultCardAction(kind, retry, moveToCore);
       case "continue":
         return void (row && wiz.resume(row));
       case "finish":

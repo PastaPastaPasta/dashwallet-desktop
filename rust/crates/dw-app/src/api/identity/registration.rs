@@ -326,10 +326,19 @@ pub enum RegistrationWaitName {
     /// which identity indexes the seed uses: "Waiting for DashPay to
     /// start". The engine runs it again meanwhile.
     Startup,
+    /// A registration paid from the Platform balance may still go through
+    /// and nothing proves it did yet: the next check settles it ("Check
+    /// again").
+    PaymentUnknown,
+    /// A registration paid from the Platform balance did not go through in
+    /// time and still may: "Move to Dash wallet" frees the balance, and a
+    /// resume tries it once more.
+    PaymentHeld,
 }
 
 mirror_enum!(engine::RegistrationWait => RegistrationWaitName {
-    Unlock, Authorize, Sync, InstantSend, ChainLock, Network, FundingUnknown, NeedsFinish, Startup
+    Unlock, Authorize, Sync, InstantSend, ChainLock, Network, FundingUnknown, NeedsFinish, Startup,
+    PaymentUnknown, PaymentHeld
 });
 
 /// Why a registration is `failed`.
@@ -401,6 +410,9 @@ pub struct RegistrationStatus {
     pub profile_failure: Option<String>,
     /// Set on an invitation claim's row.
     pub invitation: Option<RegistrationInvitation>,
+    /// A row funded from the Platform addresses: like a claim's, its resume
+    /// takes the grant `registrationResumeGrant` sizes.
+    pub from_platform: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -452,6 +464,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             name_failure,
             profile_failure,
             invitation,
+            from_platform,
             created_at,
             updated_at,
         } = s;
@@ -471,6 +484,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             name_failure,
             profile_failure,
             invitation: invitation.map(Into::into),
+            from_platform,
             created_at,
             updated_at,
         }
