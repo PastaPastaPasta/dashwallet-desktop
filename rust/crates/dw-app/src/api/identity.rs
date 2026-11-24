@@ -30,7 +30,7 @@ use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
 use self::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
-    PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
+    PlatformAddressRow, PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
     PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
 };
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
@@ -171,8 +171,9 @@ commands! {
         Ok(quote.into())
     }
 
-    /// An invitation claim row's resume grant: no duffs, and the credits
-    /// of the steps it has left, from the row (DP5-03 D20).
+    /// An invitation claim row's or a Platform-funded row's resume grant:
+    /// no duffs, and the credits of the steps it has left, from the row
+    /// (DP5-03 D20).
     #[facade("DashPay::registration_resume_grant")]
     fn registration_resume_grant(state, wallet_id: String, draft: String) -> GrantRequest {
         let dashpay = state.dashpay(&wallet_id).await?;
@@ -471,19 +472,21 @@ commands! {
     }
 
     /// Tops the identity up with `amount` of the Platform addresses'
-    /// credits under `grant`.
+    /// credits under `grant`. `fee_input`: the quote's input 0; a plan
+    /// with another fee source or claim is `credits.quote_changed`.
     #[facade("DashPay::top_up_from_platform")]
     fn credits_top_up_from_platform(
         state,
         wallet_id: String,
         identity: String,
         amount: WithdrawAmount,
+        fee_input: Option<PlatformAddressRow>,
         grant: String,
     ) -> TopUpFromPlatformOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         let _in_flight = state.broadcasting();
         let out = dashpay
-            .top_up_from_platform(identity, amount.into(), grant)
+            .top_up_from_platform(identity, amount.into(), fee_input.map(Into::into), grant)
             .await?;
         Ok(out.into())
     }
@@ -545,16 +548,18 @@ commands! {
 
     /// Moves `amount` of the Platform addresses' credits to `to` (the
     /// quote's: one of the wallet's Core receiving addresses) under `grant`.
+    /// `exit_of`: the quote's, the held top-up this move is the exit of.
     #[facade("DashPay::move_to_core")]
     fn platform_move_to_core(
         state,
         wallet_id: String,
         amount: WithdrawAmount,
         to: String,
+        exit_of: Option<String>,
         grant: String,
     ) -> MoveToCoreOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.move_to_core(amount.into(), to, grant).await?.into())
+        Ok(dashpay.move_to_core(amount.into(), to, exit_of, grant).await?.into())
     }
 
     /// The wallet's Platform receive address: the lowest unused one.

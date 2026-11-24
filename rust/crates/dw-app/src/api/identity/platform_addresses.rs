@@ -32,6 +32,9 @@ pub struct PlatformAddressBalance {
     /// Unix seconds of this session's last sync pass; `null` before one.
     pub synced_at: Option<u64>,
     pub syncing: bool,
+    /// The network has address funds transitions: below protocol version 11
+    /// a top-up or send from these addresses is refused.
+    pub sends_active: bool,
 }
 
 impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
@@ -43,6 +46,7 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
             addresses,
             synced_at,
             syncing,
+            sends_active,
         } = b;
         PlatformAddressBalance {
             credits,
@@ -51,6 +55,7 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
             addresses: addresses.into_iter().map(Into::into).collect(),
             synced_at,
             syncing,
+            sends_active,
         }
     }
 }
@@ -69,6 +74,13 @@ impl From<engine::PlatformAddressRow> for PlatformAddressRow {
     fn from(r: engine::PlatformAddressRow) -> Self {
         let engine::PlatformAddressRow { address, credits } = r;
         PlatformAddressRow { address, credits }
+    }
+}
+
+impl From<PlatformAddressRow> for engine::PlatformAddressRow {
+    fn from(r: PlatformAddressRow) -> Self {
+        let PlatformAddressRow { address, credits } = r;
+        engine::PlatformAddressRow { address, credits }
     }
 }
 
@@ -193,6 +205,9 @@ pub struct MoveToCoreQuote {
     /// The wallet's own Core receive address: `platformMoveToCore` pays it.
     pub to: String,
     pub grant: GrantRequest,
+    /// The held top-up from Platform this move is the exit of: pass it to
+    /// `platformMoveToCore`.
+    pub exit_of: Option<String>,
 }
 
 impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
@@ -203,6 +218,7 @@ impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
             expected_duffs,
             to,
             grant,
+            exit_of,
         } = q;
         MoveToCoreQuote {
             credits,
@@ -210,6 +226,7 @@ impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
             expected_duffs,
             to,
             grant: grant.into(),
+            exit_of,
         }
     }
 }

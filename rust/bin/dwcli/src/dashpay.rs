@@ -925,7 +925,8 @@ fn registration_params(e: &RegistrationError) -> Value {
         | R::FundingCancelled
         | R::NotSynced
         | R::CoinsLocked
-        | R::QuoteChanged => json!({}),
+        | R::QuoteChanged
+        | R::Refunded => json!({}),
         R::ShieldedNotReady { reason, ready_at } => {
             json!({"reason": reason, "ready_at": ready_at})
         }
@@ -957,6 +958,7 @@ fn contact_params(e: &ContactError) -> Value {
         | C::ScanExpired
         | C::ScanUnverified
         | C::NoUsername => json!({}),
+        C::Shielded(s) => shielded_params(s),
         C::Platform(p) => platform_params(p),
         C::Credits(c) => credits_params(c),
     }
@@ -1744,7 +1746,15 @@ fn platform_addr_cmd(ctx: &Ctx, cmd: PlatformAddrCmd) -> Result<Value, CliError>
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.move_to_core(amount, quote.to.clone(), grant))?;
+            // An exit moves exactly its quoted withdrawal, or nothing.
+            let amount = match quote.exit_of {
+                Some(_) => WithdrawAmount::Credits {
+                    credits: quote.credits - quote.fee_credits,
+                },
+                None => amount,
+            };
+            let ask = (quote.to.clone(), quote.exit_of.clone());
+            let outcome = ctx.block_on(dp.move_to_core(amount, ask.0, ask.1, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         #[cfg(feature = "platform-addr-fund")]
@@ -2036,7 +2046,13 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.top_up_from_platform(identity, amount, grant))?;
+            // What Confirm showed, Max included: its credits and its fee input.
+            let amount = WithdrawAmount::Credits {
+                credits: quote.credits,
+            };
+            let fee_input = quote.inputs.first().cloned();
+            let outcome =
+                ctx.block_on(dp.top_up_from_platform(identity, amount, fee_input, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         IdentityCmd::TopUpPending => out(ctx.block_on(dp.pending_top_ups())?),
@@ -2712,7 +2728,7 @@ mod tests {
         // Release 0.1 (lane E2): the Platform addresses.
         (
             "platform-addr status",
-            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false}}"#,
+            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false,"sends_active":true}}"#,
         ),
         ("platform-addr activity", r#"{"ok":true,"result":[]}"#),
         // Offline (DAPI refuses): the pass and the plan's proved read.

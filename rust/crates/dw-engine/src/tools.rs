@@ -203,7 +203,7 @@ impl RescanState {
 /// The version this build was released as. The release workflow passes its run's version as
 /// `DW_BUILD_VERSION` (`0.1.0`, `0.1.0-rc.1`, `0.1.0-dev.57.g1a2b3c4`); a build without it (local,
 /// tests, Nightly) is a dev build.
-pub(crate) const BUILD_VERSION: &str = match option_env!("DW_BUILD_VERSION") {
+pub const BUILD_VERSION: &str = match option_env!("DW_BUILD_VERSION") {
     Some(v) if !v.is_empty() => v,
     _ => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
 };
@@ -1014,7 +1014,11 @@ impl NetworkSession {
     }
 
     /// QT-148 "Rebuild Index" equivalent: deletes the SPV chain data and
-    /// keeps wallets, vault and app data. SPV must be stopped. Every
+    /// keeps wallets, vault and app data. SPV must be stopped, no wallet
+    /// mixing or with a session open (`MixingActive`), and no signed
+    /// round's inputs held (`InputsHeld`): the reset would hide that
+    /// round's transaction from the wallet. Mixing does not start while it
+    /// runs. Every
     /// wallet's filter checkpoint goes back below its birth height, so the
     /// next `start_spv` syncs headers again and rescans each wallet.
     pub async fn reset_chain_data(self: &Arc<Self>) -> Result<(), EngineError> {
@@ -1026,6 +1030,9 @@ impl NetworkSession {
             if this.platform_spv_state(&manager) != crate::SpvState::Stopped {
                 return Err(EngineError::SpvRunning);
             }
+            // Refused before any replay record is stored.
+            this.expire_all_held();
+            let _coinjoin = this.coinjoin.claim_reset()?;
             // No wallet opens or closes between the two lists below.
             let _wallets = this.wallet_lifecycle.hold().await;
             let wallets: Vec<(WalletId, u32)> = (manager.list_wallet_ids_blocking().into_iter())

@@ -265,9 +265,6 @@ pub(crate) async fn finish_fund(
     outpoint: OutPoint,
     grant: &str,
 ) -> Result<LockFinish, PlatformError> {
-    (session.platform)
-        .settle_startup_hold(wallet, || lib.funding_hold())
-        .await;
     let kind = FundLocks::new(session, wallet, lib);
     let lease = || authority(session, wallet, grant, kind.flow());
     locks::finish(&kind, outpoint, lease).await
@@ -282,14 +279,6 @@ pub(crate) async fn finish_all(
     lease: &Lease,
     report: &mut super::FinishReport,
 ) {
-    // One wait for both kinds, under the one lease: only the fund side's
-    // readiness reads the hold.
-    let fund = PwFund::open(session, wallet).await;
-    if let Ok(lib) = &fund {
-        (session.platform)
-            .settle_startup_hold(wallet, || lib.funding_hold())
-            .await;
-    }
     match PwShielded::open(session, wallet).await {
         Ok(lib) => {
             locks::finish_kind(&ShieldLocks::new(session, wallet, &lib), lease, report).await
@@ -299,7 +288,7 @@ pub(crate) async fn finish_all(
             report.unread.push(LockKindId::Shielded);
         }
     }
-    match fund {
+    match PwFund::open(session, wallet).await {
         Ok(lib) => locks::finish_kind(&FundLocks::new(session, wallet, &lib), lease, report).await,
         Err(e) => {
             tracing::warn!(error = %e, "Finish transfers could not open the Platform address side");

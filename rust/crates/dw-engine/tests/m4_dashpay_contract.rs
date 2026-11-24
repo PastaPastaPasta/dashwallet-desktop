@@ -291,6 +291,7 @@ const NOT_FACADE: &[&str] = &[
     "platform_fund_tests.rs",
     "platform_moves.rs",
     "platform_moves_tests.rs",
+    "platform_register.rs",
     "platform_register_tests.rs",
     "platform_shield_tests.rs",
     "platform_top_up_tests.rs",
@@ -319,6 +320,7 @@ const NOT_FACADE: &[&str] = &[
     "shielded_close_tests.rs",
     "shielded_dispatch_tests.rs",
     "shielded_disposition_tests.rs",
+    "shielded_payout.rs",
     "shielded_pool.rs",
     "shielded_tests",
     "shielded_tests.rs",
@@ -1069,6 +1071,7 @@ fn error_codes_match_the_contract() {
                 ready_at: None,
             },
             RegistrationError::QuoteChanged,
+            RegistrationError::Refunded,
         ],
         RegistrationError::code,
     );
@@ -1643,7 +1646,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.top_up_from_platform_quote(s(), WithdrawAmount::All)
                 .await
                 .map(drop),
-            dp.top_up_from_platform(s(), WithdrawAmount::All, s())
+            dp.top_up_from_platform(s(), WithdrawAmount::All, None, s())
                 .await
                 .map(drop),
         ] {
@@ -1657,7 +1660,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.platform_activity().await.map(drop),
             dp.sync_platform_addresses().await.map(drop),
             dp.move_to_core_quote(WithdrawAmount::All).await.map(drop),
-            dp.move_to_core(WithdrawAmount::All, s(), s())
+            dp.move_to_core(WithdrawAmount::All, s(), None, s())
                 .await
                 .map(drop),
             dp.platform_shield_quote(WithdrawAmount::All)

@@ -18,6 +18,8 @@ export interface InfoRow {
   title: string;
   value: string;
   note?: string;
+  /** A version string: shown left to right in every language. */
+  ltr?: true;
 }
 
 export interface InfoSection {
@@ -85,8 +87,8 @@ export function informationSections(launch: LaunchInfo, info: NodeSummary, timeZ
       id: "general",
       title: t("tools.information.sections.general"),
       rows: [
-        row(t("tools.information.rows.clientVersion"), launch.appVersion),
-        row(t("tools.information.rows.engineVersion"), launch.engineVersion),
+        { ...row(t("tools.information.rows.clientVersion"), launch.buildVersion), ltr: true },
+        { ...row(t("tools.information.rows.engineVersion"), launch.engineVersion), ltr: true },
         row(t("tools.information.rows.userAgent"), info.userAgent),
         row(t("tools.information.rows.dataDir"), info.dataDir),
         row(t("tools.information.rows.startupTime"), dateText(info.startupTime, timeZone)),

@@ -235,6 +235,8 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
       network: { kind: "testnet", dirName: "testnet", unitName: "tDASH" },
       appVersion: "0.1.0",
       engineVersion: "fixture",
+      // A dev build from main, as the release workflow stamps one.
+      buildVersion: "0.1.0-dev.57.g1a2b3c4",
     },
     passphrase: FIXTURE_PASSPHRASE,
     lock: unlocked([FIXTURE_WALLET_ID]),
@@ -457,6 +459,14 @@ function attributeMore(w: World) {
   const hidden = rows.findLast((r) => r.txType === "sendToAddress" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
   hidden.counterparty = { identity: IDENTITY.judy, username: "judy", displayName: "Judy", avatarUrl: null };
   (w.dashpay.activity[IDENTITY.judy] ??= []).push(coreActivity({ txid: hidden.txid, direction: "sent", amount: Math.abs(hidden.amount) - (hidden.fee ?? 0), height: hidden.blockHeight, timestamp: hidden.timestamp }));
+}
+
+/** Every wallet of `w` born below block 1,100,000, where its stored headers begin: Home's
+ * history-gap notice names them all. */
+export function withHistoryGap(w: World): World {
+  for (const x of w.wallets) x.summary.birthHeight = 1_000_000;
+  w.tools.historyGap = { startHeight: 1_100_000, walletIds: w.wallets.map((x) => x.summary.walletId) };
+  return w;
 }
 
 function twoWallets(w: World): World {
@@ -1295,6 +1305,17 @@ const SCENARIOS = {
     w.tools.rescanStep = 0;
     return w;
   },
+  /** The wallet's history starts before the block data this install keeps: Home says its older
+   * payments aren't shown and offers Repair's reset, which clears it. */
+  "history-gap": (t) => withHistoryGap(base(t)),
+  /** The notice with mixing stopped but a signed round's inputs still held: its reset is refused. */
+  "history-gap-settling": (t) => {
+    const w = withHistoryGap(base(t));
+    w.tools.inputsHeld = true;
+    return w;
+  },
+  /** The same for two wallets. */
+  "history-gap-two-wallets": (t) => withHistoryGap(twoWallets(base(t))),
   /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */
   "wallet-behind-stopped": (t) => walletBehind(t, true, false),
   /** The same with nothing found yet: Home shows 0. */
@@ -1399,6 +1420,24 @@ const SCENARIOS = {
       running: false,
       fundsCommitted: false,
       failure: { phase: "keysPrepared", code: "registration.funding_insufficient", retryable: true, needed: "3002260", available: "1000000" },
+    };
+    w.dashpay.runs = [];
+    return w;
+  },
+  /** Paid from the Platform balance, and Platform has not said whether the payment went through:
+   * Continue pays it again, Move to Dash wallet frees the balance (F22). */
+  "dashpay-registering-held": (t) => {
+    const w = base(t);
+    w.dashpay = registering();
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "keysPrepared",
+      waiting: "paymentHeld",
+      txid: null,
+      holdsKey: false,
+      running: false,
+      fundsCommitted: true,
+      fromPlatform: true,
     };
     w.dashpay.runs = [];
     return w;

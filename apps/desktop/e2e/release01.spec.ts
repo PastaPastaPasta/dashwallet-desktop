@@ -844,7 +844,7 @@ test.describe("Move to Dash wallet", () => {
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
-    // Settled while the sheet is still open: it keeps showing the result.
+    // Settled while the sheet is still open: it takes Activity's answer.
     await page.evaluate(() => {
       const f = window.__dwFixture!;
       const p = f.world.pending.platform!;
@@ -852,7 +852,7 @@ test.describe("Move to Dash wallet", () => {
       p.addresses = [];
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "identities" } });
     });
-    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
     await page.getByTestId("platform-move-done").click();
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
     expect(await platformMoveWhy(page)).toBe("Nothing on your Platform addresses to move yet.");

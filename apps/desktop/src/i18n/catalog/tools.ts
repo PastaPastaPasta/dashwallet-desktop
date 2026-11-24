@@ -224,7 +224,7 @@ export const tools = {
     walletTitle: "Repair the wallet",
     dropUnconfirmed: "Remove unconfirmed transactions",
     dropUnconfirmedButton: "Remove unconfirmed transactions…",
-    dropUnconfirmedQuestion: "Abandon every unconfirmed transaction that the network does not have and rescan? A transaction that reached the network may still confirm.",
+    dropUnconfirmedQuestion: "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm. Dash Wallet may also keep re-sending the ones it sent since it last started, for up to a day. To stop that, restart Dash Wallet.",
     dropAction: "Remove",
     resetChainData: "Reset chain data and resync",
     resetChainDataButton: "Reset chain data and resync…",
@@ -301,6 +301,7 @@ export const tools = {
       heightOutOfRange: "The height is above the current chain tip.",
       noPeers: "No peers are connected. Try again once the wallet is online.",
       notImplemented: "This feature is not available yet.",
+      inputsHeld: "A CoinJoin round that just finished is still settling, so chain data can't be reset yet. This takes up to an hour. Try again then.",
     },
     stuckRefusal: {
       rowsUnknown: "The wallet does not know this funding's coins yet.",

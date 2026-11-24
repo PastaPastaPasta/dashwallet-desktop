@@ -16,6 +16,7 @@ export const CARDS: Record<string, { scenario: string; extra?: string; title: st
   creating: { scenario: "dashpay-registering", title: "Creating – @alice", chip: "@alice · Registering" },
   creatingUnlock: { scenario: "dashpay-registering-unlock", title: "Creating – @alice", chip: "@alice · Registering" },
   creatingPaused: { scenario: "dashpay-registering-paused", title: "Creating – @alice", chip: "@alice · Registering" },
+  creatingHeld: { scenario: "dashpay-registering-held", title: "Creating – @alice", chip: "@alice · Registering" },
   creatingRepair: { scenario: "tools-stuck-funding", title: "Creating – @alice", chip: "@alice · Registering" },
   voting: { scenario: "dashpay-contest-pending", title: "Voting – @alice", chip: "@alice · Pending" },
   votingNoEnd: { scenario: "dashpay-contest-pending-no-end", title: "Voting – @alice", chip: "@alice · Pending" },

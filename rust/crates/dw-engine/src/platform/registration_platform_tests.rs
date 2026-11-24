@@ -123,6 +123,58 @@ fn a_plan_that_cannot_pay_is_refused() {
     assert_eq!(e, PlatformError::Unavailable);
 }
 
+/// A plan for another input count, or from a later input 0, is found
+/// before a shortage is reported: an address that pays alone at the
+/// one-input reserve behind one that cannot, and two inputs behind
+/// addresses held below the larger reserves.
+#[test]
+fn a_plan_for_another_input_count_is_found_before_refusing() {
+    let (r1, r2, r3) = (reserve(1), reserve(2), reserve(3));
+    assert!(r1 + 500_000 < r2 && r2 + 1_000_000 < r3);
+    let funding = 4 * r3;
+    let alone = plan(&[(1, r1 + 1_000_000), (2, r1 + funding)], funding).unwrap();
+    assert_eq!(alone.inputs.keys().collect::<Vec<_>>(), [&address(2)]);
+    assert_eq!(alone.fee_reserve_credits, r1);
+    let two = plan(
+        &[
+            (1, r1 + 500_000),
+            (2, r2 + 1_000_000),
+            (3, funding - 1_000_000),
+        ],
+        funding,
+    )
+    .unwrap();
+    assert_eq!(two.inputs.len(), 2);
+    assert_eq!(two.fee_reserve_credits, r2);
+    assert_eq!(two.funding_credits, funding);
+    let (first, (_, claim)) = two.inputs.iter().next().unwrap();
+    assert!(balances(&[(1, r1 + 500_000), (2, r2 + 1_000_000), (3, funding)])[first] - claim >= r2);
+}
+
+/// An address at the last nonce is never planned; one before it signs at
+/// the last.
+#[test]
+fn an_address_at_the_last_nonce_is_not_planned() {
+    let funding = 25_000_000;
+    let entries = [(1, 900_000_000), (2, 900_000_000)];
+    for (last, input) in [(u32::MAX, address(2)), (u32::MAX - 1, address(1))] {
+        let mut nonces = nonces(&entries);
+        nonces.insert(address(1), last);
+        let plan = register_plan((&balances(&entries), &nonces), funding, KEYS, version()).unwrap();
+        assert_eq!(plan.inputs.keys().collect::<Vec<_>>(), [&input], "{last}");
+        assert!(plan.inputs.values().all(|(n, _)| *n == nonces[&input] + 1));
+    }
+    let mut nonces = nonces(&entries[..1]);
+    nonces.insert(address(1), u32::MAX);
+    let e = register_plan(
+        (&balances(&entries[..1]), &nonces),
+        funding,
+        KEYS,
+        version(),
+    );
+    assert_eq!(e.unwrap_err().code(), "platform.insufficient_credits");
+}
+
 /// A reserve for two inputs leaves the first address out (it holds less);
 /// the next is input 0, and the last input's claim below the input minimum
 /// is raised to it, so the identity receives the claims' sum.
@@ -189,8 +241,9 @@ fn the_reserve_is_three_fees_for_the_inputs_taken() {
     assert_eq!(p.fee_reserve_credits, REGISTER_FEE_BAND * p.fee_credits);
 }
 
-/// Input 0 above the reserve by less than the input minimum: the refusal
-/// names input 0's balance against the reserve and that minimum.
+/// Input 0 above the reserve by less than the input minimum: a later
+/// address that pays alone is planned; with none, the refusal names input
+/// 0's balance against the reserve and that minimum.
 #[test]
 fn a_claim_below_the_input_minimum_reports_input_0() {
     let min_input = version()
@@ -198,7 +251,9 @@ fn a_claim_below_the_input_minimum_reports_input_0() {
         .state_transitions
         .address_funds
         .min_input_amount;
-    let e = plan(&[(1, reserve(1) + 1), (2, 1_000_000_000)], 25_000_000).unwrap_err();
+    let p = plan(&[(1, reserve(1) + 1), (2, 1_000_000_000)], 25_000_000).unwrap();
+    assert_eq!(p.inputs.keys().collect::<Vec<_>>(), [&address(2)]);
+    let e = plan(&[(1, reserve(1) + 1), (2, 25_000_000)], 25_000_000).unwrap_err();
     assert_eq!(
         e,
         PlatformError::InsufficientCredits {

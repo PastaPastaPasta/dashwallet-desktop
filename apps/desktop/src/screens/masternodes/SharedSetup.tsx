@@ -272,7 +272,7 @@ export function SharedSetup({ wallet, network, onClose, onCreated }: { wallet: W
       <>
         <p data-testid="sh-setup-estimate">
           {balance.data
-            ? t("masternodes.shared.funding.estimateCoordinator", { amount: dash((shares[0]?.amount ?? 0) + DEFAULT_FEE), balance: dash(balance.data.confirmed), share: dash(shares[0]?.amount ?? 0), fee: dash(DEFAULT_FEE) })
+            ? t("masternodes.shared.funding.estimateCoordinator", { amount: dash((shares[0]?.amount ?? 0) + DEFAULT_FEE), share: dash(shares[0]?.amount ?? 0), fee: dash(DEFAULT_FEE) })
             : t("masternodes.shared.funding.estimate", { amount: dash((shares[0]?.amount ?? 0) + DEFAULT_FEE) })}
         </p>
         <p className="mg-muted mg-small">{t("masternodes.shared.funding.feeYours", { fee: dash(DEFAULT_FEE) })}</p>

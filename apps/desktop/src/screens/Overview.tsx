@@ -24,13 +24,14 @@ import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
 import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type HeroSync, type PoolReading } from "../format/homeBalance";
 import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
-import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
+import { DashPayCard, defaultCardAction, moveToDashWallet } from "./dashpay/DashPayCard";
 import { buyCredits } from "./dashpay/MyProfile";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
 import { ExportStagingBanner } from "./ExportStagingBanner";
 import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
+import { HistoryGapNotice } from "./HistoryGapNotice";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 import { defaultRoute, transferFor } from "../transfer/model";
@@ -197,7 +198,7 @@ function HomeDashPayCard({ walletId, network }: { walletId: string; network: Net
   const { inputs, retry } = useStatusInputs(walletId, network);
   const card = homeCard(inputs);
   // DP1-10 D8: "Buy credits" opens My Profile with the top-up sheet.
-  const onAction = (kind: CardActionKind) => (kind === "buyCredits" && inputs.main ? buyCredits(b, walletId, inputs.main) : defaultCardAction(kind, retry));
+  const onAction = (kind: CardActionKind) => (kind === "buyCredits" && inputs.main ? buyCredits(b, walletId, inputs.main) : defaultCardAction(kind, retry, () => moveToDashWallet(b, walletId)));
   return card && <DashPayCard card={card} onAction={onAction} />;
 }
 
@@ -278,6 +279,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">
+        <HistoryGapNotice />
         <UpgradeReplayNotice walletId={walletId} />
         <ProtocolAdvisoryBanner network={network} />
         <ExportStagingBanner />

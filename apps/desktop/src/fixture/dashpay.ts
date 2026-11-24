@@ -454,6 +454,7 @@ export function registering(): DashPayWorld {
         nameFailure: null,
         profileFailure: null,
         invitation: null,
+        fromPlatform: false,
         createdAt: at(0, 1),
         updatedAt: at(0, 0),
       },

@@ -142,6 +142,7 @@ import type { PendingPlatformFund } from "./PendingPlatformFund";
 import type { PendingTopUp } from "./PendingTopUp";
 import type { PlatformActivity } from "./PlatformActivity";
 import type { PlatformAddressBalance } from "./PlatformAddressBalance";
+import type { PlatformAddressRow } from "./PlatformAddressRow";
 import type { PlatformFundOutcome } from "./PlatformFundOutcome";
 import type { PlatformFundQuote } from "./PlatformFundQuote";
 import type { PlatformPacing } from "./PlatformPacing";
@@ -256,9 +257,6 @@ export const SHELL_EVENT = "shell://event";
 
 /** Txids per `historyChanged` or `newTransactions` event. */
 export const MAX_TXIDS = 256;
-
-/** What `mnSharedAbandon` and `mnSharedAbandonUnreadable` charge, in duffs: a `masternodeOp` grant's exact cap. */
-export const SHARED_ABANDON_FEE = 193;
 
 /**
  * How the app was launched: the self-test, the forced theme, and the
@@ -933,7 +931,9 @@ export function historyGap(): Promise<WalletHistoryGap | null> {
 /**
  * "Rebuild index": deletes the SPV chain data and keeps wallets, vault
  * and app data. SPV must be stopped; the next `startSpv` syncs headers
- * again and rescans each wallet from its birth height.
+ * again and rescans each wallet from its birth height. Refused with
+ * `app.network_busy` while mixing, as a network switch is, and with
+ * `coinjoin.inputs_held` while a signed round's inputs are held.
  */
 export function resetChainData(): Promise<null> {
   return invoke<null>("reset_chain_data");
@@ -1703,8 +1703,9 @@ export function registrationQuote(walletId: string, request: RegistrationRequest
 }
 
 /**
- * An invitation claim row's resume grant: no duffs, and the credits
- * of the steps it has left, from the row (DP5-03 D20).
+ * An invitation claim row's or a Platform-funded row's resume grant:
+ * no duffs, and the credits of the steps it has left, from the row
+ * (DP5-03 D20).
  */
 export function registrationResumeGrant(walletId: string, draft: string): Promise<GrantRequest> {
   return invoke<GrantRequest>("registration_resume_grant", { walletId, draft });
@@ -1913,10 +1914,11 @@ export function creditsTopUpFromPlatformQuote(walletId: string, identity: string
 
 /**
  * Tops the identity up with `amount` of the Platform addresses'
- * credits under `grant`.
+ * credits under `grant`. `fee_input`: the quote's input 0; a plan
+ * with another fee source or claim is `credits.quote_changed`.
  */
-export function creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome> {
-  return invoke<TopUpFromPlatformOutcome>("credits_top_up_from_platform", { walletId, identity, amount, grant });
+export function creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, feeInput: PlatformAddressRow | null, grant: string): Promise<TopUpFromPlatformOutcome> {
+  return invoke<TopUpFromPlatformOutcome>("credits_top_up_from_platform", { walletId, identity, amount, feeInput, grant });
 }
 
 /**
@@ -1966,9 +1968,10 @@ export function platformShieldQuote(walletId: string, amount: WithdrawAmount): P
 /**
  * Moves `amount` of the Platform addresses' credits to `to` (the
  * quote's: one of the wallet's Core receiving addresses) under `grant`.
+ * `exit_of`: the quote's, the held top-up this move is the exit of.
  */
-export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome> {
-  return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, grant });
+export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, exitOf: string | null, grant: string): Promise<MoveToCoreOutcome> {
+  return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, exitOf, grant });
 }
 
 /**
@@ -3161,17 +3164,26 @@ export function mnSharedApprove(walletId: string, session: string, consentHash: 
 }
 
 /**
- * Spends one reserved coin of a session that may be out back to the
- * wallet, so it can't confirm (`SharedSession.abandonable`). Takes a
- * `masternodeOp` grant covering `SHARED_ABANDON_FEE`. Every network.
+ * Spends every reserved coin of a session that may be out back to the
+ * wallet, so it can't confirm (`SharedSession.abandonCharge`). Takes a
+ * `masternodeOp` grant of exactly that charge. Every network.
  */
 export function mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
   return invoke<SharedSession>("mn_shared_abandon", { walletId, session, grant });
 }
 
 /**
+ * The latest abandon spend's saved bytes handed off again, while the
+ * spend may be out (`SharedSession.resendAbandonCharge`). Takes a
+ * `masternodeOp` grant of exactly that charge. Every network.
+ */
+export function mnSharedResendAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
+  return invoke<SharedSession>("mn_shared_resend_abandon", { walletId, session, grant });
+}
+
+/**
  * The same for a session whose stored record no longer reads
- * (`UnreadableSession.abandonable`).
+ * (`UnreadableSession.abandonCharge`).
  */
 export function mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession> {
   return invoke<UnreadableSession>("mn_shared_abandon_unreadable", { walletId, session, grant });
@@ -3179,8 +3191,8 @@ export function mnSharedAbandonUnreadable(walletId: string, session: string, gra
 
 /**
  * A participant at `combined` signs its funding inputs into the
- * registration, charged its `debit`. Takes a `masternodeOp` grant of at
- * least that `debit`. Refused on mainnet before the engine is called
+ * registration, charged its `debit`. Takes a `masternodeOp` grant of
+ * exactly that `debit`. Refused on mainnet before the engine is called
  * (`app.shared_send_off`).
  */
 export function mnSharedSign(walletId: string, session: string, grant: string): Promise<SharedOutcome> {
@@ -3190,7 +3202,7 @@ export function mnSharedSign(walletId: string, session: string, grant: string): 
 /**
  * The coordinator signs its own inputs last and sends the registration
  * at `combined`, or sends the saved registration again at `sent`,
- * charged its `debit`. Takes a `masternodeOp` grant of at least that
+ * charged its `debit`. Takes a `masternodeOp` grant of exactly that
  * `debit`. Refused on mainnet before the engine is called
  * (`app.shared_send_off`).
  */
@@ -3568,14 +3580,14 @@ export type CommandArgs = {
   credits_withdraw_to_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw_to_platform: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_top_up_from_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
-  credits_top_up_from_platform: { walletId: string; identity: string; amount: WithdrawAmount; grant: string };
+  credits_top_up_from_platform: { walletId: string; identity: string; amount: WithdrawAmount; feeInput: PlatformAddressRow | null; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
   platform_addresses: { walletId: string };
   platform_activity: { walletId: string };
   platform_addresses_sync: { walletId: string };
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
   platform_shield_quote: { walletId: string; amount: WithdrawAmount };
-  platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; grant: string };
+  platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string };
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
   platform_send: { walletId: string; operation: string; grant: string };
@@ -3724,6 +3736,7 @@ export type CommandArgs = {
   mn_shared_unlock: { walletId: string; session: string };
   mn_shared_approve: { walletId: string; session: string; consentHash: string; grant: string };
   mn_shared_abandon: { walletId: string; session: string; grant: string };
+  mn_shared_resend_abandon: { walletId: string; session: string; grant: string };
   mn_shared_abandon_unreadable: { walletId: string; session: string; grant: string };
   mn_shared_sign: { walletId: string; session: string; grant: string };
   mn_shared_send: { walletId: string; session: string; grant: string };
@@ -4102,6 +4115,7 @@ export type CommandResults = {
   mn_shared_unlock: SharedOutcome;
   mn_shared_approve: SharedOutcome;
   mn_shared_abandon: SharedSession;
+  mn_shared_resend_abandon: SharedSession;
   mn_shared_abandon_unreadable: UnreadableSession;
   mn_shared_sign: SharedOutcome;
   mn_shared_send: SharedOutcome;
@@ -4482,6 +4496,7 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_shared_unlock: "masternodes",
   mn_shared_approve: "masternodes",
   mn_shared_abandon: "masternodes",
+  mn_shared_resend_abandon: "masternodes",
   mn_shared_abandon_unreadable: "masternodes",
   mn_shared_sign: "masternodes",
   mn_shared_send: "masternodes",
@@ -4676,6 +4691,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "coinjoin.broadcast_rejected",
   "coinjoin.mixing_active",
   "coinjoin.move_running",
+  "coinjoin.inputs_held",
   "coinjoin.plan_changed",
   "masternode.watch_only",
   "masternode.vault_locked",
@@ -4723,6 +4739,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "registration.funding_unknown_recent",
   "registration.shielded_not_ready",
   "registration.quote_changed",
+  "registration.refunded",
   "name.invalid",
   "name.taken",
   "name.contest_open",
@@ -4813,6 +4830,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "masternodes.no_owner_key",
   "masternodes.update_pending",
   "masternodes.update_superseded",
+  "masternodes.update_abandoned_pending",
   "masternodes.shared_session_not_found",
   "masternodes.shared_stage",
   "masternodes.shared_message",

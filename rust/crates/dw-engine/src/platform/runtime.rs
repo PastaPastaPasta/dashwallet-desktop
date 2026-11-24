@@ -957,7 +957,8 @@ impl PlatformRuntime {
     /// [`startup_retry_pause`], from 30 s doubling to 10 minutes, for as long
     /// as flows keep asking and the outcome keeps holding them. Nothing while
     /// SPV is stopped (the next start runs it), for a wallet without keys,
-    /// or while a bring-up of it runs. `true` when it asked.
+    /// while a bring-up of it runs, or while one asked for has not ended.
+    /// `true` when it asked.
     pub(crate) fn retry_startup(&self, id: WalletId) -> bool {
         self.retry_startup_at(id, Instant::now())
     }
@@ -983,7 +984,7 @@ impl PlatformRuntime {
                 next: now,
                 asked: false,
             });
-            if now < retry.next {
+            if retry.asked || now < retry.next {
                 return false;
             }
             retry.runs += 1;
