@@ -154,7 +154,8 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     const p = fx.world.pending.platform!;
     const first = [...p.addresses].sort((a, b) => (a.address < b.address ? -1 : 1))[0];
     const quote = await cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000"));
-    expect(quote).toEqual({ credits: "1000000000", feeCredits: "1000000", debitCredits: "1003000000", inputs: [{ address: first.address, credits: "1000000000" }], grant: { maxDuffs: 0, maxCredits: "1003000000" } });
+    // The debit the grant covers: the claim and all input 0 keeps, which the fee can take.
+    expect(quote).toEqual({ credits: "1000000000", feeCredits: "1000000", debitCredits: first.credits, inputs: [{ address: first.address, credits: "1000000000" }], grant: { maxDuffs: 0, maxCredits: first.credits } });
     expect(await code(cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("1")))).toBe("platform.grant_exceeded");
     const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant(quote.grant.maxCredits));
     expect([out.state, out.mayLand, out.feeCredits]).toEqual(["done", false, "1000000"]);
@@ -169,7 +170,7 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     expect(await code(cmd.creditsTopUpFromPlatformQuote(W, A, credits("39998000000")))).toBe("platform.insufficient_credits");
     expect((await cmd.creditsTopUpFromPlatformQuote(W, A, { kind: "all" })).credits).toBe("39997000000");
     fx.world.pending.platform!.nextTopUp = "pending";
-    const g = await fromPlatformGrant("2000000000");
+    const g = await fromPlatformGrant("40000000000");
     expect((await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), g)).state).toBe("pending");
     expect(await code(cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000")))).toBe("credits.move_pending");
     fx.world.launch.network = { kind: "mainnet", dirName: "mainnet", unitName: "DASH" };
@@ -181,7 +182,7 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     const p = fx.world.pending.platform!;
     p.nextTopUp = "held";
     const quoteInputs = (await cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000"))).inputs.map((i) => i.address);
-    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("2000000000"));
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("40000000000"));
     expect([out.state, out.mayLand]).toEqual(["failed", true]);
     const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
     const g = (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;
@@ -198,7 +199,7 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     const fx = install("dashpay-registered");
     const p = fx.world.pending.platform!;
     p.nextTopUp = "held";
-    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("2000000000"));
+    const out = await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), await fromPlatformGrant("40000000000"));
     p.nextMove = "pending";
     const move = await cmd.platformMoveToCoreQuote(W, { kind: "all" });
     const g = (await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: move.credits }, W, { kind: "passphrase", passphrase: "demo" })).id;

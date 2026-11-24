@@ -129,7 +129,7 @@ export const FROM_PLATFORM_RULES = { fee: 1_000_000n, band: 3_000_000n, min: 200
 
 /** The engine's plan (C-routes C3-3), one band: the addresses in order, input 0 keeping the band;
  * Max is what they hold less it. */
-function fromPlatformPlan(addresses: readonly PlatformAddressRow[], amount: WithdrawAmount): { credits: bigint; inputs: PlatformAddressRow[] } {
+function fromPlatformPlan(addresses: readonly PlatformAddressRow[], amount: WithdrawAmount): { credits: bigint; inputs: PlatformAddressRow[]; debit: bigint } {
   const R = FROM_PLATFORM_RULES;
   const ordered = [...addresses].sort((a, b) => (a.address < b.address ? -1 : 1)).filter((a) => BigInt(a.credits) > 0n);
   const usable = ordered.reduce((n, a) => n + BigInt(a.credits), 0n);
@@ -147,7 +147,10 @@ function fromPlatformPlan(addresses: readonly PlatformAddressRow[], amount: With
     inputs.push({ address: a.address, credits: String(claim) });
     left -= claim;
   }
-  return { credits, inputs };
+  // The fee can take all input 0 keeps: the debit the grant covers is the claims and that remainder.
+  const first = ordered.find((a) => a.address === inputs[0]?.address);
+  const debit = credits + (first ? BigInt(first.credits) - BigInt(inputs[0].credits) : 0n);
+  return { credits, inputs, debit };
 }
 
 export function topUpHandlers(d: TopUpDeps): Handlers {
@@ -247,19 +250,17 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
     // C-routes D-C3, in the engine's order: mainnet, address funds, a hold, the plan, the grant.
     credits_top_up_from_platform_quote: ({ walletId, identity, amount }, { world }) => {
       d.dashpay(world, walletId, identity);
-      const { credits, inputs } = fromPlatformChecks(world, amount);
+      const { credits, inputs, debit } = fromPlatformChecks(world, amount);
       const fee = FROM_PLATFORM_RULES.fee;
-      const debit = credits + FROM_PLATFORM_RULES.band;
       return { credits: String(credits), feeCredits: String(fee), debitCredits: String(debit), inputs, grant: { maxDuffs: 0, maxCredits: String(debit) } };
     },
     credits_top_up_from_platform: ({ walletId, identity, amount, grant }, ctx) => {
       const { world } = ctx;
       const dp = d.dashpay(world, walletId, identity);
-      const { p, credits, inputs } = fromPlatformChecks(world, amount);
+      const { p, credits, inputs, debit } = fromPlatformChecks(world, amount);
       const fee = FROM_PLATFORM_RULES.fee;
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
-      const debit = credits + FROM_PLATFORM_RULES.band;
       if (BigInt(g.grant.purpose.maxCredits) < debit)
         throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: String(debit), remaining: g.grant.purpose.maxCredits });
       d.useGrant(world, grant);
