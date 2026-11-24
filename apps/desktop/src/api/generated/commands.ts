@@ -4828,6 +4828,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "masternodes.no_owner_key",
   "masternodes.update_pending",
   "masternodes.update_superseded",
+  "masternodes.update_abandoned_pending",
   "masternodes.shared_session_not_found",
   "masternodes.shared_stage",
   "masternodes.shared_message",

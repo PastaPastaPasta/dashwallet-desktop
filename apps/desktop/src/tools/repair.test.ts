@@ -190,6 +190,9 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(model.state).toEqual({ kind: "done", text: "2 transactions were removed; a rescan was scheduled." });
     expect(api.dropUnconfirmed).toHaveBeenCalledExactlyOnceWith(WALLET_A);
     expect(RepairText.dropped(1)).toBe("1 transaction was removed; a rescan was scheduled.");
+    expect(RepairText.dropUnconfirmedQuestion).toBe(
+      "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm. Dash Wallet may also keep re-sending the ones it sent since it last started, for up to a day. To stop that, restart Dash Wallet.",
+    );
   });
 
   it("a Remove Unconfirmed refused while a saved transaction doesn't read says what to do (#611)", async () => {
