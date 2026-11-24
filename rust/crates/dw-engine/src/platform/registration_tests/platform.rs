@@ -472,4 +472,38 @@ fn mainnet_refuses_a_platform_registration_before_anything_is_written() {
     });
     f.drive(&lib, draft, Some(f.lease()), false);
     assert_eq!(f.row(draft).phase, Phase::IdentityRegistered.as_str());
+    // A resume refuses before its grant is redeemed: the same grant still
+    // opens a lease after it.
+    let draft = f.insert(platform_row(Some(platform_plan_of(FUNDING))));
+    let before = f.row(draft);
+    let grant = f.grant(0, 10 * COIN * 1000, Credential::None);
+    let e = (f.engine)
+        .block_on(registration::resume(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            &draft.to_string(),
+            Some(grant.clone()),
+        ))
+        .unwrap_err();
+    assert!(off(&e), "{e:?}");
+    assert_eq!(f.row(draft), before);
+    (f.engine)
+        .block_on(
+            f.session
+                .begin_lease(f.wallet, FlowKind::Registration, &[grant]),
+        )
+        .expect("the refused resume left its grant unredeemed");
+    // Finish transfers runs none of the Platform rows.
+    let rows = f.rows();
+    (f.engine)
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    assert_eq!(f.rows(), rows);
+    assert!(lib.w().platform_asks.is_empty(), "no pass ran on mainnet");
 }
