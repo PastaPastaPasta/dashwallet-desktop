@@ -4506,6 +4506,10 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-xs);
 }
 
+.shielded-card-actions > * {
+  white-space: nowrap;
+}
+
 .platform-card-title {
   margin: 0;
   font-size: var(--dw-type-subhead-medium-size);
