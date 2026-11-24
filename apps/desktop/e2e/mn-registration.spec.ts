@@ -721,6 +721,18 @@ for (const theme of ["light", "dark"] as const)
     expect(errors).toEqual([]);
   });
 
+test("mainnet: opening Set up after a failed list read doesn't read the list again (issue 635)", async ({ page }) => {
+  const errors = await open(page, "reg", "light", "mainnet", "&fail=mn_list:rpc");
+  await expect(page.getByTestId("mn-list-failed")).toBeVisible();
+  const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_list").length);
+  const before = await reads();
+  await page.getByTestId("mn-set-up").click();
+  await expect(sheet(page)).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(await reads()).toBe(before);
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
 test("mainnet: Review ends with the send-off line and sends nothing", async ({ page }) => {
   const errors = await open(page, "reg", "light", "mainnet");
   await setUp(page);
