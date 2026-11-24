@@ -1641,12 +1641,11 @@ impl SessionHub {
                     (children, claim)
                 });
                 let queued = !children.is_empty();
-                if claim {
-                    if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
-                        if let Err(e) = crate::tx_actions::note_claims_swept(&appdb, id, txids) {
-                            tracing::warn!(wallet = %id, error = %e, "could not note the claims swept")
-                        }
-                    }
+                if claim
+                    && let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade)
+                    && let Err(e) = crate::tx_actions::note_claims_swept(&appdb, id, txids)
+                {
+                    tracing::warn!(wallet = %id, error = %e, "could not note the claims swept")
                 }
                 if queued {
                     let winner = crate::history::Winner {
