@@ -216,6 +216,38 @@ describe("fixture backend", () => {
     await expect(quote("dashpaydesktopquote2", { kind: "invitation", linkId: "1".padStart(32, "0"), requestInviter: true })).rejects.toMatchObject({
       code: "invitation.expired",
     });
+    // C-funding F5: from the Platform balance the identity receives the name's credits, the first
+    // address keeps three fees, and the start is refused until its flow step lands.
+    const fromPlatform = await quote("dashpaydesktopquote2", { kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" });
+    expect(fromPlatform).toMatchObject({
+      lockDuffs: 0,
+      totalDuffs: 0,
+      remainingCredits: "0",
+      grant: { maxDuffs: 0, maxCredits: "4124500000" },
+      platform: { fundingCredits: "2000000000", feeCredits: "41500000", feeReserveCredits: "124500000", debitCredits: "2124500000" },
+    });
+    expect((await quote("dashpaydesktopquote2")).platform).toBeNull();
+    const { fundingCredits, feeReserveCredits } = fromPlatform.platform!;
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits }, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "platform_registration" } });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits: "1" }, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "registration.quote_changed" });
+    // A move that may still execute holds the addresses: refused, naming it.
+    clearMocks();
+    backend({ scenario: "platform-send-held" });
+    await expect(quote("dashpaydesktopquote2", { kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" })).rejects.toMatchObject({
+      code: "credits.move_pending",
+      data: { kind: "artifact", artifact: "ps-held" },
+    });
+    // Mainnet: off (flag platform_registration).
+    clearMocks();
+    backend({ scenario: "dashpay-no-identity", network: "mainnet" });
+    await expect(quote("dashpaydesktopquote2", { kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" })).rejects.toMatchObject({
+      code: "platform.feature_off",
+      data: { feature: "platform_registration" },
+    });
   });
 
   it("opens a transaction on the window's network and refuses regtest and devnet", async () => {
