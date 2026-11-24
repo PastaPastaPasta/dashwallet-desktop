@@ -34,6 +34,11 @@ on:
         required: false
         default: ""
         type: string
+      dry_run:
+        description: "Verify and attach everything on macos-15, then stop BEFORE final attestation, publication, and staging cleanup"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -219,39 +224,42 @@ jobs:
             --identities-file docs/release/signing-identities.json
             --pgp-pubkey docs/release/release-key.asc
           )
-          # N2: Pass pinned Windows CA bundle once populated with PEM certificates.
-          if [[ -f docs/release/windows-ca.pem ]] && grep -q 'BEGIN CERTIFICATE' docs/release/windows-ca.pem; then
+          # N2 / Blocker #4: Pass pinned Windows CA bundle only when it contains an actual PEM certificate line.
+          if [[ -f docs/release/windows-ca.pem ]] && grep -qx -- '-----BEGIN CERTIFICATE-----' docs/release/windows-ca.pem; then
             args+=(--win-ca-file docs/release/windows-ca.pem)
           fi
           ci/github/release-attach.sh "${args[@]}"
       - name: Prepare final signed release assets for attestation
         env:
-          GITHUB_EVENT_NAME: push
-          GITHUB_REF: refs/tags/${{ inputs.tag }}
-          GITHUB_SHA: ${{ env.TAG_SHA }}
           DIST: ${{ runner.temp }}/attached/dist
           FEED: ${{ runner.temp }}/attached/feed
           SIGNED_MANIFEST: ${{ runner.temp }}/attached/signed-manifest.json
           OUT: ${{ runner.temp }}/publish
+          DW_SIGNED_DISPATCH: "1"
           DW_SIGNING_REQUIRED: "1"
         run: ci/github/release-publish.sh prepare
+      - name: Report dry-run success (skipping final attestation, publication, and cleanup)
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "::notice::dry_run=true on $TAG ($TAG_SHA): all unsigned-input attestations, detached signatures, pinned identities, macOS codesign/spctl/stapler/.dmg checks, Windows Authenticode, minisign, PGP, and release-publish.sh prepare succeeded. Skipped final attestation, GitHub Release publication, and staging draft cleanup."
       - name: Attest every final signed release asset
+        if: ${{ !inputs.dry_run }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ runner.temp }}/publish/attest/*
       - name: Publish the signed GitHub Release
+        if: ${{ !inputs.dry_run }}
         env:
-          GITHUB_EVENT_NAME: push
-          GITHUB_REF: refs/tags/${{ inputs.tag }}
-          GITHUB_SHA: ${{ env.TAG_SHA }}
           DIST: ${{ runner.temp }}/attached/dist
           FEED: ${{ runner.temp }}/attached/feed
           SIGNED_MANIFEST: ${{ runner.temp }}/attached/signed-manifest.json
           OUT: ${{ runner.temp }}/publish
+          DW_SIGNED_DISPATCH: "1"
           DW_SIGNING_REQUIRED: "1"
           GH_TOKEN: ${{ github.token }}
         run: ci/github/release-publish.sh publish
       - name: Clean up staging draft release after successful publish
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -15,7 +15,7 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null PYTHONDONTWRITEBYTECODE=1
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
 # The history: c1 <- c2 (origin/main) <- newer (docs only) <- code; `side` branches off c1.
@@ -106,6 +106,20 @@ case "$1 $2" in
         [[ -z "${FAKE_CONT_RELEASE:-}" ]] || printf 'continuous\t42\tfalse\t%s\n' "$(wc -l < "$FS/ids")"
         exit 0 ;;
       "GET releases/42") cat "$FS/notes" 2>/dev/null; exit 0 ;;
+      "GET releases/1/assets")
+        [[ "${FAKE_API_ERROR:-}" != assets ]] || e503
+        if [[ -n "${FAKE_TAG_MANIFEST:-}" && -f "${FAKE_TAG_MANIFEST}" ]]; then
+          python3 - "$FAKE_TAG_MANIFEST" "${FAKE_TAG_DIGEST_MISMATCH:-}" <<'PY'
+import json, sys
+m = json.loads(open(sys.argv[1]).read())
+mismatch = sys.argv[2] == "1"
+for idx, (name, digest) in enumerate(sorted(m["files"].items()), 101):
+    if mismatch and idx == 101:
+        digest = "0" * 64
+    print(f"{idx}\t{name}\tsha256:{digest}")
+PY
+        fi
+        exit 0 ;;
       "GET releases/42/assets")
         [[ "${FAKE_API_ERROR:-}" != assets ]] || e503
         while IFS=$'\t' read -r id n; do
@@ -135,6 +149,10 @@ esac
 exit 0
 FAKE
 chmod +x "$bin/gh"
+if ! command -v sha256sum >/dev/null 2>&1; then
+  printf '#!/usr/bin/env bash\nexec shasum -a 256 "$@"\n' > "$bin/sha256sum"
+  chmod +x "$bin/sha256sum"
+fi
 FS=$work/fs
 export PATH="$bin:$PATH" LOG=$work/log FAKE_FS=$FS
 
@@ -262,6 +280,7 @@ FAKE_RELEASES="$tag" run push refs/heads/main "$c2" "$ver"
 check "main after a generation without SBOMs: adds them, ends as the complete new generation" \
   '[[ $status -eq 0 && $(gen_of) == new && $(leftovers) -eq 0 && -n "$(body DashWallet-continuous-sbom-rust.cdx.json)" ]]'
 # a failed or cancelled update of that generation rolls back to it, without the SBOMs it never had
+if [[ "${DW_TEST_FAST:-}" != 1 ]]; then
 SEED_NO_SBOM=1 seed_old
 FAKE_RELEASES="$tag" publish_only
 total_nosbom=$(writes)
@@ -329,6 +348,7 @@ done
 check "an older run repairs an interrupted update of the newer commit (killafter at each write)" '[[ $bad -eq 0 ]]'
 export GITHUB_SHA=$c2
 unset FAKE_RELEASES
+fi
 # recovery without the API's digests: hashes the downloaded bodies
 seed_old
 FAKE_RELEASES="$tag" FAKE_FAIL_AT=12 FAKE_FAIL_MODE=kill publish_only
@@ -450,9 +470,27 @@ fs_reset
 SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
 check "stable tag (fail-closed default): with attached signatures (SHA256SUMS.asc, feed, 11-file manifest) publishes all 11 attested assets" \
   '[[ $status -eq 0 && -f "$OUT/attest/SHA256SUMS.asc" && -f "$OUT/attest/latest.json" ]] && log_has "/attest/SHA256SUMS.asc" && log_has "/attest/latest.json"'
-SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=11 run push refs/tags/v0.1.0 "$c2" 0.1.0
-check "stable tag: rerun of complete 11-asset signed release is left as it is" \
+SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=11 FAKE_TAG_MANIFEST=$work/signed-manifest.json run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "Blocker #9: rerun of complete 11-asset signed release with matching remote digests is left as it is" \
   '[[ $status -eq 0 ]] && ! log_has "release create"'
+fs_reset
+SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=11 FAKE_TAG_MANIFEST=$work/signed-manifest.json FAKE_TAG_DIGEST_MISMATCH=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "Blocker #9: rerun of existing 11-asset signed release with differing remote asset digest fails closed" \
+  '[[ $status -ne 0 && $(writes) -eq 0 ]] && grep -q "from signed-manifest.json" "$work/pub.out"'
+# Blocker #1: real workflow_dispatch with DW_SIGNED_DISPATCH=1 publishes signed tag, refuses unsigned/RC/main
+fs_reset
+SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist DW_SIGNED_DISPATCH=1 DW_SIGNING_REQUIRED=1 run workflow_dispatch refs/tags/v0.1.0 "$c2" 0.1.0
+check "Blocker #1: workflow_dispatch with DW_SIGNED_DISPATCH=1 publishes all 11 attested signed assets" \
+  '[[ $status -eq 0 && $(ls "$OUT/attest" | wc -l) -eq 11 ]] && log_has "release create v0.1.0 " && log_has "/attest/SHA256SUMS.asc" && log_has "/attest/latest.json"'
+fs_reset
+SIGNED_MANIFEST=$work/signed-manifest.json FEED=$work/fout DIST=$work/tagdist run workflow_dispatch refs/tags/v0.1.0 "$c2" 0.1.0
+check "Blocker #1: workflow_dispatch WITHOUT DW_SIGNED_DISPATCH=1 publishes nothing" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
+fs_reset
+DIST=$work/tagdist DW_SIGNED_DISPATCH=1 DW_ALLOW_UNSIGNED_STABLE=1 run workflow_dispatch refs/tags/v0.1.0 "$c2" 0.1.0
+refused "Blocker #1: DW_SIGNED_DISPATCH=1 refuses unsigned even if DW_ALLOW_UNSIGNED_STABLE=1"
+fs_reset
+DIST=$work/tagdist DW_SIGNED_DISPATCH=1 run workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+check "Blocker #1: DW_SIGNED_DISPATCH=1 never publishes a release candidate" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
 # H2: signed-manifest.json missing pgp_fpr is refused
 jq 'del(.pgp_fpr)' "$work/signed-manifest.json" > "$work/signed-manifest-nofpr.json"
 fs_reset
@@ -493,21 +531,36 @@ printf -- '-----BEGIN PGP SIGNATURE-----\nmain\n-----END PGP SIGNATURE-----\n' >
 DIST=$work/maindist run push refs/heads/main "$c2" "$ver"
 refused "main never publishes SHA256SUMS.asc"
 
-# --- tauri-build.sh: DW_ENABLE_UPDATER=1 embeds stable feed URL with zero private keys
-tb() { # tb ENABLE_UPDATER LOCAL_KEY: runs tauri-build.sh with a fake pnpm; sets $tbs, $TB
+# --- tauri-build.sh: DW_ENABLE_UPDATER=1 embeds stable feed URL with zero private keys & rejects retired key
+python3 - "$work" <<'PY'
+import base64, json, sys
+from pathlib import Path
+wk = Path(sys.argv[1])
+def make_conf(kid_hex: str, path: Path) -> None:
+    kid = bytes.fromhex(kid_hex)[::-1]
+    pub = b"Ed" + kid + b"\x11" * 32
+    b64 = base64.b64encode(f"untrusted comment: minisign public key: {kid_hex}\n{base64.b64encode(pub).decode()}\n".encode()).decode()
+    path.write_text(json.dumps({"plugins": {"updater": {"pubkey": b64}}}))
+make_conf("1122334455667788", wk / "tauri-rotated.conf.json")
+make_conf("ED322B963B527B21", wk / "tauri-retired.conf.json")
+PY
+tb() { # tb ENABLE_UPDATER LOCAL_KEY [TAURI_CONF]: runs tauri-build.sh with a fake pnpm; sets $tbs, $TB
   local env_file=$work/tb-env
   : > "$env_file"
   tbs=0
   TB=$(cd "$work" && PATH="$work/tb-bin:$PATH" DW_ENABLE_UPDATER=$1 TAURI_SIGNING_PRIVATE_KEY=$2 \
-    GITHUB_ENV=$env_file "$here/tauri-build.sh" --bundles appimage 2>&1) || tbs=$?
+    TAURI_CONF=${3:-$work/tauri-rotated.conf.json} GITHUB_ENV=$env_file "$here/tauri-build.sh" --bundles appimage 2>&1) || tbs=$?
 }
 mkdir -p "$work/tb-bin"
 printf '#!/usr/bin/env bash\necho "pnpm $*"\n' > "$work/tb-bin/pnpm"; chmod +x "$work/tb-bin/pnpm"
-tb 1 ""
+tb 1 "" "$work/tauri-rotated.conf.json"
 check "tauri-build: DW_ENABLE_UPDATER=1 merges feed URL with createUpdaterArtifacts=false and no secret" \
   '[[ $tbs -eq 0 && "$TB" == *"--config ../../rust/crates/dw-app/tauri.updater.conf.json"* && "$TB" == *"createUpdaterArtifacts\":false"* && ! -s "$work/tb-env" ]]'
-tb 0 ""
-check "tauri-build: plain build without DW_ENABLE_UPDATER adds no updater config" \
+tb 1 "" "$work/tauri-retired.conf.json"
+check "Blocker #6: tauri-build refuses DW_ENABLE_UPDATER=1 with retired CI key ED322B963B527B21" \
+  '[[ $tbs -ne 0 && "$TB" == *"ED322B963B527B21"* ]]'
+tb 0 "" "$work/tauri-retired.conf.json"
+check "tauri-build: plain build without DW_ENABLE_UPDATER adds no updater config (even before key rotation)" \
   '[[ $tbs -eq 0 && "$TB" == *"pnpm tauri build --bundles appimage"* && "$TB" != *config* && ! -s "$work/tb-env" ]]'
 tb 0 local-key
 check "tauri-build: local developer build with TAURI_SIGNING_PRIVATE_KEY still enables UPDATER=1" \
@@ -517,6 +570,7 @@ export GITHUB_SHA=$c2
 # --- classify and decide
 check "classify: main push" '[[ $(GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main "$here/release-publish.sh" classify) == main ]]'
 check "classify: release tag" '[[ $(GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v0.1.0-rc.2 "$here/release-publish.sh" classify) == tag ]]'
+check "classify: signed workflow_dispatch on stable tag" '[[ $(GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/tags/v0.1.0 DW_SIGNED_DISPATCH=1 "$here/release-publish.sh" classify) == tag ]]'
 check "classify: dry-run tag, branch, PR, dispatch" '[[ $({ for r in refs/tags/v0.0.0-rel8 refs/heads/dw/x; do GITHUB_EVENT_NAME=push GITHUB_REF=$r "$here/release-publish.sh" classify; done; for e in pull_request workflow_dispatch; do GITHUB_EVENT_NAME=$e GITHUB_REF=refs/heads/main "$here/release-publish.sh" classify; done; } | tr "\n" " ") == "skip skip skip skip " ]]'
 # decide <event> <ref> <sha> <base> [repo]: prints "publish build"
 decide() {
@@ -538,9 +592,12 @@ check "decide: a pull request and a dispatch do not publish" '[[ $(decide pull_r
 check "decide: the schedule builds main and does not publish" '[[ $(decide schedule refs/heads/main "$c2" "") == "false true" ]]'
 check "decide: a docs-only branch push does not build" '[[ $(decide push refs/heads/dw/x "$newer" "$c2") == "false false" ]]'
 stable_tag() { decide "$@" > /dev/null; sed -n 's/^stable_tag=//p' "$work/decide.out"; }
+signed_stable() { decide "$@" > /dev/null; sed -n 's/^signed_stable=//p' "$work/decide.out"; }
 check "decide: only a final stable tag on main sets stable_tag=true" '[[ $(stable_tag push refs/tags/v0.1.0 "$c2" "") == true ]]'
 check "decide: an rc, a dry run, a tag off main, main and a dispatch set stable_tag=false" \
   '[[ "$(stable_tag push refs/tags/v0.1.0-rc.1 "$c2" "") $(stable_tag push refs/tags/v0.0.0-rel8 "$c2" "") $(stable_tag push refs/tags/v0.1.0 "$side" "") $(stable_tag push refs/heads/main "$c2" "") $(stable_tag workflow_dispatch refs/tags/v0.1.0 "$c2" "")" == "false false false false false" ]]'
+check "Blocker #6: decide sets signed_stable=true by default, false under DW_ALLOW_UNSIGNED_STABLE=1, true when DW_SIGNING_REQUIRED=1 overrides" \
+  '[[ $(signed_stable push refs/tags/v0.1.0 "$c2" "") == true && $(DW_ALLOW_UNSIGNED_STABLE=1 signed_stable push refs/tags/v0.1.0 "$c2" "") == false && $(DW_ALLOW_UNSIGNED_STABLE=1 DW_SIGNING_REQUIRED=1 signed_stable push refs/tags/v0.1.0 "$c2" "") == true ]]'
 check "decide: a docs-only pull request does not build" '[[ $(decide pull_request refs/pull/9/merge "$newer" "$c2") == "false false" ]]'
 check "decide: a code change builds" '[[ $(decide push refs/heads/dw/x "$code" "$c2") == "false true" ]]'
 check "decide: a docs-only push after a code push on the branch still builds (measured from main, not the last push)" '[[ $(decide push refs/heads/dw/x "$docsafter" "$code") == "false true" ]]'
@@ -564,7 +621,7 @@ else
   e2e=$work/detached-e2e
   mkdir -p "$e2e/unsigned" "$e2e/sigs" "$e2e/work" "$e2e/attached"
   python3 - "$e2e" "$here" <<'PY'
-import base64, hashlib, json, os, shutil, struct, subprocess, sys
+import base64, hashlib, json, os, shutil, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 e2e = Path(sys.argv[1])
@@ -602,11 +659,17 @@ def make_minimal_pe() -> bytes:
 
 win_name = f"dash-wallet-{ver}-windows-x64-setup.exe"
 (unsigned / win_name).write_bytes(make_minimal_pe())
-win_key = wk / "win.key"; win_cert = wk / "win.crt"
+win_key = wk / "win.key"; win_cert = wk / "win.crt"; win_cnf = wk / "win.cnf"
+# Use a config file instead of -addext so macOS system LibreSSL 3.3.6 and OpenSSL 1.1/3/4 all work.
+win_cnf.write_text(
+    "[req]\ndistinguished_name = dn\nx509_extensions = ext\nprompt = no\n"
+    "[dn]\nCN = Dash Core Test Signer\n"
+    "[ext]\nextendedKeyUsage = codeSigning\n"
+)
 subprocess.run([
     "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
     "-keyout", str(win_key), "-out", str(win_cert), "-days", "2",
-    "-subj", "/CN=Dash Core Test Signer", "-addext", "extendedKeyUsage=codeSigning",
+    "-config", str(win_cnf), "-extensions", "ext",
 ], check=True, capture_output=True)
 (sigs / "win").mkdir(parents=True)
 win_signed = wk / win_name
@@ -686,31 +749,86 @@ u_text = "".join(u_lines)
 (unsigned / "unsigned.SHA256SUMS").write_text(u_text)
 (sigs / "unsigned.SHA256SUMS").write_text(u_text)
 
-# 4. Sign updater latest.json with a real Ed25519 minisign keypair and write fake tauri.conf.json
-ms_priv = wk / "ms.pem"; ms_pub_der = wk / "ms.der"
-subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(ms_priv)], check=True, capture_output=True)
-subprocess.run(["openssl", "pkey", "-in", str(ms_priv), "-pubout", "-outform", "DER", "-out", str(ms_pub_der)], check=True, capture_output=True)
-raw_pub = ms_pub_der.read_bytes()[-32:]
-key_id = bytes.fromhex("217b523b962b32ed")
-pub_b64 = base64.b64encode(f"untrusted comment: minisign public key: ED322B963B527B21\n{base64.b64encode(b'Ed' + key_id + raw_pub).decode()}\n".encode()).decode()
-(wk / "tauri.conf.json").write_text(json.dumps({"plugins": {"updater": {"pubkey": pub_b64}}}))
+# 4. Sign updater latest.json with pure-Python RFC 8032 Ed25519 (zero openssl Ed25519 CLI dependency;
+#    works identically on macOS LibreSSL/OpenSSL 1.1.1w and Linux) and cross-check RFC 8032 §7.1 vectors.
+import importlib.util
+vm_spec = importlib.util.spec_from_file_location("vm", str(here / "verify-minisign.py"))
+vm = importlib.util.module_from_spec(vm_spec); vm_spec.loader.exec_module(vm)
 
-def minisign_file(p: Path, version: str) -> str:
+# Blocker #3: Cross-check pure-Python Ed25519 verifier against official RFC 8032 §7.1 vectors 1-3
+rfc_vectors = [
+    ("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "",
+     "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"),
+    ("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", "72",
+     "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"),
+    ("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025", "af82",
+     "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"),
+]
+for vpub, vmsg, vsig in rfc_vectors:
+    assert vm.ed25519_verify(bytes.fromhex(vpub), bytes.fromhex(vmsg), bytes.fromhex(vsig)), "RFC 8032 vector failed"
+
+def ed_encode_point(pt):
+    x, y, z, _ = pt
+    zi = pow(z, vm._P - 2, vm._P)
+    rx, ry = (x * zi) % vm._P, (y * zi) % vm._P
+    return (ry | ((rx & 1) << 255)).to_bytes(32, "little")
+
+def ed_keypair(seed: bytes):
+    h = hashlib.sha512(seed).digest()
+    a = int.from_bytes(h[:32], "little")
+    a &= (1 << 254) - 8
+    a |= 1 << 254
+    return seed, a, h[32:], ed_encode_point(vm._ed_scalar_mul(vm._B, a))
+
+def ed_sign(kp, msg: bytes) -> bytes:
+    _, a, prefix, pub = kp
+    r = int.from_bytes(hashlib.sha512(prefix + msg).digest(), "little") % vm._L
+    r_enc = ed_encode_point(vm._ed_scalar_mul(vm._B, r))
+    k = int.from_bytes(hashlib.sha512(r_enc + pub + msg).digest(), "little") % vm._L
+    s = (r + k * a) % vm._L
+    return r_enc + s.to_bytes(32, "little")
+
+def make_minisign_pub(kid: bytes, pub: bytes) -> str:
+    return base64.b64encode(
+        f"untrusted comment: minisign public key: {kid[::-1].hex().upper()}\n"
+        f"{base64.b64encode(b'Ed' + kid + pub).decode()}\n".encode()
+    ).decode()
+
+def minisign_with_kp(kp, kid: bytes, p: Path, version: str) -> str:
     digest = hashlib.blake2b(p.read_bytes(), digest_size=64).digest()
-    df = wk / "d.bin"; sf = wk / "s.bin"; gf = wk / "g.bin"; gsf = wk / "gs.bin"
-    df.write_bytes(digest)
-    subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", str(ms_priv), "-rawin", "-in", str(df), "-out", str(sf)], check=True)
-    art_sig = sf.read_bytes()
+    art_sig = ed_sign(kp, digest)
     tc = f"timestamp:1700000000\tfile:{p.name}\tversion:{version}"
-    gf.write_bytes(art_sig + tc.encode())
-    subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", str(ms_priv), "-rawin", "-in", str(gf), "-out", str(gsf)], check=True)
+    gsig = ed_sign(kp, art_sig + tc.encode())
     box = (
         "untrusted comment: signature from tauri secret key\n"
-        + base64.b64encode(b"ED" + key_id + art_sig).decode() + "\n"
+        + base64.b64encode(b"ED" + kid + art_sig).decode() + "\n"
         + f"trusted comment: {tc}\n"
-        + base64.b64encode(gsf.read_bytes()).decode() + "\n"
+        + base64.b64encode(gsig).decode() + "\n"
     )
     return base64.b64encode(box.encode()).decode()
+
+kp1 = ed_keypair(bytes(range(32)))
+kp2 = ed_keypair(bytes(range(32, 64)))
+key_id = bytes.fromhex("8877665544332211")  # key ID 1122334455667788 (non-retired)
+retired_kid = bytes.fromhex("217b523b962b32ed")  # ED322B963B527B21 (retired CI key)
+(wk / "tauri.conf.json").write_text(json.dumps({"plugins": {"updater": {"pubkey": make_minisign_pub(key_id, kp1[3])}}}))
+(wk / "tauri-retired.conf.json").write_text(json.dumps({"plugins": {"updater": {"pubkey": make_minisign_pub(retired_kid, kp1[3])}}}))
+
+def minisign_file(p: Path, version: str) -> str:
+    return minisign_with_kp(kp1, key_id, p, version)
+
+# Blocker #5: Verify fixed golden SHA-256 of pack-app across Python 3.12/3.14/3.15 (compresslevel=9)
+g_app = wk / "golden/Dash Wallet.app"
+(g_app / "Contents/MacOS").mkdir(parents=True)
+(g_app / "Contents/Info.plist").write_bytes(b"<plist>golden-v1</plist>\n")
+g_exe = g_app / "Contents/MacOS/dash-wallet"
+g_exe.write_bytes(b"\xcf\xfa\xed\xfeGOLDEN-PAYLOAD\n")
+g_exe.chmod(0o755)
+g_tar = wk / "golden.tar.gz"
+subprocess.run(["python3", str(here / "macos-detached-sig.py"), "pack-app", str(g_app), str(g_tar)], check=True, capture_output=True)
+got_golden = sha256_file(g_tar)
+want_golden = "13bffd244eb69f184e432936b06f90711f8d07606c43155f9df254f7e0686a04"
+assert got_golden == want_golden, f"pack-app golden digest mismatch: got {got_golden}, want {want_golden}"
 
 (sigs / "updater").mkdir(parents=True)
 latest_path = sigs / "updater/latest.json"
@@ -746,28 +864,8 @@ latest_badver = json.loads(latest_path.read_text())
 latest_badver["platforms"]["linux-x86_64-appimage"]["signature"] = minisign_file(unsigned / f"dash-wallet-{ver}-linux-x86_64.AppImage", "0.0.9")
 (wk / "latest-badver.json").write_text(json.dumps(latest_badver, indent=2) + "\n")
 
-ms2_priv = wk / "ms2.key"; ms2_pub = wk / "ms2.pub"
-subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(ms2_priv)], check=True, capture_output=True)
-subprocess.run(["openssl", "pkey", "-in", str(ms2_priv), "-pubout", "-outform", "DER", "-out", str(ms2_pub)], check=True, capture_output=True)
-def minisign_with_key(priv: Path, kid: bytes, p: Path, version: str) -> str:
-    digest = hashlib.blake2b(p.read_bytes(), digest_size=64).digest()
-    df = wk / "d2.bin"; sf = wk / "s2.bin"; gf = wk / "g2.bin"; gsf = wk / "gs2.bin"
-    df.write_bytes(digest)
-    subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", str(priv), "-rawin", "-in", str(df), "-out", str(sf)], check=True)
-    art_sig = sf.read_bytes()
-    tc = f"timestamp:1700000000\tfile:{p.name}\tversion:{version}"
-    gf.write_bytes(art_sig + tc.encode())
-    subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", str(priv), "-rawin", "-in", str(gf), "-out", str(gsf)], check=True)
-    box = (
-        "untrusted comment: signature from wrong key\n"
-        + base64.b64encode(b"ED" + kid + art_sig).decode() + "\n"
-        + f"trusted comment: {tc}\n"
-        + base64.b64encode(gsf.read_bytes()).decode() + "\n"
-    )
-    return base64.b64encode(box.encode()).decode()
-
 latest_badkey = json.loads(latest_path.read_text())
-latest_badkey["platforms"]["linux-x86_64-appimage"]["signature"] = minisign_with_key(ms2_priv, key_id, unsigned / f"dash-wallet-{ver}-linux-x86_64.AppImage", ver)
+latest_badkey["platforms"]["linux-x86_64-appimage"]["signature"] = minisign_with_kp(kp2, key_id, unsigned / f"dash-wallet-{ver}-linux-x86_64.AppImage", ver)
 (wk / "latest-badkey.json").write_text(json.dumps(latest_badkey, indent=2) + "\n")
 
 latest_badurl = json.loads(latest_path.read_text())
@@ -789,70 +887,114 @@ final_entries = [
 final_entries.sort(key=lambda p: p.name)
 (sigs / "SHA256SUMS").write_text("".join(f"{sha256_file(p)}  {p.name}\n" for p in final_entries))
 
-gpg_home = wk / "gnupg"
-gpg_home.mkdir(mode=0o700)
-env = {**os.environ, "GNUPGHOME": str(gpg_home)}
-subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key", "Release E2E <e2e@example.com>", "ed25519", "sign", "never"], check=True, env=env, capture_output=True)
-fpr = subprocess.check_output(["gpg", "--batch", "--with-colons", "--list-secret-keys"], env=env, text=True)
-primary_fpr = [line.split(":")[9] for line in fpr.splitlines() if line.startswith("fpr:")][0]
-(wk / "pgp.fpr").write_text(primary_fpr)
-subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "release-key.asc"), "--export", primary_fpr], check=True, env=env, capture_output=True)
-subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", primary_fpr,
-                "--output", str(sigs / "SHA256SUMS.asc"), str(sigs / "SHA256SUMS")], check=True, env=env, capture_output=True)
+# Use short /tmp dirs for GNUPGHOME so gpg-agent sockets stay well below macOS's 104-byte UNIX_PATH_MAX.
+gpg_root = Path(tempfile.mkdtemp(dir="/tmp", prefix="dwg"))
+try:
+    gpg_home = gpg_root / "m"
+    gpg_home.mkdir(mode=0o700)
+    env = {**os.environ, "GNUPGHOME": str(gpg_home)}
+    subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key", "Release E2E <e2e@example.com>", "ed25519", "sign", "never"], check=True, env=env, capture_output=True)
+    fpr = subprocess.check_output(["gpg", "--batch", "--with-colons", "--list-secret-keys"], env=env, text=True)
+    primary_fpr = [line.split(":")[9] for line in fpr.splitlines() if line.startswith("fpr:")][0]
+    (wk / "pgp.fpr").write_text(primary_fpr)
+    subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "release-key.asc"), "--export", primary_fpr], check=True, env=env, capture_output=True)
+    subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", primary_fpr,
+                    "--output", str(sigs / "SHA256SUMS.asc"), str(sigs / "SHA256SUMS")], check=True, env=env, capture_output=True)
 
-# Write valid signing-identities.json for the test
-(wk / "identities.json").write_text(json.dumps({
-    "schema": 1,
-    "pgp_fingerprint": primary_fpr,
-    "apple_team_id": "TESTTEAM01",
-    "windows_leaf_sha256": win_leaf_sha,
-}, indent=2) + "\n")
+    # Write valid signing-identities.json for the test
+    (wk / "identities.json").write_text(json.dumps({
+        "schema": 1,
+        "pgp_fingerprint": primary_fpr,
+        "apple_team_id": "TESTTEAM01",
+        "windows_leaf_sha256": win_leaf_sha,
+    }, indent=2) + "\n")
 
-# Create a tampered SHA256SUMS (still validly PGP-signed) to verify SHA256SUMS mismatch detection
-bad_sums = (sigs / "SHA256SUMS").read_text().replace(sha256_file(unsigned / f"dash-wallet-{ver}-linux-amd64.deb"), "0" * 64)
-(wk / "SHA256SUMS.bad").write_text(bad_sums)
-subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", primary_fpr,
-                "--output", str(wk / "SHA256SUMS.bad.asc"), str(wk / "SHA256SUMS.bad")], check=True, env=env, capture_output=True)
-subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=env, capture_output=True)
+    # Create a tampered SHA256SUMS (still validly PGP-signed) to verify SHA256SUMS mismatch detection
+    bad_sums = (sigs / "SHA256SUMS").read_text().replace(sha256_file(unsigned / f"dash-wallet-{ver}-linux-amd64.deb"), "0" * 64)
+    (wk / "SHA256SUMS.bad").write_text(bad_sums)
+    subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", primary_fpr,
+                    "--output", str(wk / "SHA256SUMS.bad.asc"), str(wk / "SHA256SUMS.bad")], check=True, env=env, capture_output=True)
+    subprocess.run(["gpgconf", "--kill", "all"], env=env, capture_output=True)
 
-# L1: Create a revoked PGP key, sign SHA256SUMS with it, revoke it, and export revoked pubkey
-rev_home = wk / "gnupg-rev"
-rev_home.mkdir(mode=0o700)
-rev_env = {**os.environ, "GNUPGHOME": str(rev_home)}
-subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key", "Revoked E2E <rev@example.com>", "ed25519", "sign", "never"], check=True, env=rev_env, capture_output=True)
-rev_out = subprocess.check_output(["gpg", "--batch", "--with-colons", "--list-secret-keys"], env=rev_env, text=True)
-rev_fpr = [line.split(":")[9] for line in rev_out.splitlines() if line.startswith("fpr:")][0]
-(wk / "rev.fpr").write_text(rev_fpr)
-subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", rev_fpr,
-                "--output", str(wk / "SHA256SUMS.rev.asc"), str(sigs / "SHA256SUMS")], check=True, env=rev_env, capture_output=True)
-rev_cert = rev_home / "openpgp-revocs.d" / f"{rev_fpr}.rev"
-# Strip leading ':' gpg adds before -----BEGIN in auto-generated revoc certs
-rev_text = rev_cert.read_text().replace("\n:-----BEGIN", "\n-----BEGIN")
-if rev_text.startswith(":-----BEGIN"):
-    rev_text = rev_text[1:]
-rev_cert.write_text(rev_text)
-subprocess.run(["gpg", "--batch", "--import", str(rev_cert)], check=True, env=rev_env, capture_output=True)
-subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "revoked-key.asc"), "--export", rev_fpr], check=True, env=rev_env, capture_output=True)
-subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=rev_env, capture_output=True)
+    # L1: Create a revoked PGP key, sign SHA256SUMS with it, revoke it, and export revoked pubkey
+    rev_home = gpg_root / "r"
+    rev_home.mkdir(mode=0o700)
+    rev_env = {**os.environ, "GNUPGHOME": str(rev_home)}
+    subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key", "Revoked E2E <rev@example.com>", "ed25519", "sign", "never"], check=True, env=rev_env, capture_output=True)
+    rev_out = subprocess.check_output(["gpg", "--batch", "--with-colons", "--list-secret-keys"], env=rev_env, text=True)
+    rev_fpr = [line.split(":")[9] for line in rev_out.splitlines() if line.startswith("fpr:")][0]
+    (wk / "rev.fpr").write_text(rev_fpr)
+    subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", rev_fpr,
+                    "--output", str(wk / "SHA256SUMS.rev.asc"), str(sigs / "SHA256SUMS")], check=True, env=rev_env, capture_output=True)
+    rev_cert = rev_home / "openpgp-revocs.d" / f"{rev_fpr}.rev"
+    # Strip leading ':' gpg adds before -----BEGIN in auto-generated revoc certs
+    rev_text = rev_cert.read_text().replace("\n:-----BEGIN", "\n-----BEGIN")
+    if rev_text.startswith(":-----BEGIN"):
+        rev_text = rev_text[1:]
+    rev_cert.write_text(rev_text)
+    subprocess.run(["gpg", "--batch", "--import", str(rev_cert)], check=True, env=rev_env, capture_output=True)
+    subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "revoked-key.asc"), "--export", rev_fpr], check=True, env=rev_env, capture_output=True)
+    subprocess.run(["gpgconf", "--kill", "all"], env=rev_env, capture_output=True)
 
-# H2: Create an attacker PGP key (simulating a key supplied inside sigs_repo)
-atk_home = wk / "gnupg-atk"
-atk_home.mkdir(mode=0o700)
-atk_env = {**os.environ, "GNUPGHOME": str(atk_home)}
-subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key", "Attacker <atk@example.com>", "ed25519", "sign", "never"], check=True, env=atk_env, capture_output=True)
-atk_out = subprocess.check_output(["gpg", "--batch", "--with-colons", "--list-secret-keys"], env=atk_env, text=True)
-atk_fpr = [line.split(":")[9] for line in atk_out.splitlines() if line.startswith("fpr:")][0]
-(wk / "atk.fpr").write_text(atk_fpr)
-subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "atk-key.asc"), "--export", atk_fpr], check=True, env=atk_env, capture_output=True)
-subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", atk_fpr,
-                "--output", str(wk / "SHA256SUMS.atk.asc"), str(sigs / "SHA256SUMS")], check=True, env=atk_env, capture_output=True)
-subprocess.run(["gpgconf", "--kill", "gpg-agent"], env=atk_env, capture_output=True)
+    # H2: Create an attacker PGP key (simulating a key supplied inside sigs_repo)
+    atk_home = gpg_root / "a"
+    atk_home.mkdir(mode=0o700)
+    atk_env = {**os.environ, "GNUPGHOME": str(atk_home)}
+    subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key", "Attacker <atk@example.com>", "ed25519", "sign", "never"], check=True, env=atk_env, capture_output=True)
+    atk_out = subprocess.check_output(["gpg", "--batch", "--with-colons", "--list-secret-keys"], env=atk_env, text=True)
+    atk_fpr = [line.split(":")[9] for line in atk_out.splitlines() if line.startswith("fpr:")][0]
+    (wk / "atk.fpr").write_text(atk_fpr)
+    subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "atk-key.asc"), "--export", atk_fpr], check=True, env=atk_env, capture_output=True)
+    subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", atk_fpr,
+                    "--output", str(wk / "SHA256SUMS.atk.asc"), str(sigs / "SHA256SUMS")], check=True, env=atk_env, capture_output=True)
+    subprocess.run(["gpgconf", "--kill", "all"], env=atk_env, capture_output=True)
+finally:
+    shutil.rmtree(gpg_root, ignore_errors=True)
 PY
 
   e2e_fpr=$(cat "$e2e/work/pgp.fpr")
   e2e_rev_fpr=$(cat "$e2e/work/rev.fpr")
   e2e_atk_fpr=$(cat "$e2e/work/atk.fpr")
   e2e_leaf=$(cat "$e2e/work/win.leaf")
+  attach_path=$PATH
+  if [[ "$(uname -s)" == Darwin ]]; then
+    # On real macOS runners (script-tests-macos), stub only Apple-notarization tools for our
+    # synthetic .app/.dmg fixtures while exercising REAL /bin/bash 3.2, Python 3.15, Homebrew
+    # osslsigncode, gpg, BSD grep, and release-attach.sh's Darwin code paths.
+    mac_bin=$e2e/mac-bin
+    mkdir -p "$mac_bin"
+    cat > "$mac_bin/codesign" <<'CS'
+#!/usr/bin/env bash
+case "$*" in
+  *subject.OU*TESTTEAM01*1.2.840.113635.100.6.1.13*|*1.2.840.113635.100.6.1.13*subject.OU*TESTTEAM01*) exit 0 ;;
+  *) echo "stub codesign: missing Developer ID OID + Team ID requirement: $*" >&2; exit 1 ;;
+esac
+CS
+    cat > "$mac_bin/spctl" <<'SP'
+#!/usr/bin/env bash
+exit 0
+SP
+    cat > "$mac_bin/xcrun" <<'XC'
+#!/usr/bin/env bash
+exit 0
+XC
+    cat > "$mac_bin/hdiutil" <<HD
+#!/usr/bin/env bash
+if [[ "\$1" == attach ]]; then
+  mnt=
+  prev=
+  for a in "\$@"; do
+    [[ "\$prev" == -mountpoint ]] && mnt=\$a
+    prev=\$a
+  done
+  cp -Rp "$e2e/work/signed-app/Dash Wallet.app" "\$mnt/"
+  ln -s /Applications "\$mnt/Applications"
+fi
+exit 0
+HD
+    chmod +x "$mac_bin/codesign" "$mac_bin/spctl" "$mac_bin/xcrun" "$mac_bin/hdiutil"
+    attach_path="$mac_bin:$PATH"
+  fi
   attach_base=(
     --version 0.1.0
     --unsigned-dir "$e2e/unsigned"
@@ -870,7 +1012,7 @@ PY
   fi
 
   attach_rc=0
-  "$here/release-attach.sh" "${attach_base[@]}" --out-dir "$e2e/attached" > "$e2e/attach.out" 2>&1 || attach_rc=$?
+  PATH="$attach_path" "$here/release-attach.sh" "${attach_base[@]}" --out-dir "$e2e/attached" > "$e2e/attach.out" 2>&1 || attach_rc=$?
   check "release-attach: verifies unsigned hashes, attaches Windows+macOS detached sigs, verifies pinned leaf+minisign+PGP+SHA256SUMS" \
     '[[ $attach_rc -eq 0 && -f "$e2e/attached/signed-manifest.json" ]] && jq -e --arg fpr "$e2e_fpr" --arg leaf "$e2e_leaf" ".pgp_fpr == \$fpr and .apple_team_id == \"TESTTEAM01\" and .windows_leaf_sha256 == \$leaf and (.files | length) == 11" "$e2e/attached/signed-manifest.json" >/dev/null'
   if [[ $attach_rc -ne 0 || ! -f "$e2e/attached/signed-manifest.json" ]]; then
@@ -879,11 +1021,11 @@ PY
     echo "--- end release-attach.sh output ---" >&2
   fi
 
-  # Feed release-attach.sh's output directly into release-publish.sh (fail-closed default, no override!)
+  # Feed release-attach.sh's output directly into release-publish.sh via REAL workflow_dispatch + DW_SIGNED_DISPATCH=1 (Blocker #1)
   fs_reset
   SIGNED_MANIFEST=$e2e/attached/signed-manifest.json FEED=$e2e/attached/feed DIST=$e2e/attached/dist \
-    run push refs/tags/v0.1.0 "$c2" 0.1.0
-  check "release-attach -> release-publish (fail-closed default): publishes all 11 verified attested assets" \
+    DW_SIGNED_DISPATCH=1 DW_SIGNING_REQUIRED=1 run workflow_dispatch refs/tags/v0.1.0 "$c2" 0.1.0
+  check "Blocker #1: release-attach -> release-publish (real workflow_dispatch + DW_SIGNED_DISPATCH=1): publishes all 11 verified attested assets" \
     '[[ $status -eq 0 && $(ls "$OUT/attest" | wc -l) -eq 11 ]] && log_has "release create v0.1.0 " && log_has "/attest/SHA256SUMS.asc" && log_has "/attest/latest.json"'
   if [[ $status -ne 0 ]]; then
     echo "--- release-publish.sh output (status=$status) ---" >&2
@@ -891,17 +1033,31 @@ PY
     echo "--- end release-publish.sh output ---" >&2
   fi
 
+  # Blocker #4: checked-in placeholder docs/release/windows-ca.pem must NOT trigger --win-ca-file and is refused if passed
+  check "Blocker #4: checked-in placeholder docs/release/windows-ca.pem does not match standalone BEGIN CERTIFICATE delimiter" \
+    '! grep -qx -- "-----BEGIN CERTIFICATE-----" "$here/../../docs/release/windows-ca.pem"'
+
   # Helper for negative release-attach.sh checks
   expect_attach_fail() {
     local label=$1 pattern=$2 log=$3; shift 3
     local rc=0
-    "$here/release-attach.sh" "$@" > "$log" 2>&1 || rc=$?
+    PATH="$attach_path" "$here/release-attach.sh" "$@" > "$log" 2>&1 || rc=$?
     check "$label" "[[ $rc -ne 0 ]] && grep -qE \"$pattern\" \"$log\""
     if [[ $rc -eq 0 ]] || ! grep -qE "$pattern" "$log"; then
       echo "--- $label (rc=$rc) ---" >&2
       cat "$log" >&2 || true
     fi
   }
+
+  expect_attach_fail \
+    "Blocker #4: release-attach refuses placeholder docs/release/windows-ca.pem when passed as --win-ca-file" \
+    "no valid PEM certificate" "$e2e/attach-badca.out" \
+    "${attach_base[@]}" --win-ca-file "$here/../../docs/release/windows-ca.pem" --out-dir "$e2e/attached-badca"
+
+  expect_attach_fail \
+    "Blocker #6: verify-minisign refuses retired CI updater key ED322B963B527B21" \
+    "refusing retired updater key ID ED322B963B527B21" "$e2e/attach-retired-ms.out" \
+    "${attach_base[@]}" --tauri-conf "$e2e/work/tauri-retired.conf.json" --out-dir "$e2e/attached-retired-ms"
 
   # Unsigned input tampering
   cp -R "$e2e/unsigned" "$e2e/unsigned-bad"
@@ -1062,6 +1218,67 @@ PY
     "release-attach: refuses SHA256SUMS mismatch for a final asset" \
     "SHA-256 mismatch" "$e2e/attach-badsums.out" \
     "${attach_base[@]}" --sigs-dir "$e2e/sigs-badsums" --out-dir "$e2e/attached-badsums"
+
+  # Blocker #7: ci/release/fetch-unsigned.sh pins locally verified --tag-sha, verifies run + attestations + checksums before exposing files
+  fu=$e2e/fetch-unsigned-test
+  mkdir -p "$fu/bin"
+  cat > "$fu/bin/gh" <<'FGH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1 ${2:-}" in
+  "api repos/"*"/commits/"*)
+    echo "${FU_REMOTE_SHA}"
+    ;;
+  "api repos/"*"/actions/runs/"*)
+    printf '{"path":".github/workflows/release.yml","event":"push","head_branch":"%s","head_sha":"%s","head_repository":{"full_name":"o/r"},"conclusion":"success"}\n' \
+      "${FU_RUN_BRANCH:-v0.1.0}" "${FU_RUN_SHA:-$FU_REMOTE_SHA}"
+    ;;
+  "run download")
+    dest=
+    prev=
+    for a in "$@"; do
+      [[ "$prev" == -D ]] && dest=$a
+      prev=$a
+    done
+    cp "$FU_SRC_DIR"/* "$dest/"
+    ;;
+  "attestation verify")
+    [[ -z "${FU_FAIL_ATTEST:-}" ]] || { echo "attestation mismatch" >&2; exit 1; }
+    echo "ok $3"
+    ;;
+  *)
+    echo "unexpected fake gh call: $*" >&2
+    exit 1
+    ;;
+esac
+FGH
+  chmod +x "$fu/bin/gh"
+  fu_sha=1111111111111111111111111111111111111111
+  fu_moved=2222222222222222222222222222222222222222
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/unsigned" FU_REMOTE_SHA="$fu_sha" \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/out-ok" --sigs-dir "$fu/sigs-ok" > "$fu/ok.out" 2>&1 || fu_rc=$?
+  check "Blocker #7: fetch-unsigned.sh verifies tag SHA, run metadata, attestations, and unsigned.SHA256SUMS" \
+    '[[ $fu_rc -eq 0 && -f "$fu/out-ok/unsigned.SHA256SUMS" && -f "$fu/sigs-ok/unsigned.SHA256SUMS" ]]'
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/unsigned" FU_REMOTE_SHA="$fu_moved" \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/out-moved" --sigs-dir "$fu/sigs-moved" > "$fu/moved.out" 2>&1 || fu_rc=$?
+  check "Blocker #7: fetch-unsigned.sh refuses moved remote tag before exposing any files" \
+    '[[ $fu_rc -ne 0 && ! -d "$fu/out-moved" ]] && grep -q "tag moved" "$fu/moved.out"'
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/unsigned" FU_REMOTE_SHA="$fu_sha" FU_RUN_SHA="$fu_moved" \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/out-badrun" --sigs-dir "$fu/sigs-badrun" > "$fu/badrun.out" 2>&1 || fu_rc=$?
+  check "Blocker #7: fetch-unsigned.sh refuses Actions run built from a different commit" \
+    '[[ $fu_rc -ne 0 && ! -d "$fu/out-badrun" ]] && grep -q "expected locally verified" "$fu/badrun.out"'
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/unsigned" FU_REMOTE_SHA="$fu_sha" FU_FAIL_ATTEST=1 \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/out-badatt" --sigs-dir "$fu/sigs-badatt" > "$fu/badatt.out" 2>&1 || fu_rc=$?
+  check "Blocker #7: fetch-unsigned.sh refuses attestation failure without exposing staged files" \
+    '[[ $fu_rc -ne 0 && ! -d "$fu/out-badatt" ]]'
 fi
 
 # --- release-version.sh

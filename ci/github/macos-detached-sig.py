@@ -598,7 +598,7 @@ def cmd_pack_app(args: argparse.Namespace) -> None:
         return ti
 
     entries = [app] + sorted(app.rglob("*"), key=lambda p: p.relative_to(app).as_posix())
-    with out.open("wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
+    with out.open("wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=0) as gz:
         with tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as tf:
             for p in entries:
                 arcname = app_name if p == app else f"{app_name}/{p.relative_to(app).as_posix()}"

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Verify Tauri updater latest.json minisign signatures against a public key and version.
 
-Uses only Python 3 stdlib + `openssl` (Ed25519 via `openssl pkeyutl -verify -rawin`), so it
-runs identically on macOS and Linux with zero extra packages. Enforces `requireSignedVersion`:
-every platform signature's trusted comment must carry `version:<VERSION>`.
+Uses only Python 3 stdlib (pure-Python RFC 8032 Ed25519 verification + hashlib SHA-512 /
+BLAKE2b-512), so it runs identically on macOS (regardless of LibreSSL / OpenSSL 1.1.1w)
+and Linux with zero external CLI dependencies. Enforces `requireSignedVersion`: every
+platform signature's trusted comment must carry `version:<VERSION>`, pins exact platform
+URLs, and refuses retired CI updater key IDs.
 """
 
 from __future__ import annotations
@@ -12,12 +14,87 @@ import argparse
 import base64
 import hashlib
 import json
-import subprocess
-import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
+# Retired / dead CI updater key IDs that must NEVER sign a stable feed.
+RETIRED_UPDATER_KEY_IDS = frozenset({
+    "ED322B963B527B21",  # former GitHub Actions `release` environment key (PK-03)
+    "7A4629E8E5438F3C",  # earlier dead test key
+})
+
+# RFC 8032 Ed25519 curve parameters (verification only; public values).
+_P = (1 << 255) - 19
+_L = (1 << 252) + 27742317777372353535851937790883648493
+_D = (-121665 * pow(121666, _P - 2, _P)) % _P
+_I = pow(2, (_P - 1) // 4, _P)
+
+
+def _ed_recover_x(y: int, sign: int) -> int | None:
+    if y >= _P:
+        return None
+    u = (y * y - 1) % _P
+    v = (_D * y * y + 1) % _P
+    v3 = (v * v * v) % _P
+    v7 = (v3 * v3 * v) % _P
+    x = (u * v3 * pow((u * v7) % _P, (_P - 5) // 8, _P)) % _P
+    vx2 = (v * x * x) % _P
+    if vx2 == u:
+        pass
+    elif vx2 == (-u) % _P:
+        x = (x * _I) % _P
+    else:
+        return None
+    if x == 0 and sign == 1:
+        return None
+    if (x & 1) != sign:
+        x = _P - x
+    return x
+
+
+def _ed_decode_point(enc: bytes) -> tuple[int, int, int, int] | None:
+    if len(enc) != 32:
+        return None
+    y = int.from_bytes(enc, "little")
+    sign = y >> 255
+    y &= (1 << 255) - 1
+    x = _ed_recover_x(y, sign)
+    if x is None:
+        return None
+    return (x, y, 1, (x * y) % _P)
+
+
+def _ed_point_add(
+    p1: tuple[int, int, int, int], p2: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
+    x1, y1, z1, t1 = p1
+    x2, y2, z2, t2 = p2
+    a = ((y1 - x1) * (y2 - x2)) % _P
+    b = ((y1 + x1) * (y2 + x2)) % _P
+    c = (2 * _D * t1 * t2) % _P
+    d = (2 * z1 * z2) % _P
+    e = (b - a) % _P
+    f = (d - c) % _P
+    g = (d + c) % _P
+    h = (b + a) % _P
+    return ((e * f) % _P, (g * h) % _P, (f * g) % _P, (e * h) % _P)
+
+
+def _ed_scalar_mul(pt: tuple[int, int, int, int], s: int) -> tuple[int, int, int, int]:
+    res = (0, 1, 1, 0)
+    addend = pt
+    while s > 0:
+        if s & 1:
+            res = _ed_point_add(res, addend)
+        addend = _ed_point_add(addend, addend)
+        s >>= 1
+    return res
+
+
+_BY = (4 * pow(5, _P - 2, _P)) % _P
+_BX = _ed_recover_x(_BY, 0)
+assert _BX is not None
+_B = (_BX, _BY, 1, (_BX * _BY) % _P)
 
 EXPECTED_PLATFORM_FILES = {
     "darwin-aarch64-app": "dash-wallet-{version}-macos-universal.app.tar.gz",
@@ -62,34 +139,23 @@ def decode_minisign_sig(b64_sig: str) -> tuple[bytes, bytes, bytes, str, bytes]:
 
 
 def ed25519_verify(pub_ed25519: bytes, message: bytes, signature: bytes) -> bool:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        pub_der = tmp_path / "pub.der"
-        msg_file = tmp_path / "msg.bin"
-        sig_file = tmp_path / "sig.bin"
-        pub_der.write_bytes(ED25519_SPKI_PREFIX + pub_ed25519)
-        msg_file.write_bytes(message)
-        sig_file.write_bytes(signature)
-        res = subprocess.run(
-            [
-                "openssl",
-                "pkeyutl",
-                "-verify",
-                "-pubin",
-                "-inkey",
-                str(pub_der),
-                "-keyform",
-                "DER",
-                "-rawin",
-                "-in",
-                str(msg_file),
-                "-sigfile",
-                str(sig_file),
-            ],
-            capture_output=True,
-            check=False,
-        )
-        return res.returncode == 0
+    """RFC 8032 §5.1.7 strict Ed25519 verification (canonical S < L, [S]B == R + [k]A)."""
+    if len(pub_ed25519) != 32 or len(signature) != 64:
+        return False
+    a_pt = _ed_decode_point(pub_ed25519)
+    r_pt = _ed_decode_point(signature[:32])
+    if a_pt is None or r_pt is None:
+        return False
+    s = int.from_bytes(signature[32:], "little")
+    if s >= _L:
+        return False
+    k = int.from_bytes(hashlib.sha512(signature[:32] + pub_ed25519 + message).digest(), "little") % _L
+    lhs = _ed_scalar_mul(_B, s)
+    rhs = _ed_point_add(r_pt, _ed_scalar_mul(a_pt, k))
+    return (
+        (lhs[0] * rhs[2] - rhs[0] * lhs[2]) % _P == 0
+        and (lhs[1] * rhs[2] - rhs[1] * lhs[2]) % _P == 0
+    )
 
 
 def parse_trusted_comment_version(trusted_comment: str) -> str | None:
@@ -166,6 +232,12 @@ def main() -> None:
         pubkey_b64 = args.pubkey
 
     pub_key_id, pub_ed25519 = decode_minisign_pubkey(pubkey_b64)
+    key_id_hex = pub_key_id[::-1].hex().upper()
+    if key_id_hex in RETIRED_UPDATER_KEY_IDS:
+        raise SystemExit(
+            f"verify-minisign: refusing retired updater key ID {key_id_hex} "
+            "(rotate the local-only stable updater key in tauri.conf.json before tagging 1.0)"
+        )
     latest = json.loads(Path(args.latest_json).read_text())
 
     if latest.get("version") != args.version:

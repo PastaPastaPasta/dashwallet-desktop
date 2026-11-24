@@ -68,12 +68,18 @@ ref=${GITHUB_REF:?}
 
 # --- what this trigger publishes ----------------------------------------------------------------
 kind=skip
+signed_dispatch=0
 if [[ "$event" == push ]]; then
   if [[ "$ref" == refs/heads/main ]]; then
     kind=main
   elif [[ "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
     kind=tag
   fi
+elif [[ "$event" == workflow_dispatch && "${DW_SIGNED_DISPATCH:-}" == 1 && "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  # Blocker #1: GitHub Actions preserves GITHUB_EVENT_NAME=workflow_dispatch over step env;
+  # release-publish-signed.yml opts into this explicit signed-dispatch mode for final vX.Y.Z tags.
+  kind=tag
+  signed_dispatch=1
 fi
 if [[ "$mode" == classify ]]; then echo "$kind"; exit 0; fi
 
@@ -166,11 +172,11 @@ if ((${#feed[@]})); then
     die "$FEED/latest.json does not pin exact release URLs for $tag"
 fi
 # Decision 1: Final stable tags vX.Y.Z fail closed and always require verified attached signatures
-# unless DW_ALLOW_UNSIGNED_STABLE=1 is explicitly set (and DW_SIGNING_REQUIRED=1 is not set).
-# Release candidates (-rc.N) and main/continuous are never required to be signed.
+# unless DW_ALLOW_UNSIGNED_STABLE=1 is explicitly set (and neither DW_SIGNING_REQUIRED=1 nor
+# DW_SIGNED_DISPATCH=1 is set). Release candidates (-rc.N) and main/continuous are never required to be signed.
 require_signed=0
 if [[ "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  if [[ "${DW_ALLOW_UNSIGNED_STABLE:-}" != 1 || "${DW_SIGNING_REQUIRED:-}" == 1 ]]; then
+  if ((signed_dispatch)) || [[ "${DW_ALLOW_UNSIGNED_STABLE:-}" != 1 || "${DW_SIGNING_REQUIRED:-}" == 1 ]]; then
     require_signed=1
   fi
 fi
@@ -265,7 +271,48 @@ publish)
     notes=(--notes "Release $tag. $verify_note")
     [[ ! -f "$here/../../docs/release/${version%%-*}-notes.md" ]] || notes=(--notes-file "$here/../../docs/release/${version%%-*}-notes.md")
     if complete_release "$tag" $((8 + ${#asc[@]} + ${#feed[@]})); then
-      echo "release-publish: release $tag exists and is complete; leaving it as it is"
+      if ((require_signed)); then
+        verify_signed_manifest "$out/attest" "" "$manifest"
+        IFS=$'\t' read -r _ existing_id _ _ <<<"$ROW"
+        remote_assets=$(gh api "repos/$repo/releases/$existing_id/assets" --paginate --jq '.[]|[.id,.name,(.digest // "")]|@tsv') ||
+          die "$tag: cannot list assets of existing release $existing_id to verify retry hashes"
+        seen=0
+        seen_names=$'\n'
+        dl_tmp=$(mktemp)
+        while IFS=$'\t' read -r aid aname adigest; do
+          [[ -n "$aname" ]] || continue
+          if [[ "$seen_names" == *$'\n'"$aname"$'\n'* ]]; then
+            rm -f "$dl_tmp"
+            die "$tag: existing public release has duplicate asset '$aname'"
+          fi
+          seen_names+="$aname"$'\n'
+          want_h=$(jq -r --arg k "$aname" '.files[$k] // empty' "$manifest")
+          if [[ -z "$want_h" ]]; then
+            rm -f "$dl_tmp"
+            die "$tag: existing public release has unexpected asset '$aname' not in signed-manifest.json"
+          fi
+          if [[ "$adigest" == sha256:* ]]; then
+            got_h=${adigest#sha256:}
+          else
+            gh api -H 'Accept: application/octet-stream' "repos/$repo/releases/assets/$aid" > "$dl_tmp" || {
+              rm -f "$dl_tmp"
+              die "$tag: cannot download existing asset '$aname' ($aid) to verify its hash"
+            }
+            got_h=$(sha256_of "$dl_tmp")
+          fi
+          if [[ "$got_h" != "$want_h" ]]; then
+            rm -f "$dl_tmp"
+            die "$tag: existing public release asset '$aname' has sha256 $got_h != $want_h from signed-manifest.json; refusing to report success or delete staging"
+          fi
+          seen=$((seen + 1))
+        done <<<"$remote_assets"
+        rm -f "$dl_tmp"
+        [[ $seen -eq 11 ]] ||
+          die "$tag: existing public release verified $seen/11 assets against signed-manifest.json"
+        echo "release-publish: release $tag exists and all 11 published assets match signed-manifest.json; leaving it as it is"
+      else
+        echo "release-publish: release $tag exists and is complete; leaving it as it is"
+      fi
     else
       # The tag exists (it triggered this run). A version (vX.Y.Z) is a full release, and GitHub picks
       # Latest by version; a release candidate (-rc.N) is a prerelease, never Latest.
@@ -282,7 +329,7 @@ publish)
       flavour=()
       [[ "$version" != *-rc.* ]] || flavour=(--prerelease --latest=false)
       w gh release create "$tag" "${attest_files[@]}" --repo "$repo" --verify-tag \
-        "${flavour[@]}" --title "Dash Wallet Desktop $version" "${notes[@]}"
+        ${flavour[@]+"${flavour[@]}"} --title "Dash Wallet Desktop $version" "${notes[@]}"
     fi
     exit 0
   fi

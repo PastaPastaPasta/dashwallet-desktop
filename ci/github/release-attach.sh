@@ -158,7 +158,8 @@ cleanup() {
     hdiutil detach "$dmg_mnt" >/dev/null 2>&1 || true
   fi
   if [[ -n "${gpg_tmp:-}" && -d "${gpg_tmp:-}" ]]; then
-    GNUPGHOME=$gpg_tmp gpgconf --kill gpg-agent >/dev/null 2>&1 || true
+    GNUPGHOME=$gpg_tmp gpgconf --kill all >/dev/null 2>&1 || true
+    rm -rf "$gpg_tmp"
   fi
   rm -rf "$work"
 }
@@ -203,7 +204,11 @@ attach_args=(attach-signature -in "$win_unsigned" -sigin "$win_sig" -out "$win_s
 verify_args=(verify -in "$win_signed" -require-leaf-hash "$win_leaf_hash")
 if [[ -n "$win_ca_file" ]]; then
   [[ -f "$win_ca_file" && ! -L "$win_ca_file" ]] || die "--win-ca-file not found or is a symlink: $win_ca_file"
-  grep -q 'BEGIN CERTIFICATE' "$win_ca_file" || die "--win-ca-file $win_ca_file contains no PEM certificates"
+  if ! { grep -qx -- '-----BEGIN CERTIFICATE-----' "$win_ca_file" &&
+         grep -qx -- '-----END CERTIFICATE-----' "$win_ca_file" &&
+         openssl x509 -noout -in "$win_ca_file" >/dev/null 2>&1; }; then
+    die "--win-ca-file $win_ca_file contains no valid PEM certificate"
+  fi
   python3 - "$win_ca_file" "$sigs_dir" <<'PY' || die "refusing --win-ca-file loaded from inside --sigs-dir ($win_ca_file)"
 import os, sys
 from pathlib import Path
@@ -309,7 +314,10 @@ expected_names=(
   "dash-wallet-$version-windows-x64-setup.exe"
   "latest.json"
 )
-mapfile -t actual_names < <(awk '{print $2}' "$dist_out/SHA256SUMS" | LC_ALL=C sort)
+actual_names=()
+while IFS= read -r fname; do
+  [[ -n "$fname" ]] && actual_names+=("$fname")
+done < <(awk '{print $2}' "$dist_out/SHA256SUMS" | LC_ALL=C sort)
 [[ ${#actual_names[@]} -eq ${#expected_names[@]} ]] ||
   die "SHA256SUMS must list ${#expected_names[@]} files, found ${#actual_names[@]}"
 for i in "${!expected_names[@]}"; do
@@ -331,8 +339,8 @@ done < "$dist_out/SHA256SUMS"
 echo "release-attach: all 9 final release files match SHA256SUMS"
 
 command -v gpg >/dev/null 2>&1 || die "gpg is required to verify SHA256SUMS.asc"
-gpg_tmp="$work/gnupg"
-(umask 077 && mkdir -p "$gpg_tmp")
+# Short /tmp path keeps gpg-agent/keyboxd sockets well under macOS's 104-byte UNIX_PATH_MAX.
+gpg_tmp=$(umask 077 && mktemp -d /tmp/dwgpg.XXXXXX)
 chmod 700 "$gpg_tmp"
 GNUPGHOME=$gpg_tmp gpg --batch --quiet --import "$pgp_pubkey" ||
   die "failed to import pinned PGP public key from $pgp_pubkey"

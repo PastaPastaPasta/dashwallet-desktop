@@ -12,9 +12,11 @@
 #             commit is an ancestor of a freshly fetched origin/main. A release tag on a commit outside
 #             main therefore never starts the job that holds write permissions. This check runs in the
 #             read-only job; release-publish.sh repeats it.
-# stable_tag  publish, on a final stable tag vX.Y.Z: embeds the stable updater feed URL (public config
-#             only; no private keys exist in CI for stable) and uploads the unsigned macOS .app archive
-#             for local detached signing (docs/release/SIGNING.md). Never rc, dry-run, main or dispatch.
+# stable_tag     publish, on a final stable tag vX.Y.Z (never rc, dry-run, main or dispatch).
+# signed_stable  stable_tag, unless DW_ALLOW_UNSIGNED_STABLE=1 is set (and DW_SIGNING_REQUIRED != 1).
+#                Only signed_stable=true embeds the stable updater feed URL, packs unsigned-macos /
+#                unsigned.SHA256SUMS, and waits for detached signatures; under DW_ALLOW_UNSIGNED_STABLE=1
+#                the build ships without an updater endpoint so it never trusts an unrotated key.
 # build       always, except a branch push or pull request that changes only documentation and files no
 #             release bundle is built from (docs, *.md, the Swift trees, the unrelated workflows). Main,
 #             tags and dispatch always build.
@@ -64,9 +66,15 @@ if [[ "$publish" == true && "$event" == push && "$ref" =~ ^refs/tags/v[0-9]+\.[0
   stable_tag=true
 fi
 
-echo "decide: kind=$kind publish=$publish build=$build stable_tag=$stable_tag"
+signed_stable=false
+if [[ "$stable_tag" == true ]] && [[ "${DW_ALLOW_UNSIGNED_STABLE:-}" != 1 || "${DW_SIGNING_REQUIRED:-}" == 1 ]]; then
+  signed_stable=true
+fi
+
+echo "decide: kind=$kind publish=$publish build=$build stable_tag=$stable_tag signed_stable=$signed_stable"
 {
   echo "publish=$publish"
   echo "build=$build"
   echo "stable_tag=$stable_tag"
+  echo "signed_stable=$signed_stable"
 } >> "${GITHUB_OUTPUT:?}"

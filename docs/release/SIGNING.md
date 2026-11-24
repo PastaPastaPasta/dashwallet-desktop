@@ -157,13 +157,16 @@ Before the first signed 1.0 release, Pasta provides or confirms:
    (`pnpm --dir apps/desktop tauri signer generate -w ~/.config/dashwallet-release/stable-updater.key`), and
    commit its public key into `rust/crates/dw-app/tauri.conf.json` (`plugins.updater.pubkey`) (and update
    `RELEASE_KEY_ID` in `rust/crates/dw-app/src/updates_tests.rs`) before tagging 1.0.
-7. **One end-to-end dry run before 1.0:** once items 1–6 are in place (including `docs/release/windows-ca.pem`),
-   run one dry run of `release-publish-signed.yml` on a throwaway tag (or test `osslsigncode verify` +
-   `codesign`/`spctl` on the `macos-15` runner) to confirm live Windows CA chain + CRL verification and Apple
-   Developer ID + notarization checks before cutting `v1.0.0`.
+7. **Safe pre-publish rehearsal (`dry_run=true`):** once items 1–6 are in place (including
+   `docs/release/windows-ca.pem`) and `v1.0.0` is signed locally and staged on `staging-dmg-v1.0.0`, run
+   `release-publish-signed.yml` first with `-f dry_run=true`. That executes the **entire** `macos-15`
+   verification and attachment pipeline (including live Windows CA chain/CRL verification and Apple Developer ID
+   + notarization + `.dmg` layout checks) and stops cleanly **before** final attestation, public GitHub Release
+   creation, and staging-draft cleanup — so it cannot publish or alter the live updater feed.
 8. **Fail-closed default:** final stable tags (`vX.Y.Z`) fail closed automatically and wait for detached
    signatures — no repo variable is required to enforce signing. (`DW_ALLOW_UNSIGNED_STABLE=1` is an explicit
-   escape hatch only if an unsigned pre-1.0 stable tag is ever needed.)
+   escape hatch only if an unsigned pre-1.0 stable tag is ever needed; when set, CI also omits the updater
+   endpoint from all three platform builds so an unsigned release never trusts a retired updater key.)
 
 ### Accepted risk (CI verification tooling)
 
@@ -192,11 +195,12 @@ security find-identity -v -p codesigning
 #      1 valid identities found
 
 # Store Apple notarization credentials once in the macOS login Keychain
+# (omit --password so notarytool prompts securely without saving it in shell history or ps args)
 xcrun notarytool store-credentials "dash-notary" \
   --apple-id "<apple-id@example.com>" \
-  --team-id "<TEAM_ID>" \
-  --password "<app-specific-password>"
+  --team-id "<TEAM_ID>"
 # Expected output:
+#   App-specific password for <apple-id@example.com>: ********
 #   Validating your credentials...
 #   Success. Credentials saved to Keychain.
 # (Alternatively, pass --api-key-path / --api-key-id / --api-issuer to sign-macos.sh.)
@@ -243,6 +247,10 @@ git tag -v "$TAG"
 #   gpg: Good signature from "..."
 #   Primary key fingerprint: XXXX XXXX ...
 
+# Record the exact commit SHA from the locally verified signed tag (trust anchor for Step 2):
+export TAG_SHA=$(git rev-parse "${TAG}^{commit}")
+echo "TAG_SHA=$TAG_SHA"
+
 git push origin "$TAG"
 ```
 
@@ -262,31 +270,29 @@ echo "RUN_ID=$RUN_ID"
 
 **Credential / device:** `gh` GitHub login (read-only).
 
+Use the fail-closed helper `ci/release/fetch-unsigned.sh` with the locally recorded `$TAG_SHA` from Step 1
+(it refuses if the remote tag moved, if the Actions run built a different commit, or if any single file fails
+`gh attestation verify` or `unsigned.SHA256SUMS`, exposing files to `$UNSIGNED` only after every check passes):
+
 ```sh
 export WORK="$HOME/dashwallet-release-work/${TAG}"
 export UNSIGNED="$WORK/unsigned"
 export SIGS="$WORK/sigs"
 export OUT="$WORK/out"
 rm -rf "$WORK"
-mkdir -p "$UNSIGNED" "$SIGS" "$OUT"
+mkdir -p "$OUT"
 
-gh run download "$RUN_ID" --repo "$REPO" -n "release-${TAG}" -D "$UNSIGNED"
-gh run download "$RUN_ID" --repo "$REPO" -n "unsigned-signing-inputs-${TAG}" -D "$UNSIGNED"
-
-TAG_SHA=$(gh api "repos/${REPO}/commits/${TAG}" --jq .sha)
-for f in "$UNSIGNED"/*; do
-  gh attestation verify "$f" --repo "$REPO" \
-    --signer-workflow "${REPO}/.github/workflows/release.yml" \
-    --source-ref "refs/tags/${TAG}" \
-    --source-digest "$TAG_SHA"
-done
-# Expected output for every file:
-#   ✓ Verification succeeded!
-
-(cd "$UNSIGNED" && shasum -a 256 -c unsigned.SHA256SUMS)
-# Expected output: every file prints ": OK"
-
-cp "$UNSIGNED/unsigned.SHA256SUMS" "$SIGS/unsigned.SHA256SUMS"
+ci/release/fetch-unsigned.sh \
+  --tag "$TAG" \
+  --tag-sha "$TAG_SHA" \
+  --run-id "$RUN_ID" \
+  --repo "$REPO" \
+  --unsigned-dir "$UNSIGNED" \
+  --sigs-dir "$SIGS"
+# Expected output:
+#   ✓ Verification succeeded! (for every file)
+#   every file prints ": OK"
+#   fetch-unsigned: verified ... attested unsigned files for v1.0.0 (<TAG_SHA>)
 ```
 
 ---
@@ -440,8 +446,23 @@ echo "SIGS_COMMIT=$SIGS_COMMIT"
      --repo "$REPO" --draft --title "Staging signed dmg for ${TAG}"
    ```
 
-2. Dispatch `release-publish-signed.yml` on `--ref "$TAG"` (zero secrets in CI; approve the `release`
-   environment review prompt in GitHub Actions if required reviewers are enabled):
+2. **(Recommended rehearsal)** Dispatch `release-publish-signed.yml` with `-f dry_run=true` first to verify
+   everything end-to-end on `macos-15` (including live Windows CA chain + CRL verification and Apple Developer ID
+   + notarization checks) without minting final attestations, publishing, or deleting `staging-dmg-${TAG}`:
+
+   ```sh
+   gh workflow run release-publish-signed.yml \
+     --repo "$REPO" \
+     --ref "$TAG" \
+     -f tag="$TAG" \
+     -f release_run_id="$RUN_ID" \
+     -f sigs_repo="PastaPastaPasta/dashwallet-detached-sigs" \
+     -f sigs_ref="$SIGS_COMMIT" \
+     -f dry_run=true
+   ```
+
+3. Dispatch `release-publish-signed.yml` on `--ref "$TAG"` to attest and publish (zero secrets in CI; approve
+   the `release` environment review prompt in GitHub Actions if required reviewers are enabled):
 
    ```sh
    gh workflow run release-publish-signed.yml \
