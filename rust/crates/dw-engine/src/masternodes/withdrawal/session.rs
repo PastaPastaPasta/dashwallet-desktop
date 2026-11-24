@@ -443,6 +443,22 @@ impl MnWithdrawNet for SessionNet {
 }
 
 impl NetworkSession {
+    /// Tests: the heights of the ProUpRegTxs of `pro_tx_hash` a withdrawal
+    /// reads from the history (`None` out of a block); its ProRegTx is left
+    /// out.
+    #[cfg(test)]
+    pub(crate) fn withdrawal_payout_changes(
+        self: &Arc<Self>,
+        pro_tx_hash: &[u8; 32],
+    ) -> Vec<Option<u32>> {
+        let env = SessionEnv::of(self).unwrap();
+        env.payout_changes(pro_tx_hash)
+            .into_iter()
+            .filter(|c| !c.registration)
+            .map(|c| c.height)
+            .collect()
+    }
+
     /// The Platform the withdrawal calls use;
     /// `masternodes.platform_unavailable` in a session without Platform.
     fn mn_withdraw_net(&self) -> Result<SessionNet, WithdrawalError> {

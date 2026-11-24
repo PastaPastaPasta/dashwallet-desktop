@@ -77,6 +77,9 @@ export function opRow(o: ProTxOperation, sends: Partial<Record<ProTxOperationKin
         primary: on && (o.overdue || !WAITS_FOR_BLOCK.has(o.kind)) ? "resend" : null,
         more: [],
       };
+    case "abandoned":
+      // Abandoned in Activity (D49): its coins are back, it is never resent, and it may still be mined.
+      return { title, status: t(`${P}.status.abandoned`, { title }), overdueLine: t(`${P}.abandoned`), activityTxid: o.txid, primary: null, more: [] };
     default:
       return { ...base, status: "", primary: null, more: [] };
   }
