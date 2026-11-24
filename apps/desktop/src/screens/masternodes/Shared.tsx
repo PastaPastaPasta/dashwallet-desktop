@@ -45,12 +45,14 @@ import {
   signedOutText,
   sliceFor,
   spendBackAction,
+  spendBackWayOut,
   spendBackLine,
   stageStep,
   termsDiff,
   unreadableInProgress,
   warningText,
   wayOutShown,
+  wayOutTxids,
 } from "../../masternodes/shared";
 import { sendErrorText } from "../pay/model";
 import { CredentialField, useCredential } from "./credential";
@@ -806,19 +808,19 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
             </DashButton>
             {wayOutOpen && (
               <p className="mg-muted mg-small" data-testid="sh-way-out-text">
-                {t(`${P}.abandon.ownFirst`)}{" "}
+                {v.row === "abandoning" ? spendBackWayOut(s) : t(`${P}.abandon.ownFirst`)}{" "}
                 <DashButton
                   variant="plainBlue"
                   size="small"
                   data-testid="sh-way-out-activity"
                   onClick={() => {
                     onClose();
-                    navigate("activity", { activityFilter: { kind: "txids", title: t(`${P}.sessionRow`, { code: s.code }), txids: [s.txid!] } });
+                    navigate("activity", { activityFilter: { kind: "txids", title: t(`${P}.sessionRow`, { code: s.code }), txids: wayOutTxids(s, v.row) } });
                   }}
                 >
                   {t(`${P}.abandon.openActivity`)}
                 </DashButton>
-                {canAbandon(s) && (
+                {canAbandon(s) && v.row !== "abandoning" && (
                   <DashButton variant="plainRed" size="small" data-testid="sh-way-out-abandon" disabled={busy || wallet.watchOnly} onClick={() => setAbandoning("first")}>
                     {t(`${P}.session.abandon`)}
                   </DashButton>
