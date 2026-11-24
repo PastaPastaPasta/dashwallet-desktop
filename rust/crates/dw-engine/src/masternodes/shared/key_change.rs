@@ -1460,6 +1460,12 @@ fn view(
         reserved: reserved_of(&k.row).iter().map(outpoint_string).collect(),
         next,
         discardable: may_discard(&k.row),
+        abandonable: funder
+            && !matches!(
+                stage,
+                SharedStage::Confirmed { .. } | SharedStage::Conflicted | SharedStage::Dead { .. }
+            )
+            && (k.row.out_at.is_none() || v.chain.holds_any(&reserved_of(&k.row))),
         warnings,
         approved_terms: None,
         base_keys: Some(k.base.clone()),

@@ -20,7 +20,7 @@ mod protx_records;
 mod reads;
 mod records;
 mod shared;
-pub use shared::standby_file_transactions;
+pub use shared::{shared_abandon_fee, standby_file_transactions};
 mod shared_records;
 mod tracking;
 pub(crate) mod withdrawal;

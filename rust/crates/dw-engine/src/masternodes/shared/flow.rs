@@ -210,7 +210,12 @@ impl NetworkSession {
             }
             history
         };
-        Ok(ChainView { history, unspent })
+        let pending = self.spends.snapshot(&wallet);
+        Ok(ChainView {
+            history,
+            unspent,
+            pending,
+        })
     }
 
     pub(crate) async fn shared_view(
