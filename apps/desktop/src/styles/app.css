@@ -5821,6 +5821,11 @@ button.bell-row-open:focus-visible {
   min-height: 0;
 }
 
+/* A step shown without the list (Sent) takes the whole width. */
+.mg-wizard > .mg-step:only-child {
+  grid-column: 1 / -1;
+}
+
 .mg-steps {
   display: flex;
   flex-direction: column;
@@ -5975,6 +5980,13 @@ button.bell-row-open:focus-visible {
 
 .sheet .mg-sheet-body {
   padding-top: var(--dw-space-xxs);
+}
+
+/* A checkbox with its sentence beside it. */
+.mg-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--dw-space-s);
 }
 
 /* Vote sheet: masternodes with a checkbox, their weight and current vote. */
