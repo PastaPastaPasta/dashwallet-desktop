@@ -175,7 +175,7 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     await model.confirm();
     expect(model.state).toEqual({
       kind: "failed",
-      text: "Dash Wallet can't read one of the transaction records in Savings. While Savings is open, Abandon and Remove Unconfirmed are unavailable in every wallet. Closing it in Settings ▸ Wallet makes them available in the others. To fix it, remove Savings there and restore it from its recovery phrase. Its coins come back once the restored wallet syncs. Before you remove it, make sure you have its recovery phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them.",
+      text: "Dash Wallet can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Savings and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
     });
   });
 

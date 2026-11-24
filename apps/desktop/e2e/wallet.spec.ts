@@ -882,7 +882,7 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-action-note")).toHaveText(
-      "Dash Wallet can't read one of the transaction records in Main. While Main is open, Abandon and Remove Unconfirmed are unavailable in every wallet. Closing it in Settings ▸ Wallet makes them available in the others. To fix it, remove Main there and restore it from its recovery phrase. Its coins come back once the restored wallet syncs. Before you remove it, make sure you have its recovery phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them.",
+      "Dash Wallet can't read one of the transaction records in Main, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Main and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Main and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
     );
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);

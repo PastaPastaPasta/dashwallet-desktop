@@ -58,7 +58,7 @@ pub enum TxActionRefusal {
     /// A stored transaction record of the loaded wallet named didn't read
     /// at its load, so what descends from the payment is unknown (#611). A
     /// restart clears it once the record reads; a record that never does
-    /// stays until that wallet is closed, or removed and restored.
+    /// stays until that wallet is removed and restored.
     RecordUnreadable(WalletId),
 }
 
@@ -72,8 +72,9 @@ impl TxActionRefusal {
                     .into()
             }
             Self::RecordUnreadable(wallet) => format!(
-                "A saved transaction of wallet {wallet} can't be read. Close that wallet, or \
-                 remove it and restore it from its recovery phrase."
+                "A transaction record in wallet {wallet} can't be read. Restore that wallet from \
+                 its recovery phrase, and wait until it has finished syncing before using Abandon \
+                 or Remove Unconfirmed."
             ),
             other => format!("transaction action refused: {other:?}"),
         }
