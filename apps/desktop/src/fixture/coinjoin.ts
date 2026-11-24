@@ -412,6 +412,13 @@ export function coinjoinScenarios(base: Base) {
     /** S7: 42 %, one session waiting in a masternode's queue. Mixed coins are on the CoinJoin
      * account, so the page offers "Move mixed coins", as a real wallet's does. */
     "coinjoin-mixing": (t: ThemeName | null) => withMixedCoins(mixing(base(t), { status: { kind: "waitingInQueue" }, progress: PROGRESS_42, sessions: [SESSION], queueSize: 3 }), 3, true),
+    /** Home's history-gap notice while a wallet mixes: its reset is refused until mixing stops. */
+    "history-gap-mixing": (t: ThemeName | null) => {
+      const w = mixing(base(t), { status: { kind: "waitingInQueue" }, progress: PROGRESS_42, sessions: [SESSION], queueSize: 3 });
+      for (const x of w.wallets) x.summary.birthHeight = 1_000_000;
+      w.tools.historyGap = { startHeight: 1_100_000, walletIds: w.wallets.map((x) => x.summary.walletId) };
+      return w;
+    },
     /** S5: running, but no masternode list yet. */
     "coinjoin-paused": (t: ThemeName | null) => withMixedCoins(mixing(base(t), { status: { kind: "noMasternodes" }, progress: PROGRESS_42 }), 3, true),
     /** S6: running and fully mixed: it waits for new coins. */

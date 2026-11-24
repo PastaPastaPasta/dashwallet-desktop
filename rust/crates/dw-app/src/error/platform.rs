@@ -424,6 +424,7 @@ impl From<ContactError> for AppError {
                 ContactCode::DetailsTooLong,
                 Some(ErrorData::Size { bytes, max }),
             ),
+            C::Shielded(e) => return e.into(),
             C::Credits(e) => return (*e).into(),
             C::Platform(e) => return e.into(),
         };

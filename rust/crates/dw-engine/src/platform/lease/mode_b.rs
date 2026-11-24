@@ -1551,6 +1551,7 @@ impl LeaseTable {
 
     /// Whether `wallet` has a shielded artifact, archived or not, for the
     /// transition `st_hash`; an error as [`Self::shielded_artifact`]'s.
+    #[cfg(test)]
     pub(crate) async fn has_shielded_artifact(
         &self,
         wallet: WalletId,

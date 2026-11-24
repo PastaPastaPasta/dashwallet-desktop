@@ -85,7 +85,7 @@ export function informationSections(launch: LaunchInfo, info: NodeSummary, timeZ
       id: "general",
       title: t("tools.information.sections.general"),
       rows: [
-        row(t("tools.information.rows.clientVersion"), launch.appVersion),
+        row(t("tools.information.rows.clientVersion"), launch.buildVersion),
         row(t("tools.information.rows.engineVersion"), launch.engineVersion),
         row(t("tools.information.rows.userAgent"), info.userAgent),
         row(t("tools.information.rows.dataDir"), info.dataDir),

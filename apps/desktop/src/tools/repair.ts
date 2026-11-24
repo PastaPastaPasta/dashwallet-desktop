@@ -6,6 +6,7 @@
 // coins back to the wallet at a fee shown first; Finish transfers (DP1-09 D10).
 
 import { hasCode, isAppError, type Backend } from "../api/backend";
+import { startSpvPastLock } from "../api/lockGate";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
@@ -27,6 +28,12 @@ export const RepairText = {
   },
   get resetChainDataQuestion() {
     return t("tools.repair.resetChainDataQuestion");
+  },
+  get resetChainDataButton() {
+    return t("tools.repair.resetChainDataButton");
+  },
+  get resetAction() {
+    return t("tools.repair.resetAction");
   },
   get dropUnconfirmed() {
     return t("tools.repair.dropUnconfirmed");
@@ -118,6 +125,10 @@ export function repairErrorText(e: unknown): string {
       return t("tools.repair.errors.noPeers");
     case "not_implemented":
       return t("tools.repair.errors.notImplemented");
+    case "coinjoin.inputs_held":
+      return t("tools.repair.errors.inputsHeld");
+    case "app.network_busy":
+      return e.data?.kind === "networkBusy" && e.data.mixing ? t("settings.updates.busy.mixing") : failureText(e);
     case "stuck_funding":
       return e.data?.kind === "stuckFunding" ? stuckFundingText(e.data.refusal, e.data.retryLater) : e.message;
     default:
@@ -182,6 +193,38 @@ export const isShield = (t: StuckTarget): t is StuckShieldFunding => "repair" in
 export interface StuckTopUp {
   funding: StuckTopUpFunding;
   name: string | null;
+}
+
+export type ResyncApi = Pick<Backend, "stopSpv" | "resetChainData" | "startSpv">;
+
+/** "Reset chain data and resync" (D11), from Repair or Home's history-gap notice. The engine
+ * resets only a stopped client; sync starts again whatever the stop or the reset did (the stop can
+ * fail after SPV stopped, on a Platform drain). The first failure is the one thrown; a restart that
+ * then fails too would only hide it. */
+export function resetChainAndResync(api: ResyncApi): Promise<void> {
+  let reset = resets.get(api);
+  if (!reset) {
+    reset = runReset(api).finally(() => resets.delete(api));
+    resets.set(api, reset);
+  }
+  return reset;
+}
+
+/** The reset under way per backend: Home and Repair asking at once share it. */
+const resets = new WeakMap<object, Promise<void>>();
+
+/** A reset of `api`'s chain data runs: its own stop of sync is not a stopped sync to read for. */
+export const resetUnderway = (api: object): boolean => resets.has(api);
+
+async function runReset(api: ResyncApi) {
+  try {
+    await api.stopSpv();
+    await api.resetChainData();
+  } catch (e) {
+    await startSpvPastLock(api).catch(() => undefined);
+    throw e;
+  }
+  await startSpvPastLock(api);
 }
 
 export type Confirmation = "resetChainData" | "dropUnconfirmed" | "resolveStuck";
@@ -324,17 +367,7 @@ export class RepairModel extends Model {
     }
     await this.#run(async () => {
       if (what === "dropUnconfirmed") return { kind: "done", text: RepairText.dropped(await this.api.dropUnconfirmed(this.walletId)) };
-      // The engine resets only a stopped client; sync starts again whatever the stop or the reset
-      // did (the stop can fail after SPV stopped, on a Platform drain, D11).
-      // The first failure is the one shown; a restart that then fails too would only hide it.
-      try {
-        await this.api.stopSpv();
-        await this.api.resetChainData();
-      } catch (e) {
-        await this.api.startSpv().catch(() => undefined);
-        throw e;
-      }
-      await this.api.startSpv();
+      await resetChainAndResync(this.api);
       return { kind: "done", text: RepairText.resetDone };
     });
   }
