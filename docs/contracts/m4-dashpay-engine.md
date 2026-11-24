@@ -4731,3 +4731,11 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     `credits.withdrawal_out_of_range`).
 
 99. **Shielded → Platform (C-routes D-C1, slice C1b-1, version 78).** `unshield_to_platform_quote` and `unshield_to_platform` (§2.13): off on mainnet (flag `unshield_to_platform`: both refuse `platform.feature_off{feature: "unshield_to_platform"}` first, before the wallet or its shielded store is opened and before any read, grant or write; on elsewhere, until its funds ruling); an unshield from the wallet's notes to one of its own Platform addresses (C1-1: the Platform payment account; its receive address by default), through platform-wallet's keyset entry point under the dispatch hook, with `unshield_to_core`'s gates and outcomes. A foreign `to` is refused before the grant. Attribution of the address's rise (`FromShielded`) is a later slice; until then the rise reads as an `incoming` row.
+
+100. **A top-up from Platform as its Confirm showed (C-routes D-C3 review, version 79).** `top_up_from_platform`
+    takes `fee_input: Option<PlatformAddressRow>`, its quote's input 0 (the fee source): a plan at submit that takes
+    its fee another way (another address, or the same one with another claim) is `credits.quote_changed` before the
+    grant is used, nothing signed. A plan that differs only by the input count's reserve is re-planned at each
+    larger count, and the one that takes the fee as quoted signs (a Max confirms its own quote). `None` plans as
+    before. `PlatformAddressBalance` gains `sends_active` (`#[serde(default)]`): false below
+    `ADDRESS_FUNDS_INITIAL_PROTOCOL_VERSION`, where a send or a top-up is `platform.feature_off`.
