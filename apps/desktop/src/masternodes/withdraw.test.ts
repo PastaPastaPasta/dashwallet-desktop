@@ -51,3 +51,12 @@ describe("the evonode withdrawal held by an unconfirmed payout change", () => {
     expect(payoutUnconfirmedRefusal(err("masternodes.withdrawal_unverified"), checking("payout_change_unconfirmed"))).toBeNull();
   });
 });
+
+describe("the owner-key withdrawal of an evonode whose payout is P2SH", () => {
+  it("says why the owner key can't withdraw and what to do", () => {
+    expect(destinationNote(checking("owner_payout_p2sh"))).toBe(
+      "Owner-key withdrawals don't work with this evonode's payout address, because it's a P2SH address: Platform would send the credits to an address nobody can spend. To withdraw with the owner key, change the payout to a regular address first. You can withdraw once that change confirms.",
+    );
+    expect(payoutUnconfirmedRefusal(err("masternodes.withdrawal_destination_checking"), checking("owner_payout_p2sh"))).toBeNull();
+  });
+});

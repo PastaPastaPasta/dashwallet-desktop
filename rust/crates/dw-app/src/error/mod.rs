@@ -341,6 +341,9 @@ pub enum ErrorData {
     /// `platform.broadcast_unknown`, `platform.will_be_sent`: what to ask
     /// `dispatch_status` about.
     Artifact { artifact: String },
+    /// `app.browser_open` from `open_project_link`: the page that did not
+    /// open, for the user to copy.
+    Link { url: String },
     /// `contact.payment_locked`, `credits.top_up_pending` (the lock to
     /// resume), and a txid elsewhere.
     Txid { txid: String },

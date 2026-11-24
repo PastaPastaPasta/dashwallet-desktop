@@ -65,6 +65,13 @@ export interface Ctx {
 
 export type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
 
+/** dw-app's `ProjectLinkName::url` table, for the fixture's failed opens. */
+const PROJECT_LINKS = {
+  sourceCode: "https://github.com/PastaPastaPasta/dashwallet-desktop",
+  issues: "https://github.com/PastaPastaPasta/dashwallet-desktop/issues",
+  website: "https://www.dash.org",
+} as const;
+
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
 /** Whether the window's network has a wallet (`list_wallets` is not empty). */
@@ -733,6 +740,11 @@ export const HANDLERS: Handlers = {
   recent_notices: (_, { world }) => world.notices,
   open_releases_page: (_, { world }) => {
     world.releasesOpened = (world.releasesOpened ?? 0) + 1;
+    return null;
+  },
+  open_project_link: ({ link }, { world }) => {
+    world.linksOpened = [...(world.linksOpened ?? []), link];
+    if (world.linkOpenFails) throw fail("app.browser_open", "no browser", { kind: "link", url: PROJECT_LINKS[link] });
     return null;
   },
   protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
