@@ -242,6 +242,9 @@ export const onboarding = {
     recoverOne: "{amount} is left on a transfer to Shielded that Platform refused. You can recover it to your Platform balance, minus Platform's fee.",
     /** Two or more: the card says "one" for a single transfer. */
     recoverSeveral: "{count} transfers to Shielded that Platform refused have {total} left. You can recover each to your Platform balance, minus Platform's fee.",
+    /** Mainnet, where this version does not recover: no Recover button anywhere. */
+    recoverOffOne: "{amount} is left on a transfer to Shielded that Platform refused. It's still yours. This version can recover it on test networks only.",
+    recoverOffSeveral: "{count} transfers to Shielded that Platform refused have {total} left. It's still yours. This version can recover it on test networks only.",
     recoverConfirm: {
       title: "Recover leftover value",
       body: "Move the {amount} left on this transfer to your Platform balance? Platform's fee comes out of this amount.",
@@ -270,6 +273,11 @@ export const onboarding = {
       },
       recoverTooSmall: "The {amount} left on this transfer is less than Platform's fee for moving it, so it can't be recovered.",
       recoverFailed: "Dash Wallet couldn't recover this value. It's still listed here, and you can try again.",
+      /** A recover that may have gone through: not a refusal. */
+      recoverChecking: "Dash Wallet can't tell yet whether the recovery went through. Trying again is safe: the same amount can't be recovered twice.",
+      recoverOff: "This version can recover what's left of a refused transfer on test networks only.",
+      /** The "Can be recovered" chip on mainnet. */
+      testNetworksOnly: "Test networks only",
       done: {
         appliedPlatformAddress: "Added to your Platform address",
         appliedShielded: "Added to Shielded",

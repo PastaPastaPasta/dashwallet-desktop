@@ -256,6 +256,14 @@ describe("fixture unfinished transfers", () => {
       expect(rows.map((a) => [a.state, a.credits])).toEqual([["done", String(30_000_000_000n - 56_000_000n)]]);
     });
 
+    it("is off on mainnet: the quote and the recover are refused, and the lock stays", async () => {
+      open("recovery-recoverable-mainnet");
+      const [l] = (await cmd.unfinishedTransfers(W)).locks;
+      expect(await cmd.recoverTransferQuote(W, l.txid, l.vout)).toEqual({ kind: "notApplied", error: "platform.feature_off" });
+      expect(await cmd.recoverTransfer(W, l.txid, l.vout, await creditsGrant("30000000000"))).toEqual({ kind: "notApplied", error: "platform.feature_off" });
+      expect((await cmd.unfinishedTransfers(W)).locks).toHaveLength(2);
+    });
+
     it("quotes a below-fee lock too small and never recovers it; a lock that is not partly used is not recoverable", async () => {
       open("recovery-recoverable-small");
       const [, small] = (await cmd.unfinishedTransfers(W)).locks;

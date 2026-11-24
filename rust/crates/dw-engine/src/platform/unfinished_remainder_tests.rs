@@ -177,6 +177,11 @@ fn a_partly_used_shield_lock_is_recovered_to_the_wallets_own_address() {
         .map(|l| l.status.clone());
     assert_eq!(row, Some(AssetLockStatus::Consumed), "the library's row");
     let r = record(&fx, at).expect("a recovered record");
+    assert_eq!(
+        r.duffs,
+        left.div_ceil(1000),
+        "sized by what was left, not the lock"
+    );
     let activity = r.activity();
     assert_eq!(activity.kind, PlatformActivityKind::Recovered);
     assert_eq!(activity.state, PlatformActivityState::Done);
@@ -342,6 +347,51 @@ fn a_recover_is_behind_the_shield_flows_network_gate() {
         "the hint is not re-read"
     );
     assert!(lib.recovered.lock().unwrap().is_empty());
+    assert!(kept(&fx, &g), "the grant is not redeemed");
+}
+
+/// Off on mainnet, first: a quote and a recover are refused
+/// `platform.feature_off` before any Platform read, lock, record or grant.
+/// The wallet's recovery and activity rows stay byte-equal, the grant is
+/// still redeemable, and the shield side still keeps the lock out of the
+/// pending shields there.
+#[test]
+fn a_recover_is_off_on_mainnet_before_anything_is_read() {
+    let fx = Fixture::new(0);
+    let mut fake = FakeFund::new(&fx);
+    fake.network = dashcore::Network::Mainnet;
+    let lib = Arc::new(fake);
+    let at = shield_lock(&fx, &lib, 0x5C).out_point;
+    mark_remaining(&fx, at, 600_000_000);
+    lib.proves(
+        at,
+        SpentRead::Remaining {
+            credits: 600_000_000,
+        },
+    );
+    let before = rows(&fx);
+    let g = grant(&fx, 1, 600_000_000);
+
+    let off = super::super::errors::PlatformError::FeatureOff {
+        feature: remainder::FEATURE.into(),
+    }
+    .code();
+    assert_eq!(
+        quote(&fx, &lib, at),
+        RecoverQuote::NotApplied { error: off.into() }
+    );
+    assert_eq!(
+        recover(&fx, &lib, at, &g).unwrap(),
+        LockFinish::NotApplied { error: off.into() }
+    );
+    assert_eq!(
+        lib.platform_reads.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no Platform read"
+    );
+    assert_eq!(rows(&fx), before, "nothing written");
+    assert!(lib.recovered.lock().unwrap().is_empty());
+    assert!(lib.signed.lock().unwrap().is_empty());
     assert!(kept(&fx, &g), "the grant is not redeemed");
 }
 

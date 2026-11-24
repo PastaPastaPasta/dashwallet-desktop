@@ -85,6 +85,8 @@ export const RECOVERY_COPY = {
   },
   recoverOne: (amount: string) => t("onboarding.unfinished.recoverOne", { amount }),
   recoverSeveral: (n: number, total: string) => t("onboarding.unfinished.recoverSeveral", { count: n, total }),
+  recoverOffOne: (amount: string) => t("onboarding.unfinished.recoverOffOne", { amount }),
+  recoverOffSeveral: (n: number, total: string) => t("onboarding.unfinished.recoverOffSeveral", { count: n, total }),
   recoverConfirm: {
     get title() {
       return t("onboarding.unfinished.recoverConfirm.title");
@@ -109,6 +111,15 @@ export const RECOVERY_COPY = {
       return t("onboarding.unfinished.sheet.close");
     },
     recoverTooSmall: (amount: string) => t("onboarding.unfinished.sheet.recoverTooSmall", { amount }),
+    get recoverChecking() {
+      return t("onboarding.unfinished.sheet.recoverChecking");
+    },
+    get recoverOff() {
+      return t("onboarding.unfinished.sheet.recoverOff");
+    },
+    get testNetworksOnly() {
+      return t("onboarding.unfinished.sheet.testNetworksOnly");
+    },
     get recoverFailed() {
       return t("onboarding.unfinished.sheet.recoverFailed");
     },
@@ -154,7 +165,26 @@ export interface RecoverAsk {
 }
 
 /** What a recover of a lock came to, when it moved nothing: too small to move, or it failed. */
-export type RecoverNote = { kind: "tooSmall"; credits: string } | { kind: "failed" };
+export type RecoverNote = { kind: "tooSmall"; credits: string } | { kind: "failed" } | { kind: "checking" } | { kind: "off" };
+
+/** The engine's refusal of a recover on mainnet (`unfinished_remainder::FEATURE`). */
+const FEATURE_OFF = "platform.feature_off";
+
+/** A recover note as the card and the sheet say it. */
+export function recoverNoteText(note: RecoverNote, duffs: (d: number) => string): string {
+  switch (note.kind) {
+    case "tooSmall":
+      return RECOVERY_COPY.sheet.recoverTooSmall(duffs(creditsToDuffs(note.credits)));
+    case "checking":
+      return RECOVERY_COPY.sheet.recoverChecking;
+    case "off":
+      return RECOVERY_COPY.sheet.recoverOff;
+    case "failed":
+      return RECOVERY_COPY.sheet.recoverFailed;
+  }
+}
+
+const refusalNote = (error: string): RecoverNote => (error === FEATURE_OFF ? { kind: "off" } : { kind: "failed" });
 
 /** A transfer to Shielded Platform proved partly used: listed whatever its origin (this device's own
  * refused shield is no pending shield), and only ever recovered. */
@@ -194,6 +224,7 @@ export function cardView(
   state: RecoveryState,
   duffs: (d: number) => string,
   errorText: (e: unknown) => string,
+  mainnet = false,
 ): CardView | null {
   if (state.kind === "running") return { kind: "running", text: RECOVERY_COPY.running, note: null, actions: [], lock: null };
   if (state.kind === "failed" && !failureStale(state, data)) return { kind: "failed", text: errorText(state.error), note: null, actions: ["retry", "dismiss"], lock: null };
@@ -211,11 +242,15 @@ export function cardView(
   const recoverable = restored.filter(partlyUsed).filter((l) => l.state === "recoverable");
   if (recoverable.length === 1) {
     const [lock] = recoverable;
-    return { kind: "recoverable", text: RECOVERY_COPY.recoverOne(duffs(creditsToDuffs(lock.remainingCredits))), note, actions: ["recover", ...details], lock };
+    const amount = duffs(creditsToDuffs(lock.remainingCredits));
+    // Off on mainnet in this version: no Recover anywhere.
+    if (mainnet) return { kind: "recoverable", text: RECOVERY_COPY.recoverOffOne(amount), note, actions: details, lock: null };
+    return { kind: "recoverable", text: RECOVERY_COPY.recoverOne(amount), note, actions: ["recover", ...details], lock };
   }
   if (recoverable.length > 1) {
-    const total = recoverable.reduce((n, l) => n + BigInt(l.remainingCredits), 0n);
-    return { kind: "recoverable", text: RECOVERY_COPY.recoverSeveral(recoverable.length, duffs(creditsToDuffs(String(total)))), note, actions: ["details"], lock: null };
+    const total = duffs(creditsToDuffs(String(recoverable.reduce((n, l) => n + BigInt(l.remainingCredits), 0n))));
+    const text = mainnet ? RECOVERY_COPY.recoverOffSeveral(recoverable.length, total) : RECOVERY_COPY.recoverSeveral(recoverable.length, total);
+    return { kind: "recoverable", text, note, actions: ["details"], lock: null };
   }
   return note === null ? null : { kind: "done", text: note, note: null, actions: ["dismiss"], lock: null };
 }
@@ -327,10 +362,11 @@ export class RecoveryModel extends Model {
       notifySettled();
       return this.#set({ kind: "idle" });
     }
-    const note: RecoverNote = quote?.kind === "tooSmall" ? { kind: "tooSmall", credits: quote.credits } : { kind: "failed" };
+    const note: RecoverNote = quote?.kind === "tooSmall" ? { kind: "tooSmall", credits: quote.credits } : quote?.kind === "notApplied" ? refusalNote(quote.error) : { kind: "failed" };
     this.notes.set(key, note);
-    const text = note.kind === "tooSmall" ? RECOVERY_COPY.sheet.recoverTooSmall(duffs(creditsToDuffs(note.credits))) : RECOVERY_COPY.sheet.recoverFailed;
-    this.#set({ kind: "done", text });
+    // The quote may have changed what is listed (a fresh too-small value).
+    if (note.kind === "tooSmall") notifySettled();
+    this.#set({ kind: "done", text: recoverNoteText(note, duffs) });
   }
 
   /** The user confirmed: the recover runs under a grant of exactly the quoted credits. */
@@ -415,11 +451,14 @@ export class RecoveryModel extends Model {
         this.results.set(key, { lock, result: got.value, recovered: true });
         return { kind: "idle" };
       }
+      // Checking may have gone through; a refusal before the signature did not.
+      const note: RecoverNote = got.value.kind === "notApplied" ? refusalNote(got.value.error) : { kind: "checking" };
+      this.notes.set(key, note);
+      return { kind: "done", text: recoverNoteText(note, String) };
     } catch {
-      // The failure line says it, and the lock stays listed.
+      this.notes.set(key, { kind: "failed" });
+      return { kind: "done", text: RECOVERY_COPY.sheet.recoverFailed };
     }
-    this.notes.set(key, { kind: "failed" });
-    return { kind: "done", text: RECOVERY_COPY.sheet.recoverFailed };
   }
 
   #set(state: RecoveryState) {

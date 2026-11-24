@@ -1080,7 +1080,14 @@ const SCENARIOS = {
     w.pending.recovery.locks = [partlyUsedLock(2, 20_000_000, 40_000_000n)];
     return w;
   },
-  /** The first recover fails after its signature ("checking"); the next is applied. */
+  /** A refused transfer to Shielded with 0.30 DASH left, on mainnet: listed, never offered a Recover. */
+  "recovery-recoverable-mainnet": (t) => {
+    const w = base(t);
+    w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n), partlyUsedLock(3, 40_000_000, 20_000_000_000n)];
+    return w;
+  },
+  /** The first recover may have gone through ("checking"); the next is applied. */
   "recovery-recover-fails": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];

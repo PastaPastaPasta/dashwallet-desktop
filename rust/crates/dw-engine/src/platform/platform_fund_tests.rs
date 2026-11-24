@@ -115,6 +115,9 @@ struct FakeFund {
     session: Arc<NetworkSession>,
     wallet: WalletId,
     version: u32,
+    pub(super) network: Network,
+    /// Platform reads made: the version refreshed, a spent read.
+    pub(super) platform_reads: AtomicU32,
     /// The library's tracked locks, every funding type (the kind's rows are
     /// [`fund::fund_rows`] of them).
     tracked: Mutex<Vec<TrackedAssetLock>>,
@@ -165,6 +168,8 @@ impl FakeFund {
             session: Arc::clone(&fx.s),
             wallet: fx.wallet,
             version: PlatformVersion::latest().protocol_version,
+            network: Network::Testnet,
+            platform_reads: AtomicU32::new(0),
             tracked: Mutex::default(),
             script: lock_script(fx),
             funding: Mutex::new(Script::Proved),
@@ -292,10 +297,11 @@ impl FakeFund {
 
 impl FundLib for FakeFund {
     fn network(&self) -> Network {
-        Network::Testnet
+        self.network
     }
 
     async fn refresh_protocol_version(&self) -> u32 {
+        self.platform_reads.fetch_add(1, Ordering::SeqCst);
         self.version
     }
 
@@ -308,6 +314,7 @@ impl FundLib for FakeFund {
     }
 
     async fn spent(&self, outpoint: OutPoint) -> SpentRead {
+        self.platform_reads.fetch_add(1, Ordering::SeqCst);
         (self.spent.lock().unwrap().get(&outpoint)).map_or(SpentRead::Unread, |r| *r)
     }
 

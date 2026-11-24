@@ -162,6 +162,22 @@ describe("unfinished transfers card: refused transfers to Shielded (#402)", () =
     expect(sheetRows(list([rows[0], rows[2]]), new Map()).map((r) => r.lock.state)).toEqual(["recoverable", "tooSmall"]);
   });
 
+  it("on mainnet lists what is left with MG's off line and offers no Recover", () => {
+    const one = partly(1, "recoverable", "30000000000");
+    expect(cardView(list([one]), IDLE, duffs, errorText, true)).toMatchObject({
+      kind: "recoverable",
+      text: "30000000 duffs is left on a transfer to Shielded that Platform refused. It's still yours. This version can recover it on test networks only.",
+      actions: [],
+      lock: null,
+    });
+    const two = cardView(list([one, partly(2, "recoverable", "20000000000")]), IDLE, duffs, errorText, true);
+    expect(two).toMatchObject({
+      text: "2 transfers to Shielded that Platform refused have 50000000 duffs left. It's still yours. This version can recover it on test networks only.",
+      actions: ["details"],
+    });
+    expect(C.sheet.testNetworksOnly).toBe("Test networks only");
+  });
+
   it("shows no card when every refused transfer is below the fee", () => {
     expect(view(list([partly(3, "tooSmall", "40000000")]))).toBeNull();
     expect(view(list([partly(3, "tooSmall", "40000000"), partly(4, "tooSmall", "1")]))).toBeNull();
@@ -375,16 +391,16 @@ describe("RecoveryModel", () => {
 
 describe("RecoveryModel recover (#402)", () => {
   const one = partly(1, "recoverable", "300000000000");
-  const READY: RecoverQuote = { kind: "ready", credits: "290000000000", feeCredits: "56000000" };
+  const READY: RecoverQuote = { kind: "ready", credits: "29000000000", feeCredits: "56000000" };
 
   it("reads Platform first, asks to confirm the fresh amount, then recovers under a grant of exactly those credits", async () => {
     const { model, calls, vault } = recoverSetup(READY);
     await model.askRecover(one, duffs);
-    expect(model.asking).toEqual({ lock: one, credits: "290000000000" });
+    expect(model.asking).toEqual({ lock: one, credits: "29000000000" });
     expect(calls).toEqual(["quote 1:0"]);
     expect(vault.calls.authorize).toEqual([]);
     await model.confirmRecover();
-    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 1, maxCredits: "290000000000" }, walletId: WALLET_A });
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 1, maxCredits: "29000000000" }, walletId: WALLET_A });
     expect(calls).toEqual(["quote 1:0", "recover 1:0 grant-1"]);
     expect(model.asking).toBeNull();
     expect(model.results.get(lockKey(one))).toEqual({ lock: one, result: { kind: "applied" }, recovered: true });
@@ -409,20 +425,26 @@ describe("RecoveryModel recover (#402)", () => {
     expect(api.recoverTransfer).not.toHaveBeenCalled();
   });
 
-  it("a quote that fails, a recover that may have executed, or one that throws, leave the lock listed with the failure line", async () => {
-    for (const [quote, recovered] of [
-      [new Error("down"), undefined],
-      [{ kind: "notApplied", error: "platform.unavailable" } as RecoverQuote, undefined],
-      [READY, { kind: "checking" } as LockFinish],
-      [READY, appError("platform.grant_invalid")],
-    ] as const) {
+  it("a definite refusal says couldn't recover; one that may have gone through says so; mainnet says test networks only", async () => {
+    const cases: [RecoverQuote | Error, LockFinish | ReturnType<typeof appError> | undefined, string, string][] = [
+      [new Error("down"), undefined, "failed", C.sheet.recoverFailed],
+      [{ kind: "notApplied", error: "platform.unavailable" }, undefined, "failed", C.sheet.recoverFailed],
+      [READY, appError("platform.grant_invalid"), "failed", C.sheet.recoverFailed],
+      [READY, { kind: "notApplied", error: "platform.unavailable" }, "failed", C.sheet.recoverFailed],
+      [READY, { kind: "checking" }, "checking", C.sheet.recoverChecking],
+      [{ kind: "notApplied", error: "platform.feature_off" }, undefined, "off", C.sheet.recoverOff],
+      [READY, { kind: "notApplied", error: "platform.feature_off" }, "off", C.sheet.recoverOff],
+    ];
+    for (const [quote, recovered, note, text] of cases) {
       const { model } = recoverSetup(quote, recovered);
       await model.askRecover(one, duffs);
       if (model.asking) await model.confirmRecover();
-      expect(model.notes.get(lockKey(one))).toEqual({ kind: "failed" });
+      expect(model.notes.get(lockKey(one))).toEqual({ kind: note });
       expect(model.results.has(lockKey(one))).toBe(false);
-      expect(model.state).toEqual({ kind: "done", text: C.sheet.recoverFailed });
+      expect(model.state).toEqual({ kind: "done", text });
     }
+    expect(C.sheet.recoverChecking).toBe("Dash Wallet can't tell yet whether the recovery went through. Trying again is safe: the same amount can't be recovered twice.");
+    expect(C.sheet.recoverOff).toBe("This version can recover what's left of a refused transfer on test networks only.");
   });
 
   it("a lock already recovered or used up elsewhere reads the list again, and claims no result", async () => {

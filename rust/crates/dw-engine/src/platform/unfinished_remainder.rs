@@ -9,8 +9,9 @@
 //! value lands on the wallet's own Platform receive address, the only
 //! destination (no caller names one), through the library's
 //! `fund_from_shielded_remainder_asset_lock`, signed with the lock's credit
-//! key alone ([`LockKeySigner`]). Before anything is read it passes the shield
-//! flow's own network gate and the fund's; then, under the shield and fund
+//! key alone ([`LockKeySigner`]). It is off on mainnet ([`FEATURE`]), refused
+//! first. Before anything is read it passes the shield flow's own network
+//! gate and the fund's; then, under the shield and fund
 //! locks, it reads Platform's proved state again and goes on only for a
 //! remaining value at least Platform's fee. The grant must carry exactly
 //! those credits (a quote reads them first, [`quote`]), and is redeemed only
@@ -53,6 +54,21 @@ pub(crate) const NOT_RECOVERABLE: &str = "recovery.not_recoverable";
 /// The call permit's label.
 const LABEL: &str = "recover";
 
+/// The flag of a recover: off on mainnet until Drive's acceptance of the
+/// spend is verified there, on for every test network.
+pub(crate) const FEATURE: &str = "shielded_remainder_recover";
+
+/// `platform.feature_off{feature: FEATURE}` on mainnet, read from the
+/// library's network alone: nothing is read, locked or redeemed before it.
+fn refuse_on_mainnet(network: dashcore::Network) -> Result<(), PlatformError> {
+    match network {
+        dashcore::Network::Mainnet => Err(PlatformError::FeatureOff {
+            feature: FEATURE.into(),
+        }),
+        _ => Ok(()),
+    }
+}
+
 /// What a recover's checks found, under the shield and fund locks.
 enum Standing {
     /// Refused before the grant: the code.
@@ -78,6 +94,10 @@ pub(crate) async fn quote(
     lib: &impl FundLib,
     outpoint: OutPoint,
 ) -> Result<RecoverQuote, PlatformError> {
+    if let Err(e) = refuse_on_mainnet(lib.network()) {
+        let error = e.code().into();
+        return Ok(RecoverQuote::NotApplied { error });
+    }
     let rules = match gates(lib).await {
         Ok(rules) => rules,
         Err(error) => return Ok(RecoverQuote::NotApplied { error }),
@@ -110,6 +130,10 @@ pub(crate) async fn recover(
     outpoint: OutPoint,
     grant: &str,
 ) -> Result<LockFinish, PlatformError> {
+    if let Err(e) = refuse_on_mainnet(lib.network()) {
+        let error = e.code().into();
+        return Ok(LockFinish::NotApplied { error });
+    }
     let rules = match gates(lib).await {
         Ok(rules) => rules,
         Err(error) => return Ok(LockFinish::NotApplied { error }),

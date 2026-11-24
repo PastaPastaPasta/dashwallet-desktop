@@ -213,6 +213,7 @@ const partlyUsedAt = (r: RecoveryWorld, txid: string, vout: number) => r.locks.f
 export const REMAINDER_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
   recover_transfer_quote: ({ walletId, txid, vout }: { walletId: string; txid: string; vout: number }, ctx: Ctx): RecoverQuote => {
     wallet(ctx.world, walletId);
+    if (ctx.world.launch.network.kind === "mainnet") return { kind: "notApplied", error: "platform.feature_off" };
     const lock = partlyUsedAt(ctx.world.pending.recovery, txid, vout);
     if (!lock?.remainingCredits) return { kind: "notApplied", error: "recovery.not_recoverable" };
     const credits = lock.remainingCredits;
@@ -221,6 +222,8 @@ export const REMAINDER_HANDLERS: Record<string, (args: never, ctx: Ctx) => unkno
   },
   recover_transfer: ({ walletId, txid, vout, grant }: { walletId: string; txid: string; vout: number; grant: string }, ctx: Ctx): LockFinish => {
     wallet(ctx.world, walletId);
+    // Off on mainnet, first (engine `unfinished_remainder::FEATURE`).
+    if (ctx.world.launch.network.kind === "mainnet") return { kind: "notApplied", error: "platform.feature_off" };
     const r = ctx.world.pending.recovery;
     const lock = partlyUsedAt(r, txid, vout);
     if (!lock?.remainingCredits) return { kind: "notApplied", error: "recovery.not_recoverable" };

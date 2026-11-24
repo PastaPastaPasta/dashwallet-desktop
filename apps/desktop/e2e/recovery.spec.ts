@@ -58,17 +58,29 @@ test.describe("Unfinished transfers", () => {
     expect(await seriousAxeViolations(page)).toEqual([]);
   });
 
+  test("recovery-recoverable-mainnet: what is left is listed with the test-networks line, and there is no Recover anywhere", async ({ page }) => {
+    await open(page, "recovery-recoverable-mainnet");
+    await expect(page.getByTestId("unfinished-text")).toContainText("This version can recover it on test networks only.");
+    await expect(page.getByTestId("unfinished-recover")).toHaveCount(0);
+    await page.getByTestId("unfinished-details").click();
+    const rows = page.getByTestId("unfinished-row");
+    await expect(rows).toHaveCount(2);
+    await expect(rows.getByTestId("unfinished-row-state")).toHaveText(["Test networks only", "Test networks only"]);
+    await expect(page.getByTestId("unfinished-row-recover")).toHaveCount(0);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+  });
+
   test("recovery-too-small-only: no card when every refused transfer is below the fee", async ({ page }) => {
     await open(page, "recovery-too-small-only");
     await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
   });
 
-  test("recovery-recover-fails: a recover that fails keeps the lock with the failure line, and the next one recovers it", async ({ page }) => {
+  test("recovery-recover-fails: a recover that may have gone through says so and keeps the lock, and the next one recovers it", async ({ page }) => {
     await open(page, "recovery-recover-fails");
     await page.getByTestId("unfinished-recover").click();
     await page.getByTestId("recover-confirm-ok").click();
     await authorize(page);
-    await expect(page.getByTestId("unfinished-note")).toHaveText("Dash Wallet couldn't recover this value. It's still listed here, and you can try again.");
+    await expect(page.getByTestId("unfinished-note")).toHaveText("Dash Wallet can't tell yet whether the recovery went through. Trying again is safe: the same amount can't be recovered twice.");
     await page.getByTestId("unfinished-recover").click();
     await page.getByTestId("recover-confirm-ok").click();
     await authorize(page);
