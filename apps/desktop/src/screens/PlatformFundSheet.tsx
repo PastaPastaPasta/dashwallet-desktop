@@ -13,22 +13,23 @@ import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { endedBeforeApply, finishAfter, fundCanChange, fundErrorText, FUND_COPY as C, type PlatformFundFlow } from "../platform/fund";
 
-/** Formats for the sheet: Dash in the display unit, masked in discreet mode. */
+/** Formats for the sheet: Dash in the display unit with its full decimals, masked in discreet mode. */
 function useFormats(network: NetworkInfo) {
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
-  const duffs = (d: number) => (discreet ? shown.masked() : `${shown.compact(d)} ${shown.name}`);
+  const duffs = (d: number) => (discreet ? shown.masked() : `${shown.full(d)} ${shown.name}`);
   return { shown, duffs, credits: (c: string) => duffs(creditsToDuffs(c)) };
 }
 
 type Formats = ReturnType<typeof useFormats>;
 
-/** A confirm row; an amount or address `value` reads left to right in any language, a `text` one follows the page. */
+/** A confirm row; an amount `value` reads left to right in any language, right-aligned in tabular digits so the
+ * decimals line up; a `text` one follows the page. */
 function Row({ label, value, testId, total, text }: { label: string; value: string; testId: string; total?: boolean; text?: boolean }) {
   return (
     <div className={`detail-row ${total ? "topup-total" : ""}`}>
       <dt className="detail-label">{label}</dt>
-      <dd className="detail-value" data-testid={testId}>
+      <dd className={`detail-value ${text ? "" : "detail-amount"}`} data-testid={testId}>
         {text ? value : <bdi dir="ltr">{value}</bdi>}
       </dd>
     </div>

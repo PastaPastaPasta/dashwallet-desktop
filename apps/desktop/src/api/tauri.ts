@@ -129,6 +129,7 @@ export class IpcBackend implements Backend {
   resendTransaction = cmd.resendTransaction;
   openTxInExplorer = cmd.openTxInExplorer;
   openReleasesPage = () => cmd.openReleasesPage();
+  openProjectLink = cmd.openProjectLink;
   protocolCompatibility = () => cmd.protocolCompatibility();
   currentReceiveAddress = cmd.currentReceiveAddress;
   nextReceiveAddress = cmd.nextReceiveAddress;
@@ -309,6 +310,8 @@ export class IpcBackend implements Backend {
   creditsWithdraw = cmd.creditsWithdraw;
   creditsWithdrawToPlatformQuote = cmd.creditsWithdrawToPlatformQuote;
   creditsWithdrawToPlatform = cmd.creditsWithdrawToPlatform;
+  creditsTopUpFromPlatformQuote = cmd.creditsTopUpFromPlatformQuote;
+  creditsTopUpFromPlatform = cmd.creditsTopUpFromPlatform;
   creditsWithdrawals = cmd.creditsWithdrawals;
   // The search is the renderer's (U-05 D13): dash-qt's wildcards over label and address.
   addressBook = (walletId: string, purpose: AddressPurposeName | null) => cmd.addressBook(walletId, purpose, null);

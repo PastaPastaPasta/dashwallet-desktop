@@ -141,6 +141,7 @@ extension DashWalletCore.TxActionRefusal {
         case .inMempool: 4
         case .notSentByWallet: 5
         case .rescanFirst: 6
+        case .settledDescendant: 7
         }
     }
 }

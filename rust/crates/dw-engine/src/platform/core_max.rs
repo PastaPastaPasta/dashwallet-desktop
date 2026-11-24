@@ -255,7 +255,7 @@ pub(crate) async fn credit_script(
     let (xpub, account) = {
         let id = pw.wallet.wallet_id();
         let wm = pw.wallet.wallet_manager().read().await;
-        let (Some(wallet), Some(info)) = (wm.get_wallet(&id), wm.get_wallet_info(&id)) else {
+        let Some((wallet, info)) = wm.get_wallet_and_info(&id) else {
             return Err(FundError::Refused(PlatformError::WalletNotFound));
         };
         let (keys, managed) = (&wallet.accounts, &info.core_wallet.accounts);
