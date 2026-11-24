@@ -1,3 +1,22 @@
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+
+/** `ss -Hltnp`: every TCP listener of this host, with its owner where visible. */
+export function ssListing() {
+  const r = spawnSync("ss", ["-Hltnp"], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`ss: ${r.stderr}`);
+  return r.stdout;
+}
+
+/** The process group of `pid`, or null when it is gone or not readable. */
+export function processGroup(pid: string) {
+  try {
+    return Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[2]);
+  } catch {
+    return null;
+  }
+}
+
 /** The process groups of every TCP listener on each of `ports`, from one `ss -Hltnp` listing;
  * null for a listener whose owner is not visible (another account's). */
 export function snapshotOf(ssOutput: string, ports: number[], groupOf: (pid: string) => number | null) {
