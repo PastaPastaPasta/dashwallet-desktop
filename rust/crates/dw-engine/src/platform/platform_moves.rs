@@ -1372,8 +1372,6 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
             of(|k| k == MoveKind::ToCore),
         );
         if !top_ups.is_empty() && !exit_moves.is_empty() {
-            // Exits paying one address share one document, so a document
-            // read present for one is present for each of them, read or not.
             let found: Vec<usize> = (exit_moves.iter().copied())
                 .filter(|&i| exits.get(&moves[i].id) == Some(&true))
                 .collect();
@@ -3344,7 +3342,9 @@ pub(crate) async fn quote(
     // takes exactly its inputs (C-routes C3-9), as `run` plans it, so
     // Confirm shows that move; one Platform has not answered holds the next
     // move, as the move refuses it.
-    let held = (moves.iter()).find(|m| m.holds() && !m.reached(&seen));
+    let held = (moves.iter())
+        .find(|m| m.kind.credits_identity() && m.holds())
+        .or_else(|| (moves.iter()).find(|m| m.holds() && !m.reached(&seen)));
     if let Some(h) = held.filter(|h| h.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }

@@ -497,3 +497,83 @@ fn a_held_moves_quote_takes_what_its_exit_signs() {
         );
     }
 }
+
+impl World {
+    /// A held top-up's exit as the host confirms it: its quote's
+    /// `exit_of`, at the quote's planned withdrawal.
+    fn named_exit(
+        &self,
+        q: &MoveToCoreQuote,
+        grant: &str,
+    ) -> Result<MoveToCoreOutcome, CreditsError> {
+        let (to, exit_of, grant) = (q.to.clone(), q.exit_of.clone(), grant.to_owned());
+        let amount = WithdrawAmount::Credits {
+            credits: q.credits - q.fee_credits,
+        };
+        self.call(move |net, s, w, id| async move {
+            move_to_core(
+                &*net,
+                &s,
+                &w,
+                id,
+                (amount, to.as_str(), exit_of.as_deref()),
+                &grant,
+            )
+            .await
+        })
+    }
+}
+
+/// A held top-up's exit named by its quote: on mainnet each way it no
+/// longer stands (the top-up settled since the quote, the plan is not at
+/// its nonces, another record holds beside it) answers the flag, with
+/// nothing signed or recorded and the grant kept.
+#[test]
+fn a_named_top_up_exit_that_no_longer_stands_is_off_on_mainnet() {
+    let setup = || {
+        let w = World::mainnet();
+        let a = w.address(0);
+        w.net.fund(a, 3 * DASH);
+        let address = bech32m(&a, Network::Mainnet);
+        let top_up = held(
+            "move-1-0",
+            MoveKind::ToIdentity,
+            (&address, 1, 3 * DASH, 3 * DASH),
+            "identity",
+        );
+        w.seed(&top_up);
+        let q = w.quote(WithdrawAmount::All).unwrap();
+        assert_eq!(q.exit_of.as_deref(), Some("move-1-0"));
+        (w, top_up, q)
+    };
+    let refused = |w: &World, q: &MoveToCoreQuote, records: usize| {
+        let grant = w.f.grant(q.credits);
+        off(w.named_exit(q, &grant));
+        assert!(w.net.sent().is_empty(), "nothing broadcast");
+        assert!(w.net.recorded_before_signing.lock().unwrap().is_empty());
+        assert!(w.f.unused(&grant), "the grant kept");
+        assert_eq!(w.moves().len(), records, "nothing recorded");
+    };
+
+    let (w, mut top_up, q) = setup();
+    (top_up.state, top_up.can_land) = (PlatformActivityState::Done, false);
+    w.seed(&top_up);
+    refused(&w, &q, 1);
+
+    let (w, mut top_up, q) = setup();
+    top_up.inputs[0].nonce = 3;
+    w.seed(&top_up);
+    refused(&w, &q, 1);
+
+    let (w, _, q) = setup();
+    let b = w.address(1);
+    w.net.fund(b, DASH);
+    let other = held(
+        "move-2-0",
+        MoveKind::ToCore,
+        (&bech32m(&b, Network::Mainnet), 1, DASH, DASH),
+        &w.to.clone(),
+    );
+    w.seed(&other);
+    refused(&w, &q, 2);
+}

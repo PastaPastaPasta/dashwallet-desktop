@@ -664,6 +664,18 @@ fn several_present_exits_settle_one() {
     assert_eq!(states(&moves), [failed, failed, done]);
     let unattributed: Vec<_> = moves.iter().map(|m| m.activity().unattributed).collect();
     assert_eq!(unattributed, [false, true, true]);
+
+    // An unread exit to another address has another document: the one read
+    // present names its winner.
+    let mut moves = vec![
+        failed_top_up(),
+        record_of(MoveKind::ToCore, "x", 2),
+        record_of(MoveKind::ToCore, "y", 3),
+    ];
+    moves[2].to = "another".into();
+    settle_with(&mut moves, &seen_at(20, 4), &one);
+    assert_eq!(states(&moves), [failed, done, failed]);
+    assert!(moves.iter().all(|m| !m.unattributed));
 }
 
 /// A read whose nonce is below one a done record signed is behind what

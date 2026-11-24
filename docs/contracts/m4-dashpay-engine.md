@@ -4819,7 +4819,10 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     `next_receive_address` stay as before (a grant with no quote is `invalid_argument`). Reads of the balance stay.
     The top-up from Platform, Platform-source contact payments, `unshield_to_platform` and a registration from the
     addresses keep their own mainnet flags. On mainnet a move's destination that is not one of the wallet's own Core
-    addresses (`invalid_argument`) answers the flag; its other errors keep their codes. `PlatformAddressBalance` gains `sends_off` (`#[serde(default)]`): the
+    addresses (`invalid_argument`) answers the flag, and so does a move with `exit_of` (item 103) whose top-up no
+    longer holds, whose plan is not at that top-up's inputs and nonces, or beside which another record holds;
+    inputs that no longer carry its amount stay `credits.quote_changed`, and the move's other errors keep their
+    codes. `PlatformAddressBalance` gains `sends_off` (`#[serde(default)]`): the
     flag's feature where it holds the paths off, `sends_active` then `false`. Testnet, devnet and regtest are
     unchanged.
 
@@ -4834,8 +4837,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     `PlatformActivity`, `MoveToCoreOutcome` and `PlatformSendOutcome` gain `unattributed`; dw-app maps it to
     `winnerKnown: false` (absent otherwise). Only the display changes: no state, amount, hold or refusal does. The
     host titles each such row "settled with another payment or move" by its kind and shows the group's debit on the
-    newest row only. `move_to_core_quote` plans beside the same held record `move_to_core` signs at (any record that
-    may still execute, of any kind, not only a top-up), so the quoted credits and fee are those of the plan the exit
+    newest row only. `move_to_core_quote` plans beside the same held record `move_to_core` signs at (a held top-up
+    first, as item 103, else any record that may still execute and the read does not show reached), so the quoted credits and fee are those of the plan the exit
     signs, and refuses a plan of only some of that record's inputs as the move would (`credits.move_pending{id}`; on
     mainnet the flag). `exit_of` still names a held top-up only (item 103); beside any other held record the move
     finds it as before.
