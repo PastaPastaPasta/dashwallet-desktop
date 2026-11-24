@@ -31,9 +31,10 @@
 #   push to main              an immutable prerelease v<version>-dev.<run>+<short sha> and the rolling
 #                             prerelease `continuous` (stable asset names, replaced in place);
 #   push of a tag vX.Y.Z-rc.N that candidate's keyless prerelease (8 assets, never Latest, no .asc);
-#   push of a tag vX.Y.Z      when DW_SIGNING_REQUIRED=1 is set: attests the unsigned build artifacts
-#                             and waits for local detached signing + release-publish-signed.yml
-#                             (docs/release/SIGNING.md); otherwise publishes the 8 unsigned assets;
+#   push of a tag vX.Y.Z      fails closed by default: attests the unsigned build artifacts and waits
+#                             for local detached signing + release-publish-signed.yml (docs/release/SIGNING.md);
+#                             publishes the 8 unsigned assets only when DW_ALLOW_UNSIGNED_STABLE=1 is set
+#                             (and DW_SIGNING_REQUIRED != 1);
 #   anything else             builds and uploads CI artifacts only: the schedule and workflow_dispatch.
 #                             Pull requests (forks included) build nothing. None reaches the publish job.
 #

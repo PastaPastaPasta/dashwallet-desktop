@@ -18,12 +18,16 @@
 #     [--apple-team-id <10-alnum>] \
 #     [--win-leaf-hash <sha256:64-hex>] \
 #     [--win-ca-file <path>] \
-#     [--skip-win-chain-verify]
+#     [--skip-win-chain-verify] \
+#     [--allow-non-darwin]
 #
 # Pinned signer identities (PGP public key + primary fingerprint, Apple Team ID, Windows leaf
 # cert SHA-256) are loaded from the main repository at the tag (docs/release/signing-identities.json
 # and docs/release/release-key.asc) and NEVER from --sigs-dir. All three identities fail closed
 # until populated.
+#
+# Must run on macOS (Darwin) for codesign, spctl, stapler, and .dmg layout verification; non-Darwin
+# hosts fail closed unless --allow-non-darwin is explicitly passed (for Linux test suites only).
 #
 # Layout expected in --sigs-dir (mirroring dashpay/dash-detached-sigs):
 #   unsigned.SHA256SUMS                                    # binds sigs to the exact unsigned CI build
@@ -52,6 +56,7 @@ apple_team_id=
 win_ca_file=
 win_leaf_hash=
 skip_win_chain_verify=0
+allow_non_darwin=0
 
 while (($#)); do
   case "$1" in
@@ -69,11 +74,17 @@ while (($#)); do
     --win-ca-file) win_ca_file=${2:?}; shift 2 ;;
     --win-leaf-hash) win_leaf_hash=${2:?}; shift 2 ;;
     --skip-win-chain-verify) skip_win_chain_verify=1; shift ;;
+    --allow-non-darwin) allow_non_darwin=1; shift ;;
     *) echo "release-attach: unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 die() { echo "release-attach: $*" >&2; exit 1; }
+
+# N4: Fail closed off macOS unless --allow-non-darwin is explicitly requested (Linux tests only).
+if [[ "$(uname -s)" != Darwin ]] && ((!allow_non_darwin)); then
+  die "macOS codesign, spctl, stapler, and .dmg layout verification require macOS (pass --allow-non-darwin only for Linux test suites, never for publishing)"
+fi
 
 [[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--version must be a stable X.Y.Z"
 [[ -d "$unsigned_dir" && ! -L "$unsigned_dir" ]] || die "--unsigned-dir $unsigned_dir does not exist"
@@ -153,11 +164,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. Verify unsigned CI build matches sigs/unsigned.SHA256SUMS verbatim.
+# 1. Verify unsigned CI build matches sigs/unsigned.SHA256SUMS byte-for-byte with CI's copy (N5) and by hash.
+ci_unsigned_sums="$unsigned_dir/unsigned.SHA256SUMS"
 unsigned_sums="$sigs_dir/unsigned.SHA256SUMS"
+[[ -s "$ci_unsigned_sums" ]] || die "missing CI unsigned.SHA256SUMS at $ci_unsigned_sums"
 [[ -s "$unsigned_sums" ]] || die "missing $unsigned_sums"
+cmp -s "$ci_unsigned_sums" "$unsigned_sums" ||
+  die "sigs/unsigned.SHA256SUMS differs from CI's attested unsigned.SHA256SUMS ($ci_unsigned_sums)"
 unsigned_sums_abs=$(cd "$(dirname "$unsigned_sums")" && pwd)/$(basename "$unsigned_sums")
-echo "release-attach: verifying unsigned CI inputs against unsigned.SHA256SUMS"
+echo "release-attach: verifying unsigned CI inputs against unsigned.SHA256SUMS (byte-identical to CI copy)"
 sha256_check "$unsigned_sums_abs" "$unsigned_dir"
 
 dist_out="$out_dir/dist"
@@ -187,6 +202,19 @@ verify_help=$(osslsigncode verify --help 2>&1 || true)
 attach_args=(attach-signature -in "$win_unsigned" -sigin "$win_sig" -out "$win_signed")
 verify_args=(verify -in "$win_signed" -require-leaf-hash "$win_leaf_hash")
 if [[ -n "$win_ca_file" ]]; then
+  [[ -f "$win_ca_file" && ! -L "$win_ca_file" ]] || die "--win-ca-file not found or is a symlink: $win_ca_file"
+  grep -q 'BEGIN CERTIFICATE' "$win_ca_file" || die "--win-ca-file $win_ca_file contains no PEM certificates"
+  python3 - "$win_ca_file" "$sigs_dir" <<'PY' || die "refusing --win-ca-file loaded from inside --sigs-dir ($win_ca_file)"
+import os, sys
+from pathlib import Path
+ca = Path(os.path.realpath(sys.argv[1]))
+sigs = Path(os.path.realpath(sys.argv[2]))
+try:
+    ca.relative_to(sigs)
+    sys.exit(1)
+except ValueError:
+    sys.exit(0)
+PY
   # osslsigncode <= 2.13 verifies the cert chain inside attach-signature and requires -CAfile there;
   # >= 2.14 does digest-only attach and accepts -CAfile/-require-leaf-hash on verify only.
   [[ "$attach_help" == *"-CAfile"* ]] && attach_args+=(-CAfile "$win_ca_file")
@@ -218,22 +246,26 @@ echo "release-attach: applying detached macOS signatures to Dash Wallet.app"
 python3 "$here/macos-detached-sig.py" apply "$work/mac-unsigned/Dash Wallet.app" "$mac_sigs" "$work/mac-signed/Dash Wallet.app"
 python3 "$here/macos-detached-sig.py" verify-signed "$work/mac-signed/Dash Wallet.app"
 
-apple_req="anchor apple generic and certificate leaf[subject.OU] = \"$apple_team_id\""
+# Pin both Apple Developer ID Application cert type (OIDs 1.2.840.113635.100.6.2.6 + .6.1.13) and Team ID.
+apple_req="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"$apple_team_id\""
 if [[ "$(uname -s)" == Darwin ]]; then
-  echo "release-attach: verifying macOS codesign (Team ID $apple_team_id), Gatekeeper (spctl), and notarization staple"
+  echo "release-attach: verifying macOS codesign (Developer ID, Team ID $apple_team_id), Gatekeeper (spctl), and notarization staple"
   codesign --verify --deep --strict --verbose=2 -R="$apple_req" "$work/mac-signed/Dash Wallet.app"
   spctl --assess --type execute -vv "$work/mac-signed/Dash Wallet.app"
   xcrun stapler validate "$work/mac-signed/Dash Wallet.app"
+else
+  echo "release-attach: WARNING: skipping macOS codesign/spctl/stapler/.dmg mount verification (--allow-non-darwin)" >&2
 fi
 
 mac_app_tar="$feed_out/dash-wallet-$version-macos-universal.app.tar.gz"
 python3 "$here/macos-detached-sig.py" pack-app "$work/mac-signed/Dash Wallet.app" "$mac_app_tar"
 
-# 5. macOS .dmg: verify signed .dmg Team ID, staple, exact top-level layout, and interior Dash Wallet.app.
+# 5. macOS .dmg: verify signed .dmg Developer ID cert + Team ID, spctl primary-signature, staple, exact top-level layout, and interior Dash Wallet.app.
 dmg_name="dash-wallet-$version-macos-universal.dmg"
 if [[ "$(uname -s)" == Darwin ]]; then
-  echo "release-attach: verifying $dmg_name signature (Team ID $apple_team_id), staple, top-level layout, and interior .app"
+  echo "release-attach: verifying $dmg_name signature (Developer ID, Team ID $apple_team_id), spctl primary-signature, staple, top-level layout, and interior .app"
   codesign --verify --verbose=2 -R="$apple_req" "$signed_dmg"
+  spctl --assess --type open --context context:primary-signature -vv "$signed_dmg"
   xcrun stapler validate "$signed_dmg"
   dmg_mnt="$work/dmg-mnt"
   mkdir -p "$dmg_mnt"
@@ -305,23 +337,27 @@ chmod 700 "$gpg_tmp"
 GNUPGHOME=$gpg_tmp gpg --batch --quiet --import "$pgp_pubkey" ||
   die "failed to import pinned PGP public key from $pgp_pubkey"
 
+gpg_status="$work/gpg-status.txt"
+gpg_stderr="$work/gpg-stderr.txt"
 gpg_rc=0
-verify_out=$(GNUPGHOME=$gpg_tmp gpg --batch --status-fd 1 --verify "$dist_out/SHA256SUMS.asc" "$dist_out/SHA256SUMS" 2>&1) || gpg_rc=$?
+GNUPGHOME=$gpg_tmp gpg --batch --status-file "$gpg_status" --verify "$dist_out/SHA256SUMS.asc" "$dist_out/SHA256SUMS" \
+  >/dev/null 2>"$gpg_stderr" || gpg_rc=$?
 if ((gpg_rc != 0)); then
-  printf '%s\n' "$verify_out" >&2
+  cat "$gpg_stderr" "$gpg_status" >&2 || true
   die "gpg --verify failed for SHA256SUMS.asc (exit $gpg_rc)"
 fi
 
 # L1: Reject revoked or expired keys/signatures explicitly, and require GOODSIG + pinned primary VALIDSIG.
-if grep -qE '^\[GNUPG:\] (REVKEYSIG|KEYREVOKED|EXPKEYSIG|EXPSIG|BADSIG|ERRSIG)\b' <<<"$verify_out"; then
-  printf '%s\n' "$verify_out" >&2
+# Use POSIX ERE `( |$)` rather than GNU `\b` so macOS BSD grep behaves identically to Linux GNU grep.
+if grep -qE '^\[GNUPG:\] (REVKEYSIG|KEYREVOKED|EXPKEYSIG|EXPSIG|BADSIG|ERRSIG)( |$)' "$gpg_status"; then
+  cat "$gpg_stderr" "$gpg_status" >&2 || true
   die "PGP signature on SHA256SUMS.asc rejected (revoked, expired, or bad key/signature)"
 fi
-grep -qE '^\[GNUPG:\] GOODSIG\b' <<<"$verify_out" || {
-  printf '%s\n' "$verify_out" >&2
+grep -qE '^\[GNUPG:\] GOODSIG( |$)' "$gpg_status" || {
+  cat "$gpg_stderr" "$gpg_status" >&2 || true
   die "PGP verification for SHA256SUMS.asc did not emit GOODSIG"
 }
-sig_primary=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print toupper($12); exit }' <<<"$verify_out")
+sig_primary=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print toupper($12); exit }' "$gpg_status")
 [[ -n "$sig_primary" ]] || die "PGP verification failed for SHA256SUMS.asc (missing VALIDSIG)"
 [[ "$sig_primary" == "$want_fpr" ]] ||
   die "SHA256SUMS.asc signed by primary key $sig_primary, expected $want_fpr"

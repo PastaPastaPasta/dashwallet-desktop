@@ -45,10 +45,9 @@ defaults:
 jobs:
   attach-and-publish:
     name: Verify, attach detached signatures, attest, and publish
-    # M1: Must be dispatched on the exact tag ref so the workflow, pinned identities, and Sigstore
-    # attestations all bind to refs/tags/<tag>. `environment: release` carries ZERO secrets and
-    # enforces GitHub's v* deployment tag rule + required reviewers.
-    if: ${{ github.ref == format('refs/tags/{0}', inputs.tag) }}
+    # M1 / N3: `environment: release` carries ZERO secrets and enforces GitHub's v* deployment tag
+    # rule + required reviewers. No job-level `if:` so a wrong-ref dispatch fails loudly in the
+    # ref-guard step below instead of showing skipped/green.
     environment: release
     runs-on: macos-15
     timeout-minutes: 30
@@ -93,21 +92,33 @@ jobs:
               exit 1
             fi
           done
+          # L7: Refuse sharing dmg_draft_tag with the final release tag so the staged .dmg is never
+          # deleted before release-publish.sh publish succeeds.
+          [[ "$dmg_tag" != "$INPUT_TAG" ]] || {
+            echo "::error::dmg_draft_tag must differ from tag (use default staging-dmg-$INPUT_TAG so a failed publish preserves the staged .dmg)" >&2
+            exit 1
+          }
           {
             echo "TAG=$INPUT_TAG"
             echo "VERSION=${INPUT_TAG#v}"
             echo "SIGS_REF=$sigs_ref"
             echo "DMG_TAG=$dmg_tag"
           } >> "$GITHUB_ENV"
+      # N6: Check out the exact triggering github.sha, then assert refs/tags/$TAG^{commit} matches it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify tag commit is on origin/main
+      - name: Verify tag commit matches github.sha and is on origin/main
         run: |
-          git fetch --quiet --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git fetch --quiet origin "+refs/tags/$TAG:refs/tags/$TAG" '+refs/heads/main:refs/remotes/origin/main'
           sha=$(git rev-parse HEAD)
+          tag_commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          [[ "$sha" == "$GITHUB_SHA" && "$tag_commit" == "$sha" ]] || {
+            echo "::error::refs/tags/$TAG points to $tag_commit, but checked-out HEAD is $sha (GITHUB_SHA=$GITHUB_SHA)" >&2
+            exit 1
+          }
           git merge-base --is-ancestor "$sha" refs/remotes/origin/main || {
             echo "::error::$TAG ($sha) is not an ancestor of origin/main; refusing to publish" >&2
             exit 1
@@ -198,15 +209,21 @@ jobs:
           # H2 / M4 / Decision 5: Pinned identities (docs/release/signing-identities.json and
           # docs/release/release-key.asc) are read exclusively from the main repo checkout at $TAG
           # (never from sigs_repo and never from mutable variables). Fails closed on placeholders.
-          ci/github/release-attach.sh \
-            --version "$VERSION" \
-            --unsigned-dir "$RUNNER_TEMP/unsigned" \
-            --sigs-dir "$SIGS_DIR" \
-            --out-dir "$RUNNER_TEMP/attached" \
-            --signed-dmg "$SIGNED_DMG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --identities-file docs/release/signing-identities.json \
+          args=(
+            --version "$VERSION"
+            --unsigned-dir "$RUNNER_TEMP/unsigned"
+            --sigs-dir "$SIGS_DIR"
+            --out-dir "$RUNNER_TEMP/attached"
+            --signed-dmg "$SIGNED_DMG"
+            --repo "$GITHUB_REPOSITORY"
+            --identities-file docs/release/signing-identities.json
             --pgp-pubkey docs/release/release-key.asc
+          )
+          # N2: Pass pinned Windows CA bundle once populated with PEM certificates.
+          if [[ -f docs/release/windows-ca.pem ]] && grep -q 'BEGIN CERTIFICATE' docs/release/windows-ca.pem; then
+            args+=(--win-ca-file docs/release/windows-ca.pem)
+          fi
+          ci/github/release-attach.sh "${args[@]}"
       - name: Prepare final signed release assets for attestation
         env:
           GITHUB_EVENT_NAME: push
@@ -222,18 +239,6 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ runner.temp }}/publish/attest/*
-      - name: Remove staging draft before publish only if it shares the release tag
-        if: ${{ env.DMG_TAG == env.TAG }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          dmg_name="dash-wallet-$VERSION-macos-universal.dmg"
-          draft_id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq ".[] | select(.tag_name == \"$DMG_TAG\" and .draft == true and (.assets | length) == 1 and .assets[0].name == \"$dmg_name\") | .id" | head -n 1 || true)
-          if [[ -n "$draft_id" ]]; then
-            echo "Deleting staging draft release $draft_id for $DMG_TAG before publishing final release"
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id" --silent
-          fi
       - name: Publish the signed GitHub Release
         env:
           GITHUB_EVENT_NAME: push
@@ -247,7 +252,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ci/github/release-publish.sh publish
       - name: Clean up staging draft release after successful publish
-        if: ${{ env.DMG_TAG != env.TAG }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

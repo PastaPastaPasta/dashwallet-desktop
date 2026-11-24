@@ -132,6 +132,11 @@ Before the first signed 1.0 release, Pasta provides or confirms:
        `yubico-piv-tool -s 9c -a read-certificate | openssl x509 -noout -fingerprint -sha256`).
    - `docs/release/release-key.asc`: armored PGP public key exported with
      `gpg --armor --export <PRIMARY_PGP_FINGERPRINT> > docs/release/release-key.asc`.
+   - `docs/release/windows-ca.pem` (recommended): root + intermediate PEM certificate bundle for Dash Core's
+     Windows code-signing CA (`osslsigncode verify -CAfile docs/release/windows-ca.pem`). Homebrew's default CA
+     bundle on the `macos-15` runner has not been exercised live against Dash Core's code-signing root/CRL
+     endpoints; committing the CA bundle here ensures `release-publish-signed.yml` passes `--win-ca-file
+     docs/release/windows-ca.pem` cleanly.
 3. **macOS Developer ID Application identity & Apple notarization credentials on his Mac:** exact string from
    `security find-identity -v -p codesigning` (e.g. `"Developer ID Application: Dash Core Group, Inc. (XXXXXXXXXX)"`)
    and either a `notarytool` Keychain profile (`xcrun notarytool store-credentials dash-notary ...`) or a local
@@ -152,9 +157,23 @@ Before the first signed 1.0 release, Pasta provides or confirms:
    (`pnpm --dir apps/desktop tauri signer generate -w ~/.config/dashwallet-release/stable-updater.key`), and
    commit its public key into `rust/crates/dw-app/tauri.conf.json` (`plugins.updater.pubkey`) (and update
    `RELEASE_KEY_ID` in `rust/crates/dw-app/src/updates_tests.rs`) before tagging 1.0.
-7. **Fail-closed default:** final stable tags (`vX.Y.Z`) fail closed automatically and wait for detached
+7. **One end-to-end dry run before 1.0:** once items 1–6 are in place (including `docs/release/windows-ca.pem`),
+   run one dry run of `release-publish-signed.yml` on a throwaway tag (or test `osslsigncode verify` +
+   `codesign`/`spctl` on the `macos-15` runner) to confirm live Windows CA chain + CRL verification and Apple
+   Developer ID + notarization checks before cutting `v1.0.0`.
+8. **Fail-closed default:** final stable tags (`vX.Y.Z`) fail closed automatically and wait for detached
    signatures — no repo variable is required to enforce signing. (`DW_ALLOW_UNSIGNED_STABLE=1` is an explicit
    escape hatch only if an unsigned pre-1.0 stable tag is ever needed.)
+
+### Accepted risk (CI verification tooling)
+
+- **Homebrew formula versions (`L5`):** `.github/workflows/release-publish-signed.yml` pins the runner image to
+  `macos-15` and logs exact tool versions (`osslsigncode --version`, `gpg --version`), but runs unpinned
+  `brew install osslsigncode gnupg` because Homebrew core does not retain older formula bottles without a custom
+  tap. Risk is accepted and bounded by pinning all cryptographic trust anchors in the main repository at the tag
+  (`windows_leaf_sha256`, `apple_team_id` + Developer ID OIDs, `plugins.updater.pubkey`, `pgp_fingerprint` +
+  `release-key.asc`), by the zero-secret `release` environment with required reviewers, and by `gh attestation verify`
+  on every unsigned input.
 
 ---
 
@@ -227,7 +246,7 @@ git tag -v "$TAG"
 git push origin "$TAG"
 ```
 
-Wait for the `Release` workflow run on `$TAG` to finish green. Because `DW_SIGNING_REQUIRED=1` is set:
+Wait for the `Release` workflow run on `$TAG` to finish green. Because final stable tags fail closed by default:
 - CI builds all 5 unsigned bundles, 2 SBOMs, `SHA256SUMS`, and `dash-wallet-1.0.0-macos-unsigned.tar.gz`.
 - The `publish` job attests the unsigned build inputs and holds back publishing (no unsigned GitHub release is
   created). Record the Actions run ID:
@@ -412,9 +431,9 @@ echo "SIGS_COMMIT=$SIGS_COMMIT"
 
 #### Option A (recommended): Publish via `.github/workflows/release-publish-signed.yml` (mints Sigstore attestations on every final signed asset)
 
-1. Stage the signed, notarized `.dmg` in a temporary draft release on `staging-dmg-${TAG}` (using a separate
-   draft tag means it is deleted only **after** the final `$TAG` release publishes successfully, so a failed
-   publish does not lose the staged `.dmg`):
+1. Stage the signed, notarized `.dmg` in a temporary draft release on `staging-dmg-${TAG}` (`release-publish-signed.yml`
+   refuses `dmg_draft_tag == tag` so the draft is deleted only **after** the final `$TAG` release publishes
+   successfully, preserving the staged `.dmg` if publish fails):
 
    ```sh
    gh release create "staging-dmg-${TAG}" "$OUT/dist/dash-wallet-${VERSION}-macos-universal.dmg" \
@@ -434,19 +453,25 @@ echo "SIGS_COMMIT=$SIGS_COMMIT"
      -f sigs_ref="$SIGS_COMMIT"
    ```
 
-   The workflow runs on `macos-15` in the secret-less `release` environment, verifies `github.ref == refs/tags/$TAG`,
-   verifies every downloaded unsigned artifact from `$RUN_ID` with `gh attestation verify` against `release.yml`,
-   fetches `dashwallet-detached-sigs` at `$SIGS_COMMIT`, runs `ci/github/release-attach.sh` using the pinned
-   identities from the main repo at `$TAG` (`docs/release/signing-identities.json` and
-   `docs/release/release-key.asc` — verifying `unsigned.SHA256SUMS`, attaching Windows `.pem` + `osslsigncode verify`
-   with pinned leaf hash, attaching macOS `osx/` + `codesign` Team ID/`spctl`/`stapler`, verifying the staged
-   `.dmg` Team ID, top-level `{Dash Wallet.app, Applications -> /Applications}` layout, and interior `.app`
-   modes/bytes, verifying `latest.json` exact URLs + minisign signatures, verifying all 9 hashes in `SHA256SUMS`,
-   and verifying `SHA256SUMS.asc` with `GOODSIG` + pinned primary fingerprint while rejecting revoked/expired keys),
-   attests all 11 final assets with `actions/attest-build-provenance`, publishes the exact attested copies via
+   The workflow runs on `macos-15` in the secret-less `release` environment, enforces `github.ref == refs/tags/$TAG`,
+   checks out `github.sha` and asserts `refs/tags/$TAG^{commit} == HEAD`, verifies every downloaded unsigned
+   artifact from `$RUN_ID` with `gh attestation verify` against `release.yml`, fetches `dashwallet-detached-sigs`
+   at `$SIGS_COMMIT`, runs `ci/github/release-attach.sh` using the pinned identities from the main repo at `$TAG`
+   (`docs/release/signing-identities.json`, `docs/release/release-key.asc`, and `docs/release/windows-ca.pem` when
+   populated — comparing `unsigned.SHA256SUMS` byte-for-byte with CI's copy, attaching Windows `.pem` +
+   `osslsigncode verify` with pinned leaf hash, attaching macOS `osx/` + Developer ID OID/Team ID `codesign -R` /
+   `spctl` / `stapler`, verifying the staged `.dmg` Developer ID cert type (`codesign -R` + `spctl --assess --type open --context context:primary-signature`),
+   staple, top-level `{Dash Wallet.app, Applications -> /Applications}` layout, and interior `.app` modes/bytes,
+   verifying `latest.json` exact URLs + minisign signatures, verifying all 9 hashes in `SHA256SUMS`, and verifying
+   `SHA256SUMS.asc` with `GOODSIG` + pinned primary fingerprint while rejecting revoked/expired keys), attests all
+   11 final assets with `actions/attest-build-provenance`, publishes the exact attested copies via
    `ci/github/release-publish.sh`, and then deletes the `staging-dmg-${TAG}` draft.
 
 #### Option B: Local attach, verify, and publish from macOS
+
+**Must be run on macOS:** `ci/github/release-attach.sh` fails closed on non-Darwin hosts so Apple `codesign`,
+`spctl`, `stapler`, and `.dmg` layout checks cannot be silently skipped (`--allow-non-darwin` is strictly for
+Linux test suites, never for publishing).
 
 If you need to attach and publish directly from your Mac (without GitHub Actions attesting the final signed
 assets — the unsigned CI build inputs remain attested from Step 1):
@@ -461,6 +486,7 @@ ci/github/release-attach.sh \
   --repo "$REPO" \
   --identities-file docs/release/signing-identities.json \
   --pgp-pubkey docs/release/release-key.asc
+# Add `--win-ca-file docs/release/windows-ca.pem` if populated.
 
 TAG_SHA=$(git rev-parse "${TAG}^{commit}")
 GITHUB_EVENT_NAME=push GITHUB_REF="refs/tags/${TAG}" GITHUB_SHA="$TAG_SHA" \

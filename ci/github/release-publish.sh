@@ -11,10 +11,11 @@
 # checkout whose `origin/main` is fetched with full history.
 # FEED (optional) is the update feed (latest.json and the macOS app archive). Only a stable release
 # tag vX.Y.Z publishes one; a feed on any other trigger is refused.
-# With DW_SIGNING_REQUIRED=1 (a repository variable, docs/release/SIGNING.md) a final vX.Y.Z tag is
-# refused unless attached signatures are present and verified (SHA256SUMS.asc, signed-manifest.json
-# from release-attach.sh matching the Windows .exe / macOS .dmg / .app.tar.gz / SHA256SUMS hashes,
-# and the signed updater feed latest.json). Release candidates (-rc.N) never require signing.
+# Final vX.Y.Z tags fail closed by default: publishing is refused unless verified attached signatures
+# are present (SHA256SUMS.asc, signed-manifest.json from release-attach.sh with pinned identities and
+# all 11 file hashes, and the signed updater feed latest.json). Set DW_ALLOW_UNSIGNED_STABLE=1 only
+# for an explicit unsigned override (DW_SIGNING_REQUIRED=1 still overrides that escape hatch).
+# Release candidates (-rc.N) never require signing.
 # OUT defaults to $DIST/../publish. DRY_RUN=1 runs the reads (release and tag lookups) and prints each
 # write instead of doing it, so the logic can be run by hand against the real repository.
 #

@@ -677,12 +677,14 @@ subprocess.run(["python3", str(here / "macos-detached-sig.py"), "pack-app", str(
 signed_dmg = wk / f"dash-wallet-{ver}-macos-universal.dmg"
 signed_dmg.write_bytes(b"signed-notarized-dmg")
 
-# Write unsigned.SHA256SUMS
+# Write unsigned.SHA256SUMS in both unsigned/ (CI copy) and sigs/ (signer copy)
 def sha256_file(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 u_lines = [f"{sha256_file(p)}  {p.name}\n" for p in sorted(unsigned.iterdir(), key=lambda x: x.name)]
-(sigs / "unsigned.SHA256SUMS").write_text("".join(u_lines))
+u_text = "".join(u_lines)
+(unsigned / "unsigned.SHA256SUMS").write_text(u_text)
+(sigs / "unsigned.SHA256SUMS").write_text(u_text)
 
 # 4. Sign updater latest.json with a real Ed25519 minisign keypair and write fake tauri.conf.json
 ms_priv = wk / "ms.pem"; ms_pub_der = wk / "ms.der"
@@ -863,6 +865,9 @@ PY
     --win-ca-file "$e2e/work/win.crt"
     --skip-win-chain-verify
   )
+  if [[ "$(uname -s)" != Darwin ]]; then
+    attach_base+=(--allow-non-darwin)
+  fi
 
   attach_rc=0
   "$here/release-attach.sh" "${attach_base[@]}" --out-dir "$e2e/attached" > "$e2e/attach.out" 2>&1 || attach_rc=$?
@@ -912,12 +917,33 @@ PY
     "expected 0000000000000000000000000000000000000000" "$e2e/attach-bad-pgp.out" \
     "${attach_base[@]}" --pgp-fingerprint 0000000000000000000000000000000000000000 --out-dir "$e2e/attached-bad-pgp"
 
+  # N4: Off Darwin, release-attach.sh fails closed unless --allow-non-darwin is explicitly passed
+  if [[ "$(uname -s)" != Darwin ]]; then
+    expect_attach_fail \
+      "N4: release-attach refuses non-Darwin host unless --allow-non-darwin is given" \
+      "require macOS|--allow-non-darwin" "$e2e/attach-nondarwin.out" \
+      --version 0.1.0 --unsigned-dir "$e2e/unsigned" --sigs-dir "$e2e/sigs" \
+      --out-dir "$e2e/attached-nondarwin" --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg" \
+      --repo o/r --tauri-conf "$e2e/work/tauri.conf.json" \
+      --identities-file "$e2e/work/identities.json" --pgp-pubkey "$e2e/work/release-key.asc" \
+      --win-ca-file "$e2e/work/win.crt" --skip-win-chain-verify
+  fi
+
+  # N5: Dropping a line from sigs/unsigned.SHA256SUMS (would pass sha256sum -c alone) is refused by byte-for-byte cmp
+  cp -R "$e2e/sigs" "$e2e/sigs-trunc-unsigned"
+  head -n 2 "$e2e/sigs/unsigned.SHA256SUMS" > "$e2e/sigs-trunc-unsigned/unsigned.SHA256SUMS"
+  expect_attach_fail \
+    "N5: release-attach refuses sigs/unsigned.SHA256SUMS that differs byte-for-byte from CI's unsigned.SHA256SUMS" \
+    "differs from CI" "$e2e/attach-trunc-unsigned.out" \
+    "${attach_base[@]}" --sigs-dir "$e2e/sigs-trunc-unsigned" --out-dir "$e2e/attached-trunc-unsigned"
+
   # H2 / Decision 5: default repo placeholder signing-identities.json fails closed (no fingerprint)
   expect_attach_fail \
     "H2/Decision 5: release-attach fails closed on placeholder repo signing-identities.json (no fingerprint)" \
     "pinned PGP primary fingerprint" "$e2e/attach-nofpr.out" \
     --version 0.1.0 --unsigned-dir "$e2e/unsigned" --sigs-dir "$e2e/sigs" \
-    --out-dir "$e2e/attached-nofpr" --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg"
+    --out-dir "$e2e/attached-nofpr" --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg" \
+    --allow-non-darwin
 
   # H2: missing SHA256SUMS.asc at attach time
   cp -R "$e2e/sigs" "$e2e/sigs-noasc"
