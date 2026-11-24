@@ -44,10 +44,13 @@ pub struct UiSettings {
     pub auto_lock_secs: Option<u32>,
     /// A new payment starts with "Subtract fee from amount" checked (QT-137).
     pub subtract_fee_by_default: bool,
-    /// Settings ▸ General ▸ Show Masternodes: the Masternodes sidebar item and
-    /// route (Governance, Username voting) are hidden until it is on (MG-00
-    /// D1, D2; the 0.1 release plan).
-    pub show_masternodes: bool,
+    /// Settings ▸ General ▸ Show Masternodes (MG-00 D1, D2 as amended by
+    /// MG-10 Q5): the Masternodes sidebar item and route. Auto shows it when
+    /// the wallet holds masternode keys, a collateral-shaped coin, a tracked
+    /// masternode or a proposal in progress. A file from before this setting
+    /// reads `showMasternodes: true` as On and anything else as Auto.
+    #[serde(deserialize_with = "MasternodesItem::lenient")]
+    pub masternodes_item: MasternodesItem,
     /// The Masternodes page's open tab (MG-10 D1); a tab this build doesn't
     /// know opens the default.
     #[serde(deserialize_with = "MasternodesTab::lenient")]
@@ -73,7 +76,7 @@ impl Default for UiSettings {
             autohide_balance: false,
             auto_lock_secs: None,
             subtract_fee_by_default: false,
-            show_masternodes: false,
+            masternodes_item: MasternodesItem::Auto,
             masternodes_tab: MasternodesTab::MyMasternodes,
             pre_release_notice_dismissed: false,
             language: None,
@@ -111,6 +114,23 @@ fn is_language_tag(tag: &str) -> bool {
         open_singleton = p.len() == 1;
     }
     !open_singleton
+}
+
+impl MasternodesItem {
+    fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        Ok(Self::deserialize(value).unwrap_or_default())
+    }
+}
+
+/// When the Masternodes sidebar item shows (MG-00 D2, amended by MG-10 Q5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum MasternodesItem {
+    #[default]
+    Auto,
+    On,
+    Off,
 }
 
 impl MasternodesTab {
@@ -208,8 +228,15 @@ fn from_file(text: &str) -> serde_json::Result<UiSettings> {
         .remove("language")
         .and_then(|raw| serde_json::from_str::<Option<String>>(raw.get()).ok())
         .flatten();
+    let legacy_on = !fields.contains_key("masternodesItem")
+        && fields
+            .remove("showMasternodes")
+            .is_some_and(|raw| raw.get() == "true");
     let mut settings: UiSettings = serde_json::from_str(&serde_json::to_string(&fields)?)?;
     settings.language = language;
+    if legacy_on {
+        settings.masternodes_item = MasternodesItem::On;
+    }
     Ok(settings)
 }
 
@@ -248,7 +275,7 @@ mod tests {
             autohide_balance: true,
             auto_lock_secs: Some(300),
             subtract_fee_by_default: true,
-            show_masternodes: true,
+            masternodes_item: MasternodesItem::Off,
             masternodes_tab: MasternodesTab::Names,
             pre_release_notice_dismissed: true,
             language: Some("pt-BR".into()),
@@ -277,8 +304,42 @@ mod tests {
             std::fs::write(path(dir.path()), file).unwrap();
             let s = read(dir.path());
             assert_eq!(s.masternodes_tab, MasternodesTab::MyMasternodes);
-            assert!(s.show_masternodes);
+            assert_eq!(s.masternodes_item, MasternodesItem::On);
         }
+    }
+
+    #[test]
+    fn show_masternodes_from_an_older_file_reads_as_on_and_anything_else_as_auto() {
+        let dir = root();
+        let cases = [
+            (r#"{"showMasternodes":true}"#, MasternodesItem::On),
+            (r#"{"showMasternodes":false}"#, MasternodesItem::Auto),
+            (r#"{"showMasternodes":"yes"}"#, MasternodesItem::Auto),
+            (r#"{"unit":"duffs"}"#, MasternodesItem::Auto),
+            (
+                r#"{"showMasternodes":true,"masternodesItem":"off"}"#,
+                MasternodesItem::Off,
+            ),
+            (r#"{"masternodesItem":"on"}"#, MasternodesItem::On),
+            (r#"{"masternodesItem":"sometimes"}"#, MasternodesItem::Auto),
+        ];
+        for (file, want) in cases {
+            std::fs::write(path(dir.path()), file).unwrap();
+            assert_eq!(read(dir.path()).masternodes_item, want, "{file}");
+        }
+        assert_eq!(
+            UiSettings::default().masternodes_item,
+            MasternodesItem::Auto
+        );
+    }
+
+    #[test]
+    fn a_saved_file_no_longer_holds_show_masternodes() {
+        let dir = root();
+        write(dir.path(), &UiSettings::default()).unwrap();
+        let text = std::fs::read_to_string(path(dir.path())).unwrap();
+        assert!(!text.contains("showMasternodes"), "{text}");
+        assert!(text.contains(r#""masternodesItem": "auto""#), "{text}");
     }
 
     #[test]
