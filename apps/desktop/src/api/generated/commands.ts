@@ -1967,9 +1967,10 @@ export function platformShieldQuote(walletId: string, amount: WithdrawAmount): P
 /**
  * Moves `amount` of the Platform addresses' credits to `to` (the
  * quote's: one of the wallet's Core receiving addresses) under `grant`.
+ * `exit_of`: the quote's, the held top-up this move is the exit of.
  */
-export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome> {
-  return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, grant });
+export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, exitOf: string | null, grant: string): Promise<MoveToCoreOutcome> {
+  return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, exitOf, grant });
 }
 
 /**
@@ -3603,7 +3604,7 @@ export type CommandArgs = {
   platform_addresses_sync: { walletId: string };
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
   platform_shield_quote: { walletId: string; amount: WithdrawAmount };
-  platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; grant: string };
+  platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string };
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
   platform_send: { walletId: string; operation: string; grant: string };

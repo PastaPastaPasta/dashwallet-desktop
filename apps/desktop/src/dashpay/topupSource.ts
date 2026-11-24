@@ -25,6 +25,10 @@ export const SOURCE_COPY = withTable(messageTable("dashpay.topUp.payWith", ["tit
   get notOffered() {
     return PAY_WITH_COPY.notOffered;
   },
+  /** The Shielded row's reason, on every network. */
+  get shieldedNotOffered() {
+    return t("dashpay.topUp.source.shieldedNotOffered");
+  },
   /** A move or payment from Platform holds the addresses (the Transfer sheet's copy). */
   get heldByOther() {
     return t("transfer.move.waiting.held");
@@ -127,7 +131,7 @@ export function topUpSources(i: SourceInputs): SourceRow[] {
   return [
     { source: "core", label: SOURCE_COPY.core, balance: shown(i.coreDuffs), reason: null },
     { source: "platform", label: SOURCE_COPY.platform, balance: shown(typeof p === "object" ? p?.duffs : undefined), reason: platformReason },
-    { source: "shielded", label: SOURCE_COPY.shielded, balance: shown(i.shieldedDuffs), reason: SOURCE_COPY.notOffered },
+    { source: "shielded", label: SOURCE_COPY.shielded, balance: shown(i.shieldedDuffs), reason: SOURCE_COPY.shieldedNotOffered },
   ];
 }
 
