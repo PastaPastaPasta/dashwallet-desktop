@@ -30,19 +30,18 @@ import {
   type PlatformHold,
   type SourceRow,
 } from "../../dashpay/topupSource";
-import { transferFor } from "../../transfer/model";
 import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
+import { moveToDashWallet } from "./DashPayCard";
 
 /** "Move to Dash wallet" for a held top-up: Home's transfer, at the move to the Dash wallet. */
 function useMoveToCore(flow: TopUpFlow, walletId: string) {
   const b = useBackend();
   return () => {
     flow.close();
-    navigate("home");
-    transferFor(b, walletId).start("platformToCore");
+    moveToDashWallet(b, walletId);
   };
 }
 

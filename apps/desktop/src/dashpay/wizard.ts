@@ -219,12 +219,14 @@ export class RegistrationWizard extends Model {
     this.changed();
   }
 
-  /** Continue (R2, R6): the row's label quoted again for the grant (no call sizes a resume's),
-   * then `resume_registration`. */
+  /** Continue (R2, R6): the row's label quoted again for the grant, or a claim's or a
+   * Platform-funded row's own grant (`registration_resume_grant`), then `resume_registration`. */
   async resume(row: RegistrationStatus): Promise<void> {
     await this.#call("resume", async () => {
       // A claim row's grant is the row's (D20): its invitation's quote refuses a claim that landed.
-      const grant = row.invitation
+      // A Platform-funded row's too (#685): a quote of its addresses refuses while its payment
+      // holds them, and a Core quote's grant carries duffs.
+      const grant = row.invitation || row.fromPlatform
         ? await this.api.registrationResumeGrant(this.walletId, row.draft)
         : (await this.api.registrationQuote(this.walletId, { ...coreRequest(row.label), temporaryLabel: row.temporaryLabel })).grant;
       const done = await this.#withGrant(grant, (g) => this.api.resumeRegistration(this.walletId, row.draft, g.id).then(() => true));

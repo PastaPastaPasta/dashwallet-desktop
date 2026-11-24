@@ -173,7 +173,8 @@ export function reported(world: World, walletId: string, dp: DashPayWorld, r: Re
   // A failed row that still owns an outstanding funding step (the engine's `Awaiting` standing)
   // keeps that step's wait; any other failed row waits for nothing (f1, Sol r1 P2).
   if (r.phase === "failed") return { ...r, waiting: awaitingWait(r.waiting), holdsKey: false, running: false };
-  const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown";
+  // A Platform-funded row's payment reads its create's record (C-funding F7, F22).
+  const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown" || (r.fromPlatform && (r.waiting === "paymentHeld" || r.waiting === "paymentUnknown"));
   // A parked run (its lease revoked or parked, D14) says what it parks for; an idle row its proof.
   const proofless = !dp.runs.includes(r.draft) && (r.phase === "fundingSent" || r.phase === "proofWaiting");
   const keyless = world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly";
@@ -276,9 +277,7 @@ export function platformQuote(label: string, p: PlatformWorld | null, mainnet: b
   const held = p.activity.find(isHeldOp);
   if (held) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: held.id });
   const { contested, credits } = costs(label);
-  const funding = credits > MIN_IDENTITY_FUNDING ? credits : MIN_IDENTITY_FUNDING;
-  const reserve = 3n * REGISTER_FEE_CREDITS;
-  const debit = funding + reserve;
+  const { funding, reserve, debit } = platformDebit(label);
   const best = p.addresses.map((a) => BigInt(a.credits)).reduce((n, c) => (c > n ? c : n), 0n);
   if (best < debit) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(debit), available: String(best) });
   return {
@@ -292,6 +291,15 @@ export function platformQuote(label: string, p: PlatformWorld | null, mainnet: b
     readiness: null,
     platform: { fundingCredits: String(funding), feeCredits: String(REGISTER_FEE_CREDITS), feeReserveCredits: String(reserve), debitCredits: String(debit) },
   };
+}
+
+/** What a Platform-funded registration of `label` takes from the addresses: the identity's funding
+ * and the first address's fee reserve (the row stores both at its start). */
+function platformDebit(label: string) {
+  const { credits } = costs(label);
+  const funding = credits > MIN_IDENTITY_FUNDING ? credits : MIN_IDENTITY_FUNDING;
+  const reserve = 3n * REGISTER_FEE_CREDITS;
+  return { funding, reserve, debit: funding + reserve };
 }
 
 /** The fixture quote's costs for `label` (handlers.ts `registration_quote`). */
@@ -377,6 +385,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         nameFailure: null,
         profileFailure: null,
         invitation: null,
+        fromPlatform: false,
         createdAt: now,
         updatedAt: now,
       },
@@ -420,6 +429,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         nameFailure: null,
         profileFailure: null,
         invitation: { linkId: plan.linkId, inviter: plan.inviter, requestFailure: null },
+        fromPlatform: false,
         createdAt: now,
         updatedAt: now,
       },
@@ -454,8 +464,13 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       if (!row) throw invalid("unknown draft");
       if (row.phase === "failed" && !row.failure?.retryable) throw invalid(`registration ${draft} failed for good (${row.failure?.code})`);
       if (row.phase === "done" || active(world, walletId, dp, draft) || grant === null) return null;
+      // F5: a Platform-funded row is off on mainnet before its grant is redeemed, and its grant
+      // carries no duffs.
+      if (row.fromPlatform && world.launch.network.kind === "mainnet")
+        throw fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (!g) throw fail("platform.grant_invalid", "grant invalid");
+      if (row.fromPlatform && (g.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs !== 0)) throw fail("platform.grant_invalid", "grant invalid");
       // A parked run takes the grant (a new lease); an idle row runs again.
       d.newLease(ctx, walletId, "registration", [g]);
       const phase = row.phase === "failed" ? row.failure!.phase : row.phase;
@@ -465,16 +480,16 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       changed(ctx, walletId, draft);
       return null;
     },
-    // registration.rs `resume_grant` (DP5-03 D20): a claim row's grant from the row alone, no
-    // duffs and the credits of the steps it has left.
+    // registration.rs `resume_grant` (DP5-03 D20, #685): a claim row's or a Platform-funded row's
+    // grant from the row alone, no duffs and the credits of the steps it has left.
     registration_resume_grant: ({ walletId, draft }, { world }) => {
       const row = d.dashpay(world, walletId).registrations.find((r) => r.draft === draft);
       if (!row) throw invalid("unknown draft");
-      if (!row.invitation) throw invalid("not an invitation's claim");
+      if (!row.invitation && !row.fromPlatform) throw invalid("not an invitation's claim or a Platform-funded row");
       const at = PHASE_ORDER.indexOf(row.phase === "failed" ? row.failure!.phase : row.phase);
-      let credits = row.identity ? 0n : IDENTITY_CREDITS;
+      let credits = row.identity ? 0n : row.fromPlatform ? platformDebit(row.label).debit : IDENTITY_CREDITS;
       if (at < PHASE_ORDER.indexOf("nameRegistered")) credits += NAME_CREDITS;
-      if (row.invitation.inviter && at < PHASE_ORDER.indexOf("done")) credits += REQUEST_CREDITS;
+      if (row.invitation?.inviter && at < PHASE_ORDER.indexOf("done")) credits += REQUEST_CREDITS;
       return { maxDuffs: 0, maxCredits: String(credits) };
     },
     // registration.rs `discard`: only a row whose funds are not committed.

@@ -1674,8 +1674,9 @@ export function registrationQuote(walletId: string, request: RegistrationRequest
 }
 
 /**
- * An invitation claim row's resume grant: no duffs, and the credits
- * of the steps it has left, from the row (DP5-03 D20).
+ * An invitation claim row's or a Platform-funded row's resume grant:
+ * no duffs, and the credits of the steps it has left, from the row
+ * (DP5-03 D20).
  */
 export function registrationResumeGrant(walletId: string, draft: string): Promise<GrantRequest> {
   return invoke<GrantRequest>("registration_resume_grant", { walletId, draft });

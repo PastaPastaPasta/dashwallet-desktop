@@ -45,6 +45,7 @@ export const dashpay = {
     buyCredits: "Buy credits",
     unlock: "Unlock",
     continue: "Continue",
+    moveToCore: "Move to Dash wallet",
   },
   /** A registration's three steps. `step` is the step's number out of three ("1/3"); `text` is the step. */
   step: {
