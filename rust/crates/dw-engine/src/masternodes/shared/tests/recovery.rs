@@ -1003,6 +1003,55 @@ fn test_a_registration_that_wins_lists_nothing() {
     assert_stage(f.resend_abandon(0, &id, COIN).unwrap_err(), "confirmed");
 }
 
+/// #438: on mainnet `send_shared_registration` refuses, so a coordinator's
+/// `sent` session whose hand-off was refused lists no `resend` (the read on
+/// regtest lists it). The row is the regtest session's, its envelope named
+/// mainnet and read back at `draft`, whose addresses and service mainnet
+/// doesn't check; out, the row reads `sent` whatever the envelope's stage.
+#[test]
+fn test_a_mainnet_session_lists_no_resend() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    f.spv(true, 1);
+    let debit = f.session_of(0, &id).debit.unwrap();
+    let resend = RecoveryAction::Resend { charge: debit };
+    assert!(f.recovery(0, &id).actions.contains(&resend));
+    let mut row = f.row(0, &id);
+    let mut envelope = parse(&row.envelope);
+    envelope.network = dashcore::Network::Mainnet;
+    envelope.stage = Stage::Draft;
+    row.envelope = envelope.to_text();
+
+    let (out_at, signed, txid, error) = (
+        row.out_at.take().unwrap(),
+        row.signed_tx.take().unwrap(),
+        row.txid.take().unwrap(),
+        row.last_error.take(),
+    );
+
+    let m = fx_on(DashNetwork::Mainnet, 1, true);
+    let (db, w) = (m.db(), m.wallets[0].to_string());
+    db.insert_shared_session_durable(&w, &row, 1).unwrap();
+    assert!(
+        db.mark_shared_session_out_durable(&w, &id, &signed, &txid, out_at)
+            .unwrap()
+    );
+    db.record_shared_session_attempt(&w, &id, error.as_deref())
+        .unwrap();
+    m.spv(true, 1);
+    let s = m.session_of(0, &id);
+    assert_eq!(s.stage, SharedStage::Sent);
+    assert!(!s.recovery.actions.contains(&resend), "{:?}", s.recovery);
+    let e = m.send(0, &id, 400 * COIN + FEE).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::Unsupported { feature, .. } if feature == "protx_sending"),
+        "{e:?}"
+    );
+}
+
 /// The resend and abandon calls with the switch off are `unsupported`, and
 /// the read lists no call that hands bytes off.
 #[test]

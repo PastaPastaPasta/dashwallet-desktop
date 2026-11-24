@@ -20,6 +20,7 @@ use serde::Deserialize;
 use super::super::MasternodesError;
 use super::super::protx::build::tx_size;
 use super::super::protx::ops::{conflict_of, overdue, tip_overdue};
+use super::super::protx::require_protx_sending;
 use super::super::shared_records::{
     AbandonSpend, AbandonSpendState, Blocked, BlockedReason, HandoffError, HandoffErrorOutcome,
     HandoffTx, RecoveryAction, SettledBy, Settlement, SharedKind, SharedRecovery, SharedRole,
@@ -830,14 +831,14 @@ impl NetworkSession {
 
     /// Whether the session's own resend passes its checks before the lease,
     /// as `send_shared_registration` and `send_maintenance` run them at
-    /// `sent`.
+    /// `sent`: never on mainnet (#438).
     async fn resend_passes(
         &self,
         wallet: WalletId,
         row: &SharedSessionRow,
         session: &SharedSession,
     ) -> bool {
-        if super::v24_context(self, wallet).await.is_err() {
+        if require_protx_sending(self).is_err() || super::v24_context(self, wallet).await.is_err() {
             return false;
         }
         match session.kind {

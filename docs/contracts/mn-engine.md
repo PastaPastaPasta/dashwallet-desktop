@@ -1669,11 +1669,11 @@ a block, or a key change's `dead` lists no action but `discard` where the call a
   `abandoned_in_activity` (its history entry abandoned), `in_history` (recorded, unconfirmed), `refused` (`not_sent`),
   `uncertain` (bytes kept), `legacy`. `attributed`: every abandon spend's txid, oldest first.
 - `actions`, a safe subset of what the calls accept now: `resend{charge}` (at `sent`, no abandon spend, the SPV client
-  running, the resend's checks passing; the debit or the key change's fee); `abandon{charge, spends, replaces}` (the
-  coin test usable, with no abandon spend or the latest `refused`, `abandoned_in_activity`, or `legacy` and overdue;
-  a funder's key change before `out_at`: `charge: 0, spends: false`); `resend_abandon{charge}` (the latest spend
-  `uncertain`, or `in_history` with its bytes; its fee known as the call reads it; the SPV client running; its inputs
-  free of other pending spends);
+  running, the resend's checks passing, not on mainnet; the debit or the key change's fee); `abandon{charge, spends,
+  replaces}` (the coin test usable, with no abandon spend or the latest `refused`, `abandoned_in_activity`, or `legacy`
+  and overdue; a funder's key change before `out_at`: `charge: 0, spends: false`); `resend_abandon{charge}` (the latest
+  spend `uncertain`, or `in_history` with its bytes; its fee known as the call reads it; the SPV client running; its
+  inputs free of other pending spends);
   `abandon_wallet_tx{txid}` (Activity's Abandon accepts it: the session's own recorded transaction blocking the coin
   test, or the latest spend `in_history`); `resend_wallet_tx{txid}` (the latest spend `in_history` with no bytes kept,
   Activity's Resend accepting it); `discard{releases}` (nothing out). No call that hands bytes off is listed while
