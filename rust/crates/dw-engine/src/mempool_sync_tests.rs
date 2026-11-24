@@ -29,6 +29,8 @@ mod h03_kill9_core_tests;
 mod own_spend_balance_tests;
 #[path = "own_spend_disk_tests.rs"]
 mod own_spend_disk_tests;
+#[path = "removed_payment_way_out_tests.rs"]
+mod removed_payment_way_out_tests;
 #[path = "signed_coin_pin_tests.rs"]
 mod signed_coin_pin_tests;
 
