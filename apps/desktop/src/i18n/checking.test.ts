@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { FUND_COPY } from "../platform/fund";
+import { shieldResultText } from "../coinjoin/move";
+import { FUND_COPY, fundRowView } from "../platform/fund";
 import { RECOVERY_COPY } from "../recovery/model";
 import { SHIELDED_COPY } from "../shielded/flow";
 import { flatten } from "./core";
@@ -25,5 +26,12 @@ describe("the Checking lines", () => {
       expect(copy.done.checking.text).toContain(`choose ${label} on the ${RECOVERY_COPY.title} card on Home.`);
       expect(copy.done.checking.text).toContain(`, ${label} adds it.`);
     }
+  });
+
+  it("go to the right screens: a move's result names Home, Home's row names its button", () => {
+    const result = shieldResultText({ txid: "aa".repeat(32), state: { kind: "consumptionUnknown" } }, (c) => c);
+    expect([result.title, result.text]).toEqual([SHIELDED_COPY.done.checking.title, SHIELDED_COPY.done.checking.text]);
+    const row = fundRowView({ duffs: 50_000_000, state: "checking", consumptionUnknown: true }, String);
+    expect(row).toEqual({ kind: "checking", text: FUND_COPY.done.checking.row, action: "checkAgain" });
   });
 });
