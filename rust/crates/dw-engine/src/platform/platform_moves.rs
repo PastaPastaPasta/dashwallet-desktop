@@ -130,7 +130,7 @@ use super::platform_addresses::{
 use super::registration_flow::parse_identity;
 use super::requests::{leased, write_permit};
 use super::shielded_pool;
-use super::signers::VaultPlatformAddressSigner;
+use super::signers::{VaultIdentitySigner, VaultPlatformAddressSigner};
 use super::trust::{self, Rule5};
 use super::withdrawal;
 use crate::events::unix_now;
@@ -171,13 +171,18 @@ pub(crate) enum MoveKind {
     /// top-up from addresses): `to` is the identity (base58), the fee comes
     /// from input 0 and the claims are what the identity gains.
     ToIdentity,
+    /// A registration's identity create from addresses (1.0 C4a, C-funding
+    /// F9): `to` is the identity its inputs and nonces give (base58), the
+    /// record's id names the registration's draft. Held and exited as a
+    /// top-up is: nonces taken with no exit document settle it.
+    Register,
 }
 
 impl MoveKind {
-    /// It credits one of the wallet's identities from the addresses: held,
-    /// a move to Core of exactly its inputs is its exit (C-routes C3-9).
+    /// It credits an identity from the addresses: a top-up or a
+    /// registration's create, held and exited alike (C-routes C3-9).
     pub(crate) fn credits_identity(self) -> bool {
-        matches!(self, MoveKind::ToIdentity)
+        matches!(self, MoveKind::ToIdentity | MoveKind::Register)
     }
 }
 
@@ -1136,7 +1141,7 @@ impl MoveRecord {
                 MoveKind::ToCore => PlatformActivityKind::MoveToCore,
                 MoveKind::Transfer => PlatformActivityKind::Send,
                 MoveKind::ToContact => PlatformActivityKind::ContactPayment,
-                MoveKind::ToIdentity => PlatformActivityKind::ToIdentity,
+                MoveKind::ToIdentity | MoveKind::Register => PlatformActivityKind::ToIdentity,
             },
             state: self.state,
             credits,
@@ -1419,9 +1424,10 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
                     // as failed (0.1).
                     moves[i].state = match moves[i].kind {
                         MoveKind::Transfer => PlatformActivityState::Replaced,
-                        MoveKind::ToCore | MoveKind::ToContact | MoveKind::ToIdentity => {
-                            PlatformActivityState::Failed
-                        }
+                        MoveKind::ToCore
+                        | MoveKind::ToContact
+                        | MoveKind::ToIdentity
+                        | MoveKind::Register => PlatformActivityState::Failed,
                     };
                     moves[i].can_land = false;
                 }
@@ -1875,9 +1881,10 @@ impl Refused {
                     max: limits.max,
                 }
             }
-            (Refused::OutOfRange, MoveKind::Transfer | MoveKind::ToIdentity) => {
-                CreditsError::SendOutOfRange { min: limits.min }
-            }
+            (
+                Refused::OutOfRange,
+                MoveKind::Transfer | MoveKind::ToIdentity | MoveKind::Register,
+            ) => CreditsError::SendOutOfRange { min: limits.min },
         }
     }
 }
@@ -2345,6 +2352,23 @@ pub(crate) trait MoveNet: Send + Sync {
         &self,
         id: Identifier,
     ) -> impl Future<Output = Result<(bool, u64), PlatformError>> + Send;
+    /// Signs the create of `identity` (its keys, at identity `index`) from
+    /// `inputs` at those nonces with both signers, the fee from input 0, and
+    /// broadcasts it (rs-sdk's `put_with_address_funding`, C-funding F8);
+    /// `Ok` with the proved identity's id: that result binds execution and
+    /// the id is checked against the inputs (F10).
+    fn register(
+        &self,
+        identity: &Identity,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        index: u32,
+        signers: (&VaultIdentitySigner, &VaultPlatformAddressSigner),
+    ) -> impl Future<Output = Result<Identifier, PlatformWalletError>> + Send;
+    /// Whether identity `id` exists, proved, with the proof's block height.
+    fn identity_exists(
+        &self,
+        id: Identifier,
+    ) -> impl Future<Output = Result<(bool, u64), PlatformError>> + Send;
 }
 
 /// The SDK and platform-wallet.
@@ -2444,6 +2468,46 @@ impl MoveNet for SdkMoves {
         let (document, at) =
             dpp::document::Document::fetch_with_metadata(&self.sdk, query, None).await?;
         Ok((document.is_some(), at.height))
+    }
+
+    async fn register(
+        &self,
+        identity: &Identity,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        index: u32,
+        (identity_signer, signer): (&VaultIdentitySigner, &VaultPlatformAddressSigner),
+    ) -> Result<Identifier, PlatformWalletError> {
+        use dash_sdk::platform::transition::put_identity::PutIdentity;
+        let (proved, infos, height) = identity
+            .put_with_address_funding(&self.sdk, inputs, None, identity_signer, signer, None)
+            .await
+            .map_err(PlatformWalletError::Sdk)?;
+        let id = proved.id();
+        // The library's follow-ups (C-funding F8): neither decides anything,
+        // and the next sync heals a failure of either.
+        (self.wallet.platform())
+            .reconcile_address_infos(&infos, height, "registration")
+            .await;
+        let wallet_id = self.wallet.wallet_id();
+        match crate::wallet_read::info_mut_of(&self.wallet).await {
+            Ok(mut state) => match (state.identity_manager).add_identity(
+                proved,
+                index,
+                wallet_id,
+                self.wallet.persister(),
+            ) {
+                Ok(()) | Err(PlatformWalletError::IdentityAlreadyExists(_)) => {}
+                Err(e) => tracing::warn!(%id, "recording a registration's identity: {e}"),
+            },
+            Err(e) => tracing::warn!(%id, "recording a registration's identity: {e}"),
+        }
+        Ok(id)
+    }
+
+    async fn identity_exists(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        use dash_sdk::platform::Fetch;
+        let (identity, at) = Identity::fetch_with_metadata(&self.sdk, id, None).await?;
+        Ok((identity.is_some(), at.height))
     }
 }
 
@@ -3375,9 +3439,10 @@ pub(crate) async fn quote(
     {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    // A top-up from Platform not settled: its exit takes exactly its inputs
-    // (C-routes C3-9), so Confirm shows that move; one Platform has not
-    // answered holds the next move, as the move refuses it.
+    // A top-up from Platform or a registration's create not settled: its
+    // exit takes exactly its inputs (C-routes C3-9), so Confirm shows that
+    // move; one Platform has not answered holds the next move, as the move
+    // refuses it.
     let top_up = (moves.iter()).find(|m| m.kind.credits_identity() && m.holds());
     if let Some(h) = top_up.filter(|h| h.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
@@ -4391,6 +4456,12 @@ impl NetworkSession {
             .await
     }
 }
+
+#[path = "platform_register.rs"]
+mod register;
+pub(crate) use register::{
+    PlanFund, PlanWrite, PlanWriter, RegisterAsk, RegisterOutcome, register_fund, register_held,
+};
 
 #[cfg(test)]
 #[path = "platform_moves_tests.rs"]

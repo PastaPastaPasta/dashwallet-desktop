@@ -1375,7 +1375,10 @@ fn the_key_window_parks_at_key_until_and_follows_the_proof_wait() {
             t.begin(
                 wallet,
                 FlowKind::Registration,
-                move || issue(&vault, &wallet, (FlowKind::Registration, None), &[g], None),
+                move || {
+                    let flow = (FlowKind::Registration, None);
+                    issue(&vault, &wallet, flow, &[g], None, false)
+                },
                 move || epoch.epoch(),
             )
         };

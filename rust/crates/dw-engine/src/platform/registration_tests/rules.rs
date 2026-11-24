@@ -124,6 +124,15 @@ impl RegistrationLib for Hooked {
         self.fake.platform_plan(funding).await
     }
 
+    fn platform_fund<'a>(
+        &'a self,
+        ask: crate::platform::platform_moves::RegisterAsk,
+        lease: Option<&'a Lease>,
+        write_plan: crate::platform::platform_moves::PlanWriter<'a>,
+    ) -> crate::platform::platform_moves::PlanFund<'a> {
+        self.fake.platform_fund(ask, lease, write_plan)
+    }
+
     async fn funding_permit(
         &self,
         lease: &Lease,
