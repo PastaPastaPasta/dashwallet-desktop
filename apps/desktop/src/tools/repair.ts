@@ -199,7 +199,19 @@ export type ResyncApi = Pick<Backend, "stopSpv" | "resetChainData" | "startSpv">
  * resets only a stopped client; sync starts again whatever the stop or the reset did (the stop can
  * fail after SPV stopped, on a Platform drain). The first failure is the one thrown; a restart that
  * then fails too would only hide it. */
-export async function resetChainAndResync(api: ResyncApi) {
+export function resetChainAndResync(api: ResyncApi): Promise<void> {
+  let reset = resets.get(api);
+  if (!reset) {
+    reset = runReset(api).finally(() => resets.delete(api));
+    resets.set(api, reset);
+  }
+  return reset;
+}
+
+/** The reset under way per backend: Home and Repair asking at once share it. */
+const resets = new WeakMap<object, Promise<void>>();
+
+async function runReset(api: ResyncApi) {
   try {
     await api.stopSpv();
     await api.resetChainData();

@@ -652,28 +652,29 @@ export function useRescanProgress() {
   return useQuery({ queryKey: keys.rescanProgress, queryFn: () => b.rescanProgress(), refetchInterval: 5_000 });
 }
 
-/** When `history_gap` is read after SPV starts or the open wallets change: at once, then while it
- * answers `null`, since the engine's first header anchor reaches disk some seconds after the start
- * and no event says so. */
+/** When `history_gap` is read while SPV runs: at once, then while it answers `null`, since the
+ * engine's first header anchor reaches disk some seconds after the start and no event says so. */
 const HISTORY_GAP_READS_MS = [0, 6_000, 20_000, 60_000];
 
 /** Reads `history_gap` (about 1 MB of headers on disk) for the app shell: never on a sync tick.
- * `walletIds` is the open wallets' ids, joined. */
-const historyGapQuery = (b: Backend) => ({ queryKey: keys.historyGap, queryFn: () => b.historyGap() });
+ * Kept until the wallet locks, so Home finds it again however long it was away. */
+const historyGapQuery = (b: Backend) => ({ queryKey: keys.historyGap, queryFn: () => b.historyGap(), gcTime: Infinity });
 
-export function useHistoryGapReads(running: boolean, walletIds: string) {
+/** `wallets` is the open wallets' ids and birth heights, joined: a new wallet or a lower birth
+ * height reads again. With sync stopped it reads once, as stored headers answer without SPV. */
+export function useHistoryGapReads(running: boolean, wallets: string) {
   const b = useBackend();
   const client = useQueryClient();
   useEffect(() => {
-    if (!running) return;
-    const timers = HISTORY_GAP_READS_MS.map((ms) =>
+    if (!wallets) return;
+    const timers = (running ? HISTORY_GAP_READS_MS : [0]).map((ms) =>
       setTimeout(() => {
         if (ms > 0 && client.getQueryData(keys.historyGap) != null) return;
         void client.fetchQuery({ ...historyGapQuery(b), staleTime: 0 }).catch(() => undefined);
       }, ms),
     );
     return () => timers.forEach(clearTimeout);
-  }, [b, client, running, walletIds]);
+  }, [b, client, running, wallets]);
 }
 
 /** The last `history_gap` answer the shell read; this never reads itself. */

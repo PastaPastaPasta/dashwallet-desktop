@@ -153,7 +153,7 @@ function WalletChrome({
   const detail = useUi((s) => s.detail);
   const lock = useLockStatus();
   const sync = useSyncStatus();
-  useHistoryGapReads(sync.raw?.running === true, (wallets.data ?? []).map((w) => w.walletId).join(","));
+  useHistoryGapReads(sync.raw?.running === true, (wallets.data ?? []).map((w) => `${w.walletId}:${w.birthHeight}`).join(","));
   const dashpay = useDashPayShell(wallet?.walletId);
   const registration = useStatusRegistration(wallet?.walletId, dashpay.status);
   const open = (row: TxRow) => ui.set({ detail: row.txid });

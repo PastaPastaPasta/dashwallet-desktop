@@ -415,7 +415,8 @@ export function coinjoinScenarios(base: Base) {
     /** Home's history-gap notice while a wallet mixes: its reset is refused until mixing stops. */
     "history-gap-mixing": (t: ThemeName | null) => {
       const w = mixing(base(t), { status: { kind: "waitingInQueue" }, progress: PROGRESS_42, sessions: [SESSION], queueSize: 3 });
-      w.tools.historyGap = { startHeight: 1_100_000, walletIds: [w.wallets[0].summary.walletId] };
+      for (const x of w.wallets) x.summary.birthHeight = 1_000_000;
+      w.tools.historyGap = { startHeight: 1_100_000, walletIds: w.wallets.map((x) => x.summary.walletId) };
       return w;
     },
     /** S5: running, but no masternode list yet. */

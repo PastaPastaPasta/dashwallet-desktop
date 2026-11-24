@@ -19,7 +19,7 @@ export function HistoryGapNotice() {
   const model = useModel(historyGapModel(b));
   const titleId = useId();
   const { state } = model;
-  if (!gap.data || gap.data.walletIds.length === 0 || state.kind === "hidden") return null;
+  if (!gap.data || gap.data.walletIds.length === 0 || model.hides(gap.data.walletIds)) return null;
   const working = state.kind === "working";
   return (
     <section className="protocol-advisory-banner history-gap-notice card-l1" data-testid="history-gap-notice" aria-labelledby={titleId}>
@@ -44,7 +44,7 @@ export function HistoryGapNotice() {
           <DashButton variant="tintedBlue" size="small" data-testid="history-gap-reset" disabled={working} onClick={() => model.ask()}>
             {HistoryGapText.reset}
           </DashButton>
-          <DashButton variant="plainBlue" size="small" data-testid="history-gap-not-now" disabled={working} onClick={() => model.notNow()}>
+          <DashButton variant="plainBlue" size="small" data-testid="history-gap-not-now" disabled={working} onClick={() => model.notNow(gap.data!.walletIds)}>
             {HistoryGapText.notNow}
           </DashButton>
         </div>

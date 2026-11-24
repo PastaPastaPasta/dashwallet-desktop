@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { appError } from "../onboarding/testWorld";
 import { historyGapModel, HistoryGapModel, HistoryGapText } from "./historyGap";
-import { RepairText } from "./repair";
+import { RepairText, resetChainAndResync } from "./repair";
 
 const wallet = (walletId: string, name: string): WalletSummary => ({ walletId, name, watchOnly: false, hasMnemonic: true, hd: true, birthHeight: 900_000, createdAt: null, balances: null });
 
@@ -59,16 +59,35 @@ describe("history gap notice", () => {
     model.ask();
     model.dismiss();
     expect(model.state.kind).toBe("shown");
-    model.notNow();
-    expect(historyGapModel(api).state.kind).toBe("hidden");
-    expect(historyGapModel(fakeApi().api).state.kind).toBe("shown");
+    expect(model.hides(["a"])).toBe(false);
+    model.notNow(["a"]);
+    expect(historyGapModel(api).hides(["a"])).toBe(true);
+    expect(historyGapModel(fakeApi().api).hides(["a"])).toBe(false);
 
     const other = fakeApi().api;
     historyGapModel(other).ask();
     const done = historyGapModel(other).confirm();
     expect(historyGapModel(other).state.kind).toBe("working");
-    historyGapModel(other).notNow();
-    expect(historyGapModel(other).state.kind).toBe("working");
+    historyGapModel(other).notNow(["a"]);
+    expect(historyGapModel(other).hides(["a"])).toBe(false);
     expect(await done).toBe(true);
+  });
+
+  it("Not now shows the notice again for a wallet it did not cover", () => {
+    const model = new HistoryGapModel(fakeApi().api);
+    model.notNow(["a"]);
+    expect(model.hides(["a"])).toBe(true);
+    expect(model.hides(["a", "b"])).toBe(false);
+  });
+
+  it("Home and Repair asking at once share one reset", async () => {
+    const { calls, api } = fakeApi();
+    const home = new HistoryGapModel(api);
+    home.ask();
+    const first = home.confirm();
+    const second = resetChainAndResync(api);
+    expect(await first).toBe(true);
+    await second;
+    expect(calls).toEqual(["stop", "reset", "start"]);
   });
 });

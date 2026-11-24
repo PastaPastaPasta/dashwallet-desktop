@@ -1,6 +1,7 @@
 // Home's notice for open wallets whose history starts before the block data this install keeps
 // (engine `history_gap`): their earlier payments are missing until "Reset chain data and resync",
-// the same reset Tools ▸ Repair offers. "Not now" hides it until the app starts again.
+// the same reset Tools ▸ Repair offers. "Not now" hides it for those wallets until the app starts
+// again.
 
 import type { WalletHistoryGap } from "../api/generated/WalletHistoryGap";
 import type { WalletSummary } from "../api/generated/WalletSummary";
@@ -31,7 +32,7 @@ export const HistoryGapText = {
   },
 };
 
-export type HistoryGapState = { kind: "shown" } | { kind: "confirming" } | { kind: "working" } | { kind: "failed"; text: string } | { kind: "hidden" };
+export type HistoryGapState = { kind: "shown" } | { kind: "confirming" } | { kind: "working" } | { kind: "failed"; text: string };
 
 /** One notice per backend, so "Not now" and a reset under way outlive Home's mounts until the app
  * starts again. */
@@ -45,14 +46,21 @@ export function historyGapModel(api: ResyncApi): HistoryGapModel {
 
 export class HistoryGapModel extends Model {
   state: HistoryGapState = { kind: "shown" };
+  readonly #dismissed = new Set<string>();
 
   constructor(private readonly api: ResyncApi) {
     super();
   }
 
-  notNow() {
+  /** Hides the notice for `walletIds`; a wallet not among them shows it again. */
+  notNow(walletIds: readonly string[]) {
     if (this.state.kind === "working") return;
-    this.#set({ kind: "hidden" });
+    walletIds.forEach((id) => this.#dismissed.add(id));
+    this.#set({ kind: "shown" });
+  }
+
+  hides(walletIds: readonly string[]): boolean {
+    return walletIds.every((id) => this.#dismissed.has(id));
   }
 
   ask() {
