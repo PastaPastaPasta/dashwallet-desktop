@@ -57,6 +57,9 @@ export const OnboardingText = {
   get birthDateInFuture() {
     return t("onboarding.options.birthDateInFuture");
   },
+  get birthDateMissing() {
+    return t("onboarding.options.birthDateMissing");
+  },
 };
 
 type Api = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "createVault" | "generateMnemonic" | "checkMnemonic" | "importWallet">;
@@ -342,11 +345,18 @@ export class OnboardingModel extends Model {
   }
 
   /** The date field's text (`YYYY-MM-DD`), read as a local date, so today is never in the
-   * future (an input's `valueAsDate` is UTC midnight). */
+   * future (an input's `valueAsDate` is UTC midnight). A field left empty, or a day the month
+   * does not have, is refused (#686): it would scan from the first block without saying so. */
   setScanDate(text: string) {
     this.scanDate = text;
     const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
-    this.setBirthDate(ymd ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) : null);
+    const date = ymd ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) : null;
+    if (date && date.getMonth() === Number(ymd![2]) - 1 && date.getDate() === Number(ymd![3])) this.setBirthDate(date);
+    else {
+      this.options = { ...this.options, birthHeight: 0 };
+      this.birthDateError = OnboardingText.birthDateMissing;
+      this.changed();
+    }
   }
 
   /** The height field's text; anything but a whole, non-negative number scans from genesis
