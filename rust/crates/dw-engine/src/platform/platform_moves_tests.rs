@@ -427,6 +427,8 @@ pub(crate) enum Act {
     /// The transition sent `n`-th (from 0) executes instead of this one,
     /// which is answered with the addresses' snapshot.
     EarlierExecutes(usize),
+    /// Signed and broadcast; a node answers with a signature error.
+    SignatureRefused,
     /// The signer refuses every input: the transition, short of its
     /// witnesses, is refused as Platform's checks refuse a malformed one
     /// (an error `never_valid` reads as definitive), with nothing signed.
@@ -459,12 +461,16 @@ pub(crate) struct FakeMoves {
     sets_latch: Mutex<Option<Arc<super::super::provenance::Provenance>>>,
     /// The next read waits, once it is in, for `read_release`.
     block_read: AtomicBool,
+    /// What each sent transition does besides moving its inputs.
+    effects: Mutex<Vec<Effect>>,
+    /// The withdrawal documents executed withdrawals created.
+    documents: Mutex<BTreeSet<Identifier>>,
+    /// Reads of a withdrawal document fail.
+    documents_down: AtomicBool,
+    /// What executed top-ups added to the identity.
+    topped_up: AtomicU64,
     pub(crate) read_entered: tokio::sync::Notify,
     pub(crate) read_release: tokio::sync::Notify,
-    /// Each sent transition's output script, a withdrawal's.
-    scripts: Mutex<Vec<Option<CoreScript>>>,
-    /// The withdrawal documents the executed withdrawals wrote, by id.
-    documents: Mutex<BTreeSet<dpp::prelude::Identifier>>,
     /// How far below the address proofs' height a document read's proof is.
     pub(crate) document_lag: AtomicU64,
     /// Each signing's count of `pending` contact payout rows on disk.
@@ -491,10 +497,12 @@ impl FakeMoves {
             stop_in_read: AtomicBool::new(false),
             sets_latch: Mutex::default(),
             block_read: AtomicBool::new(false),
+            effects: Mutex::default(),
+            documents: Mutex::default(),
+            documents_down: AtomicBool::new(false),
+            topped_up: AtomicU64::new(0),
             read_entered: tokio::sync::Notify::new(),
             read_release: tokio::sync::Notify::new(),
-            scripts: Mutex::default(),
-            documents: Mutex::default(),
             document_lag: AtomicU64::new(0),
             payout_rows_at_signing: Mutex::default(),
             withdrawal_reads: AtomicUsize::new(0),
@@ -573,6 +581,20 @@ impl FakeMoves {
         source: Option<PlatformAddress>,
         output: Option<(PlatformAddress, u64)>,
     ) -> bool {
+        self.execute_as(inputs, source, output, &Effect::Moves)
+    }
+
+    /// [`Self::execute`], and what the transition does besides: a
+    /// withdrawal creates its document (its id from the first input's
+    /// nonce and address and the payout script, as Drive derives it), a
+    /// top-up adds its claims to the identity.
+    fn execute_as(
+        &self,
+        inputs: &BTreeMap<PlatformAddress, (u32, u64)>,
+        source: Option<PlatformAddress>,
+        output: Option<(PlatformAddress, u64)>,
+        effect: &Effect,
+    ) -> bool {
         let mut state = self.state.lock().unwrap();
         if !(inputs.iter()).all(|(a, (n, _))| state.get(a).is_some_and(|s| s.0 + 1 == *n)) {
             return false;
@@ -596,46 +618,41 @@ impl FakeMoves {
             state.entry(to).or_insert((0, 0)).1 += paid;
         }
         drop(state);
+        match effect {
+            Effect::Moves => {}
+            Effect::Withdrawal(script) => {
+                use dpp::document::Document;
+                use dpp::system_data_contracts::withdrawals_contract;
+                let (first, (nonce, _)) = inputs.first_key_value().unwrap();
+                let mut entropy = nonce.to_be_bytes().to_vec();
+                entropy.extend_from_slice(&first.to_bytes());
+                entropy.extend_from_slice(script);
+                self.documents
+                    .lock()
+                    .unwrap()
+                    .insert(Document::generate_document_id_v0(
+                        &withdrawals_contract::ID,
+                        &withdrawals_contract::OWNER_ID,
+                        "withdrawal",
+                        &entropy,
+                    ));
+            }
+            Effect::TopUp => {
+                let claims: u64 = inputs.values().map(|(_, c)| *c).sum();
+                self.topped_up.fetch_add(claims, Ordering::SeqCst);
+            }
+        }
         self.tick();
         true
     }
 
-    /// [`Self::execute`] of the transition sent `n`-th, writing its
-    /// withdrawal document as Drive does (`address_credit_withdrawal/v0/
-    /// transformer.rs`: the first input's nonce and address, the script).
+    /// Executes the `n`-th sent transition (from 0) as Drive would.
     pub(crate) fn execute_sent(&self, n: usize) -> bool {
         let inputs = self.sent.lock().unwrap()[n].clone();
         let source = self.sources.lock().unwrap()[n];
         let output = self.outputs.lock().unwrap()[n];
-        let script = self.scripts.lock().unwrap()[n].clone();
-        self.execute_with(&inputs, source, output, script.as_ref())
-    }
-
-    fn execute_with(
-        &self,
-        inputs: &BTreeMap<PlatformAddress, (u32, u64)>,
-        source: Option<PlatformAddress>,
-        output: Option<(PlatformAddress, u64)>,
-        script: Option<&CoreScript>,
-    ) -> bool {
-        if !self.execute(inputs, source, output) {
-            return false;
-        }
-        if let (Some(script), Some((first, (nonce, _)))) = (script, inputs.first_key_value()) {
-            use dpp::document::Document;
-            use dpp::system_data_contracts::withdrawals_contract;
-            let mut entropy = nonce.to_be_bytes().to_vec();
-            entropy.extend_from_slice(&first.to_bytes());
-            entropy.extend_from_slice(script.as_bytes());
-            let id = Document::generate_document_id_v0(
-                &withdrawals_contract::ID,
-                &withdrawals_contract::OWNER_ID,
-                "withdrawal",
-                &entropy,
-            );
-            self.documents.lock().unwrap().insert(id);
-        }
-        true
+        let effect = self.effects.lock().unwrap()[n].clone();
+        self.execute_as(&inputs, source, output, &effect)
     }
 
     /// The scripted broadcast of a withdrawal (`output` `None`) or a
@@ -643,8 +660,8 @@ impl FakeMoves {
     async fn broadcast(
         &self,
         inputs: BTreeMap<PlatformAddress, (u32, u64)>,
-        (output, script): (Option<(PlatformAddress, u64)>, Option<CoreScript>),
-        fee_strategy: AddressFundsFeeStrategy,
+        output: Option<(PlatformAddress, u64)>,
+        (fee_strategy, effect): (AddressFundsFeeStrategy, Effect),
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), Box<PlatformWalletError>> {
         let recorded = self
@@ -690,8 +707,7 @@ impl FakeMoves {
         self.sent.lock().unwrap().push(inputs.clone());
         self.sources.lock().unwrap().push(source);
         self.outputs.lock().unwrap().push(output);
-        self.scripts.lock().unwrap().push(script.clone());
-        let script = script.as_ref();
+        self.effects.lock().unwrap().push(effect.clone());
         let lost = || {
             PlatformWalletError::Sdk(dash_sdk::Error::TimeoutReached(
                 Duration::from_secs(1),
@@ -700,12 +716,12 @@ impl FakeMoves {
         };
         let result = match act {
             Act::Executes => {
-                self.execute_with(&inputs, source, output, script);
+                self.execute_as(&inputs, source, output, &effect);
                 Ok(())
             }
             Act::AnswersOnly => Ok(()),
             Act::ExecutesUnanswered => {
-                self.execute_with(&inputs, source, output, script);
+                self.execute_as(&inputs, source, output, &effect);
                 Err(lost())
             }
             Act::Lost => Err(lost()),
@@ -715,14 +731,21 @@ impl FakeMoves {
                     TransitionNoInputsError::new().into(),
                 ))
             }
+            Act::SignatureRefused => {
+                use dpp::consensus::signature::InvalidStateTransitionSignatureError;
+                Err(PlatformWalletError::Sdk(
+                    ConsensusError::from(InvalidStateTransitionSignatureError::new("node".into()))
+                        .into(),
+                ))
+            }
             Act::StopsBeforeSigning | Act::StopsAfterSigning => panic!("the process stops"),
             Act::Unsigned => unreachable!("returned before signing"),
             Act::StopsAfterBroadcast => {
-                self.execute_with(&inputs, source, output, script);
+                self.execute_as(&inputs, source, output, &effect);
                 panic!("the process stops")
             }
             Act::StopsBeforeOutcome => {
-                self.execute_with(&inputs, source, output, script);
+                self.execute_as(&inputs, source, output, &effect);
                 self.stop_in_read.store(true, Ordering::SeqCst);
                 Ok(())
             }
@@ -769,8 +792,11 @@ impl MoveNet for FakeMoves {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
-        let ask = (None, Some(script));
-        (self.broadcast(inputs, ask, fee_strategy, signer).await).map_err(|e| *e)
+        let effect = Effect::Withdrawal(script.as_bytes().to_vec());
+        (self
+            .broadcast(inputs, None, (fee_strategy, effect), signer)
+            .await)
+            .map_err(|e| *e)
     }
 
     async fn withdrawal(&self, id: dpp::prelude::Identifier) -> Result<(bool, u64), PlatformError> {
@@ -790,10 +816,45 @@ impl MoveNet for FakeMoves {
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
         (self
-            .broadcast(inputs, (Some(to), None), fee_strategy, signer)
+            .broadcast(inputs, Some(to), (fee_strategy, Effect::Moves), signer)
             .await)
             .map_err(|e| *e)
     }
+
+    async fn top_up(
+        &self,
+        _identity: &Identity,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        signer: &VaultPlatformAddressSigner,
+    ) -> Result<u64, PlatformWalletError> {
+        // dpp's constructor fixes the fee on input 0.
+        let strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
+        (self
+            .broadcast(inputs, None, (strategy, Effect::TopUp), signer)
+            .await)
+            .map_err(|e| *e)?;
+        Ok(self.topped_up.load(Ordering::SeqCst))
+    }
+
+    async fn withdrawal_document(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        if self.documents_down.load(Ordering::SeqCst) {
+            return Err(PlatformError::Unavailable);
+        }
+        trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
+        let present = self.documents.lock().unwrap().contains(&id);
+        Ok((present, self.height.load(Ordering::SeqCst)))
+    }
+}
+
+/// What a sent transition does besides moving its inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Effect {
+    /// A transfer's output, or nothing more.
+    Moves,
+    /// A withdrawal to the payout script.
+    Withdrawal(Vec<u8>),
+    /// A top-up of the identity by its claims.
+    TopUp,
 }
 
 /// A session with a wallet, its Platform payment addresses and `net`.
@@ -2914,3 +2975,6 @@ fn only_a_rise_beyond_an_applied_fund_is_incoming() {
 
 #[path = "platform_shield_tests.rs"]
 mod shield;
+
+#[path = "platform_top_up_tests.rs"]
+mod top_up;

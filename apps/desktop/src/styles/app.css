@@ -4526,6 +4526,10 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-xs);
 }
 
+.shielded-card-actions > * {
+  white-space: nowrap;
+}
+
 .platform-card-title {
   margin: 0;
   font-size: var(--dw-type-subhead-medium-size);
@@ -5518,8 +5522,16 @@ button.bell-row-open:focus-visible {
 
 .mg-header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--dw-space-s);
+  min-width: 0;
+}
+
+/* A disabled action's reason wraps under it, end-aligned, instead of widening the header. */
+.mg-header-actions > .dash-button-why {
+  text-align: end;
 }
 
 .page-masternodes .page-column {
@@ -6092,6 +6104,11 @@ button.bell-row-open:focus-visible {
   text-align: end;
 }
 
+/* A username vote's present choice names its contender: "Alice (8ZtW…R97P)". */
+.mg-nodes-names .mg-node {
+  grid-template-columns: 20px minmax(0, 1fr) 64px 160px;
+}
+
 /* A "More" button's menu (mg-00.css's .mg-menu, with real menu items). */
 .mg-menu-anchor {
   position: relative;
@@ -6261,8 +6278,8 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-text-tertiary);
 }
 
-/* A group, not a fieldset, as on Restore options (issue 108): a flex fieldset's legend could move
-   the centred sheet under the first click on WebKitGTK. */
+/* A radio group, not a fieldset, as on Restore options (issue 108): a flex fieldset's legend could
+   move the centred sheet under the first click on WebKitGTK. */
 .mg-choices {
   display: flex;
   flex-direction: column;

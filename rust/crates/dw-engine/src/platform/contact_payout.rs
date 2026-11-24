@@ -567,7 +567,7 @@ pub(crate) async fn pay(
         let _ = session.end_flow(call.grant.clone());
     }
     match ran {
-        Ok(record) => Ok(ContactPayOutcome {
+        Ok((record, _)) => Ok(ContactPayOutcome {
             reference: record.id,
             state: leg.state,
         }),
