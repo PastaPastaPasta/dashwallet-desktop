@@ -3261,7 +3261,7 @@ const ELSEWHERE_PHRASE: &str =
 /// change, signed on another device and handed to the network (as Broadcast
 /// Tx does with a PSBT), is stored; after a restart an InstantSend-locked
 /// rival paying the wallet beats it. The payment is dropped and A is held
-/// through a `dropped:` note, as for a wallet that holds its secret.
+/// through a `drop_holds:` note, as for a wallet that holds its secret.
 #[test]
 fn a_watch_only_wallets_beaten_payment_is_dropped_and_its_coin_held() {
     use key_wallet::wallet::initialization::WalletAccountCreationOptions;
