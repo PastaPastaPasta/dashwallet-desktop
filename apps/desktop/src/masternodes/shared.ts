@@ -219,12 +219,12 @@ export const sharedBadgeCount = (sessions: readonly SharedSession[] | undefined,
 export const isFinal = (s: Pick<SharedSession, "stage">) => s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
 
 /** Discard is offered only while the engine says so, and never at a final stage. */
-export const canDiscard = (s: Pick<SharedSession, "stage" | "discardable">) => s.discardable && !isFinal(s);
+export const canDiscard = (s: Pick<SharedSession, "discardable">) => s.discardable;
 
-/** "Sessions in progress" (§2.1): not final, newest first. Registrations, and from S6 the
- * maintenance sessions too. */
+/** "Sessions in progress" (§2.1): not final, or final but still discardable (a dead session whose
+ * coins Discard releases), newest first. Registrations, and from S6 the maintenance sessions too. */
 export function sessionsInProgress(sessions: readonly SharedSession[] | undefined, slice: SharedSlice = S5_SLICE): SharedSession[] {
-  return (sessions ?? []).filter((s) => (isRegistration(s) || slice.maintenance) && !isFinal(s)).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+  return (sessions ?? []).filter((s) => (isRegistration(s) || slice.maintenance) && (!isFinal(s) || s.discardable)).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
 /** The stage strip's current step, 1–6 (MG-00 D31 over MG-04b §2.3). */

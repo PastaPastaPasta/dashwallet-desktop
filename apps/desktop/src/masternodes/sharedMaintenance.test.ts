@@ -99,15 +99,21 @@ describe("registrations keep S5's rule under S6", () => {
 describe("final stages (F4)", () => {
   const finals: SharedSession["stage"][] = [{ kind: "confirmed", height: 1 }, { kind: "conflicted" }, { kind: "dead", reason: "abandoned" }];
   for (const stage of finals)
-    it(`${stage.kind}: not in progress, and no Discard even if marked discardable`, () => {
+    it(`${stage.kind}: not in progress and no Discard once the engine reads it not discardable`, () => {
       const sessions = [
-        { ...participantSession("signing"), stage, discardable: true },
-        { ...togetherSession("participant", "signing"), stage, discardable: true },
-        { ...keyChangeSession("coordinator", "combined"), stage, discardable: true },
+        { ...participantSession("signing"), stage, discardable: false },
+        { ...togetherSession("participant", "signing"), stage, discardable: false },
+        { ...keyChangeSession("coordinator", "combined"), stage, discardable: false },
       ];
       expect(sessionsInProgress(sessions, S6_SLICE)).toEqual([]);
       for (const s of sessions) expect(canDiscard(s), s.kind).toBe(false);
     });
+
+  it("a dead session that still holds coins stays listed with Discard until it is discarded", () => {
+    const s = { ...participantSession("signing"), stage: { kind: "dead", reason: "inputs_spent" } as SharedSession["stage"], discardable: true };
+    expect(sessionsInProgress([s], S6_SLICE)).toEqual([s]);
+    expect(canDiscard(s)).toBe(true);
+  });
 
   it("an open discardable session is listed and offers Discard", () => {
     const s = keyChangeSession("coordinator", "combined");
