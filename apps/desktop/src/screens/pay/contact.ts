@@ -12,6 +12,7 @@ import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { EligibilityName } from "../../api/generated/EligibilityName";
 import type { LockResolutionName } from "../../api/generated/LockResolutionName";
 import type { LockStateName } from "../../api/generated/LockStateName";
+import type { PaymentSourceName } from "../../api/generated/PaymentSourceName";
 import type { UserHit } from "../../api/generated/UserHit";
 import type { UserRelation } from "../../api/generated/UserRelation";
 import type { PayTab } from "../../app/ui";
@@ -202,7 +203,7 @@ export type Banner =
   | { kind: "gone"; text: string }
   | { kind: "watchOnly"; text: string }
   | { kind: "enable"; text: string }
-  | { kind: "paymentLock"; text: string; txid: string }
+  | { kind: "paymentLock"; text: string; txid: string; source: PaymentSourceName }
   | { kind: "broken"; text: string }
   | { kind: "mixingOnly"; text: string }
   | { kind: "note"; text: string };
@@ -223,6 +224,18 @@ export interface BannerInput {
 
 export const PAYMENT_LOCK_TEXT = en.pay.contact.banner.paymentLock;
 
+/** The locked banner names the balance a payout left from (C-funding D-C5 Copy). */
+function lockText(source: PaymentSourceName): string {
+  switch (source) {
+    case "platform":
+      return t("pay.contact.banner.paymentLockPlatform");
+    case "shielded":
+      return t("pay.contact.banner.paymentLockShielded");
+    case "core":
+      return t("pay.contact.banner.paymentLock");
+  }
+}
+
 /** First match wins (D6). A locked vault never reaches the tab: the lock screen replaces the pages. */
 export function payBanner(i: BannerInput): Banner | null {
   if (i.detail === undefined) return i.readError ? { kind: "readFailed", text: t("pay.contact.banner.readFailed", { error: i.readError }) } : { kind: "loading" };
@@ -232,7 +245,7 @@ export function payBanner(i: BannerInput): Banner | null {
   if (relation !== "contact" && !request && !i.accepted) return { kind: "gone", text: t("pay.contact.banner.notContacts") };
   if (i.watchOnly) return { kind: "watchOnly", text: t("pay.contact.watchOnly") };
   if (request && i.hasKeys === false) return { kind: "enable", text: t("pay.contact.banner.enableThenAccept") };
-  if (i.detail.paymentLock) return { kind: "paymentLock", text: t("pay.contact.banner.paymentLock"), txid: i.detail.paymentLock.txid };
+  if (i.detail.paymentLock) return { kind: "paymentLock", text: lockText(i.detail.paymentLock.source), txid: i.detail.paymentLock.txid, source: i.detail.paymentLock.source };
   if (channel === "broken") return { kind: "broken", text: t("contacts.pane.broken") };
   if (i.lock === "unlockedMixingOnly") return { kind: "mixingOnly", text: t("pay.contact.banner.mixingOnly") };
   if (request) return { kind: "note", text: t("pay.contact.banner.request") };

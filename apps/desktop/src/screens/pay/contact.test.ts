@@ -106,7 +106,7 @@ describe("IOS-050 the banner (D6)", () => {
 
   it("shows the payment lock with its txid before the channel, and only then mixing-only", () => {
     const locked = detail({ channel: "broken" }, { paymentLock: { txid: "d4".repeat(32), since: 5, source: "core", reference: "d4".repeat(32) } });
-    expect(payBanner(input({ detail: locked, lock: "unlockedMixingOnly" }))).toEqual({ kind: "paymentLock", text: PAYMENT_LOCK_TEXT, txid: "d4".repeat(32) });
+    expect(payBanner(input({ detail: locked, lock: "unlockedMixingOnly" }))).toEqual({ kind: "paymentLock", text: PAYMENT_LOCK_TEXT, txid: "d4".repeat(32), source: "core" });
     expect(payBanner(input({ detail: detail({ channel: "broken" }), lock: "unlockedMixingOnly" }))).toMatchObject({ kind: "broken" });
     expect(payBanner(input({ lock: "unlockedMixingOnly" }))).toMatchObject({ kind: "mixingOnly" });
     expect(payBanner(input({ watchOnly: true, detail: locked }))).toMatchObject({ kind: "watchOnly" });

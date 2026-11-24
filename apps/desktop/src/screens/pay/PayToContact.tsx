@@ -10,7 +10,7 @@ import { errorMessage } from "../../api/backend";
 import type { ContactRecipient } from "../../api/generated/ContactRecipient";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { UserHit } from "../../api/generated/UserHit";
-import { useLockStatus, useWallets } from "../../api/queries";
+import { useLockStatus, usePoolBalances, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
@@ -27,6 +27,8 @@ import { CoinControl } from "./CoinControl";
 import { FoundUser } from "./FoundUser";
 import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
+import { BalanceAmount, BalancePaySheet, FromStep, useBalancePay } from "./PayFromBalance";
+import { fromRows, liveSources, payingSource, type PaySource } from "./fromBalance";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
@@ -359,11 +361,19 @@ function ContactForm({
   const backToForm = () => (reviewButton.current?.disabled === false ? reviewButton.current : amountField.current);
 
   const { duffs } = amount;
+  // "From" (C-funding D-C5, P16): the Dash wallet each time the form opens, never remembered.
+  const discreet = useUi((s) => s.discreet);
+  const pools = usePoolBalances(walletId);
+  const [chosen, setChosen] = useState<PaySource>("core");
+  const coreAvailable = useAvailable(walletId, advanced, sheets.held);
+  const rows = fromRows({ coreDuffs: coreAvailable, shielded: pools.shielded, platform: pools.platform, amount: (d) => shown.withUnit(d), discreet, acceptsToo: acceptsToo(detail.data, accepted), live: liveSources(network.kind) });
+  const source = payingSource(rows, chosen);
+  const balance = useBalancePay({ walletId, identity, contact, source, duffs, settled: amount.settled && !amount.fiat.error, shown });
   const recipient: ContactRecipient | null =
     typeof duffs === "number" && duffs > 0 ? { identity, contact, amount: duffs, subtractFee, note: note.trim() || null } : null;
   const spec = draftSpec(recipient, advanced);
-  const available = useAvailable(walletId, advanced, sheets.held);
-  const { estimate, general, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || held || sheets.held, shown);
+  const available = coreAvailable;
+  const { estimate, general, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || held || sheets.held || balance.active, shown);
   const ready = estimated && amount.settled && !amount.fiat.error;
   const max = useMax(walletId, advanced, shown, (text) => {
     amount.setText(text);
@@ -382,7 +392,8 @@ function ContactForm({
         aria-label={t("pay.contact.form", { name: payee.name })}
         onSubmit={(e) => {
           e.preventDefault();
-          review();
+          if (balance.active) balance.review();
+          else review();
         }}
       >
         <section className="pay-card card-l1 pay-payee-card" data-testid="pay-payee">
@@ -402,6 +413,22 @@ function ContactForm({
         {banner && <PayBanner banner={banner} contact={contact} checking={resolve.isPending} onCheck={check} retry={() => void detail.refetch()} />}
         <ActionLine ok={found?.resolved ?? true} text={found?.text ?? null} testId="pay-lock-resolve" />
         {!held && (
+          <section className="pay-card card-l1">
+            <FromStep rows={rows} source={source} onChange={setChosen} />
+          </section>
+        )}
+        {!held && balance.active && (
+          <>
+            <section className="pay-card card-l1">
+              <BalanceAmount shown={shown} amount={amount} inputRef={amountField} />
+              <FormField label={t("pay.contact.note")} hint={t("pay.contact.noteHint")}>
+                {(p) => <input {...p} data-testid="pay-note" value={note} autoComplete="off" onChange={(e) => setNote(e.target.value)} />}
+              </FormField>
+            </section>
+            <PayFooter form="contact" problem={balance.problem} fee={balance.fee} shown={shown} ready={balance.ready} incomplete={balance.incomplete} reviewRef={reviewButton} />
+          </>
+        )}
+        {!held && !balance.active && (
           <>
             <section className="pay-card card-l1">
               <AmountFields
@@ -447,6 +474,24 @@ function ContactForm({
           }}
         />
       )}
+      {(balance.confirmed !== null || balance.flow.step !== "confirm") && (
+        <BalancePaySheet
+          flow={balance.flow}
+          quote={balance.confirmed}
+          name={payee.name}
+          note={note.trim() || null}
+          shown={shown}
+          onClose={(paid) => {
+            balance.close();
+            if (paid) {
+              amount.setText("");
+              setNote("");
+            }
+            refreshAfter(client, walletId, identity, ["contacts"]);
+            backToForm()?.focus();
+          }}
+        />
+      )}
       {phase.kind === "sending" && <SendingSheet sending={phase.sending} network={network} />}
       {phase.kind === "result" && (
         <ResultSheet
@@ -486,9 +531,12 @@ function PayBanner({ banner, contact, checking, onCheck, retry }: { banner: Bann
     case "paymentLock":
       action = (
         <span className="add-contact-actions">
-          <DashButton key="show" variant="tintedGray" size="small" data-testid="pay-banner-show" onClick={() => navigate("activity", { detail: banner.txid })}>
-            {t("pay.contact.showTransaction")}
-          </DashButton>
+          {/* A payout's reference is no Core transaction: there is none to show yet. */}
+          {banner.source === "core" && (
+            <DashButton key="show" variant="tintedGray" size="small" data-testid="pay-banner-show" onClick={() => navigate("activity", { detail: banner.txid })}>
+              {t("pay.contact.showTransaction")}
+            </DashButton>
+          )}
           <DashButton key="check" variant="tintedBlue" size="small" data-testid="pay-banner-check" disabled={checking} onClick={onCheck}>
             {checking ? t("pay.contact.checking") : t("pay.contact.checkAgain")}
           </DashButton>

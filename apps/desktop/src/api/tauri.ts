@@ -229,6 +229,8 @@ export class IpcBackend implements Backend {
   contactActivity = cmd.contactActivity;
   frequentContacts = cmd.frequentContacts;
   resolveContactPaymentLock = cmd.resolveContactPaymentLock;
+  contactPayQuote = cmd.contactPayQuote;
+  contactPay = cmd.contactPay;
   grantRequest = cmd.grantRequest;
   creditsCostTable = cmd.creditsCostTable;
   dashpayEligibility = cmd.dashpayEligibility;
