@@ -41,7 +41,7 @@ governance sync (D2).
 `contested_names(wallet) -> ContestedNames`:
 - `contests`: the open DPNS contests, soonest-ending first: the first page (100) of Platform's end-date index from now
   on, each with one vote-state page (100 contenders, Drive's default; D9): `label` (normalized), `ends_at` (Unix s),
-  `contenders` (`identity` base58, `votes`), `lock_votes`, `abstain_votes`, `contenders_complete` (false for a full
+  `contenders` (`identity` base58, `votes`, `name`: the contender's own spelling of the label from its `domain` document on that page, `null` when the document is missing, does not decode or does not fold to the label, or when the page's proof used a quorum key SPV did not verify (H-09); MG-11 F1), `lock_votes`, `abstain_votes`, `contenders_complete` (false for a full
   page).
 - `voters`: the wallet's masternodes eligible to vote, list order: every SPV list entry whose voting key the wallet
   holds, as `Governance::vote` chooses keys (keychain 0–19, then an attached voting key whose recorded id is the list's,

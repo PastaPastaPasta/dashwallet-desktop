@@ -4050,6 +4050,26 @@ struct EngineMixingWallet {
 }
 
 impl EngineMixingWallet {
+    /// Whether any of `outpoints` was locked by the user, left the wallet,
+    /// or is claimed by another owner, read under `fence`. This session's
+    /// own reservation is not a claim against it.
+    async fn withdrawn_under(
+        &self,
+        s: &Arc<NetworkSession>,
+        fence: &CoinFence,
+        outpoints: &[OutPoint],
+    ) -> Result<bool, WalletError> {
+        let view = (s.pass_view(fence).await)
+            .map_err(|e| WalletError(e.to_string()))?
+            .ok_or_else(|| WalletError("the wallet's coins are not readable".into()))?;
+        // Another owner's claim (a payment, a move) is a spend in progress.
+        Ok(s.spends
+            .held_by_other(&self.wallet_id, self.owner, outpoints)
+            || outpoints.iter().any(|o| {
+                !(view.coins.iter()).any(|c| c.coin.utxo.outpoint == *o && !c.coin.user_locked)
+            }))
+    }
+
     fn session(&self) -> Result<Arc<NetworkSession>, WalletError> {
         self.session
             .upgrade()
@@ -4125,16 +4145,7 @@ impl MixingWallet for EngineMixingWallet {
     async fn any_withdrawn(&self, outpoints: &[OutPoint]) -> Result<bool, WalletError> {
         let s = self.session()?;
         let fence = (s.coin_fence(self.wallet_id).await).map_err(|e| WalletError(e.to_string()))?;
-        let view = (s.pass_view(&fence).await)
-            .map_err(|e| WalletError(e.to_string()))?
-            .ok_or_else(|| WalletError("the wallet's coins are not readable".into()))?;
-        // Another owner's claim (a payment, a move) is a spend in progress;
-        // this session's own reservation is not.
-        Ok(s.spends
-            .held_by_other(&self.wallet_id, self.owner, outpoints)
-            || outpoints.iter().any(|o| {
-                !(view.coins.iter()).any(|c| c.coin.utxo.outpoint == *o && !c.coin.user_locked)
-            }))
+        self.withdrawn_under(&s, &fence, outpoints).await
     }
 
     async fn reserve_scripts(&self, count: usize) -> Result<Vec<ScriptBuf>, WalletError> {
@@ -4202,12 +4213,23 @@ impl MixingWallet for EngineMixingWallet {
         // unresolved, is not signed (review P2b r7 O-2): read under the
         // coin fence, which a funding call keeps until its lock is
         // recorded, and kept through the signing.
-        let _fence = s
+        let fence = s
             .coin_fence(self.wallet_id)
             .await
             .map_err(|e| WalletError(e.to_string()))?;
         if !s.leases.journal_ready() {
             return Err(WalletError("the dispatch journal is not read".into()));
+        }
+        // A coin the user locked, or another owner claimed, since the
+        // session's last check is not signed: checked under this fence,
+        // which a "Lock unspent" waiting on it cannot pass.
+        let ours: Vec<OutPoint> = (inputs.iter())
+            .map(|(i, _)| tx.input[*i].previous_output)
+            .collect();
+        if self.withdrawn_under(&s, &fence, &ours).await? {
+            return Err(WalletError(
+                "an input was locked, left the wallet or is claimed by another payment".into(),
+            ));
         }
         let held = s.leases.unresolved_lock_inputs(self.wallet_id);
         if let Some(o) = (inputs.iter())

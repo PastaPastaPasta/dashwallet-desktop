@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 74
+Contract-Version: 75
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -71,7 +71,7 @@ type is `pub(crate)`.
 | `payments.rs` | DP3-01, DP3-02 | `payment_lock`, `resolve_payment_lock`, `contact_activity`, `frequent_contacts` |
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
 | `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar`, `NetworkSession.load_contact_pictures`, `set_load_contact_pictures` |
-| `credits.rs` | DP1-06, DP6-02, C6a-1 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw`, `withdrawals`, `withdraw_to_platform_quote`, `withdraw_to_platform` |
+| `credits.rs` | DP1-06, DP6-02, C6a-1 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw`, `withdrawals`, `withdraw_to_platform_quote`, `withdraw_to_platform`, `top_up_from_platform_quote`, `top_up_from_platform` |
 | `platform_addresses.rs` | release 0.1, lane E2; 0.2 X1b | `platform_addresses`, `platform_activity`, `sync_platform_addresses`, `move_to_core_quote`, `move_to_core`, `platform_receive_address`, `platform_send_quote`, `platform_send`, `platform_fund_quote`, `platform_fund`, `pending_platform_funds`, `resume_platform_fund` |
 | `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
@@ -527,6 +527,8 @@ bodies decided where the rows leave room:
 | `withdrawals(identity)` | async | The identity's withdrawal documents on Platform (`identityRecent`), the most recently updated first, at most 20: id, credits, `expected_duffs`, the address paid, `WithdrawalStatus` and the document's times (§5). Re-read on `Platform{Credits}`; a queued withdrawal moves on Platform's schedule, so the host also re-reads while one is not `Complete`. **Implemented (DP6-02).** | `CreditsError` |
 | `withdraw_to_platform_quote(identity, amount)` | async | What moving `amount` of the identity's credits to the wallet's own Platform address takes (§7 item 93; C-routes D-C6): `credits` (what the balance loses and the address gains), `fee_credits` (the reserve: the larger of dpp's minimum fee for the transition with one recipient and a bound on the fee Platform meters, the `identity_update` minimum and the withdrawal's identity operations plus one new address entry's stored bytes at the version's rates, processing doubled; Platform charges what it meters, at most this), `to` (the wallet's Platform receive address, as `platform_receive_address`) and the `grant` (`max_credits` = `credits + fee_credits`, no duffs). `All` is the balance less the reserve. Refuses an identity that is not the wallet's (`identity.not_found`) or that it only watches (`invalid_argument`), a protocol version below address funds (`platform.feature_off{feature: "platform_addresses"}`), an amount below the version's `min_output_amount` (`credits.withdrawal_out_of_range{min, max}`, `max` the balance less the reserve), an amount above that or `All` below the least (`platform.insufficient_credits{needed, available}`). **Implemented (C6a-1).** | `CreditsError` |
 | `withdraw_to_platform(identity, to, amount, grant)` | async | Moves `amount` to `to`, one of the wallet's own Platform addresses (the payment account's derived ones; anything else `invalid_argument`), with dpp's `IdentityCreditTransferToAddressesTransition` (one recipient, no fee increase). As `withdraw`: the money-move gate, then under the identity's write lock the quote's refusals against the balance read again, then the identity's nonce (below), the grant or `Withdraw` lease (`platform.grant_exceeded`, `platform.grant_invalid`) and a CRITICAL ECDSA TRANSFER key the vault holds (`identity.keys_missing{transfer}`), all before the grant is redeemed. **The nonce is `withdraw`'s** (one session record of both): of an unconfirmed withdrawal or transfer and the next write at most one executes. Before signing, the unconfirmed writes are decided: a withdrawal's document read back with its amount, or a transfer at a nonce Platform no longer takes, executed, so this call is `credits.withdrawal_landed{artifact}` naming it (a document id, or a transfer's transition hash) and that marker clears; while a transfer of the identity may still execute this call is `credits.move_pending{id}`, `id` that transfer's transition hash (a withdrawal still signs at its nonce). The write is in that record before it is broadcast. **The outcome is the identity's proved nonce**, read again after the broadcast at least as recent as the read under the lock: Platform no longer takes it and only this transfer was signed there, executed: `WithdrawToPlatformOutcome{credits, to, remaining_credits, transition}` (`remaining_credits` the proved balance the answer carried, shown only; `transition` Platform's hash of the transition, hex SHA-256). A withdrawal signed at the same nonce whose document reads back decides for itself: `credits.withdrawal_landed{artifact}` naming it. Otherwise (the nonce still taken, every read older than the one under the lock, or a failed read) a refusal Platform answered with its consensus error is that refusal and anything else `platform.broadcast_unknown{artifact}` naming the transition hash, never retried. Platform's CheckTx refusals (a fee or balance shortfall, a disabled key, a reserve short of Drive's estimate) reach the engine as no answer, so they are `platform.broadcast_unknown` too. **Either way the transfer stays in the record and holds the route:** every later `withdraw_to_platform` of the identity in the session is `credits.move_pending{id}` until one of these: a nonce read shows Platform no longer takes that nonce (decided as above), a `withdraw` signed at that nonce executes, or the app restarts (the record is not kept, BL-335). No answer and no balance decides. **Implemented (C6a-1).** | `CreditsError` |
+| `top_up_from_platform_quote(identity, amount)` | async | What topping the identity up with `amount` (`WithdrawAmount`) of the Platform addresses' credits takes (§7 item 96; C-routes D-C3, C3-2, C3-3). Refuses an identity that is not the wallet's (`identity.not_found`) or that it only watches (`invalid_argument`), and a protocol version below address funds (`platform.feature_off{feature: "platform_addresses"}`). Then one proved read of the payment account's addresses with rule 5 as `move_to_core`'s (`platform.context_unavailable`), and the hold: any move, send or top-up that may still execute (`Pending`, or `Failed` by height, its nonces not yet taken) is `credits.move_pending{id}`, since a top-up signs no other record's terms. The plan is the input-0 planner's (item 88): dpp's `IdentityTopUpFromAddressesTransition` fixes the fee on input 0 (`DeductFromInput(0)`), so input 0 is the first funded address in `PlatformAddress` order whose balance is above the reserve, and keeps it unclaimed; the reserve is three times dpp's `calculate_min_required_fee` for the plan's inputs (the top-up's base cost and the per-input cost), the band platform-wallet keeps for a transfer's fee input. The claims total the amount: a later input's short last claim borrows from the one before. `All` is the usable balance less the reserve. Every claim is at least `min_input_amount` and they total at least `min_identity_funding_amount`, else `credits.send_out_of_range{min}`; more than the usable balance less the reserve is `platform.insufficient_credits{needed, available}`. `TopUpFromPlatformQuote{credits, fee_credits, debit_credits, inputs, grant}`: `credits` what the identity gains (the claims); `fee_credits` dpp's estimate ("about": Platform meters the fee at execution and takes it from input 0's remainder, with no cap); `debit_credits = credits +` all that input 0 keeps (its proved balance less its claim, at least the reserve), since the fee can take it all: the grant's cap and not what the copy shows; `inputs` each address (bech32m) with its claim, input 0 first; `grant` `{max_duffs: 0, max_credits: debit_credits}`. Reads only. **Implemented (1.0 C3a).** | `CreditsError` |
+| `top_up_from_platform(identity, amount, grant)` | async | The top-up: an address move to the identity (§2.12's model, `MoveKind::ToIdentity`), under a `PlatformOp` grant or a `PlatformAddressMove` lease (another flow's lease is `platform.grant_invalid`). The quote's identity refusals, then the money-move gate on the identity (item 55, as `top_up`), then the identity's write lock, then address funds (`platform.feature_off`), then under the Platform move lock (lock order: identity write lock, then the move lock) `move_to_core`'s one proved read with rule 5, the hold (a `Pending` record, or any record that may still execute, is `credits.move_pending{id}`), the quote's plan and the grant's cap (`platform.grant_exceeded`), all before the grant is redeemed. The record (the inputs at their proved nonce + 1, the claims, `to` the identity in base58) is written `pending` and read back before anything is signed; dpp's transition is built at those nonces (`top_up_from_addresses_with_nonce`, never the library's call that fetches its own) and signed by the payment addresses' keys. It settles as a move does: `Done` once a proof shows every input at or past its signed nonce, `Failed` by height and still holding, groups as moves'. The identity's proved balance in the answer is `balance`, shown only: the transition's proof does not bind execution. A record `Failed` by height may still execute, so only a `move_to_core` that signs exactly its inputs at its nonces may follow it (C3-9), and of the two the exit's withdrawal document, read by id (derived from the first input's signed nonce, its address and the payout script) at or above the height the nonces were proved taken, decides: present, the exit is `Done` and the top-up `Failed`; absent, the top-up is `Done` and the exit `Failed`; unread, both keep holding. Never `Replaced`. That exit is also the way out of a fee Platform meters past what input 0 kept (Drive refuses it unpaid and the transition stays valid). `TopUpFromPlatformOutcome{id, credits, fee_credits, state, may_land, balance}`: the record's id (its `toIdentity` activity row), what the identity gains, the fee the inputs' proved balances show once done, the state, whether it may still execute (it then holds the next move), and the answered balance. An unknown outcome is `state: Pending`, no error. The identity's balance is re-read when the call returns (`Platform{Credits}`). **Implemented (1.0 C3a).** | `CreditsError` |
 
 ### 2.9 Link stash and invitations (on `NetworkSession`)
 
@@ -604,6 +606,10 @@ Every call refuses an unknown wallet (`wallet_not_found`) and a closed session (
 | `pending_platform_funds()` | async | `PendingPlatformFund{txid, duffs, proved, consumption_unknown, state}` for each open asset lock of type `AssetLockAddressTopUp` that a `paddr/` step of **this install** signed and no proved apply settled, by txid. `state` is the lock's §2.14 `UnfinishedState`: a `tooSmall` or `unsupported` one can't be finished in this version (no Finish), and neither it nor a `checking` one blocks a new fund; any other open one is `credits.fund_pending{txid}` for the next. A lock no such step signed (a restore on a new install, another app on the seed) is not listed and blocks nothing (a wallet removed and imported again keeps its steps, so its locks stay listed here): `unfinished_transfers` lists it and `finish_transfer(platformAddress, …)` and Finish transfers finish it (§2.14). **Implemented (0.2).** | `CreditsError` |
 | `resume_platform_fund(txid, grant)` | async | "Pending — finish" / "Check again": applies the pending fund lock `txid` (one `pending_platform_funds` lists; else `invalid_argument`) again, whatever its consumption, as `platform_fund` applies it: the same outpoint, never a new lock, to the address its activity record names (else the receive address), under a `PlatformAddressFund` lease of `grant`. A lock with no proof waits up to 30 s for one, else `ProofWaiting`. Only a proved apply settles it. Gated and serialized as `platform_fund`. **Implemented (0.2).** | `CreditsError` |
 | `platform_shield_quote(amount)` | async | What moving `amount` (`WithdrawAmount`) of the payment account's credits into the wallet's own shielded account 0 takes (C-routes D-C1, C1-4; the move itself is C1a-2). The pool's gates come first, as §2.13 orders them: one proved read of the protocol version, below 12 `shielded.not_active`, then the account's viewing keys bound, else `shielded.not_synced{account}` (address funds, 11, are implied). Then one proved read of the addresses with rule 5 as `move_to_core`'s (`platform.context_unavailable`), and the hold: any move or send that may still execute (`Pending`, or `Failed` by height, its nonces not yet taken) is `credits.move_pending{id}`, since a shield signs no other record's terms. The plan is the input-0 planner's: platform-wallet's `shield_to` takes the fee from input 0 (`DeductFromInput(0)`), the first input in `PlatformAddress` order, so input 0 is the first funded address whose balance is above the reserve (`shield_fee_reserve_credits` at the version, twice the flat shielded fee) and keeps the reserve unclaimed; funded addresses before it are left out, later ones below `min_input_amount` too, and at most `max_address_inputs` are taken. An amount is claimed from input 0 first, then in address order; a later input's last share below the input minimum claims the minimum (Drive leaves the excess on the address). `All` (Max) is the usable balance less the reserve. `PlatformShieldQuote{credits, pool_fee_credits, fee_reserve_credits, debit_credits, inputs, grant}`: `credits` the note's value; `pool_fee_credits` the flat fee (`compute_minimum_shielded_fee` of the two-action bundle) that `shield_to` adds to input 0's claim; `fee_reserve_credits` what input 0 keeps, from which Platform takes the fee it meters at execution, with no cap ("about"); `debit_credits = credits + pool_fee_credits + fee_reserve_credits`, the planned debit; `inputs` each address (bech32m) with its claim as the transition sends it, input 0 first with the pool fee; `grant` `{max_duffs: 0, max_credits: debit_credits}`. No claim exceeds its address's proved balance. More than the usable balance less the reserve, or nothing above the reserve, is `platform.insufficient_credits{needed: amount + reserve, available}` (`available` the usable addresses' balance, or, when none is usable, the largest funded address's, since input 0 is one address, so `needed > available` always); an amount of 0 is `credits.send_out_of_range{min: 1}`. Reads only: nothing is recorded, redeemed or signed. **Implemented (1.0 C1a-1).** | `CreditsError` |
+
+**1.0 C3a ruling (version 75).** A 0.2 or earlier build reading a 1.0 store cannot parse a record of `kind`
+`to_identity`, skips it and so drops its hold. It pays only the user's own identity, and Drive takes each nonce once,
+so nothing is paid twice; the record settles when 1.0 reads it again.
 
 **0.1 rulings.** The move pays only the wallet's own Core address, so a move that lands after it was marked `Failed`
 moves the user's credits to the user's wallet; even so a move that may still execute holds its inputs' nonces, so
@@ -960,7 +966,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 9422d9117ef77de4c54b66c358d9f93dce8c5491a8825cce8627e9e9a13a66c9 version: 74 -->
+<!-- surface-sha256: 4ca80fbafae4b7beb340f159b9b19eb0feb21b6119d17bb43de30f0975209d89 version: 75 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1196,6 +1202,23 @@ pub struct WithdrawToPlatformQuote {
     pub grant: GrantRequest,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopUpFromPlatformQuote {
+    pub credits: u64,
+    pub fee_credits: u64,
+    pub debit_credits: u64,
+    pub inputs: Vec<PlatformAddressRow>,
+    pub grant: GrantRequest,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopUpFromPlatformOutcome {
+    pub id: String,
+    pub credits: u64,
+    pub fee_credits: Option<u64>,
+    pub state: PlatformActivityState,
+    pub may_land: bool,
+    pub balance: Option<u64>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WithdrawToPlatformOutcome {
     pub credits: u64,
     pub to: String,
@@ -1235,6 +1258,8 @@ impl DashPay {
     pub async fn withdraw(&self, identity: String, to: String, amount: WithdrawAmount, grant: String) -> Result<WithdrawOutcome, CreditsError>;
     pub async fn withdraw_to_platform_quote(&self, identity: String, amount: WithdrawAmount) -> Result<WithdrawToPlatformQuote, CreditsError>;
     pub async fn withdraw_to_platform(&self, identity: String, to: String, amount: WithdrawAmount, grant: String) -> Result<WithdrawToPlatformOutcome, CreditsError>;
+    pub async fn top_up_from_platform_quote(&self, identity: String, amount: WithdrawAmount) -> Result<TopUpFromPlatformQuote, CreditsError>;
+    pub async fn top_up_from_platform(&self, identity: String, amount: WithdrawAmount, grant: String) -> Result<TopUpFromPlatformOutcome, CreditsError>;
     pub async fn withdrawals(&self, identity: String) -> Result<Vec<Withdrawal>, CreditsError>;
 }
 // src/platform/dashpay.rs
@@ -1949,6 +1974,7 @@ pub enum PlatformActivityKind {
     MoveToCore,
     Send,
     FromCore,
+    ToIdentity,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2980,6 +3006,10 @@ The shapes are in §3. What they mean, where the name does not say:
   An invitation's quote has `lock_duffs` the invitation's funding, `fee_duffs`, `total_duffs`, `available_duffs`
   and `max_duffs` 0, and `max_credits` with the request to the inviter (item 63). `readiness` is set for `Shielded`
   funding only (`ShieldedReadiness`, item 94); that quote has every duff field 0.
+- **`TopUpFromPlatformQuote`** (1.0 C3a). `debit_credits = credits + ` all that input 0 keeps (its proved balance
+  less its claim, which the fee can take), `grant.max_credits = debit_credits`, `grant.max_duffs = 0`. `inputs[0]` is
+  input 0, the fee source; what it keeps is at least the reserve (three times `fee_credits` for the plan's inputs). The claims sum to `credits`. Hosts show
+  `credits + fee_credits` ("about"), not `debit_credits`.
 - **`PlatformShieldQuote`** (1.0 C1a-1). `debit_credits = credits + pool_fee_credits + fee_reserve_credits`, and
   `grant.max_credits = debit_credits`, `grant.max_duffs = 0`. `inputs[0]` is input 0, the address the fee comes from,
   its claim with `pool_fee_credits`; its proved balance less that claim is at least `fee_reserve_credits -
@@ -4585,6 +4615,15 @@ renames or reshapes them takes the next version bump:
     fallback was never used (a wallet store may come from an installation that used it). A session whose wallet
     store holds a wallet app.sqlite never named also shows its Platform data as unverified until re-fetched. A
     withdrawal's recovery takes candidate scripts only from a verified identity read.
+
+96. **The top-up from the Platform addresses (C-routes D-C3, slice C3a, version 75).** `top_up_from_platform_quote`
+    and `top_up_from_platform` (§2.8), the records `TopUpFromPlatformQuote` and `TopUpFromPlatformOutcome`,
+    `PlatformActivityKind::ToIdentity` (its row's `to` is the identity, base58) and the move record kind `to_identity`.
+    A top-up is a move with another target, so it keeps every rule of §2.12's moves: one proved read with rule 5, one
+    hold per wallet, the record before signing, nonces at proved + 1, settlement by the inputs' proved nonces. Its
+    plan is item 88's input-0 planner with three times dpp's minimum fee as input 0's reserve; the claims total the
+    amount. A held top-up admits only an exit of exactly its inputs at its nonces, and the exit's withdrawal document
+    decides which of the two executed (C3-9). No new error code.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

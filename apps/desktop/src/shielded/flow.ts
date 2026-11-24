@@ -401,6 +401,15 @@ export class ShieldedFlow extends Model {
     this.changed();
   }
 
+  /** Opens a fresh send to `to` for `text` (Pay's Shielded address); a running or unseen call shows instead. */
+  sendTo(to: string, text: string) {
+    this.begin("send");
+    if (this.running || this.step !== "form") return;
+    this.to = to;
+    this.text = text;
+    this.changed();
+  }
+
   setText(text: string) {
     this.text = text;
     this.changed();
