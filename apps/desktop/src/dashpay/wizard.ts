@@ -224,7 +224,7 @@ export class RegistrationWizard extends Model {
   async resume(row: RegistrationStatus): Promise<void> {
     await this.#call("resume", async () => {
       // A claim row's grant is the row's (D20): its invitation's quote refuses a claim that landed.
-      // A Platform-funded row's too (#685): a quote of its addresses refuses while its payment
+      // A Platform-funded row's too: a quote of its addresses refuses while its payment
       // holds them, and a Core quote's grant carries duffs.
       const grant = row.invitation || row.fromPlatform
         ? await this.api.registrationResumeGrant(this.walletId, row.draft)

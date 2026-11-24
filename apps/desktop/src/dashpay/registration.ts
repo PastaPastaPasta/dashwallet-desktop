@@ -187,7 +187,7 @@ export type ScreenKind =
   | "nameFailed"
   /** R11 */
   | "voting"
-  /** A Platform payment that may still go through (#685): Continue or Move to Dash wallet. */
+  /** A Platform payment that may still go through: Continue or Move to Dash wallet. */
   | "held";
 
 export type ScreenActionKind = "home" | "continue" | "moveToCore" | "unlock" | "finish" | "repair" | "another" | "done" | "wallet" | "votingInfo" | Exclude<WelcomeStepKind, "share">;
