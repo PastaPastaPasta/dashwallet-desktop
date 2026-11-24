@@ -25,10 +25,15 @@ mod crash_send_tests;
 mod dismissed_spend_disk_tests;
 #[path = "h03_kill9_core_tests.rs"]
 mod h03_kill9_core_tests;
+#[cfg(unix)]
+#[path = "kill9_abandon_tests.rs"]
+mod kill9_abandon_tests;
 #[path = "own_spend_balance_tests.rs"]
 mod own_spend_balance_tests;
 #[path = "own_spend_disk_tests.rs"]
 mod own_spend_disk_tests;
+#[path = "removed_payment_way_out_tests.rs"]
+mod removed_payment_way_out_tests;
 #[path = "signed_coin_pin_tests.rs"]
 mod signed_coin_pin_tests;
 

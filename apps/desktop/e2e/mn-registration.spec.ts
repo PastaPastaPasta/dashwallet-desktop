@@ -90,17 +90,30 @@ test("hosted regular, FundNew: Type → Review, which can register on testnet; 0
   await expect(sheet(page)).toContainText("Step 1 of 5");
   await expect(page.getByTestId("reg-kind-regular").locator("input")).toBeChecked();
   await expect(page.getByTestId("reg-runner-hosted").locator("input")).toBeChecked();
+  await expect(sheet(page).locator("fieldset, legend")).toHaveCount(0);
+  await expect(sheet(page).getByRole("radiogroup", { name: "What are you setting up?" })).toBeVisible();
+  await expect(sheet(page).getByRole("radiogroup", { name: "Who runs the server?" })).toBeVisible();
+  // Native radios in a role group keep arrow-key selection within their name.
+  await page.getByTestId("reg-kind-regular").locator("input").focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByTestId("reg-kind-evonode").locator("input")).toBeChecked();
+  await page.keyboard.press("ArrowUp");
+  await expect(page.getByTestId("reg-kind-regular").locator("input")).toBeChecked();
+  await expect(page.getByTestId("reg-runner-hosted").locator("input")).toBeChecked();
   await fontsReady(page);
   expect(await seriousAxeViolations(page)).toEqual([]);
   await next(page);
   await expect(step(page, "collateral")).toContainText("Where is the 1,000 Dash collateral?");
   await expect(page.getByTestId("reg-collateral-fund-new").locator("input")).toBeChecked();
+  await expect(sheet(page).getByRole("radiogroup", { name: /^The collateral stays yours\./ })).toBeVisible();
   await next(page);
   await expect(step(page, "operator")).toContainText("Your operator's details");
   await page.getByTestId("reg-operator-key").fill(OPERATOR_KEY);
   await page.getByTestId("reg-service").fill(SERVICE);
   await next(page);
   await expect(page.getByTestId("reg-owner")).toHaveText("This wallet, owner keypair 1");
+  for (const name of ["Voting", "Payouts go to"]) await expect(sheet(page).getByRole("radiogroup", { name, exact: true })).toBeVisible();
+  await expect(sheet(page).locator("fieldset, legend")).toHaveCount(0);
   await toReview(page);
   const review = page.getByTestId("reg-review");
   await expect(review).toContainText("Masternode, run by your operator");
@@ -192,6 +205,36 @@ test("ExistingUtxo: a locked coin can't be picked, Continue needs a pick, the re
   await expectRegister(page);
   expect(errors).toEqual([]);
 });
+
+for (const theme of ["light", "dark"] as const)
+  test(`ExistingUtxo ${theme}: while Register waits for the network, the wizard stays on Review (issue 595)`, async ({ page }, info) => {
+    const errors = await open(page, "reg", theme);
+    await setUp(page);
+    await next(page);
+    await page.getByTestId("reg-collateral-existing").click();
+    await page.getByTestId(`reg-coin-${REG_COIN}`).click();
+    await next(page);
+    await page.getByTestId("reg-operator-key").fill(OPERATOR_KEY);
+    await page.getByTestId("reg-service").fill(SERVICE);
+    await next(page);
+    await toReview(page);
+    await page.getByTestId("reg-passphrase").fill("demo");
+    // The send is handed to the network but its answer is late: our own operation already holds the coin.
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_register"));
+    await page.getByTestId("reg-register").click();
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_register").length)).toBe(1);
+    await page.waitForTimeout(500);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-sending-${theme}.png`) });
+    await expect(step(page, "collateral")).toHaveCount(0);
+    await expect(page.getByTestId("reg-error-outpoint")).toHaveCount(0);
+    await expect(step(page, "review")).toBeVisible();
+    await expect(page.getByTestId("reg-preview-loading")).toHaveCount(0);
+    await expect(page.getByTestId("reg-review-total")).toBeVisible();
+    await release.evaluate((r) => r());
+    await expect(page.getByTestId("reg-done-body")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
 
 test("External: Review names the other wallet's coin; Continue saves it and opens Prove", async ({ page }) => {
   const errors = await open(page, "reg");
