@@ -4,6 +4,7 @@
 // (§3.8). The engine decides every stage and every exit; nothing here infers one.
 
 import { isAppError } from "../api/backend";
+import { SHARED_ABANDON_FEE } from "../api/generated/commands";
 import type { ShareTermsView } from "../api/generated/ShareTermsView";
 import type { SharedSession } from "../api/generated/SharedSession";
 import type { SharedWarning } from "../api/generated/SharedWarning";
@@ -164,6 +165,22 @@ export function debitParts(s: SharedSession): DebitParts | null {
 export function grantCap(action: Exclude<SharedAction, "copy" | "join">, s: SharedSession): number | null {
   if (action === "lock" || action === "approve") return 0;
   return debitParts(s)?.debit ?? null;
+}
+
+/** What Abandon charges, exactly: one reserved coin spent back to this wallet at the relay
+ * minimum (`abandon_shared_session`). The grant cap and the confirm's fee line. */
+export const ABANDON_FEE = SHARED_ABANDON_FEE;
+
+/** `row.signedOut` with its `{abandon}` filled by the Abandon button's own label. Shown only
+ * where `canAbandon` holds: the line tells the user to choose a button that must be there. */
+export const signedOutText = () => t("masternodes.shared.row.signedOut", { abandon: t("masternodes.shared.session.abandon") });
+
+/** Whether the sheet offers Abandon (§9.3): the engine's refusal rule. A registration that may
+ * be out (`discardable` false), not settled, with a reserved coin this wallet still holds
+ * (`abandonable`, which the engine reads by the same rule it spends by). */
+export function canAbandon(s: SharedSession): boolean {
+  const settled = s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
+  return isRegistration(s) && !s.discardable && !settled && s.reserved.length > 0 && s.abandonable;
 }
 
 /** The exact funding line (§2.3.2): what leaves this wallet and why, from `debit`. */

@@ -697,6 +697,11 @@ export interface Backend {
   mnSharedApprove(walletId: string, session: string, consentHash: string, grant: string): Promise<SharedOutcome>;
   /** Only while `discardable`; releases the reserved coins. */
   mnSharedDiscard(walletId: string, session: string): Promise<null>;
+  /** Only while `abandonable`: spends one reserved coin back to the wallet under a `masternodeOp`
+   * grant covering `SHARED_ABANDON_FEE`. */
+  mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession>;
+  /** The same for a session this wallet can no longer read. */
+  mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession>;
   mnSharedImport(walletId: string, text: string, target: string | null): Promise<SharedImport>;
   /** The open dialog runs in dw-app; the file's text never reaches the renderer. `null` on cancel. */
   mnSharedImportFile(walletId: string, target: string | null): Promise<SharedImport[] | null>;

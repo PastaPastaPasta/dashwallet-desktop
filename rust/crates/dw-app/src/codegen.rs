@@ -106,7 +106,10 @@ fn commands_ts(cfg: &Config, imports: &Imports) -> String {
          /** The Tauri event the shell (menus, tray, deep links) sends, with a `ShellEvent` payload. */\n\
          export const SHELL_EVENT = {SHELL_EVENT:?};\n\n\
          /** Txids per `historyChanged` or `newTransactions` event. */\n\
-         export const MAX_TXIDS = {MAX_TXIDS};"
+         export const MAX_TXIDS = {MAX_TXIDS};\n\n\
+         /** What `mnSharedAbandon` and `mnSharedAbandonUnreadable` charge, in duffs: a `masternodeOp` grant's exact cap. */\n\
+         export const SHARED_ABANDON_FEE = {};",
+        dw_engine::masternodes::shared_abandon_fee()
     );
     for (_, spec) in &specs {
         let args: Vec<(String, String)> = spec

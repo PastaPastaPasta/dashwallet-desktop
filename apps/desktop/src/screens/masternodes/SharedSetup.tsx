@@ -286,6 +286,9 @@ export function SharedSetup({ wallet, network, onClose, onCreated }: { wallet: W
         </fieldset>
         {reward === "address" && field("rewardAddress", t(`${P}.rewardAddressLabel`), <input id={`${id}-rewardAddress`} data-testid="sh-setup-reward-address" spellCheck={false} value={rewardAddress} onChange={(e) => setRewardAddress(e.target.value)} />)}
         <p className="mg-muted mg-small">{t(`${P}.nothingSent`)}</p>
+        <p className="mg-muted mg-small" data-testid="sh-reservation-note">
+          {t("masternodes.shared.reservationNote")}
+        </p>
       </>
     ),
     invite: created && (

@@ -44,7 +44,12 @@ debit: number | null, proTxHash: string | null, txid: string | null, reserved: A
 /**
  * `mn_shared_discard` would delete it now and release its coins.
  */
-discardable: boolean, warnings: Array<SharedWarning>,
+discardable: boolean,
+/**
+ * `mn_shared_abandon` would spend one of its reserved coins back to
+ * the wallet now, charged `SHARED_ABANDON_FEE`.
+ */
+abandonable: boolean, warnings: Array<SharedWarning>,
 /**
  * The terms this wallet last approved: the consent diff's base.
  */

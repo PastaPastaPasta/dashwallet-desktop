@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { SHARED_ABANDON_FEE } from "../src/api/generated/commands";
+import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 import { SH_TEXT } from "../src/fixture/shared";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
@@ -52,6 +54,7 @@ for (const theme of THEMES) {
     if (info.project.name === "chromium") await shot(page, "sh-setup-exit", theme);
     await page.getByTestId("sh-setup-continue").click();
     await expect(page.getByTestId("sh-setup-estimate")).toBeVisible();
+    await expect(page.getByTestId("sh-reservation-note")).toContainText("every coin chosen for it stays unavailable for other payments");
     if (info.project.name === "chromium") await shot(page, "sh-setup-coins", theme);
     await page.getByTestId("sh-setup-continue").click();
     await expect(page.getByTestId("sh-setup-step-invite")).toBeVisible();
@@ -71,9 +74,11 @@ for (const theme of THEMES) {
     await page.getByTestId("sh-read").click();
     await expect(page.getByTestId("sh-session")).toBeVisible();
     await expect(page.getByTestId("sh-join-button")).toBeVisible();
+    await expect(page.getByTestId("sh-reservation-note")).toContainText("every coin chosen for it stays unavailable for other payments");
     if (info.project.name === "chromium") await shot(page, "sh-join", theme);
     await page.getByTestId("sh-join-button").click();
     await expect(page.getByTestId("sh-copy")).toBeVisible();
+    await expect(page.getByTestId("sh-reservation-note")).toHaveCount(0);
     await page.getByTestId("sh-close-button").click();
     await expect(page.getByTestId("sh-close")).toBeVisible();
     if (info.project.name === "chromium") await shot(page, "sh-close", theme);
@@ -140,6 +145,57 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-unreadable-confirm")).toBeHidden();
     await expect(free).toHaveCount(0);
     await expect(out).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: a signed-out session names Abandon, which spends one coin back for exactly the fee`, async ({ page }, info) => {
+    const errors = await open(page, "sh-close-out", theme);
+    await page.getByTestId("mn-shared").click();
+    await page.getByTestId("sh-in-progress").getByRole("button").first().click();
+    const row = page.getByTestId("sh-row-signedOut");
+    await expect(row).toContainText("To cancel it, choose Abandon");
+    await expect(page.getByTestId("sh-abandon-button")).toHaveText("Abandon");
+    if (info.project.name === "chromium") await shot(page, "sh-signed-out-abandon", theme);
+    await page.getByTestId("sh-abandon-button").click();
+    await expect(page.getByTestId("sh-abandon")).toBeVisible();
+    await expect(page.getByTestId("sh-abandon-text")).toContainText(`${(SHARED_ABANDON_FEE / 1e8).toFixed(8).replace(/0+$/, "")}`);
+    await page.getByTestId("sh-abandon-passphrase").fill(FIXTURE_PASSPHRASE);
+    if (info.project.name === "chromium") await shot(page, "sh-abandon-confirm", theme);
+    await page.getByTestId("sh-abandon-abandon").click();
+    await expect(page.getByTestId("sh-abandon")).toBeHidden();
+    await expect(page.getByTestId("sh-session")).toBeVisible();
+    await expect(page.getByTestId("sh-abandon-button")).toHaveCount(0);
+    await expect(page.getByTestId("sh-session")).not.toContainText("choose Abandon");
+    if (info.project.name === "chromium") await shot(page, "sh-signed-out-abandoned", theme);
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: a signed-out session with no coin left to spend neither offers nor names Abandon`, async ({ page }) => {
+    const errors = await open(page, "sh-signed-out-abandoned", theme);
+    await page.getByTestId("mn-shared").click();
+    await page.getByTestId("sh-in-progress").getByRole("button").first().click();
+    await expect(page.getByTestId("sh-session")).toBeVisible();
+    await expect(page.getByTestId("sh-abandon-button")).toHaveCount(0);
+    await expect(page.getByTestId("sh-session")).not.toContainText("Abandon");
+    await expect(page.getByTestId("sh-close-discard")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: an unreadable session that may be out is abandoned`, async ({ page }, info) => {
+    const errors = await open(page, "sh-unreadable", theme);
+    await page.getByTestId("mn-shared").click();
+    await expect(page.getByTestId("sh-unreadable-abandon-7C7C7C")).toHaveCount(0);
+    await expect(page.getByTestId("sh-unreadable-9E9E9E")).toContainText("may already be on the network");
+    await page.getByTestId("sh-unreadable-abandon-9E9E9E").scrollIntoViewIfNeeded();
+    if (info.project.name === "chromium") await shot(page, "sh-unreadable-abandon", theme);
+    await page.getByTestId("sh-unreadable-abandon-9E9E9E").click();
+    await expect(page.getByTestId("sh-unreadable-abandon-confirm")).toBeVisible();
+    await page.getByTestId("sh-unreadable-abandon-confirm-passphrase").fill(FIXTURE_PASSPHRASE);
+    if (info.project.name === "chromium") await shot(page, "sh-unreadable-abandon-confirm", theme);
+    await page.getByTestId("sh-unreadable-abandon-confirm-abandon").click();
+    await expect(page.getByTestId("sh-unreadable-abandon-confirm")).toBeHidden();
+    await expect(page.getByTestId("sh-unreadable-9E9E9E")).toBeVisible();
+    await expect(page.getByTestId("sh-unreadable-abandon-9E9E9E")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 }

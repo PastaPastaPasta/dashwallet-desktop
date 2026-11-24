@@ -67,6 +67,40 @@ describe("fixture shared masternodes", () => {
     expect(await cmd.mnSharedSessions(W)).toHaveLength(1);
   });
 
+  it("abandons a session that may be out under a grant of exactly the fee, then offers it no more", async () => {
+    installFixture({ scenario: "sh-close-out" });
+    const [s] = await cmd.mnSharedSessions(W);
+    expect([s.discardable, s.abandonable]).toEqual([false, true]);
+    const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
+    await expect(cmd.mnSharedAbandon(W, s.id, await cap(cmd.SHARED_ABANDON_FEE - 1))).rejects.toMatchObject({ code: "send.grant_exceeded" });
+    const after = await cmd.mnSharedAbandon(W, s.id, await cap(cmd.SHARED_ABANDON_FEE));
+    expect(after).toMatchObject({ id: s.id, stage: { kind: "funding_signed" }, discardable: false, abandonable: false });
+    await expect(cmd.mnSharedAbandon(W, s.id, await cap(cmd.SHARED_ABANDON_FEE))).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "funding_signed" } });
+  });
+
+  it("refuses Abandon of a session not out, or settled, as the engine does", async () => {
+    installFixture({ scenario: "sh-participant-joined" });
+    const [s] = await cmd.mnSharedSessions(W);
+    await expect(cmd.mnSharedAbandon(W, s.id, await grant())).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "draft" } });
+    installFixture({ scenario: "sh-participant-confirmed" });
+    const [c] = await cmd.mnSharedSessions(W);
+    await expect(cmd.mnSharedAbandon(W, c.id, await grant())).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "confirmed" } });
+  });
+
+  it("abandons an unreadable session that may be out, and nothing else", async () => {
+    installFixture({ scenario: "sh-unreadable" });
+    const [free, out] = await cmd.mnSharedUnreadable(W);
+    expect([free.abandonable, out.abandonable]).toEqual([false, true]);
+    const cap = async () => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: cmd.SHARED_ABANDON_FEE }, W, PASS)).id;
+    await expect(cmd.mnSharedAbandonUnreadable(W, free.id, await cap())).rejects.toMatchObject({ code: "masternodes.shared_stage" });
+    const [readable] = await cmd.mnSharedSessions(W);
+    await expect(cmd.mnSharedAbandonUnreadable(W, readable.id, await cap())).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(cmd.mnSharedAbandon(W, out.id, await cap())).rejects.toMatchObject({ code: "internal" });
+    const after = await cmd.mnSharedAbandonUnreadable(W, out.id, await cap());
+    expect(after).toMatchObject({ id: out.id, discardable: false, abandonable: false });
+    expect((await cmd.mnSharedUnreadable(W)).find((x) => x.id === out.id)?.abandonable).toBe(false);
+  });
+
   it("refuses Discard once the session may be out", async () => {
     installFixture({ scenario: "sh-close-out" });
     const [s] = await cmd.mnSharedSessions(W);

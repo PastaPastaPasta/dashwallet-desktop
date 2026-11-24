@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { SharedNextName } from "../api/generated/SharedNextName";
 import type { SharedSession } from "../api/generated/SharedSession";
 import { coordinatorSession, participantSession } from "../fixture/shared";
-import { COIN, isIpv4Service, warningText, operatorKeyProblem, parseDash, parsePercent, penaltyError, renderSession, S5_SLICE, sessionNeedsAction, shareErrors, stageStep } from "./shared";
+import { en } from "../i18n/en";
+import { flatten } from "../i18n/core";
+import { t } from "../i18n";
+import { ABANDON_FEE, canAbandon, COIN, isIpv4Service, warningText, operatorKeyProblem, parseDash, parsePercent, penaltyError, renderSession, S5_SLICE, sessionNeedsAction, shareErrors, signedOutText, stageStep } from "./shared";
 
 const shares = (...amounts: number[]) => amounts.map((a, i) => ({ label: `P${i}`, amount: a * COIN }));
 
@@ -81,5 +84,33 @@ describe("a session whose funding signature may be out", () => {
     const w = { kind: "unvalued_inputs" as const, shares: [0], count: 1 };
     expect(warningText(w, out)).not.toContain("Discard");
     expect(warningText(w, { ...out, discardable: true })).toContain("Discard");
+  });
+});
+
+describe("Abandon", () => {
+  const catalog = flatten(en);
+  const label = t("masternodes.shared.session.abandon");
+
+  it("names the button by its own label in the signed-out line", () => {
+    expect(String(catalog.get("masternodes.shared.row.signedOut")).match(/\{abandon\}/g)).toHaveLength(1);
+    expect(label).toBe("Abandon");
+    expect(signedOutText()).toContain(label);
+    expect(signedOutText()).not.toContain("{abandon}");
+  });
+
+  it("is offered by the engine's rule: may be out, not settled, a reserved coin still held", () => {
+    const out = participantSession("funding_signed");
+    expect(canAbandon(out)).toBe(true);
+    expect(canAbandon(participantSession("sent"))).toBe(true);
+    expect(canAbandon({ ...out, discardable: true })).toBe(false);
+    expect(canAbandon({ ...out, abandonable: false })).toBe(false);
+    expect(canAbandon({ ...out, reserved: [] })).toBe(false);
+    for (const stage of [{ kind: "confirmed", height: 1 }, { kind: "conflicted" }, { kind: "dead", reason: "inputs_spent" }] as const) expect(canAbandon({ ...out, stage })).toBe(false);
+    expect(canAbandon({ ...out, kind: "dissolve_together" })).toBe(false);
+    for (const k of ["invited", "draft", "signing", "combined", "confirmed", "dead"] as const) expect(canAbandon(participantSession(k)), k).toBe(false);
+  });
+
+  it("caps its grant at the engine's exact fee", () => {
+    expect(ABANDON_FEE).toBe(193);
   });
 });

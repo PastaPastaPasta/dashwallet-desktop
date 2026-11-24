@@ -1,7 +1,8 @@
 // Shared masternodes (MG-10 §2, MG-10b S5): Start or join (`sh-start`), the coordinator's setup
 // wizard (`sh-setup`, `sh-terms`), and the session sheet (`sh-session`, `sh-join`, `sh-close`).
 // Every session screen renders the engine's `next` (D2); Discard shows only while the engine says
-// the session is `discardable`. Signing, sending and recovery are absent until EP 4 (D14).
+// the session is `discardable`; Abandon only while the engine says it is `abandonable`. Signing and
+// sending are absent until EP 4 (D14).
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -19,7 +20,9 @@ import { shortDate } from "../../governance/model";
 import { useT } from "../../i18n";
 import { useMasternodesRefresh, useSharedCapability, useSharedSession, useSharedSessions, useSharedUnreadable } from "../../masternodes/queries";
 import {
+  ABANDON_FEE,
   basisPoints,
+  canAbandon,
   DEFAULT_FEE,
   MAX_SHARED_FEE,
   fundingLine,
@@ -28,6 +31,7 @@ import {
   renderSession,
   sessionsInProgress,
   sharedErrorText,
+  signedOutText,
   stageStep,
   termsDiff,
   warningText,
@@ -62,6 +66,7 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
   const sessions = useSharedSessions(wallet.walletId);
   const unreadable = useSharedUnreadable(wallet.walletId);
   const [discarding, setDiscarding] = useState<UnreadableSession | null>(null);
+  const [abandoning, setAbandoning] = useState<UnreadableSession | null>(null);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,6 +119,17 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
   const inProgress = sessionsInProgress(sessions.data);
   const lost = unreadable.data ?? [];
   if (discarding) return <DiscardUnreadable wallet={wallet} network={network} session={discarding} onDone={() => setDiscarding(null)} />;
+  if (abandoning)
+    return (
+      <AbandonSheet
+        wallet={wallet}
+        network={network}
+        code={abandoning.code}
+        testId="sh-unreadable-abandon-confirm"
+        abandon={(grant) => b.mnSharedAbandonUnreadable(wallet.walletId, abandoning.id, grant)}
+        onDone={() => setAbandoning(null)}
+      />
+    );
   return (
     <Sheet title={t(`${P}.title`)} width="large" testId="sh-start" onClose={onClose}>
       <div className="mg-sheet-body mg-step">
@@ -201,6 +217,11 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
                       {t(`${P}.unreadable.discard`)}
                     </DashButton>
                   )}
+                  {!s.discardable && s.abandonable && (
+                    <DashButton variant="plainRed" size="small" data-testid={`sh-unreadable-abandon-${s.code}`} disabled={wallet.watchOnly} onClick={() => setAbandoning(s)}>
+                      {t(`${P}.session.abandon`)}
+                    </DashButton>
+                  )}
                 </li>
               ))}
             </ul>
@@ -253,6 +274,58 @@ function DiscardUnreadable({ wallet, network, session, onDone }: { wallet: Walle
   );
 }
 
+/** Abandon's confirm (§9.3): the exact fee, the passphrase, then one call. The grant's cap is
+ * that fee, so the call can charge nothing more. */
+function AbandonSheet({ wallet, network, code, testId, abandon, onDone }: { wallet: WalletSummary; network: NetworkInfo; code: string; testId: string; abandon: (grant: string) => Promise<unknown>; onDone: () => void }) {
+  const t = useT();
+  const { dash, networkName } = useSharedText(network);
+  const refresh = useMasternodesRefresh();
+  const credential = useCredential(wallet.walletId, t(`${P}.abandon.ask`), null);
+  const [busy, setBusy] = useState(false);
+  const acting = useRef(false);
+  const run = async () => {
+    if (acting.current || !credential.ready) return;
+    acting.current = true;
+    setBusy(true);
+    try {
+      const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: ABANDON_FEE });
+      if (!grant) return;
+      await abandon(grant.id);
+      onDone();
+    } catch (e) {
+      credential.setError(sharedErrorText(e, { network: networkName, dash }));
+    } finally {
+      acting.current = false;
+      setBusy(false);
+      void refresh();
+    }
+  };
+  return (
+    <Sheet title={t(`${P}.abandon.title`, { code })} width="small" testId={testId} closable={!busy} onClose={onDone}>
+      <form
+        className="mg-sheet-body mg-step"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run();
+        }}
+      >
+        <p data-testid={`${testId}-text`}>{t(`${P}.abandon.text`, { fee: dash(ABANDON_FEE) })}</p>
+        <CredentialField c={credential} busy={busy} testId={testId} />
+        <footer className="mg-sheet-footer">
+          <span className="mg-actions">
+            <DashButton variant="tintedGray" size="medium" data-testid={`${testId}-cancel`} data-autofocus disabled={busy} onClick={onDone}>
+              {t(`${P}.close.cancel`)}
+            </DashButton>
+            <DashButton type="submit" variant="plainRed" size="medium" data-testid={`${testId}-abandon`} disabled={busy || !credential.ready || wallet.watchOnly}>
+              {t(`${P}.session.abandon`)}
+            </DashButton>
+          </span>
+        </footer>
+      </form>
+    </Sheet>
+  );
+}
+
 const STAGES = ["invite", "collect", "lock", "approvals", "signatures", "send"] as const;
 
 function StageStrip({ s }: { s: SharedSession }) {
@@ -292,6 +365,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const [closing, setClosing] = useState(false);
   const [feeOpen, setFeeOpen] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
+  const [abandoning, setAbandoning] = useState(false);
   const [pickedShare, setPickedShare] = useState<number | null>(null);
   const replyId = useId();
   const s = pick(query.data, latest);
@@ -466,6 +540,18 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
       </Sheet>
     );
 
+  if (abandoning && canAbandon(s))
+    return (
+      <AbandonSheet
+        wallet={wallet}
+        network={network}
+        code={s.code}
+        testId="sh-abandon"
+        abandon={async (grant) => setLatest(await b.mnSharedAbandon(wallet.walletId, s.id, grant))}
+        onDone={() => setAbandoning(false)}
+      />
+    );
+
   if (feeOpen) return <FeeSheet wallet={wallet} network={network} session={s} onDone={(next) => (next && setLatest(next), setFeeOpen(false))} />;
 
   return (
@@ -549,6 +635,11 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
           </div>
         )}
         {v.row === "join" && joinShare !== null && <p className="mg-muted">{joinEstimate(s, joinShare, dash)}</p>}
+        {v.primary === "join" && (
+          <p className="mg-muted mg-small" data-testid="sh-reservation-note">
+            {t(`${P}.reservationNote`)}
+          </p>
+        )}
         {imported && (
           <div className="mg-notice mg-notice-info" data-testid="sh-import-panel">
             <span>
@@ -584,6 +675,11 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
               {t(`${P}.session.close`)}
             </DashButton>
             {moreItems.length > 0 && <MoreMenu testId="sh-more" items={moreItems} />}
+            {canAbandon(s) && (
+              <DashButton variant="plainRed" size="medium" data-testid="sh-abandon-button" disabled={busy || wallet.watchOnly} onClick={() => setAbandoning(true)}>
+                {t(`${P}.session.abandon`)}
+              </DashButton>
+            )}
           </span>
           <span className="mg-actions" aria-live="polite">
             {v.copy && (
@@ -688,7 +784,7 @@ function rowCopy(
     case "signLater":
       return t(`${P}.row.signLater`);
     case "signedOut":
-      return t(`${P}.row.signedOut`);
+      return canAbandon(s) ? signedOutText() : "";
     case "sendSigned":
       return t(`${P}.row.sendSigned`, { coordinator });
     case "waitingSigned":

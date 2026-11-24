@@ -911,6 +911,14 @@ export const masternodes = {
       saveFile: "Save to file…",
       pasteReply: "Paste a reply",
       ask: "Enter your passphrase to sign your consent.",
+      /** The button `row.signedOut`'s `{abandon}` names, and the unreadable row's. */
+      abandon: "Abandon",
+    },
+    /** Abandon's confirm (§9.3): the fee is exactly what the call charges. */
+    abandon: {
+      title: "Abandon session {code}?",
+      text: "This wallet spends one of the coins reserved for this session back to itself, so the session's transaction can't confirm. The network fee is {fee}. The other coins come back about 15 minutes after that spend confirms.",
+      ask: "Enter your passphrase to abandon this session.",
     },
     importPanel: {
       received: "You pasted message {code}. Ask the sender to read their code: it should be {code}.",

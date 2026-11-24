@@ -425,6 +425,9 @@ pub struct SharedSession {
     pub next: SharedNextName,
     /// `mn_shared_discard` would delete it now and release its coins.
     pub discardable: bool,
+    /// `mn_shared_abandon` would spend one of its reserved coins back to
+    /// the wallet now, charged `SHARED_ABANDON_FEE`.
+    pub abandonable: bool,
     pub warnings: Vec<SharedWarning>,
     /// The terms this wallet last approved: the consent diff's base.
     pub approved_terms: Option<ShareTermsView>,
@@ -439,7 +442,7 @@ pub struct SharedSession {
 mirror_struct!(engine::SharedSession => SharedSession {
     id, code, message_code, kind: into, role: into, stage: into, revision, consent_hash,
     rows: vec, terms: into, node_run_by, fee, debit, pro_tx_hash, txid, reserved, next: into,
-    discardable, warnings: vec, approved_terms: opt, base_keys: opt, key_change: opt, actor_fee,
+    discardable, abandonable, warnings: vec, approved_terms: opt, base_keys: opt, key_change: opt, actor_fee,
     created_at, updated_at, last_error,
 });
 
@@ -455,12 +458,15 @@ pub struct UnreadableSession {
     pub role: SharedRoleName,
     /// `mn_shared_discard` would delete it now: nothing of it may be out.
     pub discardable: bool,
+    /// `mn_shared_abandon_unreadable` would spend one of its reserved coins
+    /// back to the wallet now, charged `SHARED_ABANDON_FEE`.
+    pub abandonable: bool,
     pub reserved: Vec<String>,
     pub updated_at: u64,
 }
 
 mirror_struct!(engine::UnreadableSession => UnreadableSession {
-    id, code, kind: into, role: into, discardable, reserved, updated_at,
+    id, code, kind: into, role: into, discardable, abandonable, reserved, updated_at,
 });
 
 /// The message to copy or save now.

@@ -23,10 +23,6 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "NetworkSession::masternodes",
         "internal: every masternodes command obtains it via state.masternodes",
     ),
-    (
-        "Masternodes::abandon_shared_session",
-        "deferred (MG-10 S5b): needs the recovery read (EP 4)",
-    ),
     ("Masternodes::approve_maintenance", "deferred (MG-10 S6)"),
     ("Masternodes::create_standby", "deferred (MG-10 S6)"),
     ("Masternodes::dissolve", "deferred (MG-10 S6)"),
@@ -403,6 +399,38 @@ commands! {
             .approve_shared(wallet, session, consent_hash, grant)
             .await?;
         Ok(outcome.into())
+    }
+
+    /// Spends one reserved coin of a session that may be out back to the
+    /// wallet, so it can't confirm (`SharedSession.abandonable`). Takes a
+    /// `masternodeOp` grant covering `SHARED_ABANDON_FEE`. Every network.
+    #[facade("Masternodes::abandon_shared_session")]
+    fn mn_shared_abandon(state, wallet_id: String, session: String, grant: String) -> SharedSession {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let session = state
+            .masternodes()
+            .await?
+            .abandon_shared_session(wallet, session, grant)
+            .await?;
+        Ok(session.into())
+    }
+
+    /// The same for a session whose stored record no longer reads
+    /// (`UnreadableSession.abandonable`).
+    #[facade("Masternodes::abandon_unreadable_shared_session")]
+    fn mn_shared_abandon_unreadable(
+        state,
+        wallet_id: String,
+        session: String,
+        grant: String,
+    ) -> UnreadableSession {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let session = state
+            .masternodes()
+            .await?
+            .abandon_unreadable_shared_session(wallet, session, grant)
+            .await?;
+        Ok(session.into())
     }
 
     /// Deletes a session nothing of which may be out and releases its coins

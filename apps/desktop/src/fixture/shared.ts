@@ -4,7 +4,7 @@
 // fixed fake JSON blobs (no keys, documentation IPs, `y…` addresses); an import looks its text up in
 // `SH_TEXT`, so a spec pastes what another party "sent". A change `emit`s `masternodes`.
 
-import type { AppError } from "../api/generated/commands";
+import { SHARED_ABANDON_FEE, type AppError } from "../api/generated/commands";
 import type { SharedCapability } from "../api/generated/SharedCapability";
 import type { SharedImport } from "../api/generated/SharedImport";
 import type { SharedMessage } from "../api/generated/SharedMessage";
@@ -55,6 +55,8 @@ export interface SharedWorld {
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 const copy = <T>(v: T): T => structuredClone(v);
 const refuse = (reason: string, share: number | null = null) => fail("masternodes.shared_message", `shared masternode message refused: ${reason}`, { kind: "sharedMessage", reason, share });
+/** The stage `abandon_shared_session` names when the session is out and no reserved coin is left to spend. */
+const outStage = (role: SharedSession["role"]) => (role === "coordinator" ? "sent" : "funding_signed");
 const stageRefusal = (stage: string) => fail("masternodes.shared_stage", `the shared session is ${stage}`, { kind: "sharedStage", stage });
 const changed = ({ world, emit }: Ctx) => emit({ kind: "masternodes", network: world.launch.network.dirName });
 
@@ -111,6 +113,7 @@ function session(id: string, role: SharedSession["role"], patch: Partial<SharedS
     reserved: [],
     next: "copy",
     discardable: true,
+    abandonable: false,
     warnings: [],
     approvedTerms: null,
     baseKeys: null,
@@ -163,6 +166,7 @@ export function participantSession(stage: SharedSession["stage"]["kind"], patch:
     } as const
   )[stage];
   const out = stage === "funding_signed" || stage === "sent" || stage === "confirmed" || stage === "conflicted";
+  const settled = stage === "confirmed" || stage === "conflicted";
   const stageValue: SharedSession["stage"] =
     stage === "confirmed" ? { kind: "confirmed", height: 1_214_800 } : stage === "dead" ? { kind: "dead", reason: "inputs_spent" } : ({ kind: stage } as SharedSession["stage"]);
   return session(SH_PART, "participant", {
@@ -174,6 +178,7 @@ export function participantSession(stage: SharedSession["stage"]["kind"], patch:
     debit: joined ? 300 * COIN : null,
     reserved: joined ? [`${h("d0")}-1`] : [],
     discardable: !out,
+    abandonable: out && !settled && joined,
     fee: null,
     ...patch,
   });
@@ -538,6 +543,42 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       changed(ctx);
       return null;
     },
+    /** The engine's order: the session, its kind, its stage, a coin to spend, then the grant. */
+    mn_shared_abandon: ({ walletId, session: id, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      if (world.shared.unreadable.some((x) => x.id === id)) throw fail("internal", "a stored shared session does not parse");
+      const s = find(world, id);
+      if (s.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
+      const st = s.stage.kind;
+      if (s.kind === "key_change") {
+        if (s.role !== "coordinator") throw stageRefusal("participant");
+        if (st === "confirmed" || st === "conflicted" || st === "dead") throw stageRefusal(st);
+      } else if (s.discardable || st === "confirmed" || st === "conflicted") throw stageRefusal(st);
+      if (!s.abandonable) throw stageRefusal(outStage(s.role));
+      capped(world, walletId, grantId, SHARED_ABANDON_FEE);
+      s.abandonable = false;
+      const out = put(world, s);
+      changed(ctx);
+      return out;
+    },
+    mn_shared_abandon_unreadable: ({ walletId, session: id, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      if (!HEX64.test(id)) throw fail("invalid_argument", "a session id is 64 lower-case hex");
+      const lost = world.shared.unreadable.find((x) => x.id === id);
+      if (!lost) {
+        if (world.shared.sessions.some((x) => x.id === id)) throw fail("invalid_argument", "the session reads: abandon_shared_session");
+        throw fail("masternodes.shared_session_not_found", "no such shared session");
+      }
+      if (lost.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
+      if (lost.discardable || !lost.abandonable) throw stageRefusal(outStage(lost.role));
+      capped(world, walletId, grantId, SHARED_ABANDON_FEE);
+      lost.abandonable = false;
+      lost.updatedAt = Math.max(lost.updatedAt + 1, NOW);
+      changed(ctx);
+      return copy(lost);
+    },
     mn_shared_import: ({ walletId, text }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
@@ -617,11 +658,13 @@ export function sharedScenarios(base: Base) {
     /** Close before out (Keep / Discard) and out (no question). */
     "sh-close-before": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob"]))),
     "sh-close-out": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed"))),
-    /** Two sessions this wallet can't read: one it may discard, one that may be out. */
+    /** Out, and its Abandon spend already sent: no coin left to spend, so no Abandon and no line naming it. */
+    "sh-signed-out-abandoned": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed", { abandonable: false }))),
+    /** Two sessions this wallet can't read: one it may discard, one that may be out (Abandon). */
     "sh-unreadable": (t: ThemeName | null) =>
       shBase(base, t, (s) => {
         s.sessions = [coordinatorSession(["Bob"])];
-        s.unreadable = [unreadable("7c", true, 3), unreadable("9e", false, 2)];
+        s.unreadable = [unreadable("7c", true, 2), unreadable("9e", false, 3)];
       }),
     /** Both sessions, for the In progress list and the badge. */
     "sh-sessions": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob", "Carol"]), participantSession("signing"))),
@@ -630,5 +673,5 @@ export function sharedScenarios(base: Base) {
 
 function unreadable(byte: string, discardable: boolean, ago: number): UnreadableSession {
   const id = h(byte);
-  return { id, code: id.slice(0, 6).toUpperCase(), kind: "registration", role: "participant", discardable, reserved: [`${h("d" + byte[1])}-0`], updatedAt: NOW - ago * 3_600 };
+  return { id, code: id.slice(0, 6).toUpperCase(), kind: "registration", role: "participant", discardable, abandonable: !discardable, reserved: [`${h("d" + byte[1])}-0`], updatedAt: NOW - ago * 3_600 };
 }

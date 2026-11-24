@@ -208,6 +208,7 @@ import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
+import type { UnreadableSession } from "./UnreadableSession";
 import type { UntrackOutcome } from "./UntrackOutcome";
 import type { UpdateRegistrarPreview } from "./UpdateRegistrarPreview";
 import type { UpdateRegistrarRequest } from "./UpdateRegistrarRequest";
@@ -243,6 +244,9 @@ export const SHELL_EVENT = "shell://event";
 
 /** Txids per `historyChanged` or `newTransactions` event. */
 export const MAX_TXIDS = 256;
+
+/** What `mnSharedAbandon` and `mnSharedAbandonUnreadable` charge, in duffs: a `masternodeOp` grant's exact cap. */
+export const SHARED_ABANDON_FEE = 193;
 
 /**
  * How the app was launched: the self-test, the forced theme, and the
@@ -2914,6 +2918,14 @@ export function mnSharedSessions(walletId: string): Promise<Array<SharedSession>
 }
 
 /**
+ * Sessions whose stored record no longer reads, newest first: each can
+ * be discarded while nothing of it may be out.
+ */
+export function mnSharedUnreadable(walletId: string): Promise<Array<UnreadableSession>> {
+  return invoke<Array<UnreadableSession>>("mn_shared_unreadable", { walletId });
+}
+
+/**
  * One session, its stage derived now.
  */
 export function mnSharedSession(walletId: string, session: string): Promise<SharedSession> {
@@ -2971,6 +2983,23 @@ export function mnSharedUnlock(walletId: string, session: string): Promise<Share
  */
 export function mnSharedApprove(walletId: string, session: string, consentHash: string, grant: string): Promise<SharedOutcome> {
   return invoke<SharedOutcome>("mn_shared_approve", { walletId, session, consentHash, grant });
+}
+
+/**
+ * Spends one reserved coin of a session that may be out back to the
+ * wallet, so it can't confirm (`SharedSession.abandonable`). Takes a
+ * `masternodeOp` grant covering `SHARED_ABANDON_FEE`. Every network.
+ */
+export function mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
+  return invoke<SharedSession>("mn_shared_abandon", { walletId, session, grant });
+}
+
+/**
+ * The same for a session whose stored record no longer reads
+ * (`UnreadableSession.abandonable`).
+ */
+export function mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession> {
+  return invoke<UnreadableSession>("mn_shared_abandon_unreadable", { walletId, session, grant });
 }
 
 /**
@@ -3472,6 +3501,7 @@ export type CommandArgs = {
   mn_discard_operation: { walletId: string; operation: string };
   mn_shared_capability: { walletId: string };
   mn_shared_sessions: { walletId: string };
+  mn_shared_unreadable: { walletId: string };
   mn_shared_session: { walletId: string; session: string };
   mn_shared_start: { walletId: string; request: StartSharedRequest };
   mn_shared_set_fee: { walletId: string; session: string; fee: number };
@@ -3480,6 +3510,8 @@ export type CommandArgs = {
   mn_shared_lock: { walletId: string; session: string; revision: number; grant: string };
   mn_shared_unlock: { walletId: string; session: string };
   mn_shared_approve: { walletId: string; session: string; consentHash: string; grant: string };
+  mn_shared_abandon: { walletId: string; session: string; grant: string };
+  mn_shared_abandon_unreadable: { walletId: string; session: string; grant: string };
   mn_shared_discard: { walletId: string; session: string };
   mn_shared_import: { walletId: string; text: string; target: string | null };
   mn_shared_import_file: { walletId: string; target: string | null };
@@ -3828,6 +3860,7 @@ export type CommandResults = {
   mn_discard_operation: null;
   mn_shared_capability: SharedCapability;
   mn_shared_sessions: Array<SharedSession>;
+  mn_shared_unreadable: Array<UnreadableSession>;
   mn_shared_session: SharedSession;
   mn_shared_start: SharedOutcome;
   mn_shared_set_fee: SharedOutcome;
@@ -3836,6 +3869,8 @@ export type CommandResults = {
   mn_shared_lock: SharedOutcome;
   mn_shared_unlock: SharedOutcome;
   mn_shared_approve: SharedOutcome;
+  mn_shared_abandon: SharedSession;
+  mn_shared_abandon_unreadable: UnreadableSession;
   mn_shared_discard: null;
   mn_shared_import: SharedImport;
   mn_shared_import_file: Array<SharedImport> | null;
@@ -4186,6 +4221,7 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_discard_operation: "masternodes",
   mn_shared_capability: "masternodes",
   mn_shared_sessions: "masternodes",
+  mn_shared_unreadable: "masternodes",
   mn_shared_session: "masternodes",
   mn_shared_start: "masternodes",
   mn_shared_set_fee: "masternodes",
@@ -4194,6 +4230,8 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_shared_lock: "masternodes",
   mn_shared_unlock: "masternodes",
   mn_shared_approve: "masternodes",
+  mn_shared_abandon: "masternodes",
+  mn_shared_abandon_unreadable: "masternodes",
   mn_shared_discard: "masternodes",
   mn_shared_import: "masternodes",
   mn_shared_import_file: "masternodes",
