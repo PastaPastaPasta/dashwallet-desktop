@@ -13,25 +13,22 @@ use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut};
 use dw_appdb::AbandonOutcome;
 use dw_protx::shared::session::Stage;
 use dw_protx::shared::{ProRegTxV3, SpecialTx};
-use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 
 use super::super::MasternodesError;
-use super::super::protx::build::{Context, SEQUENCE, to_sign, tx_size};
+use super::super::protx::build::{Context, SEQUENCE, to_sign};
 use super::super::protx::charge_fee;
 use super::super::protx::ops::{encode_inputs, error_code};
 use super::super::shared_records::SharedStage;
 use super::build::sign_own_inputs;
-use super::store::{
-    Loaded, Recorded, message_refusal, out_stage, reserved_of, role_of, stage_refusal,
-};
+use super::recovery::{AbandonCoins, CHANGE_SCRIPT_LEN, abandon_log, latest, spend_state};
+use super::store::{Loaded, Recorded, message_refusal, out_stage, role_of, stage_refusal};
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
-use crate::coins::{CoinFence, now_secs, own_address_info, read_coins};
+use crate::coins::{CoinFence, now_secs};
+use crate::masternodes::shared_records::AbandonSpendState;
 use crate::platform::lease::Outcome;
-use crate::send::plan::dust_threshold;
-use crate::send::plan::fee_for;
 use crate::send::{
-    BroadcastOutcome, MIN_FEE_PER_KB, PreparedSummary, SendFailure, SpendCharge, TxDraft,
-    attempt_outcome, l1_address,
+    BroadcastOutcome, PreparedSummary, SendFailure, SpendCharge, TxDraft, attempt_outcome,
+    l1_address,
 };
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -274,13 +271,7 @@ impl NetworkSession {
         fence: CoinFence,
     ) -> Result<(), MasternodesError> {
         let rec = l.recorded.as_ref().ok_or_else(super::unrecorded)?;
-        let tx: Transaction = l
-            .row
-            .signed_tx
-            .as_deref()
-            .and_then(|b| dashcore::consensus::deserialize(b).ok())
-            .ok_or_else(|| EngineError::Internal("the saved registration".into()))?;
-        self.check_resend_inputs(wallet, &tx)?;
+        let tx = self.registration_resend_checks(wallet, &l.row)?;
         let fee = rec.fee.unwrap_or(0);
         let lease = self.shared_lease(wallet, grant).await?;
         let result = async {
@@ -298,19 +289,35 @@ impl NetworkSession {
         result
     }
 
-    /// The exit from an out session (§9.3, D26): the largest of its
-    /// reserved coins the wallet still holds unspent and no other pending
-    /// spend holds, spent whole to a fresh change address of its own
-    /// (charged the fee), `abandon_txid`, its bytes and its `abandon_log`
-    /// entry saved before the hand-off. The row and its locks stay until a
-    /// block settles the session (`confirmed`, or `conflicted` by this
-    /// spend).
-    /// A coordinator whose registration the wallet recorded holds none
-    /// unspent until that transaction is abandoned (QT-091, as MG-04 D49).
-    /// With no such coin it refuses `shared_stage` naming the caller's
-    /// stage while out (`sent` or `funding_signed`, review r1 of 1b n-2);
-    /// a coin worth no more than the fee and dust is
-    /// `send.amount_with_fee_exceeds_balance`.
+    /// The resend's check before its lease (MG-04 D7): no other pending
+    /// spend holds an input of the saved registration. The saved bytes.
+    pub(super) fn registration_resend_checks(
+        &self,
+        wallet: WalletId,
+        row: &dw_appdb::SharedSessionRow,
+    ) -> Result<Transaction, MasternodesError> {
+        let tx: Transaction = row
+            .signed_tx
+            .as_deref()
+            .and_then(|b| dashcore::consensus::deserialize(b).ok())
+            .ok_or_else(|| EngineError::Internal("the saved registration".into()))?;
+        self.check_resend_inputs(wallet, &tx)?;
+        Ok(tx)
+    }
+
+    /// The exit from an out session (§9.3, D26; MG-10 §4.4 changes 2 and
+    /// 4): every reserved coin the wallet holds unspent, spent to one fresh
+    /// change address of its own (charged the relay minimum of that spend),
+    /// only when [`super::recovery::AbandonCoins::Usable`], so it takes every
+    /// input an earlier abandon spend took and conflicts with all of them.
+    /// `abandon_txid`, its bytes and its `abandon_log` entry are saved
+    /// before the hand-off. The row and its locks stay until a block
+    /// settles the session (`confirmed`, or `conflicted` by this spend).
+    /// Any arm but `Usable` and `TooSmall` refuses `shared_stage` naming the
+    /// caller's stage while out (`sent` or `funding_signed`, review r1 of
+    /// 1b n-2): a coordinator whose registration the wallet recorded holds
+    /// none unspent until that transaction is abandoned (QT-091, as MG-04
+    /// D49). `TooSmall` is `send.amount_with_fee_exceeds_balance`.
     pub(super) async fn abandon_session(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -318,56 +325,44 @@ impl NetworkSession {
         row: &dw_appdb::SharedSessionRow,
         fence: CoinFence,
     ) -> Result<(), MasternodesError> {
-        let reserved = reserved_of(row);
-        // Every pending spend's coins (an earlier abandon's among them).
-        let pending = self.spends.snapshot(&wallet);
+        let chain = self.shared_chain(wallet).await?;
+        let facts = self.coin_facts(wallet, row, &chain).await?;
+        let (coins, fee) = match facts.test(&chain.history) {
+            AbandonCoins::Usable { coins, fee } => (coins, fee),
+            AbandonCoins::TooSmall { fee, available } => {
+                return Err(EngineError::Send(SendFailure::AmountWithFeeExceedsBalance {
+                    fee,
+                    available,
+                })
+                .into());
+            }
+            _ => return Err(stage_refusal(out_stage(role_of(&row.role)))),
+        };
         let w = self.wallet(&wallet).await?;
-        let coin = {
-            let state = crate::wallet_read::info_of(&w).await?;
-            read_coins(&state.core_wallet)
-                .coins
-                .into_iter()
-                .filter(|c| {
-                    reserved.contains(&c.utxo.outpoint) && !pending.contains(&c.utxo.outpoint)
-                })
-                .max_by_key(|c| (c.utxo.value(), c.utxo.outpoint))
-                .and_then(|c| {
-                    let path = own_address_info(&state.core_wallet, &c.utxo.address)?.path;
-                    Some((c.utxo, path))
-                })
-        };
-        let Some((utxo, path)) = coin else {
-            return Err(stage_refusal(out_stage(role_of(&row.role))));
-        };
-        let outpoint = utxo.outpoint;
         let address = w
             .core()
             .next_change_address_for_account(0)
             .await
             .map_err(EngineError::from)?;
         let script = address.script_pubkey();
-        let fee = abandon_fee(script.len()).ok_or(EngineError::Send(SendFailure::TxTooLarge))?;
-        let value = utxo
-            .value()
-            .checked_sub(fee)
-            .filter(|v| *v > dust_threshold(script.len()))
-            .ok_or(EngineError::Send(
-                SendFailure::AmountWithFeeExceedsBalance {
-                    fee,
-                    available: utxo.value(),
-                },
-            ))?;
+        if script.len() != CHANGE_SCRIPT_LEN {
+            return Err(EngineError::Internal("a change script that isn't P2PKH".into()).into());
+        }
+        let available: u64 = coins.iter().map(|(u, _)| u.value()).sum();
         let mut tx = Transaction {
             version: 3,
             lock_time: 0,
-            input: vec![TxIn {
-                previous_output: outpoint,
-                script_sig: ScriptBuf::new(),
-                sequence: SEQUENCE,
-                witness: Default::default(),
-            }],
+            input: coins
+                .iter()
+                .map(|(u, _)| TxIn {
+                    previous_output: u.outpoint,
+                    script_sig: ScriptBuf::new(),
+                    sequence: SEQUENCE,
+                    witness: Default::default(),
+                })
+                .collect(),
             output: vec![TxOut {
-                value,
+                value: available - fee,
                 script_pubkey: script,
             }],
             special_transaction_payload: None,
@@ -375,14 +370,14 @@ impl NetworkSession {
         let lease = self.shared_lease(wallet, grant).await?;
         let result = async {
             let (charge, signer) = charge_fee(&lease, fee)?;
-            let coins = [(utxo.clone(), path)];
             let inputs = to_sign(&tx, &coins)?;
             sign_p2pkh_inputs(&signer, &mut tx, &inputs, SIGHASH_ALL).await?;
             let txid = tx.txid().to_string();
             let (w_id, id) = (wallet.to_string(), row.id.clone());
+            let outpoints: Vec<OutPoint> = coins.iter().map(|(u, _)| u.outpoint).collect();
             let (bytes, inputs) = (
                 dashcore::consensus::serialize(&tx),
-                encode_inputs(&[outpoint]),
+                encode_inputs(&outpoints),
             );
             let logged = self
                 .appdb_op(move |db| {
@@ -398,8 +393,9 @@ impl NetworkSession {
                 })
                 .await?
                 .ok_or(MasternodesError::SharedSessionNotFound)?;
+            let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
             let summary = self
-                .summary_of(&w, &tx, std::slice::from_ref(&utxo), fee, Some(&address))
+                .summary_of(&w, &tx, &utxos, fee, Some(&address))
                 .await?;
             self.deliver_abandon(wallet, &row.id, tx, summary, charge, fence, !logged)
                 .await
@@ -409,12 +405,85 @@ impl NetworkSession {
         lease.end();
         result
     }
-}
 
-/// The abandon spend's fee: one P2PKH input spent whole to one output of
-/// `script_len` bytes, at the relay minimum.
-pub(super) fn abandon_fee(script_len: usize) -> Option<u64> {
-    fee_for(FeeRate::new(MIN_FEE_PER_KB), tx_size(1, &[script_len], 0))
+    /// `resend_shared_abandon`'s hand-off (MG-10 §4.4 change 4), once the
+    /// caller refused a session settled or not out: the latest abandon
+    /// spend's saved bytes again, charged its fee, refused while it can't
+    /// be out or may be replaced (`shared_stage`: `sent` / `funding_signed`
+    /// with none signed, `legacy` with no bytes kept, `abandon_cancelled`
+    /// once abandoned in Activity, also while that Abandon's mark is stored
+    /// before its sweep or can't be read, `abandon_refused` after a definite
+    /// refusal), `legacy` too when neither its log entry nor the wallet's
+    /// coins show its fee ([`Self::abandon_fee`]), `abandon_cancelled`
+    /// again for a mark read once the coins are fenced, then while another
+    /// pending spend holds one of its inputs. Its entry reads `maybe_sent`
+    /// before the hand-off, which runs as a replay. Activity's Abandon takes
+    /// neither the fence nor the shared claim: one that marks the spend
+    /// after that last read doesn't stop the hand-off.
+    pub(super) async fn resend_abandon(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        grant: &str,
+        row: &dw_appdb::SharedSessionRow,
+    ) -> Result<(), MasternodesError> {
+        let Some(txid) = row.abandon_txid.clone() else {
+            return Err(stage_refusal(out_stage(role_of(&row.role))));
+        };
+        let chain = self.shared_chain(wallet).await?;
+        let log = abandon_log(row)?;
+        let entry = latest(row, &log);
+        let refusal = |stage: &str| MasternodesError::SharedStage {
+            stage: stage.into(),
+        };
+        let Some(bytes) = row.abandon_tx.as_deref() else {
+            return Err(refusal("legacy"));
+        };
+        match spend_state(row, entry, &chain.history) {
+            Some(AbandonSpendState::AbandonedInActivity) => {
+                return Err(refusal("abandon_cancelled"));
+            }
+            Some(AbandonSpendState::Refused) => return Err(refusal("abandon_refused")),
+            _ if self.spend_back_marked(wallet, row).await => {
+                return Err(refusal("abandon_cancelled"));
+            }
+            _ => {}
+        }
+        let tx: Transaction = dashcore::consensus::deserialize(bytes)
+            .map_err(|_| EngineError::Internal("the saved abandon spend".into()))?;
+        let Some(fee) = self.abandon_fee(wallet, row, entry, &chain.history).await? else {
+            return Err(refusal("legacy"));
+        };
+        let fence = self.coin_fence(wallet).await?;
+        if self.spend_back_marked(wallet, row).await {
+            return Err(refusal("abandon_cancelled"));
+        }
+        self.check_resend_inputs(wallet, &tx)?;
+        let lease = self.shared_lease(wallet, grant).await?;
+        let result = async {
+            let (charge, _) = charge_fee(&lease, fee)?;
+            let (w, id, marked) = (wallet.to_string(), row.id.clone(), txid.clone());
+            if !self
+                .appdb_op(move |db| {
+                    db.mark_shared_abandon_replay_durable(&w, &id, &marked, now_secs())
+                })
+                .await?
+            {
+                return Err(MasternodesError::SharedSessionNotFound);
+            }
+            let change = tx.output.first().and_then(|o| {
+                dashcore::Address::from_script(&o.script_pubkey, self.network.core_network()).ok()
+            });
+            let summary = self
+                .shared_summary(&fence, &tx, fee, change.as_ref())
+                .await?;
+            self.deliver_abandon(wallet, &row.id, tx, summary, charge, fence, false)
+                .await
+                .map(drop)
+        }
+        .await;
+        lease.end();
+        result
+    }
 }
 
 /// `signed` as the pin's typed transaction, which the hand-off and the

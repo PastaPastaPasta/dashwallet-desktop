@@ -1201,6 +1201,231 @@ fn test_QT_127_a_quiet_key_change_hints_abandon() {
     assert!(!approver.contains("abandon_hint"), "{approver}");
 }
 
+/// [`keyed`] with the funder's fee coins worth `values`.
+fn keyed_with(f: &Fx, values: &[u64]) -> (String, Txid) {
+    let (id, txid) = listed(f);
+    list_keys(f, txid, listed_operator(), [1; 20]);
+    let mined = f.seam.shared_mined.lock().unwrap().clone();
+    for (_, tx, _) in mined {
+        for input in &tx.input {
+            for w in 0..f.wallets.len() {
+                f.spend(w, input.previous_output);
+            }
+        }
+    }
+    for (seed, value) in (60u8..).zip(values) {
+        f.credit(0, seed, *value);
+    }
+    (id, txid)
+}
+
+/// QT-127's abandon with several fee inputs (MG-10 §4.4 change 4, the
+/// same-coin bound; the named `input.len() == 1` above holds only for one
+/// fee input): one spend of every reserved input, the n-input fee.
+#[test]
+fn test_QT_127_a_sent_key_change_with_several_fee_inputs_is_abandoned_by_one_spend_of_all() {
+    // The one-input fee of this request, from a probe on a large coin: a
+    // coin worth less than it can't pay it alone.
+    let probe = fx(3, true);
+    let (_, t) = keyed(&probe);
+    let (pid, _) = complete(&probe, t);
+    let one_input = probe.session_of(0, &pid).fee.unwrap();
+    drop(probe);
+    // One duff under the fee without its change output (34 bytes at the
+    // relay minimum): a coin can't pay it alone, two can, and two are worth
+    // more than their spend back's fee and dust.
+    let value = one_input - 35;
+    let f = fx(3, true);
+    let (_, txid) = keyed_with(&f, &[value, value, value]);
+    let (id, _) = complete(&f, txid);
+    send(&f, 0, &id, COIN).unwrap();
+    let reserved = reserved_of(&f.row(0, &id));
+    assert!(
+        reserved.len() >= 2,
+        "{reserved:?}, one-input fee {one_input}"
+    );
+    abandon(&f, 0, &id, COIN).unwrap();
+    let spend = f.net.sent()[1].clone();
+    assert_eq!(spend.input.len(), reserved.len());
+    assert!(
+        spend
+            .input
+            .iter()
+            .all(|i| reserved.contains(&i.previous_output))
+    );
+    let fee = super::super::recovery::spend_fee(reserved.len());
+    assert_eq!(spend.output[0].value, value * reserved.len() as u64 - fee);
+}
+
+/// MG-10 §4.4 change 4 for a key change: the funder's abandon is refused
+/// `abandoning` while its spend back may be out, and the read lists the
+/// replay at that spend's fee; the approver's read is `discard{0}`, its
+/// abandon calls refused `participant`.
+#[test]
+fn test_a_key_change_spend_back_that_may_be_out_is_only_sent_again() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    send(&f, 0, &id, COIN).unwrap();
+    abandon(&f, 0, &id, COIN).unwrap();
+    *f.seam.spv.lock().unwrap() = Some((true, 1));
+    let e = abandon(&f, 0, &id, COIN).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::SharedStage { stage } if stage == "abandoning"),
+        "{e:?}"
+    );
+    let fee = super::super::recovery::spend_fee(1);
+    let r = f.session_of(0, &id).recovery;
+    assert_eq!(
+        r.actions,
+        [crate::masternodes::RecoveryAction::ResendAbandon { charge: fee }]
+    );
+    assert_eq!(
+        r.abandon_spend.and_then(|s| s.state),
+        Some(crate::masternodes::AbandonSpendState::Uncertain)
+    );
+    let resend = |w: usize, max: u64| {
+        f.run(
+            f.mn()
+                .resend_shared_abandon(f.wallets[w], id.clone(), f.grant(w, max)),
+        )
+    };
+    assert_eq!(
+        send_code(&resend(0, fee - 1).unwrap_err()),
+        "send.grant_exceeded"
+    );
+    resend(0, fee).unwrap();
+    let out = f.net.sent();
+    assert_eq!(out.len(), 3);
+    assert_eq!(out[1].txid(), out[2].txid());
+
+    let approver = f.session_of(1, &id).recovery;
+    assert_eq!(
+        approver.actions,
+        [crate::masternodes::RecoveryAction::Discard { releases: 0 }]
+    );
+    for e in [
+        abandon(&f, 1, &id, COIN).unwrap_err(),
+        resend(1, COIN).unwrap_err(),
+    ] {
+        assert!(
+            matches!(&e, MasternodesError::SharedStage { stage } if stage == "participant"),
+            "{e:?}"
+        );
+    }
+}
+
+/// T4 "key change before out" and "dead{abandoned}": before its send the
+/// funder's read lists the release (`abandon`, charged 0, no spend) and
+/// the discard; abandoned, only the discard; the replay call refuses at
+/// that stage.
+#[test]
+fn test_a_key_change_before_out_lists_its_release() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    *f.seam.spv.lock().unwrap() = Some((true, 1));
+    let releases: u64 = COIN;
+    let r = f.session_of(0, &id).recovery;
+    assert_eq!(
+        r.actions,
+        [
+            crate::masternodes::RecoveryAction::Abandon {
+                charge: 0,
+                spends: false,
+                replaces: None
+            },
+            crate::masternodes::RecoveryAction::Discard { releases }
+        ]
+    );
+    let e = f
+        .run(
+            f.mn()
+                .resend_shared_abandon(f.wallets[0], id.clone(), f.grant(0, COIN)),
+        )
+        .unwrap_err();
+    assert_eq!(code(e), "masternodes.shared_stage");
+    let s = abandon(&f, 0, &id, 0).unwrap();
+    assert_eq!(
+        s.recovery.actions,
+        [crate::masternodes::RecoveryAction::Discard { releases: 0 }]
+    );
+}
+
+/// T4 "terminal with A absent from history", a key change `dead`: a sent
+/// key change whose masternode left the list, its spend back never
+/// recorded, lists nothing (out: no discard); both calls refuse `dead`.
+#[test]
+fn test_a_dead_key_change_lists_nothing_and_refuses_both_exits() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    send(&f, 0, &id, COIN).unwrap();
+    f.net.reject_next();
+    abandon(&f, 0, &id, COIN).unwrap();
+    delisted(&f, 200);
+    scanned_to(&f, 0, 200);
+    *f.seam.spv.lock().unwrap() = Some((true, 1));
+    let s = f.session_of(0, &id);
+    assert!(matches!(s.stage, SharedStage::Dead { .. }), "{:?}", s.stage);
+    assert!(s.recovery.actions.is_empty(), "{:?}", s.recovery);
+    assert_eq!(s.recovery.abandon_spend.unwrap().state, None);
+    let resend = f
+        .run(
+            f.mn()
+                .resend_shared_abandon(f.wallets[0], id.clone(), f.grant(0, COIN)),
+        )
+        .unwrap_err();
+    for e in [resend, abandon(&f, 0, &id, COIN).unwrap_err()] {
+        assert!(
+            matches!(&e, MasternodesError::SharedStage { stage } if stage == "dead"),
+            "{e:?}"
+        );
+    }
+}
+
+/// The value check through the call (MG-10 §4.4 change 2 parity): a held
+/// fee input worth exactly the spend's fee plus dust is
+/// `send.amount_with_fee_exceeds_balance` and reads `too_small`; one duff
+/// more is listed and passes, with the call's real change address.
+#[test]
+fn test_QT_127_the_abandon_value_check_matches_the_read() {
+    let boundary = super::super::recovery::spend_fee(1) + crate::send::plan::dust_threshold(25);
+    for value in [boundary, boundary + 1] {
+        let f = fx(3, true);
+        let (_, txid) = keyed_with(&f, &[value]);
+        let (id, _) = complete(&f, txid);
+        send(&f, 0, &id, COIN).unwrap();
+        // As a restart leaves it: no claim on the fee input.
+        f.session.spends.forget_wallet(&f.wallets[0]);
+        *f.seam.spv.lock().unwrap() = Some((true, 1));
+        let r = f.session_of(0, &id).recovery;
+        let listed = r
+            .actions
+            .iter()
+            .any(|a| matches!(a, crate::masternodes::RecoveryAction::Abandon { .. }));
+        match value == boundary {
+            true => {
+                assert!(!listed, "{r:?}");
+                assert_eq!(
+                    r.blocked.map(|b| b.reason),
+                    Some(crate::masternodes::BlockedReason::TooSmall)
+                );
+                let e = abandon(&f, 0, &id, COIN).unwrap_err();
+                assert_eq!(send_code(&e), "send.amount_with_fee_exceeds_balance");
+            }
+            false => {
+                assert!(listed, "{r:?}");
+                abandon(&f, 0, &id, COIN).unwrap();
+                assert_eq!(
+                    f.net.sent().last().unwrap().output[0].value,
+                    1 + crate::send::plan::dust_threshold(25)
+                );
+            }
+        }
+    }
+}
+
 /// An unreadable key change is judged by its stored columns, as an
 /// unreadable registration is: before out, a spent reserved coin releases
 /// its locks.
@@ -1322,8 +1547,9 @@ fn test_a_discarded_key_change_frees_its_fee_coins() {
 /// F2: an unreadable key change whose hand-off went out has an exit.
 /// `abandon_shared_session` refuses it before spending anything (its
 /// record can't be returned); `unreadable_shared_sessions` lists it
-/// `abandonable`, and `abandon_unreadable_shared_session`, under a grant of
-/// exactly `shared_abandon_fee`, spends a fee input back to the wallet. Its
+/// `abandonable` with the coin test's charge, and
+/// `abandon_unreadable_shared_session`, under a grant of exactly that charge
+/// (one duff less is refused), spends its reserved coins back to the wallet. Its
 /// locks stay until that spend is buried: kept one and five deep, released
 /// six deep.
 #[test]
@@ -1335,7 +1561,6 @@ fn test_an_unreadable_out_key_change_is_abandoned_and_released_once_buried() {
     let reserved = reserved_of(&f.row(0, &id));
     assert!(!reserved.is_empty());
     f.rewrite(0, &id, |u| u.envelope = "{".into());
-    let fee = crate::masternodes::shared_abandon_fee();
     assert!(abandon(&f, 0, &id, COIN).is_err());
     assert_eq!(f.net.sent().len(), 1, "refused before any spend");
     let listed = f
@@ -1345,6 +1570,7 @@ fn test_an_unreadable_out_key_change_is_abandoned_and_released_once_buried() {
     assert_eq!(listed[0].kind, SharedKind::KeyChange);
     assert!(!listed[0].discardable);
     assert!(listed[0].abandonable);
+    let fee = listed[0].abandon_charge.expect("charged while abandonable");
     let short = f.run(f.mn().abandon_unreadable_shared_session(
         f.wallets[0],
         id.clone(),
@@ -1362,18 +1588,22 @@ fn test_an_unreadable_out_key_change_is_abandoned_and_released_once_buried() {
     let out = f.net.sent();
     assert_eq!(out.len(), 2);
     let spend = out[1].clone();
-    assert_eq!(spend.input.len(), 1);
-    assert!(reserved.contains(&spend.input[0].previous_output));
+    assert!(
+        spend
+            .input
+            .iter()
+            .all(|i| reserved.contains(&i.previous_output))
+    );
+    assert_eq!(fee, super::super::recovery::spend_fee(spend.input.len()));
     // The wallet's record of the spend (the test network records none).
-    f.spend(0, spend.input[0].previous_output);
+    for i in &spend.input {
+        f.spend(0, i.previous_output);
+    }
     let listed = f
         .run(f.mn().unreadable_shared_sessions(f.wallets[0]))
         .unwrap();
-    assert_eq!(
-        listed[0].abandonable,
-        reserved.len() > 1,
-        "a coin left to spend"
-    );
+    assert!(!listed[0].abandonable, "every reserved coin spent");
+    assert_eq!(listed[0].abandon_charge, None);
     assert_eq!(spend.output.len(), 1);
     assert_eq!(
         f.row(0, &id).abandon_txid.as_deref(),
