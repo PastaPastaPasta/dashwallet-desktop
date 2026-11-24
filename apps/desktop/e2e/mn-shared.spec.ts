@@ -395,10 +395,12 @@ for (const theme of THEMES) {
     await page.getByTestId("mn-shared").click();
     await expect(page.getByTestId("sh-start-off")).toHaveText(reason);
     await expect(page.getByTestId("sh-start-button")).toBeDisabled();
+    await expect(page.getByTestId("sh-start-button")).toHaveAccessibleDescription(reason);
     if (info.project.name === "chromium") await shot(page, "sh-start-mainnet", theme);
     await openSession(page, "sh-participant-invited", theme, mainnet);
     await expect(page.getByTestId("sh-setup-off")).toHaveText(reason);
     await expect(page.getByTestId("sh-join-button")).toBeDisabled();
+    await expect(page.getByTestId("sh-join-button")).toHaveAccessibleDescription(reason);
     if (info.project.name === "chromium") await shot(page, "sh-join-mainnet", theme);
     await openSession(page, "sh-coordinator-ready", theme);
     await expect(page.getByTestId("sh-credential-passphrase")).toBeVisible();

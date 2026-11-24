@@ -90,6 +90,7 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
   const [notes, setNotes] = useState<string[]>([]);
   const [setup, setSetup] = useState(false);
   const pasteId = useId();
+  const startOffId = useId();
   const paste = useRef<HTMLTextAreaElement>(null);
   useEffect(() => paste.current?.focus(), []);
 
@@ -156,11 +157,11 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
           <h3>{t(`${P}.startTitle`)}</h3>
           <p className="mg-muted">{t(`${P}.startText`)}</p>
           {startOff && (
-            <p className="mg-muted mg-small" data-testid="sh-start-off">
+            <p className="mg-muted mg-small" id={startOffId} data-testid="sh-start-off">
               {startOff}
             </p>
           )}
-          <DashButton variant="filledBlue" size="small" data-testid="sh-start-button" disabled={!!startOff || !capability.data} onClick={() => setSetup(true)}>
+          <DashButton variant="filledBlue" size="small" data-testid="sh-start-button" aria-describedby={startOff ? startOffId : undefined} disabled={!!startOff || !capability.data} onClick={() => setSetup(true)}>
             {t(`${P}.startButton`)}
           </DashButton>
         </section>
@@ -463,6 +464,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const [confirming, setConfirming] = useState<SendAction | null>(null);
   const [wayOut, setWayOut] = useState<boolean | null>(null);
   const replyId = useId();
+  const setupOffId = useId();
   const s = pick(query.data, latest);
   const debit = s?.debit ?? 0;
   const credential = useCredential(wallet.walletId, t(`${P}.session.ask`), 0);
@@ -503,6 +505,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const spendBackHeld = !!sync.data && !sync.data.running && v.row === "abandoning" && s.abandonSpend?.state === "uncertain" && s.resendAbandonCharge === null;
   const mainnetOff = mainnetHoldsBack(s, network);
   const offSetup = setupOff(network);
+  const setupDescribed = offSetup ? setupOffId : undefined;
   const steps = setupSteps(s, sliceFor(network));
   const showWayOut = wayOutShown(s, v.row);
   const wayOutOpen = wayOut ?? showWayOut === "expanded";
@@ -835,7 +838,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
           </Notice>
         )}
         {offSetup && steps.length > 0 && (
-          <p className="mg-muted mg-small" data-testid="sh-setup-off">
+          <p className="mg-muted mg-small" id={setupOffId} data-testid="sh-setup-off">
             {offSetup}
           </p>
         )}
@@ -896,6 +899,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
                 variant="filledBlue"
                 size="medium"
                 data-testid="sh-join-button"
+                aria-describedby={setupDescribed}
                 disabled={busy || wallet.watchOnly || !!offSetup || joinShare === null}
                 onClick={() => void act(() => b.mnSharedJoin(wallet.walletId, s.id, { shareIndex: joinShare, reward: { kind: "refund" } }))}
               >
@@ -903,7 +907,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
               </DashButton>
             )}
             {v.primary === "lock" && (
-              <DashButton variant="filledBlue" size="medium" data-testid="sh-lock" disabled={busy || !!offSetup || !credential.ready || wallet.watchOnly} onClick={() => void signConsent((g) => b.mnSharedLock(wallet.walletId, s.id, s.revision, g))}>
+              <DashButton variant="filledBlue" size="medium" data-testid="sh-lock" aria-describedby={setupDescribed} disabled={busy || !!offSetup || !credential.ready || wallet.watchOnly} onClick={() => void signConsent((g) => b.mnSharedLock(wallet.walletId, s.id, s.revision, g))}>
                 {t(`${P}.row.lockButton`)}
               </DashButton>
             )}
@@ -912,6 +916,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
                 variant="filledBlue"
                 size="medium"
                 data-testid="sh-approve"
+                aria-describedby={setupDescribed}
                 disabled={busy || !!offSetup || !credential.ready || wallet.watchOnly || !s.consentHash}
                 onClick={() => void signConsent((g) => b.mnSharedApprove(wallet.walletId, s.id, s.consentHash!, g))}
               >
