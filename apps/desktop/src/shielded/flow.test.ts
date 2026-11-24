@@ -201,7 +201,7 @@ describe("shielded refusal copy", () => {
     await flow.run(GRANT);
     expect([flow.step, shieldedCanChange(flow.error)]).toEqual(["refused", false]);
     const words = shieldedErrorText(flow.error, credits, duffs, flow.kind);
-    expect(words).toBe("This move may still go through. Your Shielded funds stay held until it does; don't move them again until Activity shows it as done.");
+    expect(words).toBe("This move may still go through. Until Dash Wallet knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.");
     expect(words).not.toMatch(/try(ing)? again/i);
   });
 

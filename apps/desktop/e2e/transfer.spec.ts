@@ -314,7 +314,7 @@ test.describe("Transfer quotes", () => {
     await expect(page.getByTestId("unfinished-card").locator(".dash-button-why")).toHaveCount(0);
     await page.getByTestId("sidebar-pay").click();
     await expect(page.getByTestId("shielded-send")).toBeDisabled();
-    await expect(page.getByTestId("pay-shielded")).toContainText("Your Shielded move has an update.");
+    await expect(page.getByTestId("pay-shielded")).toContainText("Your last Shielded move has an update. Open it before you send from Shielded again.");
     await page.getByTestId("sidebar-home").click();
     await page.getByTestId("shielded-show").click();
     await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "shieldedToPlatform");

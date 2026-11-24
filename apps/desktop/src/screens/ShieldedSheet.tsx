@@ -469,7 +469,7 @@ export function ShieldedSendLink({ walletId, network }: { walletId: string; netw
   if (!status?.active) return sheet;
   const syncing = shieldedSyncing(status);
   // Another kind's result not yet seen (a Transfer move) waits for Transfer, not Pay.
-  const why = syncing ? SHIELDED_SYNC_COPY.syncing : flow.running ? C.card.why.busy : flow.unseen && flow.kind !== "send" ? C.unseen : !shieldedDuffs(status) ? C.card.why.empty : null;
+  const why = syncing ? SHIELDED_SYNC_COPY.syncing : flow.running ? C.card.why.busy : flow.unseen && flow.kind !== "send" ? C.unseenSend : !shieldedDuffs(status) ? C.card.why.empty : null;
   return (
     <>
       <p className="pay-shielded" data-testid="pay-shielded">

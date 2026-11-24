@@ -254,6 +254,8 @@ export const transfer = {
     close: "Close",
     show: "Show",
     unseen: "Your Shielded move has an update.",
+    /** Sending from Shielded waits until the last move's result is seen. */
+    unseenSend: "Your last Shielded move has an update. Open it before you send from Shielded again.",
     receive: {
       text: "Money sent to this address stays private. Anyone with a Shielded balance can pay it.",
       copy: "Copy address",
@@ -277,7 +279,7 @@ export const transfer = {
       contextUnavailable: "Waiting for the network to sync before Shielded can be used. Try again shortly.",
       trustMismatch: "Your Shielded account could not be verified against the network. Nothing was moved.",
       featureOff: "Shielded is turned off.",
-      toPlatformUnknown: "This move may still go through. Your Shielded funds stay held until it does; don't move them again until Activity shows it as done.",
+      toPlatformUnknown: "This move may still go through. Until Dash Wallet knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.",
     },
   },
 } as const satisfies Tree;

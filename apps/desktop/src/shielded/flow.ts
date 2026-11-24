@@ -275,6 +275,9 @@ export const SHIELDED_COPY = {
   get unseen() {
     return t("transfer.shielded.unseen");
   },
+  get unseenSend() {
+    return t("transfer.shielded.unseenSend");
+  },
   receive: {
     get text() {
       return t("transfer.shielded.receive.text");
