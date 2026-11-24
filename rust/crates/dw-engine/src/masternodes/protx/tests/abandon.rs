@@ -301,11 +301,15 @@ fn mg10_an_abandoned_key_change_frees_its_coins_and_holds_the_next_update_until_
     f.assert_resend_refused(&op);
     f.preview_update(key_change(&hash, 6)).unwrap();
     // Paid from another coin, it would share no input with the abandoned one.
+    // Refused before its grant is redeemed, a coin locked or anything signed.
     f.credit(3, COIN);
     let handed = f.lib.sent().len();
-    let e = f.update(key_change(&hash, 6), f.grant(COIN)).unwrap_err();
+    let locked = f.locked();
+    let grant = f.grant(COIN);
+    let e = f.update(key_change(&hash, 6), grant.clone()).unwrap_err();
     f.assert_abandoned_pending(&e, &op);
     assert_eq!(f.lib.sent().len(), handed, "handed off");
+    assert_eq!(f.locked(), locked);
 
     f.spent_in_a_block(fee_coin, 60);
     assert_eq!(f.state(&op), ProTxOperationState::Conflicted);
@@ -313,8 +317,33 @@ fn mg10_an_abandoned_key_change_frees_its_coins_and_holds_the_next_update_until_
         f.op_barrier_state(&op),
         Some(ProTxOperationState::Conflicted)
     );
-    let next = f.update(key_change(&hash, 6), f.grant(COIN)).unwrap();
+    let next = f.update(key_change(&hash, 6), grant).unwrap();
     assert_eq!(next.state, ProTxOperationState::Sent);
+}
+
+/// The abandoned key change is mined anyway: it reads `confirmed`, and the
+/// hold on the next update is no longer `update_abandoned_pending`. Until
+/// the synced list shows it, `update_pending` holds as for any confirmed
+/// change (D43).
+#[test]
+fn mg10_an_abandoned_key_change_mined_anyway_lifts_its_hold() {
+    let f = fx(Library::Accept);
+    let (_, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (op, tx, fee_coin) = f.sent_key_change(&hash);
+    f.abandon(tx.txid());
+    f.credit(3, COIN);
+    let e = f.update(key_change(&hash, 6), f.grant(COIN)).unwrap_err();
+    f.assert_abandoned_pending(&e, &op);
+
+    f.spend(fee_coin);
+    f.confirm(tx.clone(), 60);
+    assert_eq!(f.state(&op), ProTxOperationState::Confirmed { height: 60 });
+    let e = f.update(key_change(&hash, 6), f.grant(COIN)).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::UpdatePending { operation } if *operation == op.id),
+        "{e:?}"
+    );
 }
 
 /// A replacement signed and not sent before the change it replaces was
