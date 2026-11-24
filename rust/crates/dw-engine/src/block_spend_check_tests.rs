@@ -114,6 +114,9 @@ struct Given {
     a: OutPoint,
     funded: Transaction,
     w: Transaction,
+    p: Transaction,
+    /// P's record as the store kept it before the abandon swept it.
+    p_record: Vec<u8>,
 }
 
 impl Given {
@@ -253,6 +256,13 @@ fn given_back() -> Given {
     );
     mempool(&engine, &session, id, &p);
     wait_stored(&session, id, &[p.txid()]);
+    let p_record = wallet_db(&session)
+        .query_row(
+            "SELECT record_blob FROM core_transactions WHERE wallet_id = ?1 AND txid = ?2",
+            rusqlite::params![&id.0[..], AsRef::<[u8]>::as_ref(&p.txid())],
+            |r| r.get::<_, Vec<u8>>(0),
+        )
+        .unwrap();
     let session = reopen(&engine, session);
     abandon(&engine, &session, id, p.txid());
     let session = reopen(&engine, session);
@@ -272,8 +282,91 @@ fn given_back() -> Given {
         a,
         funded,
         w,
+        p,
+        p_record,
     };
     assert!(fx.held(), "A is back, unspent");
+    fx
+}
+
+/// The session's wallet store, opened beside its persister.
+fn wallet_db(session: &NetworkSession) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(session.data_dir().join(crate::session::WALLET_DB_FILE))
+        .unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    conn
+}
+
+/// [`given_back`], but the store's open-time repair gave A back, not an
+/// abandon: P's abandon mark goes, and, while the network is closed, the
+/// store keeps P in its recovery rows as a repair writes them, A among the
+/// coins it released. The next open reads them.
+fn repaired() -> Given {
+    let Given {
+        _dir,
+        engine,
+        session,
+        id,
+        a,
+        funded,
+        w,
+        p,
+        p_record,
+    } = given_back();
+    let appdb = Arc::clone(&session.live().unwrap().appdb);
+    let mark = format!("abandoned:{}", p.txid());
+    appdb.set_setting(&id.to_string(), &mark, None).unwrap();
+    drop(appdb);
+    let keys: Vec<Vec<u8>> = wallet_db(&session)
+        .prepare("SELECT outpoint FROM core_utxos WHERE wallet_id = ?1")
+        .unwrap()
+        .query_map([&id.0[..]], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let txid: &[u8] = a.txid.as_ref();
+    let a_key = (keys.into_iter())
+        .find(|k| k.len() == 34 && &k[1..33] == txid && k[33] == a.vout as u8)
+        .expect("A's stored outpoint key");
+    let db_path = session.data_dir().join(crate::session::WALLET_DB_FILE);
+    *session.close_load_wait.lock().unwrap() = Some(std::time::Duration::from_secs(180));
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(crate::DashNetwork::Regtest))
+            .unwrap()
+    );
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO core_dropped_unsigned_spends \
+            (wallet_id, txid, record_blob, deleted_outputs, released_coins) \
+         VALUES (?1, ?2, ?3, '[]', ?4)",
+        rusqlite::params![
+            &id.0[..],
+            AsRef::<[u8]>::as_ref(&p.txid()),
+            &p_record,
+            format!("[{{\"outpoint\":\"{}\",\"value\":1}}]", hex::encode(&a_key)),
+        ],
+    )
+    .unwrap();
+    drop(conn);
+    let session = super::open(&engine);
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    assert_eq!(persister.repair_released_coins(&id.0).unwrap(), vec![a]);
+    drop(persister);
+    let fx = Given {
+        _dir,
+        engine,
+        session,
+        id,
+        a,
+        funded,
+        w,
+        p,
+        p_record,
+    };
+    assert!(fx.held(), "A stays back after the open");
     fx
 }
 
@@ -474,4 +567,40 @@ fn a_spender_in_the_coins_funding_block_is_found() {
     let rows = fx.session.hub.block_spends.rows(&fx.id);
     assert_eq!(rows.get(&fx.a).map(|r| r.height), Some(FUNDED_AT));
     assert!(!fx.held());
+}
+
+/// (k) A coin the store's open-time repair gave back, now unspent, that a
+/// stored block spent: held for the check, not offered, and once the
+/// check finds W's block its row is stored and the coin is spent.
+#[test]
+fn a_coin_the_stores_repair_gave_back_is_found_spent_in_a_stored_block() {
+    let fx = repaired();
+    lock_w(&fx);
+    fx.start_unchecked();
+    assert!(
+        fx.session.hub.block_spends.checking(&fx.id).contains(&fx.a),
+        "the repair's coin is a suspect"
+    );
+    assert!(fx.checking(), "held and listed as checking");
+    assert!(!spendable(&fx.engine, &fx.session, fx.id, fx.a));
+    assert!(fx.other_coin_spendable());
+    fx.with_chain(fx.chain(Some(TIP + 1), FUNDED_AT));
+    assert_eq!(fx.pass(), CheckPass::Done);
+    let rows = fx.session.hub.block_spends.rows(&fx.id);
+    assert_eq!(rows.get(&fx.a).map(|r| r.spender_txid), Some(fx.w.txid()));
+    assert!(!fx.held(), "the found spend takes A out");
+    assert!(!fx.listed());
+    assert!(!spendable(&fx.engine, &fx.session, fx.id, fx.a));
+}
+
+/// (k) No stored block spent the repair's coin: released at the tip.
+#[test]
+fn a_coin_the_stores_repair_gave_back_no_block_spent_is_released_at_the_tip() {
+    let fx = repaired();
+    fx.start_unchecked();
+    assert!(fx.checking());
+    fx.with_chain(fx.chain(None, FUNDED_AT));
+    assert_eq!(fx.pass(), CheckPass::Done);
+    assert!(fx.listed() && !fx.checking(), "A is listed, not held");
+    assert!(spendable(&fx.engine, &fx.session, fx.id, fx.a));
 }
