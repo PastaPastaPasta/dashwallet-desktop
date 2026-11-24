@@ -92,7 +92,7 @@ test("IOS-071: the main badge is on the main identity's row; Set as main moves i
   await expect(row(page, WORK_IDENTITY).getByTestId("identity-main-badge")).toHaveText("Main");
   await expect(row(page, WORK_IDENTITY).getByTestId("identity-set-main")).toHaveCount(0);
   // The row shows the id shortened and copies all of it.
-  await row(page, WORK_IDENTITY).getByRole("button", { name: "Copy identity id" }).click();
+  await row(page, WORK_IDENTITY).getByRole("button", { name: "Copy identity ID" }).click();
   expect(await page.evaluate(() => (window as unknown as { __copied?: string }).__copied)).toBe(WORK_IDENTITY);
   await expect(row(page, IDENTITY.alice).getByTestId("identity-main-badge")).toHaveCount(0);
 

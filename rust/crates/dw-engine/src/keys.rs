@@ -63,6 +63,39 @@ pub(crate) fn registration_refused(_: &std::path::Path) -> bool {
     false
 }
 
+/// An import's fault points (dw-appdb `fault`, `after_` stage): its rows
+/// stored (the seed not yet), its seed stored, its wallet registered.
+pub(crate) const IMPORT_ROWS: &str = "import.rows";
+pub(crate) const IMPORT_SECRET: &str = "import.secret";
+pub(crate) const IMPORT_REGISTER: &str = "import.register";
+/// Tests: runs at each import fault point with its name, before the point.
+#[cfg(test)]
+pub(crate) static AT_IMPORT_POINT: std::sync::Mutex<Option<ImportPointHook>> =
+    std::sync::Mutex::new(None);
+#[cfg(test)]
+pub(crate) type ImportPointHook = Box<dyn Fn(&str) + Send>;
+
+impl NetworkSession {
+    /// The import fault point `point` on this session's app database: armed,
+    /// the step fails; `DW_FAULT` naming it aborts the process.
+    #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+    fn import_fault(&self, point: &str) -> Result<(), EngineError> {
+        #[cfg(test)]
+        if let Some(at) = &*AT_IMPORT_POINT.lock().unwrap_or_else(|e| e.into_inner()) {
+            at(point);
+        }
+        (self.live()?.appdb)
+            .fault_point(point, dw_appdb::fault::Stage::After)
+            .map_err(|e| EngineError::Storage(e.to_string()))
+    }
+
+    #[cfg(not(all(debug_assertions, any(test, feature = "fault-inject"))))]
+    #[inline(always)]
+    fn import_fault(&self, _point: &str) -> Result<(), EngineError> {
+        Ok(())
+    }
+}
+
 /// Address lookahead of restores in Dash Core compatibility mode: dash-qt
 /// restores scan 1000 keys ahead (QT-105), which also finds funds Core mixed
 /// on its BIP44 chains (DESIGN.md R2).
@@ -386,7 +419,7 @@ pub(crate) async fn apply_lookahead(
         wider.fold(gap, u32::max)
     };
     let accounts: Vec<(AccountTypePreference, u32, u32)> = {
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(wallet).await?;
         let accounts = &state.core_wallet.accounts;
         (accounts.standard_bip44_accounts.iter())
             .map(|(i, a)| (AccountTypePreference::BIP44, *i, widest(a)))
@@ -1041,7 +1074,6 @@ impl NetworkSession {
         // (DEC-210), before its first write.
         let readmit = wallet_id.to_string();
         let readmitted = self.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
-        self.store_fingerprint(wallet_id, fingerprint).await;
 
         // A closed (unloaded) wallet is registered: open it instead.
         if self.live()?.store.is_unloaded(&wallet_id.0) {
@@ -1109,11 +1141,16 @@ impl NetworkSession {
             }
             None
         };
-        // A Dash Core file's range, coin locks and salt are stored, all or
-        // none, before the wallet is registered or its seed is stored, so
-        // nothing can see or spend from it with keys before they are there.
-        // A wallet already there with its keys is left as it is.
-        let prior = match self.write_imported_state(wallet_id, &state).await {
+        // A Dash Core file's range, coin locks and salt, or a backup's rows,
+        // are stored, all or none, before the wallet is registered or its
+        // seed is stored, so nothing can see or spend from it with keys
+        // before they are there, and a stop before it registers leaves it
+        // unregistered for a retry (#359). A wallet already there with its
+        // keys is left as it is.
+        let prior = match self
+            .write_imported_state(wallet_id, &state, registered)
+            .await
+        {
             Ok(prior) => prior,
             Err(e) => {
                 self.undo_attach(wallet_id, undo.0.clone(), undo.1).await;
@@ -1127,17 +1164,21 @@ impl NetworkSession {
         // another derivation flag (the id derives from the seed), counts as
         // one already there. Vault file writes and fsync stay off the async
         // workers.
+        self.store_fingerprint(wallet_id, fingerprint).await;
         let had_secret = had_secret || {
             let vault = self.vault.clone();
-            let stored = tokio::task::spawn_blocking(move || {
-                match vault.store_wallet_secret(&wallet_id.0, &secret) {
-                    Err(VaultError::WalletSecretExists) => Ok(true),
-                    stored => stored.map(|()| false),
-                }
-            })
-            .await
-            .map_err(EngineError::from)
-            .and_then(|r| r.map_err(EngineError::from));
+            let stored = match self.import_fault(IMPORT_ROWS) {
+                Err(e) => Err(e),
+                Ok(()) => tokio::task::spawn_blocking(move || {
+                    match vault.store_wallet_secret(&wallet_id.0, &secret) {
+                        Err(VaultError::WalletSecretExists) => Ok(true),
+                        stored => stored.map(|()| false),
+                    }
+                })
+                .await
+                .map_err(EngineError::from)
+                .and_then(|r| r.map_err(EngineError::from)),
+            };
             match stored {
                 Ok(existed) => existed,
                 Err(e) => {
@@ -1212,6 +1253,7 @@ impl NetworkSession {
         // lookahead it is to scan with and the marker, put back if nothing is
         // registered.
         let pending = async {
+            self.import_fault(IMPORT_SECRET)?;
             let previous = self.wide_scan(wallet_id).await?;
             self.mark_pending(wallet_id, WideScan::Birth).await?;
             // A row an earlier attempt left does not narrow this one; one of
@@ -1255,6 +1297,10 @@ impl NetworkSession {
                 .await
                 .map_err(EngineError::from)
         };
+        let registered = registered.and_then(|wallet| {
+            self.import_fault(IMPORT_REGISTER)?;
+            Ok(wallet)
+        });
         #[cfg(test)]
         let registered = registered.and_then(|wallet| {
             if take_test_failure(&FAIL_AFTER_REGISTRATION_IN, self.data_dir()) {
@@ -1934,7 +1980,7 @@ impl NetworkSession {
             // Not a DashPay contact's address: the wallet does not own it
             // (MG-05 D19).
             let path = {
-                let state = wallet.state().await;
+                let state = crate::wallet_read::info_of(&wallet).await?;
                 crate::coins::own_address_info(&state.core_wallet, &parsed).map(|info| info.path)
             }
             .ok_or_else(|| EngineError::AddressNotMine(address.clone()))?;

@@ -120,6 +120,7 @@ describe("IOS-050 the banner (D6)", () => {
     const request = payBanner(input({ detail: detail({ relation: "pendingIncoming", channel: "notEstablished" }) }));
     expect(request).toMatchObject({ kind: "note", text: expect.stringContaining("Accept and pay") });
     expect(blocks(payBanner(input({ detail: detail({ relation: "pendingIncoming" }), hasKeys: false })))).toBe(true);
+    expect(payBanner(input({ detail: detail({ relation: "pendingIncoming" }), hasKeys: false }))).toMatchObject({ kind: "enable", text: "Enable DashPay first. Then you can accept and pay." });
   });
 
   it("reads the Enable and broken-channel texts in the language in use", () => {
@@ -130,7 +131,7 @@ describe("IOS-050 the banner (D6)", () => {
       const broken = textOf(payBanner(input({ detail: detail({ channel: "broken" }) })));
       const refusal = sendErrorText(err("contact.channel_broken"), "test")?.text ?? "";
       for (const text of [enable, broken, refusal]) expect(text).not.toMatch(/Enable DashPay first|Payments to this contact/);
-      expect(enable).toMatch(/^⟦.*⟧ ⟦.*⟧$/);
+      expect(enable).toMatch(/^⟦[^⟦⟧]*⟧$/);
       expect(broken).toMatch(/^⟦.*⟧$/);
       expect(refusal).toBe(broken);
     } finally {
@@ -208,18 +209,35 @@ describe("IOS-050 Accept and pay: one credential, one lease (D10, D11)", () => {
     await expect(acceptUnderLease(noLease.api, args)).rejects.toMatchObject({ stage: "accept" });
     expect(noLease.calls).toEqual(["grantRequest", "authorizeSet", "revoke g0", "revoke g1"]);
   });
+
+  it("#173 item 9: the signing window ended before the lease took its grants: ask for the passphrase, nothing accepted", async () => {
+    const window = { ...args, credential: { kind: "unencrypted" } as const, windowed: true };
+    for (const code of ["platform.grant_invalid", "vault.grant_invalid"] as const) {
+      const ended = fake({ beginFlow: vi.fn(async () => Promise.reject(err(code))) });
+      const e = await acceptUnderLease(ended.api, window).catch((x: unknown) => x);
+      expect(e).toMatchObject({ stage: "authorize", cause: { code: "vault.credential_required" } });
+      expect(ended.calls).toEqual(["grantRequest", "authorizeSet", "revoke g0", "revoke g1"]);
+      expect(ended.api.dashpayAcceptRequest).not.toHaveBeenCalled();
+    }
+    // With a passphrase given there is no window to have ended: a refused lease stays the accept's failure.
+    const typed = fake({ beginFlow: vi.fn(async () => Promise.reject(err("platform.grant_invalid"))) });
+    await expect(acceptUnderLease(typed.api, args)).rejects.toMatchObject({ stage: "accept" });
+    // Nor on an unencrypted vault: it has no window and no passphrase to ask for.
+    const plain = fake({ beginFlow: vi.fn(async () => Promise.reject(err("platform.grant_invalid"))) });
+    await expect(acceptUnderLease(plain.api, { ...args, credential: { kind: "unencrypted" } })).rejects.toMatchObject({ stage: "accept", cause: { code: "platform.grant_invalid" } });
+  });
 });
 
 describe("IOS-050 U-03's promise and refusals for a contact (D9, D13)", () => {
   const pay: ContactRecipient = { identity: ME, contact: BOB, amount: 1_000_000, subtractFee: false, note: "Lunch" };
-  const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 1_000_000 };
+  const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 1_000_000, leftOver: 0 };
   const confirmed = confirmedOf(pay, estimate, { kind: "auto" });
   const prepared = (outputs: PreparedTxSummary["outputs"], over: Partial<PreparedTxSummary> = {}): PreparedTxSummary => ({
     txid: "ab".repeat(32),
     fee: 226,
     feeRatePerKb: 1000,
     sizeBytes: 226,
-    inputs: [],
+    inputs: [{ outpoint: { txid: "cd".repeat(32), vout: 0 }, address: null, amount: 1_000_236 }],
     outputs,
     totalSent: 1_000_000,
     totalDebit: 1_000_226,
@@ -276,8 +294,11 @@ describe("IOS-050 U-03's promise and refusals for a contact (D9, D13)", () => {
     const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 1_000_000, fee: 226 };
     expect(broadcastFailure(err("contact.payment_locked"), "test", held, true, "DASH", true)).toMatchObject({ kind: "failed" });
     expect(broadcastFailure(err("storage"), "test", held, true, "DASH", true)).toMatchObject({ kind: "failed" });
-    // To an address, or on a retry, it stays unknown.
-    expect(broadcastFailure(err("storage"), "test", held, true)).toMatchObject({ kind: "unknown" });
+    // A first broadcast to an address whose record could not be written was not sent either; on a
+    // retry it stays unknown.
+    expect(broadcastFailure(err("storage"), "test", held, true)).toMatchObject({ kind: "failed" });
+    expect(broadcastFailure(err("storage"), "test", held, false, "DASH", true)).toMatchObject({ kind: "unknown" });
+    expect(broadcastFailure(err("contact.payment_locked"), "test", held, true)).toMatchObject({ kind: "unknown" });
     expect(broadcastFailure(err("contact.payment_locked"), "test", held, false, "DASH", true)).toMatchObject({ kind: "unknown" });
   });
 });

@@ -1,12 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { ToolsTab } from "../src/api/generated/ToolsTab";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
-import { fixtureUrl, openToolsTab, THEMES, trackPageErrors, type Theme } from "./helpers";
-import { checkArea, PSEUDO } from "./pseudo";
+import { authorize, fixtureUrl, openToolsTab, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { checkArea, counted, PSEUDO, readFirst } from "./pseudo";
 
 // Localization (MP-14): Tools under the two pseudo-locales (./pseudo.ts): all eight tabs,
 // Information's warning banner and DashPay card, Repair's confirmation and GrantSheet, Address
-// Book's editor, QR and empty states, PSBT operations, Coin Selection's summary, and No wallet.
+// Book's editor, QR and empty states, PSBT operations, Coin Selection's summary and Tree mode, Finish
+// transfers' result, and No wallet.
 // States are reached as tools.spec.ts and dashpay-info.spec.ts reach them.
 
 const UNSIGNED = Buffer.from("psbt\xffunsigned", "latin1").toString("base64");
@@ -49,6 +50,22 @@ const COIN_TABLE = '.table-card:has([data-testid="coin-table"])';
 
 /** Works around #240 (coins.tsx's screen-reader-only headers widen the page in English) until #240 lands. */
 const CONTAIN_ENGLISH_COIN_TABLE_SR_ONLY_HEADERS = `${COIN_TABLE} { position: relative; }`;
+
+/** Coin Selection in Tree mode, every coin selected: one row per address, its coins under it. */
+async function openTreeMode(page: Page, theme: Theme, lang: string) {
+  await openTab(page, theme, lang, "coinSelection", "tools-coinjoin");
+  await page.getByTestId("coins-mode-tree").click();
+  await expect(page.locator("[data-testid^=coin-group-]").first()).toBeVisible();
+  await page.getByTestId("coins-select-all").click();
+  await expect(page.getByTestId("coins-selection")).toBeVisible();
+}
+
+/** Repair ▸ Finish transfers, authorized, through to its report. */
+async function finishTransfers(page: Page) {
+  await page.getByTestId("repair-finish-transfers").click();
+  await authorize(page);
+  await expect(page.getByTestId("repair-outcome")).toBeVisible();
+}
 
 const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) => Promise<void>; roots?: string[]; data?: RegExp[]; panes?: string[]; scrollers?: string[] }> = {
   information: {
@@ -207,6 +224,20 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
     data: COIN_DATE,
     scrollers: [COIN_TABLE],
   },
+  "coin-selection-tree": {
+    open: async (page, theme, lang) => {
+      await openTreeMode(page, theme, lang);
+      await page.addStyleTag({ content: CONTAIN_ENGLISH_COIN_TABLE_SR_ONLY_HEADERS });
+    },
+    data: COIN_DATE,
+    scrollers: [COIN_TABLE],
+  },
+  "repair-finished": {
+    open: async (page, theme, lang) => {
+      await openTab(page, theme, lang, "repair", "tools-stuck-funding");
+      await finishTransfers(page);
+    },
+  },
   "no-wallet": {
     open: async (page, theme, lang) => {
       await load(page, theme, lang, "no-wallet");
@@ -233,3 +264,14 @@ for (const theme of THEMES)
         });
         expect(errors).toEqual([]);
       });
+
+test.describe("counts keep their order under ar-XB", () => {
+  test("a Tree mode row's coins and Finish transfers' counts are read number first", async ({ page }) => {
+    await openTreeMode(page, "light", "ar-XB");
+    const group = page.locator("[data-testid^=coin-group-]").first();
+    await readFirst(group.locator("td").last(), "a group's coins", counted("coins?", "s?nioc"));
+    await openToolsTab(page, "repair");
+    await finishTransfers(page);
+    await readFirst(page.getByTestId("repair-outcome"), "the resumed count", counted("resumed", "demuser"));
+  });
+});

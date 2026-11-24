@@ -54,8 +54,8 @@ export const home = {
     loading: "Loading transactions",
     seeAll: "See all transactions",
   },
-  /** The Unfinished transfers sheet: a lock's transaction id, copied. */
-  unfinished: { txid: "transaction id" },
+  /** The Unfinished transfers sheet: a lock's transaction ID, copied. */
+  unfinished: { copyTxid: "Copy transaction ID" },
   /** The banner when the network has upgraded past this version (a security notice). */
   advisory: {
     label: "App update available",
@@ -63,5 +63,14 @@ export const home = {
     link: "GitHub releases",
     dismiss: "Dismiss",
     openFailed: "Could not open the releases page.",
+  },
+  /** An unfinished Dash Core export's unencrypted temporary file, found at the start. */
+  exportStaging: {
+    /** Toast: the start deleted it. */
+    deleted: "Dash Wallet deleted an unfinished Dash Core export left from the last time it ran. That file wasn't encrypted. If you still need the export, export again.",
+    /** Banner, until dismissed: the start could not delete it; `{path}` is its full path. */
+    notDeleted: "Dash Wallet couldn't delete an unfinished Dash Core export left from the last time it ran. That file isn't encrypted and can hold your wallet's private keys. Delete it yourself: {path}",
+    label: "Unfinished export",
+    dismiss: "Dismiss",
   },
 } as const satisfies Tree;

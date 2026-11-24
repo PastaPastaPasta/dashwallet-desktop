@@ -186,9 +186,10 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
       <dl className="detail-list card-l1" data-testid="unfinished-rows">
         {rows.map(({ lock, result }) => {
           const key = lockKey(lock);
-          const action = result?.kind === "applied" ? null : lock.state === "ready" ? "finish" : lock.state === "checking" ? "checkAgain" : null;
+          const finished = result?.kind === "applied" || result?.kind === "reportedUsed" ? result.kind : null;
+          const action = finished ? null : lock.state === "ready" ? "finish" : lock.state === "checking" ? "checkAgain" : null;
           return (
-            <div className="detail-row" key={key} data-testid="unfinished-row" data-state={result?.kind === "applied" ? "applied" : lock.state}>
+            <div className="detail-row" key={key} data-testid="unfinished-row" data-state={finished ?? lock.state}>
               <dt className="detail-label">{C.sheet.kind[lock.kind]}</dt>
               <dd className="detail-value">
                 <bdi dir="ltr" data-testid="unfinished-row-amount">{fmt.duffs(lock.duffs)}</bdi>{" "}
@@ -196,7 +197,7 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
                   {C.sheet.state[lock.state]}
                 </span>
                 <br />
-                <CopyValue value={lock.txid} display={shortId(lock.txid)} label={tr("home.unfinished.txid")} mono />
+                <CopyValue value={lock.txid} display={shortId(lock.txid)} action={tr("home.unfinished.copyTxid")} mono />
                 {result && (
                   <p className={result.kind === "notApplied" ? "form-problem" : "field-hint"} role="status" data-testid="unfinished-row-result">
                     {resultText(result, errorText, lock.kind)}

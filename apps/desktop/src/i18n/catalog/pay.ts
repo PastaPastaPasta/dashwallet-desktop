@@ -56,6 +56,8 @@ export const pay = {
     rejectedReason: "The network rejected the transaction: {reason}. The payment was not sent.",
     broadcastUnknown: "The payment may have been sent: the network did not answer in time.",
     cancelled: "The payment was cancelled before anything was sent.",
+    heldUntilRestart:
+      "The payment was not sent, but its coins stay reserved until you restart Dash Wallet. After the restart it's listed as pending in Activity; abandon it there to get the coins back.",
     contactLocked: "Another payment to this contact is still being sent or may have been sent. Pay again once it is settled.",
     pendingIncoming: "Accept the contact request first, or use Accept and pay.",
     ineligible: "This contact cannot be paid now.",
@@ -94,6 +96,16 @@ export const pay = {
     enterRate: "Enter a custom fee rate.",
     enterChangeAddress: "Enter the custom change address.",
   },
+  /** Added recipients (QT-052): one payment to several addresses. */
+  more: {
+    add: "Add recipient",
+    /** `number`: its place in the payment, 2 for the first added one. */
+    recipient: "Recipient {number}",
+    remove: "Remove",
+    platform: "A Dash Platform address can't be added to a payment. Pay it on its own.",
+    /** Shown under Add recipient while the feature is testnet-only. */
+    testnetOnly: "Paying several recipients at once is available on test networks only in this version.",
+  },
   toAddress: {
     form: "Pay to an address",
     linkUsername: "The link names the payee {username}. The name is not verified.",
@@ -105,6 +117,16 @@ export const pay = {
     message: "Message",
     messageHint: "Kept with the transaction in this wallet; not sent to the payee.",
     reviewPsbt: "Review PSBT",
+  },
+  /** Pay ▸ To an address: a QR code from an image or the screen (IOS-043 on a desktop without a camera). */
+  scan: {
+    openImage: "Open QR Code Image…",
+    screen: "Scan a Screen Region",
+    cancel: "Cancel",
+    hint: "You can also paste or drop a QR code image into Pay to.",
+    reading: "Reading the image…",
+    capturing: "Select a region of the screen…",
+    noPayment: "There is no Dash address or payment link in this QR code.",
   },
   psbt: {
     summary: "Advanced: unsigned transaction (PSBT)",
@@ -124,8 +146,7 @@ export const pay = {
     minutes: "{minutes} minutes",
     hours: "{hours} hours",
     /** The word after a block count, chosen by `count`. */
-    blocks: { one: "block", other: "blocks" },
-    target: "{time} ({blocks} {word})",
+    target: { one: "{time} ({blocks} block)", other: "{time} ({blocks} blocks)" },
     rateMissing: "Enter a fee rate in DASH per kB.",
     rateMin: "The fee rate must be at least {rate} {unit}/kB (the minimum relay fee).",
     rateMax: "The fee rate must be at most {rate} {unit}/kB.",
@@ -166,7 +187,18 @@ export const pay = {
     changeTo: "Change to",
     total: "Total",
     subtractNote: "The fee is subtracted from the amount: the payee receives the amount above.",
+    /** A payment to several recipients: one of them may pay the fee from its amount. */
+    /** `amount`: what was taken from that recipient's entered amount. */
+    subtractNoteMany: "{amount} of the fee is subtracted from {address}'s amount: each recipient receives the amount shown.",
+    /** The row of each recipient in a payment to several. */
+    recipients: { one: "{count} recipient", other: "{count} recipients" },
     changeNote: "The total includes the change: the custom change address may not belong to this wallet.",
+    mixed: {
+      coins: { one: "This payment spends {count} mixed coin.", other: "This payment spends {count} mixed coins." },
+      manyCoins: "Spending 10 or more mixed coins in one payment can link them together and weaken your privacy. Consider paying a smaller amount.",
+      noChange: "Mixed payments have no change: the {amount} left over after the payment goes to the network fee.",
+    },
+    unmixed: "This payment uses coins that aren't mixed, so it can be traced back to where they came from. To pay privately, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).",
     checkingPolicy: "Checking the payment settings",
     passphrase: "Passphrase",
     wait: "Too many attempts. Try again in {secs} s.",
@@ -191,7 +223,7 @@ export const pay = {
     unknownText: "{text} Check Activity before you pay again.",
     networkFee: "Network fee",
     txid: "Transaction ID",
-    txidCopy: "transaction ID",
+    copyTxid: "Copy transaction ID",
     show: "Show in Activity",
     close: "Close",
     sending: "Sending…",
@@ -226,7 +258,7 @@ export const pay = {
       readFailed: "Could not read this contact: {error}",
       gone: "This user is no longer in your contacts.",
       notContacts: "You can pay this user once you are contacts.",
-      thenAccept: "Then you can accept and pay.",
+      enableThenAccept: "Enable DashPay first. Then you can accept and pay.",
       paymentLock: "A payment to this contact may have been sent. Check it again before you pay again.",
       mixingOnly: "The wallet is unlocked for mixing only. Unlock it fully to pay.",
       request: "This user sent you a contact request. Accept and pay accepts it and pays in one step.",

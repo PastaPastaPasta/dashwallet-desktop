@@ -2,7 +2,7 @@
 // `dashpay://user` link), else the selected contact's pane (its actions, payment activity and
 // private details), else a prompt to pick one.
 
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { ActivityFilterName } from "../../api/generated/ActivityFilterName";
 import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
@@ -23,7 +23,7 @@ import { useModel } from "../../onboarding/model";
 import { detailDate } from "../../format/tx";
 import { Outcome } from "../tools/common";
 import { RowChips } from "./ContactList";
-import { useActionToast, useRefocus } from "./afterAction";
+import { focusInView, takeDetailFocus, useActionToast, useRefocus } from "./afterAction";
 import { Avatar } from "./Avatar";
 
 /** What the selected contact's pane acts with (DP2-09 D16): the identity's actions, and whether
@@ -62,12 +62,16 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
   const chips = rowChips(c);
   // Only a contact has private details (DP2-09 D7).
   const detail = useContactDetail(pane.walletId, pane.identity, c.relation === "contact" ? c.contact : null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (takeDetailFocus(c.contact)) focusInView(heading.current);
+  }, [c.contact]);
   return (
     <section className="add-contact contact-detail card-l1" aria-labelledby="contact-detail-name" data-testid="contact-detail">
       <header className="contact-detail-header">
         <Avatar letters={avatarLetters(c)} size="pane" identity={c.contact} />
         <div className="contact-detail-names">
-          <h2 id="contact-detail-name" className="add-contact-title">
+          <h2 ref={heading} id="contact-detail-name" className="add-contact-title" tabIndex={-1}>
             {shownName(c)}
           </h2>
           {sub && (
@@ -85,7 +89,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
       <dl className="about-list contact-detail-facts">
         <dt>{t("contacts.pane.identity")}</dt>
         <dd data-testid="contact-detail-identity">
-          <CopyValue value={c.contact} label={t("contacts.pane.copyIdentity")} mono />
+          <CopyValue value={c.contact} action={t("contacts.pane.copyIdentity")} mono />
         </dd>
         <dt>{t("contacts.pane.relation")}</dt>
         <dd data-testid="contact-detail-relation">{relationTitle(c.relation)}</dd>

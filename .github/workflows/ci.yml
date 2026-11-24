@@ -27,6 +27,8 @@
 # - macos: engine tests, every Swift suite (MacUITests render the screens offscreen),
 #   the macOS app built with XcodeGen + xcodebuild, installed to /Applications and launched,
 #   with screenshots.
+# - windows-cross-check: on Linux, `cargo clippy --workspace --all-targets` for x86_64-pc-windows-gnu
+#   (MinGW-w64), so a pull request lints the Windows code paths before it merges.
 # - windows: engine build, tests and clippy (MSVC). windows-swift builds the Swift side and
 #   dash-wallet (WinUIBackend), whose launch still crashes; it does not fail the run
 #   (docs/ci.md, "Known gaps").
@@ -78,7 +80,7 @@ jobs:
   # - docs/ or *.md only (not docs/contracts or the generated E0-13 coverage table): nothing.
   # - only apps/desktop (not the paths Rust tests read, below): desktop-renderer (tokens, tsc, vitest,
   #   and dw-protx's no_operator_signing scan of apps/desktop/src).
-  # - anything else, unknown paths included: lint, rust-linux and desktop-renderer.
+  # - anything else, unknown paths included: lint, rust-linux, windows-cross-check (not required yet) and desktop-renderer.
   # With FUNDS_FULL_SUITE true, a funds path (any renderer file but i18n catalogs and stylesheets, any
   # Rust or Swift file, or a path naming a funds word) runs every required job.
   # Skipped required jobs report success. Every other event, and any failure here, runs them all.
@@ -153,16 +155,12 @@ jobs:
       - name: Tracked paths are valid on Windows
         working-directory: .
         run: ci/github/windows-paths.py
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
-        working-directory: .
         # A download that has not finished in a minute has stalled on a mirror (it takes seconds);
         # the next attempt uses the Azure mirror. The default deadline is 6 minutes.
         env:
           DW_APT_DOWNLOAD_DEADLINE: "60"
-        run: ci/github/linux-host-deps.sh rust
+        uses: ./.github/actions/linux-host-deps
       # Only that toolchain: rust-cache's key hashes every installed one.
       - name: Rust toolchain (rust-toolchain.toml)
         run: ../ci/github/rust-toolchain-only.sh
@@ -171,6 +169,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo clippy -p dw-app --all-targets --features selftest --locked -- -D warnings
@@ -183,9 +182,43 @@ jobs:
             ~/.cargo/.crates2.json
           key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-0.20.2
       - name: cargo-deny
-        run: cargo install cargo-deny --version 0.20.2 --locked
+        run: env -u CARGO_TARGET_DIR cargo install cargo-deny --version 0.20.2 --locked
       - name: RustSec advisories (Cargo.lock; ignores in rust/deny.toml)
         run: cargo deny --locked check advisories
+
+  # Main's Windows job lints the Windows code paths, but only after a merge. This lints them on every
+  # pull request that runs the Rust jobs, cross-compiled from Linux with MinGW-w64: the same command as
+  # the Windows job's clippy, for the GNU target instead of MSVC.
+  windows-cross-check:
+    name: Windows cross-check (mingw)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.rust == 'false') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: MinGW-w64 compilers
+        working-directory: .
+        env:
+          DW_APT_DOWNLOAD_DEADLINE: "60"
+        run: ci/github/linux-host-deps.sh mingw
+      # Only that toolchain, as in Rust lint, plus the Windows GNU target.
+      - name: Rust toolchain (rust-toolchain.toml) and x86_64-pc-windows-gnu
+        run: ../ci/github/rust-toolchain-only.sh && rustup target add x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          shared-key: ci-mingw-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/pinned-sources
+      - run: cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-gnu -- -D warnings
+      - run: cargo clippy -p dw-app --all-targets --features selftest --locked --target x86_64-pc-windows-gnu -- -D warnings
 
   rust-linux:
     name: Rust tests (Linux)
@@ -204,16 +237,12 @@ jobs:
         with:
           persist-credentials: false
       # No linux-free-disk.sh: the runner starts with about 90 GB free; a cold run uses about 20.
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
-        working-directory: .
         # A download that has not finished in a minute has stalled on a mirror (it takes seconds);
         # the next attempt uses the Azure mirror. The default deadline is 6 minutes.
         env:
           DW_APT_DOWNLOAD_DEADLINE: "60"
-        run: ci/github/linux-host-deps.sh rust
+        uses: ./.github/actions/linux-host-deps
       # Only that toolchain: rust-cache's key hashes every installed one.
       - name: Rust toolchain (rust-toolchain.toml)
         run: ../ci/github/rust-toolchain-only.sh
@@ -222,6 +251,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/pinned-sources
       # dw-app's build writes files that cargo then finds newer than the build, so the next cargo
       # command would compile dw-app again (about 60 s): tauri-codegen's assets in its OUT_DIR,
       # named by their content hash, and tauri-build's permissions/autogenerated, which it watches
@@ -481,12 +511,8 @@ jobs:
       - name: Free disk space
         working-directory: .
         run: ci/github/linux-free-disk.sh
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Linux packages (WebKitGTK, its WebDriver, Xvfb)
-        working-directory: .
-        run: ci/github/linux-host-deps.sh tauri
+        uses: ./.github/actions/linux-host-deps
       # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
@@ -496,6 +522,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -504,7 +531,7 @@ jobs:
             ~/.cargo/.crates2.json
           key: tauri-driver-${{ runner.os }}-${{ runner.arch }}-2.1.0
       - name: tauri-driver
-        run: cargo install tauri-driver --version 2.1.0 --locked
+        run: env -u CARGO_TARGET_DIR cargo install tauri-driver --version 2.1.0 --locked
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: apps/desktop/package.json
@@ -553,9 +580,7 @@ jobs:
         run: ci/github/linux-free-disk.sh
       - name: Linux packages (WebKitGTK, Xvfb, D-Bus, xdg-utils)
         if: ${{ matrix.os == 'linux' }}
-        run: ci/github/linux-host-deps.sh tauri
-      - name: protoc
-        run: ci/github/install-protoc.sh
+        uses: ./.github/actions/linux-host-deps
       # On Linux only that toolchain, as in rust-linux, whose cache the Linux leg restores; the
       # macOS and Windows caches are saved by jobs that keep the image's stable.
       - name: Rust toolchain (rust-toolchain.toml), Linux
@@ -573,6 +598,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: apps/desktop/package.json
@@ -633,8 +659,6 @@ jobs:
         run: ci/github/linux-host-deps.sh swiftcrossui
       - name: Swift 6.3.3 (swiftly)
         run: ci/github/linux-swiftly.sh 6.3.3
-      - name: protoc
-        run: ci/github/install-protoc.sh
       # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
@@ -644,6 +668,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - name: Rust core bundle (and check the committed bindings)
         run: scripts/build-core.sh --check-bindings
       # By product: a plain `swift build --build-tests` also compiles swift-winui's
@@ -682,9 +707,6 @@ jobs:
           xcodebuild -version
           swift --version
           df -h /System/Volumes/Data
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
@@ -693,6 +715,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/pinned-sources
       - name: cargo test --workspace
         working-directory: rust
         run: cargo test --workspace --locked --no-fail-fast
@@ -764,9 +787,6 @@ jobs:
           persist-credentials: false
       - name: Disk space
         run: df -h . || true
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
@@ -775,6 +795,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/pinned-sources
       - name: cargo build --workspace
         working-directory: rust
         run: cargo build --workspace --locked
@@ -810,9 +831,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: protoc
-        working-directory: .
-        run: ci/github/install-protoc.sh
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
         run: rustup toolchain install && rustc --version
@@ -821,6 +839,7 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
+      - uses: ./.github/actions/pinned-sources
       - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057 # v0.5.0
         with:
           swift-version: swift-6.3.3-release

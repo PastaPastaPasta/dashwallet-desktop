@@ -26,10 +26,10 @@ const COIN_CHOICES: { id: CoinChoice; readonly title: string }[] = (["any", "mix
   },
 }));
 
-function targetTitle(blocks: number): string {
+export function targetTitle(blocks: number): string {
   const minutes = blocks * BLOCK_MINUTES;
   const time = minutes < 60 ? tr("pay.coins.minutes", { minutes: String(minutes) }) : tr("pay.coins.hours", { hours: String(+(minutes / 60).toFixed(1)) });
-  return tr("pay.coins.target", { time, blocks: String(blocks), word: tr("pay.coins.blocks", { count: blocks }) });
+  return tr("pay.coins.target", { time, blocks: String(blocks), count: blocks });
 }
 
 /** Why a typed custom rate cannot be used, or `null` when it can. */
@@ -48,7 +48,7 @@ function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
   const fee = feeMode(advanced);
   const summary = useQuery({
     queryKey: ["coins", walletId, "summary", advanced.selected, payAmount, fee] as const,
-    queryFn: () => b.coinSelectionSummary(walletId, advanced.selected.map(outpointOf), payAmount ? [payAmount] : [], fee!),
+    queryFn: () => b.coinSelectionSummary(walletId, advanced.selected.map(outpointOf), payAmount === null ? [] : typeof payAmount === "number" ? (payAmount ? [payAmount] : []) : payAmount, fee!),
     enabled: advanced.selected.length > 0 && !!fee,
   });
   const toggle = (key: string, on: boolean) =>
@@ -194,8 +194,9 @@ interface Props {
   network: NetworkInfo;
   advanced: Advanced;
   onChange: (a: Advanced) => void;
-  /** The amount being paid, duffs, when it parses: coin control's summary pays it. */
-  payAmount: number | null;
+  /** The amount being paid, duffs, when it parses, or each recipient's (one output each): coin
+   * control's summary pays it. */
+  payAmount: number | number[] | null;
 }
 
 export function CoinControl(props: Props) {

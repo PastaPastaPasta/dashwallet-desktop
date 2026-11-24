@@ -69,6 +69,7 @@ export class IpcBackend implements Backend {
   openNetwork = () => cmd.openNetwork(null, null);
   listWallets = () => cmd.listWallets();
   lockStatus = () => cmd.lockStatus();
+  recentNotices = () => cmd.recentNotices();
   unlock = (passphrase: string) => cmd.unlock(passphrase);
   unlockMixingOnly = (passphrase: string) => cmd.unlockMixingOnly(passphrase);
   lock = () => cmd.lock();
@@ -353,6 +354,19 @@ export class IpcBackend implements Backend {
   mnDetachKey = cmd.mnDetachKey;
   mnKeys = cmd.mnKeys;
   mnRevealKey = cmd.mnRevealKey;
+  mnRegistrationKeys = cmd.mnRegistrationKeys;
+  mnPreviewRegistration = cmd.mnPreviewRegistration;
+  mnRegister = cmd.mnRegister;
+  mnPrepareExternalRegistration = cmd.mnPrepareExternalRegistration;
+  mnRefreshExternalRegistration = cmd.mnRefreshExternalRegistration;
+  mnSubmitExternalRegistration = cmd.mnSubmitExternalRegistration;
+  mnReleaseCollateral = cmd.mnReleaseCollateral;
+  mnLockCollateral = cmd.mnLockCollateral;
+  mnPreviewUpdateRegistrar = cmd.mnPreviewUpdateRegistrar;
+  mnUpdateRegistrar = cmd.mnUpdateRegistrar;
+  mnOperations = cmd.mnOperations;
+  mnResendOperation = cmd.mnResendOperation;
+  mnDiscardOperation = cmd.mnDiscardOperation;
   onEvent = (listener: (e: AppEvent) => void) => tracked(listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload)));
   onShellEvent = (listener: (e: ShellEvent) => void) => tracked(listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload)));
   now = () => this.clock();

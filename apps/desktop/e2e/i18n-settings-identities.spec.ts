@@ -126,7 +126,7 @@ export const STATES: Record<string, State> = {
     await p.getByTestId("settings-watch-only-add").click();
     await expect(p.getByTestId("settings-watch-only-error")).toBeVisible();
   }),
-  About: tab("about", "funded", ["settings-about", "settings-about-more"], async (p) => {
+  About: tab("about", "funded", ["settings-about", "settings-about-license", "settings-about-more"], async (p) => {
     await p.getByTestId("settings-about-agent").getByText("…").waitFor({ state: "detached" });
   }),
   CoinJoin: tab("coinjoin", "funded", ["settings-coinjoin", "settings-coinjoin-mixing"], async (p) => {

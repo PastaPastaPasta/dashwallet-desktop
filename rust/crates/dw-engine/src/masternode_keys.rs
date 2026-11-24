@@ -235,7 +235,7 @@ impl NetworkSession {
         let wallet = self.wallet(&wallet_id).await?;
         let end = start.saturating_add(count);
         if role == MasternodeKeyRole::PlatformNode {
-            let state = wallet.state().await;
+            let state = crate::wallet_read::info_of(&wallet).await?;
             let Some(account) = state.core_wallet.accounts.provider_platform_keys.as_ref() else {
                 return Err(MasternodeFailure::WatchOnly.into());
             };

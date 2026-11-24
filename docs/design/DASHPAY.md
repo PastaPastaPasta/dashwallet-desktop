@@ -820,7 +820,7 @@ retry forever nor count towards `registration.in_progress`, so a new registratio
 |---|---|---|
 | `WALLET_RESTORE` is not attested | `create_invitation` is refused, and so is `mark_asset_lock_consumption_unknown` | Invitation creation is X3 (1.1), after the storage patch; never fake the capability bit. The rare asset-lock case shows "Finish registration" again. #5207, which relaxes the reconciliation requirement, targets v5.1 only. |
 | `pending_contact_crypto` is not reloaded | the queue is lost on restart | drain at unlock and in the bring-up; Contacts shows "Unlock to finish setting up N contacts" |
-| the payments overlay and token balances are not reloaded | display metadata only | forced DashPay pass after `load()`; covered by the H-03 kill -9 test |
+| `load()` does not read the payments overlay tables or token balances | none for payments; the app shows no token balances | DashPay payments come back with the identity's stored record, not the overlay tables: the H-03 kill -9 matrix's row R7 checks that a payment stored before a kill is in the wallet after the relaunch. There is no forced DashPay pass after `load()`. The bell's row for that payment is not restored (#381). |
 | `dpns_name_states` live for one session only | marketplace departure classification | X4: mirror them in dw-appdb |
 
 ### 3.5 Change detection and events

@@ -308,7 +308,7 @@ impl NetworkSession {
         let wallet = self.wallet(&wallet_id).await?;
         // The hub is written under the read lock, so a fork's truncation
         // (under the write lock) lowers the target after this raise.
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(&wallet).await?;
         self.hub.detect_truncation(wallet_id, &state.core_wallet);
         let live = state.core_wallet.synced_height();
         let (refused, target, loading) = self.hub.update_wallet_state(wallet_id, |s| {

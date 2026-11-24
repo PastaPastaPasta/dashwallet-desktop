@@ -241,25 +241,27 @@ pub fn run() {
     // and returns before the engine is built: it runs on the event loop's
     // Ready, and the window cannot paint until that hook returns. With the
     // single-instance plugin it waits for the build, during which the plugin forwards and
-    // exits where it can. Without it (macOS, or Linux without a session
-    // bus) it comes first, so a refused launch ends before GTK starts and
-    // GLib autolaunches a session bus of its own.
-    let take_lock = || {
+    // exits where it can; a refused launch gives the plugin's claim up
+    // before its dialog, so later launches do not hand their links to it.
+    // Without it (macOS, or Linux without a session bus) it comes first, so
+    // a refused launch ends before Tauri starts.
+    let take_lock = |release: &dyn Fn()| {
         instance::InstanceLock::acquire(&root, instance::InstanceLock::LAUNCH_WAIT).unwrap_or_else(
             |e| {
                 eprintln!("dash-wallet: {e}");
+                instance::refuse(&e, release, shell::native::show_refusal);
                 std::process::exit(1);
             },
         )
     };
     let mut base = tauri::Builder::<tauri::Wry>::new();
     let single_instance = shell::native::single_instance(&root);
-    let lock_and_mark = || {
-        let lock = take_lock();
+    let lock_and_mark = |release: &dyn Fn()| {
+        let lock = take_lock(release);
         startup_phase(started, "instance");
         lock
     };
-    let early_lock = single_instance.is_none().then(lock_and_mark);
+    let early_lock = single_instance.is_none().then(|| lock_and_mark(&|| ()));
     if let Some(single_instance) = single_instance {
         base = base.plugin(single_instance);
     }
@@ -286,7 +288,11 @@ pub fn run() {
             std::process::exit(1);
         });
     startup_phase(started, "built");
-    app.manage(early_lock.unwrap_or_else(lock_and_mark));
+    let lock = match early_lock {
+        Some(lock) => lock,
+        None => lock_and_mark(&|| shell::native::release_single_instance(&app)),
+    };
+    app.manage(lock);
     // The self-test's grant, outside `capabilities/` so that no other build
     // embeds it (build.rs, E0-13 D17). Tauri panics on one it cannot parse
     // or resolve (`api::selftest` tests it parses; every permission exists).
@@ -312,6 +318,7 @@ pub fn run() {
         if let RunEvent::Exit = event
             && let Some(state) = handle.try_state::<AppState>()
         {
+            shell::quit::hide_for_exit(handle);
             // Flush and release every wallet database before the process ends.
             if let Err(e) = tauri::async_runtime::block_on(state.shutdown_engine()) {
                 eprintln!("dash-wallet: engine shutdown: {e}");

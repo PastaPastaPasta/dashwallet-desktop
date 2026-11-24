@@ -167,7 +167,7 @@ export function voteBlocked(r: MasternodeRow, watchOnly: boolean): string | null
   return r.roles.voting ? null : MnText.voteNoKey;
 }
 
-/** §1.7's line in place of Change keys (S1 shows the line only, never the action). */
+/** §1.7's line in place of Change keys or payout, which shows only while the registrar is `available`. */
 export function registrarLine(d: MasternodeDetail): { text: string; unlock: boolean } | null {
   switch (d.registrar.kind) {
     case "registration_unavailable":

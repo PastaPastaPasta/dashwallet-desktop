@@ -272,6 +272,14 @@ pub enum NoticeCode {
     /// `platform.trust_mismatch`. Once per quorum and session; the detail
     /// names the quorum. Engine-side.
     PlatformTrustMismatch,
+    /// At the session's open, a Dash Core export that did not end had left
+    /// its staging file, which holds keys unencrypted; it was deleted. The
+    /// detail is its path.
+    ExportStagingDeleted,
+    /// As [`Self::ExportStagingDeleted`], but the file could not be
+    /// deleted: the detail is its path, for the user to delete. Sent again
+    /// at each open until a delete succeeds.
+    ExportStagingNotDeleted,
 }
 
 impl NoticeCode {
@@ -497,6 +505,9 @@ pub(crate) struct SessionHub {
     pub tracker: Mutex<SyncTracker>,
     pub pump: EventPump,
     pub history: HistoryStore,
+    /// The session's app database, once the session is open and until it
+    /// closes: a sweep drops the sent marks of the payments it removed.
+    pub appdb: std::sync::OnceLock<std::sync::Weak<dw_appdb::AppDb>>,
     pub wallets: RwLock<BTreeMap<WalletId, WalletState>>,
     pub names: RwLock<HashMap<WalletId, WalletName>>,
     /// The rescan the engine started, until it finishes or is cancelled.
@@ -582,6 +593,44 @@ pub(crate) struct SessionHub {
     pub(crate) unreadable_record: Mutex<(Option<dashcore::Txid>, Option<dashcore::Txid>)>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next abandon quits before its sweep, as at an exit.
+    #[cfg(test)]
+    pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: the next abandon returns after its sweep, without its rescan.
+    #[cfg(test)]
+    pub(crate) quit_before_rescan: std::sync::atomic::AtomicBool,
+    /// Tests: holds the next abandon after its sweep, before its rescan.
+    #[cfg(test)]
+    pub(crate) pause_before_rescan: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: how many abandons pass before [`Self::pause_abandon`] holds one.
+    #[cfg(test)]
+    pub(crate) pause_abandon_skip: std::sync::atomic::AtomicUsize,
+    /// Tests: how long the last abandon held the wallet manager.
+    #[cfg(test)]
+    pub(crate) last_abandon_hold: Mutex<Option<std::time::Duration>>,
+    /// Tests: holds the next abandon between its plan and its sweep.
+    #[cfg(test)]
+    pub(crate) pause_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next abandon of this root fails once its sweep is stored.
+    #[cfg(test)]
+    pub(crate) fail_after_sweep_of: Mutex<Option<dashcore::Txid>>,
+    /// Tests: the coins the last abandon's sweep released.
+    #[cfg(test)]
+    pub(crate) last_release: Mutex<Option<Vec<dashcore::OutPoint>>>,
+    /// Tests: holds the next abandon after its marks are written, before
+    /// its sweep.
+    #[cfg(test)]
+    pub(crate) pause_abandon_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next abandon's write of its abandoned marks fails.
+    #[cfg(test)]
+    pub(crate) fail_abandon_mark: std::sync::atomic::AtomicBool,
+    /// Tests: the next abandon's store of its sweep fails.
+    #[cfg(test)]
+    pub(crate) fail_abandon_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: Remove unconfirmed transactions reads this wallet's sent marks
+    /// as not read.
+    #[cfg(test)]
+    pub(crate) fail_sent_read: Mutex<Option<WalletId>>,
     /// Tests: holds the next payment's metadata write after its wallet read.
     #[cfg(test)]
     pub(crate) pause_metadata: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -605,6 +654,9 @@ pub(crate) struct SessionHub {
     /// is applied wholly before the wallet leaves or not at all; taken
     /// before every other lock of the hub's.
     unloaded: Mutex<HashSet<WalletId>>,
+    /// Wallets with a Remove Unconfirmed batch, or a single Abandon, whose
+    /// rescan is not made yet.
+    abandon_batches: Mutex<HashMap<WalletId, usize>>,
     /// Tests: holds the next event right after its wallet's check.
     #[cfg(test)]
     pub(crate) pause_event: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
@@ -612,6 +664,25 @@ pub(crate) struct SessionHub {
 
 #[cfg(test)]
 pub(crate) type PublishedHook = Box<dyn FnOnce(crate::WalletId) -> bool + Send>;
+
+/// A Remove Unconfirmed batch, or a single Abandon, in progress
+/// ([`SessionHub::abandon_batch`]).
+pub(crate) struct AbandonBatch<'a> {
+    hub: &'a SessionHub,
+    wallet: WalletId,
+}
+
+impl Drop for AbandonBatch<'_> {
+    fn drop(&mut self) {
+        let mut batches = (self.hub.abandon_batches.lock()).unwrap_or_else(|p| p.into_inner());
+        if let Some(n) = batches.get_mut(&self.wallet) {
+            *n -= 1;
+            if *n == 0 {
+                batches.remove(&self.wallet);
+            }
+        }
+    }
+}
 
 impl SessionHub {
     /// Tests: runs [`Self::on_published`], if set, for wallet `id`. A load
@@ -689,6 +760,7 @@ impl SessionHub {
             tracker: Mutex::new(SyncTracker::default()),
             pump: EventPump::default(),
             history: HistoryStore::default(),
+            appdb: std::sync::OnceLock::new(),
             wallets: RwLock::new(BTreeMap::new()),
             names: RwLock::new(HashMap::new()),
             rescan: Mutex::new(None),
@@ -731,6 +803,30 @@ impl SessionHub {
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
             #[cfg(test)]
+            quit_before_sweep: Default::default(),
+            #[cfg(test)]
+            quit_before_rescan: Default::default(),
+            #[cfg(test)]
+            pause_before_rescan: Mutex::new(None),
+            #[cfg(test)]
+            last_release: Mutex::new(None),
+            #[cfg(test)]
+            fail_after_sweep_of: Mutex::new(None),
+            #[cfg(test)]
+            pause_sweep: Mutex::new(None),
+            #[cfg(test)]
+            pause_abandon_skip: Default::default(),
+            #[cfg(test)]
+            last_abandon_hold: Mutex::new(None),
+            #[cfg(test)]
+            pause_abandon_sweep: Mutex::new(None),
+            #[cfg(test)]
+            fail_abandon_mark: Default::default(),
+            #[cfg(test)]
+            fail_abandon_sweep: Default::default(),
+            #[cfg(test)]
+            fail_sent_read: Mutex::new(None),
+            #[cfg(test)]
             pause_metadata: Mutex::new(None),
             #[cfg(test)]
             pause_resume: Mutex::new(None),
@@ -740,6 +836,7 @@ impl SessionHub {
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),
             unloaded: Mutex::new(HashSet::new()),
+            abandon_batches: Mutex::new(HashMap::new()),
             #[cfg(test)]
             pause_event: Mutex::new(None),
         }
@@ -1005,6 +1102,30 @@ impl SessionHub {
             .unwrap_or(0)
     }
 
+    /// Marks a Remove Unconfirmed batch, or a single Abandon, of `wallet` in
+    /// progress until the returned guard drops: its abandons store rewind
+    /// records it makes only after their sweeps, which a sync commit must
+    /// leave stored meanwhile.
+    pub(crate) fn abandon_batch(&self, wallet: WalletId) -> AbandonBatch<'_> {
+        *(self
+            .abandon_batches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .entry(wallet)
+        .or_default() += 1;
+        AbandonBatch { hub: self, wallet }
+    }
+
+    /// Whether a Remove Unconfirmed batch, or a single Abandon, of `wallet`
+    /// is in progress.
+    pub(crate) fn abandon_batch_pending(&self, wallet: &WalletId) -> bool {
+        (self
+            .abandon_batches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .contains_key(wallet)
+    }
+
     /// Forgets the in-memory state of an unloaded wallet; its name stays
     /// (the "Open Wallet" menu lists it).
     pub(crate) fn unload_wallet(&self, id: &WalletId) {
@@ -1044,7 +1165,10 @@ impl SessionHub {
     pub(crate) fn admit(&self, id: WalletId) -> bool {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         let was = unloaded.remove(&id);
-        self.history.with_wallet(id, |h| h.session_held.clear());
+        self.history.with_wallet(id, |h| {
+            h.session_held.clear();
+            h.held_here.clear();
+        });
         was
     }
 
@@ -1056,7 +1180,10 @@ impl SessionHub {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         for id in ids {
             if unloaded.remove(&id) {
-                self.history.with_wallet(id, |h| h.session_held.clear());
+                self.history.with_wallet(id, |h| {
+                    h.session_held.clear();
+                    h.held_here.clear();
+                });
             }
         }
     }
@@ -1382,7 +1509,22 @@ impl SessionHub {
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
-                if self.update_balance(id, balance, account_balances) {
+                // An event queued before an Abandon this session took its
+                // transaction carries the balance from before the sweep:
+                // read the manager's instead. One queued while the entry
+                // is still abandoned, whatever its own context, is that
+                // too; after a restart an event is the transaction seen
+                // again, with its own balance.
+                let stale = (self.history).read_wallet(&id, |h| {
+                    h.abandoned_here.contains(&record.txid)
+                        && (matches!(record.context, TransactionContext::Mempool)
+                            || h.txs.get(&record.txid).is_some_and(|e| e.is_abandoned()))
+                });
+                if stale {
+                    if let Some(reread) = self.balance_reread.get() {
+                        reread(id);
+                    }
+                } else if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
                 }
                 // First seen through its InstantSend lock: evidence. In
@@ -1431,12 +1573,21 @@ impl SessionHub {
                     },
                 );
                 // Upstream deleted these records (provably beaten spends);
-                // the history drops them too.
+                // the history drops them too, and their sent marks go.
                 self.history.with_wallet(id, |h| {
                     for t in txids {
                         h.forget(t);
+                        h.swept.insert(*t);
                     }
                 });
+                if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
+                    match crate::tx_actions::forget_sent(&appdb, id, txids) {
+                        Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
+                        Err(e) => {
+                            tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
+                        }
+                    }
+                }
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
@@ -1778,7 +1929,9 @@ impl PumpTarget for SessionPump {
                 let marked: Vec<Txid> = (txids.into_iter())
                     .filter(|t| sent.contains_key(t))
                     .collect();
-                crate::tx_actions::forget_sent(&appdb, wallet_id, &marked);
+                if let Err(e) = crate::tx_actions::forget_sent(&appdb, wallet_id, &marked) {
+                    tracing::warn!(wallet = %wallet_id, error = %e, "could not drop the marks of settled payments");
+                }
             }
         };
         #[cfg(test)]

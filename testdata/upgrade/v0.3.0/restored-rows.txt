@@ -1,0 +1,10 @@
+0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add registered=true seed=true name="Fixture main" birth=Some(0)
+  settings_kv ["scope", "key", "value"]
+    [Text("0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"), Text("bip32.master_fingerprint"), Text("73c5da0a")]
+  wallets ["wallet_id", "name", "created_at"]
+    [Text("0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"), Text("Fixture main"), Text("restored now")]
+da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30 registered=true seed=true name="Fixture second" birth=Some(0)
+  settings_kv ["scope", "key", "value"]
+    [Text("da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"), Text("bip32.master_fingerprint"), Text("1ddb040f")]
+  wallets ["wallet_id", "name", "created_at"]
+    [Text("da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"), Text("Fixture second"), Text("restored now")]

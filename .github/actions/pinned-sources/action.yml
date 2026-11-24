@@ -1,0 +1,30 @@
+# protoc and the Tenderdash proto sources that tenderdash-proto's build script would download,
+# from the Actions cache or, on a miss, from upstream with retries. Every use, a cache hit as well
+# as a download, checks each archive against the SHA-256 pinned in its script and stops the job on
+# a mismatch: ci/github/install-protoc.sh and ci/github/tenderdash-sources.sh. The key hashes both
+# scripts, so a new pin is a new entry. A pull request reads main's entry and never saves one.
+#
+# Runs after Swatinem/rust-cache: it exports CARGO_TARGET_DIR (rust/target, where cargo builds
+# anyway), and rust-cache hashes CARGO* variables into its key.
+name: Pinned sources
+description: protoc and the Tenderdash proto sources, cached and checked against pinned SHA-256s
+runs:
+  using: composite
+  steps:
+    - id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/pinned-sources
+        key: pinned-sources-${{ runner.os }}-${{ runner.arch }}-protoc-${{ env.PROTOC_VERSION }}-${{ hashFiles('ci/github/install-protoc.sh', 'ci/github/tenderdash-sources.sh') }}
+    - name: protoc and the Tenderdash sources (checked against their pinned SHA-256)
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        PINNED_CACHE_DIR: ${{ runner.temp }}/pinned-sources
+        PINNED_CACHE_KEY: ${{ steps.restore.outputs.cache-primary-key }}
+      run: ci/github/install-protoc.sh && ci/github/tenderdash-sources.sh
+    - if: steps.restore.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/pinned-sources
+        key: ${{ steps.restore.outputs.cache-primary-key }}

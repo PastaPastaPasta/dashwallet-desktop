@@ -35,7 +35,7 @@ import type { Utxo } from "../api/generated/Utxo";
 import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
-import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
+import { newSettingsWorld, withAutomaticBackups, withRestoreBackup, type SettingsWorld } from "./settings";
 import { restoredFundLock, restoredLock } from "./recovery";
 import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
@@ -43,7 +43,7 @@ import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinj
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
-import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -255,7 +255,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
-    masternodes: newMasternodesWorld(),
+    masternodes: noMasternodesWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
     pending: newPendingWorld(),
@@ -693,6 +693,35 @@ const SCENARIOS = {
     w.pending.platform = null;
     return w;
   },
+  /** An InstantSend-locked payment a ChainLocked spend beat, sent before a restart: Abandon is
+   * offered, and refused until the wallet restarts and rescans. */
+  "abandon-rescan-first": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5e".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.rescanFirst = [row.txid];
+    return w;
+  },
+  /** A payment this wallet made on another device, seen only by its change before the coins it
+   * spent are known: its debit is unknown, so Abandon warns about paying twice. */
+  "abandon-debit-unknown": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const received = wallet.rows.find((r) => r.category === "received" && r.status.kind === "unconfirmed")!;
+    const row: TxRow = { ...received, txid: "d0".repeat(32), timestamp: (received.timestamp ?? 0) + 60, label: null };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.debitUnknown = [row.txid];
+    return w;
+  },
   /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
   "shielded-inactive": (t) => {
     const w = base(t);
@@ -911,6 +940,21 @@ const SCENARIOS = {
     w.pending.recovery.checksBeforeApply = 1;
     return w;
   },
+  /** A restore read back a Core → Shielded lock Platform already took: it may already be finished, and Check again hears the network say it was added. */
+  "recovery-restored-finished": (t) => {
+    const w = base(t);
+    const lock = restoredLock(1, 50_000_000, "checking");
+    w.pending.recovery.locks = [lock];
+    w.pending.recovery.consumed = [lock.txid];
+    return w;
+  },
+  /** A restore read back a Core → Shielded lock Platform has not taken: it reads checking, and the first Check again or Finish transfers applies it. */
+  "recovery-restored-unapplied": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 0;
+    return w;
+  },
   /** A restored lock still waiting for its confirmations: Home has no card. */
   "recovery-confirming": (t) => {
     const w = base(t);
@@ -935,6 +979,14 @@ const SCENARIOS = {
   "paddr-recovery-restored": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [restoredFundLock(1, 50_000_000)];
+    return w;
+  },
+  /** A restore read back an "Add from Dash wallet" lock Platform already took: Check again hears the network say it was added. */
+  "paddr-recovery-restored-finished": (t) => {
+    const w = base(t);
+    const lock = restoredFundLock(1, 50_000_000, "checking");
+    w.pending.recovery.locks = [lock];
+    w.pending.recovery.consumed = [lock.txid];
     return w;
   },
   /** A restored "Add from Dash wallet" lock, ready, while the shielded side can't be read. */
@@ -973,6 +1025,21 @@ const SCENARIOS = {
     w.wallets = [];
     w.phrases = {};
     w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    return w;
+  },
+  /** No wallet and no vault, and a backup of two wallets on disk that Choose File… picks
+   * (passphrase FIXTURE_RESTORE_BACKUP_PASSPHRASE): onboarding's Restore from a file. */
+  "no-wallet-backup-file": (t) => {
+    const w = base(t);
+    const backedUp = [
+      { walletId: FIXTURE_WALLET_ID, name: "Main", phrase: MAIN_PHRASE },
+      { walletId: SECOND_WALLET_ID, name: "Savings", phrase: SECOND_PHRASE },
+    ];
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    withRestoreBackup(w.settings, backedUp);
+    w.tools.files.open = { name: "Main and Savings.dwbackup", data: "" };
     return w;
   },
   /** A vault (passphrase `demo`) that holds no wallet yet: onboarding without a passphrase step. */

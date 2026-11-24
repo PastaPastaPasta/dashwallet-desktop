@@ -35,7 +35,8 @@ fn listed(f: &SendFailure) {
         | F::NoPeers
         | F::BroadcastRejected { .. }
         | F::BroadcastUnknown { .. }
-        | F::Cancelled => {}
+        | F::Cancelled
+        | F::HeldUntilRestart => {}
     }
 }
 
@@ -71,6 +72,7 @@ fn failures() -> Vec<SendFailure> {
         F::BroadcastRejected { reason: "r".into() },
         F::BroadcastUnknown { reason: "r".into() },
         F::Cancelled,
+        F::HeldUntilRestart,
     ]
 }
 
@@ -108,8 +110,8 @@ fn outcome_of_code_matches_attempt_outcome_for_every_hand_off_error() {
             (expected == HandoffOutcome::Refused).then_some(code)
         })
         .collect();
-    let mut inherited: Vec<String> = dw_appdb::INHERITED_REFUSED_CODES
-        .iter()
+    let mut inherited: Vec<String> = (dw_appdb::INHERITED_REFUSED_CODES.iter())
+        .chain(crate::send::REFUSED_SINCE_INHERITED)
         .map(|c| (*c).to_string())
         .collect();
     inherited.sort();

@@ -61,10 +61,14 @@ export interface ShieldedWorld {
   unresolved: UnresolvedSpend[];
   /** Spends of unknown result whose record was lost (DEC-1057). */
   unrecorded: UnrecordedSpend[];
-  /** How a shield ends: applied, or the lock waiting for its proof. */
-  shield: "applied" | "proofWaiting";
+  /** How a shield ends: applied, the lock waiting for its proof, proved with its apply unknown
+   * (`checking`), or locked and refused by Platform (`notApplied`). */
+  shield: "applied" | "proofWaiting" | "checking" | "notApplied";
   /** The pool has too few notes to withdraw from (`shielded.pool_too_small`). */
   poolTooSmall: boolean;
+  /** The notes are resting until then (Unix seconds; C-funding F17): a registration cannot use
+   * them yet. Unset: rested. */
+  restingUntil?: number;
   /** A shield from the main balance whose lock signed and got no verdict (`SHIELD_STEP`): Tools ▸
    * Repair lists it, priced on every spendable coin of the main balance. */
   shieldUnknown?: boolean;
@@ -284,6 +288,14 @@ function shieldEnd(s: ShieldedWorld, txid: string, duffs: number): ShieldOutcome
   if (s.shield === "proofWaiting") {
     s.pendingShields = [...s.pendingShields.filter((p) => p.txid !== txid), { txid, duffs, proved: false, consumptionUnknown: false }];
     return { txid, state: { kind: "proofWaiting" } };
+  }
+  if (s.shield === "checking") {
+    s.pendingShields = [...s.pendingShields.filter((p) => p.txid !== txid), { txid, duffs, proved: true, consumptionUnknown: true }];
+    return { txid, state: { kind: "consumptionUnknown" } };
+  }
+  if (s.shield === "notApplied") {
+    s.pendingShields = [...s.pendingShields.filter((p) => p.txid !== txid), { txid, duffs, proved: true, consumptionUnknown: false }];
+    return { txid, state: { kind: "notApplied", error: "fixture: Platform refused the lock" } };
   }
   s.pendingShields = s.pendingShields.filter((p) => p.txid !== txid);
   s.balance = String(BigInt(s.balance) + credits);

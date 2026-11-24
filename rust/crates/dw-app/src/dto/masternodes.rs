@@ -409,6 +409,275 @@ impl TryFrom<dw_engine::RevealedMasternodeKey> for RevealedMasternodeKey {
     }
 }
 
+/// A ProUpRegTx's operator key: kept from the synced list, or a BLS
+/// **public** key given or taken from the keychain (MG-04 D10, D14).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum OperatorUpdate {
+    Keep,
+    /// 96 hex characters, basic serialization.
+    Given {
+        public_key: String,
+    },
+    Keychain {
+        index: u32,
+    },
+    NextUnused,
+}
+
+impl From<OperatorUpdate> for engine::KeepOr<engine::OperatorChoice> {
+    fn from(o: OperatorUpdate) -> Self {
+        use engine::{KeepOr, OperatorChoice as C};
+        match o {
+            OperatorUpdate::Keep => KeepOr::Keep,
+            OperatorUpdate::Given { public_key } => KeepOr::Set(C::Given { public_key }),
+            OperatorUpdate::Keychain { index } => KeepOr::Set(C::Keychain { index }),
+            OperatorUpdate::NextUnused => KeepOr::Set(C::NextUnused),
+        }
+    }
+}
+
+/// A ProUpRegTx's voting key: kept, the keychain's, or another wallet's
+/// P2PKH address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VotingUpdate {
+    Keep,
+    Keychain { index: u32 },
+    Address { address: String },
+    NextUnused,
+}
+
+impl From<VotingUpdate> for engine::KeepOr<engine::VotingChoice> {
+    fn from(v: VotingUpdate) -> Self {
+        use engine::{KeepOr, VotingChoice as C};
+        match v {
+            VotingUpdate::Keep => KeepOr::Keep,
+            VotingUpdate::Keychain { index } => KeepOr::Set(C::Keychain { index }),
+            VotingUpdate::Address { address } => KeepOr::Set(C::Address { address }),
+            VotingUpdate::NextUnused => KeepOr::Set(C::NextUnused),
+        }
+    }
+}
+
+/// Where a masternode's rewards go: always named (MG-04 D10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PayoutChoice {
+    /// A fresh receive address of this wallet.
+    NewAddress,
+    /// P2PKH or P2SH, this wallet's or another's.
+    Address { address: String },
+}
+
+impl From<PayoutChoice> for engine::PayoutChoice {
+    fn from(p: PayoutChoice) -> Self {
+        match p {
+            PayoutChoice::NewAddress => Self::NewAddress,
+            PayoutChoice::Address { address } => Self::Address { address },
+        }
+    }
+}
+
+/// A ProUpRegTx to build (MG-04 §3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRegistrarRequest {
+    pub pro_tx_hash: String,
+    pub operator: OperatorUpdate,
+    pub voting: VotingUpdate,
+    pub payout: PayoutChoice,
+}
+
+impl From<UpdateRegistrarRequest> for engine::UpdateRegistrarRequest {
+    fn from(r: UpdateRegistrarRequest) -> Self {
+        let UpdateRegistrarRequest {
+            pro_tx_hash,
+            operator,
+            voting,
+            payout,
+        } = r;
+        Self {
+            pro_tx_hash,
+            operator: operator.into(),
+            voting: voting.into(),
+            payout: payout.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CollateralKindName {
+    FundNew,
+    ExistingUtxo,
+    External,
+}
+
+mirror_enum!(engine::CollateralKind => CollateralKindName { FundNew, ExistingUtxo, External });
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformFacts {
+    pub node_id: String,
+    pub p2p_port: u16,
+    pub http_port: u16,
+}
+
+mirror_struct!(engine::PlatformFacts => PlatformFacts { node_id, p2p_port, http_port });
+
+/// What a ProTx carries, for display. No secret, no signature.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProTxTerms {
+    pub masternode_type: MasternodeTypeName,
+    pub version: u16,
+    pub service: String,
+    pub owner_address: String,
+    pub owner_index: Option<u32>,
+    pub voting_address: String,
+    pub voting_index: Option<u32>,
+    pub operator_public_key: String,
+    pub operator_index: Option<u32>,
+    /// Basis points.
+    pub operator_reward: u16,
+    /// Empty for a preview's new address.
+    pub payout_address: String,
+    pub collateral: Option<CollateralKindName>,
+    pub collateral_outpoint: Option<String>,
+    pub collateral_address: Option<String>,
+    pub platform: Option<PlatformFacts>,
+    pub platform_node_index: Option<u32>,
+}
+
+mirror_struct!(engine::ProTxTerms => ProTxTerms {
+    masternode_type: into, version, service, owner_address, owner_index, voting_address,
+    voting_index, operator_public_key, operator_index, operator_reward, payout_address,
+    collateral: opt, collateral_outpoint, collateral_address, platform: opt, platform_node_index,
+});
+
+/// Which owner key signs a ProUpRegTx.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OwnerKeySource {
+    Keychain {
+        index: u32,
+    },
+    /// The `owner` key attached to the tracked masternode.
+    Attached,
+}
+
+impl From<engine::OwnerKeySource> for OwnerKeySource {
+    fn from(o: engine::OwnerKeySource) -> Self {
+        match o {
+            engine::OwnerKeySource::Keychain { index } => Self::Keychain { index },
+            engine::OwnerKeySource::Attached => Self::Attached,
+        }
+    }
+}
+
+/// A ProUpRegTx's plan before anything is signed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRegistrarPreview {
+    pub terms: ProTxTerms,
+    pub version: u16,
+    pub fee: u64,
+    /// What the `masternodeOp` grant must cover.
+    pub total_debit: u64,
+    pub owner_key: OwnerKeySource,
+    pub operator_changes: bool,
+    pub voting_changes: bool,
+    /// `null` when the wallet holds no payout of the masternode.
+    pub payout_changes: Option<bool>,
+    /// A new operator key bans the masternode until the operator's service
+    /// update.
+    pub pose_bans: bool,
+}
+
+mirror_struct!(engine::UpdateRegistrarPreview => UpdateRegistrarPreview {
+    terms: into, version, fee, total_debit, owner_key: into, operator_changes, voting_changes,
+    payout_changes, pose_bans,
+});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProTxOperationKindName {
+    Registration,
+    UpdateRegistrar,
+    UpdateShare,
+    Dissolve,
+}
+
+mirror_enum!(engine::ProTxOperationKind => ProTxOperationKindName {
+    Registration, UpdateRegistrar, UpdateShare, Dissolve,
+});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProTxOperationStateName {
+    NeedsSignature,
+    InputsSpent,
+    Signed,
+    NotSent,
+    Sent,
+    Confirmed { height: u32 },
+    Conflicted,
+}
+
+impl From<engine::ProTxOperationState> for ProTxOperationStateName {
+    fn from(s: engine::ProTxOperationState) -> Self {
+        use engine::ProTxOperationState as S;
+        match s {
+            S::NeedsSignature => Self::NeedsSignature,
+            S::InputsSpent => Self::InputsSpent,
+            S::Signed => Self::Signed,
+            S::NotSent => Self::NotSent,
+            S::Sent => Self::Sent,
+            S::Confirmed { height } => Self::Confirmed { height },
+            S::Conflicted => Self::Conflicted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SignRequest {
+    pub address: String,
+    pub message: String,
+}
+
+mirror_struct!(engine::SignRequest => SignRequest { address, message });
+
+/// One of the wallet's ProTx operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProTxOperation {
+    pub id: String,
+    pub kind: ProTxOperationKindName,
+    pub pro_tx_hash: Option<String>,
+    pub txid: Option<String>,
+    pub state: ProTxOperationStateName,
+    pub sign_request: Option<SignRequest>,
+    pub fee: u64,
+    pub debit: u64,
+    pub overdue: bool,
+    pub created_at: u64,
+    pub signed_at: Option<u64>,
+    pub sent_at: Option<u64>,
+    pub last_error: Option<String>,
+    pub terms: ProTxTerms,
+}
+
+mirror_struct!(engine::ProTxOperation => ProTxOperation {
+    id, kind: into, pro_tx_hash, txid, state: into, sign_request: opt, fee, debit, overdue,
+    created_at, signed_at, sent_at, last_error, terms: into,
+});
+
 #[cfg(test)]
 mod tests {
     use zeroize::Zeroizing;
@@ -746,5 +1015,48 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(err.code_str(), "internal");
+    }
+
+    #[test]
+    fn a_registrar_request_reads_the_renderers_shape() {
+        let key = "ab".repeat(48);
+        let r: UpdateRegistrarRequest = serde_json::from_value(serde_json::json!({
+            "proTxHash": "cd".repeat(32),
+            "operator": { "kind": "given", "publicKey": key },
+            "voting": { "kind": "address", "address": "yVoting" },
+            "payout": { "kind": "address", "address": "yPayout" },
+        }))
+        .unwrap();
+        let e: engine::UpdateRegistrarRequest = r.into();
+        assert_eq!(
+            e.operator,
+            engine::KeepOr::Set(engine::OperatorChoice::Given { public_key: key })
+        );
+        assert_eq!(
+            e.voting,
+            engine::KeepOr::Set(engine::VotingChoice::Address {
+                address: "yVoting".into()
+            })
+        );
+        assert_eq!(
+            e.payout,
+            engine::PayoutChoice::Address {
+                address: "yPayout".into()
+            }
+        );
+        let kept: UpdateRegistrarRequest = serde_json::from_value(serde_json::json!({
+            "proTxHash": "cd".repeat(32),
+            "operator": { "kind": "keep" },
+            "voting": { "kind": "next_unused" },
+            "payout": { "kind": "new_address" },
+        }))
+        .unwrap();
+        let e: engine::UpdateRegistrarRequest = kept.into();
+        assert_eq!(e.operator, engine::KeepOr::Keep);
+        assert_eq!(
+            e.voting,
+            engine::KeepOr::Set(engine::VotingChoice::NextUnused)
+        );
+        assert_eq!(e.payout, engine::PayoutChoice::NewAddress);
     }
 }
