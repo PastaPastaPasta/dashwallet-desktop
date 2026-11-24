@@ -391,6 +391,7 @@ export class IpcBackend implements Backend {
   mnSharedApprove = cmd.mnSharedApprove;
   mnSharedDiscard = cmd.mnSharedDiscard;
   mnSharedAbandon = cmd.mnSharedAbandon;
+  mnSharedResendAbandon = cmd.mnSharedResendAbandon;
   mnSharedAbandonUnreadable = cmd.mnSharedAbandonUnreadable;
   mnSharedSign = cmd.mnSharedSign;
   mnSharedSend = cmd.mnSharedSend;
