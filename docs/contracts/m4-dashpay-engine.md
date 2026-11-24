@@ -968,7 +968,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 9da80d1f27e1f6f3cb5b3ddda7b826fea792885727b26ad3a7367c1f2300bdd0 version: 84 -->
+<!-- surface-sha256: 5d0b61b5c361d9d2bc82029b1e0d879b5c89e38f0d14ec89fa96c5d60b213a19 version: 87 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1969,6 +1969,7 @@ pub struct PlatformAddressBalance {
     pub synced_at: Option<u64>,
     pub syncing: bool,
     pub #[serde(default)] sends_active: bool,
+    pub #[serde(default)] sends_off: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformAddressRow {
@@ -2009,6 +2010,7 @@ pub struct PlatformActivity {
     pub #[serde(default)] may_land: bool,
     pub #[serde(default)] estimated: bool,
     pub #[serde(default)] contact: Option<super::payments::Counterparty>,
+    pub #[serde(default)] unattributed: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveToCoreQuote {
@@ -2027,6 +2029,7 @@ pub struct MoveToCoreOutcome {
     pub to: Option<String>,
     pub state: PlatformActivityState,
     pub fee_credits: Option<u64>,
+    pub unattributed: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2069,6 +2072,7 @@ pub struct PlatformSendOutcome {
     pub may_land: bool,
     pub fee_credits: Option<u64>,
     pub estimated: bool,
+    pub unattributed: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformShieldQuote {
