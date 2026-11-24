@@ -209,6 +209,20 @@ describe("IOS-050 Accept and pay: one credential, one lease (D10, D11)", () => {
     await expect(acceptUnderLease(noLease.api, args)).rejects.toMatchObject({ stage: "accept" });
     expect(noLease.calls).toEqual(["grantRequest", "authorizeSet", "revoke g0", "revoke g1"]);
   });
+
+  it("#173 item 9: the signing window ended before the lease took its grants: ask for the passphrase, nothing accepted", async () => {
+    const window = { ...args, credential: { kind: "unencrypted" } as const };
+    for (const code of ["platform.grant_invalid", "vault.grant_invalid"] as const) {
+      const ended = fake({ beginFlow: vi.fn(async () => Promise.reject(err(code))) });
+      const e = await acceptUnderLease(ended.api, window).catch((x: unknown) => x);
+      expect(e).toMatchObject({ stage: "authorize", cause: { code: "vault.credential_required" } });
+      expect(ended.calls).toEqual(["grantRequest", "authorizeSet", "revoke g0", "revoke g1"]);
+      expect(ended.api.dashpayAcceptRequest).not.toHaveBeenCalled();
+    }
+    // With a passphrase given there is no window to have ended: a refused lease stays the accept's failure.
+    const typed = fake({ beginFlow: vi.fn(async () => Promise.reject(err("platform.grant_invalid"))) });
+    await expect(acceptUnderLease(typed.api, args)).rejects.toMatchObject({ stage: "accept" });
+  });
 });
 
 describe("IOS-050 U-03's promise and refusals for a contact (D9, D13)", () => {
