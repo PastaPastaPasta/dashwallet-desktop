@@ -490,11 +490,14 @@ fn a_held_moves_quote_takes_what_its_exit_signs() {
         let sent = w.net.sent();
         assert_eq!(sent.len(), 1, "{network:?}");
         assert_eq!(sent[0].keys().collect::<Vec<_>>(), vec![&a], "{network:?}");
+        let exit = (w.moves().into_iter()).find(|m| m.id == exit.id).unwrap();
         let signed: u64 = sent[0].values().map(|(_, credits)| *credits).sum();
         assert_eq!(
-            quote.credits, signed,
+            (quote.credits, exit.credits),
+            (3 * DASH, 3 * DASH),
             "{network:?}: Confirm showed what was signed"
         );
+        assert!(signed <= quote.credits, "{network:?}");
     }
 }
 
