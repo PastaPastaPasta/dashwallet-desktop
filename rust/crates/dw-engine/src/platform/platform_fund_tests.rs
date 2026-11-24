@@ -8,7 +8,7 @@
 //! never a new lock; only this install's locks listed by the fund, every
 //! one by the recovery; the conformance run; the lease's signers.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -42,7 +42,7 @@ use super::unfinished_conformance::{self as conformance, End, Rig};
 use super::unfinished_funds::FundLocks;
 use super::unfinished_locks::{
     self as locks, KindLock, LockFinish, LockKind, LockKindId, LockOrigin, Mark, Marks, Minimum,
-    UnfinishedLock, UnfinishedState,
+    SpentRead, UnfinishedLock, UnfinishedState,
 };
 use crate::{NetworkSession, WalletId};
 
@@ -103,6 +103,10 @@ enum Answer {
     Failed,
     /// The apply panics.
     Panics,
+    /// A first attempt signs and fails; the library's retry in the same
+    /// call (the CL-height or IS→CL resubmit) signs nothing more and hears
+    /// Platform's "already consumed" for the applied outpoint.
+    RetriedConsumed,
 }
 
 /// platform-wallet's side of a fund, scripted; the journal, the lease and
@@ -148,6 +152,8 @@ struct FakeFund {
     core_built: Mutex<Option<Vec<super::shield_drain::DrainCoin>>>,
     core_drained: Mutex<Vec<Vec<OutPoint>>>,
     core_fenced: Mutex<Vec<bool>>,
+    /// Platform's proved spent read of each outpoint; unread when unset.
+    spent: Mutex<HashMap<OutPoint, SpentRead>>,
 }
 
 impl FakeFund {
@@ -181,7 +187,13 @@ impl FakeFund {
             core_built: Mutex::default(),
             core_drained: Mutex::default(),
             core_fenced: Mutex::default(),
+            spent: Mutex::default(),
         }
+    }
+
+    /// Platform's proved state reads `read` for the lock at `at`.
+    fn proves(&self, at: OutPoint, read: SpentRead) {
+        self.spent.lock().unwrap().insert(at, read);
     }
 
     /// The next apply signs with the lock's key, then ends as `answer`.
@@ -253,6 +265,10 @@ impl FundLib for FakeFund {
 
     async fn fund_lock_rows(&self) -> Vec<KindLock> {
         fund::fund_rows(&*self.tracked.lock().unwrap())
+    }
+
+    async fn spent(&self, outpoint: OutPoint) -> SpentRead {
+        (self.spent.lock().unwrap().get(&outpoint)).map_or(SpentRead::Unread, |r| *r)
     }
 
     async fn credit_script(&self, outpoint: OutPoint) -> Option<ScriptBuf> {
@@ -397,6 +413,7 @@ impl FundLib for FakeFund {
                 "broadcast failed".into(),
             )),
             Answer::Panics => panic!("the apply panics"),
+            Answer::RetriedConsumed => Err(PlatformWalletError::AssetLockAlreadyConsumed(outpoint)),
         }
     }
 
@@ -857,9 +874,10 @@ fn an_interrupted_fund_resumes_the_same_outpoint_never_a_new_lock() {
 
 /// A failure after signing is no settle evidence: the lock pends
 /// "Checking" however often a resume hears it, blocks no new fund, and
-/// each resume applies the same outpoint. Platform's unproved "already
-/// consumed" for that outpoint is kept as reported, not settled: the lock
-/// leaves the pending list (finished elsewhere) and is not applied again.
+/// each resume applies the same outpoint. Platform's "already consumed"
+/// for that outpoint, its proved state saying the same, is kept as
+/// reported, not settled: the lock leaves the pending list (finished
+/// elsewhere) and is not applied again.
 #[test]
 fn already_consumed_finishes_the_lock_elsewhere_and_a_failure_reads_checking() {
     let fx = Fixture::new(0);
@@ -877,6 +895,7 @@ fn already_consumed_finishes_the_lock_elsewhere_and_a_failure_reads_checking() {
     );
     assert!(marks(&fx, &lib).1.outpoints.contains(&outpoint));
     assert!(reported(&fx, &lib).is_empty());
+    lib.proves(outpoint, SpentRead::Consumed);
     lib.answer(Answer::Consumed { of: None });
     assert_eq!(
         resume_of(&fx, &lib, outpoint).unwrap(),
@@ -1166,6 +1185,10 @@ impl Rig for FundRig {
 
     fn reports_used(&self) -> bool {
         true
+    }
+
+    fn prove_spent(&self, outpoint: OutPoint, read: SpentRead) {
+        self.lib.proves(outpoint, read);
     }
 }
 
@@ -1745,6 +1768,7 @@ fn a_checking_fund_completes_when_platform_says_its_lock_is_used() {
         .find(|r| r.kind == PlatformActivityKind::FromCore)
         .unwrap();
     assert_eq!(fund.state, PlatformActivityState::Pending);
+    lib.proves(lib.outpoint(0), SpentRead::Consumed);
     lib.answer(Answer::Consumed { of: None });
     assert_eq!(
         resume_of(&w.f, &lib, lib.outpoint(0)).unwrap(),
@@ -1918,6 +1942,7 @@ fn a_restored_lock_used_elsewhere_leaves_no_activity_and_no_allowance() {
         let at = lib.outpoint(0);
         let answer = Answer::Consumed { of: None };
         if signs {
+            lib.proves(at, SpentRead::Consumed);
             lib.answer(answer);
         } else {
             lib.refuse(answer);
@@ -2033,6 +2058,7 @@ fn a_reported_fund_whose_record_write_failed_completes_after_a_restart() {
     let outpoint = own_checking_fund(&w.f, &lib);
     w.net.fund(w.address(0), estimate());
     w.fail_next_outcome_write();
+    lib.proves(outpoint, SpentRead::Consumed);
     lib.answer(Answer::Consumed { of: None });
     assert_eq!(
         resume_of(&w.f, &lib, outpoint).unwrap(),
@@ -2060,7 +2086,7 @@ fn a_fund_ends_on_its_own_outputs_evidence_only() {
     w.net.fund(w.address(0), estimate());
     let sibling = OutPoint::new(outpoint.txid, outpoint.vout + 1);
     record_mark(&w.f, Mark::Settled, sibling);
-    record_mark(&w.f, Mark::Reported, sibling);
+    record_mark(&w.f, Mark::Used, sibling);
     let rows = w.activity();
     assert_eq!(
         fund_rows(&rows),
@@ -2181,6 +2207,7 @@ fn a_reported_lock_finishes_as_reported_every_time() {
     let lib = Arc::new(FakeFund::new(&fx));
     lib.track(lib.lock(1, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
     let at = lib.outpoint(0);
+    lib.proves(at, SpentRead::Consumed);
     lib.answer(Answer::Consumed { of: None });
     assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::ReportedUsed);
     assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::ReportedUsed);
@@ -2206,6 +2233,7 @@ fn a_removed_restored_record_gives_back_what_it_absorbed() {
         paid - 1_000_000_000,
         "{rows:?}"
     );
+    lib.proves(at, SpentRead::Consumed);
     lib.answer(Answer::Consumed { of: None });
     assert_eq!(finish(&w.f, &lib, at).0.unwrap(), LockFinish::ReportedUsed);
     let rows = w.activity();
@@ -2710,9 +2738,9 @@ fn reopen(fx: &mut Fixture) {
 
 /// F2 on type 4: a restored lock, `RecoveredFromChain` with its proof,
 /// that Platform answers "already consumed" for, the library unable to
-/// record the answer at the real persister: reported used, off the list
-/// and the card, settled nowhere, and so after a restart, with no second
-/// apply.
+/// record the answer at the real persister, and Platform's proved state
+/// says consumed: reported used, off the list and the card, settled
+/// nowhere, and so after a restart, with no second apply.
 #[test]
 fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
     let mut fx = Fixture::new(0);
@@ -2721,6 +2749,7 @@ fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
     let at = row.out_point;
     lib.track(row.clone());
     lib.answer(Answer::Unrecorded);
+    lib.proves(at, SpentRead::Consumed);
     let (finished, asked) = finish(&fx, &lib, at);
     assert!(asked);
     assert_eq!(finished.unwrap(), LockFinish::ReportedUsed);
@@ -2740,13 +2769,16 @@ fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
 }
 
 /// F2's "Finish all" on type 4: both restored locks answered "already
-/// consumed", unrecorded by the library, count as already used.
+/// consumed", unrecorded by the library and proved consumed, count as
+/// already used.
 #[test]
 fn finish_transfers_counts_restored_fund_locks_platform_reports_used() {
     let fx = Fixture::new(0);
     let lib = Arc::new(FakeFund::new(&fx));
     for n in 1..=2 {
-        lib.track(lib.lock(n, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+        let row = lib.lock(n, 1_000_000, AssetLockStatus::RecoveredFromChain, true);
+        lib.proves(row.out_point, SpentRead::Consumed);
+        lib.track(row);
         lib.answer(Answer::Unrecorded);
     }
     let report = finish_transfers(&fx, &lib);
@@ -2784,3 +2816,175 @@ fn a_persistence_failure_leaves_a_restored_fund_lock_unfinished() {
 
 #[path = "core_max_fund_tests.rs"]
 mod core_max_fund_tests;
+
+/// BL-921: Platform's "already consumed" for a restored fund lock is not
+/// taken without Platform's proof. With no proved answer (an error, no
+/// proof, a timeout) or a proof that it is unspent, the lock reads
+/// Checking, stays on the card and is reported used nowhere.
+#[test]
+fn an_unproved_already_consumed_leaves_a_restored_fund_lock_checking() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    for (n, read) in [
+        (1, None),
+        (2, Some(SpentRead::Unread)),
+        (3, Some(SpentRead::Unspent)),
+    ] {
+        let row = lib.lock(n, 1_000_000, AssetLockStatus::RecoveredFromChain, true);
+        let at = row.out_point;
+        lib.track(row);
+        if let Some(read) = read {
+            lib.proves(at, read);
+        }
+        lib.answer(Answer::Unrecorded);
+        let (finished, asked) = finish(&fx, &lib, at);
+        assert!(asked, "{read:?}");
+        assert_eq!(finished.unwrap(), LockFinish::Checking, "{read:?}");
+        assert!(
+            state_of(&fx, &lib).contains(&(at, UnfinishedState::Checking)),
+            "{read:?} stays on the card"
+        );
+        assert!(!reported(&fx, &lib).contains(&at), "{read:?}");
+    }
+    assert!(reported(&fx, &lib).is_empty());
+}
+
+/// BL-921: a restored fund lock Platform's proof shows partly used (a
+/// remaining value) is not used: it reads Checking, and "Check again"
+/// applies it again (here the library's apply is proved).
+#[test]
+fn a_proved_remaining_fund_lock_stays_checking_and_check_again_applies_it() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let row = lib.lock(4, 1_000_000, AssetLockStatus::RecoveredFromChain, true);
+    let at = row.out_point;
+    lib.track(row);
+    lib.proves(at, SpentRead::Remaining);
+    lib.answer(Answer::Unrecorded);
+    assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::Checking);
+    assert_eq!(state_of(&fx, &lib), [(at, UnfinishedState::Checking)]);
+    assert!(reported(&fx, &lib).is_empty());
+
+    lib.answer(Answer::Done(None));
+    let (again, asked) = finish(&fx, &lib, at);
+    assert!(asked);
+    assert_eq!(again.unwrap(), LockFinish::Applied);
+    assert_eq!(lib.applied.lock().unwrap().len(), 2, "applied again");
+    assert!(state_of(&fx, &lib).is_empty());
+}
+
+/// BL-921: an earlier version kept Platform's unproved "already consumed"
+/// as `recovery.address_fund.reported.<outpoint>`. That record no longer
+/// hides the lock: it lists again as Checking (a restored lock), and leaves
+/// the card only once Platform's proof says it is consumed.
+#[test]
+fn an_earlier_versions_unproved_report_no_longer_hides_a_fund_lock() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let row = lib.lock(5, 1_000_000, AssetLockStatus::RecoveredFromChain, true);
+    let at = row.out_point;
+    lib.track(row);
+    let (s, wallet) = (Arc::clone(&fx.s), fx.wallet);
+    let appdb = s.live().unwrap().appdb;
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let key = format!("recovery.address_fund.reported.{at}");
+    appdb.set_setting_durable(&scope, &key, Some("1")).unwrap();
+
+    assert!(reported(&fx, &lib).is_empty(), "not read");
+    assert_eq!(
+        state_of(&fx, &lib),
+        [(at, UnfinishedState::Checking)],
+        "listed again, Checking"
+    );
+
+    lib.proves(at, SpentRead::Consumed);
+    lib.answer(Answer::Unrecorded);
+    assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::ReportedUsed);
+    assert!(state_of(&fx, &lib).is_empty(), "off the card once proved");
+    assert_eq!(reported(&fx, &lib), HashSet::from([at]));
+}
+
+/// BL-921 (funds review): the lock key counts as signed when it signed on
+/// any attempt of the apply call, a library retry's included. An "already
+/// consumed" a retry heard, with no signature of its own, is Platform's
+/// answer, unproved: Checking without the proof, used only with it.
+#[test]
+fn an_already_consumed_after_a_signed_attempt_and_a_retry_needs_the_proof() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let (unread, proved) = (
+        lib.lock(6, 1_000_000, AssetLockStatus::RecoveredFromChain, true),
+        lib.lock(7, 1_000_000, AssetLockStatus::RecoveredFromChain, true),
+    );
+    let (a, b) = (unread.out_point, proved.out_point);
+    lib.track(unread);
+    lib.track(proved);
+    lib.answer(Answer::RetriedConsumed);
+    let (finished, asked, outcomes) = finish_with_outcomes(&fx, &lib, a);
+    assert!(asked);
+    assert_eq!(finished.unwrap(), LockFinish::Checking);
+    assert_eq!(outcomes, [FlowOutcome::MaybeSent], "the call signed");
+    assert!(marks(&fx, &lib).1.outpoints.contains(&a));
+    assert!(!reported(&fx, &lib).contains(&a));
+
+    lib.proves(b, SpentRead::Consumed);
+    lib.answer(Answer::RetriedConsumed);
+    assert_eq!(finish(&fx, &lib, b).0.unwrap(), LockFinish::ReportedUsed);
+    assert_eq!(reported(&fx, &lib), HashSet::from([b]));
+    assert_eq!(
+        *lib.signed.lock().unwrap(),
+        [true, true],
+        "one signature per call"
+    );
+}
+
+/// #465: one unauthenticated "already consumed" answer is never final. A
+/// restored fund lock Platform answers that for, with no proved read,
+/// reads Checking, and after a restart it is listed again with Check
+/// again. Check again applies it once the proved read says unspent, and
+/// a later proved "consumed" takes another such lock off the card.
+#[test]
+fn an_unauthenticated_already_consumed_is_never_final_across_a_restart() {
+    let mut fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let (live, used) = (
+        lib.lock(11, 1_000_000, AssetLockStatus::RecoveredFromChain, true),
+        lib.lock(12, 1_000_000, AssetLockStatus::RecoveredFromChain, true),
+    );
+    let (a, b) = (live.out_point, used.out_point);
+    lib.track(live.clone());
+    lib.track(used.clone());
+    for at in [a, b] {
+        lib.answer(Answer::Unrecorded);
+        assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::Checking);
+    }
+    assert!(reported(&fx, &lib).is_empty(), "nothing taken as used");
+
+    drop(lib);
+    reopen(&mut fx);
+    let lib = Arc::new(FakeFund::new(&fx));
+    lib.track(live);
+    lib.track(used);
+    let listed = state_of(&fx, &lib);
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    for at in [a, b] {
+        assert!(
+            listed.contains(&(at, UnfinishedState::Checking)),
+            "listed again after a restart, with Check again: {listed:?}"
+        );
+    }
+
+    lib.proves(a, SpentRead::Unspent);
+    lib.answer(Answer::Done(None));
+    let (applied, asked) = finish(&fx, &lib, a);
+    assert!(asked);
+    assert_eq!(applied.unwrap(), LockFinish::Applied, "unspent: applied");
+
+    lib.proves(b, SpentRead::Consumed);
+    lib.answer(Answer::Unrecorded);
+    assert_eq!(finish(&fx, &lib, b).0.unwrap(), LockFinish::ReportedUsed);
+    assert!(
+        state_of(&fx, &lib).is_empty(),
+        "the proved read settles both"
+    );
+}
