@@ -764,6 +764,14 @@ export const masternodes = {
     /** Under a revealed owner or voting secret, where a copy button would be (it has none). */
     noCopy: "This key can't be copied, so it doesn't end up in your clipboard. Keep it in this wallet unless you're moving the masternode to another wallet.",
     watchOnly: "This wallet is watch-only, so it can't show masternode keys.",
+    /** A wallet without its seed (Forgot Passphrase left it watch-only) still lists its public keys. */
+    noSeed: "This wallet has no seed in Dash Wallet, so it can show these keys' public data but not their private keys.",
+    /** A key's match line while the known masternodes are still being read, and after a read failed. */
+    checking: "Checking…",
+    checkFailed: "Couldn't check",
+    checkFailedLine: "Couldn't check which known masternodes these keys belong to.",
+    /** Above Reveal: the app can't keep every desktop's screen sharing out (Linux). */
+    screenWarning: "Before you reveal it, stop any screen sharing or recording and make sure no one can see your screen.",
   },
   withdraw: {
     /** An evonode credit withdrawal whose identity data the wallet could not verify (H-09). */

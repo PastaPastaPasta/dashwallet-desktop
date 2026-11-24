@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { TEST_VECTOR_WIF } from "../src/fixture/masternodes";
+import { FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
@@ -7,10 +8,11 @@ import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors, type The
 // more" paging, rows matched to known masternodes, and a reveal behind the passphrase that is
 // dropped on hide.
 
-const open = async (page: Page, theme: Theme) => {
+const open = async (page: Page, theme: Theme, scenario = "mn-list", before?: () => Promise<unknown>) => {
   await page.clock.setFixedTime(FIXTURE_NOW);
-  await page.goto(fixtureUrl("mn-list", theme));
+  await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
+  if (before) await before();
   await page.getByTestId("sidebar-masternodes").click();
   await expect(page.getByTestId("page-masternodes")).toBeVisible();
   await page.getByTestId("mn-tab-more").click();
@@ -80,6 +82,42 @@ test("Masternode keys lists each role, pages, and reveals one secret behind the 
   await expect(sheet.getByTestId("mn-key-copy-warning")).toContainText("Paste this only into your masternode's configuration.");
   await expect(sheet.getByTestId("mn-key-no-copy")).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+test("a key says Checking… until the known masternodes are read, and never Not matched before", async ({ page }) => {
+  let release: Awaited<ReturnType<typeof page.evaluateHandle<() => void>>> | null = null;
+  await open(page, "light", "mn-list", async () => {
+    release = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_masternode"));
+  });
+  const sheet = page.getByTestId("mn-keys");
+  await expect(sheet.getByTestId("mn-key-1-match")).toHaveText("Checking…");
+  await expect(sheet.getByTestId("mn-key-2-match")).toHaveText("Checking…");
+  await release!.evaluate((r) => r());
+  await expect(sheet.getByTestId("mn-key-1-match")).toHaveText("Matched to Office node · 203.0.113.9:19999");
+  await expect(sheet.getByTestId("mn-key-2-match")).toHaveText("Not matched to a known masternode");
+});
+
+test("a failed read says Couldn't check, with Try again", async ({ page }) => {
+  await open(page, "light", "mn-list-failed");
+  const sheet = page.getByTestId("mn-keys");
+  await expect(sheet.getByTestId("mn-key-2-match")).toHaveText("Couldn't check");
+  await expect(sheet.getByTestId("mn-keys-check-failed")).toContainText("Couldn't check which known masternodes these keys belong to.");
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.listFails = false));
+  await sheet.getByTestId("mn-keys-check-retry").click();
+  await expect(sheet.getByTestId("mn-key-1-match")).toHaveText("Matched to Office node · 203.0.113.9:19999");
+  await expect(sheet.getByTestId("mn-keys-check-failed")).toHaveCount(0);
+});
+
+test("a wallet without its seed lists public keys and offers no Reveal", async ({ page }) => {
+  await open(page, "light", "mn-watchonly", () =>
+    page.evaluate((id) => (window.__dwFixture!.world.masternodes.keysWithoutSeed = [id]), FIXTURE_WALLET_ID),
+  );
+  const sheet = page.getByTestId("mn-keys");
+  await expect(sheet.getByTestId("mn-keys-no-seed")).toContainText("no seed in Dash Wallet");
+  await sheet.getByTestId("mn-key-0-show").click();
+  await expect(sheet.getByTestId("mn-key-0-address")).toBeVisible();
+  await expect(sheet.getByTestId("mn-key-0-no-seed")).toBeVisible();
+  await expect(sheet.getByTestId("mn-key-0-reveal")).toHaveCount(0);
 });
 
 for (const theme of THEMES) {

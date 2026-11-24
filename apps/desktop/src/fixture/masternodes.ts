@@ -104,6 +104,9 @@ export interface MasternodesWorld {
   trackedAt: Record<string, number>;
   /** The keychain owner key index of each own masternode with the owner role; other held registrations get their own fake owner address. */
   ownerKeys: Record<string, number>;
+  /** Wallets whose seed is gone but whose provider accounts stay (Forgot Passphrase): `mn_keys`
+   * lists their public keys, `mn_reveal_key` still refuses. */
+  keysWithoutSeed?: string[];
   /** A held registration's operator reward in hundredths of a percent; absent: 0. */
   operatorRewards: Record<string, number>;
 }
@@ -431,7 +434,8 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
     },
     mn_keys: ({ walletId, role, start, count }, { world }) => {
       if (count > 100) throw fail("invalid_argument", "count above 100");
-      if (wallet(world, walletId).summary.watchOnly) throw fail("masternode.watch_only", "fixture: a watch-only wallet has no provider account");
+      if (wallet(world, walletId).summary.watchOnly && !world.masternodes.keysWithoutSeed?.includes(walletId))
+        throw fail("masternode.watch_only", "fixture: a watch-only wallet has no provider account");
       const end = Math.min(start + count, POOL[role]);
       return Array.from({ length: Math.max(0, end - start) }, (_, i) => keyInfo(role, start + i));
     },

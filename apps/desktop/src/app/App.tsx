@@ -385,7 +385,7 @@ function Shell() {
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
-      {shown === "mnKeys" && wallet && <MasternodeKeysSheet key={wallet.walletId} walletId={wallet.walletId} role={mnKeysRole} onClose={closeDialog} />}
+      {shown === "mnKeys" && wallet && <MasternodeKeysSheet key={wallet.walletId} walletId={wallet.walletId} watchOnly={wallet.watchOnly} role={mnKeysRole} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
       {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}
       {onboarding && <Onboarding network={network} inert={notice} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}

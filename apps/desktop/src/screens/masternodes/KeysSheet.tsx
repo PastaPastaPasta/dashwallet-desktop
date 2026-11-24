@@ -27,12 +27,24 @@ import { useLockTimer } from "../LockScreen";
 
 const P = "masternodes.keys";
 
-export function MasternodeKeysSheet({ walletId, role: initialRole, onClose }: { walletId: string; role: MasternodeKeyRoleName | null; onClose: () => void }) {
+export function MasternodeKeysSheet({
+  walletId,
+  watchOnly: noSeed,
+  role: initialRole,
+  onClose,
+}: {
+  walletId: string;
+  /** The wallet holds no seed (watch-only, or left so by Forgot Passphrase): public keys only. */
+  watchOnly: boolean;
+  role: MasternodeKeyRoleName | null;
+  onClose: () => void;
+}) {
   const t = useT();
   const [role, setRole] = useState<MasternodeKeyRoleName>(initialRole ?? "owner");
   const [pages, setPages] = useState(1);
   const [open, setOpen] = useState<number | null>(null);
-  const { details, pending } = useKnownDetails(walletId);
+  const known = useKnownDetails(walletId);
+  const { details } = known;
   const keys = useKeyPages(walletId, role, pages);
   const choose = (r: MasternodeKeyRoleName) => {
     setRole(r);
@@ -50,8 +62,21 @@ export function MasternodeKeysSheet({ walletId, role: initialRole, onClose }: { 
       ) : (
         <>
           <p className="sheet-text" data-testid="mn-keys-intro">
-            {t(`${P}.intro`)} {matched > 0 && t(`${P}.matchedCount`, { count: matched })}
+            {t(`${P}.intro`)} {known.state === "done" && matched > 0 && t(`${P}.matchedCount`, { count: matched })}
           </p>
+          {noSeed && (
+            <p className="sheet-warning" role="note" data-testid="mn-keys-no-seed">
+              {t(`${P}.noSeed`)}
+            </p>
+          )}
+          {known.state === "failed" && (
+            <p className="mg-notice-row" data-testid="mn-keys-check-failed">
+              <span className="field-error">{t(`${P}.checkFailedLine`)}</span>
+              <DashButton variant="tintedBlue" size="small" data-testid="mn-keys-check-retry" onClick={known.retry}>
+                {t("components.phrase.tryAgain")}
+              </DashButton>
+            </p>
+          )}
           <div className="segmented" role="group" aria-label={t(`${P}.rolesLabel`)} data-testid="mn-keys-roles">
             {KEY_ROLES.map((r) => (
               <button key={r} type="button" className="segment" aria-pressed={role === r} data-testid={`mn-keys-role-${r}`} onClick={() => choose(r)}>
@@ -79,7 +104,9 @@ export function MasternodeKeysSheet({ walletId, role: initialRole, onClose }: { 
                       <span className="mono">{shortKey(key)}</span>
                       {" · "}
                       <span className="mg-muted" data-testid={`mn-key-${key.index}-match`}>
-                        {matches.length === 0 && pending ? t("masternodes.myMasternodes.loading") : matchText(t, matches)}
+                        {matches.length > 0 || known.state === "done"
+                          ? matchText(t, matches)
+                          : t(known.state === "checking" ? `${P}.checking` : `${P}.checkFailed`)}
                       </span>
                     </span>
                     <DashButton
@@ -92,7 +119,7 @@ export function MasternodeKeysSheet({ walletId, role: initialRole, onClose }: { 
                       {open === key.index ? t(`${P}.hide`) : t(`${P}.show`)}
                     </DashButton>
                   </div>
-                  {open === key.index && <KeyPanel key={`${walletId}-${key.role}-${key.index}`} walletId={walletId} k={key} />}
+                  {open === key.index && <KeyPanel key={`${walletId}-${key.role}-${key.index}`} walletId={walletId} k={key} noSeed={noSeed} />}
                 </li>
               ))}
             </ul>
@@ -146,19 +173,26 @@ function useKeyPages(walletId: string, role: MasternodeKeyRoleName, pages: numbe
   };
 }
 
-/** The details of the masternodes this wallet knows (its own and tracked), for matching, and
- * whether some are still being read (a key then isn't called unmatched yet). */
-function useKnownDetails(walletId: string): { details: MasternodeDetail[]; pending: boolean } {
+/** The details of the masternodes this wallet knows (its own and tracked), for matching. A key is
+ * called unmatched only once every read succeeded ("done"); before, "checking"; after a failed
+ * read, "failed", with `retry`. */
+function useKnownDetails(walletId: string): { details: MasternodeDetail[]; state: "checking" | "failed" | "done"; retry: () => void } {
   const b = useBackend();
   const list = useMasternodes(walletId);
   const hashes = (list.data?.masternodes ?? []).map((r) => r.proTxHash);
   const details = useQueries({
     queries: hashes.map((h) => ({ queryKey: mnKeys.detail(walletId, h), queryFn: () => b.mnMasternode(walletId, h) })),
   });
-  return { details: details.flatMap((d) => (d.data ? [d.data] : [])), pending: list.isPending || list.isError || details.some((d) => d.isPending || d.isError) };
+  const failed = list.isError || details.some((d) => d.isError);
+  const checking = list.isPending || details.some((d) => d.isPending);
+  const retry = () => {
+    if (list.isError) void list.refetch();
+    for (const d of details) if (d.isError) void d.refetch();
+  };
+  return { details: details.flatMap((d) => (d.data ? [d.data] : [])), state: failed ? "failed" : checking ? "checking" : "done", retry };
 }
 
-function KeyPanel({ walletId, k }: { walletId: string; k: MasternodeKeyInfo }) {
+function KeyPanel({ walletId, k, noSeed }: { walletId: string; k: MasternodeKeyInfo; noSeed: boolean }) {
   const t = useT();
   const protection = useSecretScreen();
   return (
@@ -187,7 +221,15 @@ function KeyPanel({ walletId, k }: { walletId: string; k: MasternodeKeyInfo }) {
         </DetailRow>
       )}
       <DetailRow label={t(`${P}.privateKey`)} testId={`mn-key-${k.index}-secret`}>
-        {protection !== "on" ? <ProtectionPending protection={protection} /> : <Reveal walletId={walletId} k={k} />}
+        {noSeed ? (
+          <span className="mg-small mg-muted" data-testid={`mn-key-${k.index}-no-seed`}>
+            {t(`${P}.noSeed`)}
+          </span>
+        ) : protection !== "on" ? (
+          <ProtectionPending protection={protection} />
+        ) : (
+          <Reveal walletId={walletId} k={k} />
+        )}
       </DetailRow>
     </dl>
   );
@@ -247,6 +289,9 @@ function Reveal({ walletId, k }: { walletId: string; k: MasternodeKeyInfo }) {
       <p className="mg-small mg-muted">
         {model.encrypted && `${t(`${P}.needsPassphrase`)} `}
         {t(`${P}.revealNote.${k.role}`)}
+      </p>
+      <p className="mg-small mg-muted" data-testid={`mn-key-${k.index}-screen-warning`}>
+        {t(`${P}.screenWarning`)}
       </p>
       {model.error && (
         <p className="form-problem" role="alert" data-testid={`mn-key-${k.index}-error`}>
