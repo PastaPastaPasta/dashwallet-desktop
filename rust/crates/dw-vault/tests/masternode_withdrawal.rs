@@ -13,8 +13,8 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use common::*;
 use dashcore::blockdata::transaction::special_transaction::provider_update_registrar::ProviderUpdateRegistrarPayload;
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::hashes::hash160;
 use dpp::ProtocolError;
 use dpp::address_funds::AddressWitness;
 use dpp::identity::accessors::IdentityGettersV0;
@@ -93,18 +93,18 @@ fn token(v: &Vault, purpose: GrantPurpose, credential: Credential<'_>) -> GrantT
         .unwrap()
 }
 
-fn hash160_of(secret: &SecretKey) -> [u8; 20] {
-    hash160::Hash::hash(&PublicKey::from_secret_key(secret).serialize()).to_byte_array()
+fn hash160_of(secret: &EcdsaSecretKey) -> [u8; 20] {
+    hash160::Hash::hash(&secret.public_key().to_compressed()).to_byte_array()
 }
 
 /// Wallet 1's key at `p`, derived here.
-fn derived(v: &Vault, p: &str) -> SecretKey {
+fn derived(v: &Vault, p: &str) -> EcdsaSecretKey {
     let master = ExtendedPrivKey::new_master(v.network(), &[1; 64]).unwrap();
-    master.derive_priv(&path(p)).unwrap().private_key
+    master.derive_priv(&path(p)).unwrap().private_key.clone()
 }
 
 /// The P2PKH script of `secret`.
-fn p2pkh(secret: &SecretKey) -> CoreScript {
+fn p2pkh(secret: &EcdsaSecretKey) -> CoreScript {
     CoreScript::new_p2pkh(hash160_of(secret))
 }
 
@@ -112,7 +112,7 @@ fn p2pkh(secret: &SecretKey) -> CoreScript {
 #[derive(Clone)]
 struct Case {
     key: WithdrawalKey,
-    secret: SecretKey,
+    secret: EcdsaSecretKey,
     identity_key: IdentityPublicKey,
     t: IdentityCreditWithdrawalTransitionV1,
     pro_tx_hash: [u8; 32],
@@ -162,7 +162,7 @@ fn v0(k: &mut IdentityPublicKey) -> &mut IdentityPublicKeyV0 {
 /// The identity key Drive gives the owner identity for `secret`
 /// (`get_owner_identity_owner_key_v0`, `…_withdrawal_key_v0`): OWNER id 1
 /// or TRANSFER id 0, CRITICAL, read-only, `ECDSA_HASH160`.
-fn identity_key(owner: bool, secret: &SecretKey) -> IdentityPublicKey {
+fn identity_key(owner: bool, secret: &EcdsaSecretKey) -> IdentityPublicKey {
     IdentityPublicKey::V0(IdentityPublicKeyV0 {
         id: if owner { 1 } else { 0 },
         purpose: if owner {
@@ -181,7 +181,7 @@ fn identity_key(owner: bool, secret: &SecretKey) -> IdentityPublicKey {
 
 /// A valid withdrawal with `key`, whose secret is `secret`; a payout key
 /// pays its own address.
-fn case(key: WithdrawalKey, secret: SecretKey) -> Case {
+fn case(key: WithdrawalKey, secret: EcdsaSecretKey) -> Case {
     let owner = key.is_owner();
     let script = (!owner).then(|| p2pkh(&secret));
     let destination = script
@@ -220,7 +220,7 @@ fn cases(v: &Vault) -> [Case; 4] {
             WithdrawalKey::AttachedOwner {
                 pro_tx_hash: PRO_TX,
             },
-            SecretKey::from_secret_bytes(ATTACHED_OWNER).unwrap(),
+            EcdsaSecretKey::from_bytes(&ATTACHED_OWNER).unwrap(),
         ),
         case(
             WithdrawalKey::WalletPayout {
@@ -232,7 +232,7 @@ fn cases(v: &Vault) -> [Case; 4] {
             WithdrawalKey::AttachedPayout {
                 pro_tx_hash: PRO_TX,
             },
-            SecretKey::from_secret_bytes(ATTACHED_PAYOUT).unwrap(),
+            EcdsaSecretKey::from_bytes(&ATTACHED_PAYOUT).unwrap(),
         ),
     ]
 }
@@ -245,12 +245,12 @@ fn withdrawal_signer(v: &Vault, c: &Case) -> VaultSigner {
 /// A single-key `ECDSA_HASH160` signer, as rs-sdk's simple-signer
 /// `SingleKeySigner` signs: `dashcore::signer::sign` of the data.
 #[derive(Debug)]
-struct OneKey(SecretKey);
+struct OneKey(EcdsaSecretKey);
 
 #[async_trait]
 impl IdentitySigner<IdentityPublicKey> for OneKey {
     async fn sign(&self, _: &IdentityPublicKey, data: &[u8]) -> Result<BinaryData, ProtocolError> {
-        let sig = dpp::dashcore::signer::sign(data, &self.0.to_secret_bytes())
+        let sig = dpp::dashcore::signer::sign(data, &*self.0.to_bytes())
             .map_err(|e| ProtocolError::Generic(e.to_string()))?;
         Ok(sig.to_vec().into())
     }
@@ -282,7 +282,7 @@ async fn platform(c: &Case) -> StateTransition {
         Pooling::Never,
         MIN_CORE_FEE_PER_BYTE,
         0,
-        OneKey(c.secret),
+        OneKey(c.secret.clone()),
         Some(&c.identity_key),
         PreferredKeyPurposeForSigningWithdrawal::TransferPreferred,
         c.t.nonce,
@@ -449,15 +449,15 @@ async fn withdrawals_equal_platforms_construction_and_verify() {
             theirs.serialize_to_bytes().unwrap()
         );
         let signable = ours.signable_bytes().unwrap();
-        let public = PublicKey::from_secret_key(&c.secret).serialize();
+        let public = c.secret.public_key().to_compressed();
         assert_eq!(
             hash160::Hash::hash(&public).to_byte_array().as_slice(),
             c.identity_key.data().as_slice()
         );
         dpp::dashcore::signer::verify_data_signature(&signable, &sig, &public).unwrap();
         // Another key does not verify it.
-        let other = SecretKey::from_secret_bytes([3; 32]).unwrap();
-        let other = PublicKey::from_secret_key(&other).serialize();
+        let other = EcdsaSecretKey::from_bytes(&[3; 32]).unwrap();
+        let other = other.public_key().to_compressed();
         assert!(dpp::dashcore::signer::verify_data_signature(&signable, &sig, &other).is_err());
     }
 }
@@ -625,10 +625,7 @@ fn an_identity_key_of_another_type_is_refused() {
             |c| {
                 let k = v0(&mut c.identity_key);
                 k.key_type = KeyType::ECDSA_SECP256K1;
-                k.data = PublicKey::from_secret_key(&c.secret)
-                    .serialize()
-                    .to_vec()
-                    .into();
+                k.data = c.secret.public_key().to_compressed().to_vec().into();
             },
             key_mismatch("ECDSA_HASH160"),
         );
@@ -734,7 +731,7 @@ fn an_owner_key_withdrawal_with_a_script_is_refused() {
 /// Payout key: exactly the approved script.
 #[test]
 fn a_payout_key_withdrawal_elsewhere_is_refused() {
-    let other = SecretKey::from_secret_bytes([3; 32]).unwrap();
+    let other = EcdsaSecretKey::from_bytes(&[3; 32]).unwrap();
     for pick in [2, 3] {
         refused_before_the_secret(
             pick,
@@ -815,7 +812,7 @@ fn a_key_that_is_not_the_identity_key_signs_nothing_and_spends_the_signer() {
     for valid in cases(&v) {
         let mut bad = valid.clone();
         let k = v0(&mut bad.identity_key);
-        k.data = hash160_of(&SecretKey::from_secret_bytes([3; 32]).unwrap())
+        k.data = hash160_of(&EcdsaSecretKey::from_bytes(&[3; 32]).unwrap())
             .to_vec()
             .into();
         let s = withdrawal_signer(&v, &valid);

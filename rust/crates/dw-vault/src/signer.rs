@@ -23,10 +23,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
+use dashcore::ecdsa::{EcdsaPublicKey, EcdsaSecretKey, EcdsaSignature};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use key_wallet::{ExtendedPubKeySigner, Network, Signer, SignerMethod};
-use zeroize::Zeroizing;
+use zeroize::Zeroize;
 
 use crate::paths::{self, is_bip44_path, is_coinjoin_path};
 use crate::types::{KeySource, WalletId};
@@ -347,13 +347,9 @@ const METHODS: &[SignerMethod] = &[SignerMethod::Digest];
 /// `27 + 4 + recid ‖ r ‖ s`, deterministic (RFC 6979).
 /// Also what `dashcore::signer::sign` makes for a Platform
 /// `ECDSA_HASH160` key (MG-07's name votes).
-pub(crate) fn sign_compact(digest: [u8; 32], secret: &SecretKey) -> [u8; 65] {
-    let sig =
-        ecdsa::RecoverableSignature::sign_ecdsa_recoverable(Message::from_digest(digest), secret);
-    let (recid, rs) = sig.serialize_compact();
-    let mut out = [0u8; 65];
-    out[0] = 27 + recid.to_u8() + 4;
-    out[1..].copy_from_slice(&rs);
+pub(crate) fn sign_compact(digest: [u8; 32], secret: &EcdsaSecretKey) -> [u8; 65] {
+    let mut out = secret.sign_recoverable(&digest).to_bytes();
+    out[0] = 27 + ((out[0] - 27) & 3) + 4;
     out
 }
 
@@ -519,7 +515,7 @@ impl VaultSigner {
         pro_tx_hash: &[u8; 32],
         role: &str,
         key_use: KeyUse,
-        f: impl FnOnce(&SecretKey) -> T,
+        f: impl FnOnce(&EcdsaSecretKey) -> T,
     ) -> Result<T, SignerError> {
         if !self.scope.allows_attached(key_use, role) {
             return Err(SignerError::PathNotAllowed(format!(
@@ -530,10 +526,10 @@ impl VaultSigner {
             self.alive()?;
             /// Erases the secret when dropped, so a panicking `f` erases it
             /// too.
-            struct Erased(SecretKey);
+            struct Erased(EcdsaSecretKey);
             impl Drop for Erased {
                 fn drop(&mut self) {
-                    self.0.non_secure_erase();
+                    self.0.zeroize();
                 }
             }
             let secret = Erased(self.vault.attached_secret(
@@ -583,14 +579,14 @@ impl Op<'_> {
             .derive_priv(path)
             .map_err(|e| SignerError::Derivation(e.to_string()))?;
         let out = f(&xpriv);
-        xpriv.private_key.non_secure_erase();
+        xpriv.private_key.zeroize();
         Ok(out)
     }
 }
 
 impl Drop for Op<'_> {
     fn drop(&mut self) {
-        self.master.private_key.non_secure_erase();
+        self.master.private_key.zeroize();
     }
 }
 
@@ -663,19 +659,16 @@ impl Signer for VaultSigner {
         &self,
         path: &DerivationPath,
         sighash: [u8; 32],
-    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+    ) -> Result<(EcdsaSignature, EcdsaPublicKey), SignerError> {
         self.with_key(path, KeyUse::Sign, |x| {
             // Low-R grinding, as Dash Core's `CKey::Sign`: one byte smaller on
             // average, and the same signature dashd makes for the sighash.
-            let sig = ecdsa::sign_low_r(Message::from_digest(sighash), &x.private_key);
-            (sig, PublicKey::from_secret_key(&x.private_key))
+            (x.private_key.sign(&sighash), x.private_key.public_key())
         })
     }
 
-    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
-        self.with_key(path, KeyUse::PublicKey, |x| {
-            PublicKey::from_secret_key(&x.private_key)
-        })
+    async fn public_key(&self, path: &DerivationPath) -> Result<EcdsaPublicKey, SignerError> {
+        self.with_key(path, KeyUse::PublicKey, |x| x.private_key.public_key())
     }
 }
 
@@ -702,7 +695,7 @@ impl WalletSigner for VaultSigner {
     ) -> Result<String, SignerError> {
         self.with_key(path, KeyUse::Message, |x| {
             let secret = dw_uri::keyio::Secret {
-                key: Zeroizing::new(x.private_key.to_secret_bytes()),
+                key: x.private_key.to_bytes(),
                 compressed: true,
             };
             dw_message::sign_message(&secret, message)

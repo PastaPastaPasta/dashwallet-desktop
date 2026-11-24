@@ -19,8 +19,8 @@
 
 use dashcore::OutPoint;
 use dashcore::consensus::Encodable;
-use dashcore::hashes::{Hash, hash160, sha256d};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::hashes::{hash160, sha256d};
 use dpp::identifier::MasternodeIdentifiers;
 use dpp::platform_value::{BinaryData, Identifier, Value};
 use dpp::serialization::{PlatformSerializable, Signable};
@@ -212,7 +212,7 @@ impl VoteSigner {
     fn with_secret<T>(
         &self,
         key: &VotingKey,
-        f: impl FnOnce(&SecretKey) -> T,
+        f: impl FnOnce(&EcdsaSecretKey) -> T,
     ) -> Result<T, SignerError> {
         match key {
             VotingKey::Keychain { index } => {
@@ -229,9 +229,9 @@ impl VoteSigner {
 }
 
 /// The hash160 of `secret`'s compressed public key.
-fn key_id_of(secret: &SecretKey) -> [u8; 20] {
-    let public = PublicKey::from_secret_key(secret);
-    hash160::Hash::hash(&public.serialize()).to_byte_array()
+fn key_id_of(secret: &EcdsaSecretKey) -> [u8; 20] {
+    let public = secret.public_key();
+    hash160::Hash::hash(&public.to_compressed()).to_byte_array()
 }
 
 fn protocol(e: dpp::ProtocolError) -> SignerError {

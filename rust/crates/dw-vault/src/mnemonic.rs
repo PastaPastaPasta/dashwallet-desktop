@@ -9,7 +9,7 @@ use key_wallet::mnemonic::Mnemonic;
 use key_wallet::wallet::Wallet;
 use key_wallet::wallet::root_extended_keys::RootExtendedPrivKey;
 use unicode_normalization::UnicodeNormalization;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 /// BIP39 wordlist languages (key-wallet's enum, re-exported for callers that
 /// do not depend on key-wallet).
@@ -156,9 +156,7 @@ pub fn derive_secret(
         std::str::from_utf8(bip39_passphrase).map_err(|_| MnemonicError::PassphraseNotUtf8)?;
     let mnemonic = Mnemonic::from_phrase(&normalized(text))
         .map_err(|e| MnemonicError::Invalid(e.to_string()))?;
-    let mut raw = mnemonic.to_seed(passphrase);
-    let seed = Zeroizing::new(raw);
-    raw.zeroize();
+    let seed = mnemonic.to_seed(passphrase);
     let canonical = Zeroizing::new(mnemonic.phrase());
     Ok(WalletSecret {
         mnemonic: Zeroizing::new(canonical.as_bytes().to_vec()),
