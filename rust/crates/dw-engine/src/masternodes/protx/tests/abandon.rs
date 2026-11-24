@@ -321,10 +321,8 @@ fn mg10_an_abandoned_key_change_frees_its_coins_and_holds_the_next_update_until_
     assert_eq!(next.state, ProTxOperationState::Sent);
 }
 
-/// The abandoned key change is mined anyway: it reads `confirmed`, and the
-/// hold on the next update is no longer `update_abandoned_pending`. Until
-/// the synced list shows it, `update_pending` holds as for any confirmed
-/// change (D43).
+/// The abandoned key change is mined anyway: it reads `confirmed`, and with
+/// the synced list past its block the next update is sent.
 #[test]
 fn mg10_an_abandoned_key_change_mined_anyway_lifts_its_hold() {
     let f = fx(Library::Accept);
@@ -339,11 +337,8 @@ fn mg10_an_abandoned_key_change_mined_anyway_lifts_its_hold() {
     f.spend(fee_coin);
     f.confirm(tx.clone(), 60);
     assert_eq!(f.state(&op), ProTxOperationState::Confirmed { height: 60 });
-    let e = f.update(key_change(&hash, 6), f.grant(COIN)).unwrap_err();
-    assert!(
-        matches!(&e, MasternodesError::UpdatePending { operation } if *operation == op.id),
-        "{e:?}"
-    );
+    let next = f.update(key_change(&hash, 6), f.grant(COIN)).unwrap();
+    assert_eq!(next.state, ProTxOperationState::Sent);
 }
 
 /// A replacement signed and not sent before the change it replaces was
