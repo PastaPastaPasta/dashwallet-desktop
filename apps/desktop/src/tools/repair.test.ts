@@ -164,6 +164,9 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(model.state).toEqual({ kind: "done", text: "2 transactions were removed; a rescan was scheduled." });
     expect(api.dropUnconfirmed).toHaveBeenCalledExactlyOnceWith(WALLET_A);
     expect(RepairText.dropped(1)).toBe("1 transaction was removed; a rescan was scheduled.");
+    expect(RepairText.dropUnconfirmedQuestion).toContain(
+      "It also ends masternode registrations and key changes that haven't confirmed yet, even one sent moments ago. Their coins are released, and they're never sent again.",
+    );
   });
 
   it("IOS113_birthHeightAboveTipIsRefused", async () => {
