@@ -3872,8 +3872,9 @@ fn abandons_rescan_counts_but_never_offers_a_coin_a_pending_payment_from_elsewhe
             false,
             &Arc::new(Accept::default()),
         );
+        let any = any.unwrap_or_else(|e| panic!("{state}: the automatic choice fails: {e:?}"));
         assert!(
-            any.is_ok_and(|p| !(p.summary().inputs.iter()).any(|i| i.outpoint == u)),
+            !(any.summary().inputs.iter()).any(|i| i.outpoint == u),
             "{state}: the automatic choice takes U"
         );
     }
