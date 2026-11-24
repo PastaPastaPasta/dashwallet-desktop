@@ -55,6 +55,20 @@ impl World {
     fn sent(&self) -> usize {
         self.net.sent.lock().unwrap().len()
     }
+
+    /// The quote's move, as the host confirms it: to its `to`, the exit of
+    /// its `exit_of`.
+    fn exit(
+        &self,
+        q: &MoveToCoreQuote,
+        grant: &str,
+    ) -> Result<MoveToCoreOutcome, CreditsError> {
+        let (to, exit_of, grant) = (q.to.clone(), q.exit_of.clone(), grant.to_owned());
+        self.call(move |net, s, w, id| async move {
+            let ask = (WithdrawAmount::All, to.as_str(), exit_of.as_deref());
+            move_to_core(&*net, &s, &w, id, ask, &grant).await
+        })
+    }
 }
 
 fn credits(credits: u64) -> WithdrawAmount {
@@ -590,7 +604,8 @@ fn the_core_quote_beside_a_held_top_up_is_its_exit() {
     w.net.fee.store(1, Ordering::SeqCst);
     let q = w.quote(WithdrawAmount::All).unwrap();
     assert_eq!(q.credits, 5 * DASH, "only the held input");
-    let exit = w.move_all(&w.f.grant(10 * DASH)).unwrap();
+    assert_eq!(q.exit_of, Some(w.moves()[0].id.clone()));
+    let exit = w.exit(&q, &w.f.grant(10 * DASH)).unwrap();
     assert_eq!(exit.state, PlatformActivityState::Done);
     let sent = w.net.sent.lock().unwrap().clone();
     assert_eq!(sent.last().unwrap().keys().collect::<Vec<_>>(), vec![&a]);
@@ -606,6 +621,72 @@ fn the_core_quote_beside_a_held_top_up_is_its_exit() {
         w.quote(WithdrawAmount::All).unwrap_err().code(),
         "credits.move_pending"
     );
+}
+
+/// The held top-up lands between its exit's quote and the Confirm. Named by
+/// the quote's `exit_of`, the exit no longer stands: `credits.quote_changed`,
+/// nothing signed or recorded, and the grant kept, which a new Confirm
+/// then spends.
+#[test]
+fn an_exit_after_its_top_up_landed_is_refused_and_keeps_the_grant() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.exit_of, Some(w.moves()[0].id.clone()));
+    w.lands(0);
+    let grant = w.f.grant(q.credits);
+    assert_eq!(
+        w.exit(&q, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant), "the grant kept");
+    assert_eq!(w.sent(), 1, "nothing signed");
+    let moves = w.moves();
+    assert_eq!(moves.len(), 1, "nothing recorded");
+    assert_eq!(moves[0].state, PlatformActivityState::Done);
+    assert_eq!(w.net.topped_up.load(Ordering::SeqCst), DASH);
+
+    let again = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(again.exit_of, None);
+    assert!(again.credits <= q.credits);
+    let moved = w.exit(&again, &grant).unwrap();
+    assert_eq!(moved.state, PlatformActivityState::Done);
+    assert_eq!(w.sent(), 2);
+    assert_eq!(w.net.sent.lock().unwrap()[1][&a].0, 2, "after the top-up's");
+}
+
+/// The same race with no `exit_of`: as before it, the move is planned on the
+/// read under the lock, an ordinary withdrawal of what the addresses hold.
+#[test]
+fn a_move_without_exit_of_after_its_top_up_landed_is_planned_anew() {
+    let (w, a) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    w.lands(0);
+    let grant = w.f.grant(q.credits);
+    let moved = w.move_all(&grant).unwrap();
+    assert_eq!(moved.state, PlatformActivityState::Done);
+    assert!(moved.credits < q.credits);
+    assert_eq!(w.sent(), 2);
+    assert_eq!(w.net.sent.lock().unwrap()[1][&a].0, 2, "after the top-up's");
+    assert_eq!(w.net.topped_up.load(Ordering::SeqCst), DASH);
+}
+
+/// An `exit_of` that names no held top-up is `credits.quote_changed`, with
+/// nothing signed and the grant kept.
+#[test]
+fn an_exit_of_no_held_top_up_is_refused() {
+    let (w, _) = shortfall();
+    w.net.fee.store(1, Ordering::SeqCst);
+    let mut q = w.quote(WithdrawAmount::All).unwrap();
+    let grant = w.f.grant(q.credits);
+    q.exit_of = Some("move-0-9".into());
+    assert_eq!(
+        w.exit(&q, &grant).unwrap_err().code(),
+        "credits.quote_changed"
+    );
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.sent(), 1);
 }
 
 /// The top-up executed beside its exit, and the exit's document cannot be
@@ -772,7 +853,7 @@ fn lock_order_top_up_from_platform_vs_withdraw_vs_move() {
                     &s,
                     &wallet,
                     id,
-                    (credits(DASH), to.as_str()),
+                    (credits(DASH), to.as_str(), None),
                     &move_grant,
                 ),
             )

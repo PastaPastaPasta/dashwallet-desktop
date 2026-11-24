@@ -2575,6 +2575,7 @@ pub(crate) async fn quote(
             max_duffs: 0,
             max_credits: credits,
         },
+        exit_of: top_up.map(|h| h.id.clone()),
     })
 }
 
@@ -2810,7 +2811,7 @@ pub(crate) async fn move_to_core(
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (amount, to): (WithdrawAmount, &str),
+    (amount, to, exit_of): (WithdrawAmount, &str, Option<&str>),
     grant: &str,
 ) -> Result<MoveToCoreOutcome, CreditsError> {
     let (record, _) = run(
@@ -2818,7 +2819,7 @@ pub(crate) async fn move_to_core(
         session,
         wallet,
         wallet_id,
-        (amount, Target::Core(to), None, None),
+        (amount, Target::Core(to), exit_of, None),
         grant,
     )
     .await?;
@@ -2917,13 +2918,14 @@ fn retried<'m>(
 }
 
 /// One move to `target` (module doc, Moves); the record as it stands when
-/// the call returns, and a top-up's answered identity balance.
+/// the call returns, and a top-up's answered identity balance. `named`: the
+/// held send a send retries, or the held top-up a move is the exit of.
 async fn run(
     net: &impl MoveNet,
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (amount, target, retry_of, quoted): (WithdrawAmount, Target<'_>, Option<&str>, Option<&Plan>),
+    (amount, target, named, quoted): (WithdrawAmount, Target<'_>, Option<&str>, Option<&Plan>),
     grant: &str,
 ) -> Result<(MoveRecord, Option<u64>), CreditsError> {
     let lock = wallet_lock(wallet_id);
@@ -2947,7 +2949,7 @@ async fn run(
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
     // A retry of a send that landed pays nothing and signs nothing.
-    if let (Target::Platform(to), Some(id)) = (target, retry_of)
+    if let (Target::Platform(to), Some(id)) = (target, named)
         && let Some(settled) = retry_decision(&moves, id, (&bech32m(&to, network), amount))?
     {
         return Ok((settled.clone(), None));
@@ -2957,7 +2959,8 @@ async fn run(
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
     // only its exact retry.
-    let (held, planned) = match (target, retry_of) {
+    let exit_of = named.filter(|_| matches!(target, Target::Core(_)));
+    let (held, planned) = match (target, named) {
         (Target::Platform(_), Some(id)) => {
             let held = (moves.iter()).find(|m| m.id == id);
             let planned =
@@ -2972,7 +2975,16 @@ async fn run(
                     id: pending.id.clone(),
                 });
             }
-            let held = moves.iter().find(|m| m.holds());
+            // The exit's quote was planned beside that top-up: once it no
+            // longer holds, this is not the move Confirm showed.
+            let held = match exit_of {
+                Some(id) => Some(
+                    (moves.iter())
+                        .find(|m| m.id == id && m.kind == MoveKind::ToIdentity && m.holds())
+                        .ok_or(CreditsError::QuoteChanged)?,
+                ),
+                None => moves.iter().find(|m| m.holds()),
+            };
             if let (Target::Platform(_) | Target::Identity(_), Some(h)) = (target, held) {
                 // A new send: the hold came after its quote. A top-up signs
                 // no other record's terms (C-routes C3-9).
@@ -3047,7 +3059,12 @@ async fn run(
             || ((h.kind == MoveKind::Transfer || record.kind == MoveKind::Transfer)
                 && h.terms() != record.terms())
     };
-    if let Some(held) = held.filter(blocks) {
+    if exit_of.is_some() && held.is_some_and(|h| h.key() != record.key()) {
+        return Err(CreditsError::QuoteChanged);
+    }
+    // Beside an exit, any other hold blocks it as it would block a move.
+    let mut others = (moves.iter()).filter(|m| m.holds() && exit_of.is_some_and(|id| m.id != id));
+    if let Some(held) = held.filter(blocks).or_else(|| others.find(blocks)) {
         return Err(CreditsError::MovePending {
             id: held.id.clone(),
         });

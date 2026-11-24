@@ -150,6 +150,11 @@ pub struct MoveToCoreQuote {
     pub to: String,
     /// What to authorize: no duffs, `credits` credits.
     pub grant: GrantRequest,
+    /// The held top-up from Platform this move is the exit of: the quote is
+    /// planned on its inputs only. Pass it to `move_to_core`, which then
+    /// moves only while that top-up still holds.
+    #[serde(default)]
+    pub exit_of: Option<String>,
 }
 
 /// A move's outcome.
@@ -436,11 +441,13 @@ impl DashPay {
 
     /// Moves `amount` of the Platform addresses' credits to `to` (the
     /// quote's: one of the wallet's Core receiving addresses) under `grant`
-    /// (a `PlatformOp` grant or a `PlatformAddressMove` lease).
+    /// (a `PlatformOp` grant or a `PlatformAddressMove` lease). `exit_of`:
+    /// the quote's, the held top-up this move is the exit of.
     pub async fn move_to_core(
         &self,
         amount: WithdrawAmount,
         to: String,
+        exit_of: Option<String>,
         grant: String,
     ) -> Result<MoveToCoreOutcome, CreditsError> {
         let wallet_id = self.wallet_id;
@@ -449,7 +456,7 @@ impl DashPay {
                 sdk: manager.sdk_arc(),
                 wallet: Arc::clone(&wallet),
             };
-            let ask = (amount, to.as_str());
+            let ask = (amount, to.as_str(), exit_of.as_deref());
             platform_moves::move_to_core(&net, &session, &wallet, wallet_id, ask, &grant).await
         })
         .await

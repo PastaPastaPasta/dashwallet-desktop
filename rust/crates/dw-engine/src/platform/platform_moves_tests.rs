@@ -855,7 +855,7 @@ impl World {
     ) -> Result<MoveToCoreOutcome, CreditsError> {
         let (to, grant) = (to.to_owned(), grant.to_owned());
         self.call(move |net, s, w, id| async move {
-            move_to_core(&*net, &s, &w, id, (amount, &to), &grant).await
+            move_to_core(&*net, &s, &w, id, (amount, &to, None), &grant).await
         })
     }
 
