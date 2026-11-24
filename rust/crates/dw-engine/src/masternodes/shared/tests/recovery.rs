@@ -702,6 +702,173 @@ fn test_a_spend_back_abandoned_in_activity_rescans_then_is_replaced() {
     assert_eq!(s.recovery.attributed.first(), Some(&txid));
 }
 
+/// Activity's Abandon of the spend back A stores its mark, then its sweep,
+/// and flags A in the history only once the sweep is stored. A Send again
+/// asked while that Abandon is held at its sweep is refused
+/// `abandon_cancelled`; with the sweep then failed the history still holds
+/// A live, and until the sweep is stored the read says A was abandoned in
+/// Activity and lists only Activity's Abandon of A, no Send again and no
+/// new spend, and both calls are refused. That Abandon again stores the
+/// sweep, and once the coin is back a new spend (the user's, after it)
+/// replaces A. Until then nothing goes out.
+#[test]
+fn test_a_spend_back_whose_activity_abandon_failed_its_sweep_is_never_sent_again() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.abandon(1, &id).unwrap();
+    let a = f.net.sent()[0].clone();
+    let coin = a.input[0].previous_output;
+    let (value, _) = f.coin_of(1, coin);
+    f.record(1, &a);
+    f.spv(true, 1);
+    let replay = RecoveryAction::ResendAbandon {
+        charge: spend_fee(1),
+    };
+    assert!(f.recovery(1, &id).actions.contains(&replay));
+    let sent = f.net.sent().len();
+    let (wallet, txid) = (f.wallets[1], a.txid());
+    let activity_abandon = || {
+        let s = Arc::clone(&f.session);
+        f.session.rt.spawn(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, wallet, txid).await
+        })
+    };
+
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_abandon_sweep.lock().unwrap() = Some(Arc::clone(&pause));
+    let abandoning = activity_abandon();
+    assert!(pause.wait_reached(std::time::Duration::from_secs(60)));
+    let resending = {
+        let (mn, grant, id) = (f.mn(), f.grant(1, COIN), id.clone());
+        f.session
+            .rt
+            .spawn(async move { mn.resend_shared_abandon(wallet, id, grant).await })
+    };
+    (f.session.hub.fail_abandon_sweep).store(true, std::sync::atomic::Ordering::SeqCst);
+    pause.release.notify_one();
+    let swept = f.run(abandoning).unwrap();
+    assert!(
+        matches!(&swept, Err(crate::EngineError::Storage(_))),
+        "{swept:?}"
+    );
+    assert_stage(f.run(resending).unwrap().unwrap_err(), "abandon_cancelled");
+    f.history_edit(1, txid, |e| assert!(!e.abandoned, "flagged"));
+
+    let finish = RecoveryAction::AbandonWalletTx {
+        txid: txid.to_string(),
+    };
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.abandon_spend.as_ref().and_then(|s| s.state),
+        Some(AbandonSpendState::AbandonedInActivity)
+    );
+    assert_eq!(r.actions, [finish], "Activity's Abandon finishes the sweep");
+    assert_eq!(r.blocked, None);
+    assert_stage(
+        f.resend_abandon(1, &id, COIN).unwrap_err(),
+        "abandon_cancelled",
+    );
+    assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
+    assert_eq!(f.net.sent().len(), sent, "nothing went out");
+
+    f.run(activity_abandon()).unwrap().unwrap();
+    f.history_edit(1, txid, |e| assert!(e.abandoned, "not flagged"));
+    f.credit_again(1, coin.txid.to_byte_array()[0], value);
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.actions,
+        [RecoveryAction::Abandon {
+            charge: spend_fee(1),
+            spends: true,
+            replaces: Some(txid.to_string())
+        }]
+    );
+    f.abandon_at(1, &id, spend_fee(1)).unwrap();
+    assert_eq!(f.net.sent().len(), sent + 1, "the new spend went out");
+    assert_eq!(f.net.sent()[sent].input[0].previous_output, coin);
+}
+
+/// A spend back's Abandon mark that can't be read counts as stored: the
+/// read says A was abandoned in Activity and lists Activity's Abandon of
+/// it, no Send again, and the call is refused `abandon_cancelled`; with the read back, Send again is
+/// listed again.
+#[test]
+fn test_a_spend_back_whose_abandon_mark_cannot_be_read_is_not_sent_again() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.abandon(1, &id).unwrap();
+    let a = f.net.sent()[0].clone();
+    f.record(1, &a);
+    f.spv(true, 1);
+    let replay = RecoveryAction::ResendAbandon {
+        charge: spend_fee(1),
+    };
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let unreadable = || {
+        dw_appdb::fault::arm(
+            &path,
+            &format!("settings.read_abandoned:{}", a.txid()),
+            dw_appdb::fault::Stage::Before,
+        )
+    };
+    let sent = f.net.sent().len();
+
+    unreadable();
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.abandon_spend.as_ref().and_then(|s| s.state),
+        Some(AbandonSpendState::AbandonedInActivity)
+    );
+    assert_eq!(
+        r.actions,
+        [RecoveryAction::AbandonWalletTx {
+            txid: a.txid().to_string()
+        }]
+    );
+    unreadable();
+    assert_stage(
+        f.resend_abandon(1, &id, COIN).unwrap_err(),
+        "abandon_cancelled",
+    );
+    dw_appdb::fault::disarm(&path);
+    assert_eq!(f.net.sent().len(), sent, "A never went out again");
+    assert!(f.recovery(1, &id).actions.contains(&replay));
+}
+
+/// A spend back not recorded (`uncertain`, its coins still held) whose
+/// Abandon mark can't be read: no Send again, and no new spend either,
+/// which `abandon_shared_session` would refuse while A may be out.
+#[test]
+fn test_an_uncertain_spend_back_with_an_unreadable_mark_lists_no_new_spend() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.abandon(1, &id).unwrap();
+    let a = f.net.sent()[0].clone();
+    f.spv(true, 1);
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.abandon_spend.as_ref().and_then(|s| s.state),
+        Some(AbandonSpendState::Uncertain)
+    );
+    assert_eq!(
+        r.actions,
+        [RecoveryAction::ResendAbandon {
+            charge: spend_fee(1)
+        }]
+    );
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    dw_appdb::fault::arm(
+        &path,
+        &format!("settings.read_abandoned:{}", a.txid()),
+        dw_appdb::fault::Stage::Before,
+    );
+    let r = f.recovery(1, &id);
+    dw_appdb::fault::disarm(&path);
+    assert!(r.actions.is_empty(), "{r:?}");
+    assert_stage(f.abandon(1, &id).unwrap_err(), "abandoning");
+}
+
 /// T4 legacy row, whole reservation unspent, before and after
 /// `abandon_spend.overdue`: nothing listed before (the call would accept a
 /// bounded spend), then `abandon { replaces: A }` taking every reserved

@@ -329,6 +329,17 @@ pub(super) struct ReadContext {
 }
 
 impl NetworkSession {
+    /// Whether Activity's Abandon of the latest spend back committed its
+    /// mark (a mark that cannot be read counts): it is then cancelled even
+    /// while the history still holds it live, as an Abandon flags the
+    /// entry only once its sweep is stored, so it is never handed out again.
+    pub(super) async fn spend_back_marked(&self, wallet: WalletId, row: &SharedSessionRow) -> bool {
+        match txid_of(row.abandon_txid.as_deref()) {
+            Some(txid) => self.abandon_marked(wallet, txid).await,
+            None => false,
+        }
+    }
+
     /// [`unreadable_view`] with the coin test `abandon_unreadable_shared_session`
     /// spends by: `abandonable` only while it passes, charged its fee. A coin
     /// read that fails lists the row not abandonable.
@@ -668,6 +679,15 @@ impl NetworkSession {
         let state = (pending && !terminal)
             .then(|| spend_state(row, entry, &chain.history))
             .flatten();
+        // Activity's Abandon stores its mark before its sweep, and flags the
+        // history entry only once the sweep is: marked, the spend reads
+        // abandoned there and is never replayed, and that Abandon, still
+        // accepted, finishes it. No new spend until the entry is flagged:
+        // `abandon_shared_session` still takes it as pending.
+        let marked = matches!(
+            state,
+            Some(AbandonSpendState::Uncertain | AbandonSpendState::InHistory)
+        ) && self.spend_back_marked(wallet, row).await;
         if let Some(txid) = &row.abandon_txid {
             let signed_at = entry.map_or(0, |e| e.signed_at);
             r.abandon_spend = Some(AbandonSpend {
@@ -675,7 +695,10 @@ impl NetworkSession {
                 signed_at,
                 legacy: entry.is_some_and(|e| e.legacy),
                 overdue: tip_overdue(signed_at, ctx.tip_time),
-                state,
+                state: match marked {
+                    true => Some(AbandonSpendState::AbandonedInActivity),
+                    false => state,
+                },
             });
         }
         let discard = row.out_at.is_none();
@@ -750,11 +773,12 @@ impl NetworkSession {
                 replaces: row.abandon_txid.clone(),
             });
         }
-        let replayable = match state {
-            Some(AbandonSpendState::Uncertain) => true,
-            Some(AbandonSpendState::InHistory) => row.abandon_tx.is_some(),
-            _ => false,
-        };
+        let replayable = !marked
+            && match state {
+                Some(AbandonSpendState::Uncertain) => true,
+                Some(AbandonSpendState::InHistory) => row.abandon_tx.is_some(),
+                _ => false,
+            };
         let charge = match ctx.can_send && replayable {
             true => self.abandon_fee(wallet, row, entry, &chain.history).await?,
             false => None,
@@ -775,8 +799,8 @@ impl NetworkSession {
             }
             _ => None,
         };
-        let a_recorded = a.filter(|_| state == Some(AbandonSpendState::InHistory));
-        for txid in own_blocker.into_iter().chain(a_recorded) {
+        let a_live = a.filter(|_| state == Some(AbandonSpendState::InHistory) || marked);
+        for txid in own_blocker.into_iter().chain(a_live) {
             let Some(exits) = self
                 .activity_exits(wallet, txid, ctx.spv_running, ctx.peers)
                 .await?
@@ -793,7 +817,7 @@ impl NetworkSession {
                 }
                 Some(_) => {}
             }
-            if Some(txid) == a_recorded && row.abandon_tx.is_none() {
+            if Some(txid) == a_live && row.abandon_tx.is_none() {
                 match exits.resend {
                     None => r.actions.push(RecoveryAction::ResendWalletTx {
                         txid: txid.to_string(),

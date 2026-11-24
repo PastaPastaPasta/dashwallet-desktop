@@ -1047,14 +1047,20 @@ impl NetworkSession {
         }
         // Read after the history: an Abandon writes its mark under the
         // manager's lock the view waits on, and flags the entry only once
-        // its sweep is stored. A mark that cannot be read counts.
+        // its sweep is stored.
+        f.abandon_marked = self.abandon_marked(wallet, txid).await;
+        Ok((entry, f))
+    }
+
+    /// Whether an Abandon of `txid` committed its mark, which it writes
+    /// before its sweep: a mark that cannot be read counts.
+    pub(crate) async fn abandon_marked(&self, wallet: WalletId, txid: Txid) -> bool {
         let (scope, key) = (wallet.to_string(), format!("{ABANDONED_PREFIX}{txid}"));
-        f.abandon_marked = (self.appdb_op(move |db| {
+        (self.appdb_op(move |db| {
             Ok((db.settings_with_prefix_lossy(&scope, &key)?.into_iter()).any(|(k, _)| k == key))
         }))
         .await
-        .unwrap_or(true);
-        Ok((entry, f))
+        .unwrap_or(true)
     }
 
     /// dash-qt detail fields and action enablement for one transaction.
