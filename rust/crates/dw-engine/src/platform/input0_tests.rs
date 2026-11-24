@@ -17,6 +17,7 @@ fn rules() -> Input0Rules {
         max_inputs: 3,
         min_claim_0: 1,
         min_total: 1,
+        exact: false,
     }
 }
 
@@ -208,4 +209,37 @@ fn a_plan_never_claims_past_the_proved_balances() {
         assert_eq!(p.credits, expected);
     }
     assert!(planned > 500, "{planned}");
+}
+
+/// An exact route (the top-up, C3-3): the claims total the amount, so a
+/// short last claim borrows from the input before, which keeps its own
+/// minimum; a shield-style plan claims the minimum instead.
+#[test]
+fn an_exact_plan_borrows_the_short_last_claim() {
+    let b = balances(&[(1, 1_500), (2, 5_000)]);
+    let exact = Input0Rules {
+        exact: true,
+        min_claim_0: 100,
+        ..rules()
+    };
+    // Input 0 gives 500; the 30 left would be below the minimum of 100.
+    let p = plan(&b, credits(530), &exact).unwrap();
+    assert_eq!(claims(&p), [(1, 430), (2, 100)]);
+    assert_eq!(p.inputs.values().sum::<u64>(), 530);
+    assert_eq!(
+        claims(&plan(&b, credits(530), &rules()).unwrap()),
+        [(1, 500), (2, 100)]
+    );
+    // Input 0 cannot lend below its own minimum.
+    let tight = Input0Rules {
+        min_claim_0: 450,
+        ..exact
+    };
+    assert_eq!(
+        plan(&b, credits(530), &tight),
+        Err(Input0Refused::ClaimBelow { min: 100 })
+    );
+    // Max takes every later input whole: nothing to borrow.
+    let p = plan(&b, WithdrawAmount::All, &exact).unwrap();
+    assert_eq!(claims(&p), [(1, 500), (2, 5_000)]);
 }
