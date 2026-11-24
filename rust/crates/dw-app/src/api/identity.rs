@@ -8,7 +8,7 @@
 //! the moment they arrive and never logged.
 
 mod credits;
-mod flows;
+pub(crate) mod flows;
 mod invitations;
 mod keys;
 mod names;

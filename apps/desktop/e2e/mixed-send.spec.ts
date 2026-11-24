@@ -53,8 +53,13 @@ async function review(page: Page) {
 }
 
 const sheet = (page: Page) => page.getByTestId("pay-confirm");
+const SUBTRACTED = "The fee is subtracted from the amount";
 const MANY =
   "Spending 10 or more mixed coins in one payment can link them together and weaken your privacy. Consider paying a smaller amount.";
+
+const noChange = (amount: string) => `Mixed payments have no change: the ${amount} tDASH left over after the payment goes to the network fee.`;
+const largeLeftOver = (amount: string) =>
+  `The ${amount} tDASH left over after this payment goes to the network fee, because mixed payments have no change. To lose less, raise the amount so more of it goes to the recipient.`;
 
 /** 1.05 from 0.100001 coins: eleven of them, and what they hold beyond it and the fee is fee too. */
 async function expectElevenCoins(page: Page) {
@@ -63,10 +68,11 @@ async function expectElevenCoins(page: Page) {
   await expect(warning).toHaveAttribute("role", "alert");
   await expect(page.getByTestId("pay-confirm-mixed-coins")).toHaveText("This payment spends 11 mixed coins.");
   // 11 inputs, 1 output: 1672 bytes at 1000 duffs/kB. The rest of 1.10001100 is the left-over.
+  // It is 0.05 and the fee under 10%: the left-over warning takes the note's place (#668).
   const leftOver = ((11 * DENOM - 105_000_000 - 1672) / 1e8).toFixed(8);
-  await expect(page.getByTestId("pay-confirm-mixed-change")).toHaveText(
-    `Mixed payments have no change: the ${leftOver} tDASH left over after the payment goes to the network fee.`,
-  );
+  await expect(page.getByTestId("pay-confirm-mixed-left-over")).toHaveText(largeLeftOver(leftOver));
+  await expect(page.getByTestId("pay-confirm-mixed-left-over")).toHaveAttribute("role", "alert");
+  await expect(page.getByTestId("pay-confirm-mixed-change")).toHaveCount(0);
   // The fee line already holds it.
   await expect(page.getByTestId("pay-confirm-fee")).toContainText(((11 * DENOM - 105_000_000) / 1e8).toFixed(8));
 }
@@ -111,8 +117,73 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("pay-confirm-mixed-coins")).toHaveText("This payment spends 1 mixed coin.");
     await expect(page.getByTestId("pay-confirm-mixed-warning")).toHaveCount(0);
     await expect(page.getByTestId("pay-confirm-mixed-change")).toHaveCount(0);
+    // The whole coin is paid, so the payee pays the fee: the sheet says so.
+    await expect(sheet(page)).toContainText(SUBTRACTED);
     expect(errors).toEqual([]);
   });
+
+  test(`U-06b one coin ${theme}: a remainder that covers the fee leaves the payee's amount whole (#464)`, async ({ page }, info) => {
+    const errors = await open(page, theme, "address");
+    await payee(page, "address");
+    await page.getByTestId("pay-amount").fill("0.09");
+    await page.getByTestId("pay-subtract-fee").check();
+    await mixedCoins(page);
+    await review(page);
+    await page.screenshot({ path: artifactPath(info, `${theme}-mixed-send-subtract-covered.png`) });
+    await expect(page.getByTestId("pay-confirm-amount")).toContainText("0.09000000");
+    // 1 input, 1 output: 192 bytes; the rest of the coin is the left-over, and no fee came off the amount.
+    const leftOver = ((DENOM - 9_000_000 - 192) / 1e8).toFixed(8);
+    await expect(page.getByTestId("pay-confirm-mixed-change")).toContainText(leftOver);
+    await expect(sheet(page)).not.toContainText(SUBTRACTED);
+    expect(errors).toEqual([]);
+  });
+}
+
+// #668: from 0.01 left over the sheet warns in place of the note, unless the 10% fee warning already
+// shows. Two coins pay with 340 bytes, one with 192, at 1000 duffs/kB; with subtract fee the
+// remainder covers that fee, so the numbers are the same.
+const duffs = (n: number) => (n / 1e8).toFixed(8);
+for (const theme of THEMES) {
+  for (const subtract of [false, true]) {
+    test(`U-06b left-over ${theme}${subtract ? ", subtract fee" : ""}: 0.01 or more warns in place of the note (#668)`, async ({ page }, info) => {
+      const errors = await open(page, theme, "address");
+      await payee(page, "address");
+      if (subtract) await page.getByTestId("pay-subtract-fee").check();
+      await mixedCoins(page);
+      const pay = async (amount: number) => {
+        await page.getByTestId("pay-amount").fill(duffs(amount));
+        await review(page);
+        await expect(page.getByTestId("pay-confirm-amount")).toContainText(duffs(amount));
+      };
+      const warning = page.getByTestId("pay-confirm-mixed-left-over");
+      const note = page.getByTestId("pay-confirm-mixed-change");
+      const feeWarning = page.getByTestId("pay-confirm-fee-warning");
+
+      await pay(2 * DENOM - 340 - 1_000_000);
+      await expect(page.getByTestId("pay-confirm-mixed-coins")).toHaveText("This payment spends 2 mixed coins.");
+      await expect(warning).toHaveText(largeLeftOver("0.01000000"));
+      await expect(warning).toHaveAttribute("role", "alert");
+      await expect(note).toHaveCount(0);
+      await expect(feeWarning).toHaveCount(0);
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      await page.getByTestId("pay-confirm").screenshot({ path: artifactPath(info, `${theme}-mixed-send-left-over${subtract ? "-subtract" : ""}.png`) });
+      await page.getByTestId("pay-confirm-cancel").click();
+
+      await pay(2 * DENOM - 340 - 999_999);
+      await expect(note).toHaveText(noChange("0.00999999"));
+      await expect(warning).toHaveCount(0);
+      await expect(feeWarning).toHaveCount(0);
+      await page.getByTestId("pay-confirm-cancel").click();
+
+      await pay(DENOM - 192 - 1_000_000);
+      await expect(page.getByTestId("pay-confirm-mixed-coins")).toHaveText("This payment spends 1 mixed coin.");
+      await expect(feeWarning).toBeVisible();
+      await expect(warning).toHaveCount(0);
+      await expect(note).toHaveText(noChange("0.01000000"));
+      await page.getByTestId("pay-confirm").screenshot({ path: artifactPath(info, `${theme}-mixed-send-left-over-fee-warning${subtract ? "-subtract" : ""}.png`) });
+      expect(errors).toEqual([]);
+    });
+  }
 }
 
 test("U-06b any funds: a normal payment says nothing about mixed coins", async ({ page }) => {

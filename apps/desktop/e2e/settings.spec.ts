@@ -579,6 +579,20 @@ test.describe("About", () => {
     await expect(page.getByTestId("settings-about-network").locator("dd")).toHaveText("testnet");
     await expect(page.getByTestId("settings-about-backups")).toContainText(FIXTURE_BACKUP_DIR);
   });
+
+  test("project links open by name, and a failed open gives the link to copy", async ({ page }) => {
+    await settings(page, "about");
+    await expect(page.getByTestId("settings-link-issues-hint")).toHaveText(/^Reports are public\./);
+    for (const link of ["issues", "sourceCode", "website"]) await page.getByTestId(`settings-link-${link}`).click();
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.linksOpened)).toEqual(["issues", "sourceCode", "website"]);
+    await expect(page.getByTestId("settings-link-failed")).toHaveCount(0);
+
+    await page.evaluate(() => (window.__dwFixture!.world.linkOpenFails = true));
+    await page.getByTestId("settings-link-website").click();
+    await expect(page.getByTestId("settings-link-failed")).toHaveText(/^The browser couldn't be opened\. Copy the link instead: https:\/\/www\.dash\.org/);
+    await page.getByTestId("settings-link-issues").click();
+    await expect(page.getByTestId("settings-link-failed")).toContainText("https://github.com/PastaPastaPasta/dashwallet-desktop/issues");
+  });
 });
 
 test.describe("axe", () => {

@@ -1278,9 +1278,6 @@ fn an_instant_send_locked_payout_change_is_conflicted_only_by_a_chain_locked_blo
     fa.held_by(Key::Owner, UNCONFIRMED);
 }
 
-/// In the wallet's own history a version-3 change makes the masternode
-/// shared (D25), refused before any hold; another loaded wallet's holds
-/// unless its one payee is the paid script.
 /// A plain block at or below the best ChainLock is ChainLocked: it beats
 /// an InstantSend-locked change.
 #[test]
@@ -1311,6 +1308,9 @@ fn the_highest_block_any_wallet_reads_a_change_in_decides() {
     fa.held_by(Key::Owner, "platform_behind");
 }
 
+/// In the wallet's own history a version-3 change makes the masternode
+/// shared (D25), refused before any hold; another loaded wallet's holds
+/// unless its one payee is the paid script.
 #[test]
 fn a_v3_payout_change_holds_unless_its_one_payee_is_the_paid_script() {
     let moved = CoreScript::new_p2pkh([0x22; 20]);
@@ -1340,4 +1340,264 @@ fn a_v3_payout_change_holds_unless_its_one_payee_is_the_paid_script() {
             false => fa.released(Key::Owner),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// A P2SH payout: Drive builds the owner identity's TRANSFER key from the
+// payout's 20 bytes as P2PKH, so an owner-key withdrawal would pay a script
+// nobody can spend (dashpay/platform#5840).
+
+/// `PRO_TX`'s ProRegTx, paying `to`.
+fn registration(to: &CoreScript) -> Transaction {
+    use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    use dashcore::blockdata::transaction::special_transaction::provider_registration::{
+        ProviderMasternodeType, ProviderRegistrationPayload,
+    };
+    use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
+    let payload = ProviderRegistrationPayload {
+        version: 2,
+        masternode_type: ProviderMasternodeType::HighPerformance,
+        masternode_mode: 0,
+        collateral_outpoint: coin(0x60),
+        service_address: MasternodeNetInfo::Legacy("127.0.0.1:19899".parse().unwrap()),
+        owner_key_hash: dashcore::PubkeyHash::from_byte_array(hash_of(&OWNER_SECRET)),
+        operator_public_key: dashcore::bls_sig_utils::BLSPublicKey::from_bytes([2; 48]),
+        voting_key_hash: dashcore::PubkeyHash::all_zeros(),
+        operator_reward: 0,
+        script_payout: dashcore::ScriptBuf::from_bytes(to.as_bytes().to_vec()),
+        inputs_hash: dashcore::hash_types::InputsHash::all_zeros(),
+        signature: Vec::new(),
+        platform_node_id: Some([5; 20].into()),
+        platform_p2p_port: Some(26656),
+        platform_http_port: Some(443),
+        payouts: None,
+        shared_collateral: None,
+    };
+    Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![dashcore::TxIn::default()],
+        output: vec![],
+        special_transaction_payload: Some(TransactionPayload::ProviderRegistrationPayloadType(
+            payload,
+        )),
+    }
+}
+
+/// `PRO_TX`'s ProRegTx at version 3, paying `to` in DIP-0026 shares.
+fn registration_v3(to: &[&CoreScript]) -> Transaction {
+    use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    use dashcore::blockdata::transaction::special_transaction::provider_registration::MasternodePayoutShare;
+    let mut tx = registration(to[0]);
+    let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+        &mut tx.special_transaction_payload
+    else {
+        unreachable!()
+    };
+    p.version = 3;
+    p.script_payout = dashcore::ScriptBuf::new();
+    p.payouts = Some(
+        (to.iter())
+            .map(|s| MasternodePayoutShare {
+                script_payout: dashcore::ScriptBuf::from_bytes(s.as_bytes().to_vec()),
+                reward: (10_000 / to.len()) as u16,
+            })
+            .collect(),
+    );
+    tx
+}
+
+impl Fa {
+    /// `PRO_TX`'s ProRegTx paying `to`, mined long ago: the history keeps it
+    /// under its txid, the ProTx hash.
+    fn registered(&self, to: &CoreScript) {
+        self.registered_in(self.f.wallet, registration(to));
+    }
+
+    /// `PRO_TX`'s ProRegTx `tx` in `wallet`'s history, mined long ago.
+    fn registered_in(&self, wallet: crate::WalletId, tx: Transaction) {
+        let entry = crate::history::TxEntry {
+            tx,
+            context: in_block(TIP - 50),
+            instant_locked: false,
+            first_seen: None,
+            own_inputs: Default::default(),
+            abandoned: false,
+        };
+        (self.f.session.hub.history).with_wallet(wallet, |h| {
+            h.txs.insert(dashcore::Txid::from_byte_array(PRO_TX), entry);
+        });
+    }
+
+    /// The owner key's destination reads `checking{owner_payout_p2sh}` and
+    /// an owner-key withdrawal is refused with it; the payout key's is
+    /// fixed and withdraws.
+    fn owner_held_by_p2sh(&self) {
+        let q = self.quote().unwrap();
+        match &q.owner_destination {
+            Some(WithdrawalDestinationCheck::Checking { reason }) => {
+                assert_eq!(reason.as_str(), "owner_payout_p2sh");
+            }
+            d => panic!("{d:?}"),
+        }
+        assert!(
+            matches!(
+                q.payout_destination,
+                Some(WithdrawalDestinationCheck::Fixed { .. })
+            ),
+            "{q:?}"
+        );
+        match self.withdraw(Key::Owner, AMOUNT, None).unwrap_err() {
+            MasternodesError::WithdrawalDestinationChecking { reason } => {
+                assert_eq!(reason.as_str(), "owner_payout_p2sh");
+            }
+            e => panic!("{e:?}"),
+        }
+        assert!(self.plat.sent().is_empty());
+        assert!(self.records().is_empty());
+        let r = self.withdraw(Key::Payout, AMOUNT, None).unwrap();
+        assert_eq!(r.state, State::Sent);
+    }
+}
+
+#[test]
+fn a_p2sh_payout_registered_refuses_the_owner_key_only() {
+    let fa = Fa::new(true);
+    fa.registered(&p2sh_payout());
+    fa.owner_held_by_p2sh();
+}
+
+#[test]
+fn the_latest_payout_change_decides_whether_the_payout_is_p2sh() {
+    // Registered P2PKH, changed to P2SH.
+    let fa = Fa::new(true);
+    fa.registered(&payout_script());
+    fa.seen(
+        &payout_change(&PRO_TX, &p2sh_payout(), coin(1)),
+        in_block(TIP - 10),
+    );
+    fa.owner_held_by_p2sh();
+
+    // Registered P2SH, changed back to P2PKH.
+    let fa = Fa::new(true);
+    fa.registered(&p2sh_payout());
+    fa.seen(
+        &payout_change(&PRO_TX, &p2sh_payout(), coin(1)),
+        in_block(TIP - 10),
+    );
+    fa.seen(
+        &payout_change(&PRO_TX, &payout_script(), coin(2)),
+        in_block(TIP - 5),
+    );
+    fa.released(Key::Owner);
+}
+
+#[test]
+fn an_abandoned_or_conflicted_p2sh_change_does_not_make_the_payout_p2sh() {
+    for conflicted in [false, true] {
+        let fa = Fa::new(true);
+        fa.registered(&payout_script());
+        let change = payout_change(&PRO_TX, &p2sh_payout(), coin(1));
+        fa.seen(&change, TransactionContext::Mempool);
+        if conflicted {
+            fa.seen(&rival_of(&change), in_block(TIP - 3));
+        } else {
+            fa.abandoned(&change);
+        }
+        fa.released(Key::Owner);
+    }
+}
+
+#[test]
+fn a_masternode_with_no_payout_in_the_history_withdraws_by_owner_key() {
+    let fa = Fa::new(true);
+    fa.seen(
+        &payout_change(&pro_tx(0x70), &p2sh_payout(), coin(1)),
+        in_block(TIP - 10),
+    );
+    fa.released(Key::Owner);
+}
+
+/// Once Drive's window pays a P2SH TRANSFER key itself (dashpay/platform#5840
+/// fixed), a P2SH payout refuses nothing.
+#[test]
+fn a_p2sh_payout_refuses_the_owner_key_only_while_drives_window_pays_p2pkh() {
+    let fa = Fa::new(true);
+    fa.registered(&p2sh_payout());
+    fa.owner_held_by_p2sh();
+
+    let fa = Fa::new(true);
+    fa.registered(&p2sh_payout());
+    let sh = key(
+        0,
+        Purpose::TRANSFER,
+        KeyType::BIP13_SCRIPT_HASH,
+        &p2sh_hash(),
+    );
+    fa.plat
+        .with(|w| w.identity = Some(masternode_identity(&PRO_TX, vec![sh, owner_key()])));
+    fa.released(Key::Owner);
+}
+
+/// Several DIP-0026 shares of which one is P2SH, in another loaded
+/// wallet's history: the owner key is refused, and the payout key
+/// withdraws. In this wallet's own history, version 3 is
+/// `withdrawal_shared` first.
+#[test]
+fn a_v3_payout_with_a_p2sh_share_refuses_the_owner_key() {
+    let other = CoreScript::new_p2pkh([0x22; 20]);
+    let fa = Fa::new(true);
+    fa.registered_in(OTHER_WALLET, registration_v3(&[&other, &p2sh_payout()]));
+    fa.owner_held_by_p2sh();
+
+    let fa = Fa::new(true);
+    fa.registered(&payout_script());
+    fa.seen_in(
+        OTHER_WALLET,
+        &payout_change_v3(&PRO_TX, &[&other, &p2sh_payout()], coin(1)),
+        in_block(TIP - 10),
+    );
+    fa.owner_held_by_p2sh();
+}
+
+/// A version-3 payload with one P2SH payee, in another loaded wallet's
+/// history (in this wallet's own, version 3 is `withdrawal_shared` first).
+#[test]
+fn a_v3_single_p2sh_payee_refuses_the_owner_key() {
+    let fa = Fa::new(true);
+    fa.registered_in(OTHER_WALLET, registration_v3(&[&p2sh_payout()]));
+    fa.owner_held_by_p2sh();
+
+    let fa = Fa::new(true);
+    fa.registered(&payout_script());
+    fa.seen_in(
+        OTHER_WALLET,
+        &payout_change_v3(&PRO_TX, &[&p2sh_payout()], coin(1)),
+        in_block(TIP - 10),
+    );
+    fa.owner_held_by_p2sh();
+}
+
+/// The other holds keep their order: an unconfirmed change shows first.
+#[test]
+fn another_reason_shows_before_owner_payout_p2sh() {
+    let fa = Fa::new(true);
+    fa.registered(&p2sh_payout());
+    fa.seen(
+        &payout_change(&PRO_TX, &p2sh_payout(), coin(1)),
+        TransactionContext::Mempool,
+    );
+    fa.held_by(Key::Owner, UNCONFIRMED);
+}
+
+/// The way out the copy offers: change the payout to a regular address.
+#[test]
+fn a_p2sh_registration_and_one_mined_p2pkh_change_release_the_owner_key() {
+    let fa = Fa::new(true);
+    fa.registered(&p2sh_payout());
+    fa.seen(
+        &payout_change(&PRO_TX, &payout_script(), coin(1)),
+        in_block(TIP - 5),
+    );
+    fa.released(Key::Owner);
 }

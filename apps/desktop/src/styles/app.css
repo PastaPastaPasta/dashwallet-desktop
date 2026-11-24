@@ -8,7 +8,8 @@
    focusPage), or a sheet focused because nothing in it can be pressed, shows no ring: it is not a
    control. */
 .page h1[tabindex="-1"]:focus,
-.sheet[tabindex="-1"]:focus {
+.sheet[tabindex="-1"]:focus,
+.mg-key-list[tabindex="-1"]:focus {
   outline: none;
 }
 
@@ -1484,6 +1485,14 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-xs);
 }
 
+.tx-row-party {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tx-row-party,
 .tx-row-time {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
@@ -1896,6 +1905,14 @@ input[type="radio"]:disabled {
 .detail-value {
   overflow-wrap: anywhere;
   user-select: text;
+}
+
+/* Amounts in a confirm list: tabular digits, aligned on their last digit, so the decimals line up. An amount reads
+ * left to right in any language, so its cell does too, and its end is the right in a right-to-left window as well. */
+.detail-amount {
+  direction: ltr;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
 }
 
 .detail-note {
@@ -5330,6 +5347,20 @@ button.bell-row-open:focus-visible {
   border-color: var(--dw-role-text-link);
 }
 
+/* "Pay with": a source that cannot pay says why under it. */
+.topup-choice[data-disabled] {
+  cursor: default;
+}
+
+.topup-sources {
+  margin-bottom: var(--dw-space-s);
+}
+
+/* A top-up from Platform names the address its fee is taken from: a long run that wraps. */
+.topup-platform-message {
+  overflow-wrap: anywhere;
+}
+
 .topup-choice-amount {
   font-weight: var(--dw-type-subhead-medium-weight);
 }
@@ -6079,6 +6110,20 @@ button.bell-row-open:focus-visible {
   flex-wrap: nowrap;
 }
 
+/* The wizard's long steps keep the footer, and the primary action, in view while they scroll. */
+.sheet .mg-sheet-footer-sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--dw-role-card);
+}
+
+/* A 64-hex hash breaks in the middle (its <wbr>), never before its last character. */
+.mg-hash {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
 .sheet .mg-sheet-body {
   padding-top: var(--dw-space-xxs);
 }
@@ -6372,6 +6417,105 @@ button.bell-row-open:focus-visible {
 .mg-change-keys .mg-choices + .mg-choices,
 .mg-change-keys .mg-choices:first-of-type {
   margin-top: var(--dw-space-s);
+}
+
+.mg-choice.is-disabled {
+  opacity: 0.55;
+}
+
+.sh-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-m);
+  margin-bottom: var(--dw-space-m);
+}
+
+.sh-choice h3 {
+  margin: 0;
+}
+
+.sh-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.sh-stages li {
+  padding: var(--dw-space-xxs) var(--dw-space-s);
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-secondary);
+}
+
+.sh-stages li.sh-stage-done {
+  color: var(--dw-role-text-link);
+}
+
+.sh-stages li[aria-current="step"] {
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-primary);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.sh-participants {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.sh-participants th {
+  padding: var(--dw-space-xs) 0;
+  border-bottom: 1px solid var(--dw-role-separator);
+  color: var(--dw-role-text-secondary);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  text-align: start;
+}
+
+.sh-participants td {
+  padding: var(--dw-space-xs) var(--dw-space-s) var(--dw-space-xs) 0;
+  border-bottom: 1px solid var(--dw-role-separator);
+  vertical-align: top;
+}
+
+.sh-participants td:last-child {
+  color: var(--dw-role-text-secondary);
+  text-align: end;
+}
+
+.sh-participants .mg-node-sub {
+  display: block;
+}
+
+.sh-row-copy {
+  margin: 0;
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.sh-import-warning {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.sh-setup-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: var(--dw-space-m) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sh-setup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) 96px;
+  gap: var(--dw-space-s);
+  align-items: end;
 }
 
 .page-masternodes .mg-notice {

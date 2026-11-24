@@ -148,6 +148,21 @@ describe("shielded activity rows", () => {
     expect(rowSource(received)).toBe("shielded");
   });
 
+  it("titles a contact payment by its source: Paid from Platform", () => {
+    const row = platformRow(act("cp", { kind: "contactPayment", state: "done", to: "yXcontact", contact: { identity: "bob", contact: "me" } as never }));
+    expect([sourceRowTitle(row), row.amount < 0]).toEqual(["Paid from Platform", true]);
+    expect(sourceRowTitle(shieldedRow(shield("sp", { kind: "spend", direction: "out" })))).toBe("Paid from Shielded");
+  });
+
+  it("keeps a contact payment that failed by height but may still land unconfirmed and outgoing, at its recipient", () => {
+    const contact = { identity: "bob", contact: "me" } as never;
+    const held = platformRow(act("cq", { kind: "contactPayment", state: "failed", mayLand: true, address: "tdash1kfrom", to: "yXcontact", credits: "1019500000", contact }));
+    expect(held).toMatchObject({ txid: "platform:contactPayment:cq:mayland", amount: -1_019_500, status: { kind: "unconfirmed" }, address: "yXcontact" });
+    expect(isMayLandRow(held)).toBe(true);
+    const gone = platformRow(act("cr", { kind: "contactPayment", state: "failed", mayLand: false, to: "yXcontact", contact }));
+    expect([gone.status.kind, isMayLandRow(gone)]).toEqual(["notAccepted", false]);
+  });
+
   it("maps the status", () => {
     expect(shieldedRow(shield("p", { status: "pending" })).status.kind).toBe("unconfirmed");
     expect(shieldedRow(shield("u", { status: "unknown" })).status.kind).toBe("unconfirmed");

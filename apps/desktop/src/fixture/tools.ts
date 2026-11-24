@@ -313,7 +313,7 @@ function syncChanged({ world, emit }: Ctx) {
 }
 
 function startRescan(world: World, fromHeight: number) {
-  world.tools.rescan = { fromHeight, currentHeight: fromHeight, targetHeight: world.sync.tipHeight ?? TIP, startedAt: secs(FIXTURE_NOW) };
+  world.tools.rescan = { fromHeight, currentHeight: fromHeight, targetHeight: world.sync.tipHeight ?? TIP, startedAt: secs(FIXTURE_NOW), upgradeWallets: [] };
 }
 
 const book = (world: World, walletId: string) => (world.tools.addressBook[walletId] ??= []);

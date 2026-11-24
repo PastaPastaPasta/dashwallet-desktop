@@ -32,8 +32,8 @@ use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::consensus::deserialize;
 use dashcore::{Address, Network, PrivateKey, Transaction};
 use dw_engine::{
-    DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, ImportOptions, NetworkSession,
-    RescanFrom, SessionOptions, SpvState, TxStatusKind, WalletId,
+    DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
+    NetworkSession, RescanFrom, SessionOptions, SpvState, TxStatusKind, WalletId,
 };
 use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use key_wallet::DerivationPath;
@@ -403,9 +403,13 @@ impl Installation {
             let detail = self
                 .engine
                 .block_on(self.session.tx_detail(self.wallet, txid.to_owned()));
-            if let Ok(detail) = detail {
-                let tx = deserialize(&hex::decode(&detail.raw_hex).unwrap()).unwrap();
-                return (detail.status.kind, tx);
+            match detail {
+                Ok(detail) => {
+                    let tx = deserialize(&hex::decode(&detail.raw_hex).unwrap()).unwrap();
+                    return (detail.status.kind, tx);
+                }
+                Err(EngineError::TxNotFound(_)) => {}
+                Err(e) => panic!("{txid}: {e:?}"),
             }
             assert!(
                 Instant::now() < deadline,
@@ -417,10 +421,11 @@ impl Installation {
 
     /// The status of `txid` in the history now, `None` when it has none.
     fn status_now(&self, txid: &str) -> Option<TxStatusKind> {
-        (self.engine)
-            .block_on(self.session.tx_detail(self.wallet, txid.to_owned()))
-            .ok()
-            .map(|d| d.status.kind)
+        match (self.engine).block_on(self.session.tx_detail(self.wallet, txid.to_owned())) {
+            Ok(d) => Some(d.status.kind),
+            Err(EngineError::TxNotFound(_)) => None,
+            Err(e) => panic!("{txid}: {e:?}"),
+        }
     }
 
     /// The status of `txid` once it is other than unconfirmed, or after
@@ -502,10 +507,16 @@ fn another_installations_unmined_payout_change_is_in_the_history() {
     b.holds_unmined_change(&node, &txid, &payout, "connected at the broadcast");
     node.mine(1);
     let deadline = Instant::now() + LOAD_WAIT;
-    while b.wait_in_history(&txid).0 == TxStatusKind::Unconfirmed {
+    let mut status = b.wait_in_history(&txid).0;
+    while status == TxStatusKind::Unconfirmed {
         assert!(Instant::now() < deadline, "{txid} never confirmed");
         std::thread::sleep(Duration::from_millis(250));
+        status = b.wait_in_history(&txid).0;
     }
+    assert!(
+        matches!(status, TxStatusKind::Confirming | TxStatusKind::Confirmed),
+        "{txid} after mining: {status:?}"
+    );
 
     // B connects after A broadcast, with its store.
     b.stop_spv();

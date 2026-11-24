@@ -33,6 +33,10 @@ export function useLayeredSheet(): boolean {
   );
 }
 
+/** A scrim press this soon after a sheet opens is the rest of the click that opened it (a quick
+ * second click on the button the sheet replaced), not a dismissal. */
+const CARRIED_PRESS_MS = 600;
+
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
 
 function tabbable(el: HTMLElement): boolean {
@@ -71,6 +75,7 @@ export function Sheet({
 }) {
   const t = useT();
   const panel = useRef<HTMLDivElement>(null);
+  const openedAt = useRef(performance.now());
   const layer = useContext(SheetLayer);
   useEffect(() => {
     if (!layer) return;
@@ -116,7 +121,7 @@ export function Sheet({
   };
 
   const sheet = (
-    <div className="sheet-scrim" onMouseDown={(e) => closable && e.target === e.currentTarget && onClose()}>
+    <div className="sheet-scrim" onMouseDown={(e) => closable && e.target === e.currentTarget && performance.now() - openedAt.current > CARRIED_PRESS_MS && onClose()}>
       <div
         ref={panel}
         className={`sheet sheet-${width}`}

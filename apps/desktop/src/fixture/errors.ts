@@ -15,6 +15,12 @@ const TXID = "7e".repeat(32);
 type Samples = { [K in ErrorData["kind"]]: { code: AppError["code"]; data: Extract<ErrorData, { kind: K }> } };
 
 const SAMPLES: Samples = {
+  sharedMessage: { code: "masternodes.shared_message", data: { kind: "sharedMessage", reason: "bad_signature", share: 2 } },
+  sharedStage: { code: "masternodes.shared_stage", data: { kind: "sharedStage", stage: "replied" } },
+  sharedFunding: { code: "masternodes.shared_funding_mismatch", data: { kind: "sharedFunding", reason: "fee_low", needed: 120_000 } },
+  sharedActorFee: { code: "masternodes.shared_actor_fee", data: { kind: "sharedActorFee", fee: 1_000 } },
+  sharedSendNetwork: { code: "app.shared_send_off", data: { kind: "sharedSendNetwork", network: "mainnet" } },
+  sharedUnsupported: { code: "app.shared_send_unsupported", data: { kind: "sharedUnsupported", sessionKind: "key_change" } },
   retryAfter: { code: "vault.throttled", data: { kind: "retryAfter", secs: 90 } },
   wrongPassphrase: { code: "vault.wrong_passphrase", data: { kind: "wrongPassphrase", failedAttempts: 3, retryAfterSecs: 60 } },
   rpc: { code: "console.rpc_error", data: { kind: "rpc", rpcCode: -8, rpcMessage: "Block height out of range" } },
@@ -47,6 +53,7 @@ const SAMPLES: Samples = {
   budget: { code: "platform.grant_exceeded", data: { kind: "budget", purpose: "credits", needed: "50000000", remaining: "1000000" } },
   needsGrant: { code: "platform.needs_grant", data: { kind: "needsGrant", purpose: "funding" } },
   revoked: { code: "platform.lease_revoked", data: { kind: "revoked", cause: "lock" } },
+  link: { code: "app.browser_open", data: { kind: "link", url: "https://www.dash.org" } },
   artifact: { code: "platform.broadcast_unknown", data: { kind: "artifact", artifact: "3f9a1c27".repeat(8) } },
   txid: { code: "contact.payment_locked", data: { kind: "txid", txid: TXID } },
   draft: { code: "registration.in_progress", data: { kind: "draft", draft: "reg-1" } },

@@ -129,6 +129,7 @@ export class IpcBackend implements Backend {
   resendTransaction = cmd.resendTransaction;
   openTxInExplorer = cmd.openTxInExplorer;
   openReleasesPage = () => cmd.openReleasesPage();
+  openProjectLink = cmd.openProjectLink;
   protocolCompatibility = () => cmd.protocolCompatibility();
   currentReceiveAddress = cmd.currentReceiveAddress;
   nextReceiveAddress = cmd.nextReceiveAddress;
@@ -230,6 +231,8 @@ export class IpcBackend implements Backend {
   contactActivity = cmd.contactActivity;
   frequentContacts = cmd.frequentContacts;
   resolveContactPaymentLock = cmd.resolveContactPaymentLock;
+  contactPayQuote = cmd.contactPayQuote;
+  contactPay = cmd.contactPay;
   grantRequest = cmd.grantRequest;
   creditsCostTable = cmd.creditsCostTable;
   dashpayEligibility = cmd.dashpayEligibility;
@@ -309,6 +312,8 @@ export class IpcBackend implements Backend {
   creditsWithdraw = cmd.creditsWithdraw;
   creditsWithdrawToPlatformQuote = cmd.creditsWithdrawToPlatformQuote;
   creditsWithdrawToPlatform = cmd.creditsWithdrawToPlatform;
+  creditsTopUpFromPlatformQuote = cmd.creditsTopUpFromPlatformQuote;
+  creditsTopUpFromPlatform = cmd.creditsTopUpFromPlatform;
   creditsWithdrawals = cmd.creditsWithdrawals;
   // The search is the renderer's (U-05 D13): dash-qt's wildcards over label and address.
   addressBook = (walletId: string, purpose: AddressPurposeName | null) => cmd.addressBook(walletId, purpose, null);
@@ -368,6 +373,24 @@ export class IpcBackend implements Backend {
   mnOperations = cmd.mnOperations;
   mnResendOperation = cmd.mnResendOperation;
   mnDiscardOperation = cmd.mnDiscardOperation;
+  mnSharedCapability = cmd.mnSharedCapability;
+  mnSharedSessions = cmd.mnSharedSessions;
+  mnSharedUnreadable = cmd.mnSharedUnreadable;
+  mnSharedSession = cmd.mnSharedSession;
+  mnSharedStart = cmd.mnSharedStart;
+  mnSharedSetFee = cmd.mnSharedSetFee;
+  mnSharedJoin = cmd.mnSharedJoin;
+  mnSharedMessage = cmd.mnSharedMessage;
+  mnSharedLock = cmd.mnSharedLock;
+  mnSharedUnlock = cmd.mnSharedUnlock;
+  mnSharedApprove = cmd.mnSharedApprove;
+  mnSharedDiscard = cmd.mnSharedDiscard;
+  mnSharedAbandon = cmd.mnSharedAbandon;
+  mnSharedAbandonUnreadable = cmd.mnSharedAbandonUnreadable;
+  mnSharedSign = cmd.mnSharedSign;
+  mnSharedSend = cmd.mnSharedSend;
+  mnSharedImport = cmd.mnSharedImport;
+  mnSharedImportFile = cmd.mnSharedImportFile;
   onEvent = (listener: (e: AppEvent) => void) => tracked(listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload)));
   onShellEvent = (listener: (e: ShellEvent) => void) => tracked(listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload)));
   now = () => this.clock();
