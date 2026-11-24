@@ -4435,3 +4435,36 @@ fn keys_attached_alone_whose_birth_cannot_be_put_back_leave_the_replay_owed() {
         }
     }
 }
+
+/// #172: the replay an upgrade owes lists its wallet in
+/// [`crate::RescanProgress::upgrade_wallets`], also when it is resumed after
+/// a quit; once it is done, the next open clears that. A replay any other
+/// change owes, even one stored right after the upgrade's finished, lists
+/// none.
+#[test]
+fn an_upgrade_replay_names_its_wallet_until_it_is_done() {
+    let upgrading = |s: &NetworkSession| (s.rescan_progress().unwrap()).map(|p| p.upgrade_wallets);
+    let (_dir, engine, session, id) = engine_wallet();
+    store_checkpoint(&engine, &session, id, HEIGHT + 300);
+    set_wide_scan(&engine, &session, id, None);
+
+    let session = reopen(&engine, session);
+    assert_eq!(upgrading(&session), Some(vec![id]));
+    let session = reopen(&engine, session);
+    assert_eq!(upgrading(&session), Some(vec![id]));
+
+    store_checkpoint(&engine, &session, id, HEIGHT + 301);
+    assert_eq!(replay_record(&engine, &session, id), None);
+    let live = session.live().unwrap();
+    engine
+        .block_on(live.replay.note_rewind(id, 0, HEIGHT + 400, 0))
+        .unwrap();
+    drop(live);
+    let session = reopen(&engine, session);
+    assert_eq!(upgrading(&session), Some(Vec::new()));
+
+    store_checkpoint(&engine, &session, id, HEIGHT + 401);
+    let session = reopen(&engine, session);
+    assert_eq!(upgrading(&session), None);
+    assert_eq!(engine.block_on(session.upgrade_replay(id)), None);
+}
