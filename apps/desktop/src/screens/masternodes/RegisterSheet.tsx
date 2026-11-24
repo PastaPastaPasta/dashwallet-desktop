@@ -47,6 +47,7 @@ import {
   collateralNote,
   finalAction,
   registrationCalls,
+  registrationSends,
 } from "../../masternodes/registration";
 import { failureText } from "../pay/model";
 import { CredentialField, useCredential } from "./credential";
@@ -75,7 +76,8 @@ export function RegisterSheet({
 }) {
   const t = useT();
   const backend = useBackend();
-  const b = registrationCalls(backend);
+  const sends = registrationSends(network);
+  const b = registrationCalls(backend, sends);
   const shown = useDisplay(network);
   const id = useId();
   const refresh = useMasternodesRefresh();
@@ -567,7 +569,7 @@ export function RegisterSheet({
 
   const reviewing = step === "review";
   const proving = step === "prove";
-  const action = finalAction(step, external);
+  const action = finalAction(step, external, sends);
   const sendOff = action === "sendOff";
   const notSent = step === "done" && op?.state.kind === "not_sent";
   const title = d.kind === "evonode" || op?.terms.masternodeType === "evonode" ? t(`${R}.titleEvonode`) : t(`${R}.titleRegular`);
