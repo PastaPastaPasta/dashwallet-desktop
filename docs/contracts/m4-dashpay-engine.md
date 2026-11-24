@@ -4888,7 +4888,7 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     address share one withdrawal document, so a document read present for one of them is present for each, read or
     not: two such exits of other amounts are that unattributed case, never a winner by whichever was read. A group of equal
     terms, or one whose winner a document names, is not marked: its `Replaced` rows stay "replaced by a retry".
-    `PlatformActivity`, `MoveToCoreOutcome` and `PlatformSendOutcome` gain `unattributed`; dw-app maps it to
+    `PlatformActivity`, `MoveToCoreOutcome` and `PlatformSendOutcome` gain `unattributed` (also set for a record stored before the mark that carries a group's outcome, since only such a group has one); dw-app maps it to
     `winnerKnown: false` (absent otherwise). Only the display changes: no state, amount, hold or refusal does. The
     host titles each such row "settled with another payment or move" by its kind and shows the group's debit on the
     newest row only. `move_to_core_quote` plans beside the same held record `move_to_core` signs at (a held top-up

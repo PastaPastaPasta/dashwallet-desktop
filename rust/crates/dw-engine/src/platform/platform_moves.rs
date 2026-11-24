@@ -1163,8 +1163,14 @@ impl MoveRecord {
             may_land: self.holds(),
             estimated: self.estimated(),
             contact: None,
-            unattributed: self.unattributed,
+            unattributed: self.winner_unknown(),
         }
+    }
+
+    /// Settled with no named winner: marked so, or a group's outcome stored
+    /// before the mark existed (only such a group has one).
+    fn winner_unknown(&self) -> bool {
+        self.unattributed || self.group.is_some()
     }
 
     /// What its inputs give: a send's amount (for Max, before the fee).
@@ -3814,7 +3820,7 @@ pub(crate) async fn move_to_core(
         to: row.to,
         state: record.state,
         fee_credits: row.fee_credits,
-        unattributed: record.unattributed,
+        unattributed: record.winner_unknown(),
     })
 }
 
@@ -3853,7 +3859,7 @@ pub(crate) async fn send(
         may_land: row.may_land,
         fee_credits: row.fee_credits,
         estimated: row.estimated,
-        unattributed: record.unattributed,
+        unattributed: record.winner_unknown(),
     })
 }
 

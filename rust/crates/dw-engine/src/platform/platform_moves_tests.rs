@@ -2182,6 +2182,29 @@ fn a_0_1_move_record_reads_as_to_core() {
     assert_eq!(row.expected_duffs, Some(0));
 }
 
+/// A group's outcome stored before records carried `unattributed` still
+/// shows no named winner; a record with no group outcome stays named.
+#[test]
+fn a_group_outcome_from_before_the_mark_names_no_winner() {
+    let read = |group: bool| {
+        let mut json = serde_json::to_value(record("m", 1, &[("x", 1)])).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        fields.remove("unattributed");
+        if group {
+            let outcome = GroupOutcome {
+                debit: Some(DASH),
+                to: None,
+            };
+            fields.insert("group".into(), serde_json::to_value(outcome).unwrap());
+        }
+        let read: MoveRecord = serde_json::from_value(json).unwrap();
+        assert!(!read.unattributed);
+        read.activity().unattributed
+    };
+    assert!(read(true));
+    assert!(!read(false));
+}
+
 impl World {
     /// A send of `amount` to `to` that goes out and is lost, then a later
     /// read shows it unexecuted: `Failed` by height, able to land.
