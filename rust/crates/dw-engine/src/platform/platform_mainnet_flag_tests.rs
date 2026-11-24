@@ -275,7 +275,10 @@ fn a_held_max_send_is_retried_on_mainnet_as_max() {
         (&bech32m(&a, Network::Mainnet), 1, 3 * DASH, 3 * DASH),
         &theirs,
     );
-    (max.fee_from_output, max.credits) = (true, 3 * DASH);
+    max.fee_from_output = true;
+    max.inputs[0].fee_source = false;
+    max.fee_credits = Limits::transfer_at(PlatformVersion::latest()).fee(1);
+    max.credits = 3 * DASH;
     w.seed(&max);
     let row = (w.activity().into_iter())
         .find(|r| r.id == "move-1-0")

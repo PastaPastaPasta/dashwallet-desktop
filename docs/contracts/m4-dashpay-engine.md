@@ -4910,5 +4910,5 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     newest row only. `move_to_core_quote` plans beside the same held record `move_to_core` signs at (a held top-up
     or registration create first, as items 103 and 104, else any record that may still execute and the read does not show reached), so the quoted credits and fee are those of the plan the exit
     signs, and refuses a plan of only some of that record's inputs as the move would (`credits.move_pending{id}`; on
-    mainnet the flag). `exit_of` still names a held top-up only (item 103); beside any other held record the move
-    finds it as before.
+    mainnet the flag). `exit_of` names the held top-up (item 103) or registration create (item 104); beside any
+    other held record the move finds it as before.
