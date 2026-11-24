@@ -43,7 +43,7 @@ import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinj
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
-import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -255,7 +255,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
-    masternodes: newMasternodesWorld(),
+    masternodes: noMasternodesWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
     pending: newPendingWorld(),
