@@ -846,6 +846,7 @@ test.describe("Activity", () => {
     await page.getByTestId("sidebar-activity").click();
     await page.locator(`.tx-row[data-txid="${"5d".repeat(32)}"]`).first().click();
     await expect(page.getByTestId("tx-detail")).toContainText("Waiting for confirmation");
+    await expect(page.getByTestId("tx-resend")).toBeVisible();
     await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
     expect(errors).toEqual([]);
   });

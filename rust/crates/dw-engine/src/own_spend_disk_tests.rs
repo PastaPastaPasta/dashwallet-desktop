@@ -2216,13 +2216,18 @@ fn abandoning_a_payment_under_a_locked_child_is_refused_and_its_coin_stays_spent
     kept_under_a_settled_child(&engine, session, id, &payment, &child);
 }
 
-/// Three generations: P, its child C spending P's change, and C's child G
-/// spending C's change, only G InstantSend-locked; then a restart. G proves
-/// C and so P: Abandon of P is not offered and is refused, and P's coin is
-/// never offered (#446).
-#[test]
-fn abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_spent() {
-    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+/// P, its child C spending P's change, and C's child G spending C's
+/// change, only G InstantSend-locked, all stored.
+#[allow(clippy::type_complexity)]
+fn payment_under_a_locked_grandchild() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+    Transaction,
+) {
+    let (dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
     let payment = send(
         &engine,
@@ -2260,6 +2265,16 @@ fn abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_
         &[payment.txid(), child.txid(), grandchild.txid()],
     );
     super::wait_stored_locked(&session, id, grandchild.txid());
+    (dir, engine, session, id, payment, child)
+}
+
+/// Three generations: P, its child C spending P's change, and C's child G
+/// spending C's change, only G InstantSend-locked; then a restart. G proves
+/// C and so P: Abandon of P is not offered and is refused, and P's coin is
+/// never offered (#446).
+#[test]
+fn abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_spent() {
+    let (_dir, engine, session, id, payment, child) = payment_under_a_locked_grandchild();
     let session = reopen(&engine, session);
     start_spv(&engine, &session);
     let extras = engine
@@ -2276,6 +2291,44 @@ fn abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_
         ),
         "{result:?}"
     );
+    kept_under_a_settled_child(&engine, session, id, &payment, &child);
+}
+
+/// As above, but the child's record doesn't read at the wallet's load, so
+/// nothing links the grandchild to the payment: Abandon refuses until a
+/// restart and a rescan, Remove Unconfirmed keeps it, and its coin stays
+/// spent, in the session and after a restart that reads the child (#611).
+#[test]
+fn abandoning_a_payment_after_a_load_missing_its_child_is_refused() {
+    let (_dir, engine, session, id, payment, child) = payment_under_a_locked_grandchild();
+    let session = reopen(&engine, session);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    session.hub.unreadable_record.lock().unwrap().0 = Some(child.txid());
+    engine.block_on(session.load_wallet(id)).unwrap();
+    start_spv(&engine, &session);
+    let result = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(
+        matches!(
+            result,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::RescanFirst
+            ))
+        ),
+        "{result:?}"
+    );
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 0, "the payment or its funding was dropped");
+    let a = payment.input[0].previous_output;
+    assert!(!abandoned(&engine, &session, id, payment.txid()));
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "the payment's coin is held"
+    );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "the payment's coin is offered"
+    );
+    let session = reopen(&engine, session);
     kept_under_a_settled_child(&engine, session, id, &payment, &child);
 }
 

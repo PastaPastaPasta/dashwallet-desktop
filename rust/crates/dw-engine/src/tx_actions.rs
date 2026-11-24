@@ -47,10 +47,11 @@ pub enum TxActionRefusal {
     Coinbase,
     InMempool,
     NotSentByWallet,
-    /// The ChainLock exception (#170 case 14) lacks a coin the payment's
-    /// own spend claim, restored at the wallet's load, keeps out of the
-    /// wallet: a restart (which no longer restores it) and a rescan give
-    /// the evidence.
+    /// The evidence is incomplete: the ChainLock exception (#170 case 14)
+    /// lacks a coin the payment's own spend claim, restored at the wallet's
+    /// load, keeps out of the wallet; or a stored record didn't read at the
+    /// load, so what descends from the payment is unknown (#611). A restart
+    /// and a rescan give the evidence.
     RescanFirst,
     /// A later transaction that spends from it is InstantSend-locked, in a
     /// block or finalized: the network holds this one too (#446).
@@ -1325,6 +1326,12 @@ impl NetworkSession {
         }
         if held_locked || planned.iter().any(|t| locks.contains(t) && !exempt(t)) {
             return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
+        }
+        // While a stored record failed to read, what descends from the root
+        // is not known: one settled could be behind it (#611). The ChainLock
+        // exception never applies then.
+        if (self.hub.history).with_wallet(wallet, |h| h.load_incomplete) {
+            return Err(EngineError::TxActionRefused(TxActionRefusal::RescanFirst));
         }
         // A descendant settled anywhere, which the walk passes over: the
         // network holds the root too (#446).
