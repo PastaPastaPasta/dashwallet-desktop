@@ -83,7 +83,7 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
-  for (const [how, delay] of [["click", ""], ["Enter", ""], ["twice", ""], ["twice", "&delay=100"], ["twice", "&delay=400"]] as const) {
+  for (const [how, delay] of [["click", ""], ["Enter", ""], ["copy, then click", ""], ["copy, then click", "&delay=400"], ["twice", ""], ["twice", "&delay=100"], ["twice", "&delay=400"]] as const) {
     test(`shared masternode ${theme}: Done (${how}${delay ? `, engine ${delay.split("=")[1]} ms` : ""}) after Create invitation opens the session, never Discard`, async ({ page }) => {
       test.setTimeout(60_000);
       const errors = await open(page, "sh-capability-active", theme, delay);
@@ -104,6 +104,12 @@ for (const theme of THEMES) {
       await expect(page.getByTestId("sh-setup-step-invite")).toBeVisible();
       const done = page.getByTestId("sh-setup-continue");
       if (how === "click") await done.click();
+      else if (how === "copy, then click") {
+        // The regtest rehearsal: Copy invitation, then one mouse click on Done.
+        await page.getByTestId("sh-setup-copy").click();
+        const box = (await done.boundingBox())!;
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      }
       else if (how === "twice") {
         // A second click where Done was, as a quick double click lands it.
         const box = (await done.boundingBox())!;
