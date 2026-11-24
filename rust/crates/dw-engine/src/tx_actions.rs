@@ -132,7 +132,7 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// comma-separated), restored as claims at each load ([`dropped_holds`]).
 /// Not `dropped:`, which marks a transaction the claim rule dropped (#739)
 /// and holds nothing: neither reads the other's keys.
-const DROPPED_PREFIX: &str = "drop_holds:";
+const DROP_HOLDS_PREFIX: &str = "drop_holds:";
 
 /// Settings key prefix (wallet scope) of a transaction key-wallet swept
 /// for a winner that funds it: a claim, whose descendants the claim rule
@@ -170,7 +170,7 @@ pub(crate) type DroppedHolds = HashMap<WalletId, BTreeSet<OutPoint>>;
 #[cfg(all(test, debug_assertions))]
 pub(crate) const DROPPED_HOLDS_FAULT: &str = "tx_actions.dropped_holds";
 
-/// The coins the drops of `wallet` hold for good ([`DROPPED_PREFIX`]); a
+/// The coins the drops of `wallet` hold for good ([`DROP_HOLDS_PREFIX`]); a
 /// note whose value does not parse holds nothing.
 pub(crate) fn dropped_holds(
     appdb: &AppDb,
@@ -178,7 +178,7 @@ pub(crate) fn dropped_holds(
 ) -> Result<BTreeSet<OutPoint>, dw_appdb::AppDbError> {
     #[cfg(all(test, debug_assertions))]
     appdb.fault_point(DROPPED_HOLDS_FAULT, dw_appdb::fault::Stage::Before)?;
-    let rows = appdb.settings_with_prefix_lossy(&wallet.to_string(), DROPPED_PREFIX)?;
+    let rows = appdb.settings_with_prefix_lossy(&wallet.to_string(), DROP_HOLDS_PREFIX)?;
     Ok((rows.into_iter())
         .filter_map(|(_, value)| value)
         .flat_map(|v| (v.split(',').filter_map(|o| OutPoint::from_str(o).ok())).collect::<Vec<_>>())
@@ -491,7 +491,7 @@ pub(crate) fn abandoned_txids(
 /// payment marked abandoned that is still stored out of a block and
 /// unlocked (its record in the mempool, or only its outputs) is swept, and
 /// the coins it spent that no other stored record spends are released,
-/// except a dropped one's ([`DROPPED_PREFIX`]).
+/// except a dropped one's ([`DROP_HOLDS_PREFIX`]).
 /// Only marked payments are swept; one mined or InstantSend-locked since
 /// (a height-only row, a record in a block or locked, a stored lock) counts
 /// again and is left. Run before the wallets load, so a swept payment's
@@ -593,16 +593,16 @@ pub(crate) fn finish_marked_abandons(
                 spent_by_others.extend(r.transaction.input.iter().map(|i| i.previous_output));
             }
         }
-        let dropped: HashSet<Txid> = (appdb
-            .settings_with_prefix_lossy(&wallet.to_string(), DROPPED_PREFIX))
+        let drop_held: HashSet<Txid> = (appdb
+            .settings_with_prefix_lossy(&wallet.to_string(), DROP_HOLDS_PREFIX))
         .map_err(|e| storage(&e))?
         .into_iter()
-        .filter_map(|(key, _)| Txid::from_str(&key[DROPPED_PREFIX.len()..]).ok())
+        .filter_map(|(key, _)| Txid::from_str(&key[DROP_HOLDS_PREFIX.len()..]).ok())
         .collect();
         let mut sent = None;
         let (mut spent, mut held) = (BTreeSet::new(), BTreeSet::new());
         for (t, copy) in &pending {
-            let spent = match dropped.contains(t) {
+            let spent = match drop_held.contains(t) {
                 true => &mut held,
                 false => &mut spent,
             };
@@ -1723,10 +1723,10 @@ impl NetworkSession {
     /// left (#170 cases 3 and 4), one drop at a time: the children of the
     /// payments a sweep took, which its event queued with its winner; the
     /// payments [`beaten_unrecorded`] finds; and, at a load that read every
-    /// stored transaction (`stored`, with those the store dropped as
-    /// unsigned claims), the [`orphaned_unmined`] ones, whose winner is
-    /// unknown. Reads under the manager's read lock, and takes
-    /// the write lock only to drop something.
+    /// stored transaction (`stored`, with the parents whose children are
+    /// the claim rule's), the [`orphaned_unmined`] ones, whose winner is
+    /// unknown. Reads under the manager's read lock, and takes the write
+    /// lock only to drop something.
     pub(crate) async fn drop_dead(
         &self,
         manager: &Manager,
@@ -1764,7 +1764,7 @@ impl NetworkSession {
                         beaten.entry(w).or_default().push(t);
                     }
                     work.extend((beaten.into_iter()).map(|(w, ts)| (ts, w, BTreeSet::new(), true)));
-                    let orphans = stored.map(|(s, dropped)| orphaned_unmined(&h.txs, s, dropped));
+                    let orphans = stored.map(|(s, exempt)| orphaned_unmined(&h.txs, s, exempt));
                     if let Some(orphans) = orphans.filter(|o| !o.is_empty()) {
                         work.push((orphans, Winner::default(), BTreeSet::new(), false));
                     }
@@ -1902,7 +1902,7 @@ impl NetworkSession {
             .flat_map(|(t, tx)| {
                 [
                     (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)),
-                    (format!("{DROPPED_PREFIX}{t}"), holds(tx)),
+                    (format!("{DROP_HOLDS_PREFIX}{t}"), holds(tx)),
                 ]
             })
             .collect();
@@ -1919,7 +1919,7 @@ impl NetworkSession {
                 .flat_map(|(t, _)| {
                     [
                         format!("{ABANDONED_PREFIX}{t}"),
-                        format!("{DROPPED_PREFIX}{t}"),
+                        format!("{DROP_HOLDS_PREFIX}{t}"),
                     ]
                 })
                 .collect();
