@@ -640,6 +640,130 @@ fn known_gap_a_coin_another_device_spent_shows_again_when_the_abandoned_payment_
     );
 }
 
+/// The outpoints key-wallet noted spent in a block, with their heights.
+fn noted_spends(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+) -> BTreeMap<OutPoint, u32> {
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm.get_wallet_info(&id.0).unwrap();
+        info.core_wallet.observed_spent_outpoints().clone()
+    })
+}
+
+/// #400 with its order forced. L spends coins A and B and stays unconfirmed
+/// over a restart, so key-wallet holds no record of it. W, a spend of A
+/// paying only someone else, is mined and ChainLocked, and the synced
+/// height passes it: key-wallet's note of W's spend of A is pruned before
+/// the user abandons L. After a restart, and once E, another device's
+/// spend of B, is in a block, neither A nor B is listed, and A is never
+/// offered.
+#[test]
+fn a_coin_a_chain_locked_block_spent_stays_spent_when_its_pruned_payment_is_abandoned() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let to: Vec<Address> = (0..COINS)
+        .map(|_| fresh_address(&engine, &session, id))
+        .collect();
+    let funded = funding(7, &to, COIN);
+    mined(&engine, &session, id, FUNDED_AT, vec![funded.clone()]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let (a, b) = (
+        OutPoint::new(funded.txid(), 0),
+        OutPoint::new(funded.txid(), 1),
+    );
+    let loser = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN + COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &loser);
+    wait_stored(&session, id, &[loser.txid()]);
+    let session = reopen(&engine, session);
+    let before = held(&engine, &session, id);
+    assert!(
+        !before.contains(&a) && !before.contains(&b),
+        "L's claims are restored"
+    );
+
+    let winner = super::spend_of(a, vec![(elsewhere(), COIN - 1_000)]);
+    let height = TIP + 1;
+    deliver(&engine, &session, id, move |wm| {
+        Box::pin(async move {
+            let block = block_with(vec![winner]);
+            wm.apply_chain_lock(ChainLock {
+                block_height: height,
+                block_hash: block.block_hash(),
+                signature: BLSSignature::from([0; 96]),
+            });
+            wm.process_block_for_wallets(
+                &block,
+                block.block_hash(),
+                height,
+                &BTreeSet::from([id.0]),
+            )
+            .await;
+            wm.update_wallet_synced_height(&id.0, height);
+        })
+    });
+    assert_eq!(
+        noted_spends(&engine, &session, id).get(&a),
+        None,
+        "the ChainLock and the synced height prune W's note of A"
+    );
+    assert!(!held(&engine, &session, id).contains(&a), "W spends A");
+
+    abandon(&engine, &session, id, loser.txid());
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "W spends A, after the abandon"
+    );
+    let session = reopen(&engine, session);
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "W spends A, after a restart"
+    );
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+
+    let other_device = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &to[1],
+        super::spend_of(b, vec![(elsewhere(), COIN - 1_000)]),
+    );
+    mempool(&engine, &session, id, &other_device);
+    assert!(!held(&engine, &session, id).contains(&b), "E spends B");
+    mined(&engine, &session, id, TIP + 2, vec![other_device]);
+    let coins = coins(&engine, &session, id);
+    assert!(
+        !coins.iter().any(|(coin, _)| *coin == a || *coin == b),
+        "E is in a block: {coins:?}"
+    );
+    let total: u64 = coins.iter().map(|(_, value)| value).sum();
+    assert_eq!(total, (COINS as u64 - 2) * COIN, "nothing counted twice");
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "E is in a block: A is offered"
+    );
+    let session = reopen(&engine, session);
+    let after = held(&engine, &session, id);
+    assert!(
+        !after.contains(&a) && !after.contains(&b),
+        "E is in a block, after a restart: {after:?}"
+    );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "A is offered, after a restart"
+    );
+}
+
 /// Runs `op` on the session's wallet manager, then hands the hub the
 /// events it emitted and waits for the store of every wallet in `wallets`.
 fn deliver_all<F>(engine: &Engine, session: &NetworkSession, wallets: &[WalletId], op: F)
