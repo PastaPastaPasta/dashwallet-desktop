@@ -250,19 +250,22 @@ impl NetworkSession {
     }
 
     /// The coins this wallet's abandons gave back before the store kept
-    /// block spends, that no row covers and that are unspent now or spent only by an
-    /// unconfirmed transaction, with their funding heights (the wallet's
-    /// birth when unknown).
+    /// block spends, that no row covers and that are unspent now or spent
+    /// only by an unconfirmed transaction, with their funding heights (the
+    /// wallet's birth when unknown). `None` while a wallet with abandon
+    /// marks has not had a load that read its whole history; a wallet with
+    /// none has nothing to check.
     async fn block_spend_suspects(
         &self,
         manager: &crate::session::Manager,
         wallet: WalletId,
-    ) -> Result<BTreeMap<OutPoint, u32>, EngineError> {
+        history_complete: bool,
+    ) -> Result<Option<BTreeMap<OutPoint, u32>>, EngineError> {
         let (unspent, birth) = {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
             let Some(info) = wm.get_wallet_info(&wallet.0) else {
-                return Ok(BTreeMap::new());
+                return Ok(None);
             };
             let core = &info.core_wallet;
             let unspent: BTreeSet<OutPoint> = (core.accounts.all_funding_accounts().into_iter())
@@ -294,7 +297,13 @@ impl NetworkSession {
                     .flat_map(|m| m.coins.iter().copied()),
             )
             .collect();
-        Ok(self.hub.history.read(&wallet, |txs| {
+        if abandoned.is_empty() {
+            return Ok(Some(BTreeMap::new()));
+        }
+        if !history_complete {
+            return Ok(None);
+        }
+        Ok(Some(self.hub.history.read(&wallet, |txs| {
             let mut suspects = BTreeMap::new();
             for o in abandoned {
                 if rows.contains_key(&o) {
@@ -312,13 +321,13 @@ impl NetworkSession {
                 suspects.insert(o, funded_height(txs, &o, birth));
             }
             suspects
-        }))
+        })))
     }
 
     /// At each load of `wallet`, before any build: resumes a check still
-    /// held, or, the first time the wallet store keeps block spends and
-    /// after a load that read the whole history, finds the suspects, holds
-    /// them and marks the store checked. The held
+    /// held, or, the first time the wallet store keeps block spends, finds
+    /// the suspects, holds them and marks the store checked. A wallet with
+    /// abandon marks waits for a load that read its whole history. The held
     /// coins are locked under the manager's write lock; the search runs
     /// apart ([`Self::block_spend_check_pass`]).
     pub(crate) async fn start_block_spend_check(
@@ -343,11 +352,13 @@ impl NetworkSession {
             if done {
                 return Ok(());
             }
-            if !history_complete {
+            let Some(found) =
+                (self.block_spend_suspects(manager, wallet, history_complete)).await?
+            else {
                 tracing::warn!(%wallet, "history load incomplete: the block-spend check waits for a complete load");
                 return Ok(());
-            }
-            suspects = self.block_spend_suspects(manager, wallet).await?;
+            };
+            suspects = found;
             self.store_suspects(wallet, &suspects).await?;
             let persister = Arc::clone(&live.persister);
             tokio::task::spawn_blocking(move || {

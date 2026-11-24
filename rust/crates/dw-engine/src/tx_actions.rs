@@ -1151,6 +1151,11 @@ impl NetworkSession {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             pause.release.notified().await;
         }
+        // Before this abandon's mark: the one-time check takes only marks
+        // written before the store kept block spends.
+        let complete = !(self.hub.history).with_wallet(wallet, |h| h.load_incomplete);
+        self.start_block_spend_check(manager, wallet, complete)
+            .await?;
         self.check_block_spends(manager, wallet).await?;
         let proof = self.root_proof(manager, wallet, root).await;
         // Planned on a copy under the lock that applies it, so the replay
