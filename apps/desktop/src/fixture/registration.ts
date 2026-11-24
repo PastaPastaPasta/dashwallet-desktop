@@ -270,6 +270,7 @@ const MIN_IDENTITY_FUNDING = 200_000n;
  * name's credits, at least dpp's minimum; the first address keeps three fees. The fixture plans one
  * input, so the address must hold both. Off on mainnet (registration_platform.rs `FEATURE`). */
 export function platformQuote(label: string, p: PlatformWorld | null, mainnet: boolean): RegistrationQuote {
+  validLabel(label);
   if (mainnet) throw fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
   if (p === null) throw fail("platform.feature_off", "platform", { kind: "feature", feature: "platform" });
   const held = p.activity.find(isHeldOp);

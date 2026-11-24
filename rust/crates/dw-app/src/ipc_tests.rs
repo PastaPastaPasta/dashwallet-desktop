@@ -286,6 +286,15 @@ fn a_failed_engine_build_rejects_bad_network_without_retrying_and_closes_false()
     }
 }
 
+/// About and Information read the stamped build version from
+/// `launch_info`'s `buildVersion`.
+#[test]
+fn launch_info_returns_the_stamped_build_version() {
+    let demo = Demo::new();
+    let launch = demo.ok("launch_info", json!({}));
+    assert_eq!(launch["buildVersion"], dw_engine::BUILD_VERSION, "{launch}");
+}
+
 #[test]
 fn engine_and_session_commands_over_ipc() {
     let demo = Demo::new();

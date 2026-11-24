@@ -558,6 +558,8 @@ mod tests {
         let info = LaunchInfo::new(&LaunchOptions::default(), &DashNetwork::Testnet, "0.1.0");
         assert_eq!(info.app_version, "0.1.0");
         assert_eq!(info.build_version, dw_engine::BUILD_VERSION);
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["buildVersion"], dw_engine::BUILD_VERSION);
         if option_env!("DW_BUILD_VERSION").is_none() {
             assert_eq!(
                 info.build_version,

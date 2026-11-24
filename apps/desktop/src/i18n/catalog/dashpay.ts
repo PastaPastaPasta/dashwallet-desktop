@@ -63,6 +63,8 @@ export const dashpay = {
     startup: "Waiting for DashPay to start.",
     unlock: "Unlock the wallet to continue.",
     authorize: "Waiting for your approval to continue.",
+    paymentUnknown: "Checking whether the payment from your Platform balance went through.",
+    paymentHeld: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through, so paying again waits until that's known. Check back later.",
   },
   /** Why a registration stopped. `needed` and `available` are amounts; `code` is the engine's. */
   failure: {

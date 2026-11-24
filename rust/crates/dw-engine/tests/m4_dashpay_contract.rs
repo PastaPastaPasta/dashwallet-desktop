@@ -292,6 +292,7 @@ const NOT_FACADE: &[&str] = &[
     "platform_moves.rs",
     "platform_mainnet_flag_tests.rs",
     "platform_moves_tests.rs",
+    "platform_register.rs",
     "platform_register_tests.rs",
     "platform_shield_tests.rs",
     "platform_top_up_tests.rs",
@@ -1071,6 +1072,7 @@ fn error_codes_match_the_contract() {
                 ready_at: None,
             },
             RegistrationError::QuoteChanged,
+            RegistrationError::Refunded,
         ],
         RegistrationError::code,
     );
