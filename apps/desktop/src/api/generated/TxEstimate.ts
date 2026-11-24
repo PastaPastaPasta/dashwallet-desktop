@@ -15,4 +15,9 @@ change: number | null,
 /**
  * What the recipients receive, after any subtract-fee share.
  */
-totalSent: number, };
+totalSent: number,
+/**
+ * The part of `fee` beyond the draft's rate for `sizeBytes`: a
+ * CoinJoin payment's change and a dust remainder (U-06b).
+ */
+leftOver: number, };
