@@ -3143,12 +3143,21 @@ impl NetworkSession {
 mod tests {
     use super::*;
 
-    /// The drops' holds, the claim rule's dropped records and the claims
-    /// swept are read by prefix: no key of one is read as another's.
+    /// The wallet-scope marks are read by prefix (the drops' holds, the
+    /// claim rule's dropped records, the claims swept, the abandoned and
+    /// sent marks): no key of one is read as another's.
     #[test]
     fn the_drop_note_prefixes_are_apart() {
-        let prefixes = [DROP_HOLDS_PREFIX, DROPPED_PREFIX, CLAIM_SWEPT_PREFIX];
         assert_ne!(DROP_HOLDS_PREFIX, DROPPED_PREFIX);
+        let prefixes = [
+            DROP_HOLDS_PREFIX,
+            DROPPED_PREFIX,
+            CLAIM_SWEPT_PREFIX,
+            ABANDONED_PREFIX,
+            SENT_PREFIX,
+            SENT_TX_PREFIX,
+            SENT_IN_PREFIX,
+        ];
         for a in prefixes {
             for b in prefixes {
                 assert!(a == b || !a.starts_with(b), "{a} is read as {b}");
