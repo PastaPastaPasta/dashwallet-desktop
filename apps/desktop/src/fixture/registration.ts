@@ -128,6 +128,7 @@ const fail = (code: AppError["code"], message: string, data: AppError["data"] = 
 /** The engine refuses a Shielded-funded start until its flow step lands (m4 item 94). */
 export const shieldedOff = (): AppError =>
   fail("platform.feature_off", "shielded_registration", { kind: "feature", feature: "shielded_registration" });
+const platformOff = () => fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
 const invalid = (detail: string) => fail("invalid_argument", detail);
 
 /** `name.invalid` with the rules `label` breaks, if it breaks one. */
@@ -272,7 +273,7 @@ const MIN_IDENTITY_FUNDING = 200_000n;
  * input, so the address must hold both. Off on mainnet (registration_platform.rs `FEATURE`). */
 export function platformQuote(label: string, p: PlatformWorld | null, mainnet: boolean): RegistrationQuote {
   validLabel(label);
-  if (mainnet) throw fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
+  if (mainnet) throw platformOff();
   if (p === null) throw fail("platform.feature_off", "platform", { kind: "feature", feature: "platform" });
   const held = p.activity.find(isHeldOp);
   if (held) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: held.id });
@@ -462,12 +463,11 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       const dp = d.dashpay(world, walletId);
       const row = dp.registrations.find((r) => r.draft === draft);
       if (!row) throw invalid("unknown draft");
+      // F5: a Platform-funded row is off on mainnet before anything else, its grant unredeemed.
+      if (row.fromPlatform && world.launch.network.kind === "mainnet") throw platformOff();
       if (row.phase === "failed" && !row.failure?.retryable) throw invalid(`registration ${draft} failed for good (${row.failure?.code})`);
       if (row.phase === "done" || active(world, walletId, dp, draft) || grant === null) return null;
-      // F5: a Platform-funded row is off on mainnet before its grant is redeemed, and its grant
-      // carries no duffs.
-      if (row.fromPlatform && world.launch.network.kind === "mainnet")
-        throw fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
+      // F5: a Platform-funded row's grant carries no duffs.
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (!g) throw fail("platform.grant_invalid", "grant invalid");
       if (row.fromPlatform && (g.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs !== 0)) throw fail("platform.grant_invalid", "grant invalid");
@@ -486,6 +486,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       const row = d.dashpay(world, walletId).registrations.find((r) => r.draft === draft);
       if (!row) throw invalid("unknown draft");
       if (!row.invitation && !row.fromPlatform) throw invalid("not an invitation's claim or a Platform-funded row");
+      if (row.fromPlatform && world.launch.network.kind === "mainnet") throw platformOff();
       const at = PHASE_ORDER.indexOf(row.phase === "failed" ? row.failure!.phase : row.phase);
       let credits = row.identity ? 0n : row.fromPlatform ? platformDebit(row.label).debit : IDENTITY_CREDITS;
       if (at < PHASE_ORDER.indexOf("nameRegistered")) credits += NAME_CREDITS;

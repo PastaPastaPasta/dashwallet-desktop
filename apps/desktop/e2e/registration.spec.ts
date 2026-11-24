@@ -400,6 +400,7 @@ const SCREENS: { name: string; scenario: string; reach: (page: Page) => Promise<
   { name: "progress", scenario: "dashpay-registering", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "progress")) },
   { name: "paused", scenario: "dashpay-registration-paused", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "paused")) },
   { name: "retry", scenario: "dashpay-registering-paused", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "retry")) },
+  { name: "held", scenario: "dashpay-registering-held", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "held")) },
   { name: "repair", scenario: "dashpay-registration-needs-finish", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "repair")) },
   { name: "repair-unknown", scenario: "dashpay-registration-failed-unknown", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "repair")) },
   { name: "stopped", scenario: "dashpay-registration-stopped", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "stopped")) },
