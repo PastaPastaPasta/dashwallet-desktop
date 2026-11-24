@@ -200,6 +200,7 @@ export const pay = {
       coins: { one: "This payment spends {count} mixed coin.", other: "This payment spends {count} mixed coins." },
       manyCoins: "Spending 10 or more mixed coins in one payment can link them together and weaken your privacy. Consider paying a smaller amount.",
       noChange: "Mixed payments have no change: the {amount} left over after the payment goes to the network fee.",
+      largeLeftOver: "The {amount} left over after this payment goes to the network fee, because mixed payments have no change. To lose less, raise the amount so more of it goes to the recipient.",
     },
     unmixed: "This payment uses coins that aren't mixed, so it can be traced back to where they came from. To pay privately, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).",
     checkingPolicy: "Checking the payment settings",
