@@ -75,6 +75,8 @@
     "allow-shielded-send",
     "allow-unshield-quote",
     "allow-unshield-to-core",
+    "allow-unshield-to-platform-quote",
+    "allow-unshield-to-platform",
     "allow-shielded-history",
     "allow-unfinished-transfers",
     "allow-finish-transfer",

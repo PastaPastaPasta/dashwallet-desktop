@@ -585,8 +585,8 @@ class DwdGovernance(DashTestFramework):
         sbs = dwcli.gov("--sync-height", str(tip), "superblocks", "--count", "4")
         assert_equal(len(sbs), 4)
         vms = dwcli.gov("--sync-height", str(tip), "voting-masternodes", p8, "--wallet", wallet)
-        assert_equal([(v["pro_tx_hash"], v["key_index"], v["weight"], v["current_vote"]) for v in vms],
-                     [(regular[0].proTxHash, 0, 1, None)])
+        assert_equal([(v["pro_tx_hash"], v["key"], v["weight"], v["current_vote"]) for v in vms],
+                     [(regular[0].proTxHash, {"kind": "keychain", "index": 0}, 1, None)])
 
         p9_args = ("prepare", "--name", "dwd_p9", "--url", "https://example.org/p9",
                    "--payment-address", node.getnewaddress(), "--payment-amount", str(duffs("1.0")),

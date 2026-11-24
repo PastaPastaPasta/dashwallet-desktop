@@ -177,6 +177,8 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.shielded_send",
     "DashPay.unshield_quote",
     "DashPay.unshield_to_core",
+    "DashPay.unshield_to_platform_quote",
+    "DashPay.unshield_to_platform",
     "DashPay.shielded_history",
     // 0.2 RECOVERY: unfinished transfers.
     "DashPay.unfinished_transfers",
@@ -245,6 +247,7 @@ const NOT_FACADE: &[&str] = &[
     "banner_tests.rs",
     "bringup.rs",
     "contact_names.rs",
+    "contact_payout.rs",
     "contacts_model.rs",
     "contacts_perf_tests.rs",
     "contacts_tests",
@@ -889,7 +892,11 @@ fn contract_row(name: &str) -> Vec<String> {
 fn is_wrapper(v: &syn::Variant) -> bool {
     match &v.fields {
         syn::Fields::Unnamed(u) if u.unnamed.len() == 1 => {
-            tidy(&u.unnamed[0].ty).ends_with("Error")
+            let ty = tidy(&u.unnamed[0].ty);
+            ty.strip_prefix("Box<")
+                .and_then(|t| t.strip_suffix('>'))
+                .unwrap_or(&ty)
+                .ends_with("Error")
         }
         _ => false,
     }
@@ -1636,7 +1643,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.top_up_from_platform_quote(s(), WithdrawAmount::All)
                 .await
                 .map(drop),
-            dp.top_up_from_platform(s(), WithdrawAmount::All, s())
+            dp.top_up_from_platform(s(), WithdrawAmount::All, None, s())
                 .await
                 .map(drop),
         ] {
@@ -1678,6 +1685,8 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.shielded_send(s(), 1, None, s(), false).await.map(drop),
             dp.unshield_quote(1, None).await.map(drop),
             dp.unshield_to_core(1, None, s(), false).await.map(drop),
+            dp.unshield_to_platform_quote(1, None).await.map(drop),
+            dp.unshield_to_platform(1, None, s(), false).await.map(drop),
             dp.shielded_history(0, 10).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");

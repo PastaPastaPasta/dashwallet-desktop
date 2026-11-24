@@ -14,8 +14,10 @@ use dw_vault::{Credential, GrantPurpose};
 
 use super::super::collateral::tests::{snapshot, summary};
 use super::super::reads::now;
-use super::super::{Governance, GovernanceError, VoteCast, VoteOutcome};
+use super::super::{Governance, GovernanceError, NameVotingKey, VoteCast, VoteOutcome};
 use crate::masternode_keys::MasternodeKeyRole;
+use crate::masternodes::AttachedKeyRole;
+use crate::masternodes::follow::set_key_id;
 use crate::platform::FlowKind;
 use crate::platform::lease::session_tests::{Fixture, fixture};
 use crate::platform::lease::{
@@ -58,8 +60,8 @@ fn collateral_of(mn: &[u8; 32]) -> OutPoint {
     OutPoint::new(Txid::from_byte_array([mn[0] ^ 0xff; 32]), 1)
 }
 
-fn attached_id() -> [u8; 20] {
-    let sk = SecretKey::from_secret_bytes(ATTACHED).unwrap();
+fn key_id(secret: [u8; 32]) -> [u8; 20] {
+    let sk = SecretKey::from_secret_bytes(secret).unwrap();
     hash160::Hash::hash(&PublicKey::from_secret_key(&sk).serialize()).to_byte_array()
 }
 
@@ -79,6 +81,8 @@ fn voting() -> Voting {
         let pk = hex::decode(&keys[index].public_key_hex).unwrap();
         hash160::Hash::hash(&pk).to_byte_array()
     };
+    // Each attached key's id as `attach_key` records it.
+    let appdb = f.session.live().unwrap().appdb;
     for (mn, key) in [(C, ATTACHED), (H, STRAY)] {
         f.engine
             .block_on(
@@ -86,6 +90,13 @@ fn voting() -> Voting {
                     .vault_op(move |v| v.store_masternode_key(&mn, "voting", &key)),
             )
             .unwrap();
+        set_key_id(
+            &appdb,
+            &display_hex(&mn),
+            AttachedKeyRole::Voting,
+            Some(key_id(key)),
+        )
+        .unwrap();
     }
 
     let rt = &f.session.governance;
@@ -106,7 +117,7 @@ fn voting() -> Voting {
     let entries = [
         (A, id(0)),
         (B, id(3)),
-        (C, attached_id()),
+        (C, key_id(ATTACHED)),
         (D, [9; 20]),
         (E, id(5)),
         (G, [8; 20]),
@@ -242,6 +253,51 @@ fn vote_signs_and_stores_one_vote_per_masternode() {
     let changed = v.vote(VoteOutcome::No, &[A], v.grant()).unwrap();
     assert_eq!(changed[0].rejected.as_deref(), Some("too_often"));
     assert_eq!(v.stored(), expected);
+}
+
+/// The vote sheet's masternodes: the keychain's by index, then the ones
+/// whose attached voting key is the list's (C), each saying which key it
+/// votes with. A masternode whose attached key is not the list's (H), or
+/// whose key is someone else's (D, G), is not offered; E is, though its
+/// collateral is unresolved, which the row says and its vote refuses.
+/// Removing C's key drops
+/// it.
+#[test]
+fn voting_masternodes_offers_keychain_then_attached_voting_keys() {
+    let v = voting();
+    let offered = |v: &Voting| {
+        let mns =
+            v.f.engine
+                .block_on(v.gov.voting_masternodes(v.f.wallet, v.proposal.clone()))
+                .unwrap();
+        mns.into_iter()
+            .map(|m| (m.pro_tx_hash, m.key, m.collateral_resolved))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        offered(&v),
+        vec![
+            (display_hex(&A), NameVotingKey::Keychain { index: 0 }, true),
+            (display_hex(&B), NameVotingKey::Keychain { index: 3 }, true),
+            (display_hex(&E), NameVotingKey::Keychain { index: 5 }, false),
+            (display_hex(&C), NameVotingKey::Attached, true),
+        ]
+    );
+    let cast = v.vote(VoteOutcome::No, &[C, E], v.grant()).unwrap();
+    assert_eq!(
+        reasons(&cast),
+        vec![
+            (display_hex(&C), None),
+            (display_hex(&E), Some("collateral_unresolved")),
+        ]
+    );
+
+    let appdb = v.f.session.live().unwrap().appdb;
+    set_key_id(&appdb, &display_hex(&C), AttachedKeyRole::Voting, None).unwrap();
+    assert_eq!(
+        offered(&v).last(),
+        Some(&(display_hex(&E), NameVotingKey::Keychain { index: 5 }, false))
+    );
 }
 
 /// Whole-call errors come before the lease: the grant is not consumed and

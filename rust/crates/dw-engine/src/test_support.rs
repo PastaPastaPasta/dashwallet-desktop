@@ -193,6 +193,22 @@ pub fn set_mixing(session: &NetworkSession, wallet: crate::WalletId, mixing: boo
     session.coinjoin.set_mixing_for_test(wallet, mixing);
 }
 
+/// Opens one mixing session of `wallet` with no masternode behind it, or
+/// (`open` false) drops every open session of `wallet`.
+pub fn set_open_mixing_session(session: &NetworkSession, wallet: crate::WalletId, open: bool) {
+    session.coinjoin.set_open_session_for_test(wallet, open);
+}
+
+/// A closed session of `wallet` that signed its round holds an input since
+/// now, reserved to it, until the wallet sees the round or the observation
+/// timeout passes.
+pub fn hold_signed_round_input(session: &NetworkSession, wallet: crate::WalletId) {
+    let input = dashcore::OutPoint::new(dashcore::hashes::Hash::from_byte_array([7; 32]), 0);
+    let owner = crate::send::SpendOwner::mixing_session();
+    session.spends.reserve(wallet, owner, [input]);
+    session.coinjoin.hold_for_test(wallet, input, owner);
+}
+
 /// Holds the next Platform send of `session` (`DashPay::platform_send`)
 /// before it starts, until the returned sender is dropped. The receiver
 /// hears once it is held.
@@ -218,6 +234,17 @@ pub fn sent_marks(session: &NetworkSession, wallet: crate::WalletId) -> Vec<Stri
         .into_iter()
         .map(|(key, _)| key[prefix.len()..].to_string())
         .collect()
+}
+
+/// Tracks `pro_tx_hash` with no masternode list, as the engine's own
+/// tracking tests do, so another crate can attach keys to it.
+pub fn track_unlisted(session: &NetworkSession, pro_tx_hash: [u8; 32]) {
+    let service = (session.manager())
+        .expect("a live session")
+        .tracked_masternodes_service();
+    service
+        .track_blocking(pro_tx_hash, None)
+        .expect("track the masternode");
 }
 
 /// Ends every wallet's unfinished replay as SPV would with nothing new to

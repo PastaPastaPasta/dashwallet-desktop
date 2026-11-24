@@ -731,6 +731,9 @@ pub(crate) struct WalletHistory {
     pub load_incomplete: bool,
     /// A load filled the history: until then it may lack any record.
     pub loaded: bool,
+    /// Transactions with a verified InstantSend lock stored and no record
+    /// at the last load, by the transactions their lock names inputs of.
+    pub lock_parents: HashMap<Txid, Vec<Txid>>,
     /// The spend claims restored this session, by coin, with the payment
     /// each names.
     pub claimed: HashMap<OutPoint, Txid>,
@@ -793,6 +796,7 @@ impl WalletHistory {
     pub fn forget(&mut self, txid: &Txid) {
         self.txs.remove(txid);
         self.hidden_registrations.remove(txid);
+        self.lock_parents.remove(txid);
     }
 
     /// The ProRegTxs kept out of sight that the history has no own entry

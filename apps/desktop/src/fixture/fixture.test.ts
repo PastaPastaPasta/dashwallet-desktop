@@ -69,6 +69,7 @@ describe("fixture backend", () => {
       "notifications.test.ts",
       "pane.test.ts",
       "payContact.test.ts",
+      "payFromBalance.test.ts",
       "pending.test.ts",
       "pending.ts",
       "profile.test.ts",
@@ -86,12 +87,15 @@ describe("fixture backend", () => {
       "sentinels.test.ts",
       "settings.test.ts",
       "settings.ts",
+      "shared.test.ts",
+      "shared.ts",
       "shielded.ts",
       "tools.test.ts",
       "tools.ts",
       "topup.test.ts",
       "topup.ts",
       "transfer.ts",
+      "unshieldToPlatform.test.ts",
       "updates.ts",
       "vault.ts",
       "vectors/accept.json",
@@ -102,7 +106,7 @@ describe("fixture backend", () => {
     ]);
     // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
     const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "masternodes.ts", "names.ts", "pending.ts", "rates.ts", "recovery.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shielded.ts", "tools.ts", "topup.ts", "transfer.ts", "updates.ts", "vault.ts", "wallet.ts"]);
+    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "masternodes.ts", "names.ts", "pending.ts", "rates.ts", "recovery.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shared.ts", "shielded.ts", "tools.ts", "topup.ts", "transfer.ts", "updates.ts", "vault.ts", "wallet.ts"]);
     const { bySource } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
       expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
@@ -147,7 +151,7 @@ describe("fixture backend", () => {
       const launch = await b.launchInfo();
       expect(launch.engineVersion, scenario).toBe("fixture");
       // Prices are Mainnet's (MP-01): the fiat scenarios open it, as does a first run with no choice saved.
-      const network = scenario.startsWith("fiat") || scenario === "no-wallet-mainnet" ? "mainnet" : scenario === "network-pinned" ? "regtest" : "testnet";
+      const network = scenario.startsWith("fiat") || scenario === "no-wallet-mainnet" || scenario.endsWith("-mainnet") ? "mainnet" : scenario === "network-pinned" ? "regtest" : "testnet";
       expect((await b.openNetwork()).network.dirName, scenario).toBe(network);
       const wallets = await b.listWallets();
       const count = scenario.startsWith("no-wallet") || scenario === "fiat-first-run" ? 0 : scenario.endsWith("two-wallets") ? 2 : 1;

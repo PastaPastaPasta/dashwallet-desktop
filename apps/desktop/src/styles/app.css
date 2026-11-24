@@ -551,6 +551,11 @@ input[type="radio"]:disabled {
   overflow-wrap: anywhere;
 }
 
+/* A Shielded outcome can name a Platform address: it wraps rather than widening the sheet. */
+.shielded-outcome-text {
+  overflow-wrap: anywhere;
+}
+
 /* A banned masternode's notice is a long run in some languages: it wraps rather than widening the pane. */
 .mn-banned-notice {
   overflow-wrap: anywhere;
@@ -1449,10 +1454,6 @@ input[type="radio"]:disabled {
   background: var(--dw-role-accent-tint);
 }
 
-.tx-row.is-readonly:hover {
-  background: transparent;
-}
-
 .tx-row-icon {
   width: var(--dw-layout-row-icon-size);
   height: var(--dw-layout-row-icon-size);
@@ -1485,6 +1486,14 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-xs);
 }
 
+.tx-row-party {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tx-row-party,
 .tx-row-time {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
@@ -4763,6 +4772,8 @@ button.bell-row-open:focus-visible {
 
 .pay-shielded-route {
   display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
   margin-top: calc(-1 * var(--dw-space-s));
 }
 
@@ -4829,6 +4840,26 @@ button.bell-row-open:focus-visible {
 
 .protocol-advisory-link:disabled {
   opacity: var(--dw-opacity-disabled);
+}
+
+.history-gap-notice {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+}
+
+.history-gap-title {
+  margin: 0;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.history-gap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+  margin-top: var(--dw-space-xs);
 }
 
 .export-staging-path {
@@ -5707,6 +5738,20 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-s);
 }
 
+/* The pane's actions sit under its title, above everything its reads fill in, with More in a column
+ * of its own at the row's end: nothing that lands later moves it under the pointer. */
+.mg-pane-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--dw-space-s);
+}
+
+/* An action's place, held while the read that decides it is out. */
+.mg-reserved {
+  visibility: hidden;
+}
+
 /* Lines in two columns: the wallet's masternodes and their last votes. */
 .mg-roles {
   display: grid;
@@ -5748,6 +5793,25 @@ button.bell-row-open:focus-visible {
 }
 
 .mg-notice-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
+/* Keys you added: one line per key with its Remove. */
+.mg-keys-added {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-keys-added li {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -6107,7 +6171,32 @@ button.bell-row-open:focus-visible {
   position: sticky;
   bottom: 0;
   z-index: 1;
+  flex-wrap: wrap;
   background: var(--dw-role-card);
+}
+
+/* The passphrase, with the step's messages, rides in the sticky footer, on its own row above the
+   note and the actions. */
+.mg-sheet-footer-credential {
+  display: flex;
+  flex: 1 0 100%;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+/* An empty problem line takes no room there. */
+.mg-sheet-footer-credential .form-problem {
+  margin: 0;
+}
+
+.mg-sheet-footer-credential .form-problem:empty {
+  display: none;
+}
+
+/* Under it, the note shrinks so the actions keep the right end of the same row. */
+.mg-sheet-footer-sticky .mg-sheet-footer-note {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 /* A 64-hex hash breaks in the middle (its <wbr>), never before its last character. */
@@ -6182,6 +6271,12 @@ button.bell-row-open:focus-visible {
 /* A username vote's present choice names its contender: "Alice (8ZtW…R97P)". */
 .mg-nodes-names .mg-node {
   grid-template-columns: 20px minmax(0, 1fr) 64px 160px;
+}
+
+/* The masternode list's height line keeps its place while its read is out, failed or unsynced:
+ * nothing below it moves when the read answers. */
+.mg-list-height {
+  min-height: var(--dw-type-footnote-line);
 }
 
 /* A "More" button's menu (mg-00.css's .mg-menu, with real menu items). */
@@ -6409,6 +6504,105 @@ button.bell-row-open:focus-visible {
 .mg-change-keys .mg-choices + .mg-choices,
 .mg-change-keys .mg-choices:first-of-type {
   margin-top: var(--dw-space-s);
+}
+
+.mg-choice.is-disabled {
+  opacity: 0.55;
+}
+
+.sh-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-m);
+  margin-bottom: var(--dw-space-m);
+}
+
+.sh-choice h3 {
+  margin: 0;
+}
+
+.sh-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.sh-stages li {
+  padding: var(--dw-space-xxs) var(--dw-space-s);
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-secondary);
+}
+
+.sh-stages li.sh-stage-done {
+  color: var(--dw-role-text-link);
+}
+
+.sh-stages li[aria-current="step"] {
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-primary);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.sh-participants {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.sh-participants th {
+  padding: var(--dw-space-xs) 0;
+  border-bottom: 1px solid var(--dw-role-separator);
+  color: var(--dw-role-text-secondary);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  text-align: start;
+}
+
+.sh-participants td {
+  padding: var(--dw-space-xs) var(--dw-space-s) var(--dw-space-xs) 0;
+  border-bottom: 1px solid var(--dw-role-separator);
+  vertical-align: top;
+}
+
+.sh-participants td:last-child {
+  color: var(--dw-role-text-secondary);
+  text-align: end;
+}
+
+.sh-participants .mg-node-sub {
+  display: block;
+}
+
+.sh-row-copy {
+  margin: 0;
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.sh-import-warning {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.sh-setup-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: var(--dw-space-m) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sh-setup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) 96px;
+  gap: var(--dw-space-s);
+  align-items: end;
 }
 
 .page-masternodes .mg-notice {

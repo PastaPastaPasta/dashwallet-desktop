@@ -44,6 +44,7 @@ import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld }
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { newSharedWorld, sharedScenarios, type SharedWorld } from "./shared";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -158,6 +159,8 @@ export interface World {
   governance: GovernanceWorld;
   /** My masternodes: the SPV list, own and tracked masternodes, attached keys (masternodes.ts, MG-10). */
   masternodes: MasternodesWorld;
+  /** Shared masternodes: the capability and the main wallet's sessions (shared.ts, MG-10b). */
+  shared: SharedWorld;
   /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
   rates: RatesWorld;
   /** Updates: what this copy can do, the feed and the install (updates.ts, PK-03). */
@@ -263,6 +266,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
     masternodes: noMasternodesWorld(),
+    shared: newSharedWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
     pending: newPendingWorld(),
@@ -453,6 +457,14 @@ function attributeMore(w: World) {
   const hidden = rows.findLast((r) => r.txType === "sendToAddress" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
   hidden.counterparty = { identity: IDENTITY.judy, username: "judy", displayName: "Judy", avatarUrl: null };
   (w.dashpay.activity[IDENTITY.judy] ??= []).push(coreActivity({ txid: hidden.txid, direction: "sent", amount: Math.abs(hidden.amount) - (hidden.fee ?? 0), height: hidden.blockHeight, timestamp: hidden.timestamp }));
+}
+
+/** Every wallet of `w` born below block 1,100,000, where its stored headers begin: Home's
+ * history-gap notice names them all. */
+export function withHistoryGap(w: World): World {
+  for (const x of w.wallets) x.summary.birthHeight = 1_000_000;
+  w.tools.historyGap = { startHeight: 1_100_000, walletIds: w.wallets.map((x) => x.summary.walletId) };
+  return w;
 }
 
 function twoWallets(w: World): World {
@@ -736,6 +748,43 @@ const SCENARIOS = {
     w.send.settledChild = [row.txid];
     return w;
   },
+  /** An unconfirmed payment of the first of two open wallets, whose saved transaction doesn't read:
+   * Abandon is offered and refused, and so is Remove Unconfirmed; both name the wallet and say to
+   * close it, or remove and restore it. */
+  "abandon-record-unreadable-two-wallets": (t) => {
+    const w = twoWallets(base(t));
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
+  /** As `abandon-record-unreadable-two-wallets`, with only that wallet open: the refusal doesn't
+   * say to close it. */
+  "abandon-record-unreadable": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
   /** An unconfirmed payment a later payment spends from, already locked when the detail opens:
    * Abandon isn't offered. */
   "abandon-settled-child-hidden": (t) => {
@@ -825,6 +874,13 @@ const SCENARIOS = {
   "paddr-fund-applies": (t) => {
     const w = base(t);
     w.pending.platform!.nextFund = "done";
+    return w;
+  },
+  /** Credits moved from Shielded to the receive address: a "From Shielded" row, done. */
+  "paddr-from-shielded": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    p.activity = [{ id: "from-shielded-5a5a", kind: "fromShielded", state: "done", credits: "25000000000", address: p.receive.address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 600, mayLand: false, estimated: false }, ...p.activity];
     return w;
   },
   /** A lock of "Add from Dash wallet" waiting for its proof: the card shows Finish. */
@@ -1247,6 +1303,17 @@ const SCENARIOS = {
     w.tools.rescanStep = 0;
     return w;
   },
+  /** The wallet's history starts before the block data this install keeps: Home says its older
+   * payments aren't shown and offers Repair's reset, which clears it. */
+  "history-gap": (t) => withHistoryGap(base(t)),
+  /** The notice with mixing stopped but a signed round's inputs still held: its reset is refused. */
+  "history-gap-settling": (t) => {
+    const w = withHistoryGap(base(t));
+    w.tools.inputsHeld = true;
+    return w;
+  },
+  /** The same for two wallets. */
+  "history-gap-two-wallets": (t) => withHistoryGap(twoWallets(base(t))),
   /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */
   "wallet-behind-stopped": (t) => walletBehind(t, true, false),
   /** The same with nothing found yet: Home shows 0. */
@@ -1618,6 +1685,8 @@ const SCENARIOS = {
   ...governanceScenarios(base),
   // My masternodes (MG-10): masternodes.ts.
   ...masternodesScenarios(base),
+  // Shared masternodes (MG-10b): shared.ts.
+  ...sharedScenarios(base),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesScenarios(base),
   // Transfer (POLISH 25): transfer.ts.

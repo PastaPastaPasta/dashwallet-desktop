@@ -2607,7 +2607,8 @@ fn a_restored_backup_raises_its_lookahead_before_the_wallet_is_registered() {
 /// larger lookahead in one write: when that write fails, neither is stored,
 /// so no replay is owed without the range it needs. Before, the replay was
 /// stored first, and a failure or a quit before the lookahead left it owed
-/// with the narrow BIP44 range.
+/// with the narrow BIP44 range. Once the write works, Recovery runs to its
+/// end and leaves the lookahead stored and the wallet marked done.
 #[test]
 fn a_recovery_scan_whose_write_fails_stores_neither_its_replay_nor_its_lookahead() {
     let dir = tempfile::tempdir().unwrap();
@@ -2635,6 +2636,25 @@ fn a_recovery_scan_whose_write_fails_stores_neither_its_replay_nor_its_lookahead
     assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
     assert_eq!(wide_scan(&engine, &session, id), marker);
     assert_eq!(replay_record(&engine, &session, id), None);
+
+    let recovery = recovery_running(&engine, &session, id);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+
+    assert!(
+        matches!(recovered, Ok(Ok(Ok(_)))),
+        "runs once the write works: {recovered:?}"
+    );
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(crate::coinjoin::RECOVERY_LOOKAHEAD)
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
 }
 
 /// CoinJoin Recovery that stops right after its write, as a quit there
@@ -3756,6 +3776,73 @@ fn an_attach_the_vault_refuses_leaves_nothing_behind() {
     assert_eq!(replay_record(&engine, &session, id), None);
 }
 
+/// Keys attached while an unencrypted vault's data key is not in memory
+/// and its OS store is unavailable are refused before anything is written,
+/// and the marker, lookahead and birth they changed are back, as for a
+/// vault unlocked for mixing only.
+#[test]
+fn an_attach_the_os_store_refuses_leaves_nothing_behind() {
+    use crate::EngineConfig;
+    use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+    let dir = tempfile::tempdir().unwrap();
+    let engine_with = |store: MemoryOsStore| {
+        let config = EngineConfig {
+            data_root: dir.path().join("data"),
+            worker_threads: Some(2),
+            vault: VaultConfig {
+                kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                os_store: Arc::new(store),
+                ..Default::default()
+            },
+        };
+        let engine = Engine::new(config, Arc::new(Silent)).unwrap();
+        let session = engine
+            .block_on(engine.open_network(DashNetwork::Regtest, offline()))
+            .unwrap();
+        (engine, session)
+    };
+    let (engine, session) = engine_with(MemoryOsStore::new());
+    create_vault(&engine, &session);
+    let id = import_phrase(&engine, &session, PHRASE, HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
+    drop(session);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+    let (engine, session) = engine_with(MemoryOsStore::unavailable());
+
+    let refused = engine.block_on(session.import_wallet(
+        zeroize::Zeroizing::new(PHRASE.to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(0),
+            lookahead: Some(200),
+            ..Default::default()
+        },
+    ));
+
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::Vault(
+                dw_vault::VaultError::OsStoreUnavailable(_)
+            ))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
+    assert_eq!(stored_birth(&session, id), Some(HEIGHT));
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
 /// F-A: a seed import with the default lookahead deletes a row an earlier
 /// attempt left before registration: the next load scans with the default.
 #[test]
@@ -4008,6 +4095,42 @@ fn a_failed_restore_leaves_the_scan_of_a_wallet_it_attached_keys_to() {
     assert_eq!(wide_scan(&engine, &session, a), marker);
 }
 
+/// A restore whose bundle carries Dash Core counters, onto a watch-only
+/// wallet not yet synced to its own birth, lowers the birth to the
+/// bundle's before the wallet is marked scanned: no rewind is owed, so
+/// nothing else lowers it, and dash-spv scans no block below the birth.
+#[test]
+fn a_restore_with_counters_onto_a_wallet_not_synced_to_its_birth_lowers_the_birth() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let a = born_at_700(&engine, &session);
+    let backup = dir.path().join("one.dwbackup");
+    craft_backup(
+        &session,
+        &backup,
+        &[(a, &[(crate::compat::ISSUED_SETTING, "1001,2")])],
+    );
+    assert!(session.vault().delete_wallet_secret(&a.0).unwrap());
+    store_synced_only(&session, a, 0);
+    engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&a.0).unwrap();
+        info.core_wallet.update_synced_height(0);
+    });
+
+    let restored = engine
+        .block_on(session.restore_backup(backup, Some(zeroize::Zeroizing::new(b"bk".to_vec()))));
+
+    assert!(restored.is_ok(), "{restored:?}");
+    assert!(session.vault().has_wallet_secret(&a.0));
+    assert_eq!(synced_height(&engine, &session, a), 0);
+    assert_eq!(birth_height(&engine, &session, a), 1);
+    assert_eq!(stored_birth(&session, a), Some(1));
+}
+
 /// Round 4, 7: keys attached with only a lookahead to a wallet whose stored
 /// legacy range start-up could not apply apply that range before the
 /// replay: its addresses are derived, and the wallet is marked done.
@@ -4210,6 +4333,714 @@ fn keys_attached_show_no_replay_spv_already_finished() {
     );
 }
 
+/// Starts CoinJoin Recovery of wallet `id` on the engine's runtime and
+/// returns it once its rescan runs.
+fn recovery_running(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+) -> tokio::task::JoinHandle<Result<crate::coinjoin::RecoveryReport, EngineError>> {
+    let s = Arc::clone(session);
+    let runtime = engine.block_on(async { tokio::runtime::Handle::current() });
+    let recovery = runtime.spawn(async move { s.coinjoin_recovery_scan(id).await });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while session.rescan_progress().unwrap().is_none() {
+        if recovery.is_finished() {
+            panic!("Recovery ended first: {:?}", engine.block_on(recovery));
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Recovery's rescan did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    recovery
+}
+
+/// CoinJoin Recovery started after a rescan that finished with nobody
+/// reading its progress runs: a finished rescan is no rescan running.
+#[test]
+fn a_recovery_scan_after_a_finished_rescan_nobody_read_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT);
+
+    let s = Arc::clone(&session);
+    let runtime = engine.block_on(async { tokio::runtime::Handle::current() });
+    let recovery = runtime.spawn(async move { s.coinjoin_recovery_scan(id).await });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !recovery.is_finished()
+        && engine.block_on(session.stored_lookahead(id)).unwrap()
+            != Some(crate::coinjoin::RECOVERY_LOOKAHEAD)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Recovery did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !recovery.is_finished(),
+        "Recovery ended at its start: {:?}",
+        engine.block_on(recovery)
+    );
+    while session.rescan_progress().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Recovery's rescan did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+
+    assert!(matches!(recovered, Ok(Ok(Ok(_)))), "{recovered:?}");
+}
+
+/// A wallet born at its creation, scanned to `HEIGHT`, whose CoinJoin
+/// Recovery was cancelled while its rescan ran: Recovery returns
+/// `RescanInterrupted`, not a report.
+fn cancelled_recovery(dir: &std::path::Path) -> (Engine, Arc<NetworkSession>, WalletId) {
+    let (engine, session) = open_spv_engine(dir.join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let recovery = recovery_running(&engine, &session, id);
+
+    assert!(engine.block_on(session.cancel_rescan()).unwrap());
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+    assert!(
+        matches!(recovered, Ok(Ok(Err(EngineError::RescanInterrupted)))),
+        "{recovered:?}"
+    );
+    (engine, session, id)
+}
+
+/// A cancelled CoinJoin Recovery is not reported as finished: it returns
+/// `RescanInterrupted`, and sends stay held as interrupted.
+#[test]
+fn a_cancelled_recovery_scan_is_not_reported_as_finished() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session, id) = cancelled_recovery(dir.path());
+
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInterrupted)),
+        "{guard:?}"
+    );
+}
+
+/// After a cancelled CoinJoin Recovery, a plain rescan from the wallet's
+/// birth lifts the cancel's hold and scans with Recovery's 1,000-address
+/// range on both chains; once it reaches the old checkpoint, sends go.
+#[test]
+fn a_cancelled_recovery_then_a_rescan_from_the_birth_keeps_its_range_and_lifts_the_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session, id) = cancelled_recovery(dir.path());
+
+    (engine.block_on(session.rescan(crate::RescanFrom::WalletBirth))).unwrap();
+
+    let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
+    assert_eq!(gap(&engine, &session, id, bip44()), raised);
+    assert_eq!(gap(&engine, &session, id, cj()), raised);
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(raised)
+    );
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInProgress)),
+        "{guard:?}"
+    );
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(guard.is_ok(), "{guard:?}");
+}
+
+/// A cancelled CoinJoin Recovery whose rescan is replaced at once by a
+/// rescan from the birth, before Recovery looks again and with nobody
+/// reading progress, still returns `RescanInterrupted`: the replacement
+/// finishing is not Recovery's.
+#[test]
+fn a_cancelled_recovery_replaced_at_once_by_a_rescan_is_not_reported_as_finished() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let recovery = recovery_running(&engine, &session, id);
+
+    assert!(engine.block_on(session.cancel_rescan()).unwrap());
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+
+    assert!(
+        matches!(recovered, Ok(Ok(Err(EngineError::RescanInterrupted)))),
+        "{recovered:?}"
+    );
+}
+
+/// A quit while CoinJoin Recovery's rescan runs: the next start resumes the
+/// replay from the wallet's birth with the 1,000-address range, shows it as
+/// a rescan, and holds sends until it ends.
+#[test]
+fn a_recovery_scan_quit_mid_rescan_resumes_at_the_next_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let birth = birth_height(&engine, &session, id).saturating_sub(1);
+    let recovery = recovery_running(&engine, &session, id);
+
+    let session = reopen(&engine, session);
+
+    let ended = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+    assert!(
+        matches!(
+            ended,
+            Ok(Ok(Err(EngineError::CoinJoin(
+                crate::coinjoin::CoinJoinFailure::SpvNotRunning
+            ) | EngineError::NetworkNotOpen(_))))
+        ),
+        "{ended:?}"
+    );
+    let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
+    assert_eq!(gap(&engine, &session, id, bip44()), raised);
+    assert_eq!(synced_height(&engine, &session, id), birth);
+    assert_eq!(replay_record(&engine, &session, id), Some((birth, HEIGHT)));
+    assert!(session.rescan_progress().unwrap().is_some());
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInProgress)),
+        "{guard:?}"
+    );
+}
+
+/// CoinJoin Recovery's two settings go in one transaction: with the
+/// database refusing the wide-scan marker, written after the lookahead in
+/// that write, the lookahead does not stay either.
+#[test]
+fn a_recovery_scan_whose_marker_write_is_refused_keeps_no_lookahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let marker = wide_scan(&engine, &session, id);
+    let scope = dw_appdb::local_scope(&id.to_string());
+    let db = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+    for (name, event) in [
+        ("no_marker_insert", "INSERT"),
+        ("no_marker_update", "UPDATE"),
+    ] {
+        db.execute_batch(&format!(
+            "CREATE TRIGGER {name} BEFORE {event} ON settings_kv \
+             WHEN NEW.scope = '{scope}' AND NEW.key = '{key}' \
+             BEGIN SELECT RAISE(ABORT, 'test: marker refused'); END;",
+            key = crate::keys::WIDE_SCAN_SETTING,
+        ))
+        .unwrap();
+    }
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            session.coinjoin_recovery_scan(id),
+        )
+        .await
+    });
+
+    db.execute_batch("DROP TRIGGER no_marker_insert; DROP TRIGGER no_marker_update;")
+        .unwrap();
+    assert!(
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("test: marker refused")),
+        "refused by the database: {recovered:?}"
+    );
+    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    assert_eq!(wide_scan(&engine, &session, id), marker);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
+/// CoinJoin Recovery whose in-memory raise fails after its write is
+/// refused, and both settings stay: the next open raises the BIP44 range to
+/// the stored lookahead and replays from the wallet's birth.
+#[test]
+fn a_recovery_scan_whose_raise_fails_after_its_write_replays_with_its_lookahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let birth = birth_height(&engine, &session, id).saturating_sub(1);
+    insert_unraisable_account(&engine, &session, id);
+
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            session.coinjoin_recovery_scan(id),
+        )
+        .await
+    });
+
+    assert!(
+        matches!(&recovered, Ok(Err(e)) if e.to_string().contains("BIP44 #1")),
+        "refused at the raise: {recovered:?}"
+    );
+    let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(raised)
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(birth))
+    );
+    let session = reopen(&engine, session);
+    assert_eq!(gap(&engine, &session, id, bip44()), raised);
+    assert_eq!(synced_height(&engine, &session, id), birth);
+    assert_eq!(replay_record(&engine, &session, id), Some((birth, HEIGHT)));
+}
+
+/// Keys attached alone (no Dash Core range, no lookahead) with a birth
+/// height below a synced watch-only wallet's lower its birth and replay
+/// from there.
+#[test]
+fn keys_attached_alone_with_an_earlier_birth_replay_from_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |birth| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(birth),
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    commit_batch(&engine, &session, id, HEIGHT + 100);
+
+    assert_eq!(import(HEIGHT - 500).unwrap(), id);
+
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500);
+    assert_eq!(stored_birth(&session, id), Some(HEIGHT - 500));
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT - 501);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((HEIGHT - 501, HEIGHT + 100))
+    );
+}
+
+/// Keys attached with an earlier birth to a watch-only wallet whose
+/// checkpoint is already at or below the attach's start need no rewind, and
+/// still lower the birth: dash-spv scans nothing below it.
+#[test]
+fn keys_attached_with_an_earlier_birth_below_no_checkpoint_still_lower_the_birth() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |birth, lookahead| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(birth),
+                lookahead,
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(HEIGHT, None).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_synced_only(&session, id, 0);
+    engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&id.0).unwrap();
+        info.core_wallet.update_synced_height(0);
+    });
+    assert_eq!(synced_height(&engine, &session, id), 0);
+
+    assert_eq!(import(HEIGHT - 500, Some(200)).unwrap(), id);
+
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500);
+    assert_eq!(stored_birth(&session, id), Some(HEIGHT - 500));
+    assert_eq!(replay_record(&engine, &session, id), None, "no rewind");
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+}
+
+/// Keys attached with an earlier birth whose lookahead cannot be stored are
+/// refused, and the lookahead row, the birth and the marker the attach
+/// changed are put back.
+#[test]
+fn keys_attached_with_an_earlier_birth_that_are_refused_put_the_birth_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |birth, lookahead| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(REFUSED_PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(birth),
+                lookahead,
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(HEIGHT, None).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    commit_batch(&engine, &session, id, HEIGHT + 100);
+    let marker = wide_scan(&engine, &session, id);
+
+    let refused = failing(&crate::keys::FAIL_LOOKAHEAD_WRITE, id, || {
+        import(HEIGHT - 500, Some(200))
+    });
+
+    assert!(refused.is_err());
+    assert!(!session.vault().has_wallet_secret(&id.0));
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
+    assert_eq!(stored_birth(&session, id), Some(HEIGHT));
+    assert_eq!(wide_scan(&engine, &session, id), marker);
+    assert_eq!(engine.block_on(session.lookahead_row(id)).unwrap(), None);
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT + 100);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
+/// An attach whose seed write fails other than by the vault refusing it
+/// before writing keeps the lower birth and the replay it marked: the
+/// vault may hold the seed all the same (a failed directory sync or
+/// read-back after the write), and the next open replays from the lower
+/// start, with the keys or without them. A refusal before any write puts
+/// them back (`an_attach_the_vault_refuses_leaves_nothing_behind`).
+#[test]
+fn keys_attached_whose_seed_write_fails_keep_the_lower_birth_and_the_replay() {
+    use dw_vault::fault::Fault;
+    for fault in [None, Some(Fault::DirSync), Some(Fault::ReadBack)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, session) = open_engine(dir.path().join("data"));
+        create_vault(&engine, &session);
+        let import = |session: &Arc<NetworkSession>, birth| {
+            engine.block_on(session.import_wallet(
+                zeroize::Zeroizing::new(PHRASE.to_vec()),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(birth),
+                    ..Default::default()
+                },
+            ))
+        };
+        let id = import(&session, HEIGHT).unwrap();
+        assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+        commit_batch(&engine, &session, id, HEIGHT + 100);
+        let appdb = session.data_dir().join(dw_appdb::APP_DB_FILE);
+        match fault {
+            Some(fault) => {
+                dw_vault::fault::arm(&session.data_dir().join(dw_vault::VAULT_DIR), fault);
+            }
+            None => dw_appdb::fault::arm(
+                &appdb,
+                crate::keys::IMPORT_ROWS,
+                dw_appdb::fault::Stage::After,
+            ),
+        }
+
+        let refused = import(&session, HEIGHT - 500);
+
+        dw_appdb::fault::disarm(&appdb);
+        assert!(refused.is_err(), "{fault:?}");
+        assert_eq!(
+            birth_height(&engine, &session, id),
+            HEIGHT - 500,
+            "{fault:?}"
+        );
+        assert_eq!(stored_birth(&session, id), Some(HEIGHT - 500), "{fault:?}");
+        assert_eq!(
+            wide_scan(&engine, &session, id),
+            Some(crate::keys::WideScan::From(HEIGHT - 501)),
+            "{fault:?}"
+        );
+        let session = reopen(&engine, session);
+        assert_eq!(
+            session.vault().has_wallet_secret(&id.0),
+            fault.is_some(),
+            "{fault:?}"
+        );
+        assert_eq!(
+            birth_height(&engine, &session, id),
+            HEIGHT - 500,
+            "{fault:?}"
+        );
+        assert_eq!(
+            synced_height(&engine, &session, id),
+            HEIGHT - 501,
+            "{fault:?}"
+        );
+        assert_eq!(
+            replay_record(&engine, &session, id),
+            Some((HEIGHT - 501, HEIGHT + 100)),
+            "{fault:?}"
+        );
+    }
+}
+
+/// Wallets the tests below import, each its own: their faults go by wallet
+/// id.
+const REFUSED_PHRASE: &[u8] =
+    b"please owner emotion tobacco bulk cupboard flash squirrel across fame only monitor";
+const LOWERING_PHRASE: &[u8] =
+    b"afford alter spike radar gate glance object seek swamp infant panel yellow";
+const PUT_BACK_PHRASE: &[u8] =
+    b"turtle front uncle idea crush write shrug there lottery flower risk shell";
+const LATER_BIRTH_PHRASE: &[u8] =
+    b"mammal actual flee path apple leaf mechanic right feed strategy trust sugar";
+const UNREADABLE_MARKER_PHRASE: &[u8] =
+    b"surface boost boring system put where shoot duty coconut wine can square";
+
+/// Keys alone with an earlier birth whose lowering cannot be stored are
+/// refused with the replay from that birth still owed: the next load lowers
+/// the birth and replays.
+#[test]
+fn keys_attached_alone_whose_lower_birth_cannot_be_stored_leave_the_replay_owed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |birth| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(LOWERING_PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(birth),
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+
+    let refused = failing(&crate::tools::FAIL_BIRTH_STORE, id, || import(HEIGHT - 500));
+
+    assert!(refused.is_err());
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(HEIGHT - 501))
+    );
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500);
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT - 501);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((HEIGHT - 501, HEIGHT + 100))
+    );
+}
+
+/// A refused attach that cannot put its lower birth back keeps the replay
+/// owed rather than marking the lower birth scanned. Attaching the keys
+/// again, in the same session or after a reopen, alone or with a
+/// lookahead, stores them and replays from the lower birth.
+#[test]
+fn keys_attached_whose_birth_cannot_be_put_back_leave_the_replay_owed_for_a_retry() {
+    for (reopened, retry_lookahead) in [
+        (false, None),
+        (false, Some(200)),
+        (true, None),
+        (true, Some(200)),
+    ] {
+        let case = format!("reopened {reopened}, retry lookahead {retry_lookahead:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, session) = open_engine(dir.path().join("data"));
+        create_vault(&engine, &session);
+        let import = |session: &Arc<NetworkSession>, birth, lookahead| {
+            engine.block_on(session.import_wallet(
+                zeroize::Zeroizing::new(PUT_BACK_PHRASE.to_vec()),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(birth),
+                    lookahead,
+                    ..Default::default()
+                },
+            ))
+        };
+        let id = import(&session, HEIGHT, None).unwrap();
+        assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+        store_checkpoint(&engine, &session, id, HEIGHT + 100);
+
+        let refused = failing(&crate::keys::FAIL_BIRTH_PUT_BACK, id, || {
+            failing(&crate::keys::FAIL_LOOKAHEAD_WRITE, id, || {
+                import(&session, HEIGHT - 500, Some(200))
+            })
+        });
+
+        assert!(refused.is_err(), "{case}");
+        assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500, "{case}");
+        assert_eq!(
+            wide_scan(&engine, &session, id),
+            Some(crate::keys::WideScan::From(HEIGHT - 501)),
+            "{case}"
+        );
+        let session = if reopened {
+            reopen(&engine, session)
+        } else {
+            session
+        };
+
+        let retried = import(&session, HEIGHT - 500, retry_lookahead);
+
+        assert_eq!(retried.unwrap(), id, "{case}");
+        assert!(session.vault().has_wallet_secret(&id.0), "{case}");
+        assert_eq!(birth_height(&engine, &session, id), HEIGHT - 500, "{case}");
+        assert_eq!(stored_birth(&session, id), Some(HEIGHT - 500), "{case}");
+        assert_eq!(synced_height(&engine, &session, id), HEIGHT - 501, "{case}");
+        assert_eq!(
+            replay_record(&engine, &session, id),
+            Some((HEIGHT - 501, HEIGHT + 100)),
+            "{case}"
+        );
+        if let Some(lookahead) = retry_lookahead {
+            assert_eq!(gap(&engine, &session, id, bip44()), lookahead, "{case}");
+        }
+    }
+}
+
+/// An attach whose lower birth cannot be stored leaves its replay owed from
+/// the start it asked for. Keys attached again with a later birth, alone or
+/// with a lookahead, lower the birth to that owed start, not to their own,
+/// before the wallet is marked scanned: dash-spv scans no block below the
+/// birth.
+#[test]
+fn keys_attached_again_with_a_later_birth_lower_the_birth_to_the_replay_still_owed() {
+    for lookahead in [None, Some(200)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, session) = open_engine(dir.path().join("data"));
+        create_vault(&engine, &session);
+        let import = |birth, lookahead| {
+            engine.block_on(session.import_wallet(
+                zeroize::Zeroizing::new(LATER_BIRTH_PHRASE.to_vec()),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(birth),
+                    lookahead,
+                    ..Default::default()
+                },
+            ))
+        };
+        let id = import(HEIGHT, None).unwrap();
+        assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+        store_synced_only(&session, id, 0);
+        engine.block_on(async {
+            let manager = session.manager().unwrap();
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let info = wm.get_wallet_info_mut(&id.0).unwrap();
+            info.core_wallet.update_synced_height(0);
+        });
+        let refused = failing(&crate::tools::FAIL_BIRTH_STORE, id, || {
+            import(HEIGHT - 700, None)
+        });
+        assert!(refused.is_err());
+        assert_eq!(
+            wide_scan(&engine, &session, id),
+            Some(crate::keys::WideScan::From(HEIGHT - 701))
+        );
+
+        assert_eq!(
+            import(HEIGHT - 500, lookahead).unwrap(),
+            id,
+            "{lookahead:?}"
+        );
+
+        assert_eq!(synced_height(&engine, &session, id), 0, "{lookahead:?}");
+        assert_eq!(
+            birth_height(&engine, &session, id),
+            HEIGHT - 700,
+            "{lookahead:?}"
+        );
+        assert_eq!(
+            stored_birth(&session, id),
+            Some(HEIGHT - 700),
+            "{lookahead:?}"
+        );
+        assert_eq!(
+            wide_scan(&engine, &session, id),
+            Some(crate::keys::WideScan::Done),
+            "{lookahead:?}"
+        );
+    }
+}
+
+/// Keys attached alone, with no earlier birth, to a wallet whose marker
+/// owes a replay but cannot be read leave the marker as it is, without
+/// marking the wallet scanned: the next open replays from where it owes.
+#[test]
+fn keys_attached_alone_over_an_unreadable_marker_leave_the_replay_owed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |session: &Arc<NetworkSession>| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(UNREADABLE_MARKER_PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(HEIGHT),
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(&session).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+    let owed = crate::keys::WideScan::From(HEIGHT + 50);
+    set_wide_scan(&engine, &session, id, Some(owed));
+
+    let attached = failing(&crate::keys::FAIL_WIDE_SCAN_READ, id, || import(&session));
+
+    assert_eq!(attached.unwrap(), id);
+    assert!(session.vault().has_wallet_secret(&id.0));
+    assert_eq!(wide_scan(&engine, &session, id), Some(owed));
+    let session = reopen(&engine, session);
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT + 50);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((HEIGHT + 50, HEIGHT + 100))
+    );
+}
+
 /// #172: the replay an upgrade owes lists its wallet in
 /// [`crate::RescanProgress::upgrade_wallets`], also when it is resumed after
 /// a quit; once it is done, the next open clears that. A replay any other
@@ -4241,4 +5072,78 @@ fn an_upgrade_replay_names_its_wallet_until_it_is_done() {
     let session = reopen(&engine, session);
     assert_eq!(upgrading(&session), None);
     assert_eq!(engine.block_on(session.upgrade_replay(id)), None);
+}
+
+/// Stores one block header at `height` under the session's chain data, as
+/// dash-spv anchors its headers there.
+fn store_header_anchor(engine: &Engine, session: &NetworkSession, height: u32) {
+    let dir = session.data_dir().join(crate::session::SPV_DIR);
+    engine.block_on(crate::tools::store_test_headers(&dir, height, 1));
+}
+
+/// A wallet whose birth is below the first stored block header is reported
+/// until "Reset chain data and resync". The reset replays it from its
+/// birth, and the next SPV start anchors its headers at or below that
+/// birth, so nothing is reported with headers stored again. A payment in a
+/// block below the old header start then shows once the replay reaches it.
+#[test]
+fn a_wallet_born_below_the_stored_headers_is_reported_until_the_chain_data_is_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = import_from_genesis(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+    store_header_anchor(&engine, &session, HEIGHT);
+    let to = bip44_address(&engine, &session, id, 3);
+    let tx = pays(1, &to);
+
+    let gap = engine.block_on(session.history_gap()).unwrap();
+
+    assert_eq!(
+        gap,
+        Some(crate::tools::HistoryGap {
+            start_height: HEIGHT,
+            wallets: vec![id],
+        })
+    );
+    engine.block_on(session.reset_chain_data()).unwrap();
+    assert_eq!(engine.block_on(session.history_gap()).unwrap(), None);
+    let birth = birth_height(&engine, &session, id);
+    assert_eq!(
+        synced_height(&engine, &session, id),
+        birth.saturating_sub(1)
+    );
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((birth.saturating_sub(1), HEIGHT + 100))
+    );
+    start_offline_spv(&engine, &session);
+    engine.block_on(session.stop_spv()).unwrap();
+    let spv = session.data_dir().join(crate::session::SPV_DIR);
+    let start = crate::tools::stored_header_start(&spv).unwrap();
+    assert!(start.is_some_and(|h| h <= birth), "{start:?}");
+    assert_eq!(engine.block_on(session.history_gap()).unwrap(), None);
+    replay_at(
+        &engine,
+        &session,
+        id,
+        std::slice::from_ref(&tx),
+        HEIGHT - 400,
+    );
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[(OutPoint::new(tx.txid(), 0), to)],
+        bip44(),
+        VALUE,
+    );
+}
+
+#[test]
+fn a_wallet_born_at_the_first_stored_header_is_not_reported() {
+    let (_dir, engine, session, _) = engine_wallet();
+    store_header_anchor(&engine, &session, 0);
+
+    assert_eq!(engine.block_on(session.history_gap()).unwrap(), None);
 }

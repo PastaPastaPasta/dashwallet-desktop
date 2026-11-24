@@ -559,6 +559,7 @@ export const dashpay = {
       failed: { title: "The top-up did not go through", text: "Nothing left your Platform addresses." },
       error: {
         short: "Your Platform addresses don't hold enough for this top-up and its fee.",
+        quoteChanged: "What you can pay from your Platform addresses changed since you reviewed this top-up. Review it again.",
         /** `min` is an amount. */
         below: "The smallest top-up from Platform is {min}.",
       },

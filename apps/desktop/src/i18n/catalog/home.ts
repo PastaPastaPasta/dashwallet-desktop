@@ -64,6 +64,17 @@ export const home = {
     dismiss: "Dismiss",
     openFailed: "Could not open the releases page.",
   },
+  /** Open wallets whose history starts before the block data this install keeps: their earlier
+   * payments are missing until chain data is reset. `wallet` is a wallet's name. */
+  historyGap: {
+    title: "Older payments aren't shown yet",
+    oneWallet: "The history of “{wallet}” starts before block {height}, where this app's block data begins. Its payments before that block aren't shown yet, so its balance may be missing coins.",
+    wallets: {
+      other: "The history of {count} wallets starts before block {height}, where this app's block data begins. Their payments before that block aren't shown yet, so their balances may be missing coins.",
+    },
+    action: "Reset chain data and resync downloads it again from the earliest wallet's birth. Your wallets, keys and settings are kept. It takes several minutes, and you can't send until it finishes.",
+    notNow: "Not now",
+  },
   /** An unfinished Dash Core export's unencrypted temporary file, found at the start. */
   exportStaging: {
     /** Toast: the start deleted it. */

@@ -33,7 +33,7 @@ import {
   type ChangeKeysForm,
 } from "../../masternodes/changeKeys";
 import { registrarLine } from "../../masternodes/model";
-import { mnKeys, useMasternodeOperations, useMasternodesRefresh } from "../../masternodes/queries";
+import { mnKeys, useMasternodeOperations, useMasternodesRefresh, usePendingAwareText } from "../../masternodes/queries";
 import { CredentialField, useCredential } from "./credential";
 
 const P = "masternodes.myMasternodes.changeKeys";
@@ -69,6 +69,7 @@ export function ChangeKeysSheet({
   const shown = useDisplay(network);
   const refresh = useMasternodesRefresh();
   const ops = useMasternodeOperations(wallet.walletId);
+  const refusal = usePendingAwareText(wallet.walletId, changeKeysErrorText);
   const recorded = recordedPayout(detail);
   const [form, setForm] = useState<ChangeKeysForm>(() => initialForm(detail));
   // Q4: the recorded payout is a probe until a preview reads it as no change; a choice the user makes ends it.
@@ -121,7 +122,7 @@ export function ChangeKeysSheet({
       if (!grant) return;
       finish(await b.mnUpdateRegistrar(wallet.walletId, pinToPreview(request, current), grant.id), current.payoutChanges);
     } catch (e) {
-      credential.setError(changeKeysErrorText(e));
+      credential.setError(await refusal(e));
       if (feeWentUp(e)) void preview.refetch();
     } finally {
       sending.current = false;
@@ -229,7 +230,7 @@ export function ChangeKeysSheet({
           <h3 className="mg-section-title">{t(`${P}.review.title`)}</h3>
           {preview.isError && request !== null && debounced === live ? (
             <p className="mg-field-error" role="alert" data-testid="mn-change-preview-error">
-              {changeKeysErrorText(preview.error)}
+              {changeKeysErrorText(preview.error, ops.isSuccess ? ops.data : undefined)}
             </p>
           ) : current ? (
             <>
@@ -303,6 +304,7 @@ function UnsentUpdate({
   onClose: () => void;
 }) {
   const t = useT();
+  const refusal = usePendingAwareText(wallet.walletId, changeKeysErrorText);
   const b = useBackend();
   const credential = useCredential(wallet.walletId, t(`${P}.notSent.ask`), null);
   const acting = useRef(false);
@@ -310,6 +312,7 @@ function UnsentUpdate({
     if (acting.current || busy || (what === "resend" && (!sends || !credential.ready))) return;
     acting.current = true;
     setBusy(true);
+    let granted: string | null = null;
     try {
       if (what === "discard") {
         await b.mnDiscardOperation(wallet.walletId, op.id);
@@ -318,9 +321,12 @@ function UnsentUpdate({
       }
       const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: op.debit });
       if (!grant) return;
+      granted = grant.id;
       onSent(await b.mnResendOperation(wallet.walletId, op.id, grant.id));
     } catch (e) {
-      credential.setError(changeKeysErrorText(e));
+      // A refusal before the lease leaves the grant unused.
+      if (granted) void b.revokeGrant(granted).catch(() => null);
+      credential.setError(await refusal(e));
     } finally {
       acting.current = false;
       setBusy(false);

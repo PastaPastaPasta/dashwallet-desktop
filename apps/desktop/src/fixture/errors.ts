@@ -15,6 +15,12 @@ const TXID = "7e".repeat(32);
 type Samples = { [K in ErrorData["kind"]]: { code: AppError["code"]; data: Extract<ErrorData, { kind: K }> } };
 
 const SAMPLES: Samples = {
+  sharedMessage: { code: "masternodes.shared_message", data: { kind: "sharedMessage", reason: "bad_signature", share: 2 } },
+  sharedStage: { code: "masternodes.shared_stage", data: { kind: "sharedStage", stage: "replied" } },
+  sharedFunding: { code: "masternodes.shared_funding_mismatch", data: { kind: "sharedFunding", reason: "fee_low", needed: 120_000 } },
+  sharedActorFee: { code: "masternodes.shared_actor_fee", data: { kind: "sharedActorFee", fee: 1_000 } },
+  sharedSendNetwork: { code: "app.shared_send_off", data: { kind: "sharedSendNetwork", network: "mainnet" } },
+  sharedUnsupported: { code: "app.shared_send_unsupported", data: { kind: "sharedUnsupported", sessionKind: "key_change" } },
   retryAfter: { code: "vault.throttled", data: { kind: "retryAfter", secs: 90 } },
   wrongPassphrase: { code: "vault.wrong_passphrase", data: { kind: "wrongPassphrase", failedAttempts: 3, retryAfterSecs: 60 } },
   rpc: { code: "console.rpc_error", data: { kind: "rpc", rpcCode: -8, rpcMessage: "Block height out of range" } },
@@ -81,7 +87,7 @@ const SAMPLES: Samples = {
   masternodeKey: { code: "masternodes.key_mismatch", data: { kind: "masternodeKey", role: "owner" } },
   unsupported: { code: "masternodes.unsupported", data: { kind: "unsupported", feature: "shared_masternodes", field: null } },
   reason: { code: "send.broadcast_rejected", data: { kind: "reason", reason: "bad-txns-inputs-missingorspent" } },
-  txAction: { code: "tx_action_refused", data: { kind: "txAction", refusal: "instantLocked" } },
+  txAction: { code: "tx_action_refused", data: { kind: "txAction", refusal: "instantLocked", walletId: null } },
   number: { code: "height_out_of_range", data: { kind: "number", value: 9_999_999 } },
   size: { code: "contact.details_too_long", data: { kind: "size", bytes: 4096, max: 2048 } },
   outpoint: { code: "outpoint_not_found", data: { kind: "outpoint", txid: TXID, vout: 1 } },

@@ -117,6 +117,11 @@ pub struct UnreadableSession {
     pub role: SharedRole,
     /// What `SharedSession.discardable` reads: nothing of it may be out.
     pub discardable: bool,
+    /// `abandon_unreadable_shared_session` would spend one of its reserved
+    /// coins back to the wallet as of this read: out, not a
+    /// dissolve-together session, not settled by its stored columns, and
+    /// a reserved coin unspent and free of other pending spends.
+    pub abandonable: bool,
     /// The outpoints locked for it, `"txid:vout"`.
     pub reserved: Vec<String>,
     pub updated_at: u64,
@@ -315,6 +320,13 @@ pub struct SharedSession {
     /// session follows its own rule. The call can still refuse on a newer
     /// state or while another call holds the session.
     pub discardable: bool,
+    /// `abandon_shared_session` would spend (or, for a key change not yet
+    /// out, release) as of this read, by the rule it refuses by: a
+    /// registration out and not `confirmed` or `conflicted`; a key change
+    /// of this wallet's funding, not `confirmed`, `conflicted` or `dead`;
+    /// once out, each with a reserved coin unspent and free of other
+    /// pending spends. A dissolve-together session never is.
+    pub abandonable: bool,
     pub warnings: Vec<SharedWarning>,
     /// The terms this wallet last approved (M-1 case 2's diff base).
     pub approved_terms: Option<ShareTermsView>,

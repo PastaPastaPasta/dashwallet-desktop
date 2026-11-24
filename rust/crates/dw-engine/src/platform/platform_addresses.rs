@@ -39,6 +39,12 @@ pub struct PlatformAddressBalance {
     pub synced_at: Option<u64>,
     /// A sync pass runs now.
     pub syncing: bool,
+    /// The network's protocol version as the session last knew it has
+    /// address funds transitions: a send, a top-up of an identity or a
+    /// move from these addresses. Below it they are refused
+    /// (`platform.feature_off`).
+    #[serde(default)]
+    pub sends_active: bool,
 }
 
 /// One funded Platform address.
@@ -70,6 +76,13 @@ pub enum PlatformActivityKind {
     /// addresses (1.0 C3a): `to` is the identity (base58). Settled as a
     /// move, by its inputs' proved nonces.
     ToIdentity,
+    /// A payment to a DashPay contact (`contact`) from the Platform balance
+    /// (C-funding P10): a withdrawal to the contact's Core address (`to`).
+    ContactPayment,
+    /// An unshield of this wallet's to its Platform address (`address`,
+    /// C-routes C1-9): `Pending` from the dispatch hook's accept until its
+    /// artifact reads executed (`Done`) or not executed (`Failed`).
+    FromShielded,
 }
 
 /// Where an activity row stands.
@@ -127,6 +140,9 @@ pub struct PlatformActivity {
     /// dpp's estimate for it.
     #[serde(default)]
     pub estimated: bool,
+    /// A `ContactPayment`'s contact, from its payout row (C-funding P10).
+    #[serde(default)]
+    pub contact: Option<super::payments::Counterparty>,
 }
 
 /// What "Move to Dash wallet" takes and pays out, at the network's

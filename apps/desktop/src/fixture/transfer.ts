@@ -44,6 +44,13 @@ export function transferScenarios(base: Base) {
       w.pending.shielded!.shield = "proofWaiting";
       return w;
     },
+    /** The reference wallet on mainnet: Shielded → Platform is off there (flag `unshield_to_platform`). */
+    "transfer-mainnet": (t: ThemeName | null) => {
+      const w = base(t);
+      w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
+      if (w.pending.networkChoice) w.pending.networkChoice = { ...w.pending.networkChoice, chosen: "mainnet", saved: true };
+      return w;
+    },
     /** The next Shielded call (an add, a move to the Dash wallet) is refused by Platform. */
     "transfer-shielded-refused": (t: ThemeName | null) => {
       const w = base(t);

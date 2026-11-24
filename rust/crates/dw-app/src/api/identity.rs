@@ -8,7 +8,7 @@
 //! the moment they arrive and never logged.
 
 mod credits;
-mod flows;
+pub(crate) mod flows;
 mod invitations;
 mod keys;
 mod names;
@@ -30,7 +30,7 @@ use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
 use self::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
-    PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
+    PlatformAddressRow, PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
     PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
 };
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
@@ -39,7 +39,7 @@ use self::registration::{
 };
 use self::shielded::{
     FundAmount, MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
-    ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding,
+    ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding, UnshieldToPlatformOutcome,
 };
 use self::startup::{
     DashPayStatus, DashPaySyncStatus, ProtocolCompatibility, QuorumSource, SyncPassReport,
@@ -471,19 +471,21 @@ commands! {
     }
 
     /// Tops the identity up with `amount` of the Platform addresses'
-    /// credits under `grant`.
+    /// credits under `grant`. `fee_input`: the quote's input 0; a plan
+    /// with another fee source or claim is `credits.quote_changed`.
     #[facade("DashPay::top_up_from_platform")]
     fn credits_top_up_from_platform(
         state,
         wallet_id: String,
         identity: String,
         amount: WithdrawAmount,
+        fee_input: Option<PlatformAddressRow>,
         grant: String,
     ) -> TopUpFromPlatformOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         let _in_flight = state.broadcasting();
         let out = dashpay
-            .top_up_from_platform(identity, amount.into(), grant)
+            .top_up_from_platform(identity, amount.into(), fee_input.map(Into::into), grant)
             .await?;
         Ok(out.into())
     }
@@ -926,6 +928,39 @@ commands! {
         let credits = shielded::parse_credits(&credits)?;
         Ok(dashpay
             .unshield_to_core(credits, to, grant, confirm_unrecorded)
+            .await?
+            .into())
+    }
+
+    /// What moving `credits` from Shielded to the wallet's own Platform
+    /// address `to` costs (`null` for its receive address).
+    #[facade("DashPay::unshield_to_platform_quote")]
+    fn unshield_to_platform_quote(
+        state,
+        wallet_id: String,
+        credits: String,
+        to: Option<String>,
+    ) -> ShieldedSpendQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay.unshield_to_platform_quote(credits, to).await?.into())
+    }
+
+    /// Shielded → Platform: unshields `credits` to the wallet's own Platform
+    /// address `to` under `grant`.
+    #[facade("DashPay::unshield_to_platform")]
+    fn unshield_to_platform(
+        state,
+        wallet_id: String,
+        credits: String,
+        to: Option<String>,
+        grant: String,
+        confirm_unrecorded: bool,
+    ) -> UnshieldToPlatformOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay
+            .unshield_to_platform(credits, to, grant, confirm_unrecorded)
             .await?
             .into())
     }
