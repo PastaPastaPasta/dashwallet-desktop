@@ -235,6 +235,8 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
       network: { kind: "testnet", dirName: "testnet", unitName: "tDASH" },
       appVersion: "0.1.0",
       engineVersion: "fixture",
+      // A dev build from main, as the release workflow stamps one.
+      buildVersion: "0.1.0-dev.57.g1a2b3c4",
     },
     passphrase: FIXTURE_PASSPHRASE,
     lock: unlocked([FIXTURE_WALLET_ID]),

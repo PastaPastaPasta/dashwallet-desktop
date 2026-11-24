@@ -259,6 +259,13 @@ impl Payees {
         self.party(contact);
     }
 
+    /// The contact a payment to `script` pays, unless two sides share it.
+    pub(crate) fn sent_to(&self, script: &ScriptBuf) -> Option<Identifier> {
+        (*self.scripts.get(script)?)
+            .filter(|s| s.direction == ActivityDirection::Sent)
+            .map(|s| s.contact)
+    }
+
     /// The counterparty record of `contact`.
     pub(crate) fn counterparty(&self, contact: &Identifier) -> Option<Counterparty> {
         self.parties.get(contact).cloned()

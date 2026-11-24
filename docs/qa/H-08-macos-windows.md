@@ -158,8 +158,8 @@ On every machine, in the clean account, before anything else has been installed.
 - [ ] Create a wallet with a passphrase. Write the recovery phrase on paper only. Expected: Home with a zero
       balance, syncing.
 - [ ] Fund it from the faucet. Expected: the payment shows in Activity, then confirms.
-- [ ] Settings ▸ About shows version `X.Y.Z` (the candidate's version without `-rc.N`; the exact candidate is the
-      file you verified in section 1). Tools ▸ Information shows a warning banner (a candidate is a pre-release
+- [ ] Settings ▸ About shows the candidate's tag without its `v` (`X.Y.Z-rc.N`; the release workflow stamps the
+      tag's version into the build). Tools ▸ Information shows a warning banner (a candidate is a pre-release
       build; a higher-priority warning, such as the network one, may be the one shown). Note its text.
 - [ ] Screenshots in light and dark: Home, Activity, Settings, Settings ▸ About.
 

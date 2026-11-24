@@ -455,7 +455,9 @@ impl AppDb {
     /// set and an entry appended to `abandon_log` with no outcome. A txid
     /// already logged keeps its entry, whose missing or `not_sent` outcome
     /// becomes `maybe_sent`: its bytes leave again, after a hand-off that may
-    /// be out or that a crash may follow. `legacy_bound` is cleared when
+    /// be out or that a crash may follow. That entry takes `fee` and
+    /// `inputs` where it has none (an older build's legacy entry): the same
+    /// txid is the same spend. `legacy_bound` is cleared when
     /// `inputs`, a JSON array of `"txid:vout"`, hold every outpoint of the
     /// stored `reserved`. `Some(logged)`, whether the txid was already
     /// logged; `None`, and nothing written, when the session is gone or isn't
@@ -510,6 +512,19 @@ impl AppDb {
                     whole
                 ],
             )?;
+            if let Some((index, _)) = entry {
+                tx.execute(
+                    "UPDATE shared_mn_sessions SET abandon_log = json_set(abandon_log,
+                         '$[' || ?3 || '].fee', COALESCE(
+                             json_extract(abandon_log, '$[' || ?3 || '].fee'), ?4),
+                         '$[' || ?3 || '].inputs', json(CASE
+                             WHEN json_array_length(abandon_log, '$[' || ?3 || '].inputs') > 0
+                             THEN json_extract(abandon_log, '$[' || ?3 || '].inputs')
+                             ELSE ?5 END))
+                     WHERE wallet_id = ?1 AND id = ?2",
+                    params![wallet_id, id, index, sql_u64(fee), inputs],
+                )?;
+            }
             if let Some((index, None | Some(AbandonOutcome::NotSent))) = entry {
                 set_entry_outcome(
                     &tx,
@@ -1427,6 +1442,49 @@ mod tests {
             !db.delete_out_shared_session_durable(W, &id(3), "x", 60)
                 .unwrap()
         );
+    }
+
+    /// A spend logged again under a legacy entry's txid fills the fee and
+    /// inputs that entry lacks, and keeps a logged fee and inputs.
+    #[test]
+    fn a_legacy_entry_takes_the_fee_and_inputs_of_its_spend() {
+        let db = AppDb::open_in_memory().unwrap();
+        out(&db, 1, &[("t", 0), ("u", 1)]);
+        db.conn()
+            .execute(
+                "UPDATE shared_mn_sessions SET abandon_txid = 'a', abandon_log = json_array(
+                     json_object('txid', 'a', 'fee', NULL, 'inputs', json('[]'),
+                         'signed_at', 5, 'outcome', 'maybe_sent', 'code', NULL,
+                         'legacy', json('true')))
+                 WHERE id = ?1",
+                [id(1)],
+            )
+            .unwrap();
+        let entry = |db: &AppDb| -> (Option<i64>, String, bool, String) {
+            db.conn()
+                .query_row(
+                    "SELECT json_extract(abandon_log, '$[0].fee'),
+                         json_extract(abandon_log, '$[0].inputs'),
+                         json_extract(abandon_log, '$[0].legacy'),
+                         json_extract(abandon_log, '$[0].outcome')
+                     FROM shared_mn_sessions WHERE id = ?1",
+                    [id(1)],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(abandon(&db, 1, "a", &[("t", 0), ("u", 1)]), Some(true));
+        let filled = (
+            Some(226),
+            "[\"t:0\",\"u:1\"]".to_string(),
+            true,
+            "maybe_sent".into(),
+        );
+        assert_eq!(entry(&db), filled);
+        assert_eq!(log(&db, 1).len(), 1, "the same entry");
+        db.set_shared_session_abandon_durable(W, &id(1), "a", &[9], 9, &inputs(&[("t", 0)]), 50)
+            .unwrap();
+        assert_eq!(entry(&db), filled, "kept");
     }
 
     /// Sol r6 M1: the legacy mark clears only with a spend taking every

@@ -126,7 +126,7 @@ fn key_change_refusal(stage: SharedStage) -> MasternodesError {
 
 /// An approver's refusal of the funder's calls: only the funder can sign
 /// the fee inputs again (`providertx_service.cpp:1229-1232`).
-fn not_funder() -> MasternodesError {
+pub(super) fn not_funder() -> MasternodesError {
     MasternodesError::SharedStage {
         stage: role_name(SharedRole::Participant).into(),
     }
@@ -266,7 +266,7 @@ impl KeyChange {
     }
 
     /// The funder's fee inputs (none for an approver).
-    fn own_inputs(&self) -> Vec<OutPoint> {
+    pub(super) fn own_inputs(&self) -> Vec<OutPoint> {
         self.funded.as_ref().map(Funded::inputs).unwrap_or_default()
     }
 }
@@ -1180,19 +1180,7 @@ impl NetworkSession {
         funded: &Funded,
         fence: crate::coins::CoinFence,
     ) -> Result<(), MasternodesError> {
-        let tx: Transaction = k
-            .row
-            .signed_tx
-            .as_deref()
-            .and_then(|b| dashcore::consensus::deserialize(b).ok())
-            .ok_or_else(|| EngineError::Internal("the saved key change".into()))?;
-        self.check_no_pending_ops(wallet, k.hash, None).await?;
-        self.check_no_key_change_out(wallet, k.hash, Some(&k.row.id))
-            .await?;
-        self.check_resend_inputs(wallet, &tx)?;
-        let chain = self.shared_chain(wallet).await?;
-        let reg = registration_of(&chain, k.hash)?;
-        check_seen_payees(&chain, k.hash, &reg.shares, k.payload.voting_key_id)?;
+        let tx = self.key_change_resend_checks(wallet, k).await?;
         let lease = self.shared_lease(wallet, grant).await?;
         let result = async {
             let (charge, _) = charge_fee(&lease, funded.fee)?;
@@ -1206,6 +1194,31 @@ impl NetworkSession {
         .await;
         lease.end();
         result
+    }
+
+    /// The funder's resend's checks before its lease (D23, MG-04 D7, D29):
+    /// no other operation or key change of the masternode pending, no other
+    /// pending spend holding an input, the seen reward scripts. The saved
+    /// bytes.
+    pub(super) async fn key_change_resend_checks(
+        &self,
+        wallet: WalletId,
+        k: &KeyChange,
+    ) -> Result<Transaction, MasternodesError> {
+        let tx: Transaction = k
+            .row
+            .signed_tx
+            .as_deref()
+            .and_then(|b| dashcore::consensus::deserialize(b).ok())
+            .ok_or_else(|| EngineError::Internal("the saved key change".into()))?;
+        self.check_no_pending_ops(wallet, k.hash, None).await?;
+        self.check_no_key_change_out(wallet, k.hash, Some(&k.row.id))
+            .await?;
+        self.check_resend_inputs(wallet, &tx)?;
+        let chain = self.shared_chain(wallet).await?;
+        let reg = registration_of(&chain, k.hash)?;
+        check_seen_payees(&chain, k.hash, &reg.shares, k.payload.voting_key_id)?;
+        Ok(tx)
     }
 
     async fn key_change_sent(
@@ -1223,8 +1236,10 @@ impl NetworkSession {
     /// is spent: no other wallet can finish the request (its fee inputs'
     /// signatures are the funder's alone, made after the insert), so the
     /// reservation and its locks are released and the row kept, reading
-    /// `dead{abandoned}`; charged 0. Out, it spends a fee input to the
-    /// wallet as a registration's abandon does (§9.3). An approver has
+    /// `dead{abandoned}`; charged 0. Out, it spends every fee input it
+    /// holds to the wallet as a registration's abandon does (§9.3; MG-10
+    /// §4.4 change 4), refused `abandoning` while its last such spend may be
+    /// out. An approver has
     /// nothing to abandon (`shared_stage{participant}`); a settled session
     /// is `shared_stage{stage}`.
     pub(super) async fn abandon_key_change(
@@ -1239,10 +1254,7 @@ impl NetworkSession {
             return Err(not_funder());
         };
         let stage = self.key_change_stage(wallet, &k).await?;
-        if matches!(
-            stage,
-            SharedStage::Confirmed { .. } | SharedStage::Conflicted | SharedStage::Dead { .. }
-        ) {
+        if super::recovery::settled_stage(stage, true) {
             return Err(stage_refusal(stage));
         }
         if k.row.out_at.is_none() {
@@ -1264,6 +1276,7 @@ impl NetworkSession {
             self.masternodes.local_change();
             self.hub.pump.mark_balances(wallet);
         } else {
+            self.check_not_abandoning(wallet, &k.row).await?;
             let fence = self.coin_fence(wallet).await?;
             self.abandon_session(wallet, grant, &k.row, fence).await?;
         }
@@ -1420,6 +1433,7 @@ fn view(
         SharedStage::Stale if funder => SharedNext::Abandon,
         _ => SharedNext::Nothing,
     };
+    let next = super::store::after_abandon(&k.row, next);
     let mut warnings = Vec::new();
     if requested.operator_public_key != k.base.operator_public_key {
         warnings.push(SharedWarning::OperatorReset);
@@ -1478,5 +1492,6 @@ fn view(
         created_at: k.row.created_at,
         updated_at: k.row.updated_at,
         last_error: k.row.last_error.clone(),
+        recovery: Default::default(),
     }
 }
