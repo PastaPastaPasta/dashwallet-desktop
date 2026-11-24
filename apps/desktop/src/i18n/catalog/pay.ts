@@ -105,7 +105,7 @@ export const pay = {
     recipient: "Recipient {number}",
     remove: "Remove",
     platform: "A Dash Platform address can't be added to a payment. Pay it on its own.",
-    shielded: "A shielded address can't be added to a payment. Pay it on its own with Send from Shielded.",
+    shielded: "A shielded address can't be one of several recipients. Pay it on its own with Send from Shielded.",
     /** Shown under Add recipient while the feature is testnet-only. */
     testnetOnly: "Paying several recipients at once is available on test networks only in this version.",
   },

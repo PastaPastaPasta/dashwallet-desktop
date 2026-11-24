@@ -29,7 +29,7 @@ test.describe("a Shielded address in Pay to", () => {
     await payTo(page, "funded", "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf");
     await page.getByTestId("pay-add-recipient").click();
     await page.getByTestId("pay-more-2-address").fill(SHIELDED_ADDRESS);
-    await expect(page.getByTestId("pay-more-2").locator(".field-error").first()).toHaveText("A shielded address can't be added to a payment. Pay it on its own with Send from Shielded.");
+    await expect(page.getByTestId("pay-more-2").locator(".field-error").first()).toHaveText("A shielded address can't be one of several recipients. Pay it on its own with Send from Shielded.");
   });
 
   test("still says it cannot be paid when Shielded is not on", async ({ page }) => {
