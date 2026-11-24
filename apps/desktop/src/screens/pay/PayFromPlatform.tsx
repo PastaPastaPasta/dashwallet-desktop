@@ -17,6 +17,7 @@ import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
+import { addressSendsOff, MAINNET_OFF_COPY } from "../../platform/mainnetOff";
 import { hasUnansweredOp } from "../../platform/move";
 import { canRetry, heldSend, retryAsks, sendAmount, sendCanRetry, sendErrorText, sendFor, sendRefusalText, settledBy, staleConfirm, SEND_COPY as C, type PlatformSendFlow, type Settled } from "../../platform/send";
 import { GrantSheet } from "../tools/common";
@@ -250,7 +251,9 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
   const asked = sendAmount(max, amount.settled ? amount.duffs : undefined);
   // Nothing is quoted behind a result: the send's own events would check its amount against what it left.
   const showing = flow.step === "done";
-  const quote = usePlatformSendQuote(walletId, to, waiting || showing ? null : asked);
+  // On mainnet this version sends nothing new from Platform: only a held payment's retry is offered.
+  const off = addressSendsOff(network, balance.data);
+  const quote = usePlatformSendQuote(walletId, to, off || waiting || showing ? null : asked);
   const empty = balance.data === null || (balance.data !== undefined && BigInt(balance.data.credits) === 0n);
   const sheetOpen = confirmed !== null || flow.running || flow.step !== "confirm";
 
@@ -311,6 +314,29 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
       <GrantSheet grants={flow.grants} />
     </>
   );
+  const earlier = held?.to && (
+    <div className="field-hint" data-testid="platform-send-earlier">
+      <p>{C.earlier(credits(held.credits), held.to)}</p>
+      <DashButton variant="tintedBlue" size="small" data-testid="platform-send-retry-held" disabled={flow.running} onClick={() => void retryHeld()}>
+        {C.retryThat}
+      </DashButton>
+      {flow.noRetry && flow.step === "confirm" && (
+        <p className="form-problem" role="alert" data-testid="platform-send-no-retry-form">
+          {C.noRetry}
+        </p>
+      )}
+    </div>
+  );
+  if (off)
+    return (
+      <>
+        <p className="field-hint" role="status" data-testid="platform-send-mainnet-off">
+          {MAINNET_OFF_COPY.moveAndSend}
+        </p>
+        {earlier}
+        {sheet}
+      </>
+    );
   // A send that emptied the balance keeps its result sheet up.
   if (empty)
     return (
@@ -352,19 +378,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
           </span>
         )}
       </FormField>
-      {held?.to && (
-        <div className="field-hint" data-testid="platform-send-earlier">
-          <p>{C.earlier(credits(held.credits), held.to)}</p>
-          <DashButton variant="tintedBlue" size="small" data-testid="platform-send-retry-held" disabled={flow.running} onClick={() => void retryHeld()}>
-            {C.retryThat}
-          </DashButton>
-          {flow.noRetry && flow.step === "confirm" && (
-            <p className="form-problem" role="alert" data-testid="platform-send-no-retry-form">
-              {C.noRetry}
-            </p>
-          )}
-        </div>
-      )}
+      {earlier}
       {notice && (
         <p className="field-hint" role="status" data-testid="platform-send-notice">
           {notice}

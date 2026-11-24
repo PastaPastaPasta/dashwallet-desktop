@@ -28,6 +28,18 @@ export const transfer = {
   unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
   /** Shielded → Platform on a network where it is off (mainnet). */
   offOnNetwork: "Moving from Shielded to Platform isn't available on this network yet. Move the funds to your Dash wallet first, then to Platform.",
+  /** What this version keeps off on mainnet, each in place of its controls; `mainnetOffChip` beside the pool it can't reach. */
+  platform: {
+    mainnetOff: "This version can move and send from Platform addresses on test networks only.",
+    mainnetOffAdd: "This version can add Dash to Platform on test networks only.",
+    mainnetOffChip: "Test networks only",
+    /** In place of `mainnetOff` while the Platform addresses hold a balance. */
+    mainnetHeld: "{amount} is on your Platform addresses. It's still yours. This version can move it to your Dash wallet on test networks only.",
+    /** In place of both while a move made earlier is held: its exit is offered. */
+    mainnetHeldExit: "A move of {moveAmount} from Platform to your Dash wallet hasn't finished yet. You can finish it now, on the terms you already signed.",
+    /** After `mainnetHeldExit` while the balance outside the held move is above 0. */
+    mainnetHeldExitRest: "The rest of your Platform balance, {rest}, is still yours. This version can move it on test networks only.",
+  },
   none: {
     absent: "Transfers move Dash between your Dash wallet, Shielded and Platform. This version has neither Shielded nor Platform addresses.",
     inactive: "Transfers move Dash between your Dash wallet, Shielded and Platform. Shielded is not active on this network yet, and this version has no Platform addresses.",

@@ -15,6 +15,7 @@ import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
+import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
 
 export type PlatformMoveApi = Pick<Backend, "platformMoveToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -176,7 +177,7 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
     case "platform.grant_exceeded":
       return t("transfer.move.error.grantExceeded");
     case "platform.feature_off":
-      return t("transfer.move.error.featureOff");
+      return isAddressSendsOff(e) ? MAINNET_OFF_COPY.refused : t("transfer.move.error.featureOff");
     case "invalid_argument":
       return invalidArgumentText(e);
     default:
@@ -202,6 +203,10 @@ export const hasPendingMove = (activity: readonly PlatformActivity[] | null | un
  * is taken yet. */
 export const hasUnansweredOp = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
   !!activity?.some((a) => holdingKind(a) && a.state === "pending");
+
+/** The move, contact payment or top-up from Platform that holds the addresses, the newest first: on
+ * mainnet, where new moves are off, Move stays offered as its exit. A held send's exit is its retry, on Pay. */
+export const heldExitOp = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity | null => activity?.find((a) => a.kind !== "send" && isHeldOp(a)) ?? null;
 
 /** Whether a payment (a `send`, not a move) holds the Platform addresses and no move does: the Move card says so. */
 export const sendHolds = (activity: readonly PlatformActivity[] | null | undefined): boolean =>

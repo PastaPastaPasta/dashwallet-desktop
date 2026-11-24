@@ -870,6 +870,16 @@ const SCENARIOS = {
     p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
     return w;
   },
+  /** As `platform-move-failed-may-land`, with 0.1 more on an address the held move does not take: its exit moves the 0.4. */
+  "platform-move-held-and-rest": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    p.heldInputs = { "pm-held": p.addresses.map((a) => a.address) };
+    p.addresses.push({ address: "tdash1q3rest7y5v9nmp3dfz0ht6l2wrk8s4xj7ga5c9e3v0u6y2pnt4qk5m8zr", credits: "10000000000" });
+    return w;
+  },
   /** The next "Add from Dash wallet" is applied (as the base world does). */
   "paddr-fund-applies": (t) => {
     const w = base(t);

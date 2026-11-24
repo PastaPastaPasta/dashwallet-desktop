@@ -8,17 +8,19 @@ import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs } from "../api/pending";
-import { keys, shieldedDuffs, useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote, usePoolBalances, useShieldedStatus, useSyncStatus, useUtxos } from "../api/queries";
+import { keys, shieldedDuffs, useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformAddresses, usePlatformMoveQuote, usePoolBalances, useShieldedStatus, useSyncStatus, useUtxos } from "../api/queries";
 import { navigate, useUi } from "../app/ui";
-import { DashButton, Icon, VisuallyHidden } from "../components/basics";
+import { Chip, DashButton, Icon, VisuallyHidden } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { useT } from "../i18n";
 import { known } from "../format/homeBalance";
 import { isSyncing } from "../format/sync";
 import { useModel } from "../onboarding/model";
+import { FROM_PLATFORM_COPY } from "../dashpay/topupSource";
 import { FUND_COPY, fundErrorText, fundRowView } from "../platform/fund";
-import { MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
+import { addressSendsOff, MAINNET_OFF_COPY } from "../platform/mainnetOff";
+import { heldExitOp, MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
 import { SHIELDED_COPY, shieldedErrorText } from "../shielded/flow";
 import { shieldedSyncing } from "../shielded/syncing";
 import {
@@ -26,8 +28,12 @@ import {
   defaultRoute,
   feeText,
   listedPools,
+  mainnetOff,
   noRouteText,
+  platformChip,
+  platformToCoreOff,
   ROUTES,
+  routeActive,
   routeWhy,
   shieldedRoute,
   transferFor,
@@ -54,6 +60,7 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   const statusRead = useShieldedStatus(walletId);
   const status = statusRead.isError ? null : statusRead.data;
   const pools = usePoolBalances(walletId);
+  const addresses = usePlatformAddresses(walletId).data;
   const hold = usePlatformHold(walletId, transferFor(b, walletId).flows.move);
   const fmt = useAmount(network);
   const sync = useSyncStatus().data;
@@ -68,7 +75,14 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
         ? pools.platform === "loading"
           ? undefined
           : null
-        : { duffs: pools.platform, dust: BigInt(pools.platformDust) > 0n, dustText: MOVE_COPY.card.dust(fmt(creditsToDuffs(pools.platformDust))), block: hold.block, waitingText: hold.waitingText },
+        : {
+            duffs: pools.platform,
+            dust: BigInt(pools.platformDust) > 0n,
+            dustText: MOVE_COPY.card.dust(fmt(creditsToDuffs(pools.platformDust))),
+            block: hold.block,
+            waitingText: hold.waitingText,
+            mainnet: addresses && addressSendsOff(network, addresses) ? mainnetOff(addresses.credits, heldExitOp(hold.activity.data), fmt) : undefined,
+          },
     coreSyncing: sync !== undefined && isSyncing(sync),
   };
 }
@@ -149,6 +163,11 @@ function Picker({ t, end, pools, fmt, id }: { t: TransferModel; end: "from" | "t
           <li key={pool}>
             <button type="button" className="transfer-picker-item" data-testid={`transfer-picker-${pool}`} aria-pressed={t[end] === pool} onClick={() => t.pick(end, pool, pools)}>
               <span className="transfer-end-pool">{T.pools[pool]}</span>
+              {pool === "platform" && platformChip(pools, end) && (
+                <span data-testid="transfer-picker-platform-chip">
+                  <Chip>{MAINNET_OFF_COPY.chip}</Chip>
+                </span>
+              )}
               <span className="transfer-end-balance">
                 <bdi dir="ltr">{balance === null ? T.unknownBalance : fmt(balance)}</bdi>
               </span>
@@ -343,7 +362,13 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
         if (ready) t.review();
       }}
     >
-      <p className="sheet-text">{INTRO.platformToCore.text}</p>
+      {p?.mainnet?.held ? (
+        <p className="sheet-text" data-testid="transfer-mainnet-exit">
+          {p.mainnet.text}
+        </p>
+      ) : (
+        <p className="sheet-text">{INTRO.platformToCore.text}</p>
+      )}
       {why && (
         <p className="field-hint" role="status" id={`${id}-why`} data-testid="transfer-unavailable">
           {why}
@@ -388,7 +413,7 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
           {T.cancel}
         </DashButton>
         <DashButton variant="filledBlue" size="large" type="submit" data-testid="transfer-continue" disabled={!ready} why={why ?? refusal ?? T.quoting} whyId={why ? `${id}-why` : refusal ? `${id}-fee` : undefined}>
-          {T.continue}
+          {p?.mainnet?.held ? FROM_PLATFORM_COPY.held.action : T.continue}
         </DashButton>
       </div>
     </form>
@@ -445,6 +470,7 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
     );
   const route = t.route;
   const why = route && route !== "unsupported" ? routeWhy(route, pools, t.flows) : null;
+  const off = route === "platformToCore" && !routeActive(route, t.flows) ? platformToCoreOff(pools) : null;
   return (
     <>
       <div className="transfer-ends">
@@ -458,6 +484,10 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
       {route === "unsupported" ? (
         <p className="field-hint" role="status" data-testid="transfer-unavailable">
           {unsupportedText(t.from, t.to)}
+        </p>
+      ) : off ? (
+        <p className="field-hint" role="status" data-testid="transfer-mainnet-off">
+          {off}
         </p>
       ) : route === "platformToCore" ? (
         <WholeBalanceForm t={t} pools={pools} why={why} network={network} walletId={walletId} />

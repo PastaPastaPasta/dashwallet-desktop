@@ -7,10 +7,11 @@ import { isAppError, type Backend } from "../api/backend";
 import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
-import { CREDITS_PER_DUFF, SHIELDED_CODES } from "../api/pending";
+import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES } from "../api/pending";
 import { messageTable, t } from "../i18n";
 import { Model } from "../onboarding/model";
 import { fundFor, type PlatformFundApi, type PlatformFundFlow } from "../platform/fund";
+import { MAINNET_OFF_COPY } from "../platform/mainnetOff";
 import { MOVE_COPY, moveFor, type MoveBlock, type PlatformMoveApi, type PlatformMoveFlow } from "../platform/move";
 import { SHIELDED_COPY, shieldedFor, type ShieldedApi, type ShieldedFlow, type ShieldedKind } from "../shielded/flow";
 import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
@@ -28,8 +29,9 @@ export const ROUTES: Record<RouteId, { from: Pool; to: Pool }> = {
   platformToCore: { from: "platform", to: "core" },
 };
 
-/** The routes the engine keeps off on mainnet (`platform.feature_off`), each by its flag. */
-export const OFF_ON_MAINNET: ReadonlySet<RouteId> = new Set<RouteId>(["shieldedToPlatform"]);
+/** The routes the engine keeps off on mainnet (`platform.feature_off`), each by its flag. Platform →
+ * Dash wallet is off there too, but still exits a held move (`platformToCoreOff`). */
+export const OFF_ON_MAINNET: ReadonlySet<RouteId> = new Set<RouteId>(["shieldedToPlatform", "coreToPlatform"]);
 
 /** The route from `from` to `to`; `"unsupported"` where no desktop command moves it (Platform →
  * Shielded) or the route is off on this network; `null` for the same pool. */
@@ -40,7 +42,18 @@ export function routeOf(from: Pool, to: Pool, mainnet = false): RouteId | "unsup
 }
 
 /** Why the ends make no route: off on this network, or no command for it. */
-export const unsupportedText = (from: Pool, to: Pool): string => (from === "shielded" && to === "platform" ? TRANSFER_COPY.offOnNetwork : TRANSFER_COPY.unsupported);
+export const unsupportedText = (from: Pool, to: Pool): string =>
+  from === "shielded" && to === "platform" ? TRANSFER_COPY.offOnNetwork : from === "core" && to === "platform" ? MAINNET_OFF_COPY.add : TRANSFER_COPY.unsupported;
+
+/** Platform → Dash wallet where this version keeps it off (mainnet): the line in place of its form;
+ * `null` where the route is on, or a held move's exit is what it offers. */
+export function platformToCoreOff(pools: Pools): string | null {
+  const off = pools.platform?.mainnet;
+  return off && !off.held ? off.text : null;
+}
+
+/** The picker's Platform row says it can't be reached from this end on this network. */
+export const platformChip = (pools: Pools, end: "from" | "to"): boolean => !!pools.platform?.mainnet && (end === "to" || !pools.platform.mainnet.held);
 
 export const TRANSFER_COPY = {
   get title() {
@@ -167,9 +180,26 @@ export interface Pools {
   shielded: { active: boolean; syncing: boolean; duffs: number | null } | null | undefined;
   /** `null`: this dw-app has no Platform addresses; `undefined`: still being read. `duffs`: what a
    * move of everything would take. */
-  platform: { duffs: number | null; dust: boolean; dustText: string; block: MoveBlock | null; waitingText: string } | null | undefined;
+  platform: { duffs: number | null; dust: boolean; dustText: string; block: MoveBlock | null; waitingText: string; mainnet?: MainnetOff } | null | undefined;
   /** The wallet's Core sync is running and not caught up: a shield's funding waits for it. */
   coreSyncing?: boolean;
+}
+
+/** Set where this version keeps the Platform addresses' funds paths off (mainnet). `held`: a move made
+ * earlier still holds them, so Move stays offered as its exit and `text` says so above it; otherwise
+ * `text` is the line in place of Move. */
+export interface MainnetOff {
+  held: boolean;
+  text: string;
+}
+
+/** The mainnet state from the addresses' credits and the held move (`heldExitOp`), if any. */
+export function mainnetOff(credits: string, held: { credits: string } | null, fmt: (duffs: number) => string): MainnetOff {
+  const duffs = creditsToDuffs(credits);
+  if (!held) return { held: false, text: duffs > 0 ? MAINNET_OFF_COPY.held(fmt(duffs)) : MAINNET_OFF_COPY.moveAndSend };
+  const rest = creditsToDuffs(String(BigInt(credits) - BigInt(held.credits)));
+  const exit = MAINNET_OFF_COPY.heldExit(fmt(creditsToDuffs(held.credits)));
+  return { held: true, text: rest > 0 ? `${exit} ${MAINNET_OFF_COPY.heldExitRest(fmt(rest))}` : exit };
 }
 
 /** The pools the picker lists: the Dash wallet always, the others while this dw-app has them. */

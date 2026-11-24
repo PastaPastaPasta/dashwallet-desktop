@@ -27,6 +27,7 @@ import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import type { ContactPayQuoteInfo } from "../api/generated/ContactPayQuoteInfo";
 import type { PayoutStateName } from "../api/generated/PayoutStateName";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
+import { PLATFORM_ADDRESS_SENDS } from "../platform/mainnetOff";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, fundDuffs, HANDLERS, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
@@ -255,9 +256,10 @@ function moveWorld(world: World, to: ChosenNetwork) {
 const sum = (addresses: PlatformWorld["addresses"]) => addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
 const total = (p: PlatformWorld) => sum(p.addresses);
 
-/** The inputs of a held top-up from Platform: its exit (C3-9) moves those only. `null`: no such hold. */
+/** The inputs of a held move, contact payment or top-up from Platform, where the world names them: its
+ * exit (C3-9) moves those only. `null`: no such hold. */
 function exitInputs(p: PlatformWorld): string[] | null {
-  const held = p.activity.find((a) => a.kind === "toIdentity" && isHeldOp(a));
+  const held = p.activity.find((a) => a.kind !== "send" && isHeldOp(a));
   return held ? (p.heldInputs?.[held.id] ?? null) : null;
 }
 
@@ -270,9 +272,26 @@ function moveSources(p: PlatformWorld) {
 /** What a move of everything would take: nothing when it would be refused (it does not clear the fee). */
 const movable = (p: PlatformWorld) => (total(p) > MOVE_FEE_CREDITS ? total(p) : 0n);
 
-function balance(p: PlatformWorld): PlatformAddressBalance {
+/** As the engine's `address_sends_open`: this version keeps the addresses' funds paths off on mainnet. */
+const sendsOff = (world: Ctx["world"]) => world.launch.network.kind === "mainnet";
+
+function refuseSendsOff(world: Ctx["world"]) {
+  if (sendsOff(world)) throw fail("platform.feature_off", PLATFORM_ADDRESS_SENDS, { kind: "feature", feature: PLATFORM_ADDRESS_SENDS });
+}
+
+function balance(world: Ctx["world"], p: PlatformWorld): PlatformAddressBalance {
   const credits = total(p) + BigInt(p.dust);
-  return { credits: String(credits), movableCredits: String(movable(p)), duffs: Number(movable(p) / CREDITS_PER_DUFF), addresses: [...p.addresses].sort((a, b) => Number(BigInt(b.credits) - BigInt(a.credits))), syncedAt: p.syncedAt, syncing: false, sendsActive: p.sendsActive ?? true };
+  const off = sendsOff(world);
+  return {
+    credits: String(credits),
+    movableCredits: String(movable(p)),
+    duffs: Number(movable(p) / CREDITS_PER_DUFF),
+    addresses: [...p.addresses].sort((a, b) => Number(BigInt(b.credits) - BigInt(a.credits))),
+    syncedAt: p.syncedAt,
+    syncing: false,
+    sendsActive: !off && (p.sendsActive ?? true),
+    sendsOff: off ? PLATFORM_ADDRESS_SENDS : null,
+  };
 }
 
 /** The platform state of `world`, or the absent-command rejection. */
@@ -347,6 +366,8 @@ function moveCredits(p: PlatformWorld, amount: WithdrawAmount): bigint {
 function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQuote {
   wallet(ctx.world, walletId);
   const p = platformOf(ctx.world, "platform_move_to_core_quote");
+  // On mainnet only a held move's exit passes.
+  if (!p.activity.some(isHeldOp)) refuseSendsOff(ctx.world);
   // As the engine's quote: a send that may still land holds the next move, refused before any passphrase.
   const sending = p.activity.find((a) => a.kind === "send" && isHeldOp(a));
   if (sending) throw moveHeld(sending.id);
@@ -425,6 +446,8 @@ const unknownOperation = () => fail("invalid_argument", "unknown or used operati
 function sendQuote(ctx: Ctx, walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): PlatformSendQuote {
   wallet(ctx.world, walletId);
   const p = platformOf(ctx.world, "platform_send_quote");
+  // On mainnet only a held send's exact retry passes.
+  if (sendsOff(ctx.world) && !p.activity.some((a) => a.id === retryOf && a.kind === "send" && isHeldOp(a) && retriedBy(p.terms[a.id], to.trim(), amount))) refuseSendsOff(ctx.world);
   const address = recipient(ctx.world, p, to);
   const retry = retryOf === null ? holdFor(p, address, amount) : namedRetry(p, retryOf, address, amount);
   const operation = `op-${p.nextOperation++}`;
@@ -497,6 +520,7 @@ const NOT_BLOCKING: readonly PendingPlatformFund["state"][] = ["checking", "tooS
 function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): PlatformFundQuote {
   const w = wallet(ctx.world, walletId);
   const p = platformOf(ctx.world, call);
+  refuseSendsOff(ctx.world);
   if (duffs < FUND_MIN_DUFFS) throw fail("credits.below_minimum", "below the minimum", { kind: "limit", duffs: FUND_MIN_DUFFS });
   // As the engine: a lock that is checking, too small or unsupported blocks no new add.
   const blocking = p.funds.find((f) => !NOT_BLOCKING.includes(f.state));
@@ -579,7 +603,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   ...RECOVERY_HANDLERS,
   platform_addresses: ({ walletId }: { walletId: string }, { world }: Ctx) => {
     wallet(world, walletId);
-    return balance(platformOf(world, "platform_addresses"));
+    return balance(world, platformOf(world, "platform_addresses"));
   },
   platform_activity: ({ walletId }: { walletId: string }, { world }: Ctx) => {
     wallet(world, walletId);
@@ -589,11 +613,13 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     wallet(world, walletId);
     const p = platformOf(world, "platform_addresses_sync");
     p.syncedAt = Math.floor(FIXTURE_NOW.getTime() / 1000);
-    return balance(p);
+    return balance(world, p);
   },
   platform_receive_address: ({ walletId }: { walletId: string }, { world }: Ctx) => {
     wallet(world, walletId);
-    return platformOf(world, "platform_receive_address").receive;
+    const p = platformOf(world, "platform_receive_address");
+    refuseSendsOff(world);
+    return p.receive;
   },
   platform_send_quote: ({ walletId, to, amount, retryOf }: { walletId: string; to: string; amount: WithdrawAmount; retryOf?: string | null }, ctx: Ctx) => sendQuote(ctx, walletId, to, amount, retryOf ?? null),
   // As the engine: a `platformOp` grant of the quote's credits, the only grant its operation's send takes.
@@ -613,6 +639,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     wallet(world, walletId);
     const p = platformOf(world, "platform_send");
     const op = p.operations[operation];
+    if (!op?.quote.retryOf) refuseSendsOff(world);
     // An operation is the session's and single use: unknown or used is quoted again.
     if (!op || op.used) throw unknownOperation();
     // Only the grant issued for it pays it: any other is refused unused, and the operation stays.
