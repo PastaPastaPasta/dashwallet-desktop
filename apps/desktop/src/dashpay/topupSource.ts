@@ -50,7 +50,7 @@ export const FROM_PLATFORM_COPY = withTable(messageTable("dashpay.topUp.fromPlat
     },
   }),
   failed: from("failed", ["title", "text"]),
-  error: withTable(from("error", ["short"]), {
+  error: withTable(from("error", ["short", "quoteChanged"]), {
     below: (min: string) => t("dashpay.topUp.fromPlatform.error.below", { min }),
   }),
 });
@@ -158,6 +158,8 @@ export function fromPlatformErrorText(e: unknown, amount: (duffs: number) => str
       return e.data?.kind === "creditMinimum" ? FROM_PLATFORM_COPY.error.below(amount(creditsToDuffs(e.data.min))) : FROM_PLATFORM_COPY.error.short;
     case "platform.insufficient_credits":
       return FROM_PLATFORM_COPY.error.short;
+    case "credits.quote_changed":
+      return FROM_PLATFORM_COPY.error.quoteChanged;
     case "platform.feature_off":
       return SOURCE_COPY.notOffered;
     default:

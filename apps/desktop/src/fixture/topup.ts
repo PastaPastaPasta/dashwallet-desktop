@@ -255,10 +255,13 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       const fee = FROM_PLATFORM_RULES.fee;
       return { credits: String(credits), feeCredits: String(fee), debitCredits: String(debit), inputs, grant: { maxDuffs: 0, maxCredits: String(debit) } };
     },
-    credits_top_up_from_platform: ({ walletId, identity, amount, grant }, ctx) => {
+    credits_top_up_from_platform: ({ walletId, identity, amount, feeInput, grant }, ctx) => {
       const { world } = ctx;
       const dp = d.dashpay(world, walletId, identity);
       const { p, credits, inputs, debit } = fromPlatformChecks(world, amount);
+      // As the engine: the fee source and its claim Confirm showed, or nothing (before the grant).
+      if (feeInput && (inputs[0]?.address !== feeInput.address || inputs[0]?.credits !== feeInput.credits))
+        throw fail("credits.quote_changed", "the fee input changed since this top-up was quoted");
       const fee = FROM_PLATFORM_RULES.fee;
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");

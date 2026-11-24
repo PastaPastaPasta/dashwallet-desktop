@@ -25,6 +25,7 @@ import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
 import type { NetworkSwitch } from "./generated/NetworkSwitch";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance";
+import type { PlatformAddressRow } from "./generated/PlatformAddressRow";
 import type { LockFinish } from "./generated/LockFinish";
 import type { LockKind } from "./generated/LockKind";
 import type { ShieldedActivity } from "./generated/ShieldedActivity";
@@ -613,7 +614,7 @@ export interface Backend {
   /** C-routes D-C3: what a top-up of `identity` from the Platform addresses gives, its fee and grant; `all` keeps the fee band on the first input. */
   creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote>;
   /** Tops up `identity` from the Platform addresses under the quote's `platformOp` grant. */
-  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome>;
+  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, feeInput: PlatformAddressRow | null, grant: string): Promise<TopUpFromPlatformOutcome>;
   /** The identity's withdrawals on Platform, newest first. */
   creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;

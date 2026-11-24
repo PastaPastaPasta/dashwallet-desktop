@@ -30,7 +30,7 @@ use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
 use self::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
-    PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
+    PlatformAddressRow, PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
     PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
 };
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
