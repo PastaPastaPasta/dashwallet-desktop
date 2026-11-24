@@ -1814,15 +1814,17 @@ impl MoveNet for SdkMoves {
         (self.wallet.platform())
             .reconcile_address_infos(&infos, height, "registration")
             .await;
-        let mut state = self.wallet.state_mut().await;
         let wallet_id = self.wallet.wallet_id();
-        match (state.identity_manager).add_identity(
-            proved,
-            index,
-            wallet_id,
-            self.wallet.persister(),
-        ) {
-            Ok(()) | Err(PlatformWalletError::IdentityAlreadyExists(_)) => {}
+        match crate::wallet_read::info_mut_of(&self.wallet).await {
+            Ok(mut state) => match (state.identity_manager).add_identity(
+                proved,
+                index,
+                wallet_id,
+                self.wallet.persister(),
+            ) {
+                Ok(()) | Err(PlatformWalletError::IdentityAlreadyExists(_)) => {}
+                Err(e) => tracing::warn!(%id, "recording a registration's identity: {e}"),
+            },
             Err(e) => tracing::warn!(%id, "recording a registration's identity: {e}"),
         }
         Ok(id)
