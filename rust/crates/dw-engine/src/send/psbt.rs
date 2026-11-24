@@ -8,6 +8,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+use rand::seq::SliceRandom;
+
 use dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_psbt::{InputData, KeyPaths, PartiallySignedTransaction, Status};
 use dw_vault::{GrantKind, VaultError};
@@ -275,14 +277,22 @@ impl TxDraft {
                     Transaction {
                         version: 2,
                         lock_time: 0,
-                        input: (r.plan.inputs.iter())
-                            .map(|u| TxIn {
-                                previous_output: u.outpoint,
-                                script_sig: ScriptBuf::new(),
-                                sequence: u32::MAX,
-                                witness: Default::default(),
-                            })
-                            .collect(),
+                        // Shuffled as `prepare` shuffles them: the PSBT keeps
+                        // its order to the broadcast, and the selector's order
+                        // would show.
+                        input: {
+                            let mut inputs = r.plan.inputs.clone();
+                            inputs.shuffle(&mut rand::thread_rng());
+                            inputs
+                        }
+                        .iter()
+                        .map(|u| TxIn {
+                            previous_output: u.outpoint,
+                            script_sig: ScriptBuf::new(),
+                            sequence: u32::MAX,
+                            witness: Default::default(),
+                        })
+                        .collect(),
                         output: (r.recipients.iter())
                             .zip(&r.plan.amounts)
                             .map(|(rc, amount)| TxOut {

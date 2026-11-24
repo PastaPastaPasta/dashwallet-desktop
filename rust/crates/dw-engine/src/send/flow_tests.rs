@@ -5337,6 +5337,7 @@ mod normal_payment_beside_mixing {
             "an unsigned mixed payment makes no change"
         );
         assert_eq!(unsigned.output[0].value, 2 * d - 50_000);
+        assert_eq!(unsigned.output[0].script_pubkey, super::script_of(FOREIGN));
         assert_eq!(unsigned.input.len() as u32, estimate.input_count);
 
         let mixed_tx = send(CoinSource::FullyMixedOnly, 2 * d - 50_000);
