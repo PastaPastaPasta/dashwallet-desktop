@@ -113,7 +113,7 @@ test("a wallet without its seed lists public keys and offers no Reveal", async (
     page.evaluate((id) => (window.__dwFixture!.world.masternodes.keysWithoutSeed = [id]), FIXTURE_WALLET_ID),
   );
   const sheet = page.getByTestId("mn-keys");
-  await expect(sheet.getByTestId("mn-keys-no-seed")).toContainText("no seed in Dash Wallet");
+  await expect(sheet.getByTestId("mn-keys-no-seed")).toContainText("recovery phrase is no longer in Dash Wallet");
   await sheet.getByTestId("mn-key-0-show").click();
   await expect(sheet.getByTestId("mn-key-0-address")).toBeVisible();
   await expect(sheet.getByTestId("mn-key-0-no-seed")).toBeVisible();
