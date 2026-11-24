@@ -1,5 +1,6 @@
-//! #268: a payment P of the wallet's coin A, unconfirmed, and W, a foreign
-//! spend of A paying only someone else, mined and ChainLocked. After a
+//! #268: a payment P of the wallet's coin A, unconfirmed and without change
+//! (one with change goes when W's block is scanned, #170 case 3), and W, a
+//! foreign spend of A paying only someone else, mined and ChainLocked. After a
 //! restart between P and W, key-wallet holds no record of P, so W's block
 //! does not sweep it; it only notes W's spend of A, and the ChainLock prunes
 //! that note. Removing or abandoning P then releases A, which the store
@@ -362,8 +363,8 @@ fn brought_back(restart_after_lock: bool, how: Removal) -> Fx {
         &fx.session,
         id,
         CoinSource::Outpoints(vec![a]),
-        COIN / 2,
-        false,
+        COIN,
+        true,
     );
     mempool(&fx.engine, &fx.session, id, &fx.p);
     wait_stored(&fx.session, id, &[fx.p.txid()]);

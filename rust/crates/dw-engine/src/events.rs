@@ -570,6 +570,16 @@ pub(crate) struct SessionHub {
     /// Payments whose own block a wallet's ChainLock named, by wallet:
     /// their sent marks go at the next history flush.
     final_sends: Mutex<Vec<(WalletId, Vec<Txid>)>>,
+    /// The children of payments key-wallet's conflict sweep took, which it
+    /// holds no record of, by wallet, each set with its winner and the
+    /// swept payments: dropped at the next reconcile (#170 case 4).
+    dead_children: Mutex<Vec<DeadChildren>>,
+    /// The coins each wallet's drops hold for good, as its open read them
+    /// (`tx_actions::finish_marked_abandons`): claimed at its load.
+    dropped_holds: Mutex<crate::tx_actions::DroppedHolds>,
+    /// Held through each drop of dead transactions
+    /// (`NetworkSession::drop_dead`).
+    pub(crate) drop_gate: tokio::sync::Mutex<()>,
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -828,6 +838,9 @@ impl SessionHub {
             headers: RwLock::new(None),
             header_tip: Mutex::new(None),
             final_sends: Mutex::new(Vec::new()),
+            dead_children: Mutex::new(Vec::new()),
+            dropped_holds: Mutex::new(HashMap::new()),
+            drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
@@ -1078,6 +1091,33 @@ impl SessionHub {
     fn header_tip_dropped(&self, tip: u32) -> bool {
         let mut last = self.header_tip.lock().unwrap_or_else(|p| p.into_inner());
         last.replace(tip).is_some_and(|last| tip < last)
+    }
+
+    /// The children of swept payments queued for wallet `id`'s drop: each
+    /// set with its winner and the swept payments.
+    pub(crate) fn take_dead_children(
+        &self,
+        id: WalletId,
+    ) -> Vec<(Vec<Txid>, crate::history::Winner, BTreeSet<Txid>)> {
+        let mut queued = (self.dead_children.lock()).unwrap_or_else(|p| p.into_inner());
+        let (mine, others) = std::mem::take(&mut *queued)
+            .into_iter()
+            .partition(|(w, ..)| *w == id);
+        *queued = others;
+        (mine.into_iter())
+            .map(|(_, children, winner, swept)| (children, winner, swept))
+            .collect()
+    }
+
+    /// Keeps the drops' holds an open read, by wallet.
+    pub(crate) fn note_dropped_holds(&self, holds: crate::tx_actions::DroppedHolds) {
+        (self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner())).extend(holds);
+    }
+
+    /// The coins wallet `id`'s drops hold for good, as its open read them.
+    pub(crate) fn dropped_holds(&self, id: WalletId) -> BTreeSet<dashcore::OutPoint> {
+        let holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
+        holds.get(&id).cloned().unwrap_or_default()
     }
 
     /// A reconcile of wallet `id` begins: later events start another.
@@ -1690,15 +1730,58 @@ impl SessionHub {
                 let dead =
                     crate::tx_actions::swept_claims(id, *superseded_by, &swept).unwrap_or_default();
                 // Upstream deleted these records (provably beaten spends);
-                // the history drops them too, and their sent marks go.
-                self.history.with_wallet(id, |h| {
+                // the history drops them too, and their sent marks go. Their
+                // children it holds no record of can never confirm either:
+                // the next reconcile drops them, with this winner.
+                let (children, claim) = self.history.with_wallet(id, |h| {
+                    // A sweep whose winner funds a swept transaction is the
+                    // claim rule's (#739): what is built on the claim is
+                    // its to judge. So is one whose swept transaction the
+                    // history does not hold.
+                    let claim = (txids.iter()).any(|t| {
+                        h.txs.get(t).is_none_or(|e| {
+                            (e.tx.input.iter()).any(|i| i.previous_output.txid == *superseded_by)
+                        })
+                    });
+                    if claim
+                        && (txids.iter()).all(|t| {
+                            h.txs.get(t).is_none_or(|e| {
+                                !(e.tx.input.iter())
+                                    .any(|i| i.previous_output.txid == *superseded_by)
+                            })
+                        })
+                    {
+                        let unheld: Vec<&Txid> =
+                            (txids.iter()).filter(|t| !h.txs.contains_key(*t)).collect();
+                        tracing::debug!(wallet = %id, ?unheld, winner = %superseded_by,
+                            "a sweep is taken as a claim only because the history lacks a swept transaction");
+                    }
+                    let children = match claim {
+                        true => BTreeSet::new(),
+                        false => crate::history::unmined_children(&h.txs, txids),
+                    };
                     for t in txids {
                         h.forget(t);
                         h.swept.insert(*t);
                     }
+                    (children, claim)
                 });
+                let queued = !children.is_empty();
+                if queued {
+                    let winner = crate::history::Winner {
+                        txid: Some(*superseded_by),
+                        mined: winner_block.as_ref().map(|b| b.height()),
+                    };
+                    (self.dead_children.lock().unwrap_or_else(|p| p.into_inner())).push((
+                        id,
+                        children.into_iter().collect(),
+                        winner,
+                        txids.iter().copied().collect(),
+                    ));
+                }
                 if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
-                    match crate::tx_actions::forget_swept(&appdb, id, txids, &dead) {
+                    let claims: &[Txid] = if claim { txids } else { &[] };
+                    match crate::tx_actions::forget_swept(&appdb, id, txids, &dead, claims) {
                         Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
                         Err(e) => {
                             tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
@@ -1708,6 +1791,9 @@ impl SessionHub {
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
+                }
+                if queued {
+                    self.schedule_reconcile(id);
                 }
                 // A swept transaction can never confirm, nor can what the
                 // history alone holds built on its outputs (a payment
@@ -1844,6 +1930,10 @@ impl SessionHub {
         }
     }
 }
+
+/// Children of swept payments queued for a drop: their wallet, their
+/// txids, the winner, and the swept payments.
+type DeadChildren = (WalletId, Vec<Txid>, crate::history::Winner, BTreeSet<Txid>);
 
 /// The transactions a wallet event names.
 fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
