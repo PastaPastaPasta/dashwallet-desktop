@@ -259,6 +259,12 @@ pub enum RegistrationError {
     /// nothing was written or signed; quote again.
     #[error("the cost changed since the quote")]
     QuoteChanged,
+    /// A row's failure, never returned by a call: its create from the
+    /// Platform addresses failed inside a block (C-funding F10), which took
+    /// their nonces and a penalty and made no identity. What is left stays
+    /// on the addresses; nothing retries.
+    #[error("the registration's payment was taken without an identity")]
+    Refunded,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -286,6 +292,7 @@ impl RegistrationError {
             Self::FundingUnknownRecent { .. } => "registration.funding_unknown_recent",
             Self::ShieldedNotReady { .. } => "registration.shielded_not_ready",
             Self::QuoteChanged => "registration.quote_changed",
+            Self::Refunded => "registration.refunded",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Credits(e) => e.code(),

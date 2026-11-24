@@ -468,6 +468,11 @@ pub(crate) struct FakeMoves {
     effects: Mutex<Vec<Effect>>,
     /// The withdrawal documents executed withdrawals created.
     documents: Mutex<BTreeSet<Identifier>>,
+    /// The identities registrations created.
+    pub(crate) identities: Mutex<BTreeSet<Identifier>>,
+    /// An executed create makes no identity: it fails inside its block,
+    /// taking its nonces and its fee.
+    pub(crate) create_fails: AtomicBool,
     /// Reads of a withdrawal document fail.
     documents_down: AtomicBool,
     /// What executed top-ups added to the identity.
@@ -502,6 +507,8 @@ impl FakeMoves {
             block_read: AtomicBool::new(false),
             effects: Mutex::default(),
             documents: Mutex::default(),
+            identities: Mutex::default(),
+            create_fails: AtomicBool::new(false),
             documents_down: AtomicBool::new(false),
             topped_up: AtomicU64::new(0),
             read_entered: tokio::sync::Notify::new(),
@@ -651,6 +658,11 @@ impl FakeMoves {
             Effect::TopUp => {
                 let claims: u64 = inputs.values().map(|(_, c)| *c).sum();
                 self.topped_up.fetch_add(claims, Ordering::SeqCst);
+            }
+            Effect::Register(id) => {
+                if !self.create_fails.load(Ordering::SeqCst) {
+                    self.identities.lock().unwrap().insert(*id);
+                }
             }
         }
         self.tick();
@@ -864,6 +876,33 @@ impl MoveNet for FakeMoves {
         let present = self.documents.lock().unwrap().contains(&id);
         Ok((present, self.height.load(Ordering::SeqCst)))
     }
+
+    async fn register(
+        &self,
+        identity: &Identity,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        _index: u32,
+        (_, signer): (&VaultIdentitySigner, &VaultPlatformAddressSigner),
+    ) -> Result<Identifier, PlatformWalletError> {
+        let id = dpp::state_transition::identity_id_from_input_addresses(&inputs)
+            .map_err(|e| PlatformWalletError::Sdk(e.into()))?;
+        assert_eq!(identity.id(), id, "the identity its inputs give");
+        let strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
+        (self
+            .broadcast(inputs, None, (strategy, Effect::Register(id)), signer)
+            .await)
+            .map_err(|e| *e)?;
+        Ok(id)
+    }
+
+    async fn identity_exists(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        if self.documents_down.load(Ordering::SeqCst) {
+            return Err(PlatformError::Unavailable);
+        }
+        trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
+        let present = self.identities.lock().unwrap().contains(&id);
+        Ok((present, self.height.load(Ordering::SeqCst)))
+    }
 }
 
 /// What a sent transition does besides moving its inputs.
@@ -875,6 +914,8 @@ pub(crate) enum Effect {
     Withdrawal(Vec<u8>),
     /// A top-up of the identity by its claims.
     TopUp,
+    /// A registration's create of the identity with this id.
+    Register(Identifier),
 }
 
 /// A session with a wallet, its Platform payment addresses and `net`.

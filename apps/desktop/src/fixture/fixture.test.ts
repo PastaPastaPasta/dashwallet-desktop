@@ -236,6 +236,12 @@ describe("fixture backend", () => {
     await expect(
       cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits: "1" }, initialProfile: null }, "g"),
     ).rejects.toMatchObject({ code: "registration.quote_changed" });
+    // The label's rules come first, as the engine's: the quote and the start refuse it alike.
+    const doubled = { kind: "platformAddresses", fundingCredits, feeReserveCredits } as const;
+    await expect(quote("foo--bar", doubled)).rejects.toMatchObject({ code: "name.invalid" });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "foo--bar", temporaryLabel: null, funding: doubled, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "name.invalid" });
     // A move that may still execute holds the addresses: refused, naming it.
     clearMocks();
     backend({ scenario: "platform-send-held" });

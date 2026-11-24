@@ -76,7 +76,10 @@ pub(crate) type HeldKey = (DerivationPath, Vec<u8>);
 
 /// §4.1 step 2 on the blocking pool: checks every grant before consuming
 /// any, redeems them, moves an own key into one `KeyHold`, issues every
-/// signer the purposes need, and drops the tokens. With `keys`, the
+/// signer the purposes need, and drops the tokens. With `platform_address`,
+/// a `Registration` lease with credits also carries the Platform-address
+/// signer (a registration paid from the Platform addresses, C-funding F5).
+/// With `keys`, the
 /// `PlatformOp` grant is redeemed only while the vault holds one of them
 /// (dw-vault `redeem_grant_holding_key`), else `KeysNotHeld` with every
 /// grant unused (none given included).
@@ -88,6 +91,7 @@ pub(crate) fn issue(
     (flow, source): (FlowKind, Option<PaymentSource>),
     grants: &[String],
     keys: Option<&[HeldKey]>,
+    platform_address: bool,
 ) -> Result<Issued, LeaseError> {
     let epoch_before = vault.epoch();
     let allowed = kinds_for(flow);
@@ -227,6 +231,10 @@ pub(crate) fn issue(
                 } else if max_credits > 0 {
                     out.signers.identity =
                         Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
+                    if platform_address && flow == FlowKind::Registration {
+                        out.signers.platform_address =
+                            Some(scoped(SignerScope::PlatformAddress).map_err(issuing)?);
+                    }
                 }
                 out.signers.crypto = Some(scoped(SignerScope::DashPayCrypto).map_err(issuing)?);
             }
@@ -310,7 +318,21 @@ impl NetworkSession {
         flow: FlowKind,
         grants: &[String],
     ) -> Result<Lease, LeaseError> {
-        self.begin_issuing((wallet, flow, None), grants, None).await
+        self.begin_issuing((wallet, flow, None), grants, None, false)
+            .await
+    }
+
+    /// A `Registration` lease; `from_platform`: it also carries the
+    /// Platform-address signer (C-funding F5).
+    pub(crate) async fn begin_registration_lease(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        grants: &[String],
+        from_platform: bool,
+    ) -> Result<Lease, LeaseError> {
+        let flow = FlowKind::Registration;
+        self.begin_issuing((wallet, flow, None), grants, None, from_platform)
+            .await
     }
 
     /// [`Self::begin_lease`] for a `ContactPayFromBalance` payment from
@@ -322,7 +344,7 @@ impl NetworkSession {
         grants: &[String],
     ) -> Result<Lease, LeaseError> {
         let flow = FlowKind::ContactPayFromBalance;
-        self.begin_issuing((wallet, flow, Some(source)), grants, None)
+        self.begin_issuing((wallet, flow, Some(source)), grants, None, false)
             .await
     }
 
@@ -336,7 +358,7 @@ impl NetworkSession {
         grants: &[String],
         keys: Vec<HeldKey>,
     ) -> Result<Lease, LeaseError> {
-        self.begin_issuing((wallet, flow, None), grants, Some(keys))
+        self.begin_issuing((wallet, flow, None), grants, Some(keys), false)
             .await
     }
 
@@ -345,6 +367,7 @@ impl NetworkSession {
         (wallet, flow, source): (WalletId, FlowKind, Option<PaymentSource>),
         grants: &[String],
         keys: Option<Vec<HeldKey>>,
+        platform_address: bool,
     ) -> Result<Lease, LeaseError> {
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
@@ -353,7 +376,10 @@ impl NetworkSession {
             .begin(
                 wallet,
                 flow,
-                move || issue(&vault, &wallet, (flow, source), &grants, keys.as_deref()),
+                move || {
+                    let (scope, keys) = ((flow, source), keys.as_deref());
+                    issue(&vault, &wallet, scope, &grants, keys, platform_address)
+                },
                 move || epoch_vault.epoch(),
             )
             .await
@@ -363,6 +389,16 @@ impl NetworkSession {
     /// contact payout's lease pays once and is never rebound: `Invalid`
     /// before the grants are redeemed (a host begins another flow).
     pub async fn rebind_lease(&self, lease: &Lease, grants: &[String]) -> Result<(), LeaseError> {
+        self.rebind_lease_scoped(lease, grants, false).await
+    }
+
+    /// [`Self::rebind_lease`]; `platform_address` as [`issue`] takes it.
+    pub(crate) async fn rebind_lease_scoped(
+        &self,
+        lease: &Lease,
+        grants: &[String],
+        platform_address: bool,
+    ) -> Result<(), LeaseError> {
         if lease.flow == FlowKind::ContactPayFromBalance {
             return Err(LeaseError::Invalid);
         }
@@ -371,7 +407,10 @@ impl NetworkSession {
         let (wallet, flow, grants) = (lease.wallet, lease.flow, grants.to_vec());
         lease
             .rebind(
-                move || issue(&vault, &wallet, (flow, None), &grants, None),
+                move || {
+                    let scope = (flow, None);
+                    issue(&vault, &wallet, scope, &grants, None, platform_address)
+                },
                 move || epoch_vault.epoch(),
             )
             .await
