@@ -1436,8 +1436,9 @@ fn an_unshield_the_library_builds_for_the_quote_is_admitted() {
     use dpp::shielded::builder::{SpendableNote, build_unshield_transition};
     use dpp::version::PlatformVersion;
     use grovedb_commitment_tree::{
-        Anchor, FullViewingKey, MerkleHashOrchard, MerklePath, NOTE_COMMITMENT_TREE_DEPTH, Note,
-        NoteValue, RandomSeed, Rho, Scope, SpendAuthorizingKey, SpendingKey,
+        ExtractedNoteCommitment, FullViewingKey, Hashable, MerkleHashOrchard, MerklePath,
+        NOTE_COMMITMENT_TREE_DEPTH, Note, NoteValue, RandomSeed, Rho, Scope, SpendAuthorizingKey,
+        SpendingKey,
     };
     let h = Hooked::new();
     let credits = NOTE / 2;
@@ -1459,11 +1460,12 @@ fn an_unshield_the_library_builds_for_the_quote_is_admitted() {
         rseed,
     ))
     .unwrap();
-    let auth_path = [MerkleHashOrchard::empty_leaf(); NOTE_COMMITMENT_TREE_DEPTH];
-    let spend = SpendableNote {
-        note,
-        merkle_path: MerklePath::from_parts(0, auth_path),
-    };
+    let merkle_path = MerklePath::from_parts(
+        0,
+        [MerkleHashOrchard::empty_leaf(); NOTE_COMMITMENT_TREE_DEPTH],
+    );
+    let anchor = merkle_path.root(ExtractedNoteCommitment::from(note.commitment()));
+    let spend = SpendableNote { note, merkle_path };
     let change = OrchardAddress::from_raw_bytes(&address.to_raw_address_bytes()).unwrap();
     let prover = CachedOrchardProver::new();
     let (st, fee) = build_unshield_transition(
@@ -1473,7 +1475,7 @@ fn an_unshield_the_library_builds_for_the_quote_is_admitted() {
         &change,
         &fvk,
         &SpendAuthorizingKey::from(&sk),
-        Anchor::empty_tree(),
+        anchor,
         &&prover,
         [0; 36],
         PlatformVersion::get(lib.version).unwrap(),
