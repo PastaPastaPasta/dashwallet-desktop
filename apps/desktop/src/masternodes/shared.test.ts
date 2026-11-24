@@ -367,6 +367,13 @@ describe("Abandon", () => {
     expect(spendBackAction(spend("in_history"))).toBe("resend");
     expect(spendBackAction(spend("abandoned_in_activity"))).toBe("abandonAgain");
     expect(spendBackAction(spend("legacy"))).toBeNull();
+    const overdueLegacy = spend("legacy", { abandonable: true, abandonCharge: 193, abandonSpend: { txid: "a8".repeat(32), state: "legacy", overdue: true, code: null } });
+    expect(spendBackAction(overdueLegacy), "an older version's spend, once overdue").toBe("abandonAgain");
+    const sentAbandoned = coordinator({ kind: "sent" }, "nothing", { txid: "7e".repeat(32), discardable: false, lastError: "send.broadcast_rejected", abandonSpend: spend("refused").abandonSpend, abandonable: true, abandonCharge: 193 });
+    expect(handoffLine(sentAbandoned, refused), "lastError is the spend back's").toBeNull();
+    expect(renderSession(sentAbandoned, S5_SLICE).row).toBe("abandoning");
+    expect(wayOutShown(sentAbandoned, "abandoning"), "the spend back's row has its own action").toBeNull();
+    expect(wayOutShown({ ...sentAbandoned, abandonSpend: null, next: "wait" }, "sent")).toBe("collapsed");
     for (const state of ["uncertain", "in_history", "abandoned_in_activity", "legacy"] as const) {
       expect(spendBackLine(spend(state), refused), state).not.toMatch(/didn't go out/);
     }

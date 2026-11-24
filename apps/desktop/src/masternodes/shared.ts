@@ -228,11 +228,12 @@ export function grantCap(action: Exclude<SharedAction, "copy" | "join">, s: Shar
  * 3): nothing left. Any other code, the resend marker included, may have left. */
 export const REFUSED_HANDOFF: readonly string[] = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent", "send.cancelled", "network_not_open", "wallet_not_found", "send.held_until_restart"];
 
-/** §2.3.3's hand-off line under a sent registration, `null` when the hand-off left no error. A
+/** §2.3.3's hand-off line under a sent registration, `null` when the hand-off left no error or
+ * once it is abandoned (`lastError` is then the spend back's, which `spendBackLine` reads). A
  * refused code reads as `refused`'s sentence; an unknown one as this sheet's own lower-case
  * sentence (the resend marker, the timeout), else as the bare code. */
 export function handoffLine(s: SharedSession, refused: (code: string) => string | null): string | null {
-  if (s.stage.kind !== "sent" || !s.lastError) return null;
+  if (s.stage.kind !== "sent" || !s.lastError || s.abandonSpend) return null;
   const code = s.lastError;
   const bare = () => t("masternodes.shared.row.handoffCode", { code });
   if (REFUSED_HANDOFF.includes(code)) {
@@ -267,11 +268,12 @@ export function spendBackLine(s: SharedSession, refused: (code: string) => strin
 }
 
 /** The spend back's own action (D50): Send again replays the same bytes while the read lists it;
- * Try again (refused) and Abandon again (cancelled in Activity) are a new spend of the same coins. */
+ * Try again (refused) and Abandon again (cancelled in Activity, or an older version's spend once
+ * overdue) are a new spend of the same coins. */
 export function spendBackAction(s: SharedSession): "resend" | "tryAgain" | "abandonAgain" | null {
   const state = s.abandonSpend?.state;
   if (state === "refused") return canAbandon(s) ? "tryAgain" : null;
-  if (state === "abandoned_in_activity") return canAbandon(s) ? "abandonAgain" : null;
+  if (state === "abandoned_in_activity" || state === "legacy") return canAbandon(s) ? "abandonAgain" : null;
   return s.resendAbandonCharge !== null && (state === "uncertain" || state === "in_history") ? "resend" : null;
 }
 
@@ -297,10 +299,10 @@ export function canAbandon(s: SharedSession): boolean {
 
 /** MG's way-out line: wherever this wallet holds the registration (`txid`), at `sent`, and
  * wherever `row.signedOut` or `unvalued_inputs_out` is hidden because Abandon isn't offered.
- * Collapsed until the session is `overdue` (D49), then expanded; `null` where it isn't shown. */
+ * Not under the spend back's own row (`abandoning`). Collapsed until the session is `overdue` (D49), then expanded; `null` where it isn't shown. */
 export function wayOutShown(s: SharedSession, row: RowKey): "collapsed" | "expanded" | null {
   const settled = s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
-  if (!s.txid || !isRegistration(s) || settled) return null;
+  if (!s.txid || !isRegistration(s) || settled || row === "abandoning") return null;
   const shown = s.stage.kind === "sent" || (!canAbandon(s) && (row === "signedOut" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs"))));
   if (!shown) return null;
   return s.overdue ? "expanded" : "collapsed";

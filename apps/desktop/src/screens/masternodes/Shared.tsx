@@ -499,6 +499,8 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const v = renderSession(s, sliceFor(network));
   const offered = sendOffer(s, network, wallet.watchOnly);
   const handoffHeld = disconnected && (offered === "send" || offered === "resend");
+  /** The read holds a pending spend back's Send again while SPV is stopped. */
+  const spendBackHeld = !!sync.data && !sync.data.running && v.row === "abandoning" && s.abandonSpend?.state === "uncertain" && s.resendAbandonCharge === null;
   const mainnetOff = mainnetHoldsBack(s, network);
   const offSetup = setupOff(network);
   const steps = setupSteps(s, sliceFor(network));
@@ -822,7 +824,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
             )}
           </div>
         )}
-        {handoffHeld && (
+        {(handoffHeld || spendBackHeld) && (
           <p className="mg-muted mg-small" data-testid="sh-spv-stopped">
             {t(`${P}.row.spvStopped`)}
           </p>
