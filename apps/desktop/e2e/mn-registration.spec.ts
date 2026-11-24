@@ -440,6 +440,8 @@ test("a saved registration offers Continue, and Prove can submit; Discard still 
 });
 
 const revokes = (page: Page) => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "revoke_grant").length);
+/** Grants issued and neither redeemed nor revoked: a refusal must leave none. */
+const liveGrants = (page: Page) => page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).map((g) => g.grant.id));
 
 for (const theme of ["light", "dark"] as const)
   test(`${theme}: a saved registration whose fee coins were spent offers a new message from Prove, then submits (issue 460)`, async ({ page }, info) => {
@@ -509,6 +511,8 @@ test("a mistyped signature is refused before any signing, and its grant is revok
   await page.getByTestId("reg-passphrase").fill("demo");
   await page.getByTestId("reg-submit").click();
   await expect.poll(() => revokes(page)).toBe(before + 1);
+  // The refused submit's grant is gone: none is left to redeem.
+  expect(await liveGrants(page)).toEqual([]);
   await expect(step(page, "prove")).toBeVisible();
   await expect(page.getByTestId("reg-done-body")).toHaveCount(0);
   expect(errors).toEqual([]);
@@ -547,6 +551,7 @@ test("fee coins spent while Prove is open: the refusal hides the old message and
   await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
   await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
   await expect.poll(() => revokes(page)).toBe(before + 1);
+  expect(await liveGrants(page)).toEqual([]);
   await page.getByTestId("reg-new-message").click();
   await expect(page.getByTestId("reg-sign-request")).toBeVisible();
   expect(errors).toEqual([]);
@@ -560,6 +565,7 @@ test("a refused Send again from In progress revokes its grant (issue 460)", asyn
   await page.getByTestId("mn-op-resend-passphrase").fill("demo");
   await page.getByTestId("mn-op-resend-confirm").click();
   await expect.poll(() => revokes(page)).toBe(before + 1);
+  expect(await liveGrants(page)).toEqual([]);
   await expect(page.getByTestId("mn-op-resend-sheet")).toBeVisible();
   expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
 });
