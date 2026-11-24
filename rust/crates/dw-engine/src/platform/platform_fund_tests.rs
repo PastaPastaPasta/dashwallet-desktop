@@ -237,24 +237,6 @@ impl FakeFund {
         self.tracked.lock().unwrap()[i].out_point
     }
 
-    /// The tracked lock at `outpoint` ChainLocked, with its proof.
-    fn prove(&self, outpoint: OutPoint) {
-        let mut tracked = self.tracked.lock().unwrap();
-        let row = tracked
-            .iter_mut()
-            .find(|l| l.out_point == outpoint)
-            .unwrap();
-        *row = conformance::tracked(
-            &row.transaction,
-            outpoint.vout,
-            row.funding_type,
-            AssetLockStatus::ChainLocked,
-            true,
-        );
-    }
-}
-
-impl FakeFund {
     /// The next scripted apply: signs with `key` first when scripted to,
     /// then ends as its answer.
     async fn scripted<S>(
@@ -289,6 +271,22 @@ impl FakeFund {
             Answer::Panics => panic!("the apply panics"),
             Answer::RetriedConsumed => Err(PlatformWalletError::AssetLockAlreadyConsumed(outpoint)),
         }
+    }
+
+    /// The tracked lock at `outpoint` ChainLocked, with its proof.
+    fn prove(&self, outpoint: OutPoint) {
+        let mut tracked = self.tracked.lock().unwrap();
+        let row = tracked
+            .iter_mut()
+            .find(|l| l.out_point == outpoint)
+            .unwrap();
+        *row = conformance::tracked(
+            &row.transaction,
+            outpoint.vout,
+            row.funding_type,
+            AssetLockStatus::ChainLocked,
+            true,
+        );
     }
 }
 
@@ -2429,7 +2427,9 @@ fn arming_names_what_it_did_and_undoing_touches_only_that() {
     let arm = |at: OutPoint| {
         let s = Arc::clone(&fx.s);
         (fx.engine)
-            .block_on(async move { arm_fund(&s, wallet, (at, 1_000_000), "a".into(), 1).await })
+            .block_on(
+                async move { arm_fund(&s, wallet, (at, 1_000_000), "a".into(), 1, false).await },
+            )
             .unwrap()
     };
     let disarm = |at: OutPoint, arming| {

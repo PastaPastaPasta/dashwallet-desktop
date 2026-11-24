@@ -127,7 +127,11 @@ fn rows(fx: &Fixture) -> Vec<(String, String)> {
     let appdb = fx.s.live().unwrap().appdb;
     let scope = dw_appdb::local_scope(&fx.wallet.to_string());
     let mut rows = appdb.settings_with_prefix(&scope, "recovery.").unwrap();
-    rows.extend(appdb.settings_with_prefix(&scope, "platform_address/").unwrap());
+    rows.extend(
+        appdb
+            .settings_with_prefix(&scope, "platform_address/")
+            .unwrap(),
+    );
     rows
 }
 
@@ -216,7 +220,8 @@ fn a_remaining_value_below_the_fee_is_never_recovered() {
 /// proved Remaining, whatever Platform says now, is refused before its
 /// grant, and so is a recover the fresh read no longer backs (unspent, or
 /// no proved answer). A fresh read that shows the lock used up takes it off
-/// the list as used elsewhere. None of them signs or redeems anything.
+/// the list as used elsewhere; a type-4 lock is no shield lock. None of them
+/// signs or redeems anything.
 #[test]
 fn only_a_proved_remaining_is_recovered() {
     let fx = Fixture::new(0);
@@ -276,6 +281,17 @@ fn only_a_proved_remaining_is_recovered() {
     );
     assert!(record(&fx, used).is_none());
     assert_eq!(quote(&fx, &lib, used), RecoverQuote::Finished);
+
+    let fund_row = lib.lock(0x5F, LOCK_DUFFS, AssetLockStatus::ChainLocked, true);
+    let fund_lock = fund_row.out_point;
+    lib.track(fund_row);
+    mark_remaining(&fx, fund_lock, left);
+    lib.proves(fund_lock, SpentRead::Remaining { credits: left });
+    let refused = recover(&fx, &lib, fund_lock, &g).unwrap_err();
+    assert!(
+        matches!(refused, PlatformError::InvalidArgument { .. }),
+        "an Add from Dash wallet lock: {refused:?}"
+    );
 
     assert!(lib.recovered.lock().unwrap().is_empty());
     assert!(lib.signed.lock().unwrap().is_empty());

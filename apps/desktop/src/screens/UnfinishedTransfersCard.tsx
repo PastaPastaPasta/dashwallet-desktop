@@ -13,13 +13,13 @@ import { Sheet } from "../components/sheet";
 import { shortId } from "../dashpay/identities";
 import { known } from "../format/homeBalance";
 import { unreadText } from "../dashpay/registration";
+import { creditsToDuffs } from "../api/pending";
 import { useT } from "../i18n";
 import { useModel } from "../onboarding/model";
 import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
 import { moveFor, MOVE_COPY as M } from "../platform/move";
 import {
   cardView,
-  creditsAsDuffs,
   lockKey,
   lockKinds,
   RECOVERY_COPY as C,
@@ -58,7 +58,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
     finish: () => view?.lock && void model.finish(view.lock),
     finishAll: () => void model.finishAll(),
     checkAgain: () => void model.checkAgain(checking),
-    recover: () => view?.lock && void model.askRecover(view.lock),
+    recover: () => view?.lock && void model.askRecover(view.lock, fmt.duffs),
     details: () => setDetails(true),
     retry: () => void model.retry(),
     dismiss: () => model.dismiss(),
@@ -222,7 +222,7 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
                 )}
                 {!finished && left !== null && (
                   <p className="field-hint" role="status" data-testid="unfinished-row-too-small">
-                    {C.sheet.recoverTooSmall(fmt.duffs(creditsAsDuffs(left)))}
+                    {C.sheet.recoverTooSmall(fmt.duffs(creditsToDuffs(left)))}
                   </p>
                 )}
                 {!finished && note?.kind === "failed" && (
@@ -237,7 +237,7 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
                       size="small"
                       data-testid={`unfinished-row-${action}`}
                       disabled={model.running}
-                      onClick={() => void (action === "finish" ? model.finish(lock) : action === "recover" ? model.askRecover(lock) : model.checkAgain([lock]))}
+                      onClick={() => void (action === "finish" ? model.finish(lock) : action === "recover" ? model.askRecover(lock, fmt.duffs) : model.checkAgain([lock]))}
                     >
                       {action === "finish" ? C.finish : action === "recover" ? C.recover : C.checkAgain}
                     </DashButton>
@@ -273,7 +273,7 @@ function RecoverConfirmSheet({ model, format }: { model: RecoveryModel; format: 
   return (
     <Sheet title={C.recoverConfirm.title} width="small" testId="recover-confirm" onClose={() => model.cancelRecover()}>
       <p className="sheet-text" data-testid="recover-confirm-text">
-        {C.recoverConfirm.body(format(creditsAsDuffs(ask.credits)))}
+        {C.recoverConfirm.body(format(creditsToDuffs(ask.credits)))}
       </p>
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" data-testid="recover-confirm-cancel" onClick={() => model.cancelRecover()}>

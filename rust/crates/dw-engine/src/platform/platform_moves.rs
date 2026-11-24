@@ -575,30 +575,8 @@ pub(crate) enum Arming {
 /// Records that an apply of the fund lock at `outpoint` is about to
 /// release a signature: its record armed (module doc), made first for a
 /// lock that has none (a restored one: paying `address`, about
-/// `credits`).
+/// `credits`; `recovered` for a recover's, `unfinished_remainder`).
 pub(crate) async fn arm_fund(
-    session: &NetworkSession,
-    wallet: WalletId,
-    lock: (OutPoint, u64),
-    address: String,
-    credits: u64,
-) -> Result<Arming, PlatformError> {
-    arm(session, wallet, lock, address, credits, false).await
-}
-
-/// [`arm_fund`] for a recover of the partly used shield lock `lock`: a
-/// record it makes is `recovered`.
-pub(crate) async fn arm_recover(
-    session: &NetworkSession,
-    wallet: WalletId,
-    lock: (OutPoint, u64),
-    address: String,
-    credits: u64,
-) -> Result<Arming, PlatformError> {
-    arm(session, wallet, lock, address, credits, true).await
-}
-
-async fn arm(
     session: &NetworkSession,
     wallet: WalletId,
     lock: (OutPoint, u64),

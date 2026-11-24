@@ -214,7 +214,7 @@ pub(crate) fn read_spent(
 
 /// [`SpentRead::Remaining`] of a stored `AssetLockValue`'s bytes;
 /// [`SpentRead::Unread`] when they are not one.
-pub(crate) fn remaining(bytes: &[u8]) -> SpentRead {
+fn remaining(bytes: &[u8]) -> SpentRead {
     use dpp::asset_lock::reduced_asset_lock_value::{AssetLockValue, AssetLockValueGettersV0};
     use dpp::serialization::PlatformDeserializableUntrusted;
     match AssetLockValue::deserialize_from_bytes_untrusted_exact(bytes) {
@@ -366,6 +366,21 @@ fn mark_prefix(kind: LockKindId, mark: Mark) -> String {
     format!("recovery.{}.{sort}.", kind.label())
 }
 
+/// `wallet`'s `mark` records of `kind`'s locks, each with its stored value.
+fn mark_rows(
+    db: &AppDb,
+    wallet: WalletId,
+    kind: LockKindId,
+    mark: Mark,
+) -> Result<Vec<(OutPoint, String)>, AppDbError> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let prefix = mark_prefix(kind, mark);
+    let rows = db.settings_with_prefix(&scope, &prefix)?;
+    Ok((rows.into_iter())
+        .filter_map(|(key, value)| Some((key[prefix.len()..].parse().ok()?, value)))
+        .collect())
+}
+
 /// `wallet`'s `mark` records of `kind`'s locks.
 pub(crate) fn read_marks(
     db: &AppDb,
@@ -373,11 +388,8 @@ pub(crate) fn read_marks(
     kind: LockKindId,
     mark: Mark,
 ) -> Result<HashSet<OutPoint>, AppDbError> {
-    let scope = dw_appdb::local_scope(&wallet.to_string());
-    let prefix = mark_prefix(kind, mark);
-    let rows = db.settings_with_prefix(&scope, &prefix)?;
-    Ok((rows.into_iter())
-        .filter_map(|(key, _)| key[prefix.len()..].parse().ok())
+    Ok((mark_rows(db, wallet, kind, mark)?.into_iter())
+        .map(|(at, _)| at)
         .collect())
 }
 
@@ -405,57 +417,44 @@ fn write_mark_value(
     db.set_setting_durable(&scope, &key, Some(value))
 }
 
+/// `f` on `session`'s `app.sqlite`, off the async threads.
+async fn on_appdb<T: Send + 'static>(
+    session: &NetworkSession,
+    f: impl FnOnce(&AppDb) -> Result<T, AppDbError> + Send + 'static,
+) -> Result<T, PlatformError> {
+    let appdb = session.live()?.appdb;
+    tokio::task::spawn_blocking(move || f(&appdb))
+        .await
+        .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
+        .map_err(|e| PlatformError::Storage {
+            detail: e.to_string(),
+        })
+}
+
 /// `wallet`'s [`Mark::Remaining`] records of `kind`'s locks: the credits
-/// each read left. A record whose value does not parse is skipped.
-pub(crate) fn read_remaining(
-    db: &AppDb,
-    wallet: WalletId,
-    kind: LockKindId,
-) -> Result<HashMap<OutPoint, u64>, AppDbError> {
-    let scope = dw_appdb::local_scope(&wallet.to_string());
-    let prefix = mark_prefix(kind, Mark::Remaining);
-    let rows = db.settings_with_prefix(&scope, &prefix)?;
-    Ok((rows.into_iter())
-        .filter_map(|(key, value)| Some((key[prefix.len()..].parse().ok()?, value.parse().ok()?)))
-        .collect())
-}
-
-/// Records that `kind`'s lock at `outpoint` has `credits` left
-/// ([`Mark::Remaining`]), durably, over any earlier record of it.
-pub(crate) fn write_remaining(
-    db: &AppDb,
-    wallet: WalletId,
-    kind: LockKindId,
-    outpoint: OutPoint,
-    credits: u64,
-) -> Result<(), AppDbError> {
-    let value = credits.to_string();
-    write_mark_value(db, wallet, kind, Mark::Remaining, outpoint, &value)
-}
-
-/// [`read_remaining`] on `session`'s `app.sqlite`, off the async threads;
-/// none when it cannot be read (nothing is then offered a recover).
+/// each read left; none when they cannot be read (nothing is then offered a
+/// recover). A record whose value does not parse is skipped.
 pub(crate) async fn remaining_of(
     session: &NetworkSession,
     wallet: WalletId,
     kind: LockKindId,
 ) -> HashMap<OutPoint, u64> {
-    let read = async {
-        let appdb = session.live()?.appdb;
-        tokio::task::spawn_blocking(move || read_remaining(&appdb, wallet, kind))
-            .await
-            .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
-            .map_err(|e| PlatformError::Storage {
-                detail: e.to_string(),
-            })
-    };
-    read.await.unwrap_or_else(|e| {
-        tracing::warn!(wallet_id = %wallet, ?kind, error = %e, "could not read a kind's remaining values");
-        HashMap::new()
-    })
+    let read = on_appdb(session, move |db| {
+        mark_rows(db, wallet, kind, Mark::Remaining)
+    });
+    match read.await {
+        Ok(rows) => (rows.into_iter())
+            .filter_map(|(at, value)| Some((at, value.parse().ok()?)))
+            .collect(),
+        Err(e) => {
+            tracing::warn!(wallet_id = %wallet, ?kind, error = %e, "could not read a kind's remaining values");
+            HashMap::new()
+        }
+    }
 }
 
-/// [`write_remaining`] on `session`'s `app.sqlite`, off the async threads.
+/// Records that `kind`'s lock at `outpoint` has `credits` left
+/// ([`Mark::Remaining`]), durably, over any earlier record of it.
 pub(crate) async fn record_remaining(
     session: &NetworkSession,
     wallet: WalletId,
@@ -463,17 +462,16 @@ pub(crate) async fn record_remaining(
     outpoint: OutPoint,
     credits: u64,
 ) {
-    let write = async {
-        let appdb = session.live()?.appdb;
-        tokio::task::spawn_blocking(move || {
-            write_remaining(&appdb, wallet, kind, outpoint, credits)
-        })
-        .await
-        .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
-        .map_err(|e| PlatformError::Storage {
-            detail: e.to_string(),
-        })
-    };
+    let write = on_appdb(session, move |db| {
+        write_mark_value(
+            db,
+            wallet,
+            kind,
+            Mark::Remaining,
+            outpoint,
+            &credits.to_string(),
+        )
+    });
     if let Err(e) = write.await {
         tracing::warn!(%outpoint, ?kind, error = %e, "could not record a lock's remaining value");
     }
@@ -487,15 +485,7 @@ pub(crate) async fn marks_of(
     kind: LockKindId,
     mark: Mark,
 ) -> HashSet<OutPoint> {
-    let read = async {
-        let appdb = session.live()?.appdb;
-        tokio::task::spawn_blocking(move || read_marks(&appdb, wallet, kind, mark))
-            .await
-            .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
-            .map_err(|e| PlatformError::Storage {
-                detail: e.to_string(),
-            })
-    };
+    let read = on_appdb(session, move |db| read_marks(db, wallet, kind, mark));
     read.await.unwrap_or_else(|e| {
         tracing::warn!(wallet_id = %wallet, ?kind, ?mark, error = %e, "could not read a kind's lock records");
         HashSet::new()
@@ -510,15 +500,9 @@ pub(crate) async fn record(
     mark: Mark,
     outpoint: OutPoint,
 ) {
-    let write = async {
-        let appdb = session.live()?.appdb;
-        tokio::task::spawn_blocking(move || write_mark(&appdb, wallet, kind, mark, outpoint))
-            .await
-            .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
-            .map_err(|e| PlatformError::Storage {
-                detail: e.to_string(),
-            })
-    };
+    let write = on_appdb(session, move |db| {
+        write_mark(db, wallet, kind, mark, outpoint)
+    });
     if let Err(e) = write.await {
         tracing::warn!(%outpoint, ?kind, ?mark, error = %e, "could not record a lock");
     }

@@ -9,9 +9,11 @@ import type { Backend } from "../api/backend";
 import type { AppError } from "../api/generated/AppError";
 import type { LockFinish } from "../api/generated/LockFinish";
 import type { LockKind } from "../api/generated/LockKind";
+import type { RecoverQuote } from "../api/generated/RecoverQuote";
 import type { UnfinishedLock } from "../api/generated/UnfinishedLock";
 import type { UnfinishedState } from "../api/generated/UnfinishedState";
 import type { UnfinishedTransfers } from "../api/generated/UnfinishedTransfers";
+import { creditsToDuffs } from "../api/pending";
 import { REG_COPY } from "../dashpay/registration";
 import { platformOp } from "../dashpay/topup";
 import { finishGrant } from "../dashpay/wizard";
@@ -143,7 +145,7 @@ type Action =
   | { kind: "finish"; lock: UnfinishedLock }
   | { kind: "all" }
   | { kind: "check"; locks: UnfinishedLock[] }
-  | { kind: "recover"; lock: UnfinishedLock; credits: string };
+  | ({ kind: "recover" } & RecoverAsk);
 
 /** A recover asked for: the lock and the credits Platform's proved state showed left just now. */
 export interface RecoverAsk {
@@ -154,12 +156,9 @@ export interface RecoverAsk {
 /** What a recover of a lock came to, when it moved nothing: too small to move, or it failed. */
 export type RecoverNote = { kind: "tooSmall"; credits: string } | { kind: "failed" };
 
-/** Credits as the duffs they are worth, for the DASH formatter (rounded down). */
-export const creditsAsDuffs = (credits: string): number => Number(BigInt(credits) / 1000n);
-
 /** A transfer to Shielded Platform proved partly used: listed whatever its origin (this device's own
  * refused shield is no pending shield), and only ever recovered. */
-export const partlyUsed = (l: UnfinishedLock): boolean => l.state === "recoverable" || l.remainingCredits !== null;
+const partlyUsed = (l: UnfinishedLock): l is UnfinishedLock & { remainingCredits: string } => l.remainingCredits !== null;
 
 export type RecoveryState =
   | { kind: "idle" }
@@ -209,14 +208,14 @@ export function cardView(
     return { kind: "ready", text: RECOVERY_COPY.several(ready.length, duffs(total), lockKinds(ready)), note, actions: ["finishAll", "details"], lock: null };
   }
   if (checking.length > 0) return { kind: "checking", text: RECOVERY_COPY.checking(checking.length), note, actions: ["checkAgain", "details"], lock: null };
-  const recoverable = restored.filter((l) => l.state === "recoverable" && l.remainingCredits !== null);
+  const recoverable = restored.filter(partlyUsed).filter((l) => l.state === "recoverable");
   if (recoverable.length === 1) {
     const [lock] = recoverable;
-    return { kind: "recoverable", text: RECOVERY_COPY.recoverOne(duffs(creditsAsDuffs(lock.remainingCredits ?? "0"))), note, actions: ["recover", ...details], lock };
+    return { kind: "recoverable", text: RECOVERY_COPY.recoverOne(duffs(creditsToDuffs(lock.remainingCredits))), note, actions: ["recover", ...details], lock };
   }
   if (recoverable.length > 1) {
-    const total = recoverable.reduce((n, l) => n + BigInt(l.remainingCredits ?? "0"), 0n);
-    return { kind: "recoverable", text: RECOVERY_COPY.recoverSeveral(recoverable.length, duffs(creditsAsDuffs(String(total)))), note, actions: ["details"], lock: null };
+    const total = recoverable.reduce((n, l) => n + BigInt(l.remainingCredits), 0n);
+    return { kind: "recoverable", text: RECOVERY_COPY.recoverSeveral(recoverable.length, duffs(creditsToDuffs(String(total)))), note, actions: ["details"], lock: null };
   }
   return note === null ? null : { kind: "done", text: note, note: null, actions: ["dismiss"], lock: null };
 }
@@ -258,6 +257,10 @@ export function onRecoverySettled(f: () => void): () => void {
   settledListeners.add(f);
   return () => settledListeners.delete(f);
 }
+
+const notifySettled = () => {
+  for (const f of settledListeners) queueMicrotask(f);
+};
 
 export class RecoveryModel extends Model {
   state: RecoveryState = { kind: "idle" };
@@ -303,24 +306,31 @@ export class RecoveryModel extends Model {
   }
 
   /** Reads what is left on a partly used lock from Platform's proved state now; enough to move asks
-   * the user to confirm (`asking`). */
-  async askRecover(lock: UnfinishedLock): Promise<void> {
+   * the user to confirm (`asking`). `duffs` formats an amount for the card's line. */
+  async askRecover(lock: UnfinishedLock, duffs: (d: number) => string): Promise<void> {
     if (this.running) return;
     const key = lockKey(lock);
     this.notes.delete(key);
     this.#set({ kind: "running" });
+    let quote: RecoverQuote | null = null;
     try {
-      const quote = await this.api.recoverTransferQuote(this.walletId, lock.txid, lock.vout);
-      if (quote.kind === "ready") this.asking = { lock, credits: quote.credits };
-      else if (quote.kind === "tooSmall") this.notes.set(key, { kind: "tooSmall", credits: quote.credits });
-      else if (quote.kind === "finished") {
-        this.results.set(key, { lock, result: { kind: "applied" }, recovered: true });
-        for (const f of settledListeners) queueMicrotask(f);
-      } else this.notes.set(key, { kind: "failed" });
+      quote = await this.api.recoverTransferQuote(this.walletId, lock.txid, lock.vout);
     } catch {
-      this.notes.set(key, { kind: "failed" });
+      quote = null;
     }
-    this.#set({ kind: "idle" });
+    if (quote?.kind === "ready") {
+      this.asking = { lock, credits: quote.credits };
+      return this.#set({ kind: "idle" });
+    }
+    if (quote?.kind === "finished") {
+      // Recovered, or used up elsewhere: the list read again drops it.
+      notifySettled();
+      return this.#set({ kind: "idle" });
+    }
+    const note: RecoverNote = quote?.kind === "tooSmall" ? { kind: "tooSmall", credits: quote.credits } : { kind: "failed" };
+    this.notes.set(key, note);
+    const text = note.kind === "tooSmall" ? RECOVERY_COPY.sheet.recoverTooSmall(duffs(creditsToDuffs(note.credits))) : RECOVERY_COPY.sheet.recoverFailed;
+    this.#set({ kind: "done", text });
   }
 
   /** The user confirmed: the recover runs under a grant of exactly the quoted credits. */
@@ -356,7 +366,7 @@ export class RecoveryModel extends Model {
     } catch (e) {
       this.#set({ kind: "failed", error: e, retry: action });
     } finally {
-      if (ran) for (const f of settledListeners) queueMicrotask(f);
+      if (ran) notifySettled();
       if (ran && platform) onMoveSettledNotify();
     }
   }
@@ -391,7 +401,7 @@ export class RecoveryModel extends Model {
     return only?.kind === "reportedUsed" ? { kind: "done", text: RECOVERY_COPY.sheet.done.reportedUsed } : { kind: "idle" };
   }
 
-  async #recover({ lock, credits }: { lock: UnfinishedLock; credits: string }, since: number, started: () => void, touchedPlatform: () => void): Promise<RecoveryState> {
+  async #recover({ lock, credits }: RecoverAsk, since: number, started: () => void, touchedPlatform: () => void): Promise<RecoveryState> {
     const key = lockKey(lock);
     try {
       const got = await this.grants.withGrant(
@@ -401,12 +411,15 @@ export class RecoveryModel extends Model {
         since,
       );
       if (!got) return { kind: "idle" };
-      if (got.value.kind === "applied" || got.value.kind === "reportedUsed") this.results.set(key, { lock, result: got.value, recovered: true });
-      else this.notes.set(key, { kind: "failed" });
+      if (got.value.kind === "applied" || got.value.kind === "reportedUsed") {
+        this.results.set(key, { lock, result: got.value, recovered: true });
+        return { kind: "idle" };
+      }
     } catch {
-      this.notes.set(key, { kind: "failed" });
+      // The failure line says it, and the lock stays listed.
     }
-    return { kind: "idle" };
+    this.notes.set(key, { kind: "failed" });
+    return { kind: "done", text: RECOVERY_COPY.sheet.recoverFailed };
   }
 
   #set(state: RecoveryState) {

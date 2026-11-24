@@ -1058,16 +1058,16 @@ const SCENARIOS = {
     w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredFundLock(2, 25_000_000)];
     return w;
   },
-  /** A transfer to Shielded of this device's that Platform refused after a penalty, 0.3 DASH left: Home offers Recover. */
+  /** A transfer to Shielded of this device's that Platform refused after a penalty, 0.30 DASH left: Home offers Recover. */
   "recovery-recoverable": (t) => {
     const w = base(t);
-    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 300_000_000_000n)];
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
     return w;
   },
-  /** Two refused transfers to Shielded: one with 0.3 DASH left, one with less than the fee left (too small, not on the card). */
+  /** Two refused transfers to Shielded: one with 0.30 DASH left, one with less than the fee left (too small, not on the card). */
   "recovery-recoverable-small": (t) => {
     const w = base(t);
-    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 300_000_000_000n), partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n), partlyUsedLock(2, 20_000_000, 40_000_000n)];
     return w;
   },
   /** Only refused transfers to Shielded with less than the fee left: no card. */
@@ -1079,7 +1079,7 @@ const SCENARIOS = {
   /** The first recover fails after its signature ("checking"); the next is applied. */
   "recovery-recover-fails": (t) => {
     const w = base(t);
-    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 300_000_000_000n)];
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
     w.pending.recovery.failures = 1;
     return w;
   },

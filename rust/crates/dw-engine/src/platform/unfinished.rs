@@ -211,12 +211,7 @@ impl DashPay {
         grant: String,
     ) -> Result<LockFinish, PlatformError> {
         let wallet = self.wallet_id;
-        let outpoint = move || -> Result<OutPoint, PlatformError> {
-            let txid: Txid = (txid.trim().parse()).map_err(|_| PlatformError::InvalidArgument {
-                detail: "txid is not a hex txid".into(),
-            })?;
-            Ok(OutPoint { txid, vout })
-        };
+        let outpoint = move || lock_outpoint(&txid, vout);
         match kind {
             LockKindId::Shielded => {
                 on_pool_signing(&self.session, wallet, move |session, lib| async move {

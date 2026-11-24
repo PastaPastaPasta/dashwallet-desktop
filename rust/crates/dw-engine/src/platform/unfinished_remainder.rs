@@ -15,18 +15,21 @@
 //! remaining value at least Platform's fee. The grant must carry exactly
 //! those credits (a quote reads them first, [`quote`]), and is redeemed only
 //! once every refusal before it has passed. Just before the lock key signs,
-//! a `recovered` record of the wallet's Platform activity is armed, so a rise
-//! of the address is the recover's while it is pending.
+//! a `recovered` record of the wallet's Platform activity is armed, sized by
+//! what is left, so a rise of the address up to that is the recover's while
+//! it is pending.
 //!
 //! Only a proved apply settles the lock: [`Mark::Settled`], the library's own
 //! row `Consumed`, and the record done. A failure after the signature leaves
 //! the lock listed; the next recover's proved read settles it if Platform
 //! shows it used (completing an armed record with its estimate), or offers
-//! it again.
+//! it again. A quote that reads such a proof records it the same way; it
+//! signs nothing.
 
 use std::sync::Arc;
 
 use dashcore::OutPoint;
+use dpp::balances::credits::CREDITS_PER_DUFF;
 use dpp::version::PlatformVersion;
 
 use super::errors::PlatformError;
@@ -75,20 +78,26 @@ pub(crate) async fn quote(
     lib: &impl FundLib,
     outpoint: OutPoint,
 ) -> Result<RecoverQuote, PlatformError> {
+    let rules = match gates(lib).await {
+        Ok(rules) => rules,
+        Err(error) => return Ok(RecoverQuote::NotApplied { error }),
+    };
     let (shield, fund) = (pool::wallet_lock(session, wallet), fund::fund_lock(wallet));
     let (_shield, _fund) = (shield.lock().await, fund.lock().await);
-    Ok(match standing(session, wallet, lib, outpoint).await? {
-        Standing::Refused(error) => RecoverQuote::NotApplied { error },
-        Standing::Finished(_) => RecoverQuote::Finished,
-        Standing::TooSmall { credits, floor } => RecoverQuote::TooSmall {
-            credits,
-            fee_credits: floor,
+    Ok(
+        match standing(session, wallet, lib, outpoint, rules).await? {
+            Standing::Refused(error) => RecoverQuote::NotApplied { error },
+            Standing::Finished(_) => RecoverQuote::Finished,
+            Standing::TooSmall { credits, floor } => RecoverQuote::TooSmall {
+                credits,
+                fee_credits: floor,
+            },
+            Standing::Ready { credits, floor, .. } => RecoverQuote::Ready {
+                credits,
+                fee_credits: floor,
+            },
         },
-        Standing::Ready { credits, floor, .. } => RecoverQuote::Ready {
-            credits,
-            fee_credits: floor,
-        },
-    })
+    )
 }
 
 /// `DashPay::recover_transfer`: moves what is left on the partly used shield
@@ -101,9 +110,13 @@ pub(crate) async fn recover(
     outpoint: OutPoint,
     grant: &str,
 ) -> Result<LockFinish, PlatformError> {
+    let rules = match gates(lib).await {
+        Ok(rules) => rules,
+        Err(error) => return Ok(LockFinish::NotApplied { error }),
+    };
     let (shield, fund) = (pool::wallet_lock(session, wallet), fund::fund_lock(wallet));
     let (_shield, _fund) = (shield.lock().await, fund.lock().await);
-    let (lock, credits, floor) = match standing(session, wallet, lib, outpoint).await? {
+    let (lock, credits, floor) = match standing(session, wallet, lib, outpoint, rules).await? {
         Standing::Refused(error) => return Ok(LockFinish::NotApplied { error }),
         Standing::Finished(done) => return Ok(done),
         Standing::TooSmall { floor, .. } => {
@@ -125,14 +138,16 @@ pub(crate) async fn recover(
     let lease = authority(session, wallet, grant, credits).await?;
     let funding = lease.uncounted_funding_signer()?;
     let estimate = credits.saturating_sub(floor);
+    // The record is sized by what is left, not the lock: no more of the
+    // address's rise can be the recover's.
+    let row = (outpoint, credits.div_ceil(CREDITS_PER_DUFF));
     let hold = platform_moves::hold_fund(session, wallet, address.clone()).await;
     let ran = lease
         .scope(async {
             let permit = lease.call_permit(LABEL, None)?;
             let signer = LockKeySigner::new(&funding, script, permit.signatures());
-            let arming = ArmingSigner::new(&signer, session, wallet, (outpoint, lock.info.amount))
-                .paying(&address, estimate)
-                .recovering();
+            let arming =
+                ArmingSigner::new(&signer, session, wallet, row, (&address, estimate)).recovering();
             let applied = lib.apply_remainder(outpoint, to, &arming).await;
             let signed = signer.signed();
             permit.finish(applied.is_ok());
@@ -159,7 +174,7 @@ pub(crate) async fn recover(
     Ok(match reply_from(applied.map(drop), outpoint, signed) {
         Ok(ApplyReply::Done) => {
             let credited = gained.map_or((estimate, true), |g| (g.min(credits), false));
-            settle(session, wallet, &lock, address, credited).await;
+            settle(session, wallet, &lock, row.1, address, credited).await;
             drop(hold);
             lib.sync_now().await;
             (session.hub.pump).mark_platform(wallet, [PlatformChange::PlatformAddresses]);
@@ -194,11 +209,8 @@ async fn standing(
     wallet: WalletId,
     lib: &impl FundLib,
     outpoint: OutPoint,
+    rules: &'static PlatformVersion,
 ) -> Result<Standing, PlatformError> {
-    let rules = match gates(lib).await {
-        Ok(rules) => rules,
-        Err(code) => return Ok(Standing::Refused(code)),
-    };
     let floor = fund::fee_credits(rules);
     let kind = LockKindId::Shielded;
     let own = (session.leases.shield_lock_txids(wallet)).ok_or(PlatformError::Unavailable)?;
@@ -267,7 +279,7 @@ async fn used_up(session: &NetworkSession, wallet: WalletId, lock: &KindLock) ->
     match record {
         Ok(Some(r)) if r.recovered && r.armed => {
             let credited = (r.credits, true);
-            settle(session, wallet, lock, r.address, credited).await;
+            settle(session, wallet, lock, r.duffs, r.address, credited).await;
             LockFinish::Applied
         }
         _ => {
@@ -278,11 +290,13 @@ async fn used_up(session: &NetworkSession, wallet: WalletId, lock: &KindLock) ->
 }
 
 /// After a recover's proved apply: the lock settled as the shield kind
-/// records it, and its record done with `credited`.
+/// records it, and its record (of `duffs`, what was left) done with
+/// `credited`.
 async fn settle(
     session: &NetworkSession,
     wallet: WalletId,
     lock: &KindLock,
+    duffs: u64,
     address: String,
     credited: (u64, bool),
 ) {
@@ -295,7 +309,7 @@ async fn settle(
     {
         tracing::warn!(%at, error = %e, "could not record a recovered lock settled");
     }
-    let row = (at, lock.info.amount);
+    let row = (at, duffs);
     if let Err(e) = platform_moves::fund_applied(session, wallet, row, address, credited).await {
         tracing::warn!(%at, error = %e, "could not record a recover in the Platform activity");
     }

@@ -379,7 +379,7 @@ describe("RecoveryModel recover (#402)", () => {
 
   it("reads Platform first, asks to confirm the fresh amount, then recovers under a grant of exactly those credits", async () => {
     const { model, calls, vault } = recoverSetup(READY);
-    await model.askRecover(one);
+    await model.askRecover(one, duffs);
     expect(model.asking).toEqual({ lock: one, credits: "290000000000" });
     expect(calls).toEqual(["quote 1:0"]);
     expect(vault.calls.authorize).toEqual([]);
@@ -393,7 +393,7 @@ describe("RecoveryModel recover (#402)", () => {
 
   it("Cancel recovers nothing", async () => {
     const { model, calls, api } = recoverSetup(READY);
-    await model.askRecover(one);
+    await model.askRecover(one, duffs);
     model.cancelRecover();
     expect(model.asking).toBeNull();
     expect(api.recoverTransfer).not.toHaveBeenCalled();
@@ -402,9 +402,10 @@ describe("RecoveryModel recover (#402)", () => {
 
   it("a value now below the fee is never offered: the row says so", async () => {
     const { model, api } = recoverSetup({ kind: "tooSmall", credits: "40000000", feeCredits: "56000000" });
-    await model.askRecover(one);
+    await model.askRecover(one, duffs);
     expect(model.asking).toBeNull();
     expect(model.notes.get(lockKey(one))).toEqual({ kind: "tooSmall", credits: "40000000" });
+    expect(model.state).toEqual({ kind: "done", text: C.sheet.recoverTooSmall("40000 duffs") });
     expect(api.recoverTransfer).not.toHaveBeenCalled();
   });
 
@@ -416,18 +417,24 @@ describe("RecoveryModel recover (#402)", () => {
       [READY, appError("platform.grant_invalid")],
     ] as const) {
       const { model } = recoverSetup(quote, recovered);
-      await model.askRecover(one);
+      await model.askRecover(one, duffs);
       if (model.asking) await model.confirmRecover();
       expect(model.notes.get(lockKey(one))).toEqual({ kind: "failed" });
       expect(model.results.has(lockKey(one))).toBe(false);
-      expect(model.state).toEqual({ kind: "idle" });
+      expect(model.state).toEqual({ kind: "done", text: C.sheet.recoverFailed });
     }
   });
 
-  it("a lock already recovered or used up reads as added to the Platform address", async () => {
+  it("a lock already recovered or used up elsewhere reads the list again, and claims no result", async () => {
     const { model, api } = recoverSetup({ kind: "finished" });
-    await model.askRecover(one);
-    expect(model.results.get(lockKey(one))).toEqual({ lock: one, result: { kind: "applied" }, recovered: true });
+    const settled = vi.fn();
+    const stop = onRecoverySettled(settled);
+    await model.askRecover(one, duffs);
+    stop();
+    await Promise.resolve();
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(model.results.has(lockKey(one))).toBe(false);
+    expect(model.asking).toBeNull();
     expect(api.recoverTransfer).not.toHaveBeenCalled();
   });
 });

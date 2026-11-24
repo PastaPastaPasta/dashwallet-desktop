@@ -25,6 +25,56 @@ test.describe("Unfinished transfers", () => {
     expect(errors).toEqual([]);
   });
 
+  test("recovery-recoverable: Home offers Recover for this device's refused transfer to Shielded, confirms the fresh amount, and recovers it", async ({ page }) => {
+    const errors = await open(page, "recovery-recoverable");
+    const card = page.getByTestId("unfinished-card");
+    await expect(page.getByTestId("unfinished-text")).toHaveText(
+      "0.30 tDASH is left on a transfer to Shielded that Platform refused. You can recover it to your Platform balance, minus Platform's fee.",
+    );
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("unfinished-recover").click();
+    const confirm = page.getByTestId("recover-confirm");
+    await expect(confirm.getByTestId("recover-confirm-text")).toHaveText("Move the 0.30 tDASH left on this transfer to your Platform balance? Platform's fee comes out of this amount.");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await confirm.getByTestId("recover-confirm-cancel").click();
+    await expect(confirm).toHaveCount(0);
+    await page.getByTestId("unfinished-recover").click();
+    await page.getByTestId("recover-confirm-ok").click();
+    await authorize(page);
+    await expect(card).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("recovery-recoverable-small: the card counts the recoverable row only; Details shows the below-fee row too small", async ({ page }) => {
+    await open(page, "recovery-recoverable-small");
+    await expect(page.getByTestId("unfinished-text")).toContainText("0.30 tDASH is left on a transfer to Shielded");
+    await page.getByTestId("unfinished-details").click();
+    const rows = page.getByTestId("unfinished-row");
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0).getByTestId("unfinished-row-state")).toHaveText("Can be recovered");
+    await expect(rows.nth(1).getByTestId("unfinished-row-state")).toHaveText("Too small to finish: worth less than the Platform fee");
+    await expect(rows.nth(1).getByTestId("unfinished-row-too-small")).toContainText("left on this transfer is less than Platform's fee for moving it, so it can't be recovered.");
+    await expect(rows.nth(1).getByTestId("unfinished-row-recover")).toHaveCount(0);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+  });
+
+  test("recovery-too-small-only: no card when every refused transfer is below the fee", async ({ page }) => {
+    await open(page, "recovery-too-small-only");
+    await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
+  });
+
+  test("recovery-recover-fails: a recover that fails keeps the lock with the failure line, and the next one recovers it", async ({ page }) => {
+    await open(page, "recovery-recover-fails");
+    await page.getByTestId("unfinished-recover").click();
+    await page.getByTestId("recover-confirm-ok").click();
+    await authorize(page);
+    await expect(page.getByTestId("unfinished-note")).toHaveText("Dash Wallet couldn't recover this value. It's still listed here, and you can try again.");
+    await page.getByTestId("unfinished-recover").click();
+    await page.getByTestId("recover-confirm-ok").click();
+    await authorize(page);
+    await expect(page.getByTestId("unfinished-text")).toHaveCount(0);
+  });
+
   test("recovery-restored-mixed: Details lists the three restored locks", async ({ page }) => {
     await open(page, "recovery-restored-mixed");
     await expect(page.getByTestId("unfinished-text")).toContainText("2 transfers to Shielded (");

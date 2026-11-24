@@ -247,13 +247,13 @@ describe("fixture unfinished transfers", () => {
     it("lists this device's lock as recoverable, quotes what is left, and recovers it under a grant of exactly that", async () => {
       open("recovery-recoverable");
       const [l] = (await cmd.unfinishedTransfers(W)).locks;
-      expect([l.origin, l.state, l.remainingCredits]).toEqual(["thisDevice", "recoverable", "300000000000"]);
-      expect(await cmd.recoverTransferQuote(W, l.txid, l.vout)).toEqual({ kind: "ready", credits: "300000000000", feeCredits: "56000000" });
+      expect([l.origin, l.state, l.remainingCredits]).toEqual(["thisDevice", "recoverable", "30000000000"]);
+      expect(await cmd.recoverTransferQuote(W, l.txid, l.vout)).toEqual({ kind: "ready", credits: "30000000000", feeCredits: "56000000" });
       expect(await code(cmd.recoverTransfer(W, l.txid, l.vout, await creditsGrant("299999999999")))).toBe("platform.grant_invalid");
-      expect(await cmd.recoverTransfer(W, l.txid, l.vout, await creditsGrant("300000000000"))).toEqual({ kind: "applied" });
+      expect(await cmd.recoverTransfer(W, l.txid, l.vout, await creditsGrant("30000000000"))).toEqual({ kind: "applied" });
       expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
       const rows = (await cmd.platformActivity(W))!.filter((a) => a.kind === "recovered");
-      expect(rows.map((a) => [a.state, a.credits])).toEqual([["done", String(300_000_000_000n - 56_000_000n)]]);
+      expect(rows.map((a) => [a.state, a.credits])).toEqual([["done", String(30_000_000_000n - 56_000_000n)]]);
     });
 
     it("quotes a below-fee lock too small and never recovers it; a lock that is not partly used is not recoverable", async () => {

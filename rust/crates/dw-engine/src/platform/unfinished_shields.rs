@@ -176,11 +176,8 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
         if signer.signed() && !matches!(applied, Ok(Applied::Done)) {
             // Platform's answer after the signature is unproved; its proved
             // state says whether the lock is used, or partly used (#402).
-            match self.lib.spent(outpoint).await {
-                SpentRead::Remaining { credits } => {
-                    tracing::warn!(%outpoint, credits, "a shield lock Platform proved partly used");
-                    locks::record_remaining(session, wallet, kind, outpoint, credits).await;
-                }
+            match read_unproved(session, wallet, self.lib, outpoint).await {
+                SpentRead::Remaining { .. } => {}
                 SpentRead::Consumed if taken && self.restored(outpoint).await => {
                     locks::record(session, wallet, kind, Mark::Used, outpoint).await;
                 }
@@ -211,6 +208,26 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
         // The shielded note is the library's once a pass finds it.
         self.lib.sync_now().await;
     }
+}
+
+/// Platform's proved state of the shield lock at `outpoint` after an apply
+/// it did not prove (a shield, its "Check again", or a finish): a lock it
+/// shows partly used, a shield refused after a penalty, is kept with what is
+/// left ([`Mark::Remaining`]); it is then no pending shield and lists
+/// Recoverable, or too small.
+pub(crate) async fn read_unproved(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    outpoint: OutPoint,
+) -> SpentRead {
+    let spent = lib.spent(outpoint).await;
+    if let SpentRead::Remaining { credits } = spent {
+        tracing::warn!(%outpoint, credits, "a shield lock Platform proved partly used");
+        let kind = LockKindId::Shielded;
+        locks::record_remaining(session, wallet, kind, outpoint, credits).await;
+    }
+    spent
 }
 
 impl<L: ShieldedLib> ShieldLocks<'_, L> {
