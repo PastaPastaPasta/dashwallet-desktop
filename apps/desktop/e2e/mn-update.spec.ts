@@ -196,6 +196,28 @@ for (const theme of THEMES)
     expect(errors).toEqual([]);
   });
 
+for (const theme of THEMES)
+  test(`a change abandoned in Activity ${theme}: a new one previews, and sending it says how to clear the old one`, async ({ page }) => {
+    const errors = await open(page, "mn-update-abandoned", theme);
+    await page.getByTestId(`mn-row-${HOME}`).click();
+    await page.getByTestId("mn-change-keys").click();
+    await page.getByTestId("mn-change-operator-keychain").click();
+    await expect(page.getByTestId("mn-change-review-operator")).toContainText("Changes");
+    await expect(page.getByTestId("mn-change-preview-error")).toHaveCount(0);
+    await page.getByTestId("mn-change-passphrase").fill(FIXTURE_PASSPHRASE);
+    await page.getByTestId("mn-change-send").click();
+    await expect(page.getByTestId("mn-change-error")).toHaveText(
+      "An abandoned change to this masternode may still confirm, and it would undo this one. To clear it, send one of that change's coins to yourself. You can make this change once that payment is in a block.",
+    );
+    await expect(page.getByTestId("mn-change-keys-sent")).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).length)).toBe(0);
+    expect(await page.evaluate(() => window.__dwFixture!.world.masternodes.operations.length)).toBe(1);
+    await fontsReady(page);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await shot(page, "change-keys-abandoned-pending", theme);
+    expect(errors.filter((e) => !e.includes("may still confirm"))).toEqual([]);
+  });
+
 test("Send again of a change saved behind a sent one: the sent line, in the sheet and in In progress (#438)", async ({ page }) => {
   const errors = await open(page, "mn-update-saved-behind-sent");
   const SENT = "was sent but hasn't reached the masternode list yet";

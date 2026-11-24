@@ -498,6 +498,20 @@ pub(crate) fn load_dropped(appdb: &AppDb, wallet: WalletId) -> (BTreeSet<Txid>, 
     }
 }
 
+/// The txids `wallet`'s abandoned marks name, each by its key (an Abandon's
+/// commit point): one whose copy does not read back still counts.
+pub(crate) fn abandoned_txids(
+    appdb: &AppDb,
+    wallet: WalletId,
+) -> Result<HashSet<Txid>, dw_appdb::AppDbError> {
+    Ok(
+        (appdb.settings_with_prefix_lossy(&wallet.to_string(), ABANDONED_PREFIX)?)
+            .into_iter()
+            .filter_map(|(key, _)| Txid::from_str(&key[ABANDONED_PREFIX.len()..]).ok())
+            .collect(),
+    )
+}
+
 /// Finishes in the wallet store the abandons whose marks are stored but
 /// whose sweeps are not (the mark is the commit point): of `wallets`, each
 /// payment marked abandoned that is still stored out of a block and
@@ -1458,6 +1472,7 @@ impl NetworkSession {
             pause.release.notified().await;
         }
         let proof = self.root_proof(manager, wallet, root).await;
+        let _gate = self.abandon_gate(wallet).write_owned().await;
         // Planned on a copy under the lock that applies it, so the replay
         // record stored before it covers what is abandoned; held until the
         // sweep is stored, so no descendant is credited between the plan and
@@ -1810,6 +1825,12 @@ impl NetworkSession {
         let changed: Vec<Txid> = abandoned.iter().copied().collect();
         self.hub.pump.mark_history(wallet, Some(&changed));
         self.hub.pump.mark_balances(wallet);
+        // A masternode operation whose transaction this abandoned holds its
+        // coins no longer (MG-10 §1.10, D49). The mark is durable, so a
+        // release that fails here runs again at the next settling.
+        if let Err(e) = self.settle_operation_locks(wallet).await {
+            tracing::warn!(%wallet, error = %e, "releasing an abandoned ProTx operation's coins");
+        }
         Ok(())
     }
 
@@ -2082,13 +2103,36 @@ impl NetworkSession {
             if let Some(r) = activity_resend_refusal(&f, manager.spv().is_started(), peers) {
                 return Err(r.into());
             }
+            #[cfg(test)]
+            let pause = this.hub.pause_resend.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause.mark_reached();
+                pause.release.notified().await;
+            }
+            // Read again, held against an abandon through the hand-off: one
+            // since the check committed its mark, and its bytes stay unsent.
+            let gate = this.abandon_gate(wallet).read_owned().await;
+            if this.abandon_marked(wallet, txid).await {
+                return Err(EngineError::TxActionRefused(
+                    TxActionRefusal::AlreadyAbandoned,
+                ));
+            }
             let handle = this.wallet(&wallet).await?;
+            #[cfg(test)]
+            let wire = this.hub.resend_wire.lock().unwrap().clone();
             // platform-wallet's only broadcast entry point waits for the
             // network's acceptance (up to dash-spv's 60 s timeout). The send
             // itself happens at once, so the call returns after a short
             // hand-off window and leaves the wait to a background task; a
             // send dash-spv refuses outright (no connection) is reported.
             let mut task = tokio::spawn(async move {
+                let _gate = gate;
+                #[cfg(test)]
+                if let Some(wire) = wire {
+                    wire.lock().unwrap().push(entry.tx.txid());
+                    return Ok(entry.tx.txid());
+                }
                 let outcome = handle.core().broadcast_transaction(&entry.tx).await;
                 match &outcome {
                     Ok(_) => tracing::info!(%txid, "resent transaction accepted"),

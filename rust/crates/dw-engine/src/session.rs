@@ -284,6 +284,13 @@ pub struct NetworkSession {
     /// Orders every write of "ask for my passphrase for every payment"
     /// with what the vault is told of it (`keys.rs`).
     pub(crate) payment_auth: tokio::sync::Mutex<()>,
+    /// Per wallet, orders an Abandon's marks with a masternode operation's
+    /// resend (MG-10 §1.10): an abandon holds it for writing from its plan
+    /// through its marks, a resend for reading from its last mark check
+    /// through its hand-off, so no resend hands off bytes an abandon has
+    /// marked.
+    pub(crate) abandon_gates:
+        Mutex<std::collections::HashMap<WalletId, Arc<tokio::sync::RwLock<()>>>>,
     /// Other crates' tests: the next write of that setting fails.
     #[cfg(all(debug_assertions, feature = "test-support"))]
     pub(crate) payment_auth_fault: std::sync::atomic::AtomicBool,
@@ -318,6 +325,12 @@ pub struct NetworkSession {
 type TestRun<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, EngineError>> + Send>>;
 
 impl NetworkSession {
+    /// The wallet's gate of [`NetworkSession::abandon_gates`].
+    pub(crate) fn abandon_gate(&self, wallet: WalletId) -> Arc<tokio::sync::RwLock<()>> {
+        let mut gates = self.abandon_gates.lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(gates.entry(wallet).or_default())
+    }
+
     /// Opens the session. Must run on the engine runtime: the manager spawns
     /// its persistence adapter task with `tokio::spawn`.
     pub(crate) async fn open(
@@ -712,6 +725,7 @@ impl NetworkSession {
             relock: Mutex::new(None),
             backups: Default::default(),
             payment_auth: tokio::sync::Mutex::new(()),
+            abandon_gates: Mutex::default(),
             #[cfg(all(debug_assertions, feature = "test-support"))]
             payment_auth_fault: Default::default(),
             resends: Mutex::new(Vec::new()),

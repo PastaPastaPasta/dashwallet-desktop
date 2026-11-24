@@ -382,8 +382,8 @@ function checkAddress(address: string, what: string) {
 }
 
 /** `preview_update_registrar`'s checks and plan, in the engine's order: the request, the list, the masternode, the
- * owner key, an update still pending (D49), then what changes. */
-function planUpdate(world: World, walletId: string, request: UpdateRegistrarRequest): UpdateRegistrarPreview {
+ * owner key, an update still pending (D49), for a `commit` an update abandoned in Activity, then what changes. */
+function planUpdate(world: World, walletId: string, request: UpdateRegistrarRequest, commit = false): UpdateRegistrarPreview {
   const hash = checkHash(request.proTxHash);
   if (request.operator.kind === "given" && !BLS_HEX.test(request.operator.publicKey)) throw fail("invalid_argument", "the operator key is not 96 hex digits");
   if (request.voting.kind === "address") checkAddress(request.voting.address, "the voting address");
@@ -399,6 +399,8 @@ function planUpdate(world: World, walletId: string, request: UpdateRegistrarRequ
   if (cap.kind !== "available") throw fail("masternodes.no_owner_key", "this wallet holds no owner key of this masternode");
   const pending = m.operations.find((u) => u.proTxHash === hash && (u.state.kind === "sent" || u.state.kind === "signed" || u.state.kind === "not_sent"));
   if (pending) throw fail("masternodes.update_pending", `operation ${pending.id} on this masternode is not in the list yet`, { kind: "operation", operation: pending.id });
+  const abandoned = commit && m.operations.find((u) => u.kind === "update_registrar" && u.proTxHash === hash && u.state.kind === "abandoned");
+  if (abandoned) throw fail("masternodes.update_abandoned_pending", `operation ${abandoned.id} on this masternode was abandoned and may still confirm`, { kind: "operation", operation: abandoned.id });
   const listedOperator = basicKey(listed.facts.operatorPublicKey);
   const operatorKey = request.operator.kind === "keep" ? listedOperator : request.operator.kind === "given" ? request.operator.publicKey.toLowerCase() : keyInfo("operator", request.operator.kind === "keychain" ? request.operator.index : NEXT_UNUSED).publicKeyHex;
   const operatorIndex = request.operator.kind === "keychain" ? request.operator.index : request.operator.kind === "next_unused" ? NEXT_UNUSED : null;
@@ -849,13 +851,16 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
       const o = opOf(world, walletId, operation);
       const state = readState(m, o).kind;
       if (state !== "signed" && state !== "not_sent" && state !== "sent") throw stateError(state);
-      // `resend_conflict` (D43, D49): a later update of the masternode that is or may go out would be undone by this
-      // one; an earlier one out and not in a block could be mined after it.
+      // `resend_conflict` (D43, D49), each other update of the masternode newest first: an abandoned one may still be
+      // mined after this one; a later one that is or may go out would be undone by it; an earlier one out and not in a
+      // block could be mined after it.
       const others = o.kind === "update_registrar" ? m.operations.filter((x) => x !== o && x.kind === o.kind && x.proTxHash === o.proTxHash) : [];
-      const later = others.find((x) => x.createdAt >= o.createdAt && ["signed", "not_sent", "sent", "confirmed"].includes(readState(m, x).kind));
-      if (later) throw fail("masternodes.update_superseded", `operation ${later.id} replaces this one`, { kind: "operation", operation: later.id });
-      const earlier = others.find((x) => x.createdAt < o.createdAt && readState(m, x).kind === "sent");
-      if (earlier) throw fail("masternodes.update_pending", `operation ${earlier.id} on this masternode is not in the list yet`, { kind: "operation", operation: earlier.id });
+      for (const x of others) {
+        const k = readState(m, x).kind;
+        if (k === "abandoned") throw fail("masternodes.update_abandoned_pending", `operation ${x.id} on this masternode was abandoned and may still confirm`, { kind: "operation", operation: x.id });
+        if (x.createdAt >= o.createdAt && ["signed", "not_sent", "sent", "confirmed"].includes(k)) throw fail("masternodes.update_superseded", `operation ${x.id} replaces this one`, { kind: "operation", operation: x.id });
+        if (x.createdAt < o.createdAt && k === "sent") throw fail("masternodes.update_pending", `operation ${x.id} on this masternode is not in the list yet`, { kind: "operation", operation: x.id });
+      }
       charge(lease(world, walletId, grant, useGrant), o.debit);
       sendOp(m, o, false);
       changed(ctx);
@@ -1062,7 +1067,7 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
     mn_update_registrar: ({ walletId, request, grant: grantId }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
-      const plan = planUpdate(world, walletId, request);
+      const plan = planUpdate(world, walletId, request, true);
       masternodeGrant(world, walletId, grantId, plan.totalDebit);
       const m = world.masternodes;
       const n = m.operations.filter((o) => o.kind === "update_registrar").length + 1;
@@ -1348,6 +1353,10 @@ export function masternodesScenarios(base: Base) {
     "mn-update-saved": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" })])),
     /** `mn-list` with a change to Home sent and not in the list yet: a new change is refused `update_pending`. */
     "mn-update-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "sent" })])),
+    /** `mn-list` with a change to Home abandoned in Activity: a new change previews, and sending it is refused `update_abandoned_pending`. */
+    "mn-update-abandoned": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "abandoned" })])),
+    /** `mn-update-abandoned` with a later change to Home saved and not sent: its Send again is refused `update_abandoned_pending`. */
+    "mn-update-saved-behind-abandoned": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" }, OP_UPDATE_SAVED, 2), homeUpdate({ kind: "abandoned" })])),
     /** `mn-update-sent` with a later change to Home saved and not sent: its Send again is refused `update_pending`. */
     "mn-update-saved-behind-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" }, OP_UPDATE_SAVED, 2), homeUpdate({ kind: "sent" })])),
     /** The keychain: Home's operator key matched in the basic form, Office's in the legacy form, Lab evonode's platform node id. */
