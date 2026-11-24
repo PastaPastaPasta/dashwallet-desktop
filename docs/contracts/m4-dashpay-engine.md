@@ -4810,7 +4810,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     still `platform.feature_off{feature: "platform_registration"}` before anything is read, written or redeemed, and
     the flow step refuses there too). The grant must carry no duffs (`platform.grant_invalid`, as a claim's); a
     vault grant is redeemed into a `Registration` lease that also carries the Platform-address signer, and a lease
-    named as the grant that does not carry it is `platform.grant_invalid`. A row of the `platform_addresses` kind is
+    named as the grant that does not carry it is `platform.grant_invalid`. A contact payout's lease (`ContactPayFromBalance`)
+    named as the grant is `platform.grant_invalid` before that check, nothing redeemed. A row of the `platform_addresses` kind is
     run: at `KeysPrepared` the step takes the move lock, reads the addresses once under rule 5, settles the wallet's
     moves, and with no plan stored refuses while any move is pending or holds (`credits.move_pending`, a wait),
     plans again (numbers other than the stored ones fail the row `registration.quote_changed`, not retryable,
