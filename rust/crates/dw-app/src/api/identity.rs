@@ -171,8 +171,9 @@ commands! {
         Ok(quote.into())
     }
 
-    /// An invitation claim row's resume grant: no duffs, and the credits
-    /// of the steps it has left, from the row (DP5-03 D20).
+    /// An invitation claim row's or a Platform-funded row's resume grant:
+    /// no duffs, and the credits of the steps it has left, from the row
+    /// (DP5-03 D20).
     #[facade("DashPay::registration_resume_grant")]
     fn registration_resume_grant(state, wallet_id: String, draft: String) -> GrantRequest {
         let dashpay = state.dashpay(&wallet_id).await?;

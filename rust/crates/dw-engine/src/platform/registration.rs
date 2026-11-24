@@ -1,6 +1,7 @@
 //! Registration: quote, the persisted state machine (§3.4), resume, discard
 //! and stranded asset locks (DP1-02).
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ use super::names::valid_label;
 use super::registration_flow::{self as flow, PwLib, RegistrationLib};
 use super::registration_ledger::{Ledger, Standing};
 use super::registration_platform;
-use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
+use super::registration_rows::{Decoded, Funding, Phase, PlatformPlan, ProfileRecord};
 use super::shielded::SHIELDED_ACTIVATION_VERSION;
 use super::shielded_pool::MIN_ACTIONS;
 use super::unfinished::{LockKindId, TransfersReport};
@@ -222,6 +223,9 @@ pub struct RegistrationStatus {
     pub profile_failure: Option<String>,
     /// Set for a row funded by an invitation (DP5-03 D8).
     pub invitation: Option<RegistrationInvitation>,
+    /// A row funded from the Platform addresses: its resume takes the grant
+    /// `registration_resume_grant` sizes, as a claim's does.
+    pub from_platform: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -896,9 +900,12 @@ pub(crate) async fn quote<L: RegistrationLib>(
     })
 }
 
-/// A claim row's resume grant (DP5-03 D20), from the row alone: no duffs,
-/// and the credits of the steps it has left. Never from the invitation's
-/// status, which reads `Claimed` once the row's own claim has landed.
+/// A claim row's or a Platform-funded row's resume grant (DP5-03 D20;
+/// C-funding F5), from the row alone, never a quote: no duffs, and the
+/// credits of the steps it has left. A claim's identity create is its
+/// fee; a Platform row's is the funding and the fee reserve it stored. Never
+/// from the invitation's status, which reads `Claimed` once the row's own
+/// claim has landed.
 pub(crate) async fn resume_grant<L: RegistrationLib>(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
@@ -906,12 +913,40 @@ pub(crate) async fn resume_grant<L: RegistrationLib>(
     draft: &str,
 ) -> Result<GrantRequest, RegistrationError> {
     let row = registration_row(session, wallet, draft).await?;
-    let Ok((phase, Funding::Invitation { inviter, .. })) = flow::interpret(&row) else {
-        return Err(invalid("not an invitation's claim"));
+    let (phase, create, inviter) = match flow::interpret(&row) {
+        Ok((phase, Funding::Invitation { inviter, .. })) => {
+            (phase, flow::IDENTITY_CREATE_CREDITS, inviter)
+        }
+        Ok((
+            phase,
+            Funding::PlatformAddresses {
+                funding_credits,
+                fee_reserve_credits,
+                plan,
+            },
+        )) => {
+            registration_platform::refuse_on_mainnet(&lib.network())?;
+            if plan
+                .as_ref()
+                .is_some_and(|p| !plan_as_made(p, funding_credits))
+            {
+                return Err(invalid("the row's stored plan is not one this wallet made"));
+            }
+            (
+                phase,
+                funding_credits.saturating_add(fee_reserve_credits),
+                None,
+            )
+        }
+        _ => {
+            return Err(invalid(
+                "not an invitation's claim or a Platform-funded row",
+            ));
+        }
     };
     let mut credits = 0u64;
     if row.identity.is_none() {
-        credits = credits.saturating_add(flow::IDENTITY_CREATE_CREDITS);
+        credits = credits.saturating_add(create);
     }
     if phase < Phase::NameRegistered {
         credits = credits.saturating_add(lib.name_credits(&row.label).await?);
@@ -929,6 +964,20 @@ pub(crate) async fn resume_grant<L: RegistrationLib>(
         max_duffs: 0,
         max_credits: credits,
     })
+}
+
+/// A stored plan as the funding step makes one: distinct addresses that
+/// parse, each at a nonce past 0 and claiming something, the claims
+/// exactly the funding the row stored, and an identity that parses.
+fn plan_as_made(plan: &PlatformPlan, funding_credits: u64) -> bool {
+    let addresses: BTreeSet<&str> = plan.inputs.iter().map(|(a, _, _)| a.as_str()).collect();
+    let claims = (plan.inputs.iter()).try_fold(0u64, |sum, (_, _, c)| sum.checked_add(*c));
+    !plan.inputs.is_empty()
+        && addresses.len() == plan.inputs.len()
+        && (plan.inputs.iter())
+            .all(|(a, n, c)| *n > 0 && *c > 0 && super::platform_moves::parse(a).is_some())
+        && claims == Some(funding_credits)
+        && Identifier::from_string(&plan.identity, Encoding::Base58).is_ok()
 }
 
 /// The wallet's registration ledger (DP1-02 §5), for the gates.
@@ -1365,6 +1414,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
                 }),
                 _ => None,
             },
+            from_platform: from_platform(row),
             created_at: row.created_at,
             updated_at: row.updated_at,
         });
@@ -1392,6 +1442,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             name_failure: None,
             profile_failure: None,
             invitation: None,
+            from_platform: false,
             created_at: 0,
             updated_at: 0,
         });

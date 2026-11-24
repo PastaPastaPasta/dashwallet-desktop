@@ -7,7 +7,7 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationFailure } from "../api/generated/RegistrationFailure";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { StartupStatus } from "../api/generated/StartupStatus";
-import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, joinModel, namesState, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, type StatusInputs } from "./status";
+import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, heldWithBoth, joinModel, namesState, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, WAITS, type StatusInputs } from "./status";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -43,6 +43,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   nameFailure: null,
   profileFailure: null,
   invitation: null,
+  fromPlatform: false,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -193,6 +194,25 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
         lines: [what, COPY.repair.message],
         action: { kind: "repair" },
       });
+  });
+
+  it("#685: a held Platform payment offers Continue and Move to Dash wallet", () => {
+    const held = row({ waiting: "paymentHeld", running: false, fundsCommitted: true, fromPlatform: true });
+    expect(homeCard(inputs(REGISTERING, { registration: held }))).toMatchObject({
+      state: "creatingHeld",
+      tone: "problem",
+      step: { n: 1 },
+      lines: [heldWithBoth()],
+      action: { kind: "continue", label: "Continue" },
+      secondary: { kind: "moveToCore", label: "Move to Dash wallet" },
+    });
+    // The line beside both names both; the plain wait line names neither (MG).
+    expect(heldWithBoth()).toContain("Continue");
+    expect(heldWithBoth()).toContain("Move to Dash wallet");
+    expect(WAITS.paymentHeld).not.toContain("Continue");
+    expect(WAITS.paymentHeld).not.toContain("Move to Dash wallet");
+    // Unknown is still a running wait, with no way out offered.
+    expect(homeCard(inputs(REGISTERING, { registration: row({ waiting: "paymentUnknown", running: true, fromPlatform: true }) }))).toMatchObject({ state: "creating", secondary: null });
   });
 
   it("S15 / AND-069–070: a contested username's vote, its end or a notice, and the temporary name", () => {
