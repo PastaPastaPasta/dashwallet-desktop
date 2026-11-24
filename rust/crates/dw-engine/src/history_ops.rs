@@ -509,6 +509,9 @@ impl NetworkSession {
         for (wallet, sent, complete, claims, stored) in sends {
             self.restore_unmined_spends(&live.manager, wallet, &sent, (complete, claims), &stored)
                 .await;
+            if let Err(e) = (self.start_block_spend_check(&live.manager, wallet, complete)).await {
+                tracing::warn!(%wallet, error = %e, "could not start the block-spend check");
+            }
         }
         Ok(())
     }

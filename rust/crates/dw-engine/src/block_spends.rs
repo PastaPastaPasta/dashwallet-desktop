@@ -49,6 +49,12 @@ pub(crate) struct BlockSpends {
     /// Bumped by every change of the rows, so a read of the store that
     /// overlapped one is not installed over it.
     generation: std::sync::atomic::AtomicU64,
+    /// Tests: the stored chain the check searches in place of SPV's.
+    #[cfg(test)]
+    pub(crate) fake_chain: RwLock<Option<Arc<dyn crate::block_spend_check::StoredChain>>>,
+    /// Tests: the next check start ignores the wallet store's mark.
+    #[cfg(test)]
+    pub(crate) ignore_mark: std::sync::atomic::AtomicBool,
     /// Applies the hold again once rows land for a wallet
     /// ([`crate::NetworkSession::attach_block_spend_hold`]).
     on_rows: std::sync::OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
@@ -63,6 +69,11 @@ fn read<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
 }
 
 impl BlockSpends {
+    #[cfg(test)]
+    pub(crate) fn stored_chain(&self) -> Option<Arc<dyn crate::block_spend_check::StoredChain>> {
+        read(&self.fake_chain).clone()
+    }
+
     fn bump(&self) {
         (self.generation).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }

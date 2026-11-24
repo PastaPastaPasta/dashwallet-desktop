@@ -19,6 +19,8 @@ use crate::history::{HistoryFilter, HistoryQuery, HistorySort, TxStatusKind};
 use crate::session::NetworkSession;
 use crate::{DashNetwork, Engine, WalletBalances, WalletId};
 
+#[path = "block_spend_check_tests.rs"]
+mod block_spend_check_tests;
 #[path = "block_spend_tests.rs"]
 mod block_spend_tests;
 #[path = "crash_send_tests.rs"]

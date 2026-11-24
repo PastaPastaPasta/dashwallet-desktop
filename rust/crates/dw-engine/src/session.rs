@@ -847,6 +847,7 @@ impl NetworkSession {
         session.back_up_every_wallet_once();
         session.spawn_ensure_background();
         session.spawn_reverify();
+        session.spawn_block_spend_checks();
         tracing::info!(
             elapsed_ms = opened.elapsed().as_millis() as u64,
             "startup session-open"
