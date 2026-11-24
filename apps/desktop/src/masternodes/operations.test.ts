@@ -75,6 +75,12 @@ describe("In progress (§1.10)", () => {
       primary: null,
       more: [],
     });
+    expect(t(`${I}.status.abandoned`, { title: "Registration" })).toBe(
+      "Registration · Abandoned. Its coins are available again.",
+    );
+    expect(t(`${I}.abandoned`)).toBe(
+      "It may still confirm if it reached the network. To make sure it never does, send one of its coins to yourself.",
+    );
   });
 
   it("acts on a registration row only while registrations send (D14), and keeps Discard", () => {
