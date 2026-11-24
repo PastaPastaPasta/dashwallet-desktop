@@ -421,9 +421,9 @@ fn contact_pay_refuses_in_order_before_the_source() {
     );
 }
 
-/// P15: "Accept and pay" takes its source; a non-Core one, and a plain
-/// payout's flow from Shielded, are off until their slices, with every
-/// grant kept; a source on another flow is refused.
+/// P15: "Accept and pay" takes its source; a non-Core one is off until
+/// its slice, with every grant kept; a source on another flow is refused.
+/// A payout's flow from Shielded is C5a's (`a_flow_lease_pays_one_payout`).
 #[test]
 fn begin_flow_takes_the_payment_source() {
     let f = fixture(false);
@@ -446,11 +446,6 @@ fn begin_flow_takes_the_payment_source() {
         (
             FlowKind::AcceptAndPay,
             Some(PaymentSource::Platform),
-            "platform.feature_off",
-        ),
-        (
-            FlowKind::ContactPayFromBalance,
-            Some(PaymentSource::Shielded),
             "platform.feature_off",
         ),
         (
