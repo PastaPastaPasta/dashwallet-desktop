@@ -332,6 +332,8 @@ for (const theme of THEMES) {
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
+    await page.getByTestId("tx-detail").locator(".sheet-close").click();
+    await expect(page.getByTestId("tx-detail")).toBeHidden();
     await page.getByTestId("sidebar-masternodes").click();
     await page.getByTestId("mn-shared").click();
     await page.getByTestId("sh-in-progress").getByRole("button").first().click();
