@@ -72,11 +72,11 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   };
 }
 
-/** An amount in the display unit, masked in discreet mode. */
+/** An amount in the display unit with its full decimals, masked in discreet mode. */
 function useAmount(network: NetworkInfo) {
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
-  return (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
+  return (duffs: number) => (discreet ? shown.masked() : `${shown.full(duffs)} ${shown.name}`);
 }
 
 const balanceOf = (pool: Pool, pools: Pools): number | null => (pool === "core" ? pools.core : pool === "shielded" ? (pools.shielded?.duffs ?? null) : (pools.platform?.duffs ?? null));

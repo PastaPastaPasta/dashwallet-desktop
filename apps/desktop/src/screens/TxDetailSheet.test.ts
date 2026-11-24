@@ -85,6 +85,12 @@ describe("a refused abandon", () => {
     expect(actionProblem(refused("rescanFirst", "engine text"))).toBe("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
   });
 
+  it("says why a payment with a locked or confirmed later payment can't be abandoned, from the catalog", () => {
+    expect(actionProblem(refused("settledDescendant", "engine text"))).toBe(
+      "This transaction can't be abandoned. A later transaction that spends from it is already locked or confirmed, so this one will confirm too.",
+    );
+  });
+
   it("gives any other refusal the engine's message", () => {
     expect(actionProblem(refused("instantLocked", "transaction action refused: InstantLocked"))).toBe("transaction action refused: InstantLocked");
   });
