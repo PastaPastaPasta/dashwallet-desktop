@@ -4818,15 +4818,18 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     settles leaves the flag's refusal, with nothing planned, granted or signed. `platform_send_grant` and
     `next_receive_address` stay as before (a grant with no quote is `invalid_argument`). Reads of the balance stay.
     The top-up from Platform, Platform-source contact payments, `unshield_to_platform` and a registration from the
-    addresses keep their own mainnet flags. `PlatformAddressBalance` gains `sends_off` (`#[serde(default)]`): the
+    addresses keep their own mainnet flags. On mainnet a move's destination that is not one of the wallet's own Core
+    addresses (`invalid_argument`) answers the flag; its other errors keep their codes. `PlatformAddressBalance` gains `sends_off` (`#[serde(default)]`): the
     flag's feature where it holds the paths off, `sends_active` then `false`. Testnet, devnet and regtest are
     unchanged.
 
 105. **A group settled with no named winner, and a held move's quote (version 87).** A move record gains
     `unattributed` (`#[serde(default)]`, persisted): set by the activity read's settlement on every member of a group
-    of moves, sends, contact payments or top-ups that share inputs and nonces with other terms (the newest, `Done`
+    of moves that share inputs and nonces with other terms (the newest, `Done`
     with the group's proved debit, included; the others `Replaced`), and on every present exit of a top-up's group
-    settled when no withdrawal document names the winner (the newest `Done`, the others `Failed`). A group of equal
+    settled when no withdrawal document names the winner (the newest `Done`, the others `Failed`). Exits paying one
+    address share one withdrawal document, so a document read present for one of them is present for each, read or
+    not: two such exits of other amounts are that unattributed case, never a winner by whichever was read. A group of equal
     terms, or one whose winner a document names, is not marked: its `Replaced` rows stay "replaced by a retry".
     `PlatformActivity`, `MoveToCoreOutcome` and `PlatformSendOutcome` gain `unattributed`; dw-app maps it to
     `winnerKnown: false` (absent otherwise). Only the display changes: no state, amount, hold or refusal does. The

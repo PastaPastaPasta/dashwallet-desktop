@@ -1372,8 +1372,13 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
             of(|k| k == MoveKind::ToCore),
         );
         if !top_ups.is_empty() && !exit_moves.is_empty() {
-            let present: Vec<usize> = (exit_moves.iter().copied())
+            // Exits paying one address share one document, so a document
+            // read present for one is present for each of them, read or not.
+            let found: Vec<usize> = (exit_moves.iter().copied())
                 .filter(|&i| exits.get(&moves[i].id) == Some(&true))
+                .collect();
+            let present: Vec<usize> = (exit_moves.iter().copied())
+                .filter(|&i| found.iter().any(|&f| moves[f].to == moves[i].to))
                 .collect();
             let known = (exit_moves.iter()).all(|&i| exits.contains_key(&moves[i].id));
             // Exits paying one address share one document: whichever of
