@@ -1867,13 +1867,36 @@ impl NetworkSession {
             if let Some(r) = activity_resend_refusal(&f, manager.spv().is_started(), peers) {
                 return Err(r.into());
             }
+            #[cfg(test)]
+            let pause = this.hub.pause_resend.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause.mark_reached();
+                pause.release.notified().await;
+            }
+            // Read again, held against an abandon through the hand-off: one
+            // since the check committed its mark, and its bytes stay unsent.
+            let gate = this.abandon_gate(wallet).read_owned().await;
+            if this.abandon_marked(wallet, txid).await {
+                return Err(EngineError::TxActionRefused(
+                    TxActionRefusal::AlreadyAbandoned,
+                ));
+            }
             let handle = this.wallet(&wallet).await?;
+            #[cfg(test)]
+            let wire = this.hub.resend_wire.lock().unwrap().clone();
             // platform-wallet's only broadcast entry point waits for the
             // network's acceptance (up to dash-spv's 60 s timeout). The send
             // itself happens at once, so the call returns after a short
             // hand-off window and leaves the wait to a background task; a
             // send dash-spv refuses outright (no connection) is reported.
             let mut task = tokio::spawn(async move {
+                let _gate = gate;
+                #[cfg(test)]
+                if let Some(wire) = wire {
+                    wire.lock().unwrap().push(entry.tx.txid());
+                    return Ok(entry.tx.txid());
+                }
                 let outcome = handle.core().broadcast_transaction(&entry.tx).await;
                 match &outcome {
                     Ok(_) => tracing::info!(%txid, "resent transaction accepted"),

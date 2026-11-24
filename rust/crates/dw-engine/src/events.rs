@@ -597,6 +597,14 @@ pub(crate) struct SessionHub {
     /// judged their states, before it returns them.
     #[cfg(test)]
     pub(crate) pause_ops_read: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next Activity Resend once it has checked the
+    /// transaction, before its hand-off.
+    #[cfg(test)]
+    pub(crate) pause_resend: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: takes the bytes Activity Resend hands off, in place of the
+    /// network.
+    #[cfg(test)]
+    pub(crate) resend_wire: Mutex<Option<Arc<Mutex<Vec<Txid>>>>>,
     /// Tests: the next abandon quits before its sweep, as at an exit.
     #[cfg(test)]
     pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
@@ -803,6 +811,10 @@ impl SessionHub {
             pause_history: Mutex::new(None),
             #[cfg(test)]
             pause_ops_read: Mutex::new(None),
+            #[cfg(test)]
+            pause_resend: Mutex::new(None),
+            #[cfg(test)]
+            resend_wire: Mutex::new(None),
             #[cfg(test)]
             fail_history_read: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
