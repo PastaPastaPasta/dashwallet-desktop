@@ -797,6 +797,7 @@ impl NetworkSession {
                 this.refresh_wallet_state(&manager, *id).await;
             }
             this.hub.pump.mark_sync();
+            (this.hub.rescan_cancels).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(true)
         })
         .await

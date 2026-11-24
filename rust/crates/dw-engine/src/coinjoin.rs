@@ -2613,14 +2613,16 @@ impl NetworkSession {
                 if !manager.spv().is_started() {
                     return Err(CoinJoinFailure::SpvNotRunning.into());
                 }
-                if this.hub.rescan().is_some() {
+                // Loaded, its birth read and its replay stored under the
+                // lifecycle lock: nothing is stored for a wallet not open.
+                let _lifecycle = this.wallet_lifecycle.hold().await;
+                // A rescan that finished with nobody reading its progress
+                // is no rescan running.
+                if this.rescan_running() {
                     return Err(EngineError::InvalidArgument(
                         "another rescan is running".into(),
                     ));
                 }
-                // Loaded, its birth read and its replay stored under the
-                // lifecycle lock: nothing is stored for a wallet not open.
-                let _lifecycle = this.wallet_lifecycle.hold().await;
                 let birth = {
                     use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
                     let wm = manager.wallet_manager_arc();
@@ -2643,6 +2645,9 @@ impl NetworkSession {
                 this.raise_for_recovery(&manager, wallet_id).await?;
                 (this.hub.history.snapshot(&wallet_id).len(), birth, marked)
             };
+            // A cancel from here on is of this rescan, or of one after it.
+            let cancels = || (this.hub.rescan_cancels).load(std::sync::atomic::Ordering::SeqCst);
+            let cancels_before = cancels();
             this.rescan(crate::sync::RescanFrom::Height(birth)).await?;
             // The rescan's replay record holds the obligation now; done again
             // only with every range applied and the pools wide.
@@ -2658,11 +2663,15 @@ impl NetworkSession {
             // cancel still setting its hold reads as in progress. A
             // cancelled replay (sends held until a rescan from the birth),
             // a stopped SPV client and a closed session end it unfinished,
-            // with nothing to report.
+            // with nothing to report, as does a cancel that a rescan started
+            // since has replaced.
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 if !this.rescan_running() {
                     match this.replay_guard(wallet_id, 0).await {
+                        Ok(_) if cancels() != cancels_before => {
+                            return Err(EngineError::RescanInterrupted);
+                        }
                         Ok(_) => break,
                         Err(EngineError::RescanInProgress) => {}
                         Err(e) => return Err(e),

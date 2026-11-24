@@ -4254,6 +4254,55 @@ fn recovery_running(
     recovery
 }
 
+/// CoinJoin Recovery started after a rescan that finished with nobody
+/// reading its progress runs: a finished rescan is no rescan running.
+#[test]
+fn a_recovery_scan_after_a_finished_rescan_nobody_read_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT);
+
+    let s = Arc::clone(&session);
+    let runtime = engine.block_on(async { tokio::runtime::Handle::current() });
+    let recovery = runtime.spawn(async move { s.coinjoin_recovery_scan(id).await });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !recovery.is_finished()
+        && engine.block_on(session.stored_lookahead(id)).unwrap()
+            != Some(crate::coinjoin::RECOVERY_LOOKAHEAD)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Recovery did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !recovery.is_finished(),
+        "Recovery ended at its start: {:?}",
+        engine.block_on(recovery)
+    );
+    while session.rescan_progress().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Recovery's rescan did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+
+    assert!(matches!(recovered, Ok(Ok(Ok(_)))), "{recovered:?}");
+}
+
 /// A wallet born at its creation, scanned to `HEIGHT`, whose CoinJoin
 /// Recovery was cancelled while its rescan ran: Recovery returns
 /// `RescanInterrupted`, not a report.
@@ -4316,6 +4365,35 @@ fn a_cancelled_recovery_then_a_rescan_from_the_birth_keeps_its_range_and_lifts_t
     store_checkpoint(&engine, &session, id, HEIGHT);
     let guard = engine.block_on(session.replay_guard(id, 0));
     assert!(guard.is_ok(), "{guard:?}");
+}
+
+/// A cancelled CoinJoin Recovery whose rescan is replaced at once by a
+/// rescan from the birth, before Recovery looks again and with nobody
+/// reading progress, still returns `RescanInterrupted`: the replacement
+/// finishing is not Recovery's.
+#[test]
+fn a_cancelled_recovery_replaced_at_once_by_a_rescan_is_not_reported_as_finished() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+    let recovery = recovery_running(&engine, &session, id);
+
+    assert!(engine.block_on(session.cancel_rescan()).unwrap());
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+
+    assert!(
+        matches!(recovered, Ok(Ok(Err(EngineError::RescanInterrupted)))),
+        "{recovered:?}"
+    );
 }
 
 /// A quit while CoinJoin Recovery's rescan runs: the next start resumes the
