@@ -662,6 +662,7 @@ fn every_release_data_root_opens_with_the_same_answers() {
         let first = open_in_child(&tag, dir.path(), 1);
         let second = open_in_child(&tag, dir.path(), 2);
         let mut found = Vec::new();
+        found.extend(replay_problems(&tag, expected, &first, &second));
         compare_with_release(expected, &first, &mut found);
         found.extend(
             compare_opens(&first, &second)
@@ -699,6 +700,50 @@ fn every_release_data_root_opens_with_the_same_answers() {
         "this build answers differently from the release that wrote the data root:\n{}",
         report.join("\n")
     );
+}
+
+/// Releases whose wallets with keys are replayed from their birth at the
+/// first open: 0.1.0 and 0.2.0 scanned with narrow CoinJoin pools and kept
+/// no marker; 0.3.0's `done` marker could be written without that replay.
+const NARROW_SCAN_RELEASES: &[&str] = &["v0.1.0", "v0.2.0", "v0.3.0"];
+
+/// Each wallet with keys of a narrow-scan release replayed at the first
+/// open, and nothing replayed at the second.
+fn replay_problems(
+    tag: &str,
+    expected: &Value,
+    first: &Value,
+    second: &Value,
+) -> Vec<(String, String)> {
+    let replayed = |answers: &Value, key: &str| -> Vec<String> {
+        (answers[key]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice)
+            .iter())
+        .filter_map(|id| id.as_str().map(str::to_ascii_lowercase))
+        .collect()
+    };
+    let mut found = Vec::new();
+    if NARROW_SCAN_RELEASES.contains(&tag) {
+        let first = replayed(first, "replayed");
+        for wallet in expected["wallets"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice)
+        {
+            let id = wallet["walletId"].as_str().unwrap().to_ascii_lowercase();
+            if !first.contains(&id) {
+                found.push((
+                    "open 1".to_string(),
+                    format!("wallet {id} was not replayed"),
+                ));
+            }
+        }
+    }
+    let again = replayed(second, "replayedAny");
+    if !again.is_empty() {
+        found.push(("open 2".to_string(), format!("replayed again: {again:?}")));
+    }
+    found
 }
 
 fn open_in_child(tag: &str, dir: &Path, n: u32) -> Value {
@@ -779,8 +824,14 @@ fn compare_with_release(expected: &Value, answers: &Value, found: &mut Vec<(Stri
     for (i, (w, g)) in want.iter().zip(got).enumerate() {
         let cmd = w["cmd"].as_str().unwrap();
         let path = format!("calls[{i}] {}", w["args"]);
+        let rise = (w["args"]["walletId"].as_str())
+            .filter(|_| cmd == "utxos")
+            .and_then(|id| answers["processedRise"][id.to_ascii_lowercase()].as_u64())
+            .unwrap_or(0);
+        let mut g = g.clone();
+        lower_confirmations(&mut g, rise);
         found.extend(
-            answer_diffs(cmd, w, g, &path)
+            answer_diffs(cmd, w, &g, &path)
                 .into_iter()
                 .map(|d| (cmd.to_string(), d)),
         );
@@ -799,6 +850,28 @@ fn compare_with_release(expected: &Value, answers: &Value, found: &mut Vec<(Stri
 }
 
 const SIGNATURES: [&str; 2] = ["signatures", "fundedSignatures"];
+
+/// Takes `rise` off every confirmed count in a `utxos` answer, which counts
+/// from the wallet's processed height: the replay a first open ends offline
+/// raises it to the replay's target, where the release's stood lower, as
+/// SPV's would. History counts from the filter checkpoint, which is back
+/// where the release had it.
+fn lower_confirmations(answer: &mut Value, rise: u64) {
+    match answer {
+        Value::Object(fields) => {
+            for (key, value) in fields.iter_mut() {
+                match value.as_u64() {
+                    Some(n) if key == "confirmations" && n > 0 => {
+                        *value = json!(n.saturating_sub(rise))
+                    }
+                    _ => lower_confirmations(value, rise),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|v| lower_confirmations(v, rise)),
+        _ => {}
+    }
+}
 
 /// The second open's answers against the first's, call by call: equal once
 /// the [`VOLATILE`] values are reduced to whether they are set.
@@ -976,6 +1049,21 @@ fn child(dir: &Path) {
     );
     let passphrase = expected["passphrase"].as_str().unwrap();
     ok("unlock", json!({ "passphrase": passphrase }));
+    // An older build's wallets are replayed once from their birth at the
+    // first open, which a data root opened offline cannot run: ended as SPV
+    // ends one that finds nothing new, so the answers compare.
+    let finished = {
+        let session = tauri::async_runtime::block_on(state.session()).expect("the session");
+        tauri::async_runtime::block_on(dw_engine::test_support::finish_replays(&session))
+    };
+    let replayed: Vec<String> = (finished.iter())
+        .filter(|f| f.from_birth)
+        .map(|f| f.wallet.to_string())
+        .collect();
+    let replayed_any: Vec<String> = finished.iter().map(|f| f.wallet.to_string()).collect();
+    let processed_rise: serde_json::Map<String, Value> = (finished.iter())
+        .map(|f| (f.wallet.to_string(), json!(f.processed_rise)))
+        .collect();
 
     let root_text = serde_json::to_string(&root.to_string_lossy()).unwrap();
     let root_text = &root_text[1..root_text.len() - 1];
@@ -1060,7 +1148,7 @@ fn child(dir: &Path) {
     std::fs::write(
         dir.join(format!("answers-{n}.json")),
         serde_json::to_string_pretty(
-            &json!({ "calls": calls, "signatures": signatures, "fundedSignatures": funded, "spends": spends }),
+            &json!({ "calls": calls, "signatures": signatures, "fundedSignatures": funded, "spends": spends, "replayed": replayed, "replayedAny": replayed_any, "processedRise": processed_rise }),
         )
         .unwrap(),
     )
