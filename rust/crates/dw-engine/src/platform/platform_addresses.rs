@@ -45,6 +45,12 @@ pub struct PlatformAddressBalance {
     /// (`platform.feature_off`).
     #[serde(default)]
     pub sends_active: bool,
+    /// `Some(feature)`: this build keeps them off on this network
+    /// (`platform.feature_off{feature}`), whatever its protocol version,
+    /// and `sends_active` is `false`; what settles or exits a move signed
+    /// before still runs.
+    #[serde(default)]
+    pub sends_off: Option<String>,
 }
 
 /// One funded Platform address.
@@ -577,6 +583,7 @@ impl DashPay {
     ) -> Result<PlatformShieldQuote, CreditsError> {
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
+            platform_moves::address_sends_open(session.vault.network())?;
             let lib = shielded_pool::PwShielded::open(&session, wallet_id).await?;
             let version = shielded_pool::platform_shield_gate(&lib).await?;
             let net = platform_moves::SdkMoves {

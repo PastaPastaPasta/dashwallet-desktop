@@ -2728,7 +2728,9 @@ pub(crate) async fn balance(
         addresses,
         synced_at: sync.last_sync_unix_seconds(),
         syncing: sync.is_syncing(),
-        sends_active: sends_active(manager.sdk_arc().version()).is_ok(),
+        sends_active: address_sends_open(network).is_ok()
+            && sends_active(manager.sdk_arc().version()).is_ok(),
+        sends_off: (address_sends_open(network).is_err()).then(|| PLATFORM_ADDRESS_SENDS.into()),
     }
 }
 
@@ -3210,6 +3212,13 @@ impl SendOps {
         })
     }
 
+    /// Whether the quoted send `id` of `wallet` is a held send's retry;
+    /// `false` for none.
+    fn retries(&self, id: &str, wallet: WalletId) -> bool {
+        self.with(id, wallet, |ops, at| Ok(ops[at].1.retry_of.is_some()))
+            .unwrap_or(false)
+    }
+
     /// Takes the quoted send `id` of `wallet` to pay under `grant`: each is
     /// sent at most once, and only under the grant issued for it. Any other
     /// grant (one issued for another send, or for none) is
@@ -3368,6 +3377,7 @@ pub(crate) async fn send_quote(
     (to, amount, retry_of): (&str, WithdrawAmount, Option<&str>),
 ) -> Result<PlatformSendQuote, CreditsError> {
     let network = session.vault.network();
+    retry_open(session, wallet_id, (to, amount, retry_of)).await?;
     let pool = pool(wallet).await?;
     let address = recipient(network, to, &pool)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
@@ -3487,9 +3497,6 @@ pub(crate) async fn shield_quote(
     })
 }
 
-/// `DashPay::top_up_from_platform_quote` (C-routes C3-2, C3-3): the
-/// identity one of the wallet's own, address funds active, one proved read
-/// with rule 5, the hold, and the input-0 plan with the top-up's band.
 /// The mainnet flag of the top-up from the Platform balance: off on
 /// mainnet until its funds ruling, on every other network.
 pub(crate) const TOP_UP_FROM_PLATFORM: &str = "top_up_from_platform";
@@ -3504,6 +3511,56 @@ fn top_up_open(network: Network) -> Result<(), PlatformError> {
     Ok(())
 }
 
+/// The mainnet flag of the Platform addresses' own funds paths: a send, a
+/// move to the Dash wallet, "Add from Dash wallet", a transfer of an
+/// identity's credits to them and their receive address. Off on mainnet
+/// until a release after their mainnet canary, whatever Platform's
+/// protocol version; on every other network.
+pub(crate) const PLATFORM_ADDRESS_SENDS: &str = "platform_address_sends";
+
+/// Whether [`PLATFORM_ADDRESS_SENDS`] is on for mainnet in this build.
+const ADDRESS_SENDS_ON_MAINNET: bool = false;
+
+/// Refused on mainnet while [`PLATFORM_ADDRESS_SENDS`] is off, before
+/// anything is read, written or redeemed. What settles, finishes or exits
+/// a move signed before is not refused (`held_exit_open`).
+pub(crate) fn address_sends_open(network: Network) -> Result<(), PlatformError> {
+    if network == Network::Mainnet && !ADDRESS_SENDS_ON_MAINNET {
+        return Err(PlatformError::FeatureOff {
+            feature: PLATFORM_ADDRESS_SENDS.into(),
+        });
+    }
+    Ok(())
+}
+
+/// [`address_sends_open`], or, with the flag off, a send that `retry_of`
+/// names as the exact retry (the same recipient and amount) of a stored
+/// send that still holds; read from the local store only.
+async fn retry_open(
+    session: &NetworkSession,
+    wallet_id: WalletId,
+    (to, amount, retry_of): (&str, WithdrawAmount, Option<&str>),
+) -> Result<(), CreditsError> {
+    let network = session.vault.network();
+    let Err(off) = address_sends_open(network) else {
+        return Ok(());
+    };
+    let Some(id) = retry_of else {
+        return Err(off.into());
+    };
+    let to = parse(to.trim()).map(|a| bech32m(&a, network));
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let exact = (moves.iter()).find(|m| m.id == id).is_some_and(|m| {
+        m.kind == MoveKind::Transfer
+            && m.holds()
+            && to.as_deref().is_some_and(|to| m.retried_by(to, amount))
+    });
+    if exact { Ok(()) } else { Err(off.into()) }
+}
+
+/// `DashPay::top_up_from_platform_quote` (C-routes C3-2, C3-3): the
+/// identity one of the wallet's own, address funds active, one proved read
+/// with rule 5, the hold, and the input-0 plan with the top-up's band.
 pub(crate) async fn top_up_quote(
     net: &impl MoveNet,
     session: &NetworkSession,
@@ -3645,6 +3702,9 @@ pub(crate) async fn send(
     operation: &str,
     grant: &str,
 ) -> Result<PlatformSendOutcome, CreditsError> {
+    if !(session.platform.send_ops).retries(operation, wallet_id) {
+        address_sends_open(session.vault.network())?;
+    }
     let op = (session.platform.send_ops).take(operation, wallet_id, grant)?;
     let address = recipient(session.vault.network(), &op.to, &pool(wallet).await?)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
@@ -3764,11 +3824,22 @@ pub(crate) async fn run(
     let version = net.version();
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
+    // With the flag off only a held move's exit or a held send's exact
+    // retry signs: anything else is the flag's refusal, never a new plan.
+    let off = matches!(target, Target::Platform(_)) && address_sends_open(network).is_err();
+    let flag = || CreditsError::from(address_sends_open(network).unwrap_err());
     // A retry of a send that landed pays nothing and signs nothing.
-    if let (Target::Platform(to), Some(id)) = (target, retry_of)
-        && let Some(settled) = retry_decision(&moves, id, (&bech32m(&to, network), amount))?
-    {
-        return Ok((settled.clone(), None));
+    if let (Target::Platform(to), Some(id)) = (target, retry_of) {
+        match retry_decision(&moves, id, (&bech32m(&to, network), amount)) {
+            Ok(Some(_)) | Err(CreditsError::Platform(PlatformError::InvalidArgument { .. }))
+                if off =>
+            {
+                return Err(flag());
+            }
+            Ok(Some(settled)) => return Ok((settled.clone(), None)),
+            Ok(None) => {}
+            Err(e) => return Err(e),
+        }
     }
     // Every spend that may sign, before anything is planned (#533).
     behind(&moves, &seen)?;
@@ -3791,6 +3862,11 @@ pub(crate) async fn run(
                 });
             }
             let held = moves.iter().find(|m| m.holds());
+            // The hold may have settled since the entry's check: with the
+            // flag off nothing new is planned, granted or signed.
+            if held.is_none() && off {
+                return Err(flag());
+            }
             if let (Target::Platform(_) | Target::Contact | Target::Identity(_), Some(h)) =
                 (target, held)
             {
@@ -3886,6 +3962,10 @@ pub(crate) async fn run(
                 && h.terms() != record.terms())
     };
     if let Some(held) = held.filter(blocks) {
+        // A held send has no exit but its retry: it holds as before.
+        if off && (retry_of.is_some() || held.kind != MoveKind::Transfer) {
+            return Err(flag());
+        }
         return Err(CreditsError::MovePending {
             id: held.id.clone(),
         });
@@ -4116,6 +4196,7 @@ pub(crate) async fn receive_address(
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
     // It ships with the send: below address funds, nothing could spend it.
+    address_sends_open(network)?;
     sends_active(net.sends_version().await)?;
     next_receive_address(wallet, network).await
 }

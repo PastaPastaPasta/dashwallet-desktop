@@ -35,6 +35,11 @@ pub struct PlatformAddressBalance {
     /// The network has address funds transitions: below protocol version 11
     /// a top-up or send from these addresses is refused.
     pub sends_active: bool,
+    /// `"platform_address_sends"`: this build keeps sends and moves from
+    /// these addresses off on this network (mainnet), whatever its
+    /// protocol version (`platform.feature_off` with that feature), and
+    /// `sendsActive` is `false`. `null` elsewhere.
+    pub sends_off: Option<String>,
 }
 
 impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
@@ -47,6 +52,7 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
             synced_at,
             syncing,
             sends_active,
+            sends_off,
         } = b;
         PlatformAddressBalance {
             credits,
@@ -56,6 +62,7 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
             synced_at,
             syncing,
             sends_active,
+            sends_off,
         }
     }
 }
