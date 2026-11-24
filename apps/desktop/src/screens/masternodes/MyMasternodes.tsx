@@ -40,7 +40,7 @@ import {
 import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh, useMasternodeOperations } from "../../masternodes/queries";
 import { conflicted, inProgress } from "../../masternodes/operations";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
-import { InProgressGroup } from "./InProgress";
+import { InProgressGroup, useInProgressActions, type InProgressActions } from "./InProgress";
 import { registrationCalls, registrationSends } from "../../masternodes/registration";
 import { collateralErrorText, ReleaseSheet } from "./ReleaseSheet";
 import { useT } from "../../i18n";
@@ -51,17 +51,26 @@ const DAY = 86_400;
 /** mn-engine's `MAX_MASTERNODE_LABEL`. */
 const MAX_LABEL = 64;
 
-export function MyMasternodes({
-  wallet,
-  network,
-  onVote,
-  onContinue,
-}: {
+interface MyMasternodesProps {
   wallet: WalletSummary;
   network: NetworkInfo;
   onVote: () => void;
   onContinue: (op: ProTxOperation) => void;
-}) {
+}
+
+/** In progress's open sheet lives here, beside the list's layouts: a list read that switches them
+ * (failed to loaded, or back) keeps it open. */
+export function MyMasternodes(props: MyMasternodesProps) {
+  const actions = useInProgressActions(props.wallet, props.network, props.onContinue);
+  return (
+    <>
+      <MyMasternodesBody {...props} actions={actions} />
+      {actions.sheets}
+    </>
+  );
+}
+
+function MyMasternodesBody({ wallet, network, onVote, actions }: MyMasternodesProps & { actions: InProgressActions }) {
   const list = useMasternodes(wallet.walletId);
   const ops = useMasternodeOperations(wallet.walletId);
   const refresh = useMasternodesRefresh();
@@ -87,7 +96,7 @@ export function MyMasternodes({
           <strong>{MnText.opsFailed}</strong> {mnErrorText(ops.error)}
         </Notice>
       )}
-      {ops.isPending ? <LoadingState testId="mn-ops-loading" text={MnText.opsLoading} /> : <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />}
+      {ops.isPending ? <LoadingState testId="mn-ops-loading" text={MnText.opsLoading} /> : <InProgressGroup ops={work} wallet={wallet} network={network} actions={actions} />}
     </>
   );
   if (list.isPending) return <LoadingState testId="mn-loading" text={MnText.loading} />;

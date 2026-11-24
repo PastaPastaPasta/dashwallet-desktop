@@ -310,6 +310,7 @@ function UnsentUpdate({
     if (acting.current || busy || (what === "resend" && (!sends || !credential.ready))) return;
     acting.current = true;
     setBusy(true);
+    let granted: string | null = null;
     try {
       if (what === "discard") {
         await b.mnDiscardOperation(wallet.walletId, op.id);
@@ -318,8 +319,11 @@ function UnsentUpdate({
       }
       const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: op.debit });
       if (!grant) return;
+      granted = grant.id;
       onSent(await b.mnResendOperation(wallet.walletId, op.id, grant.id));
     } catch (e) {
+      // A refusal before the lease leaves the grant unused.
+      if (granted) void b.revokeGrant(granted).catch(() => null);
       credential.setError(changeKeysErrorText(e));
     } finally {
       acting.current = false;

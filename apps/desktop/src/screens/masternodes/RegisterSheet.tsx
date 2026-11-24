@@ -277,6 +277,8 @@ export function RegisterSheet({
       if (refusedWhileLocked(e) || !mounted.current) return;
       if (isAppError(e) && e.code === "masternodes.operation_state" && e.data?.kind === "operationState" && e.data.state === "inputs_spent") {
         setInputsSpent(true);
+        // The saved row reads spent too, so In progress offers a new message if this sheet closes.
+        void refresh();
         return;
       }
       if (!refuse(e)) credential.setError(errorText(e));
@@ -287,6 +289,7 @@ export function RegisterSheet({
 
   const newMessage = async () => {
     if (busy || !op) return;
+    setGeneral(null);
     setBusy(true);
     try {
       const fresh = await b.mnRefreshExternalRegistration(wallet.walletId, op.id);

@@ -29,10 +29,10 @@ import { fixtureUrl, fontsReady, trackPageErrors } from "./helpers";
 // ExistingUtxo and External), the D5 re-read, field errors and refusals by step, the In progress
 // group's states, and Release collateral / Lock it again, on the fixture.
 
-async function open(page: Page, scenario: string, theme: "light" | "dark" = "light", network?: "mainnet") {
+async function open(page: Page, scenario: string, theme: "light" | "dark" = "light", network?: "mainnet", extra = "") {
   const errors = trackPageErrors(page);
   await page.clock.setFixedTime(FIXTURE_NOW);
-  await page.goto(fixtureUrl(scenario, theme, network ? `&network=${network}` : ""));
+  await page.goto(fixtureUrl(scenario, theme, (network ? `&network=${network}` : "") + extra));
   await page.getByTestId("toolbar").waitFor();
   await page.getByTestId("sidebar-masternodes").click();
   await expect(page.getByTestId("page-masternodes")).toBeVisible();
@@ -440,6 +440,12 @@ test("a saved registration offers Continue, and Prove can submit; Discard still 
 });
 
 const revokes = (page: Page) => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "revoke_grant").length);
+/** The cap of the last masternode grant the wallet issued. */
+const lastCap = (page: Page) =>
+  page.evaluate(() => {
+    const p = window.__dwFixture!.world.grants.map((g) => g.grant.purpose).filter((x) => x.kind === "masternodeOp").at(-1);
+    return p && "maxDuffs" in p ? Number(p.maxDuffs) : null;
+  });
 /** Grants issued and neither redeemed nor revoked: a refusal must leave none. */
 const liveGrants = (page: Page) => page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).map((g) => g.grant.id));
 
@@ -456,14 +462,18 @@ for (const theme of ["light", "dark"] as const)
     await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
     await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
     await expect(page.getByTestId("reg-submit")).toBeDisabled();
+    await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000453");
     await page.getByTestId("reg-new-message").click();
     await expect(page.getByTestId("reg-sign-request")).toBeVisible();
     await expect(page.getByTestId("reg-inputs-spent")).toHaveCount(0);
-    await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000453");
+    // The new message comes with new fee inputs: Prove shows the replanned fee, and the grant is capped at it.
+    await expect(page.getByTestId("reg-prove-fee")).toContainText("0.00000573");
+    await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000573");
     await page.getByTestId("reg-signature").fill(EXTERNAL_SIGNATURE);
     await page.getByTestId("reg-passphrase").fill("demo");
     await page.getByTestId("reg-submit").click();
     await expect(page.getByTestId("reg-done-body")).toBeVisible();
+    expect(await lastCap(page)).toBe(573);
     expect(errors).toEqual([]);
   });
 
@@ -552,6 +562,12 @@ test("fee coins spent while Prove is open: the refusal hides the old message and
   await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
   await expect.poll(() => revokes(page)).toBe(before + 1);
   expect(await liveGrants(page)).toEqual([]);
+  // Closed and resumed with no further event: the saved row reads spent too, and Prove asks for a new message.
+  await page.getByTestId("reg-cancel").click();
+  await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("The coins for the fee were spent");
+  await page.getByTestId(`mn-op-refresh-${OP_PREPARED}`).click();
+  await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
+  await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
   await page.getByTestId("reg-new-message").click();
   await expect(page.getByTestId("reg-sign-request")).toBeVisible();
   expect(errors).toEqual([]);
@@ -579,6 +595,53 @@ test("a failed masternode list read still shows the work in progress (issue 460)
   await expect(page.getByTestId(`mn-op-continue-${OP_PREPARED}`)).toBeVisible();
   expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
 });
+
+test("a failed new message, then one that works, leaves no stale error (review of issue 460)", async ({ page }) => {
+  const errors = await open(page, "reg-prepared-spent");
+  await page.getByTestId(`mn-op-refresh-${OP_PREPARED}`).click();
+  await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_refresh_external_registration", "rpc"));
+  await page.getByTestId("reg-new-message").click();
+  await expect(page.getByTestId("reg-general")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_refresh_external_registration", null));
+  await page.getByTestId("reg-new-message").click();
+  await expect(page.getByTestId("reg-sign-request")).toBeVisible();
+  await expect(page.getByTestId("reg-general")).toHaveCount(0);
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: In progress shows its loading state while its read is out (review of issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "reg-prepared", theme, undefined, "&hold=mn_operations");
+    await expect(page.getByTestId("mn-summary")).toBeVisible();
+    await page.waitForTimeout(300);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`mn-ops-loading-${theme}.png`) });
+    await expect(page.getByTestId("mn-ops-loading")).toBeVisible();
+    await page.evaluate(() => window.__dwFixture!.release("mn_operations"));
+    await expect(page.getByTestId(`mn-op-${OP_PREPARED}`)).toBeVisible();
+    await expect(page.getByTestId("mn-ops-loading")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: a list read that recovers keeps an open Send again and its passphrase (review of issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "mn-ops", theme, undefined, "&fail=mn_list:rpc");
+    await expect(page.getByTestId("mn-list-failed")).toBeVisible();
+    await page.waitForTimeout(300);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`mn-list-failed-${theme}.png`) });
+    await expect(page.getByTestId(`mn-op-resend-${OP_SIGNED}`)).toBeVisible();
+    await page.getByTestId(`mn-op-resend-${OP_SIGNED}`).click();
+    await page.getByTestId("mn-op-resend-passphrase").fill("demo");
+    // The list comes back while the confirmation is open: it stays, with what was typed.
+    await page.evaluate(() => window.__dwFixture!.fail("mn_list", null));
+    await page.evaluate(() => window.__dwFixture!.emit({ kind: "masternodes", network: window.__dwFixture!.world.launch.network.dirName }));
+    await expect(page.getByTestId("mn-summary")).toBeVisible();
+    await expect(page.getByTestId("mn-op-resend-sheet")).toBeVisible();
+    await expect(page.getByTestId("mn-op-resend-passphrase")).toHaveValue("demo");
+    expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+  });
 
 test("a released collateral offers Lock it again on testnet", async ({ page }) => {
   const errors = await open(page, "mn-released");
