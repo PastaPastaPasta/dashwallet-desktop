@@ -1550,6 +1550,21 @@ impl NetworkSession {
         id: WalletId,
         from: Option<u32>,
     ) -> Result<(), EngineError> {
+        match self.replay_owed(manager, id, from).await? {
+            Some(marker) => self.mark_pending(id, marker).await,
+            None => Ok(()),
+        }
+    }
+
+    /// The marker [`Self::require_replay_from`] stores for wallet `id`:
+    /// `None` when its marker already names a start at or below it. `Err`
+    /// when the marker cannot be read.
+    pub(crate) async fn replay_owed(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        from: Option<u32>,
+    ) -> Result<Option<WideScan>, EngineError> {
         let birth = birth_checkpoint(manager, id).await;
         // A record that cannot be read may start anywhere: from the birth.
         let recorded = match self.live()?.replay.stored(id).await {
@@ -1569,9 +1584,9 @@ impl NetworkSession {
             Some(WideScan::Done) | None => None,
         };
         if held.is_some_and(|h| h <= floor) {
-            return Ok(());
+            return Ok(None);
         }
-        self.mark_pending(id, WideScan::From(floor)).await
+        Ok(Some(WideScan::From(floor)))
     }
 
     /// Applies wallet `id`'s stored legacy address range and lookahead, if
@@ -1811,6 +1826,43 @@ impl NetworkSession {
             .await;
         if let Err(e) = &stored {
             tracing::warn!(wallet_id = %id, error = %e, "could not store that the wallet needs a replay with wide CoinJoin pools");
+        }
+        stored
+    }
+
+    /// Stores wallet `id`'s lookahead `gap` and, when given, its pending
+    /// [`WIDE_SCAN_SETTING`] in one write, durable when it returns `Ok`: a
+    /// quit before it leaves neither, and one after it replays with the
+    /// lookahead, which a load applies before it honours the marker.
+    pub(crate) async fn mark_pending_with_lookahead(
+        &self,
+        id: WalletId,
+        marker: Option<WideScan>,
+        gap: u32,
+    ) -> Result<(), EngineError> {
+        #[cfg(test)]
+        if marker.is_some() && fails_for(&FAIL_WIDE_SCAN_IO, id) {
+            return Err(EngineError::Storage("test: marker not stored".into()));
+        }
+        #[cfg(test)]
+        if fails_for(&FAIL_LOOKAHEAD_WRITE, id) {
+            return Err(EngineError::Storage("test: lookahead not stored".into()));
+        }
+        let wallet = id.to_string();
+        let local = dw_appdb::local_scope(&wallet);
+        let marker = marker.map(WideScan::encode);
+        let gap = gap.to_string();
+        let stored = self
+            .appdb_op(move |db| {
+                let mut writes = vec![(wallet.as_str(), LOOKAHEAD_SETTING, Some(gap.as_str()))];
+                if let Some(marker) = &marker {
+                    writes.push((local.as_str(), WIDE_SCAN_SETTING, Some(marker.as_str())));
+                }
+                db.set_scoped_settings_durable(&writes)
+            })
+            .await;
+        if let Err(e) = &stored {
+            tracing::warn!(wallet_id = %id, error = %e, "could not store the wallet's lookahead and the replay it needs");
         }
         stored
     }

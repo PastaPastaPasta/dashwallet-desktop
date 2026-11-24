@@ -317,6 +317,9 @@ pub struct TxEstimate {
     pub change: Option<u64>,
     /// What the recipients receive, after any subtract-fee share.
     pub total_sent: u64,
+    /// The part of `fee` beyond the draft's rate for `size_bytes`: a
+    /// CoinJoin payment's change and a dust remainder (U-06b).
+    pub left_over: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -491,6 +494,23 @@ impl PendingSpends {
             claims.entry(*o).or_default().insert(owner);
         }
         Ok(())
+    }
+
+    /// Whether an owner other than `owner` claims one of `outpoints`.
+    pub(crate) fn held_by_other(
+        &self,
+        wallet: &WalletId,
+        owner: SpendOwner,
+        outpoints: &[OutPoint],
+    ) -> bool {
+        let map = self.map();
+        map.get(wallet).is_some_and(|claims| {
+            outpoints.iter().any(|o| {
+                claims
+                    .get(o)
+                    .is_some_and(|owners| owners.iter().any(|w| *w != owner))
+            })
+        })
     }
 
     /// Removes every claim of `owner`.
@@ -671,6 +691,11 @@ pub(crate) trait TestBroadcaster: Send + Sync {
     /// A wait before the library is entered (the manager guard, the SPV
     /// configuration); the permit's deadline bounds it.
     fn before_entry(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+    /// A wait after a contact payment's lock row (if any) is stored, before
+    /// the sent mark is written.
+    fn after_record(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async {})
+    }
     /// The library's hand-off of `tx`, entered: its result.
     fn broadcast(
         &self,
@@ -1087,6 +1112,7 @@ impl TxDraft {
                     input_count: r.plan.inputs.len() as u32,
                     change: r.plan.change,
                     total_sent: r.plan.total_sent(),
+                    left_over: r.plan.left_over(r.fee_rate),
                 })
             })
             .await
@@ -1589,6 +1615,13 @@ impl TxDraft {
         };
         if first {
             self.record_contact(&prepared).await?;
+        }
+        #[cfg(test)]
+        {
+            let seam = self.broadcaster.lock().unwrap().clone();
+            if let Some(seam) = seam {
+                seam.after_record().await;
+            }
         }
         // The evidence a later process restores this payment's spend
         // claims from (#88), stored before it can leave; again for a send

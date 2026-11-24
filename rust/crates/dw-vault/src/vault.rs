@@ -1443,8 +1443,16 @@ impl Vault {
             let had_failures = f.throttle != Throttle::default();
             // With slot B enrolled the passphrase time is enforced from the
             // file, so it is persisted (sealed) on every successful check.
+            // A sealed policy that no longer authenticates (the manifest did,
+            // just above) is left as it is: it counts as none, the passphrase
+            // time is kept in memory, and the setter replaces the policy
+            // (#173 item 10). Refusing here would refuse the passphrase too.
             let policy = if f.slot_b.is_some() && inner.policy_floor != Some(UNREAD) {
-                Some(open_policy(f, &dek, inner.policy_floor)?.unwrap_or_default())
+                match open_policy(f, &dek, inner.policy_floor) {
+                    Ok(policy) => Some(policy.unwrap_or_default()),
+                    Err(VaultError::Corrupt(_)) => None,
+                    Err(e) => return Err(e),
+                }
             } else {
                 None
             };
@@ -3246,15 +3254,20 @@ impl Vault {
         let file = inner.file.as_ref();
         let settings = file.and_then(|f| f.quick_unlock.as_ref());
         let shown = settings.map_or(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, |s| s.spend_limit_duffs);
+        // A sealed limit that no longer authenticates (the manifest does) is
+        // reported as such and as 0, the limit in force, not as its plain copy.
+        let (spend_limit_duffs, limit_unreadable) = match (file, inner.dek.as_ref()) {
+            (Some(f), Some(dek)) => match open_policy(f, dek, inner.policy_floor) {
+                Ok(Some(policy)) => (policy.spend_limit_duffs, false),
+                Err(VaultError::Corrupt(_)) if verify_manifest(f, dek, 0).is_ok() => (0, true),
+                _ => (shown, false),
+            },
+            _ => (shown, false),
+        };
         QuickUnlockPolicy {
             enrolled: file.is_some_and(|f| f.slot_b.is_some()),
-            spend_limit_duffs: match (file, inner.dek.as_ref()) {
-                (Some(f), Some(dek)) => match open_policy(f, dek, inner.policy_floor) {
-                    Ok(Some(policy)) => policy.spend_limit_duffs,
-                    _ => shown,
-                },
-                _ => shown,
-            },
+            spend_limit_duffs,
+            limit_unreadable,
             passphrase_max_age_secs: PASSPHRASE_MAX_AGE_SECS,
             last_passphrase_at: settings
                 .and_then(|s| s.last_passphrase_at)
@@ -3290,7 +3303,17 @@ impl Vault {
         self.gated(VaultError::Locked, |op| {
             let dek = self.key_for(op, &token)?;
             let floor = self.inner().policy_floor;
-            let policy = open_policy(&next, &dek, floor)?.unwrap_or_default();
+            // A sealed limit that no longer authenticates counts as none (payments
+            // ask), so it is replaced rather than refused, the grant having checked
+            // the passphrase (#173 item 10). A manifest that does not
+            // authenticate is still `Corrupt`.
+            let policy = match open_policy(&next, &dek, floor) {
+                Ok(policy) => policy.unwrap_or_default(),
+                Err(VaultError::Corrupt(_)) if verify_manifest(&next, &dek, 0).is_ok() => {
+                    PolicyPayload::withdrawn()
+                }
+                Err(e) => return Err(e),
+            };
             let lowered = spend_limit_duffs < policy.spend_limit_duffs;
             let high_water = self.inner().high_water;
             let generation = put_policy(

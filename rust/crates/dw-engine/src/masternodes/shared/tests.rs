@@ -15,7 +15,7 @@ use dashcore::hashes::Hash;
 use dashcore::secp256k1::{Message as SecpMessage, PublicKey, ecdsa::Signature};
 use dashcore::{OutPoint, Transaction, TxOut, Txid};
 use dw_appdb::GLOBAL_SCOPE;
-use dw_protx::shared::envelope::encode_base64;
+use dw_protx::shared::envelope::{encode_base64, fingerprint};
 use dw_protx::shared::json::Json;
 use dw_protx::shared::session::funding::{check_frozen, decode_frozen};
 use dw_protx::shared::session::merge::{add_signature, check_join_signatures};
@@ -1287,6 +1287,75 @@ fn test_QT_126_messages_are_refused_without_echo() {
     assert_message(e, "not_participant");
 }
 
+/// A second `terms` read first while the code covers the sender's: the
+/// altered Invitation would show the sender's code over other terms.
+#[test]
+fn test_QT_126_an_invitation_with_a_key_twice_is_refused_and_stores_nothing() {
+    let f = fx(2, true);
+    f.credit(0, 1, 501 * COIN);
+    let inv = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+    let id = inv.session.id.clone();
+    let Json::Obj(mut entries) = Json::read(inv.message.text.as_bytes()).unwrap() else {
+        panic!("an object")
+    };
+    let at = entries.iter().position(|(k, _)| k == b"terms").unwrap();
+    let sent = entries[at].1.clone();
+    entries[at].1.push_kv("operatorReward", Json::int(9_999));
+    entries.push((b"terms".to_vec(), sent));
+    let altered = Json::Obj(entries);
+    assert_eq!(fingerprint(&altered), inv.session.message_code);
+    let text = String::from_utf8(altered.write(2)).unwrap();
+
+    assert_message(f.import(1, &text).unwrap_err(), "parse");
+    assert!(
+        f.db()
+            .shared_session(&f.wallets[1].to_string(), &id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(f.locked(1).is_empty());
+}
+
+/// A join takes `revision` + 1; at `i32::MAX` there is none, so it refuses
+/// before a key is issued or a coin reserved, and the Invitation stays.
+#[test]
+fn test_QT_126_a_join_at_the_last_revision_refuses_and_reserves_nothing() {
+    let f = fx(2, true);
+    f.credit(0, 1, 501 * COIN);
+    f.credit(1, 2, 501 * COIN);
+    let inv = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+    let id = inv.session.id.clone();
+    let mut last = parse(&inv.message.text);
+    last.revision = i32::MAX;
+    f.imported(1, &last.to_text());
+    let w = f.wallets[1].to_string();
+    let book = || {
+        f.db()
+            .address_book(&w, Some(dw_appdb::BookPurpose::Receive))
+            .unwrap()
+    };
+    let (before, issued) = (f.locked(1), book());
+
+    let e = f
+        .run(f.mn().join_shared(
+            f.wallets[1],
+            id.clone(),
+            crate::masternodes::JoinSharedRequest {
+                share_index: Some(1),
+                reward: RewardChoice::Refund,
+            },
+        ))
+        .unwrap_err();
+    assert_message(e, "parse");
+    let s = f.session_of(1, &id);
+    assert_eq!(
+        (s.stage, s.revision, s.next),
+        (SharedStage::Invited, i32::MAX as u32, SharedNext::Join)
+    );
+    assert_eq!(f.locked(1), before);
+    assert_eq!(book(), issued, "no refund address is issued");
+}
+
 #[test]
 fn test_QT_126_import_table_cells() {
     let f = fx(3, true);
@@ -1676,7 +1745,7 @@ fn test_QT_126_a_newer_draft_never_replaces_a_session_past_signing() {
     let gid = two_joined(&g);
     let locked = g.lock(0, &gid).unwrap();
     let mut draft = parse(&locked.message.text);
-    super::build::unfreeze(&mut draft);
+    super::build::unfreeze(&mut draft).unwrap();
     assert_message(g.import(0, &draft.to_text()).unwrap_err(), "older");
 
     let f = fx(3, true);
@@ -1684,7 +1753,7 @@ fn test_QT_126_a_newer_draft_never_replaces_a_session_past_signing() {
     let request = f.message(0, &id);
     // The same session as an unlock would leave it, one revision higher.
     let mut draft = parse(&request);
-    super::build::unfreeze(&mut draft);
+    super::build::unfreeze(&mut draft).unwrap();
     let draft = draft.to_text();
     assert_message(f.import(0, &draft).unwrap_err(), "conflict");
     f.imported(1, &request);
@@ -1712,13 +1781,13 @@ fn test_QT_126_newer_copies_changing_our_side_are_refused() {
 
     // As unlock and lock make it, with B's refund moved: a new digest.
     let mut relocked = parse(&locked.message.text);
-    super::build::unfreeze(&mut relocked);
+    super::build::unfreeze(&mut relocked).unwrap();
     relocked.shares[1].refund_address = elsewhere.into();
     super::build::freeze(&mut relocked).unwrap();
     assert_funding(f.import(1, &relocked.to_text()).unwrap_err(), "row_changed");
 
     let mut draft = parse(&locked.message.text);
-    super::build::unfreeze(&mut draft);
+    super::build::unfreeze(&mut draft).unwrap();
     draft.contributions[1]
         .change
         .as_mut()
@@ -1941,7 +2010,7 @@ fn test_QT_126_consent_binds_to_the_reviewed_copy() {
         .expect("locked terms carry their consent hash");
     // M-1 case 2: a re-locked copy with other terms, imported concurrently.
     let mut relocked = parse(&locked.message.text);
-    super::build::unfreeze(&mut relocked);
+    super::build::unfreeze(&mut relocked).unwrap();
     relocked.terms.early_penalty += 1;
     super::build::freeze(&mut relocked).unwrap();
     let (s, _) = f.imported(1, &relocked.to_text());

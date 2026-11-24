@@ -1072,9 +1072,27 @@ for (const theme of THEMES) {
   }
 }
 
+// Masternode keys (MG-10 §1.5): the operator segment with its first keypair open, its secret hidden.
+for (const theme of THEMES) {
+  test(`visual mn-keys ${theme}`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("mn-list", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.getByTestId("sidebar-masternodes").click();
+    await page.getByTestId("mn-page-more").click();
+    await page.getByRole("menuitem", { name: "Masternode keys…" }).click();
+    await page.getByTestId("mn-keys-role-operator").click();
+    await page.getByTestId("mn-key-0-show").click();
+    await page.getByTestId("mn-key-0-reveal").waitFor();
+    await expect(page.getByTestId("mn-key-1-match")).not.toHaveText("Checking…");
+    await page.mouse.move(0, 0);
+    await shoot(page, "mn-keys", theme);
+  });
+}
+
 // MG-10 S2: the registration wizard's steps and the In progress group, under
-// MG-00's frame names. `reg-review` is the hosted FundNew masternode, which can't send yet, `reg-operator-evo`
-// the self-run evonode.
+// MG-00's frame names. `reg-review` is the hosted FundNew masternode on testnet, which can register,
+// `reg-operator-evo` the self-run evonode.
 async function openMasternodes(page: Page, scenario: string, theme: Theme) {
   await page.clock.setFixedTime(FIXTURE_NOW);
   await page.goto(fixtureUrl(scenario, theme));
@@ -1110,7 +1128,7 @@ for (const theme of THEMES) {
     await shootStep(page, "reg-keys", theme);
     await page.getByTestId("reg-continue").click();
     await page.getByTestId("reg-review").waitFor();
-    await page.getByTestId("reg-send-off").waitFor();
+    await page.getByTestId("reg-register").waitFor();
     await shootStep(page, "reg-review", theme);
   });
 
