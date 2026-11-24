@@ -92,6 +92,10 @@ fn a_payment_on_a_claim_the_store_dropped_goes_with_it() {
     let session = reopen(&engine, session);
     skip_unsigned_check(&session);
     mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    assert!(
+        !dropped(&engine, &session, id, payment.txid()),
+        "not dropped in the session"
+    );
 
     let session = reopen(&engine, session);
     assert_payment_dropped(&engine, &session, id, &payment);
@@ -286,6 +290,10 @@ fn a_claim_with_an_input_script_that_isnt_push_only_is_kept_after_a_restart() {
     // The store's open now drops the claim on its own verdict: what is built
     // on it stays all the same.
     let session = reopen(&engine, session);
+    assert!(
+        dropped(&engine, &session, id, claim.txid()),
+        "the store dropped the claim"
+    );
     assert!(
         !dropped(&engine, &session, id, payment.txid()),
         "the payment is kept after the store drops the claim"
@@ -579,14 +587,19 @@ fn a_swept_claim_whose_input_script_isnt_push_only_keeps_what_is_built_on_it() {
         });
     let session = reopen(&engine, session);
     relay(&engine, &session, id, &claim);
+    assert!(
+        session.hub.history.get(&id, &claim.txid()).is_some(),
+        "the history holds the claim"
+    );
     mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
     assert!(
         session.hub.history.get(&id, &claim.txid()).is_none(),
         "key-wallet swept the claim"
     );
-    super::own_spend_disk_tests::eventually("the sweep's drop ran", || {
-        (session.hub.dead_hooks_done).load(std::sync::atomic::Ordering::SeqCst) > 0
-    });
+    assert!(
+        !dropped_records(&session, id).contains(&claim.txid()),
+        "the sweep recorded nothing as dropped"
+    );
     assert!(!dropped(&engine, &session, id, payment.txid()), "S is kept");
     let b = OutPoint::new(b_funding.txid(), 0);
     assert!(!spendable(&engine, &session, id, b), "b stays held");
@@ -714,9 +727,7 @@ fn a_coin_a_mined_transaction_spends_stays_spent_when_the_payment_goes() {
     mined(&engine, &session, id, BIRTH - 20, vec![funding]);
     super::own_spend_disk_tests::eventually("the claim and S are dropped", || {
         dropped(&engine, &session, id, claim.txid())
-            && !rows(&engine, &session, id)
-                .iter()
-                .any(|r| r.0 == payment.txid().to_string() && r.1 == TxStatusKind::Unconfirmed)
+            && dropped(&engine, &session, id, payment.txid())
     });
     assert!(!spendable(&engine, &session, id, b), "b stays spent");
     assert_eq!(balances(&session, id).total, PAID, "b doesn't count");
@@ -726,4 +737,89 @@ fn a_coin_a_mined_transaction_spends_stays_spent_when_the_payment_goes() {
         "b stays spent after a restart"
     );
     assert_eq!(balances(&session, id).total, PAID);
+}
+
+/// The `dropped:` records of `id`.
+fn dropped_records(
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+) -> std::collections::BTreeSet<Txid> {
+    crate::tx_actions::load_dropped(&session.live().unwrap().appdb, id).0
+}
+
+/// Path (b) with b: after a restart a peer relays the claim, key-wallet
+/// sweeps it when the scan finds the coin, and the drop of S that follows
+/// releases b, which counts once when scanned again.
+#[test]
+fn a_coin_a_payment_on_a_swept_claim_spent_is_offered_again() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, funding, claim, payment) =
+        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+    let session = reopen(&engine, session);
+    skip_unsigned_check(&session);
+    relay(&engine, &session, id, &claim);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("the sweep's drop ran", || {
+        (session.hub.dead_hooks_done).load(std::sync::atomic::Ordering::SeqCst) > 0
+    });
+    assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
+    let session = reopen(&engine, session);
+    assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
+}
+
+/// Path (b), stopped right after key-wallet's sweep, before the drop of
+/// what is built on the claim ran: the sweep recorded the claim as
+/// dropped, and the next start drops S and releases b.
+#[test]
+fn a_sweep_whose_drop_never_ran_is_finished_at_the_next_start() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, funding, claim, payment) =
+        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+    let session = reopen(&engine, session);
+    skip_unsigned_check(&session);
+    (session.hub.skip_dead_hook).store(true, std::sync::atomic::Ordering::SeqCst);
+    relay(&engine, &session, id, &claim);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    assert!(
+        dropped_records(&session, id).contains(&claim.txid()),
+        "the sweep recorded the claim"
+    );
+    assert!(
+        !dropped(&engine, &session, id, payment.txid()),
+        "S isn't dropped yet"
+    );
+
+    let session = reopen(&engine, session);
+    assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
+    let session = reopen(&engine, session);
+    assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
+}
+
+/// A claim the engine dropped and recorded is mined since (its verdict was
+/// wrong): the next start forgets its record.
+#[test]
+fn a_dropped_claim_mined_since_loses_its_record_at_the_next_start() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (funding, claim, _payment) = payment_on_a_claims_change(&engine, &session, id);
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("the claim is dropped", || {
+        dropped(&engine, &session, id, claim.txid())
+    });
+    assert!(dropped_records(&session, id).contains(&claim.txid()));
+
+    mined(&engine, &session, id, BIRTH - 15, vec![claim.clone()]);
+    assert!(
+        session
+            .hub
+            .history
+            .get(&id, &claim.txid())
+            .is_some_and(|e| e.context.block_info().is_some()),
+        "the history holds the claim mined"
+    );
+    let session = reopen(&engine, session);
+    assert!(
+        !dropped_records(&session, id).contains(&claim.txid()),
+        "its record is gone"
+    );
 }

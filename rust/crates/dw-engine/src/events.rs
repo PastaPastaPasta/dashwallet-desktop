@@ -498,10 +498,9 @@ pub(crate) type HeaderSource = Arc<
         + Sync,
 >;
 
-/// What drops the history's transactions built on a sweep's: the wallet,
-/// the swept txids, the transaction that superseded them and the swept
-/// transactions the history held (`tx_actions`, #739).
-pub(crate) type SweptDead = dyn Fn(WalletId, BTreeSet<Txid>, Txid, Vec<Transaction>) + Send + Sync;
+/// What drops the history's transactions built on a sweep's: the wallet
+/// and what the sweep dropped that can never confirm (`tx_actions`, #739).
+pub(crate) type SweptDead = dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync;
 
 /// What checks the history's pending spends of new transactions' outputs
 /// for unsigned claims: the wallet and the new txids (`tx_actions`, #739).
@@ -618,6 +617,10 @@ pub(crate) struct SessionHub {
     /// Tests: new transactions don't start the check for unsigned claims.
     #[cfg(test)]
     pub(crate) skip_unsigned_check: std::sync::atomic::AtomicBool,
+    /// Tests: a sweep doesn't start the drop of what is built on it, as at
+    /// an exit right after the sweep.
+    #[cfg(test)]
+    pub(crate) skip_dead_hook: std::sync::atomic::AtomicBool,
     /// Tests: the next abandon returns after its sweep, without its rescan.
     #[cfg(test)]
     pub(crate) quit_before_rescan: std::sync::atomic::AtomicBool,
@@ -835,6 +838,8 @@ impl SessionHub {
             dead_hooks_done: Default::default(),
             #[cfg(test)]
             skip_unsigned_check: Default::default(),
+            #[cfg(test)]
+            skip_dead_hook: Default::default(),
             #[cfg(test)]
             quit_before_rescan: Default::default(),
             #[cfg(test)]
@@ -1650,6 +1655,11 @@ impl SessionHub {
                         .filter_map(|t| h.txs.get(t).map(|e| e.tx.clone()))
                         .collect()
                 });
+                // What can never confirm is recorded as dropped with the
+                // marks' removal, so a load drops what is built on it even
+                // when the drop below never ran (#739).
+                let dead =
+                    crate::tx_actions::swept_claims(id, *superseded_by, &swept).unwrap_or_default();
                 // Upstream deleted these records (provably beaten spends);
                 // the history drops them too, and their sent marks go.
                 self.history.with_wallet(id, |h| {
@@ -1659,7 +1669,7 @@ impl SessionHub {
                     }
                 });
                 if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
-                    match crate::tx_actions::forget_sent(&appdb, id, txids) {
+                    match crate::tx_actions::forget_swept(&appdb, id, txids, &dead) {
                         Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
                         Err(e) => {
                             tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
@@ -1673,8 +1683,17 @@ impl SessionHub {
                 // A swept transaction can never confirm, nor can what the
                 // history alone holds built on its outputs (a payment
                 // key-wallet has no record of after a restart, #739).
-                if let Some(start) = self.swept_dead.get() {
-                    start(id, txids.iter().copied().collect(), *superseded_by, swept);
+                #[cfg(test)]
+                let skip = self
+                    .skip_dead_hook
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                #[cfg(not(test))]
+                let skip = false;
+                if !dead.is_empty()
+                    && !skip
+                    && let Some(start) = self.swept_dead.get()
+                {
+                    start(id, dead);
                 }
             }
             WalletEvent::ChainTruncated {

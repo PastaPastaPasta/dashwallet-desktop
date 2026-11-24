@@ -248,8 +248,11 @@ pub(crate) fn persisted_txids(
                     continue;
                 };
                 let record = blob.as_deref().and_then(decode_record);
+                // The store doesn't say which input it found unsigned: one
+                // input that isn't push-only makes the verdict doubtful.
                 let doubtful = !record.is_some_and(|r| {
                     r.txid == txid
+                        && r.transaction.txid() == txid
                         && (r.transaction.input.iter())
                             .all(|i| crate::tx_actions::push_only(&i.script_sig))
                 });
@@ -623,7 +626,7 @@ impl NetworkSession {
             // dropped as unsigned, or on what this app dropped, is dropped
             // with it (#739).
             if complete && !dropped.is_empty() {
-                self.abandon_on_dead(&live.manager, wallet, &dropped, None)
+                self.abandon_on_dead(&live.manager, wallet, &dropped, true)
                     .await;
             }
         }

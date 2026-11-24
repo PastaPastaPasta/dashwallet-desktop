@@ -329,13 +329,31 @@ pub(crate) fn forget_sent(
     wallet: WalletId,
     gone: &[Txid],
 ) -> Result<(), dw_appdb::AppDbError> {
-    if gone.is_empty() {
+    forget_swept(appdb, wallet, gone, &BTreeSet::new())
+}
+
+/// [`forget_sent`] of a sweep's `gone`, recording `dead` as dropped
+/// ([`DROPPED_PREFIX`]) in the same write: a load seeds its walk with them
+/// even when the drop of what is built on them never ran (#739).
+pub(crate) fn forget_swept(
+    appdb: &AppDb,
+    wallet: WalletId,
+    gone: &[Txid],
+    dead: &BTreeSet<Txid>,
+) -> Result<(), dw_appdb::AppDbError> {
+    if gone.is_empty() && dead.is_empty() {
         return Ok(());
     }
     let keys: Vec<String> = (gone.iter())
         .flat_map(|t| [SENT_PREFIX, SENT_TX_PREFIX, SENT_IN_PREFIX].map(|p| format!("{p}{t}")))
         .collect();
-    let writes: Vec<(&str, Option<&str>)> = keys.iter().map(|k| (k.as_str(), None)).collect();
+    let dropped: Vec<String> = dead
+        .iter()
+        .map(|t| format!("{DROPPED_PREFIX}{t}"))
+        .collect();
+    let writes: Vec<(&str, Option<&str>)> = (keys.iter().map(|k| (k.as_str(), None)))
+        .chain(dropped.iter().map(|k| (k.as_str(), Some(""))))
+        .collect();
     #[cfg(all(test, debug_assertions))]
     appdb.fault_point(FORGET_SENT_FAULT, dw_appdb::fault::Stage::Before)?;
     appdb.set_settings_durable(&wallet.to_string(), &writes)
@@ -412,6 +430,44 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Abandoned, boo
         }
     }
     (out, true)
+}
+
+/// What a sweep superseded by `by` dropped that can never confirm (#739):
+/// of the `swept` transactions the history held, the unsigned claims
+/// key-wallet dropped (each spends an output of `by`) and the swept ones
+/// that descend from them. `None` when the sweep dropped no claim the
+/// history held (a plain conflict sweep), or one through an input script
+/// that isn't push-only, whose verdict may be wrong.
+pub(crate) fn swept_claims(
+    wallet: WalletId,
+    by: Txid,
+    swept: &[Transaction],
+) -> Option<BTreeSet<Txid>> {
+    let spends_by = |i: &dashcore::TxIn| i.previous_output.txid == by;
+    let claims: Vec<&Transaction> = (swept.iter())
+        .filter(|tx| tx.input.iter().any(spends_by))
+        .collect();
+    if claims.is_empty() {
+        return None;
+    }
+    if let Some(tx) = (claims.iter())
+        .find(|tx| (tx.input.iter()).any(|i| spends_by(i) && !push_only(&i.script_sig)))
+    {
+        tracing::warn!(%wallet, claim = %tx.txid(), %by, "kept what is built on a dropped claim whose input script isn't push-only");
+        return None;
+    }
+    let mut dead: BTreeSet<Txid> = claims.iter().map(|tx| tx.txid()).collect();
+    loop {
+        let before = dead.len();
+        for tx in swept {
+            if (tx.input.iter()).any(|i| dead.contains(&i.previous_output.txid)) {
+                dead.insert(tx.txid());
+            }
+        }
+        if dead.len() == before {
+            return Some(dead);
+        }
+    }
 }
 
 /// The transactions this app dropped as ones that can never confirm, or
@@ -1343,6 +1399,9 @@ impl NetworkSession {
             let (descendants, mut links) = (self.hub.history).read(&wallet, |txs| {
                 unmined_descendants(txs, &info.core_wallet, root)
             });
+            // A dead parent is swept again with the rest: the store's open or
+            // key-wallet's sweep already deleted its record and outputs, so
+            // this only keeps its outputs from being released (#739).
             links.extend(dead_drop.into_iter().flat_map(|d| d.dead.iter().copied()));
             // Never one key-wallet holds settled, whatever the history
             // still says of it: its parents are the network's too.
@@ -2126,40 +2185,20 @@ impl NetworkSession {
 
     /// Drops what this wallet built on the outputs of `dead`, transactions
     /// that can never confirm (#739): claims the store dropped as unsigned
-    /// by their coin's owner or this app dropped (at load, `claim` `None`),
-    /// or a sweep of such a claim by key-wallet. Each unconfirmed, unlocked
-    /// transaction of the history that is one of `dead` or spends an output
-    /// of one is abandoned with what descends from it, as Remove
-    /// Unconfirmed does, unless what it spends of `dead` has a settled
-    /// descendant in any loaded wallet. `claim`: the transaction a sweep
-    /// named as superseding `dead`, and the swept transactions the history
-    /// held. Only a sweep in which one of them spends an output of it (an
-    /// unsigned claim key-wallet dropped) drops anything, and none whose
-    /// claim spends it through an input script that isn't push-only: its
-    /// verdict may be wrong. A swept claim the history didn't hold can't be
-    /// checked, and nothing is dropped.
+    /// by their coin's owner or this app dropped (`at_load`), or what a
+    /// sweep of such a claim by key-wallet dropped ([`swept_claims`]). Each
+    /// unconfirmed, unlocked transaction of the history that is one of
+    /// `dead` or spends an output of one is abandoned with what descends
+    /// from it, as Remove Unconfirmed does, unless what it spends of `dead`
+    /// has a settled descendant in any loaded wallet.
     pub(crate) async fn abandon_on_dead(
         &self,
         manager: &Manager,
         wallet: WalletId,
         dead: &BTreeSet<Txid>,
-        claim: Option<(Txid, &[Transaction])>,
+        at_load: bool,
     ) {
-        if let Some((by, swept)) = claim {
-            let spends_by = |i: &dashcore::TxIn| i.previous_output.txid == by;
-            let claims: Vec<&Transaction> = (swept.iter())
-                .filter(|tx| tx.input.iter().any(spends_by))
-                .collect();
-            if claims.is_empty() {
-                return;
-            }
-            if let Some(tx) = (claims.iter())
-                .find(|tx| (tx.input.iter()).any(|i| spends_by(i) && !push_only(&i.script_sig)))
-            {
-                tracing::warn!(%wallet, claim = %tx.txid(), %by, "kept what is built on a dropped claim whose input script isn't push-only");
-                return;
-            }
-        } else {
+        if at_load {
             self.prune_dropped(wallet, dead).await;
         }
         // A dropped one the history holds pending again (a peer relayed it
@@ -2338,25 +2377,24 @@ impl NetworkSession {
     /// [`Self::abandon_unsigned_claims`] to its new transactions.
     pub(crate) fn attach_dead_claims(self: &Arc<Self>) {
         let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
-        self.hub
-            .attach_swept_dead(Box::new(move |id, dead, by, swept| {
-                let weak = weak.clone();
-                rt.spawn(async move {
-                    let Some(session) = weak.upgrade() else {
-                        return;
-                    };
-                    let Ok(_op) = session.enter().await else {
-                        return;
-                    };
-                    let Ok(manager) = session.manager() else {
-                        return;
-                    };
-                    let _lifecycle = session.wallet_lifecycle.hold().await;
-                    (session.abandon_on_dead(&manager, id, &dead, Some((by, &swept)))).await;
-                    #[cfg(test)]
-                    (session.hub.dead_hooks_done).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                });
-            }));
+        self.hub.attach_swept_dead(Box::new(move |id, dead| {
+            let weak = weak.clone();
+            rt.spawn(async move {
+                let Some(session) = weak.upgrade() else {
+                    return;
+                };
+                let Ok(_op) = session.enter().await else {
+                    return;
+                };
+                let Ok(manager) = session.manager() else {
+                    return;
+                };
+                let _lifecycle = session.wallet_lifecycle.hold().await;
+                (session.abandon_on_dead(&manager, id, &dead, false)).await;
+                #[cfg(test)]
+                (session.hub.dead_hooks_done).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        }));
         let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
         self.hub.attach_funded(Box::new(move |id, funded| {
             let weak = weak.clone();
