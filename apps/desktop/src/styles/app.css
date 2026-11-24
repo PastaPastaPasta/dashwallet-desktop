@@ -4772,6 +4772,8 @@ button.bell-row-open:focus-visible {
 
 .pay-shielded-route {
   display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
   margin-top: calc(-1 * var(--dw-space-s));
 }
 
