@@ -2610,7 +2610,8 @@ fn a_restored_backup_raises_its_lookahead_before_the_wallet_is_registered() {
 /// larger lookahead in one write: when that write fails, neither is stored,
 /// so no replay is owed without the range it needs. Before, the replay was
 /// stored first, and a failure or a quit before the lookahead left it owed
-/// with the narrow BIP44 range.
+/// with the narrow BIP44 range. Once the write works, Recovery runs to its
+/// end and leaves the lookahead stored and the wallet marked done.
 #[test]
 fn a_recovery_scan_whose_write_fails_stores_neither_its_replay_nor_its_lookahead() {
     let dir = tempfile::tempdir().unwrap();
@@ -2638,6 +2639,22 @@ fn a_recovery_scan_whose_write_fails_stores_neither_its_replay_nor_its_lookahead
     assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
     assert_eq!(wide_scan(&engine, &session, id), marker);
     assert_eq!(replay_record(&engine, &session, id), None);
+
+    let recovery = recovery_running(&engine, &session, id);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let recovered = engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
+    });
+
+    assert!(matches!(recovered, Ok(Ok(Ok(_)))), "runs once the write works: {recovered:?}");
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(crate::coinjoin::RECOVERY_LOOKAHEAD)
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
 }
 
 /// CoinJoin Recovery that stops right after its write, as a quit there
