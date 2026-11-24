@@ -317,6 +317,10 @@ export function settledBy(outcome: Pick<PlatformSendOutcome, "id" | "mayLand"> |
   return row.state === "failed" && !row.mayLand ? "refused" : null;
 }
 
+/** The send went through: done, or settled as went, and never when its group names no winner. */
+export const sendWent = (outcome: Pick<PlatformSendOutcome, "state" | "winnerKnown"> | null | undefined, settled: Settled | null): boolean =>
+  settled !== "unknown" && outcome?.winnerKnown !== false && (outcome?.state === "done" || settled === "went");
+
 /** What the result sheet says: the outcome's own state, unless Activity has since settled it (`settled`).
  * `retried`: the send answered a retry, which may be the earlier payment's own outcome. */
 export function sendOutcomeCopy(outcome: PlatformSendOutcome, credits: (c: string) => string, settled: Settled | null, retried: boolean): { title: string; text: string } {

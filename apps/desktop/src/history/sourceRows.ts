@@ -157,9 +157,8 @@ export function findSourceRecord(txid: string, platform: readonly PlatformActivi
 
 export function sourceRowTitle(row: TxRow): string {
   const kind = row.txid.split(":")[1];
-  if (rowSource(row) === "platform" && isSettledUnknownRow(row)) return settledUnknownText(row).title;
   if (rowSource(row) === "platform")
-    return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "fromShielded" ? SourceRowText.fromShielded : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
+    return isSettledUnknownRow(row) ? settledUnknownText(row).title : kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "fromShielded" ? SourceRowText.fromShielded : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
   switch (kind) {
     case "shield":
     case "shieldFromCore":

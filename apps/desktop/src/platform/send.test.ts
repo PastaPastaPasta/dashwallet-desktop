@@ -9,7 +9,7 @@ import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { onMoveSettled } from "./move";
-import { canRetry, heldSend, PlatformSendFlow, recipientText, resetPlatformSends, retryAmount, retryAsks, SEND_COPY, sendAmount, sendCanRetry, sendErrorText, sendFor, sendOutcomeCopy, sendRefusalText, settledBy, staleConfirm } from "./send";
+import { canRetry, heldSend, PlatformSendFlow, recipientText, resetPlatformSends, retryAmount, retryAsks, SEND_COPY, sendAmount, sendCanRetry, sendErrorText, sendFor, sendOutcomeCopy, sendRefusalText, sendWent, settledBy, staleConfirm } from "./send";
 
 const TO = "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h";
 const QUOTE: PlatformSendQuote = {
@@ -321,6 +321,7 @@ describe("Pay from Platform", () => {
       expect(sendOutcomeCopy({ ...OUTCOME, winnerKnown: false }, credits, null, false)).toEqual(copy);
       expect(sendOutcomeCopy(FAILED, credits, "unknown", false)).toEqual(copy);
       expect(sendOutcomeCopy(OUTCOME, credits, null, false).title).toBe(SEND_COPY.done.title);
+      expect([sendWent(OUTCOME, null), sendWent({ ...OUTCOME, winnerKnown: false }, null), sendWent(FAILED, "went"), sendWent(FAILED, "unknown"), sendWent(FAILED, null)]).toEqual([true, false, true, false, false]);
     });
 
     it("picks the send that may still go through for the form's retry, never a move or a settled send", () => {

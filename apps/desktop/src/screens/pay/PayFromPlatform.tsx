@@ -18,7 +18,7 @@ import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { addressSendsOff, MAINNET_OFF_COPY } from "../../platform/mainnetOff";
 import { hasUnansweredOp } from "../../platform/move";
-import { canRetry, heldSend, retryAsks, sendAmount, sendCanRetry, sendErrorText, sendFor, sendOutcomeCopy, sendRefusalText, settledBy, staleConfirm, SEND_COPY as C, type PlatformSendFlow, type Settled } from "../../platform/send";
+import { canRetry, heldSend, retryAsks, sendAmount, sendCanRetry, sendErrorText, sendFor, sendOutcomeCopy, sendRefusalText, sendWent, settledBy, staleConfirm, SEND_COPY as C, type PlatformSendFlow, type Settled } from "../../platform/send";
 import { GrantSheet } from "../tools/common";
 import { FormField, type useAmountField } from "./form";
 
@@ -99,8 +99,7 @@ function SendSheet({
 }) {
   const { step, outcome } = flow;
   const q = confirmed?.quote;
-  const unknown = settled === "unknown" || outcome?.winnerKnown === false;
-  const close = () => onClose(step === "done" && !unknown && (outcome?.state === "done" || settled === "went"));
+  const close = () => onClose(step === "done" && sendWent(outcome, settled));
   // Refused for good: nothing is held, so the payment can be sent again from the form.
   const notSent = settled === "refused" || (outcome?.state === "failed" && !outcome.mayLand);
   return (
@@ -143,7 +142,7 @@ function SendSheet({
               </p>
             )}
             <div className="sheet-actions">
-              {(unknown || (outcome.state !== "done" && settled !== "went")) && !notSent && (
+              {!sendWent(outcome, settled) && !notSent && (
                 <DashButton variant="tintedGray" size="large" data-testid="platform-send-view" onClick={() => { close(); navigate("activity"); }}>
                   {C.view}
                 </DashButton>
@@ -280,7 +279,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
   };
   const settled = flow.step === "done" ? settledBy(flow.outcome, activity.data) : null;
   // A send that went ends the form at once, as Pay's Core forms do.
-  const went = flow.step === "done" && settled !== "unknown" && flow.outcome?.winnerKnown !== false && (flow.outcome?.state === "done" || settled === "went");
+  const went = flow.step === "done" && sendWent(flow.outcome, settled);
   useEffect(() => {
     if (!went) return;
     amount.setText("");
