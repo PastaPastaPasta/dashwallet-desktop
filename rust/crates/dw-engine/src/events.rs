@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use dash_spv::EventHandler;
 use dash_spv::network::NetworkEvent;
 use dash_spv::sync::SyncProgress;
-use dashcore::Txid;
+use dashcore::{Transaction, Txid};
 use key_wallet::account::AccountType;
 use key_wallet::transaction_checking::TransactionContext;
 use key_wallet::wallet::balance::WalletCoreBalance;
@@ -504,6 +504,14 @@ pub(crate) type HeaderSource = Arc<
         + Sync,
 >;
 
+/// What drops the history's transactions built on a sweep's: the wallet
+/// and what the sweep dropped that can never confirm (`tx_actions`, #739).
+pub(crate) type SweptDead = dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync;
+
+/// What checks the history's pending spends of new transactions' outputs
+/// for unsigned claims: the wallet and the new txids (`tx_actions`, #739).
+pub(crate) type Funded = dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync;
+
 /// In-memory state of one session, updated from SPV and wallet callbacks.
 pub(crate) struct SessionHub {
     pub network: DashNetwork,
@@ -537,6 +545,13 @@ pub(crate) struct SessionHub {
     reconcile: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The wallets with a reconcile started and not yet running.
     reconcile_pending: Mutex<HashSet<WalletId>>,
+    /// Drops what the history built on a sweep's transactions
+    /// (`tx_actions`, #739); unset in hub-only tests.
+    swept_dead: OnceLock<Box<SweptDead>>,
+    /// Drops the history's pending spends a new transaction shows its
+    /// coin's owner never signed (`tx_actions`, #739); unset in hub-only
+    /// tests.
+    funded: OnceLock<Box<Funded>>,
     /// Runs on each SPV peers 0 -> >0 transition: the recorded sweep
     /// chunks are sent again (`coinjoin`); unset in hub-only tests.
     peers_up: OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -600,6 +615,9 @@ pub(crate) struct SessionHub {
     /// Tests: the next history load fails to list the stored records.
     #[cfg(test)]
     pub(crate) fail_history_read: std::sync::atomic::AtomicBool,
+    /// Tests: the next history load's read of the dropped records fails.
+    #[cfg(test)]
+    pub(crate) fail_dropped_read: std::sync::atomic::AtomicBool,
     /// Tests: the next history load's first stored record read goes wrong.
     #[cfg(test)]
     pub(crate) record_read_fault: Mutex<Option<crate::history_ops::RecordFault>>,
@@ -624,6 +642,16 @@ pub(crate) struct SessionHub {
     /// Tests: the next abandon quits before its sweep, as at an exit.
     #[cfg(test)]
     pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: how many sweep events' drops of what is built on them ran.
+    #[cfg(test)]
+    pub(crate) dead_hooks_done: std::sync::atomic::AtomicUsize,
+    /// Tests: new transactions don't start the check for unsigned claims.
+    #[cfg(test)]
+    pub(crate) skip_unsigned_check: std::sync::atomic::AtomicBool,
+    /// Tests: a sweep doesn't start the drop of what is built on it, as at
+    /// an exit right after the sweep.
+    #[cfg(test)]
+    pub(crate) skip_dead_hook: std::sync::atomic::AtomicBool,
     /// Tests: the next abandon returns after its sweep, without its rescan.
     #[cfg(test)]
     pub(crate) quit_before_rescan: std::sync::atomic::AtomicBool,
@@ -802,6 +830,8 @@ impl SessionHub {
             leases: std::sync::OnceLock::new(),
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
+            swept_dead: OnceLock::new(),
+            funded: OnceLock::new(),
             peers_up: OnceLock::new(),
             balance_reread: OnceLock::new(),
             sweep_news: OnceLock::new(),
@@ -837,6 +867,8 @@ impl SessionHub {
             #[cfg(test)]
             fail_history_read: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
+            fail_dropped_read: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
             record_read_fault: Mutex::new(None),
             #[cfg(test)]
             unreadable_record: Mutex::default(),
@@ -844,6 +876,12 @@ impl SessionHub {
             pause_abandon: Mutex::new(None),
             #[cfg(test)]
             quit_before_sweep: Default::default(),
+            #[cfg(test)]
+            dead_hooks_done: Default::default(),
+            #[cfg(test)]
+            skip_unsigned_check: Default::default(),
+            #[cfg(test)]
+            skip_dead_hook: Default::default(),
             #[cfg(test)]
             quit_before_rescan: Default::default(),
             #[cfg(test)]
@@ -993,6 +1031,44 @@ impl SessionHub {
     /// Sets what starts a wallet's duplicate-coin reconcile (once).
     pub(crate) fn attach_reconcile(&self, start: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.reconcile.set(start);
+    }
+
+    /// Sets what drops the history's transactions built on swept ones
+    /// (once).
+    pub(crate) fn attach_swept_dead(&self, start: Box<SweptDead>) {
+        let _ = self.swept_dead.set(start);
+    }
+
+    /// Sets what checks the history's pending spends of a new
+    /// transaction's outputs (once).
+    pub(crate) fn attach_funded(&self, start: Box<Funded>) {
+        let _ = self.funded.set(start);
+    }
+
+    /// Starts the check for unsigned claims on what `funded` pays, when a
+    /// pending, unabandoned transaction of the history spends an output of
+    /// one: most new transactions fund none, and start no task.
+    fn check_funded(&self, id: WalletId, funded: BTreeSet<Txid>) {
+        #[cfg(test)]
+        if self
+            .skip_unsigned_check
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let Some(start) = self.funded.get() else {
+            return;
+        };
+        let spent = self.history.read_wallet(&id, |h| {
+            h.txs.values().any(|e| {
+                !e.is_abandoned()
+                    && e.context.block_info().is_none()
+                    && (e.tx.input.iter()).any(|i| funded.contains(&i.previous_output.txid))
+            })
+        });
+        if spent {
+            start(id, funded);
+        }
     }
 
     /// Starts wallet `id`'s reconcile unless one is started and not yet
@@ -1590,6 +1666,7 @@ impl SessionHub {
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
+                self.check_funded(id, BTreeSet::from([record.txid]));
                 // An event queued before an Abandon this session took its
                 // transaction carries the balance from before the sweep:
                 // read the manager's instead. One queued while the entry
@@ -1653,6 +1730,18 @@ impl SessionHub {
                         },
                     },
                 );
+                // Read before the history forgets them: what is built on
+                // them is checked against their bytes (#739).
+                let swept: Vec<Transaction> = (self.history).read_wallet(&id, |h| {
+                    (txids.iter())
+                        .filter_map(|t| h.txs.get(t).map(|e| e.tx.clone()))
+                        .collect()
+                });
+                // What can never confirm is recorded as dropped with the
+                // marks' removal, so a load drops what is built on it even
+                // when the drop below never ran (#739).
+                let dead =
+                    crate::tx_actions::swept_claims(id, *superseded_by, &swept).unwrap_or_default();
                 // Upstream deleted these records (provably beaten spends);
                 // the history drops them too, and their sent marks go. Their
                 // children it holds no record of can never confirm either:
@@ -1691,12 +1780,6 @@ impl SessionHub {
                     (children, claim)
                 });
                 let queued = !children.is_empty();
-                if claim
-                    && let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade)
-                    && let Err(e) = crate::tx_actions::note_claims_swept(&appdb, id, txids)
-                {
-                    tracing::warn!(wallet = %id, error = %e, "could not note the claims swept")
-                }
                 if queued {
                     let winner = crate::history::Winner {
                         txid: Some(*superseded_by),
@@ -1710,7 +1793,8 @@ impl SessionHub {
                     ));
                 }
                 if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
-                    match crate::tx_actions::forget_sent(&appdb, id, txids) {
+                    let claims: &[Txid] = if claim { txids } else { &[] };
+                    match crate::tx_actions::forget_swept(&appdb, id, txids, &dead, claims) {
                         Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
                         Err(e) => {
                             tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
@@ -1723,6 +1807,21 @@ impl SessionHub {
                 }
                 if queued {
                     self.schedule_reconcile(id);
+                }
+                // A swept transaction can never confirm, nor can what the
+                // history alone holds built on its outputs (a payment
+                // key-wallet has no record of after a restart, #739).
+                #[cfg(test)]
+                let skip = self
+                    .skip_dead_hook
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                #[cfg(not(test))]
+                let skip = false;
+                if !dead.is_empty()
+                    && !skip
+                    && let Some(start) = self.swept_dead.get()
+                {
+                    start(id, dead);
                 }
             }
             WalletEvent::ChainTruncated {
@@ -1786,6 +1885,9 @@ impl SessionHub {
                 // record's block was evidence already.
                 self.note_seen(id, inserted.iter().chain(updated).map(|r| r.txid));
                 self.schedule_reconcile(id);
+                if !inserted.is_empty() {
+                    self.check_funded(id, inserted.iter().map(|r| r.txid).collect());
+                }
             }
             WalletEvent::SyncHeightAdvanced { height, .. } => {
                 if self.update_heights(id, Some(*height), Some(*height)) {

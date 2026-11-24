@@ -23,6 +23,8 @@ use crate::{DashNetwork, Engine, WalletBalances, WalletId};
 mod crash_send_tests;
 #[path = "dismissed_spend_disk_tests.rs"]
 mod dismissed_spend_disk_tests;
+#[path = "dropped_claim_tests.rs"]
+mod dropped_claim_tests;
 #[path = "h03_kill9_core_tests.rs"]
 mod h03_kill9_core_tests;
 #[cfg(unix)]

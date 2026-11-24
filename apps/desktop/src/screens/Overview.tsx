@@ -26,7 +26,7 @@ import { heldLine, heldWayOutText } from "../format/heldUnfinished";
 import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type HeroSync, type PoolReading } from "../format/homeBalance";
 import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
-import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
+import { DashPayCard, defaultCardAction, moveToDashWallet } from "./dashpay/DashPayCard";
 import { buyCredits } from "./dashpay/MyProfile";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
@@ -234,7 +234,7 @@ function HomeDashPayCard({ walletId, network }: { walletId: string; network: Net
   const { inputs, retry } = useStatusInputs(walletId, network);
   const card = homeCard(inputs);
   // DP1-10 D8: "Buy credits" opens My Profile with the top-up sheet.
-  const onAction = (kind: CardActionKind) => (kind === "buyCredits" && inputs.main ? buyCredits(b, walletId, inputs.main) : defaultCardAction(kind, retry));
+  const onAction = (kind: CardActionKind) => (kind === "buyCredits" && inputs.main ? buyCredits(b, walletId, inputs.main) : defaultCardAction(kind, retry, () => moveToDashWallet(b, walletId)));
   return card && <DashPayCard card={card} onAction={onAction} />;
 }
 

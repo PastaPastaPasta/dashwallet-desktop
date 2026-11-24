@@ -330,4 +330,20 @@ describe("an invitation's claim (DP5-03 D17)", () => {
     const coreDraft = await cmd.startRegistration(W, coreRequest(LABEL), await grant(core.grant.maxDuffs, core.grant.maxCredits));
     await expect(cmd.registrationResumeGrant(W, coreDraft)).rejects.toMatchObject({ code: "invalid_argument" });
   });
+
+  it("#685: a held Platform-funded row resumes under its own grant, which carries no duffs", async () => {
+    const f = install();
+    const quote = await cmd.registrationQuote(W, coreRequest(LABEL));
+    const draft = await cmd.startRegistration(W, coreRequest(LABEL), await grant(quote.grant.maxDuffs, quote.grant.maxCredits));
+    const dp = f.world.dashpay;
+    Object.assign(dp.registrations.find((r) => r.draft === draft)!, { phase: "keysPrepared", waiting: "paymentHeld", running: false, fundsCommitted: true, fromPlatform: true });
+    dp.runs = dp.runs.filter((d) => d !== draft);
+    const own = await cmd.registrationResumeGrant(W, draft);
+    expect(own.maxDuffs).toBe(0);
+    expect(BigInt(own.maxCredits)).toBeGreaterThan(0n);
+    await expect(cmd.resumeRegistration(W, draft, await grant(1, own.maxCredits))).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    expect(await rowOf(draft)).toMatchObject({ waiting: "paymentHeld", running: false });
+    await cmd.resumeRegistration(W, draft, await grant(0, own.maxCredits));
+    expect(await rowOf(draft)).toMatchObject({ running: true, fromPlatform: true });
+  });
 });
