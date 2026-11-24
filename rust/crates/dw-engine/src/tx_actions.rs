@@ -688,6 +688,24 @@ fn add_known(
     }
 }
 
+/// Adds the transactions with a verified InstantSend lock stored and no
+/// record, linked to their parents by the inputs their lock names (#611):
+/// a locked child whose record is gone still proves its parents.
+fn add_locked_without_record(
+    known: &mut HashMap<Txid, Known>,
+    lock_parents: &HashMap<Txid, Vec<Txid>>,
+) {
+    for (t, parents) in lock_parents {
+        known
+            .entry(*t)
+            .or_insert_with(|| Known {
+                parents: parents.clone(),
+                ..Known::default()
+            })
+            .settled = true;
+    }
+}
+
 /// The transactions something settled descends from in `known`: first
 /// under one InstantSend-locked, in a block or finalized, then under one in
 /// a block or finalized.
@@ -760,8 +778,12 @@ impl NetworkSession {
     ) -> Settled {
         let (mut known, mut incomplete) = (HashMap::new(), None);
         for (id, core) in infos {
-            (self.hub.history).read(&WalletId(*id), |txs| add_known(&mut known, txs, core));
-            if (self.hub.history).read_wallet(&WalletId(*id), |h| h.load_incomplete) {
+            let unread = (self.hub.history).read_wallet(&WalletId(*id), |h| {
+                add_known(&mut known, &h.txs, core);
+                add_locked_without_record(&mut known, &h.lock_parents);
+                h.load_incomplete
+            });
+            if unread {
                 incomplete.get_or_insert(WalletId(*id));
             }
         }

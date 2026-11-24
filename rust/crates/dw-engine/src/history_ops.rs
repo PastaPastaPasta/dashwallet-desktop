@@ -137,6 +137,13 @@ pub(crate) struct Persisted {
     /// Spends the store's open dropped as not signed by their coins'
     /// owner (`core_dropped_unsigned_spends`): never restored from a mark.
     pub(crate) dropped: HashSet<Txid>,
+    /// Transactions with a verified InstantSend lock stored and no record,
+    /// by the transactions their lock names inputs of: what links a locked
+    /// child whose record is gone to its parents (#611).
+    pub(crate) lock_parents: HashMap<Txid, Vec<Txid>>,
+    /// A stored lock row didn't decode: which transactions it links is
+    /// unknown.
+    pub(crate) locks_unread: bool,
 }
 
 impl Persisted {
@@ -237,7 +244,53 @@ pub(crate) fn persisted_txids(
             tracing::warn!(error = %e, "could not read the spends the store dropped as unsigned")
         }
     }
+    // Verified locks of transactions without a record; one with a record
+    // links through its record's inputs. A failed query fails the listing,
+    // so no wallet loads complete without them.
+    let mut stmt = conn.prepare(
+        "SELECT l.wallet_id, l.txid, l.islock_blob FROM core_instant_locks l \
+         WHERE l.verified = 1 AND NOT EXISTS (SELECT 1 FROM core_transactions t \
+         WHERE t.wallet_id = l.wallet_id AND t.txid = l.txid AND t.record_blob IS NOT NULL)",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, Vec<u8>>(0)?,
+            r.get::<_, Vec<u8>>(1)?,
+            r.get::<_, Vec<u8>>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (wallet, txid, blob) = row?;
+        let (Ok(wallet), Ok(txid)) = (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid)) else {
+            continue;
+        };
+        let persisted = out.entry(wallet).or_default();
+        match decode_lock(&blob) {
+            Some(lock) if lock.txid == txid => {
+                let parents = lock.inputs.iter().map(|o| o.txid).collect();
+                persisted.lock_parents.insert(txid, parents);
+            }
+            // The store ignores a lock row for another transaction too.
+            Some(lock) => {
+                tracing::warn!(%txid, lock_txid = %lock.txid, "a stored lock names another transaction; ignored");
+            }
+            None => {
+                tracing::warn!(%txid, "a stored InstantSend lock doesn't decode");
+                persisted.locks_unread = true;
+            }
+        }
+    }
     Ok(out)
+}
+
+/// A stored lock row's blob, decoded as the store encodes it.
+fn decode_lock(blob: &[u8]) -> Option<dashcore::InstantLock> {
+    let config =
+        bincode::config::standard().with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
+    match bincode::serde::decode_from_slice(blob, config) {
+        Ok((lock, used)) if used == blob.len() => Some(lock),
+        _ => None,
+    }
 }
 
 /// Of `txids`, those with an output of theirs stored for `wallet`, and
@@ -320,6 +373,8 @@ struct LoadedHistory {
     /// Of `stored`, those that settle a sent payment: a record, or a
     /// height-only row with a height.
     settled: HashSet<Txid>,
+    /// [`Persisted::lock_parents`].
+    lock_parents: HashMap<Txid, Vec<Txid>>,
 }
 
 impl NetworkSession {
@@ -409,6 +464,7 @@ impl NetworkSession {
                         abandoned,
                         sent,
                         complete: clean
+                            && !persisted.locks_unread
                             && marks_read
                             && sent_read == crate::tx_actions::SentRead::Complete,
                         claims: clean
@@ -416,6 +472,7 @@ impl NetworkSession {
                             && sent_read != crate::tx_actions::SentRead::Failed,
                         stored,
                         settled,
+                        lock_parents: persisted.lock_parents,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -444,6 +501,7 @@ impl NetworkSession {
             claims,
             stored,
             settled,
+            lock_parents,
         } in loaded
         {
             let info = wm.get_wallet_info(&wallet.0);
@@ -477,6 +535,7 @@ impl NetworkSession {
             self.hub.history.with_wallet(wallet, |h| {
                 h.set_loaded_coins(loaded_coins);
                 h.load_incomplete = !complete;
+                h.lock_parents = lock_parents;
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
                 }
