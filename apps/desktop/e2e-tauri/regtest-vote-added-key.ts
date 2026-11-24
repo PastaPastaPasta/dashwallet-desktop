@@ -180,7 +180,8 @@ async function main() {
 
     // Vote with it.
     await wd.press(tid("masternodes-tabs-governance"));
-    await wd.press(await wd.waitFor(tid(row), `${PROPOSAL} in the list`));
+    await wd.waitFor(tid(row), `${PROPOSAL} in the list`);
+    await wd.press(tid(row));
     await poll(LOAD_WAIT_MS, "Vote… enabled (a voting key in the wallet)", async () => ((await enabled("proposal-vote")) ? true : undefined));
     await wd.press(tid("proposal-vote"));
     const node = `vote-node-${SHORT}`;
