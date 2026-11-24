@@ -284,7 +284,16 @@ const WINDOW_ENDED: AppError = { code: "vault.credential_required", message: "Th
  * revoked, or the lease ended. */
 export async function acceptUnderLease(
   api: AcceptApi,
-  a: { walletId: string; identity: string; from: string; spendCap: number; credential: CredentialSpec },
+  a: {
+    walletId: string;
+    identity: string;
+    from: string;
+    spendCap: number;
+    credential: CredentialSpec;
+    /** The grants come from an encrypted vault's signing window (no passphrase typed): a window
+     * that ends before the lease drops them, and the passphrase is what asks again. */
+    windowed?: boolean;
+  },
 ): Promise<string> {
   let grants: AuthGrant[];
   try {
@@ -312,7 +321,8 @@ export async function acceptUnderLease(
     for (const g of grants) void api.revokeGrant(g.id).catch(() => null);
     // The signing window ended between the grants and the lease (issue 173, item 9): its grants went with
     // it. Nothing was accepted or paid, so the passphrase is asked for, as when the window is closed.
-    if (a.credential.kind === "unencrypted" && (hasCode(e, "platform.grant_invalid") || hasCode(e, "vault.grant_invalid")))
+    // An unencrypted vault has no window and no passphrase to ask for: its refusal stays the accept's.
+    if (a.windowed && a.credential.kind === "unencrypted" && (hasCode(e, "platform.grant_invalid") || hasCode(e, "vault.grant_invalid")))
       throw new AcceptFailed("authorize", WINDOW_ENDED);
     throw new AcceptFailed("accept", e);
   }
