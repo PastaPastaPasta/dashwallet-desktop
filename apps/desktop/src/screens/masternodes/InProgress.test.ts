@@ -9,23 +9,23 @@ import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { BackendContext } from "../../api/queries";
 import { InProgressGroup } from "./InProgress";
 
-const op = (id: string, kind: ProTxOperation["kind"]): ProTxOperation =>
+const op = (id: string, kind: ProTxOperation["kind"], overdue = true): ProTxOperation =>
   ({
     id,
     kind,
     state: { kind: "sent" },
     lastError: null,
-    overdue: false,
+    overdue,
     txid: "aa".repeat(32),
     proTxHash: "bb".repeat(32),
   }) as unknown as ProTxOperation;
 
-const render = (kind: NetworkInfo["kind"]) => {
+const render = (kind: NetworkInfo["kind"], overdue = true) => {
   const group = createElement(InProgressGroup, {
-    ops: [op("reg", "registration"), op("upd", "update_registrar")],
+    ops: [op("reg", "registration", overdue), op("upd", "update_registrar", overdue)],
     wallet: { walletId: "w", watchOnly: false } as WalletSummary,
     network: { kind, dirName: kind, unitName: kind === "mainnet" ? "DASH" : "tDASH" } as NetworkInfo,
-    onContinue: () => undefined,
+    actions: { act: () => undefined, error: null, sheets: null },
   });
   const client = new QueryClient();
   return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(BackendContext.Provider, { value: {} as Backend }, group)));
@@ -38,7 +38,13 @@ describe("In progress Send again follows the network", () => {
     expect(html).not.toContain("mn-op-resend-upd");
   });
 
-  it("shows Send again for a registration and a registrar update on testnet", () => {
+  it("hides Send again on testnet while they wait for their block", () => {
+    const html = render("testnet", false);
+    expect(html).not.toContain("mn-op-resend-reg");
+    expect(html).not.toContain("mn-op-resend-upd");
+  });
+
+  it("shows Send again for an overdue registration and registrar update on testnet", () => {
     const html = render("testnet");
     expect(html).toContain('data-testid="mn-op-resend-reg"');
     expect(html).toContain('data-testid="mn-op-resend-upd"');

@@ -1210,6 +1210,7 @@ fn view(
         reserved: Vec::new(),
         next,
         discardable,
+        abandonable: false,
         warnings,
         approved_terms: None,
         base_keys: None,

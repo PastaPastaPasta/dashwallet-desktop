@@ -35,6 +35,8 @@ function setup(lock = { encrypted: false }) {
         }),
     ),
     unshieldToCore: vi.fn(async (_w: string, c: string, to: string | null, grant: string, _confirm: boolean) => (calls.push(`out ${c} ${to} ${grant}`), SPEND)),
+    unshieldToPlatform: vi.fn(async (_w: string, c: string, to: string | null, grant: string, confirm: boolean) => (calls.push(`toPlatform ${c} ${to} ${grant} ${confirm}`), SPEND)),
+    platformAddressesSync: vi.fn(async (_w: string) => (calls.push("platformSync"), { credits: "0", movableCredits: "0", duffs: 0, addresses: [], syncedAt: null, syncing: false })),
   };
   const flow = new ShieldedFlow(api, WALLET_A);
   return { flow, api, vault, calls, answer: (o: ShieldedSpendOutcome) => answer!(o) };
@@ -79,6 +81,51 @@ describe("the shielded flow", () => {
     flow.next({ kind: "out", credits: "10000000000" });
     await flow.run(GRANT);
     expect(calls.at(-1)).toBe("out 10000000000 null grant-2");
+  });
+
+  it("moves to the wallet's own Platform receive address (null), passing the user's confirmation", async () => {
+    const { flow, calls } = setup();
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT);
+    expect(calls).toEqual(["toPlatform 10000000000 null grant-1 false", "platformSync"]);
+    expect([flow.step, flow.result]).toEqual(["done", { kind: "spend", outcome: SPEND }]);
+    flow.close();
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT, true);
+    expect(calls.slice(-2)).toEqual(["toPlatform 10000000000 null grant-2 true", "platformSync"]);
+  });
+
+  it("reads the Platform addresses once a move to Platform is done, so Home's total follows it", async () => {
+    const { flow, api, calls } = setup();
+    const settled = vi.fn();
+    const stop = onShieldedSettled(settled);
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT);
+    await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(2));
+    expect(api.platformAddressesSync).toHaveBeenCalledWith(WALLET_A);
+    // A pending move, or a move out to the Dash wallet, reads nothing more.
+    api.unshieldToPlatform.mockResolvedValueOnce({ ...SPEND, state: "pending" });
+    flow.close();
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT);
+    flow.close();
+    flow.begin("out");
+    flow.next({ kind: "out", credits: "10000000000" });
+    await flow.run(GRANT);
+    expect(calls.filter((c) => c === "platformSync")).toHaveLength(1);
+    // A failed read leaves the done move as it was.
+    api.platformAddressesSync.mockRejectedValueOnce(appError("platform.unavailable", null as never));
+    flow.close();
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT);
+    await Promise.resolve();
+    expect([flow.step, flow.result]).toEqual(["done", { kind: "spend", outcome: SPEND }]);
+    stop();
   });
 
   it("finishes a lock that was not applied with one duff of grant and no confirm step", async () => {
@@ -195,6 +242,18 @@ describe("shielded refusal copy", () => {
     expect(shieldedErrorText(unknown, credits, duffs, "add")).toBe(SHIELDED_COPY.fundingUnknown);
     expect(SHIELDED_COPY.fundingUnknown).toContain("Open Tools ▸ Repair");
     for (const kind of ["send", "out"] as const) expect(shieldedErrorText(unknown, credits, duffs, kind)).toBe("It may have been sent. Check Activity before trying again.");
+  });
+
+  it("never invites a second move after an unshield to Platform that may be out", async () => {
+    const { flow, api } = setup();
+    api.unshieldToPlatform.mockRejectedValueOnce(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "shielded unshield" }));
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT);
+    expect([flow.step, shieldedCanChange(flow.error)]).toEqual(["refused", false]);
+    const words = shieldedErrorText(flow.error, credits, duffs, flow.kind);
+    expect(words).toBe("This move may still go through. Until Dash Wallet knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.");
+    expect(words).not.toMatch(/try(ing)? again/i);
   });
 
   it("DEC1058_syncingNeverReadsAsPlatformDown", () => {

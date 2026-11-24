@@ -220,6 +220,17 @@ pub fn sent_marks(session: &NetworkSession, wallet: crate::WalletId) -> Vec<Stri
         .collect()
 }
 
+/// Tracks `pro_tx_hash` with no masternode list, as the engine's own
+/// tracking tests do, so another crate can attach keys to it.
+pub fn track_unlisted(session: &NetworkSession, pro_tx_hash: [u8; 32]) {
+    let service = (session.manager())
+        .expect("a live session")
+        .tracked_masternodes_service();
+    service
+        .track_blocking(pro_tx_hash, None)
+        .expect("track the masternode");
+}
+
 /// Ends every wallet's unfinished replay as SPV would with nothing new to
 /// find: its checkpoint back at the replay's target, stored, and the record
 /// settled. For a data root opened offline, which has no blocks to replay.

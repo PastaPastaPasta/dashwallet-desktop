@@ -3,7 +3,7 @@
 // (EP 2); Discard releases the coins of a row nothing of which may be out. A conflicted row shows
 // once as a notice, with no action. Shared sessions join this group in S5.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { lockGeneration, refusedWhileLocked, walletGateClosed } from "../../api/lockGate";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
@@ -16,41 +16,78 @@ import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { mnErrorText } from "../../masternodes/model";
 import { actsOn, conflicted, inProgress, opRow, opTitle, proTxSends, resendCap, resendConfirmText, type OpAction } from "../../masternodes/operations";
-import { useMasternodesRefresh } from "../../masternodes/queries";
+import { useMasternodesRefresh, usePendingAwareText } from "../../masternodes/queries";
 import { MoreMenu, StatusChip } from "./common";
 import { CredentialField, useCredential } from "./credential";
 
 const I = "masternodes.inProgress";
 
-export function InProgressGroup({
-  ops,
-  wallet,
-  network,
-  onContinue,
-}: {
-  ops: readonly ProTxOperation[];
-  wallet: WalletSummary;
-  network: NetworkInfo;
-  /** Reopens the wizard at Prove for a saved External registration. */
-  onContinue: (op: ProTxOperation) => void;
-}) {
-  const t = useT();
+/** The group's open confirmation and a row's refusal. Held by the page, not the group, so a list
+ * read that changes the page's layout neither closes an open sheet nor drops its refusal. */
+export interface InProgressActions {
+  act: (o: ProTxOperation, a: OpAction) => void;
+  error: { id: string; text: string } | null;
+  /** Send again or Discard, when open: rendered by the page outside the list's layouts. */
+  sheets: ReactNode;
+}
+
+export function useInProgressActions(wallet: WalletSummary, network: NetworkInfo, onContinue: (op: ProTxOperation) => void): InProgressActions {
   const refresh = useMasternodesRefresh();
   const b = useBackend();
   const [resending, setResending] = useState<ProTxOperation | null>(null);
   const [discarding, setDiscarding] = useState<ProTxOperation | null>(null);
   const [error, setError] = useState<{ id: string; text: string } | null>(null);
-  const sends = proTxSends(network);
-  const rows = inProgress(ops);
-  const replaced = conflicted(ops);
-  if (rows.length === 0 && replaced.length === 0) return null;
-
   const act = (o: ProTxOperation, a: OpAction) => {
     setError(null);
     if (a === "continue" || a === "refresh") onContinue(o);
     else if (a === "resend") setResending(o);
     else setDiscarding(o);
   };
+  const sheets = (
+    <>
+      {resending && <ResendSheet op={resending} wallet={wallet} network={network} onClose={() => setResending(null)} returnFocus={rowAction(resending.id, "resend")} />}
+      {discarding && (
+        <DiscardSheet
+          op={discarding}
+          onClose={() => setDiscarding(null)}
+          returnFocus={rowAction(discarding.id, "discard")}
+          onConfirm={async () => {
+            const o = discarding;
+            try {
+              await b.mnDiscardOperation(wallet.walletId, o.id);
+              setDiscarding(null);
+              void refresh();
+            } catch (e) {
+              setDiscarding(null);
+              setError({ id: o.id, text: mnErrorText(e) });
+              void refresh();
+            }
+          }}
+        />
+      )}
+    </>
+  );
+  return { act, error, sheets };
+}
+
+export function InProgressGroup({
+  ops,
+  wallet,
+  network,
+  actions,
+}: {
+  ops: readonly ProTxOperation[];
+  wallet: WalletSummary;
+  network: NetworkInfo;
+  actions: InProgressActions;
+}) {
+  const t = useT();
+  const { act, error } = actions;
+  const sends = proTxSends(network);
+  const rows = inProgress(ops);
+  const replaced = conflicted(ops);
+  if (rows.length === 0 && replaced.length === 0) return null;
+
   const label = (a: OpAction) => t(`${I}.${a === "continue" ? "continue" : a === "refresh" ? "newMessage" : a === "resend" ? "sendAgain" : "discard"}`);
 
   return (
@@ -107,34 +144,31 @@ export function InProgressGroup({
           );
         })}
       </ul>
-      {resending && <ResendSheet op={resending} wallet={wallet} network={network} onClose={() => setResending(null)} />}
-      {discarding && (
-        <DiscardSheet
-          op={discarding}
-          onClose={() => setDiscarding(null)}
-          onConfirm={async () => {
-            const o = discarding;
-            try {
-              await b.mnDiscardOperation(wallet.walletId, o.id);
-              setDiscarding(null);
-              void refresh();
-            } catch (e) {
-              setDiscarding(null);
-              setError({ id: o.id, text: mnErrorText(e) });
-              void refresh();
-            }
-          }}
-        />
-      )}
     </section>
   );
 }
 
-function DiscardSheet({ op, onClose, onConfirm }: { op: ProTxOperation; onClose: () => void; onConfirm: () => Promise<void> }) {
+type ReturnFocus = () => HTMLElement | null;
+
+// A list read can replace the row, so the opener may be gone when the sheet closes.
+const rowAction = (id: string, action: OpAction): ReturnFocus => () =>
+  document.querySelector<HTMLElement>(`[data-testid="mn-op-${action}-${id}"]`) ?? document.querySelector<HTMLElement>(`[data-testid="mn-op-more-${id}"]`);
+
+function DiscardSheet({
+  op,
+  onClose,
+  onConfirm,
+  returnFocus,
+}: {
+  op: ProTxOperation;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+  returnFocus: ReturnFocus;
+}) {
   const t = useT();
   const [busy, setBusy] = useState(false);
   return (
-    <Sheet title={t(`${I}.discardTitle`)} width="small" testId="mn-op-discard-sheet" closable={!busy} onClose={onClose}>
+    <Sheet title={t(`${I}.discardTitle`)} width="small" testId="mn-op-discard-sheet" closable={!busy} onClose={onClose} returnFocus={returnFocus}>
       <div className="mg-sheet-body">
         <p>{t(`${I}.discardText.${op.kind}`)}</p>
         <footer className="mg-sheet-footer">
@@ -162,11 +196,24 @@ function DiscardSheet({ op, onClose, onConfirm }: { op: ProTxOperation; onClose:
   );
 }
 
-function ResendSheet({ op, wallet, network, onClose }: { op: ProTxOperation; wallet: WalletSummary; network: NetworkInfo; onClose: () => void }) {
+function ResendSheet({
+  op,
+  wallet,
+  network,
+  onClose,
+  returnFocus,
+}: {
+  op: ProTxOperation;
+  wallet: WalletSummary;
+  network: NetworkInfo;
+  onClose: () => void;
+  returnFocus: ReturnFocus;
+}) {
   const t = useT();
   const b = useBackend();
   const shown = useDisplay(network);
   const refresh = useMasternodesRefresh();
+  const refusal = usePendingAwareText(wallet.walletId, mnErrorText);
   const credential = useCredential(wallet.walletId, t(`${I}.ask`), resendCap(op));
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
@@ -180,9 +227,11 @@ function ResendSheet({ op, wallet, network, onClose }: { op: ProTxOperation; wal
     if (busy || !credential.ready || !actsOn(op, proTxSends(network))) return;
     const gen = lockGeneration();
     setBusy(true);
+    let granted: string | null = null;
     try {
       const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: resendCap(op) });
       if (!grant) return;
+      granted = grant.id;
       if (!mounted.current || walletGateClosed() || lockGeneration() !== gen) {
         void b.revokeGrant(grant.id).catch(() => null);
         return;
@@ -191,15 +240,17 @@ function ResendSheet({ op, wallet, network, onClose }: { op: ProTxOperation; wal
       void refresh();
       if (mounted.current) onClose();
     } catch (e) {
+      if (granted) void b.revokeGrant(granted).catch(() => null);
       if (refusedWhileLocked(e) || !mounted.current) return;
-      credential.setError(mnErrorText(e));
+      const text = await refusal(e);
+      if (mounted.current) credential.setError(text);
       void refresh();
     } finally {
       if (mounted.current) setBusy(false);
     }
   };
   return (
-    <Sheet title={t(`${I}.resendTitle`)} width="small" testId="mn-op-resend-sheet" closable={!busy} onClose={onClose}>
+    <Sheet title={t(`${I}.resendTitle`)} width="small" testId="mn-op-resend-sheet" closable={!busy} onClose={onClose} returnFocus={returnFocus}>
       <form
         className="mg-sheet-body"
         onSubmit={(e) => {

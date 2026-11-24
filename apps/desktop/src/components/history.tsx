@@ -76,12 +76,12 @@ export interface RowDecor {
   leading?: ReactNode;
   /** The row's source, as a tag beside the time (Platform rows among the Core ones). */
   tag?: string;
-  /** The row opens nothing: it is not a button. */
-  readOnly?: boolean;
   /** Replaces the status chip with a neutral note (not a problem). */
   note?: string;
   /** The row shows no amount (it has none to show). */
   hideAmount?: boolean;
+  /** Who the row is with, shown under its title (a contact paid from a balance). */
+  party?: string;
 }
 
 function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext; onOpen: (row: TxRow) => void; decorate?: (row: TxRow) => RowDecor }) {
@@ -93,7 +93,7 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
   const shown = shownAmount(row.amount, row.txType);
   const amount = ctx.display.compact(shown.duffs, shown.signed);
   const letters = contactLetters(row.counterparty);
-  const aside = contactAside(row, title);
+  const aside = decor?.party ? null : contactAside(row, title);
   const leading =
     decor?.leading ??
     (letters !== null ? <Avatar letters={letters} identity={row.counterparty?.identity} /> : <Icon id={TX_ICON[txIcon(row.txType, row.status, row.amount)]} size={30} className="tx-row-icon" />);
@@ -104,6 +104,7 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
         <span className={`tx-row-title ${isProblem(row.status) ? "is-problem" : ""}`}>{title}</span>
         {aside && <VisuallyHidden>{aside}</VisuallyHidden>}
         <span className="tx-row-subtitle">
+          {decor?.party && <span className="tx-row-party">{decor.party}</span>}
           {date && <span className="tx-row-time">{timeOfDay(date, ctx.locale)}</span>}
           {decor?.tag && <Chip tone="info">{decor.tag}</Chip>}
           {chip && <Chip tone={isProblem(row.status) ? "danger" : "info"}>{chip}</Chip>}
@@ -118,15 +119,9 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
   );
   return (
     <li className="tx-row-item">
-      {decor?.readOnly ? (
-        <div className="tx-row is-readonly" data-testid={rowTestId(row)} data-txid={row.txid}>
-          {body}
-        </div>
-      ) : (
-        <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>
-          {body}
-        </button>
-      )}
+      <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>
+        {body}
+      </button>
     </li>
   );
 }

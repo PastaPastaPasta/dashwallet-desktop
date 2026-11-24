@@ -177,6 +177,8 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.shielded_send",
     "DashPay.unshield_quote",
     "DashPay.unshield_to_core",
+    "DashPay.unshield_to_platform_quote",
+    "DashPay.unshield_to_platform",
     "DashPay.shielded_history",
     // 0.2 RECOVERY: unfinished transfers.
     "DashPay.unfinished_transfers",
@@ -1685,6 +1687,8 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.shielded_send(s(), 1, None, s(), false).await.map(drop),
             dp.unshield_quote(1, None).await.map(drop),
             dp.unshield_to_core(1, None, s(), false).await.map(drop),
+            dp.unshield_to_platform_quote(1, None).await.map(drop),
+            dp.unshield_to_platform(1, None, s(), false).await.map(drop),
             dp.shielded_history(0, 10).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");

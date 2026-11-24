@@ -89,6 +89,7 @@ import type { IdentityRefresh } from "./IdentityRefresh";
 import type { IdentitySummary } from "./IdentitySummary";
 import type { ImportOptions } from "./ImportOptions";
 import type { InvitationStatus } from "./InvitationStatus";
+import type { JoinSharedRequest } from "./JoinSharedRequest";
 import type { JsonValue } from "./serde_json/JsonValue";
 import type { KeyCheckName } from "./KeyCheckName";
 import type { KeyMaterialInput } from "./KeyMaterialInput";
@@ -182,6 +183,11 @@ import type { RevealedMnemonic } from "./RevealedMnemonic";
 import type { ScannedContactInfo } from "./ScannedContactInfo";
 import type { ScreenScanMode } from "./ScreenScanMode";
 import type { SessionSettings } from "./SessionSettings";
+import type { SharedCapability } from "./SharedCapability";
+import type { SharedImport } from "./SharedImport";
+import type { SharedMessage } from "./SharedMessage";
+import type { SharedOutcome } from "./SharedOutcome";
+import type { SharedSession } from "./SharedSession";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
 import type { ShieldOutcome } from "./ShieldOutcome";
@@ -192,6 +198,7 @@ import type { ShieldedSpendOutcome } from "./ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
 import type { ShieldedStatus } from "./ShieldedStatus";
 import type { SpvStateName } from "./SpvStateName";
+import type { StartSharedRequest } from "./StartSharedRequest";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
 import type { StuckShieldFunding } from "./StuckShieldFunding";
 import type { StuckTopUpFunding } from "./StuckTopUpFunding";
@@ -211,6 +218,8 @@ import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
+import type { UnreadableSession } from "./UnreadableSession";
+import type { UnshieldToPlatformOutcome } from "./UnshieldToPlatformOutcome";
 import type { UntrackOutcome } from "./UntrackOutcome";
 import type { UpdateRegistrarPreview } from "./UpdateRegistrarPreview";
 import type { UpdateRegistrarRequest } from "./UpdateRegistrarRequest";
@@ -226,6 +235,7 @@ import type { VoteCast } from "./VoteCast";
 import type { VoteOutcomeName } from "./VoteOutcomeName";
 import type { VotingMasternode } from "./VotingMasternode";
 import type { WalletFileInfo } from "./WalletFileInfo";
+import type { WalletHistoryGap } from "./WalletHistoryGap";
 import type { WalletLoadStatus } from "./WalletLoadStatus";
 import type { WalletSummary } from "./WalletSummary";
 import type { WatchOnlyOptions } from "./WatchOnlyOptions";
@@ -246,6 +256,9 @@ export const SHELL_EVENT = "shell://event";
 
 /** Txids per `historyChanged` or `newTransactions` event. */
 export const MAX_TXIDS = 256;
+
+/** What `mnSharedAbandon` and `mnSharedAbandonUnreadable` charge, in duffs: a `masternodeOp` grant's exact cap. */
+export const SHARED_ABANDON_FEE = 193;
 
 /**
  * How the app was launched: the self-test, the forced theme, and the
@@ -909,6 +922,14 @@ export function warnings(): Promise<Array<NodeWarning>> {
 }
 
 /**
+ * The open wallets whose history starts before this install's block
+ * data, for the notice on Home; `null` when there are none.
+ */
+export function historyGap(): Promise<WalletHistoryGap | null> {
+  return invoke<WalletHistoryGap | null>("history_gap");
+}
+
+/**
  * "Rebuild index": deletes the SPV chain data and keeps wallets, vault
  * and app data. SPV must be stopped; the next `startSpv` syncs headers
  * again and rescans each wallet from its birth height.
@@ -1034,6 +1055,9 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
  * refused (`settledDescendant`) when a later transaction spending from
  * it is InstantSend-locked, in a block or finalized, unless a ChainLocked
  * spend of one of its inputs beat it and those are only locked (#446).
+ * One not under the ChainLock exception is refused (`recordUnreadable`)
+ * while a saved transaction of any loaded wallet didn't read at its
+ * load (#611).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1055,7 +1079,8 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
  * rescans once, from the lowest funding height of them all. One the
  * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
  * or that a settled later transaction holds (`settledDescendant`), is
- * skipped.
+ * skipped. One refused as `recordUnreadable` is kept too, and the call
+ * then fails with that refusal.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
@@ -2238,6 +2263,22 @@ export function unshieldToCore(walletId: string, credits: string, to: string | n
 }
 
 /**
+ * What moving `credits` from Shielded to the wallet's own Platform
+ * address `to` costs (`null` for its receive address).
+ */
+export function unshieldToPlatformQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote> {
+  return invoke<ShieldedSpendQuote>("unshield_to_platform_quote", { walletId, credits, to });
+}
+
+/**
+ * Shielded → Platform: unshields `credits` to the wallet's own Platform
+ * address `to` under `grant`.
+ */
+export function unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<UnshieldToPlatformOutcome> {
+  return invoke<UnshieldToPlatformOutcome>("unshield_to_platform", { walletId, credits, to, grant, confirmUnrecorded });
+}
+
+/**
  * The wallet's shielded history for Activity, pending first, then
  * newest first (`limit` at most 500).
  */
@@ -3036,6 +3077,152 @@ export function mnLockCollateral(walletId: string, proTxHash: string): Promise<n
 }
 
 /**
+ * What the wallet can do with shared masternodes: v24 as far as it can
+ * tell, shared evonodes (always off), and whether sending is on.
+ */
+export function mnSharedCapability(walletId: string): Promise<SharedCapability> {
+  return invoke<SharedCapability>("mn_shared_capability", { walletId });
+}
+
+/**
+ * Every shared-masternode session of the wallet, newest first.
+ */
+export function mnSharedSessions(walletId: string): Promise<Array<SharedSession>> {
+  return invoke<Array<SharedSession>>("mn_shared_sessions", { walletId });
+}
+
+/**
+ * Sessions whose stored record no longer reads, newest first: each can
+ * be discarded while nothing of it may be out.
+ */
+export function mnSharedUnreadable(walletId: string): Promise<Array<UnreadableSession>> {
+  return invoke<Array<UnreadableSession>>("mn_shared_unreadable", { walletId });
+}
+
+/**
+ * One session, its stage derived now.
+ */
+export function mnSharedSession(walletId: string, session: string): Promise<SharedSession> {
+  return invoke<SharedSession>("mn_shared_session", { walletId, session });
+}
+
+/**
+ * Starts a session as its coordinator: reserves the coordinator's share
+ * and the fee, signs nothing, and returns the Invitation.
+ */
+export function mnSharedStart(walletId: string, request: StartSharedRequest): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_start", { walletId, request });
+}
+
+/**
+ * Changes a draft's network fee before anyone replied.
+ */
+export function mnSharedSetFee(walletId: string, session: string, fee: number): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_set_fee", { walletId, session, fee });
+}
+
+/**
+ * Joins an imported Invitation: reserves exactly the share, signs
+ * nothing, and returns the reply.
+ */
+export function mnSharedJoin(walletId: string, session: string, request: JoinSharedRequest): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_join", { walletId, session, request });
+}
+
+/**
+ * The message to copy or save now.
+ */
+export function mnSharedMessage(walletId: string, session: string): Promise<SharedMessage> {
+  return invoke<SharedMessage>("mn_shared_message", { walletId, session });
+}
+
+/**
+ * Locks the terms at the `revision` the coordinator reviewed and signs
+ * its consent. Takes a `masternodeOp` grant of 0.
+ */
+export function mnSharedLock(walletId: string, session: string, revision: number, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_lock", { walletId, session, revision, grant });
+}
+
+/**
+ * Unlocks the terms; every approval is dropped.
+ */
+export function mnSharedUnlock(walletId: string, session: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_unlock", { walletId, session });
+}
+
+/**
+ * Approves the locked terms of `consent_hash`, the one the participant
+ * reviewed. Takes a `masternodeOp` grant of 0.
+ */
+export function mnSharedApprove(walletId: string, session: string, consentHash: string, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_approve", { walletId, session, consentHash, grant });
+}
+
+/**
+ * Spends one reserved coin of a session that may be out back to the
+ * wallet, so it can't confirm (`SharedSession.abandonable`). Takes a
+ * `masternodeOp` grant covering `SHARED_ABANDON_FEE`. Every network.
+ */
+export function mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
+  return invoke<SharedSession>("mn_shared_abandon", { walletId, session, grant });
+}
+
+/**
+ * The same for a session whose stored record no longer reads
+ * (`UnreadableSession.abandonable`).
+ */
+export function mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession> {
+  return invoke<UnreadableSession>("mn_shared_abandon_unreadable", { walletId, session, grant });
+}
+
+/**
+ * A participant at `combined` signs its funding inputs into the
+ * registration, charged its `debit`. Takes a `masternodeOp` grant of at
+ * least that `debit`. Refused on mainnet before the engine is called
+ * (`app.shared_send_off`).
+ */
+export function mnSharedSign(walletId: string, session: string, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_sign", { walletId, session, grant });
+}
+
+/**
+ * The coordinator signs its own inputs last and sends the registration
+ * at `combined`, or sends the saved registration again at `sent`,
+ * charged its `debit`. Takes a `masternodeOp` grant of at least that
+ * `debit`. Refused on mainnet before the engine is called
+ * (`app.shared_send_off`).
+ */
+export function mnSharedSend(walletId: string, session: string, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_send", { walletId, session, grant });
+}
+
+/**
+ * Deletes a session nothing of which may be out and releases its coins
+ * (`SharedSession.discardable`).
+ */
+export function mnSharedDiscard(walletId: string, session: string): Promise<null> {
+  return invoke<null>("mn_shared_discard", { walletId, session });
+}
+
+/**
+ * Reads a pasted message, or one standby transaction line. A refusal
+ * names its reason, never the text.
+ */
+export function mnSharedImport(walletId: string, text: string, target: string | null): Promise<SharedImport> {
+  return invoke<SharedImport>("mn_shared_import", { walletId, text, target });
+}
+
+/**
+ * Shows the open dialog and imports the chosen file: a message whole,
+ * or each transaction of a standby file once. `null` when the user
+ * cancelled. The file's text never reaches the renderer.
+ */
+export function mnSharedImportFile(walletId: string, target: string | null): Promise<Array<SharedImport> | null> {
+  return invoke<Array<SharedImport> | null>("mn_shared_import_file", { walletId, target });
+}
+
+/**
  * The settings and the chosen currency's price and state now.
  */
 export function ratesStatus(): Promise<RatesView> {
@@ -3261,6 +3448,7 @@ export type CommandArgs = {
   cancel_rescan: {  };
   node_info: {  };
   warnings: {  };
+  history_gap: {  };
   reset_chain_data: {  };
   set_birth_height: { walletId: string; height: number };
   start_spv: {  };
@@ -3424,6 +3612,8 @@ export type CommandArgs = {
   shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean };
   unshield_quote: { walletId: string; credits: string; to: string | null };
   unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
+  unshield_to_platform_quote: { walletId: string; credits: string; to: string | null };
+  unshield_to_platform: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
   shielded_history: { walletId: string; offset: number; limit: number };
   unfinished_transfers: { walletId: string };
   finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };
@@ -3521,6 +3711,24 @@ export type CommandArgs = {
   mn_submit_external_registration: { walletId: string; operation: string; signature: string; grant: string };
   mn_release_collateral: { walletId: string; proTxHash: string };
   mn_lock_collateral: { walletId: string; proTxHash: string };
+  mn_shared_capability: { walletId: string };
+  mn_shared_sessions: { walletId: string };
+  mn_shared_unreadable: { walletId: string };
+  mn_shared_session: { walletId: string; session: string };
+  mn_shared_start: { walletId: string; request: StartSharedRequest };
+  mn_shared_set_fee: { walletId: string; session: string; fee: number };
+  mn_shared_join: { walletId: string; session: string; request: JoinSharedRequest };
+  mn_shared_message: { walletId: string; session: string };
+  mn_shared_lock: { walletId: string; session: string; revision: number; grant: string };
+  mn_shared_unlock: { walletId: string; session: string };
+  mn_shared_approve: { walletId: string; session: string; consentHash: string; grant: string };
+  mn_shared_abandon: { walletId: string; session: string; grant: string };
+  mn_shared_abandon_unreadable: { walletId: string; session: string; grant: string };
+  mn_shared_sign: { walletId: string; session: string; grant: string };
+  mn_shared_send: { walletId: string; session: string; grant: string };
+  mn_shared_discard: { walletId: string; session: string };
+  mn_shared_import: { walletId: string; text: string; target: string | null };
+  mn_shared_import_file: { walletId: string; target: string | null };
   rates_status: {  };
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
@@ -3618,6 +3826,7 @@ export type CommandResults = {
   cancel_rescan: boolean;
   node_info: NodeSummary;
   warnings: Array<NodeWarning>;
+  history_gap: WalletHistoryGap | null;
   reset_chain_data: null;
   set_birth_height: null;
   start_spv: null;
@@ -3781,6 +3990,8 @@ export type CommandResults = {
   shielded_send: ShieldedSpendOutcome;
   unshield_quote: ShieldedSpendQuote;
   unshield_to_core: ShieldedSpendOutcome;
+  unshield_to_platform_quote: ShieldedSpendQuote;
+  unshield_to_platform: UnshieldToPlatformOutcome;
   shielded_history: Array<ShieldedActivity>;
   unfinished_transfers: UnfinishedTransfers;
   finish_transfer: LockFinish;
@@ -3878,6 +4089,24 @@ export type CommandResults = {
   mn_submit_external_registration: ProTxOperation;
   mn_release_collateral: null;
   mn_lock_collateral: null;
+  mn_shared_capability: SharedCapability;
+  mn_shared_sessions: Array<SharedSession>;
+  mn_shared_unreadable: Array<UnreadableSession>;
+  mn_shared_session: SharedSession;
+  mn_shared_start: SharedOutcome;
+  mn_shared_set_fee: SharedOutcome;
+  mn_shared_join: SharedOutcome;
+  mn_shared_message: SharedMessage;
+  mn_shared_lock: SharedOutcome;
+  mn_shared_unlock: SharedOutcome;
+  mn_shared_approve: SharedOutcome;
+  mn_shared_abandon: SharedSession;
+  mn_shared_abandon_unreadable: UnreadableSession;
+  mn_shared_sign: SharedOutcome;
+  mn_shared_send: SharedOutcome;
+  mn_shared_discard: null;
+  mn_shared_import: SharedImport;
+  mn_shared_import_file: Array<SharedImport> | null;
   rates_status: RatesView;
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
@@ -3977,6 +4206,7 @@ export const COMMANDS: Record<CommandName, string> = {
   cancel_rescan: "chain",
   node_info: "chain",
   warnings: "chain",
+  history_gap: "chain",
   reset_chain_data: "chain",
   set_birth_height: "chain",
   start_spv: "chain",
@@ -4140,6 +4370,8 @@ export const COMMANDS: Record<CommandName, string> = {
   shielded_send: "identity",
   unshield_quote: "identity",
   unshield_to_core: "identity",
+  unshield_to_platform_quote: "identity",
+  unshield_to_platform: "identity",
   shielded_history: "identity",
   unfinished_transfers: "identity",
   finish_transfer: "identity",
@@ -4237,6 +4469,24 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_submit_external_registration: "masternodes",
   mn_release_collateral: "masternodes",
   mn_lock_collateral: "masternodes",
+  mn_shared_capability: "masternodes",
+  mn_shared_sessions: "masternodes",
+  mn_shared_unreadable: "masternodes",
+  mn_shared_session: "masternodes",
+  mn_shared_start: "masternodes",
+  mn_shared_set_fee: "masternodes",
+  mn_shared_join: "masternodes",
+  mn_shared_message: "masternodes",
+  mn_shared_lock: "masternodes",
+  mn_shared_unlock: "masternodes",
+  mn_shared_approve: "masternodes",
+  mn_shared_abandon: "masternodes",
+  mn_shared_abandon_unreadable: "masternodes",
+  mn_shared_sign: "masternodes",
+  mn_shared_send: "masternodes",
+  mn_shared_discard: "masternodes",
+  mn_shared_import: "masternodes",
+  mn_shared_import_file: "masternodes",
   rates_status: "rates",
   rates_currencies: "rates",
   set_rates_settings: "rates",
@@ -4287,6 +4537,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.update_install",
   "app.update_state",
   "app.update_busy",
+  "app.shared_send_off",
+  "app.shared_send_unsupported",
   "invalid_config",
   "invalid_argument",
   "network_not_open",
@@ -4544,6 +4796,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "masternodes.already_tracked",
   "masternodes.not_tracked",
   "masternodes.key_mismatch",
+  "masternodes.key_exists",
   "masternodes.not_evonode",
   "masternodes.no_identity",
   "masternodes.platform_unavailable",

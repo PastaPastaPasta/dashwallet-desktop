@@ -264,6 +264,8 @@ export const pay = {
       notContacts: "You can pay this user once you are contacts.",
       enableThenAccept: "Enable DashPay first. Then you can accept and pay.",
       paymentLock: "A payment to this contact may have been sent. Check it again before you pay again.",
+      paymentLockPlatform: "A payment to this contact from your Platform balance may have been sent.",
+      paymentLockShielded: "A payment to this contact from your Shielded balance may have been sent.",
       mixingOnly: "The wallet is unlocked for mixing only. Unlock it fully to pay.",
       request: "This user sent you a contact request. Accept and pay accepts it and pays in one step.",
     },
@@ -307,6 +309,26 @@ export const pay = {
     pay: "Pay {name}",
     acceptAndPay: "Accept and pay",
     unverified: "Unverified",
+    /** The "From" step (C-funding D-C5, P16): Dash wallet each time, never remembered. */
+    from: {
+      title: "From",
+      core: "Dash wallet",
+      shielded: "Shielded balance",
+      platform: "Platform balance",
+      notOffered: "Not available on this network yet.",
+      empty: "No balance to pay with.",
+      acceptsToo: "Accept and pay can only use your Dash wallet balance.",
+      /** `name` the payee, `amount` and `received` with their unit, `source` a row's label. */
+      confirm: "Pay {name} {amount} from your {source}. They receive about {received}. Network fee {fee}.",
+      /** `total` the amount and the network fee, with its unit. */
+      total: "About {total} leaves your {source}: {amount} to {contact} and about {fee} in Platform fees.",
+      sent: "Payment sent. It arrives in {name}’s wallet once the Dash network processes it. This can take a while.",
+      unknown: "We could not confirm this payment. It may still go through. Do not pay again until this is settled.",
+      notSent: "The payment was not sent. You can pay this contact again.",
+      belowMinimum: "The smallest payment from here is {min}. Pay a smaller amount from your Dash wallet.",
+      movePending: "Another Platform transfer is still being confirmed. Try again when it is done.",
+      shieldedPending: "An earlier shielded payment is still being checked. Try again when it is settled.",
+    },
   },
   platform: {
     title: "Pay from Platform",

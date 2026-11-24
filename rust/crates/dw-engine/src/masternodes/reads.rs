@@ -653,7 +653,9 @@ async fn attached_roles(
     .await?;
     match roles {
         Ok(roles) => Ok(Some(roles)),
-        Err(dw_vault::VaultError::Locked) => Ok(None),
+        // Unlocked for mixing only, the record ids are out of reach as when
+        // locked: the rows still list, without their attached keys.
+        Err(dw_vault::VaultError::Locked | dw_vault::VaultError::MixingOnly) => Ok(None),
         Err(e) => Err(EngineError::from(e).into()),
     }
 }
