@@ -1449,10 +1449,6 @@ input[type="radio"]:disabled {
   background: var(--dw-role-accent-tint);
 }
 
-.tx-row.is-readonly:hover {
-  background: transparent;
-}
-
 .tx-row-icon {
   width: var(--dw-layout-row-icon-size);
   height: var(--dw-layout-row-icon-size);
