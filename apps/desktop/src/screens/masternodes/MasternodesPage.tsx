@@ -79,6 +79,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   const [showEnded, setShowEnded] = useState(false);
   const [filter, setFilter] = useState<ListFilter>("all");
   const [sheet, setSheet] = useState<"create" | "numbers" | null>(null);
+  const [tracking, setTracking] = useState(false);
   /** The registration wizard: new, or reopened at Prove on a saved External registration. */
   const [register, setRegister] = useState<{ resume?: ProTxOperation } | null>(null);
   /** The proposal the vote sheet is open on, as it was when Vote was pressed. */
@@ -166,7 +167,13 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           <h1 className="top-intro-title">{GovText.title}</h1>
           {tab === "myMasternodes" && (
             <span className="mg-header-actions" data-testid="mn-actions">
-              <MoreMenu testId="mn-page-more" items={[{ id: "keys", title: t("masternodes.keys.open"), onSelect: () => ui.set({ dialog: "mnKeys", mnKeysRole: null }) }]} />
+              <MoreMenu
+                testId="mn-page-more"
+                items={[
+                  { id: "track", title: t("masternodes.myMasternodes.track.menu"), onSelect: () => setTracking(true) },
+                  { id: "keys", title: t("masternodes.keys.open"), onSelect: () => ui.set({ dialog: "mnKeys", mnKeysRole: null }) },
+                ]}
+              />
               <DashButton
                 variant="filledBlue"
                 size="small"
@@ -210,15 +217,15 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           )}
         </header>
         <Tabs label={GovText.title} tabs={tabs} current={tab} onSelect={setTab} testId="masternodes-tabs">
-          {!mnList.isError && mnList.data?.synced && mnList.data.height !== null && (
-            <p className="mg-muted mg-small" data-testid="mn-list-height">
-              {MnText.listHeight(mnList.data.height)}
-            </p>
-          )}
+          <p className="mg-muted mg-small mg-list-height" data-testid="mn-list-slot">
+            {!mnList.isError && mnList.data?.synced && mnList.data.height !== null && <span data-testid="mn-list-height">{MnText.listHeight(mnList.data.height)}</span>}
+          </p>
           {tab === "myMasternodes" ? (
             <MyMasternodes
               wallet={wallet}
               network={network}
+              tracking={tracking}
+              onTrackClose={() => setTracking(false)}
               onVote={() => {
                 setFilter("needsVote");
                 setTab("governance");

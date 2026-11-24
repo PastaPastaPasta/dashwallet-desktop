@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
-import { filterExtra, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
+import { filterExtra, findSourceRecord, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
 
 const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity => ({
   id,
@@ -58,6 +58,16 @@ describe("platform activity rows", () => {
     const pending = platformRow(act("g", { kind: "fromCore", state: "pending", estimated: true }));
     expect(pending.status).not.toBe(done.status);
     expect(isMayLandRow(pending)).toBe(false);
+  });
+
+  it("shows an unshield to an own Platform address as From Shielded, a receipt there", () => {
+    const done = platformRow(act("s", { kind: "fromShielded", credits: "25000000000" }));
+    expect([sourceRowTitle(done), done.category, done.txType, done.amount, done.address]).toEqual(["From Shielded", "received", "recvWithAddress", 25_000_000, "tdash1abc"]);
+    const pending = platformRow(act("t", { kind: "fromShielded", state: "pending", mayLand: true }));
+    expect(pending.status).not.toBe(done.status);
+    expect(isMayLandRow(pending)).toBe(false);
+    const failed = platformRow(act("u", { kind: "fromShielded", state: "failed" }));
+    expect([sourceRowTitle(failed), failed.status.kind]).toEqual(["From Shielded", "notAccepted"]);
   });
 
   it("maps incoming, outgoing and a move to history rows", () => {
@@ -138,6 +148,21 @@ describe("shielded activity rows", () => {
     expect(rowSource(received)).toBe("shielded");
   });
 
+  it("titles a contact payment by its source: Paid from Platform", () => {
+    const row = platformRow(act("cp", { kind: "contactPayment", state: "done", to: "yXcontact", contact: { identity: "bob", contact: "me" } as never }));
+    expect([sourceRowTitle(row), row.amount < 0]).toEqual(["Paid from Platform", true]);
+    expect(sourceRowTitle(shieldedRow(shield("sp", { kind: "spend", direction: "out" })))).toBe("Paid from Shielded");
+  });
+
+  it("keeps a contact payment that failed by height but may still land unconfirmed and outgoing, at its recipient", () => {
+    const contact = { identity: "bob", contact: "me" } as never;
+    const held = platformRow(act("cq", { kind: "contactPayment", state: "failed", mayLand: true, address: "tdash1kfrom", to: "yXcontact", credits: "1019500000", contact }));
+    expect(held).toMatchObject({ txid: "platform:contactPayment:cq:mayland", amount: -1_019_500, status: { kind: "unconfirmed" }, address: "yXcontact" });
+    expect(isMayLandRow(held)).toBe(true);
+    const gone = platformRow(act("cr", { kind: "contactPayment", state: "failed", mayLand: false, to: "yXcontact", contact }));
+    expect([gone.status.kind, isMayLandRow(gone)]).toEqual(["notAccepted", false]);
+  });
+
   it("maps the status", () => {
     expect(shieldedRow(shield("p", { status: "pending" })).status.kind).toBe("unconfirmed");
     expect(shieldedRow(shield("u", { status: "unknown" })).status.kind).toBe("unconfirmed");
@@ -178,5 +203,31 @@ describe("merging into Activity", () => {
   it("returns the Core rows as they are without extra rows", () => {
     const rows = [core("c1", 1)];
     expect(mergeActivity(rows, false, [])).toBe(rows);
+  });
+});
+
+describe("findSourceRecord", () => {
+  const platform = [act("pa-1"), act("pm-1", { kind: "moveToCore", state: "failed", mayLand: true, address: null, to: "yCore" })];
+  const shielded = [shield("sh-1"), shield("sh-2", { kind: "sent", direction: "out", memo: null })];
+
+  it("finds the record a row was made from, with that row", () => {
+    const found = findSourceRecord(shieldedRow(shielded[0]).txid, platform, shielded);
+    expect(found?.source).toBe("shielded");
+    expect(found?.record).toBe(shielded[0]);
+    expect(found?.row).toEqual(shieldedRow(shielded[0]));
+    expect(findSourceRecord("platform:incoming:pa-1", platform, shielded)?.record).toBe(platform[0]);
+  });
+
+  it("keeps a move whose state changed while its details are open", () => {
+    expect(findSourceRecord("platform:moveToCore:pm-1:mayland", platform, shielded)?.record).toBe(platform[1]);
+    const replaced = [act("pm-1", { kind: "moveToCore", state: "replaced", address: null })];
+    expect(findSourceRecord("platform:moveToCore:pm-1:mayland", replaced, shielded)?.record).toBe(replaced[0]);
+  });
+
+  it("finds nothing for a Core txid, another source, or a record the read no longer has", () => {
+    expect(findSourceRecord("ab".repeat(32), platform, shielded)).toBeNull();
+    expect(findSourceRecord("shielded:received:pa-1", platform, shielded)).toBeNull();
+    expect(findSourceRecord("shielded:received:sh-9", platform, shielded)).toBeNull();
+    expect(findSourceRecord("platform:incoming:pa-1", undefined, shielded)).toBeNull();
   });
 });

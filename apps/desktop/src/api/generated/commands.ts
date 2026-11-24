@@ -219,6 +219,7 @@ import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
 import type { UnreadableSession } from "./UnreadableSession";
+import type { UnshieldToPlatformOutcome } from "./UnshieldToPlatformOutcome";
 import type { UntrackOutcome } from "./UntrackOutcome";
 import type { UpdateRegistrarPreview } from "./UpdateRegistrarPreview";
 import type { UpdateRegistrarRequest } from "./UpdateRegistrarRequest";
@@ -234,6 +235,7 @@ import type { VoteCast } from "./VoteCast";
 import type { VoteOutcomeName } from "./VoteOutcomeName";
 import type { VotingMasternode } from "./VotingMasternode";
 import type { WalletFileInfo } from "./WalletFileInfo";
+import type { WalletHistoryGap } from "./WalletHistoryGap";
 import type { WalletLoadStatus } from "./WalletLoadStatus";
 import type { WalletSummary } from "./WalletSummary";
 import type { WatchOnlyOptions } from "./WatchOnlyOptions";
@@ -917,6 +919,14 @@ export function warnings(): Promise<Array<NodeWarning>> {
 }
 
 /**
+ * The open wallets whose history starts before this install's block
+ * data, for the notice on Home; `null` when there are none.
+ */
+export function historyGap(): Promise<WalletHistoryGap | null> {
+  return invoke<WalletHistoryGap | null>("history_gap");
+}
+
+/**
  * "Rebuild index": deletes the SPV chain data and keeps wallets, vault
  * and app data. SPV must be stopped; the next `startSpv` syncs headers
  * again and rescans each wallet from its birth height.
@@ -1042,6 +1052,9 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
  * refused (`settledDescendant`) when a later transaction spending from
  * it is InstantSend-locked, in a block or finalized, unless a ChainLocked
  * spend of one of its inputs beat it and those are only locked (#446).
+ * One not under the ChainLock exception is refused (`recordUnreadable`)
+ * while a saved transaction of any loaded wallet didn't read at its
+ * load (#611).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1063,7 +1076,8 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
  * rescans once, from the lowest funding height of them all. One the
  * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
  * or that a settled later transaction holds (`settledDescendant`), is
- * skipped.
+ * skipped. One refused as `recordUnreadable` is kept too, and the call
+ * then fails with that refusal.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
@@ -2246,6 +2260,22 @@ export function unshieldToCore(walletId: string, credits: string, to: string | n
 }
 
 /**
+ * What moving `credits` from Shielded to the wallet's own Platform
+ * address `to` costs (`null` for its receive address).
+ */
+export function unshieldToPlatformQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote> {
+  return invoke<ShieldedSpendQuote>("unshield_to_platform_quote", { walletId, credits, to });
+}
+
+/**
+ * Shielded → Platform: unshields `credits` to the wallet's own Platform
+ * address `to` under `grant`.
+ */
+export function unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<UnshieldToPlatformOutcome> {
+  return invoke<UnshieldToPlatformOutcome>("unshield_to_platform", { walletId, credits, to, grant, confirmUnrecorded });
+}
+
+/**
  * The wallet's shielded history for Activity, pending first, then
  * newest first (`limit` at most 500).
  */
@@ -3424,6 +3454,7 @@ export type CommandArgs = {
   cancel_rescan: {  };
   node_info: {  };
   warnings: {  };
+  history_gap: {  };
   reset_chain_data: {  };
   set_birth_height: { walletId: string; height: number };
   start_spv: {  };
@@ -3587,6 +3618,8 @@ export type CommandArgs = {
   shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean };
   unshield_quote: { walletId: string; credits: string; to: string | null };
   unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
+  unshield_to_platform_quote: { walletId: string; credits: string; to: string | null };
+  unshield_to_platform: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
   shielded_history: { walletId: string; offset: number; limit: number };
   unfinished_transfers: { walletId: string };
   finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };
@@ -3800,6 +3833,7 @@ export type CommandResults = {
   cancel_rescan: boolean;
   node_info: NodeSummary;
   warnings: Array<NodeWarning>;
+  history_gap: WalletHistoryGap | null;
   reset_chain_data: null;
   set_birth_height: null;
   start_spv: null;
@@ -3963,6 +3997,8 @@ export type CommandResults = {
   shielded_send: ShieldedSpendOutcome;
   unshield_quote: ShieldedSpendQuote;
   unshield_to_core: ShieldedSpendOutcome;
+  unshield_to_platform_quote: ShieldedSpendQuote;
+  unshield_to_platform: UnshieldToPlatformOutcome;
   shielded_history: Array<ShieldedActivity>;
   unfinished_transfers: UnfinishedTransfers;
   finish_transfer: LockFinish;
@@ -4178,6 +4214,7 @@ export const COMMANDS: Record<CommandName, string> = {
   cancel_rescan: "chain",
   node_info: "chain",
   warnings: "chain",
+  history_gap: "chain",
   reset_chain_data: "chain",
   set_birth_height: "chain",
   start_spv: "chain",
@@ -4341,6 +4378,8 @@ export const COMMANDS: Record<CommandName, string> = {
   shielded_send: "identity",
   unshield_quote: "identity",
   unshield_to_core: "identity",
+  unshield_to_platform_quote: "identity",
+  unshield_to_platform: "identity",
   shielded_history: "identity",
   unfinished_transfers: "identity",
   finish_transfer: "identity",
@@ -4765,6 +4804,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "masternodes.already_tracked",
   "masternodes.not_tracked",
   "masternodes.key_mismatch",
+  "masternodes.key_exists",
   "masternodes.not_evonode",
   "masternodes.no_identity",
   "masternodes.platform_unavailable",

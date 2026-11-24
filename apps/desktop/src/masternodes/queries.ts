@@ -4,9 +4,11 @@
 // result is a secret the sheet holds only while shown.
 
 import { useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
 import type { MasternodeTypeName } from "../api/generated/MasternodeTypeName";
+import type { ProTxOperation } from "../api/generated/ProTxOperation";
+import { hasCode } from "../api/backend";
 import { keys, useBackend } from "../api/queries";
 import { useUi } from "../app/ui";
 import type { NodeNames } from "../governance/model";
@@ -41,9 +43,10 @@ export function useMasternodeListState() {
   return useQuery({ queryKey: mnKeys.listState, queryFn: () => b.mnListState() });
 }
 
-export function useMasternodes(walletId: string, enabled = true) {
+/** `retryOnMount` false: a failed read isn't read again just because this observer mounts. */
+export function useMasternodes(walletId: string, enabled = true, retryOnMount = true) {
   const b = useBackend();
-  return useQuery({ queryKey: mnKeys.list(walletId), queryFn: () => b.mnList(walletId), enabled });
+  return useQuery({ queryKey: mnKeys.list(walletId), queryFn: () => b.mnList(walletId), enabled, retryOnMount });
 }
 
 export function useMasternode(walletId: string, hash: string, enabled = true) {
@@ -85,6 +88,18 @@ export function useMasternodeOperations(walletId: string, enabled = true) {
   return useQuery({ queryKey: mnKeys.operations(walletId), queryFn: () => b.mnOperations(walletId), enabled });
 }
 
+/** A send's refusal as a sentence. `update_pending` names an operation whose state picks the line, and that state may
+ * have changed while the send was out, so the operations are read again, from the backend itself: a query read could
+ * join one started before the refusal, or pause offline. A failed read keeps the general line. */
+export function usePendingAwareText(walletId: string, text: (e: unknown, ops?: readonly ProTxOperation[]) => string) {
+  const b = useBackend();
+  return async (e: unknown) => {
+    if (!hasCode(e, "masternodes.update_pending")) return text(e);
+    const ops = await b.mnOperations(walletId).catch(() => undefined);
+    return text(e, ops);
+  };
+}
+
 /** What the wallet can do with shared masternodes (MG-10 §2.9). */
 export function useSharedCapability(walletId: string, enabled = true) {
   const b = useBackend();
@@ -115,6 +130,21 @@ export function useNodeNames(walletId: string): NodeNames {
   // An unlabelled row's fallback name ("Evonode b2b2…") is translated: a language change re-reads it.
   const language = useUi((s) => s.prefs.language);
   return useMemo(() => nodeNames(list.data), [list.data, language]);
+}
+
+/** What an attached key's change re-reads: the masternodes, and the proposal and username voters
+ * (governance/queries.ts's `["governance", …]` and `contestedNamesKey`), so the vote sheets list a
+ * new key at once and drop a removed one. */
+export const KEY_CHANGE_KEYS = [m, keys.governanceAll, ["contestedNames"]] as const;
+
+export function invalidateAfterKeyChange(client: QueryClient) {
+  return Promise.all(KEY_CHANGE_KEYS.map((queryKey) => client.invalidateQueries({ queryKey })));
+}
+
+/** After Add key, Remove and Stop tracking. */
+export function useKeysChanged() {
+  const client = useQueryClient();
+  return () => invalidateAfterKeyChange(client);
 }
 
 /** Re-reads every engine-local masternode query (after a command, before its event lands). */

@@ -740,6 +740,43 @@ const SCENARIOS = {
     w.send.settledChild = [row.txid];
     return w;
   },
+  /** An unconfirmed payment of the first of two open wallets, whose saved transaction doesn't read:
+   * Abandon is offered and refused, and so is Remove Unconfirmed; both name the wallet and say to
+   * close it, or remove and restore it. */
+  "abandon-record-unreadable-two-wallets": (t) => {
+    const w = twoWallets(base(t));
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
+  /** As `abandon-record-unreadable-two-wallets`, with only that wallet open: the refusal doesn't
+   * say to close it. */
+  "abandon-record-unreadable": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
   /** An unconfirmed payment a later payment spends from, already locked when the detail opens:
    * Abandon isn't offered. */
   "abandon-settled-child-hidden": (t) => {
@@ -829,6 +866,13 @@ const SCENARIOS = {
   "paddr-fund-applies": (t) => {
     const w = base(t);
     w.pending.platform!.nextFund = "done";
+    return w;
+  },
+  /** Credits moved from Shielded to the receive address: a "From Shielded" row, done. */
+  "paddr-from-shielded": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    p.activity = [{ id: "from-shielded-5a5a", kind: "fromShielded", state: "done", credits: "25000000000", address: p.receive.address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 600, mayLand: false, estimated: false }, ...p.activity];
     return w;
   },
   /** A lock of "Add from Dash wallet" waiting for its proof: the card shows Finish. */

@@ -475,6 +475,83 @@ fn a_revealed_key_is_in_no_log_and_no_event() {
     }
 }
 
+/// An attached key goes into the vault and never comes back: no read the
+/// renderer makes (the overview, the detail, the vote and username voters)
+/// and no event carries it in any form, whether or not the read answers.
+#[test]
+fn an_attached_key_is_in_no_read_and_no_event() {
+    let (demo, wallet) = demo_with_wallet();
+    let events = demo.events();
+    let h = hash("c1");
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    dw_engine::test_support::track_unlisted(&session, [0xc1; 32]);
+    drop(session);
+
+    let wif = "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy";
+    let owner_hex = "3a".repeat(32);
+    let attach = |role: &str, key: &str| {
+        demo.ok(
+            "mn_attach_key",
+            json!({ "proTxHash": h, "role": role, "key": key }),
+        )
+    };
+    // A voting key is checked against the list, which this offline demo never has
+    // (`list_unavailable`); the owner and payout keys go into the same vault records.
+    assert_eq!(attach("owner", wif), json!("unchecked"));
+    assert_eq!(attach("payout", &owner_hex), json!("unchecked"));
+
+    let wif_secret = dashcore::PrivateKey::from_wif(wif)
+        .unwrap()
+        .inner
+        .to_secret_bytes();
+    let hex_secret = hex::decode(&owner_hex).unwrap();
+    let mut forms = vec![wif.to_owned(), owner_hex.clone(), owner_hex.to_uppercase()];
+    for bytes in [&wif_secret[..], &hex_secret[..]] {
+        forms.push(hex::encode(bytes));
+        forms.push(hex::encode_upper(bytes));
+        forms.push(format!("{bytes:?}"));
+    }
+
+    let overview = demo.ok("mn_list", json!({ "walletId": wallet }));
+    let row = (overview["masternodes"].as_array().unwrap().iter())
+        .find(|r| r["proTxHash"] == json!(h))
+        .expect("the tracked row");
+    let roles: Vec<_> = (row["roles"]["attached"].as_array().unwrap().iter())
+        .map(|k| k["role"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(roles.len(), 2, "both keys are read back: {row}");
+    let reads = [
+        Ok(overview),
+        demo.call(
+            "mn_masternode",
+            json!({ "walletId": wallet, "proTxHash": h }),
+        ),
+        demo.call(
+            "governance_voting_masternodes",
+            json!({ "walletId": wallet, "proposal": hash("aa") }),
+        ),
+        demo.call("governance_contested_names", json!({ "walletId": wallet })),
+    ];
+    let events = events.lock().unwrap().join("\n");
+    for read in reads {
+        let text = match read {
+            Ok(v) | Err(v) => v.to_string(),
+        };
+        for form in &forms {
+            assert!(
+                !text.contains(form.as_str()),
+                "a read holds an attached key: {text}"
+            );
+        }
+    }
+    for form in &forms {
+        assert!(
+            !events.contains(form.as_str()),
+            "an event holds an attached key"
+        );
+    }
+}
+
 /// An open demo on `network` with an unencrypted vault (mainnet and testnet
 /// refuse the tests' weak KDF) and one seed wallet. Its session opens with
 /// unreachable local endpoints (the test seam mainnet and testnet need) and

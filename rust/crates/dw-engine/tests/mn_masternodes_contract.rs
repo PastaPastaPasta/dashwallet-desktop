@@ -771,6 +771,9 @@ fn error_codes_match_the_contract() {
             MasternodesError::KeyMismatch {
                 role: AttachedKeyRole::Voting,
             },
+            MasternodesError::KeyExists {
+                role: AttachedKeyRole::Voting,
+            },
             MasternodesError::NotEvonode,
             MasternodesError::NoIdentity,
             MasternodesError::PlatformUnavailable { detail: hash() },

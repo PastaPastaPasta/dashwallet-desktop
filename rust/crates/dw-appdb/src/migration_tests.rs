@@ -6,7 +6,6 @@ use std::path::Path;
 use refinery::Target;
 use rusqlite::{Connection, OpenFlags, params};
 
-use crate::conn::AppConn;
 use crate::{AppDb, embedded};
 
 const INITIAL: i64 = 2026100501;
@@ -71,11 +70,11 @@ fn versions(conn: &Connection) -> Vec<i64> {
 }
 
 /// A database as the previous release left it: only the initial migration.
-fn previous_schema(path: &std::path::Path) -> AppConn {
-    let mut conn = AppConn::open(path, OpenFlags::default()).unwrap();
+fn previous_schema(path: &std::path::Path) -> Connection {
+    let mut conn = Connection::open_with_flags(path, OpenFlags::default()).unwrap();
     embedded::migrations::runner()
         .set_target(Target::Version(INITIAL as i32))
-        .run(&mut *conn)
+        .run(&mut conn)
         .unwrap();
     assert_eq!(versions(&conn), [INITIAL]);
     assert!(tables(&conn).is_empty());
@@ -94,7 +93,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
     drop(db);
 
-    let conn = AppConn::open(&path, OpenFlags::default()).unwrap();
+    let conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
     assert_eq!(
         versions(&conn),
         [
@@ -171,7 +170,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     );
     drop(db);
 
-    let conn = AppConn::open(&path, OpenFlags::default()).unwrap();
+    let conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
     assert_eq!(
         versions(&conn),
         [
@@ -222,11 +221,11 @@ fn reopening_and_rerunning_change_nothing() {
     }
 
     // The runner again on the same connection applies nothing.
-    let mut conn = AppConn::open(&path, OpenFlags::default()).unwrap();
+    let mut conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
     let report = embedded::migrations::runner()
         .set_abort_divergent(true)
         .set_abort_missing(true)
-        .run(&mut *conn)
+        .run(&mut conn)
         .unwrap();
     assert!(report.applied_migrations().is_empty());
     assert_eq!(
@@ -264,10 +263,10 @@ fn an_upgrade_stopped_partway_changes_nothing_and_the_next_open_finishes_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     {
-        let mut conn = AppConn::open(&path, OpenFlags::default()).unwrap();
+        let mut conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
         embedded::migrations::runner()
             .set_target(Target::Version(SHARED_STANDBY as i32))
-            .run(&mut *conn)
+            .run(&mut conn)
             .unwrap();
         conn.execute_batch(&format!(
             "CREATE TRIGGER stop BEFORE INSERT ON refinery_schema_history
@@ -278,7 +277,7 @@ fn an_upgrade_stopped_partway_changes_nothing_and_the_next_open_finishes_it() {
     }
     assert!(AppDb::open(&path).is_err());
     {
-        let conn = AppConn::open(&path, OpenFlags::default()).unwrap();
+        let conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
         assert_eq!(*versions(&conn).last().unwrap(), SHARED_STANDBY);
         assert!(conn.prepare("SELECT 1 FROM tx_fiat").is_err());
         conn.execute_batch("DROP TRIGGER stop").unwrap();
@@ -297,10 +296,10 @@ fn upgrade_from_request_username_adds_the_withdrawal_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     {
-        let mut conn = AppConn::open(&path, OpenFlags::default()).unwrap();
+        let mut conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
         embedded::migrations::runner()
             .set_target(Target::Version(REQUEST_USERNAME as i32))
-            .run(&mut *conn)
+            .run(&mut conn)
             .unwrap();
         assert_eq!(*versions(&conn).last().unwrap(), REQUEST_USERNAME);
         conn.execute(
@@ -349,10 +348,10 @@ fn upgrade_backfills_shared_abandons_and_rewrites_inherited_refusals() {
     let id = |n: usize| format!("{n:064x}");
     let refused = crate::INHERITED_REFUSED_CODES;
     {
-        let mut conn = AppConn::open(&path, OpenFlags::default()).unwrap();
+        let mut conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
         embedded::migrations::runner()
             .set_target(Target::Version(MG_WITHDRAWALS as i32))
-            .run(&mut *conn)
+            .run(&mut conn)
             .unwrap();
         let insert = |n: usize, out: bool, abandon: Option<&str>, error: Option<&str>| {
             conn.execute(
@@ -999,7 +998,7 @@ fn upgraded_schema_equals_the_fresh_one() {
     drop(AppDb::open(&fresh).unwrap());
 
     let schema = |path: &std::path::Path| -> Vec<(String, String, String, Option<String>)> {
-        let conn = AppConn::open(path, OpenFlags::default()).unwrap();
+        let conn = Connection::open_with_flags(path, OpenFlags::default()).unwrap();
         let mut stmt = conn
             .prepare(
                 "SELECT type, name, tbl_name, sql FROM sqlite_master
@@ -1035,10 +1034,10 @@ fn verification_records_without_a_digest_verify_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     {
-        let mut conn = AppConn::open(&path, OpenFlags::default()).unwrap();
+        let mut conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
         embedded::migrations::runner()
             .set_target(Target::Version(TRUST as i32))
-            .run(&mut *conn)
+            .run(&mut conn)
             .unwrap();
         conn.execute(
             "INSERT INTO dp_trust_verified (kind, key, verified_at) VALUES ('identity', 'x', 9)",
@@ -1083,10 +1082,10 @@ fn an_installation_with_wallets_starts_latched() {
     let dir = tempfile::tempdir().unwrap();
     let at_trust = |name: &str, wallet: bool| {
         let path = dir.path().join(name);
-        let mut conn = AppConn::open(&path, OpenFlags::default()).unwrap();
+        let mut conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
         embedded::migrations::runner()
             .set_target(Target::Version(TRUST as i32))
-            .run(&mut *conn)
+            .run(&mut conn)
             .unwrap();
         if wallet {
             conn.execute(
@@ -1830,10 +1829,10 @@ fn request_username_upgrade_keeps_legacy_requests_and_checks_overrides() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     {
-        let mut conn = AppConn::open(&path, OpenFlags::default()).unwrap();
+        let mut conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
         embedded::migrations::runner()
             .set_target(Target::Version(TX_FIAT as i32))
-            .run(&mut *conn)
+            .run(&mut conn)
             .unwrap();
         conn.execute(
             "INSERT INTO receive_requests (wallet_id, created_at, address, label) VALUES (?1, 1, 'yDemo', 'Rent')",

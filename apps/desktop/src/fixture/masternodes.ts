@@ -107,9 +107,10 @@ export interface MasternodesWorld {
   payouts: Record<string, MasternodePayout[]>;
   collateralCoins: CollateralCoin[];
   unattributed30d: number;
-  /** Attached keys by ProTx hash: the secret given and its check. */
-  attached: Record<string, { role: AttachedKeyRoleName; secret: string; check: KeyCheckName }[]>;
-  /** The keys that match, by ProTx hash and role. */
+  /** Attached keys by ProTx hash: the key's id and its check at attach, never the secret (the world is kept in
+   * sessionStorage across a relaunch). */
+  attached: Record<string, { role: AttachedKeyRoleName; keyId: string; check: KeyCheckName }[]>;
+  /** The ids of the keys that match, by ProTx hash and role (the voting one is the listed voting key now). */
   expected: Record<string, Partial<Record<AttachedKeyRoleName, string>>>;
   /** An evonode's claimable credits (a decimal string); absent: no identity. */
   credits: Record<string, string>;
@@ -242,8 +243,8 @@ export function newMasternodesWorld(): MasternodesWorld {
     payouts: { [HOME]: homePayouts, [OFFICE]: officePayouts },
     collateralCoins: [],
     unattributed30d: 0,
-    attached: { [CLUB]: [{ role: "owner", secret: KEY_OTHER, check: "unchecked" }] },
-    expected: { [CLUB]: { owner: KEY_OWNER, payout: KEY_PAYOUT, voting: KEY_VOTING } },
+    attached: { [CLUB]: [{ role: "owner", keyId: keyId(KEY_OTHER), check: "unchecked" }] },
+    expected: { [CLUB]: { owner: keyId(KEY_OWNER), payout: keyId(KEY_PAYOUT), voting: keyId(KEY_VOTING) } },
     credits: { [CLUB]: "42000000000" },
     platformDown: false,
     trackedAt: { [CLUB]: NOW - 12 * DAY },
@@ -261,14 +262,51 @@ export function newMasternodesWorld(): MasternodesWorld {
   };
 }
 
-const keyId = (secret: string) => fake(HEX64.test(secret) ? `${secret.slice(0, 2)}9` : "c0", 40);
+/** A fake key id: the engine records the hash160 of the key's public key. */
+export const keyId = (secret: string) => fake(HEX64.test(secret) ? `${secret.slice(0, 16).toLowerCase()}9` : "c0", 40);
+
+type Attached = MasternodesWorld["attached"][string][number];
+
+/** A key's check as every read makes it again (D24): a voting key against the listed voting key now, so a
+ * key the masternode rotated away from no longer matches. */
+function liveCheck(m: MasternodesWorld, hash: string, k: Attached): KeyCheckName {
+  if (k.role !== "voting") return k.check;
+  // No list entry now: nothing to check against (tracking.rs `KeyReferences::check`).
+  if (!listedOf(m, hash)) return "unchecked";
+  return k.keyId === m.expected[hash]?.voting ? "matched" : "key_mismatch";
+}
+
+function votingKey(m: MasternodesWorld, hash: string) {
+  return m.attached[hash]?.find((k) => k.role === "voting");
+}
+
+/** Tracked masternodes of the synced list whose attached voting key matches it now, by ProTx hash:
+ * `voting_masternodes` offers them after the keychain's (voting.rs). */
+export function addedVoters(m: MasternodesWorld): Listed[] {
+  return m.rows
+    .filter((r) => r.tracked)
+    .flatMap((r) => {
+      const k = votingKey(m, r.proTxHash);
+      const l = listedOf(m, r.proTxHash);
+      return k && l && liveCheck(m, r.proTxHash, k) === "matched" ? [l] : [];
+    })
+    .sort((a, b) => a.proTxHash.localeCompare(b.proTxHash));
+}
+
+/** A tracked masternode whose attached voting key no longer matches the list: `vote` refuses it `no_voting_key`. */
+export function staleAddedVoter(m: MasternodesWorld, hash: string): boolean {
+  const k = votingKey(m, hash);
+  return !!k && m.rows.some((r) => r.tracked && r.proTxHash === hash) && liveCheck(m, hash, k) !== "matched";
+}
 
 const locked = (world: World) => world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly" || world.lock.state === "noVault";
 
 function withAttached(world: World, r: MasternodeRow): MasternodeRow {
   const keys = world.masternodes.attached[r.proTxHash] ?? [];
-  const attached: AttachedKey[] | null = locked(world) ? null : keys.map((k) => ({ role: k.role, keyId: keyId(k.secret), check: k.check }));
-  return { ...copy(r), roles: { ...r.roles, attached } };
+  const attached: AttachedKey[] | null = locked(world) ? null : keys.map((k) => ({ role: k.role, keyId: k.keyId, check: liveCheck(world.masternodes, r.proTxHash, k) }));
+  // An attached voting key holds the role only when it matches the list (reads.rs `roles`, records.rs `holds`).
+  const voting = r.roles.voting || (attached?.some((k) => k.role === "voting" && k.check === "matched") ?? false);
+  return { ...copy(r), roles: { ...r.roles, voting, attached } };
 }
 
 /** The engine's order: shared → registration unavailable → keychain → vault locked → matched attached → no owner key. */
@@ -318,12 +356,12 @@ function tracked(m: MasternodesWorld, proTxHash: string): MasternodeRow {
 function checkKey(world: World, r: MasternodeRow, role: AttachedKeyRoleName, key: string): KeyCheckName {
   const m = world.masternodes;
   const want = m.expected[r.proTxHash]?.[role];
-  if (role === "payout") return key === want ? "matched" : "unchecked";
+  if (role === "payout") return keyId(key) === want ? "matched" : "unchecked";
   if (role === "voting") {
     if (!m.listState.synced) throw fail("masternodes.list_unavailable", "the masternode list is not synced");
     if (!listedOf(m, r.proTxHash)) return "unchecked";
   } else if (!m.registrations.includes(r.proTxHash)) return "unchecked";
-  if (key !== want) throw fail("masternodes.key_mismatch", `the key is not this masternode's ${role} key`, { kind: "masternodeKey", role });
+  if (keyId(key) !== want) throw fail("masternodes.key_mismatch", `the key is not this masternode's ${role} key`, { kind: "masternodeKey", role });
   return "matched";
 }
 
@@ -360,7 +398,7 @@ function planUpdate(world: World, walletId: string, request: UpdateRegistrarRequ
   if (cap.kind === "vault_locked") throw fail("vault.locked", "vault locked");
   if (cap.kind !== "available") throw fail("masternodes.no_owner_key", "this wallet holds no owner key of this masternode");
   const pending = m.operations.find((u) => u.proTxHash === hash && (u.state.kind === "sent" || u.state.kind === "signed" || u.state.kind === "not_sent"));
-  if (pending) throw fail("masternodes.update_pending", `operation ${pending.id} on this masternode is not in the list yet`);
+  if (pending) throw fail("masternodes.update_pending", `operation ${pending.id} on this masternode is not in the list yet`, { kind: "operation", operation: pending.id });
   const listedOperator = basicKey(listed.facts.operatorPublicKey);
   const operatorKey = request.operator.kind === "keep" ? listedOperator : request.operator.kind === "given" ? request.operator.publicKey.toLowerCase() : keyInfo("operator", request.operator.kind === "keychain" ? request.operator.index : NEXT_UNUSED).publicKeyHex;
   const operatorIndex = request.operator.kind === "keychain" ? request.operator.index : request.operator.kind === "next_unused" ? NEXT_UNUSED : null;
@@ -440,6 +478,7 @@ export const OP_DISSOLVE_FOREIGN = opId(9);
 export const OP_UPDATE = opId(10);
 export const OP_CONFLICTED = opId(11);
 export const OP_CONFIRMED = opId(12);
+export const OP_UPDATE_SAVED = opId(13);
 /** A dissolve row's penalty: its `debit` is this plus the fee. */
 export const DISSOLVE_PENALTY = 25 * COIN;
 
@@ -468,7 +507,12 @@ const opsFor = (m: MasternodesWorld, walletId: string) => (walletId === FIXTURE_
 
 /** The state read now: a prepared row whose fee inputs went reads `inputs_spent`. */
 const readState = (m: MasternodesWorld, o: ProTxOperation): ProTxOperation["state"] => (m.spendInputs && o.state.kind === "needs_signature" ? { kind: "inputs_spent" } : o.state);
-const readOp = (m: MasternodesWorld, o: ProTxOperation): ProTxOperation => ({ ...copy(o), state: readState(m, o) });
+/** As the engine reads a row: the sign request only while it still needs a signature. */
+const readOp = (m: MasternodesWorld, o: ProTxOperation): ProTxOperation => {
+  const c = copy(o);
+  const state = readState(m, o);
+  return { ...c, state, signRequest: state.kind === "needs_signature" ? c.signRequest : null };
+};
 
 /** wallet → id → not found, as the engine reads an operation. */
 function opOf(world: World, walletId: string, id: string): ProTxOperation {
@@ -776,7 +820,8 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
       const o = opOf(world, walletId, operation);
       const state = readState(m, o).kind;
       if (state !== "needs_signature" && state !== "inputs_spent") throw stateError(state);
-      if (state === "inputs_spent") m.spendInputs = false;
+      // New fee inputs: the engine replans, so the fee and what leaves the wallet move (REG_FEE_DRIFT).
+      if (state === "inputs_spent") Object.assign(m, { spendInputs: false }), Object.assign(o, { fee: o.fee + REG_FEE_DRIFT, debit: o.debit + REG_FEE_DRIFT });
       Object.assign(o, { state: { kind: "needs_signature" }, signRequest: { address: o.terms.collateralAddress!, message: signMessage(m, o.terms) } });
       changed(ctx);
       return readOp(m, o);
@@ -804,6 +849,13 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
       const o = opOf(world, walletId, operation);
       const state = readState(m, o).kind;
       if (state !== "signed" && state !== "not_sent" && state !== "sent") throw stateError(state);
+      // `resend_conflict` (D43, D49): a later update of the masternode that is or may go out would be undone by this
+      // one; an earlier one out and not in a block could be mined after it.
+      const others = o.kind === "update_registrar" ? m.operations.filter((x) => x !== o && x.kind === o.kind && x.proTxHash === o.proTxHash) : [];
+      const later = others.find((x) => x.createdAt >= o.createdAt && ["signed", "not_sent", "sent", "confirmed"].includes(readState(m, x).kind));
+      if (later) throw fail("masternodes.update_superseded", `operation ${later.id} replaces this one`, { kind: "operation", operation: later.id });
+      const earlier = others.find((x) => x.createdAt < o.createdAt && readState(m, x).kind === "sent");
+      if (earlier) throw fail("masternodes.update_pending", `operation ${earlier.id} on this masternode is not in the list yet`, { kind: "operation", operation: earlier.id });
       charge(lease(world, walletId, grant, useGrant), o.debit);
       sendOp(m, o, false);
       changed(ctx);
@@ -975,10 +1027,13 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
       const key = HEX64.test(given) ? given.toLowerCase() : given;
       if (!HEX64.test(key) && !TEST_WIF.test(key)) throw fail("invalid_argument", "not a compressed test-network WIF or 64 hex digits");
       const r = tracked(world.masternodes, proTxHash);
-      const check = checkKey(world, r, role, key);
+      // tracking.rs refuses a vault without its full-scope key before the check, so a refusal keeps an attached key's id.
       if (locked(world)) throw fail("vault.locked", "vault locked");
       const keys = world.masternodes.attached[r.proTxHash] ?? [];
-      world.masternodes.attached[r.proTxHash] = [...keys.filter((k) => k.role !== role), { role, secret: key, check }];
+      // tracking.rs never replaces an attached key: Remove comes first.
+      if (keys.some((k) => k.role === role)) throw fail("masternodes.key_exists", `a ${role} key is already attached`, { kind: "masternodeKey", role });
+      const check = checkKey(world, r, role, key);
+      world.masternodes.attached[r.proTxHash] = [...keys, { role, keyId: keyId(key), check }];
       changed(ctx);
       return check;
     },
@@ -1194,23 +1249,28 @@ function prepared(m: MasternodesWorld, state: ProTxOperation["state"]) {
 const external = (n: number) => scenarioTerms(n, { collateral: "external", collateralOutpoint: `${h(`e${n.toString(16)}`)}-0`, collateralAddress: addr(`xE${n}`) });
 const signRequest = (n: number) => ({ address: addr(`xE${n}`), message: `${addr(`pO${n}`)}|0|${keyInfo("owner", 5 + n).address}|${keyInfo("voting", 5 + n).address}|${h(`5${n.toString(16)}`)}` });
 
+/** Home's registrar update in `state`, saved before the scenario opens (issue 438). */
+const homeUpdate = (state: ProTxOperation["state"], id = OP_UPDATE, n = 9) =>
+  scenarioOp(id, n, state, {
+    kind: "update_registrar",
+    proTxHash: HOME,
+    lastError: state.kind === "not_sent" ? "send.no_peers" : null,
+    terms: scenarioTerms(n, { service: "198.51.100.7:19999", ownerAddress: keyInfo("owner", 0).address!, ownerIndex: 0, collateral: null, collateralOutpoint: null, collateralAddress: null }),
+  });
+
 /** `mn-ops`: one operation in each state and of each kind, newest first (MG-10 §5.1). */
 function ops(m: MasternodesWorld) {
   const dissolve = (n: number, debit: number) => ({ kind: "dissolve" as const, proTxHash: h("5d"), debit, terms: scenarioTerms(n, { collateral: null, collateralOutpoint: null, collateralAddress: null }) });
   m.operations = [
     scenarioOp(OP_NEEDS_SIGNATURE, 1, { kind: "needs_signature" }, { terms: external(1), signRequest: signRequest(1) }),
-    scenarioOp(OP_INPUTS_SPENT, 2, { kind: "inputs_spent" }, { terms: external(2), signRequest: signRequest(2) }),
+    scenarioOp(OP_INPUTS_SPENT, 2, { kind: "inputs_spent" }, { terms: external(2), signRequest: null }),
     scenarioOp(OP_SIGNED, 3, { kind: "signed" }),
     scenarioOp(OP_NOT_SENT, 4, { kind: "not_sent" }, { lastError: "send.no_peers" }),
     scenarioOp(OP_SENT, 5, { kind: "sent" }),
     scenarioOp(OP_SENT_OVERDUE, 6, { kind: "sent" }, { overdue: true }),
     scenarioOp(OP_DISSOLVE, 7, { kind: "sent" }, { ...dissolve(7, DISSOLVE_PENALTY + REG_FEE.regular), overdue: true }),
     scenarioOp(OP_DISSOLVE_FOREIGN, 8, { kind: "sent" }, dissolve(8, 0)),
-    scenarioOp(OP_UPDATE, 9, { kind: "sent" }, {
-      kind: "update_registrar",
-      proTxHash: HOME,
-      terms: scenarioTerms(9, { service: "198.51.100.7:19999", ownerAddress: keyInfo("owner", 0).address!, ownerIndex: 0, collateral: null, collateralOutpoint: null, collateralAddress: null }),
-    }),
+    homeUpdate({ kind: "sent" }),
     scenarioOp(OP_CONFLICTED, 10, { kind: "conflicted" }),
     scenarioOp(OP_CONFIRMED, 11, { kind: "confirmed", height: HEIGHT - 40 }),
   ];
@@ -1263,6 +1323,19 @@ export function masternodesScenarios(base: Base) {
         m.registrations.push(CLUB);
         w.lock = { ...w.lock, state: "locked" };
       }),
+    /** Track with Club's voting key added (MG-00 D13, amended for 1.0): listed under Keys you added, and Club votes. */
+    "mn-track-voting": (t: ThemeName | null) =>
+      mnBase(base, t, (m) => {
+        trackOnly(m);
+        m.attached[CLUB] = [{ role: "voting", keyId: keyId(KEY_VOTING), check: "matched" }];
+      }),
+    /** `mn-track-voting` unlocked for mixing only: Keys you added asks to unlock, and so does adding a key. */
+    "mn-track-voting-locked": (t: ThemeName | null) =>
+      mnBase(base, t, (m, w) => {
+        trackOnly(m);
+        m.attached[CLUB] = [{ role: "voting", keyId: keyId(KEY_VOTING), check: "matched" }];
+        w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+      }),
     /** `mn-track` locked: Club still reads `registration_unavailable`. */
     "mn-track-locked": (t: ThemeName | null) =>
       mnBase(base, t, (m, w) => {
@@ -1271,6 +1344,12 @@ export function masternodesScenarios(base: Base) {
       }),
     /** `mn-list`, where the next registrar update finds no peers and is saved `not_sent`. */
     "mn-update-not-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.nextUpdateNotSent = true)),
+    /** `mn-list` with a change to Home saved and not sent: Change keys opens on Send again or Discard. */
+    "mn-update-saved": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" })])),
+    /** `mn-list` with a change to Home sent and not in the list yet: a new change is refused `update_pending`. */
+    "mn-update-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "sent" })])),
+    /** `mn-update-sent` with a later change to Home saved and not sent: its Send again is refused `update_pending`. */
+    "mn-update-saved-behind-sent": (t: ThemeName | null) => mnBase(base, t, (m) => (m.operations = [homeUpdate({ kind: "not_sent" }, OP_UPDATE_SAVED, 2), homeUpdate({ kind: "sent" })])),
     /** The keychain: Home's operator key matched in the basic form, Office's in the legacy form, Lab evonode's platform node id. */
     "mn-keys": (t: ThemeName | null) =>
       mnBase(base, t, (m) => {
