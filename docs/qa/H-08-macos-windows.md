@@ -160,8 +160,10 @@ On every machine, in the clean account, before anything else has been installed.
 - [ ] Fund it from the faucet. Expected: the payment shows in Activity, then confirms.
 - [ ] Settings ▸ About shows the candidate's tag without its `v` (`X.Y.Z-rc.N`; the release workflow stamps the
       tag's version into the build). Tools ▸ Information shows a warning banner (a candidate is a pre-release
-      build; a higher-priority warning, such as the network one, may be the one shown). Note its text.
-- [ ] Screenshots in light and dark: Home, Activity, Settings, Settings ▸ About.
+      build; a higher-priority warning, such as a stalled sync, may be the one shown). Note its text. If it is not
+      the test-build warning, clear it and look again (an unclean-shutdown warning clears only after a normal
+      quit and relaunch).
+- [ ] Screenshots in light and dark: Home, Activity, Settings, Settings ▸ About, Tools ▸ Information.
 
 **Fail if:** the OS blocked the app and the documented way to open it does not work; Windows asks for administrator
 rights; the app runs under Rosetta on Apple silicon; the timed second launch takes more than 5 seconds; the notice
