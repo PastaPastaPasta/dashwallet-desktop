@@ -119,6 +119,10 @@ export interface World {
   explorerOpened?: string[];
   /** How many times `open_releases_page` was called. */
   releasesOpened?: number;
+  /** `open_project_link` calls, in order (the fixture opens nothing). */
+  linksOpened?: string[];
+  /** `open_project_link` fails as when no browser opens. */
+  linkOpenFails?: boolean;
   /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
   protocolCompatibility?: ProtocolCompatibility;
   /** "Ask for my passphrase for every payment". The funded scenario leaves it on, so the
@@ -714,6 +718,42 @@ const SCENARIOS = {
     w.send.rescanFirst = [row.txid];
     return w;
   },
+  /** An unconfirmed payment whose later payment locked while its detail was open: Abandon is
+   * offered and refused, and the detail says why. */
+  "abandon-settled-child": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5c".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChild = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment a later payment spends from, already locked when the detail opens:
+   * Abandon isn't offered. */
+  "abandon-settled-child-hidden": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5d".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChildHidden = [row.txid];
+    return w;
+  },
   /** A payment this wallet made on another device, seen only by its change before the coins it
    * spent are known: its debit is unknown, so Abandon warns about paying twice. */
   "abandon-debit-unknown": (t) => {
@@ -1196,6 +1236,15 @@ const SCENARIOS = {
     const main = w.wallets[0];
     main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, catchingUp: true } };
     main.rows = [];
+    return w;
+  },
+  /** The first start after an update from 0.1 or 0.2: the funded wallet is replayed once from its
+   * birth, so Home and Pay say why sends wait. The replay does not move on while the scenario is up. */
+  "upgrade-replay": (t) => {
+    const w = base(t);
+    const tip = w.sync.tipHeight!;
+    w.tools.rescan = { fromHeight: tip - 200_000, currentHeight: tip - 150_000, targetHeight: tip, startedAt: secs(FIXTURE_NOW), upgradeWallets: [w.wallets[0].summary.walletId] };
+    w.tools.rescanStep = 0;
     return w;
   },
   /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */

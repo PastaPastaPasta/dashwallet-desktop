@@ -514,29 +514,26 @@ fn several_present_exits_settle_one() {
 }
 
 /// A read whose nonce is below one a done record signed is behind what
-/// this wallet already settled on: nothing is planned on it. A top-up
-/// checks every done record; a move or send a done top-up's, so a read
-/// behind a top-up never signs its nonce again.
+/// this wallet already settled on: nothing is planned on it, whatever the
+/// done record was.
 #[test]
 fn a_read_behind_a_settled_move_is_refused() {
-    let mut done = record_of(MoveKind::ToIdentity, "t", 1);
-    done.state = PlatformActivityState::Done;
-    let moves = [done];
-    for every in [true, false] {
+    for kind in [MoveKind::ToIdentity, MoveKind::ToCore, MoveKind::Transfer] {
+        let mut done = record_of(kind, "t", 1);
+        done.state = PlatformActivityState::Done;
+        let moves = [done];
         assert_eq!(
-            behind(&moves, &seen_at(20, 3), every),
-            Err(PlatformError::Unavailable)
+            behind(&moves, &seen_at(20, 3)),
+            Err(PlatformError::Unavailable),
+            "{kind:?}"
         );
-        assert_eq!(behind(&moves, &seen_at(20, 4), every), Ok(()));
-        assert_eq!(behind(&moves, &seen(20, &[("a", None)]), every), Ok(()));
+        assert_eq!(behind(&moves, &seen_at(20, 4)), Ok(()), "{kind:?}");
+        assert_eq!(
+            behind(&moves, &seen(20, &[("a", None)])),
+            Ok(()),
+            "{kind:?}"
+        );
     }
-    let mut moved = record_of(MoveKind::ToCore, "m", 1);
-    moved.state = PlatformActivityState::Done;
-    assert_eq!(
-        behind(&[moved.clone()], &seen_at(20, 3), true),
-        Err(PlatformError::Unavailable)
-    );
-    assert_eq!(behind(&[moved], &seen_at(20, 3), false), Ok(()));
 }
 
 /// After a done top-up, a send planned on a read behind it is refused

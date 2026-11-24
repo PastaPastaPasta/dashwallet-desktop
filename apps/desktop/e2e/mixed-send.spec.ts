@@ -53,6 +53,7 @@ async function review(page: Page) {
 }
 
 const sheet = (page: Page) => page.getByTestId("pay-confirm");
+const SUBTRACTED = "The fee is subtracted from the amount";
 const MANY =
   "Spending 10 or more mixed coins in one payment can link them together and weaken your privacy. Consider paying a smaller amount.";
 
@@ -111,6 +112,24 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("pay-confirm-mixed-coins")).toHaveText("This payment spends 1 mixed coin.");
     await expect(page.getByTestId("pay-confirm-mixed-warning")).toHaveCount(0);
     await expect(page.getByTestId("pay-confirm-mixed-change")).toHaveCount(0);
+    // The whole coin is paid, so the payee pays the fee: the sheet says so.
+    await expect(sheet(page)).toContainText(SUBTRACTED);
+    expect(errors).toEqual([]);
+  });
+
+  test(`U-06b one coin ${theme}: a remainder that covers the fee leaves the payee's amount whole (#464)`, async ({ page }, info) => {
+    const errors = await open(page, theme, "address");
+    await payee(page, "address");
+    await page.getByTestId("pay-amount").fill("0.09");
+    await page.getByTestId("pay-subtract-fee").check();
+    await mixedCoins(page);
+    await review(page);
+    await page.screenshot({ path: artifactPath(info, `${theme}-mixed-send-subtract-covered.png`) });
+    await expect(page.getByTestId("pay-confirm-amount")).toContainText("0.09000000");
+    // 1 input, 1 output: 192 bytes; the rest of the coin is the left-over, and no fee came off the amount.
+    const leftOver = ((DENOM - 9_000_000 - 192) / 1e8).toFixed(8);
+    await expect(page.getByTestId("pay-confirm-mixed-change")).toContainText(leftOver);
+    await expect(sheet(page)).not.toContainText(SUBTRACTED);
     expect(errors).toEqual([]);
   });
 }
