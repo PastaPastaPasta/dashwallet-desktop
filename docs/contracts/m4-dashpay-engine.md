@@ -4764,8 +4764,9 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     (`IdentityRegistered`) before anything is planned. On mainnet `resume_registration` of a Platform-funded row is
     `platform.feature_off` before any grant is redeemed, Finish transfers skips it, and no step past `KeysPrepared`
     runs. A read behind a done `register` record refuses the plans of sends and withdrawals too. A stored plan that
-    repeats an address, claims nothing at an input or names nonce 0 is refused (`internal`) before anything is
-    recorded or signed. While a plan is stored and no identity is adopted, `funds_committed` is true and
+    repeats an address, claims nothing at an input, names nonce 0 or claims other than its stored funding is refused
+    (`internal`) before anything is recorded or signed. While a plan is stored and no identity is adopted,
+    `funds_committed` is true and
     `discard_registration` is refused. A parked row's status reads `payment_held` from its stored record, else
     `payment_unknown`. The `register` record shows in `platform_activity` as `to_identity`. The registration planner
     (quote, start and step alike) leaves out any address at the last nonce (`u32::MAX`), and before refusing

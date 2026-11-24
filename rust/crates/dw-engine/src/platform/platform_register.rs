@@ -120,7 +120,7 @@ pub(crate) async fn register_fund<'w>(
             .pump
             .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
     }
-    super::contact_payout::settled(session, wallet_id, &moves).await;
+    crate::platform::contact_payout::settled(session, wallet_id, &moves).await;
     let plan = match &ask.plan {
         Some(plan) => plan.clone(),
         None => {
@@ -135,9 +135,13 @@ pub(crate) async fn register_fund<'w>(
         .collect::<Option<_>>()
         .ok_or_else(|| internal("a stored plan names an address that does not parse"))?;
     // A plan signs only as it was made: distinct addresses, each at a used
-    // nonce's successor and claiming something.
+    // nonce's successor and claiming something, the claims the funding.
     if inputs.len() != plan.inputs.len() || inputs.values().any(|&(n, c)| n == 0 || c == 0) {
         return Err(internal("a stored plan repeats an address or claims nothing").into());
+    }
+    let claims = (inputs.values()).try_fold(0u64, |sum, &(_, c)| sum.checked_add(c));
+    if claims != Some(ask.funding_credits) {
+        return Err(internal("a stored plan claims other than its funding").into());
     }
     let identity_id = Identifier::from_string(&plan.identity, Encoding::Base58)
         .map_err(|_| internal("a stored plan names no identity"))?;
@@ -540,7 +544,7 @@ async fn sign(
         // land: the next read settles it by its nonces.
         tracing::warn!(id = %moves[at].id, "storing a registration's outcome: {e}");
     }
-    super::contact_payout::settled(session, wallet_id, moves).await;
+    crate::platform::contact_payout::settled(session, wallet_id, moves).await;
     session
         .hub
         .pump

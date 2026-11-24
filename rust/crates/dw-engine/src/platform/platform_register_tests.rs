@@ -418,8 +418,8 @@ fn a_released_or_restored_create_keeps_its_hold() {
 }
 
 /// A stored plan signs only as it was made: one that repeats an address,
-/// claims nothing or names nonce 0 is refused before anything is recorded
-/// or signed.
+/// claims nothing, names nonce 0 or claims more than its funding is refused
+/// before anything is recorded or signed.
 #[test]
 fn a_tampered_plan_signs_nothing() {
     let w = World::new();
@@ -434,6 +434,7 @@ fn a_tampered_plan_signs_nothing() {
         vec![first.clone(), first.clone()],
         vec![(first.0.clone(), first.1, 0)],
         vec![(first.0.clone(), 0, first.2)],
+        vec![(first.0.clone(), first.1, first.2 + 1)],
     ] {
         let mut row = w.row(1);
         row.plan = Some(PlatformPlan {
