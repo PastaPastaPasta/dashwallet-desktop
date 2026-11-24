@@ -176,6 +176,7 @@ fn record(id: &str, at: u64, inputs: &[(&str, u32)]) -> MoveRecord {
         seen_at: None,
         fee_taken: None,
         group: None,
+        unattributed: false,
         version: None,
     }
 }
@@ -1445,6 +1446,35 @@ fn differing_terms_settle_as_a_group() {
     assert_eq!(
         (row.credits, row.expected_duffs, row.fee_credits),
         (600, None, None)
+    );
+    // Nothing says which of them executed: every row says so, the newest too.
+    assert!(
+        moves
+            .iter()
+            .all(|m| m.unattributed && m.activity().unattributed)
+    );
+}
+
+/// Moves of one key with equal terms leave the same history whichever
+/// executed: the group names its winner, and no row is unattributed.
+#[test]
+fn equal_terms_settle_attributed() {
+    let mut f = record("f", 1, &[("a", 4)]);
+    f.state = PlatformActivityState::Failed;
+    f.seen_at = Some(5);
+    let mut r = record("r", 2, &[("a", 4)]);
+    (r.answered, r.seen_at) = (true, Some(15));
+    let mut moves = vec![f, r];
+    let landed = Seen {
+        height: 20,
+        at: [("a".into(), Some((4, 300)))].into(),
+    };
+    settle(&mut moves, &landed);
+    assert_eq!(moves[1].state, PlatformActivityState::Done);
+    assert!(
+        moves
+            .iter()
+            .all(|m| !m.unattributed && !m.activity().unattributed)
     );
 }
 

@@ -149,6 +149,11 @@ pub struct PlatformActivity {
     /// A `ContactPayment`'s contact, from its payout row (C-funding P10).
     #[serde(default)]
     pub contact: Option<super::payments::Counterparty>,
+    /// A row of a group whose proof does not say which member executed:
+    /// one of them did, and neither this row's state nor the newest row's
+    /// `Done` names which.
+    #[serde(default)]
+    pub unattributed: bool,
 }
 
 /// What "Move to Dash wallet" takes and pays out, at the network's
@@ -192,6 +197,8 @@ pub struct MoveToCoreOutcome {
     pub state: PlatformActivityState,
     /// Done: the fee taken, as [`PlatformActivity::fee_credits`].
     pub fee_credits: Option<u64>,
+    /// As [`PlatformActivity::unattributed`].
+    pub unattributed: bool,
 }
 
 /// Why a string is no Platform address a send may pay
@@ -304,6 +311,8 @@ pub struct PlatformSendOutcome {
     pub fee_credits: Option<u64>,
     /// Done: `credits` counts the fee estimate (`fee_credits` `None`).
     pub estimated: bool,
+    /// As [`PlatformActivity::unattributed`].
+    pub unattributed: bool,
 }
 
 /// What moving credits from the Platform addresses into Shielded takes, at

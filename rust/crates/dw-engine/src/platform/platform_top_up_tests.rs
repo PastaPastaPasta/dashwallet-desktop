@@ -601,6 +601,10 @@ fn several_present_exits_settle_one() {
     ];
     settle_with(&mut moves, &seen_at(20, 4), &present);
     assert_eq!(states(&moves), [failed, done, failed]);
+    assert!(
+        moves.iter().all(|m| !m.unattributed),
+        "the document names it"
+    );
 
     let mut moves = vec![
         failed_top_up(),
@@ -629,6 +633,9 @@ fn several_present_exits_settle_one() {
         "not attributed to one exit's terms"
     );
     assert!(moves.iter().all(|m| !m.holds()));
+    // Either exit may have paid: both say so; the top-up did not land.
+    let unattributed: Vec<_> = moves.iter().map(|m| m.activity().unattributed).collect();
+    assert_eq!(unattributed, [false, true, true]);
 }
 
 /// A read whose nonce is below one a done record signed is behind what

@@ -213,6 +213,10 @@ pub(crate) struct MoveRecord {
     /// The proof height of the first read after its call returned.
     #[serde(default)]
     pub(crate) seen_at: Option<u64>,
+    /// Settled in a group whose proof does not say which member executed:
+    /// one of them did, and the history can't name it.
+    #[serde(default)]
+    pub(crate) unattributed: bool,
     /// Done: the fee the proved balances show it took.
     #[serde(default)]
     pub(crate) fee_taken: Option<u64>,
@@ -350,6 +354,7 @@ impl FundRecord {
             may_land: false,
             estimated: self.estimated,
             contact: None,
+            unattributed: false,
         }
     }
 
@@ -589,6 +594,7 @@ impl FromShieldedRecord {
             may_land: self.state == PlatformActivityState::Pending,
             estimated: false,
             contact: None,
+            unattributed: false,
         }
     }
 
@@ -678,6 +684,7 @@ fn released(address: &str, credits: u64, tag: &str) -> Result<Vec<Write>, Platfo
         may_land: false,
         estimated: false,
         contact: None,
+        unattributed: false,
     };
     let key = format!("{ROW_PREFIX}{at:020}/released/{tag}");
     Ok(vec![(key, Some(json(&row)?))])
@@ -1143,6 +1150,7 @@ impl MoveRecord {
             may_land: self.holds(),
             estimated: self.estimated(),
             contact: None,
+            unattributed: self.unattributed,
         }
     }
 
@@ -1373,6 +1381,9 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
                     moves[i].state = PlatformActivityState::Failed;
                     moves[i].can_land = false;
                 }
+                for &i in &present {
+                    moves[i].unattributed = true;
+                }
                 changed.extend(group);
                 continue;
             }
@@ -1429,6 +1440,9 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
             for &i in group.iter().filter(|&&i| i != newest) {
                 moves[i].state = PlatformActivityState::Replaced;
                 moves[i].can_land = false;
+            }
+            for &i in &group {
+                moves[i].unattributed = true;
             }
         }
         changed.extend(group);
@@ -1671,6 +1685,7 @@ pub(crate) fn changes(
             may_land: false,
             estimated: false,
             contact: None,
+            unattributed: false,
         };
         if is > was {
             let rose = is - was;
@@ -3704,6 +3719,7 @@ pub(crate) async fn move_to_core(
         to: row.to,
         state: record.state,
         fee_credits: row.fee_credits,
+        unattributed: record.unattributed,
     })
 }
 
@@ -3742,6 +3758,7 @@ pub(crate) async fn send(
         may_land: row.may_land,
         fee_credits: row.fee_credits,
         estimated: row.estimated,
+        unattributed: record.unattributed,
     })
 }
 
@@ -3970,6 +3987,7 @@ pub(crate) async fn run(
         seen_at: None,
         fee_taken: None,
         group: None,
+        unattributed: false,
         version: Some(version.protocol_version),
     };
     // A move `failed` by height may still execute: only one at its very

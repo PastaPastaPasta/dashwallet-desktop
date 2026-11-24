@@ -916,6 +916,7 @@ pub(crate) fn activity(e: ShieldedActivityEntry, network: Network) -> ShieldedAc
         },
         created_at: (e.created_at_ms != 0).then_some(e.created_at_ms / 1000),
         contact: None,
+        unattributed: false,
     }
 }
 
