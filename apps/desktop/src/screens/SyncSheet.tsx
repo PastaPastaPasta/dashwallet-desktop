@@ -35,6 +35,12 @@ export function stalledMinutes(s: SyncStatus, sinceReading = 0): number | null {
   return secs < STALL_SECS ? null : Math.floor(secs / 60);
 }
 
+/** The status bar holds a synced wallet at "Up to date" while a new block is processed, but the
+ * phase rows are the engine's own: say why one is still short of done. */
+export function processingBlock(s: SyncStatus): boolean {
+  return s.running && s.caughtUp && s.phases.some((p) => !p.done && p.targetHeight !== null && p.targetHeight > 0);
+}
+
 /** Seconds since `reading` arrived, ticking while the sheet is open. */
 function useSecondsSince(reading: unknown): number {
   const [since, setSince] = useState(() => ({ reading, at: Date.now() }));
@@ -59,6 +65,11 @@ export function SyncSheet({ onClose }: { onClose: () => void }) {
       <p className="sheet-text" data-testid="sync-sheet-state">
         {syncState(sync)}
       </p>
+      {sync && processingBlock(sync) && (
+        <p className="sheet-text mg-muted" data-testid="sync-sheet-processing">
+          {t("shell.sync.processingBlock")}
+        </p>
+      )}
       {stalled !== null && (
         <p className="sheet-warning" role="note" data-testid="sync-sheet-stalled">
           {t("shell.sync.stalled", { count: stalled })}

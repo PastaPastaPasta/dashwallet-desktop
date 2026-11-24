@@ -3,9 +3,27 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import { t } from "../i18n";
-import { phaseText, stalledMinutes } from "./SyncSheet";
+import { phaseText, processingBlock, stalledMinutes } from "./SyncSheet";
 
 const phase = (over: object) => ({ phase: "filters" as const, currentHeight: 600, targetHeight: 1000, done: false, ...over });
+
+describe("the new-block hold", () => {
+  const held = (filtersDone: boolean) =>
+    ({
+      running: true,
+      caughtUp: true,
+      phases: [phase({ phase: "headers", done: true }), phase({ currentHeight: 999, done: filtersDone })],
+    }) as unknown as SyncStatus;
+  it("says the latest block is being processed under Up to date while a phase is short of done", () => {
+    expect(processingBlock(held(false))).toBe(true);
+    expect(phaseText(t, held(false).phases[1], "en-US")).toBe("999 of 1,000 (99.9%)");
+    expect(t("shell.sync.processingBlock")).toBe("Processing the latest block…");
+  });
+  it("drops the line once that phase reads done, and while not caught up", () => {
+    expect(processingBlock(held(true))).toBe(false);
+    expect(processingBlock({ ...held(false), caughtUp: false })).toBe(false);
+  });
+});
 
 describe("sync phases", () => {
   it("reads done, waiting, or current of target", () => {
