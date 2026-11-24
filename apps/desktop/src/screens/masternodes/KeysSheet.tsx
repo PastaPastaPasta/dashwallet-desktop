@@ -50,6 +50,10 @@ export function MasternodeKeysSheet({
   const list = useRef<HTMLUListElement>(null);
   const refocusList = useRef(false);
   useEffect(() => {
+    // A retry that failed again leaves nothing to refocus later.
+    if (!keys.retrying && keys.error !== null) refocusList.current = false;
+  }, [keys.retrying, keys.error]);
+  useEffect(() => {
     if (!refocusList.current || keys.error !== null) return;
     refocusList.current = false;
     // Only when focus fell to the page; a role picked meanwhile keeps it.
@@ -192,15 +196,13 @@ function useKeyPages(walletId: string, role: MasternodeKeyRoleName, pages: numbe
   // A page that never loaded drops its error while it is read again, and an offline read is paused
   // rather than fetching: the retried error and an inert Try again stay until this role's read
   // settles, and are forgotten once it does or the role changes.
-  const [retried, setRetried] = useState<{ role: MasternodeKeyRoleName; error: string; seen: boolean } | null>(null);
+  const [retried, setRetried] = useState<{ role: MasternodeKeyRoleName; error: string } | null>(null);
+  // A refetch dispatches its fetch synchronously, so the render after Try again already reads.
   const reading = results.some((r) => r.isFetching || r.isPaused);
-  // Until its read is seen in flight, a retry counts as running: the refetch reports a render later.
-  const retrying = retried !== null && retried.role === role && (reading || !retried.seen);
+  const retrying = retried !== null && retried.role === role && reading;
   useEffect(() => {
-    if (retried === null) return;
-    if (retried.role !== role || (retried.seen && !reading)) setRetried(null);
-    else if (reading && !retried.seen) setRetried({ ...retried, seen: true });
-  }, [retried, role, reading]);
+    if (retried !== null && !retrying) setRetried(null);
+  }, [retried, retrying]);
   return {
     keys,
     watchOnly,
@@ -210,7 +212,7 @@ function useKeyPages(walletId: string, role: MasternodeKeyRoleName, pages: numbe
     /** Reads the failed pages again; the pages already in stay on screen. */
     retry: () => {
       if (retrying || error === null) return;
-      setRetried({ role, error, seen: false });
+      setRetried({ role, error });
       for (const r of results) if (r.isError) void r.refetch();
     },
     retrying,
