@@ -185,8 +185,7 @@ pub fn combine(
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {
-    use dashcore::hashes::Hash;
-    use dashcore::secp256k1::{Message, SecretKey, ecdsa};
+    use dashcore::ecdsa::{EcdsaSecretKey, EcdsaSignature};
     use dashcore::{Txid, script::Builder};
 
     use super::super::CollateralShare;
@@ -197,7 +196,7 @@ mod tests {
     const COIN: u64 = 100_000_000;
 
     fn key_id(i: u8) -> [u8; 20] {
-        let sk = SecretKey::from_secret_bytes([i; 32]).unwrap();
+        let sk = EcdsaSecretKey::from_bytes(&[i; 32]).unwrap();
         dashcore::PublicKey::new(sk.public_key())
             .pubkey_hash()
             .to_byte_array()
@@ -270,12 +269,11 @@ mod tests {
 
     /// `script` spending P2PKH `key`'s coin: `<sig||SIGHASH_ALL> <pubkey>`
     /// over input `index` of `tx`.
-    fn script_sig(tx: &SpecialTx, index: usize, key: &SecretKey) -> ScriptBuf {
+    fn script_sig(tx: &SpecialTx, index: usize, key: &EcdsaSecretKey) -> ScriptBuf {
         let pk = dashcore::PublicKey::new(key.public_key());
         let code = ScriptBuf::new_p2pkh(&pk.pubkey_hash());
         let hash = tx.signature_hash_all(index, &code).unwrap();
-        let sig = ecdsa::sign(Message::from_digest(hash), key);
-        let mut bytes = sig.serialize_der().to_vec();
+        let mut bytes = key.sign(&hash).with_der(<[u8]>::to_vec);
         bytes.push(1);
         Builder::new()
             .push_slice(<&dashcore::script::PushBytes>::try_from(bytes.as_slice()).unwrap())
@@ -295,8 +293,8 @@ mod tests {
         let code = ScriptBuf::new_p2pkh(&pk.pubkey_hash());
         let hash = tx.signature_hash_all(index, &code).unwrap();
         let der = &sig.as_bytes()[..sig.len() - 1];
-        ecdsa::Signature::from_der(der)
-            .and_then(|s| ecdsa::verify(&s, Message::from_digest(hash), &pk.inner))
+        EcdsaSignature::from_der(der)
+            .and_then(|s| pk.inner.verify(&hash, s))
             .is_ok()
     }
 
@@ -354,7 +352,7 @@ mod tests {
     fn test_QT_127_a_fee_input_signed_before_the_insert_does_not_spend_after_it() {
         let s = shares();
         let m = mn(&s);
-        let funder = SecretKey::from_secret_bytes([42; 32]).unwrap();
+        let funder = EcdsaSecretKey::from_bytes(&[42; 32]).unwrap();
         let mut request = prepare(&m, keys(), &fee_inputs(), Some(change()));
         for i in 0..request.input.len() {
             request.input[i].script_sig = script_sig(&request, i, &funder);

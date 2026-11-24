@@ -22,7 +22,6 @@
 
 use std::str::FromStr;
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint, ScriptBuf, Txid};
 use dw_protx::params::MASTERNODE_COLLATERAL;
 use dw_protx::payloads::sign_hash_compact;
@@ -930,7 +929,7 @@ fn test_QT_127_dissolve_together_equals_dashds() {
 /// `SIGHASH_ALL`. A changed payload byte breaks every one.
 #[test]
 fn test_QT_126_funding_signatures_verify_against_the_special_tx_sighash() {
-    use dashcore::secp256k1::{Message, PublicKey, ecdsa};
+    use dashcore::ecdsa::{EcdsaPublicKey, EcdsaSignature};
     let mut checked = 0;
     for c in registrations() {
         let tx = tx_of(str_of(&c, "tx_hex"));
@@ -950,14 +949,14 @@ fn test_QT_126_funding_signatures_verify_against_the_special_tx_sighash() {
             };
             let (hash_type, der) = sig.split_last().unwrap();
             assert_eq!(u32::from(*hash_type), dw_protx::shared::rawtx::SIGHASH_ALL);
-            let pubkey = PublicKey::from_slice(pubkey).unwrap();
+            let pubkey = EcdsaPublicKey::from_bytes(pubkey).unwrap();
             let script_code = ScriptBuf::new_p2pkh(&dashcore::PublicKey::new(pubkey).pubkey_hash());
-            let sig = ecdsa::Signature::from_der(der).unwrap();
-            let digest = |t: &SpecialTx| {
-                Message::from_digest(t.signature_hash_all(i, &script_code).unwrap())
-            };
-            ecdsa::verify(&sig, digest(&tx), &pubkey).unwrap_or_else(|e| panic!("input {i}: {e}"));
-            assert!(ecdsa::verify(&sig, digest(&tampered), &pubkey).is_err());
+            let sig = EcdsaSignature::from_der(der).unwrap();
+            let digest = |t: &SpecialTx| t.signature_hash_all(i, &script_code).unwrap();
+            pubkey
+                .verify(&digest(&tx), sig)
+                .unwrap_or_else(|e| panic!("input {i}: {e}"));
+            assert!(pubkey.verify(&digest(&tampered), sig).is_err());
             checked += 1;
         }
         assert_eq!(

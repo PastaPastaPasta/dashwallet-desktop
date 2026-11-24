@@ -28,9 +28,9 @@ use dashcore::blockdata::transaction::special_transaction::provider_registration
 };
 use dashcore::blockdata::transaction::special_transaction::provider_update_registrar::ProviderUpdateRegistrarPayload;
 use dashcore::bls_sig_utils::{BlsPkBytes, BlsScheme};
-use dashcore::hashes::Hash;
-use dashcore::secp256k1::Message;
-use dashcore::sign_message::{MessageSignature, signed_msg_hash};
+use dashcore::ecdsa::EcdsaRecSignature;
+use dashcore::hashes::sha256d;
+use dashcore::sign_message::{recover_pubkey, signed_msg_hash};
 use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
 use dashcore::sml::masternode_list_entry::net_info::{self as list_net_info, Bip155Network};
 use dashcore::{Network, OutPoint, PubkeyHash, ScriptBuf, Transaction, Txid};
@@ -384,15 +384,9 @@ pub fn signed_by(sig: &[u8], hash: [u8; 32], key_id: [u8; 20]) -> bool {
     };
     // As `VerifyHash` reads the header; `from_slice` alone is narrower.
     sig[0] = 27 + (sig[0].wrapping_sub(27) & 7);
-    let Ok(sig) = MessageSignature::from_slice(&sig) else {
+    let sig = EcdsaRecSignature::from(sig);
+    let Ok(public) = recover_pubkey(&sig, sha256d::Hash::from_byte_array(hash)) else {
         return false;
-    };
-    let Ok(public) = sig.signature.recover_ecdsa(Message::from_digest(hash)) else {
-        return false;
-    };
-    let public = dashcore::PublicKey {
-        compressed: sig.compressed,
-        inner: public,
     };
     public.pubkey_hash().to_byte_array() == key_id
 }
@@ -874,9 +868,9 @@ mod tests {
         let hash = [0x22u8; 32];
         let public = dashcore::PublicKey {
             compressed: true,
-            inner: dashcore::secp256k1::PublicKey::from_secret_key(
-                &dashcore::secp256k1::SecretKey::from_secret_bytes(secret).unwrap(),
-            ),
+            inner: dashcore::ecdsa::EcdsaSecretKey::from_bytes(&secret)
+                .unwrap()
+                .public_key(),
         };
         let key_id = public.pubkey_hash().to_byte_array();
         let sig = crate::payloads::sign_hash_compact(&secret, &hash).unwrap();

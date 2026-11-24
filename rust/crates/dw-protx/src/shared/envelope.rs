@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 
 use dashcore::Network;
-use dashcore::hashes::{Hash, sha256};
+use dashcore::hashes::sha256;
 
 use super::TRANSACTION_PROVIDER_DISSOLVE;
 use super::json::Json;
