@@ -1792,7 +1792,9 @@ impl NetworkSession {
     /// go. A coin they spent comes back only through the rewind, which is
     /// recorded before the marks and made after the sweep, and only when
     /// the plan frees it; the sweep stores none unspent. Every other coin
-    /// they spent is claimed for good. Returns the dropped txids.
+    /// they spent is claimed for good. Holds the wallet's abandon gate for
+    /// writing through its marks, as an abandon does, so no resend hands off
+    /// bytes it has marked. Returns the dropped txids.
     pub(crate) async fn drop_dead_unmined(
         &self,
         manager: &Manager,
@@ -1802,6 +1804,7 @@ impl NetworkSession {
         links: &BTreeSet<Txid>,
         recheck: bool,
     ) -> Result<BTreeSet<Txid>, EngineError> {
+        let _gate = self.abandon_gate(wallet).write_owned().await;
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
         // What any loaded wallet settled can descend from this one's
