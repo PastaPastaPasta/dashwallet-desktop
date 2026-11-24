@@ -11,4 +11,10 @@ currentHeight: number | null, targetHeight: number | null,
 /**
  * UNIX seconds.
  */
-startedAt: number, };
+startedAt: number,
+/**
+ * Lower-case hex ids of the wallets still rescanning because an older
+ * version scanned them: the first open after an update replays each
+ * once from its birth.
+ */
+upgradeWallets: Array<string>, };

@@ -61,6 +61,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     ("Masternodes::start_key_change", "deferred (MG-10 S6)"),
     ("Masternodes::start_shared", "deferred (MG-10 S5)"),
+    ("Masternodes::unreadable_shared_sessions", "deferred (MG-10 S5)"),
     ("Masternodes::unlock_shared_terms", "deferred (MG-10 S5)"),
     ("Masternodes::update_share", "deferred (MG-10 S6)"),
     ("Masternodes::withdraw_credits", "deferred (MG-10 S4)"),

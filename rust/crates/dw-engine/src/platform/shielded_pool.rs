@@ -278,6 +278,12 @@ pub(crate) trait ShieldedLib: Send + Sync {
     fn settled_locks(&self) -> impl Future<Output = HashSet<Txid>> + Send;
     /// Records the shield lock `txid` settled by a proved apply.
     fn settle(&self, txid: Txid) -> impl Future<Output = Result<(), PlatformError>> + Send;
+    /// Platform's proved answer whether the lock at `outpoint` is spent
+    /// ([`super::unfinished_locks::proved_spent`]).
+    fn spent(
+        &self,
+        outpoint: OutPoint,
+    ) -> impl Future<Output = super::unfinished_locks::SpentRead> + Send;
     /// Whether the engine's dispatch hook is set on the network's
     /// coordinator ([`EngineDispatch`]). Without it the library would send
     /// a spend the engine never accepted.
@@ -803,9 +809,35 @@ pub(crate) async fn history(
         return Ok(Vec::new());
     }
     let network = lib.network();
+    let clock = lib.rest_clock().await.ok();
+    let now = crate::events::unix_now();
     Ok((lib.activity(offset, limit).await?.into_iter())
-        .map(|e| activity(e, network))
+        .map(|e| {
+            let seen = clock.as_ref().and_then(|c| first_seen(c, &e, now));
+            let mut row = activity(e, network);
+            row.created_at = row.created_at.or(seen);
+            row
+        })
         .collect())
+}
+
+/// When the engine first saw an incoming row's notes, from the rest clock,
+/// for a row a scan derived (the library dates none): `now` for a note
+/// found after the first scan and not recorded yet, as `observe_rest` will
+/// record it; `None` for a note of the first scan (restored) or before it.
+fn first_seen(clock: &RestClock, e: &ShieldedActivityEntry, now: u64) -> Option<u64> {
+    if !matches!(e.direction, Direction::In) {
+        return None;
+    }
+    let keys = if e.note_cmxs.is_empty() {
+        std::slice::from_ref(&e.id)
+    } else {
+        e.note_cmxs.as_slice()
+    };
+    (keys.iter())
+        .filter_map(|k| (clock.seen.get(k).copied()).or(clock.scanned.then_some(now)))
+        .filter(|&t| t != 0)
+        .min()
 }
 
 /// One library activity row as the facade shows it.
@@ -1156,6 +1188,9 @@ async fn spend(
     }
     let lease = authority(session, wallet, grant, FlowKind::ShieldedSpend).await?;
     let permit = write_permit(&lease, operation, quote.total_credits)?;
+    // A pending spend's change is no note of the library's until a pass
+    // finds it: its balance after is the one before less what it spends.
+    let after = balance(lib).await.saturating_sub(quote.total_credits);
     // The records and reservations before, to tell this spend's (spends of
     // the wallet run one at a time, under its lock, and no pass runs
     // under the hold).
@@ -1234,7 +1269,7 @@ async fn spend(
                 }
             }
             Ok(Spent {
-                balance: balance(lib).await,
+                balance: after,
                 state: ShieldedSpendState::Pending,
                 unresolved,
             })
@@ -1288,7 +1323,7 @@ async fn spend(
             }
             drop(hold);
             Ok(Spent {
-                balance: balance(lib).await,
+                balance: after,
                 state: ShieldedSpendState::Pending,
                 unresolved: armed,
             })
@@ -2779,6 +2814,10 @@ impl ShieldedLib for PwShielded {
 
     async fn wait_proof(&self, outpoint: OutPoint, timeout: Duration) -> Result<(), FundError> {
         Reg::wait_proof(&self.pw, outpoint, timeout).await
+    }
+
+    async fn spent(&self, outpoint: OutPoint) -> super::unfinished_locks::SpentRead {
+        super::unfinished_locks::proved_spent(&self.pw.sdk, outpoint).await
     }
 
     async fn credit_script(&self, outpoint: OutPoint) -> Option<dashcore::ScriptBuf> {

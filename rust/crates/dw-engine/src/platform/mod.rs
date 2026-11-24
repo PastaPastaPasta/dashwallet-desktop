@@ -122,7 +122,6 @@ pub(crate) mod withdrawal;
 
 pub(crate) use avatar::{Locks, keyed_lock};
 pub use bringup::CREATED_HERE_BUDGET;
-pub(crate) use bringup::CREATED_HERE_KEY;
 pub use contacts::{
     ChannelState, ContactDetail, ContactQuery, ContactSection, ContactSectionPage, ContactSort,
     ContactSummary, ContactsPage, Eligibility, PrivateDetails, PublishState, Relation,
