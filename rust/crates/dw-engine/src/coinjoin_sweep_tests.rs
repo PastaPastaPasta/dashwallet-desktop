@@ -2287,7 +2287,23 @@ fn a_reset_of_chain_data_waits_for_mixing_and_a_signed_rounds_inputs() {
     f.session
         .hold_signed_for_test(f.wallet, owner, &[coin], now);
     assert!(!f.session.mixing_busy(), "no session open, inputs held");
+    let birth = f.session.hub.wallet_state(&f.wallet).unwrap().birth_height;
+    let manager = f.session.manager().unwrap();
+    f.engine.block_on(async {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let wm = manager.wallet_manager_arc();
+        wm.write()
+            .await
+            .update_wallet_synced_height(&f.wallet.0, birth + 100);
+    });
+    let replay = f.session.live().unwrap().replay;
+    assert_eq!(f.engine.block_on(replay.stored(f.wallet)).unwrap(), None);
     refused(reset(&f), CoinJoinFailure::InputsHeld);
+    assert_eq!(
+        f.engine.block_on(replay.stored(f.wallet)).unwrap(),
+        None,
+        "a refused reset stores no replay record"
+    );
     assert!(f.session.spends.snapshot(&f.wallet).contains(&coin));
 
     let timeout = crate::coinjoin::PENDING_OBSERVATION_FOR_TEST;
