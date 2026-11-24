@@ -3,6 +3,22 @@ import { artifactPath, fixtureUrl, fontsReady, THEMES } from "./helpers";
 
 // Sync progress (IOS-023): the status bar's sync item opens a sheet with each phase's own progress.
 
+test("a quiet stall is still called out: no further event after the engine's one-time reading", async ({ page }) => {
+  await page.clock.install();
+  await page.goto(fixtureUrl("empty-syncing", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => {
+    const fx = window.__dwFixture!;
+    fx.world.sync = { ...fx.world.sync, secondsSinceProgress: 45 };
+    fx.emit({ kind: "sync", network: fx.world.launch.network.dirName, status: fx.world.sync });
+  });
+  await page.getByTestId("status-sync").click();
+  await expect(page.getByTestId("sync-sheet-phases")).toBeVisible();
+  await expect(page.getByTestId("sync-sheet-stalled")).toHaveCount(0);
+  await page.clock.runFor(20_000);
+  await expect(page.getByTestId("sync-sheet-stalled")).toContainText("No progress for 1 minute");
+});
+
 for (const theme of THEMES)
   test(`the status bar's sync item shows each phase, ${theme}`, async ({ page }, info) => {
     await page.goto(fixtureUrl("empty-syncing", theme));
