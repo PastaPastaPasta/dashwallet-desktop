@@ -8,7 +8,7 @@
 // `governance` as the engine's notifier would.
 
 import type { AppError } from "../api/generated/commands";
-import { BANNED_REJECTION, inProgress } from "../governance/model";
+import { BANNED_REJECTION, COLLATERAL_UNRESOLVED, inProgress } from "../governance/model";
 import type { GovernanceInfo } from "../api/generated/GovernanceInfo";
 import type { GovernanceSyncState } from "../api/generated/GovernanceSyncState";
 import type { MyProposal } from "../api/generated/MyProposal";
@@ -413,7 +413,7 @@ export function governanceHandlers({
         // The engine checks an attached key against the listed voting key when it signs (voting.rs `choose_key`).
         if (staleAddedVoter(world.masternodes, proTxHash)) return refused("no_voting_key");
         if (!m) return refused("unknown_masternode");
-        if (!m.collateralResolved) return refused("collateral_unresolved");
+        if (!m.collateralResolved) return refused(COLLATERAL_UNRESOLVED);
         if (g.refuse[proTxHash]) return refused(g.refuse[proTxHash]);
         if (!m.valid) return refused(BANNED_REJECTION);
         const before = seen[proTxHash];
