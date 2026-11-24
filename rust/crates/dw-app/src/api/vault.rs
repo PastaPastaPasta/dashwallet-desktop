@@ -147,7 +147,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "Vault::shielded_spend_key",
-        "internal: reached through `DashPay::shielded_send` and `unshield_to_core`, which redeem their `ShieldedSpend` grant for one spend (m4 §2.13)",
+        "internal: reached through `DashPay::shielded_send`, `unshield_to_core` and `unshield_to_platform`, which redeem their `ShieldedSpend` grant for one spend (m4 §2.13)",
     ),
     (
         "Vault::shield_drain_signer",
