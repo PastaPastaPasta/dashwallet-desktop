@@ -961,6 +961,22 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
             // Exits paying one address share one document: whichever of
             // them executed, the history is the same (moves' rule for
             // equal terms).
+            // Exits of other terms share that document too, and it does not
+            // say which of them paid: the newest carries the group's
+            // outcome, unattributed, as moves of other terms do below.
+            let alike = (present.iter()).all(|&i| moves[i].terms() == moves[present[0]].terms());
+            if !present.is_empty() && !alike {
+                let newest = present.iter().copied().max_by_key(|&i| order(i));
+                let newest = newest.expect("present is not empty");
+                let to = Some(moves[newest].to.clone());
+                moves[newest].done_for_group(seen, to);
+                for &i in group.iter().filter(|&&i| i != newest) {
+                    moves[i].state = PlatformActivityState::Failed;
+                    moves[i].can_land = false;
+                }
+                changed.extend(group);
+                continue;
+            }
             let winner = match present.as_slice() {
                 [] if known => top_ups.iter().copied().max_by_key(|&i| order(i)),
                 [] => None,
@@ -1499,10 +1515,14 @@ pub(crate) fn top_up_plan(
             count = taken;
             continue;
         }
+        // `DeductFromInput(0)` can take all input 0 keeps, not only the
+        // band: that remainder is what the grant covers.
+        let (source, claim) = planned.input_0();
+        let kept = balances.get(&source).copied().unwrap_or(0);
         return Ok(Plan {
-            fee_source: planned.input_0().0,
+            fee_source: source,
             fee: limits.fee(taken),
-            reserve: rules.reserve,
+            reserve: kept.saturating_sub(claim),
             inputs: planned.inputs,
             fee_from_output: false,
         });
@@ -1535,9 +1555,11 @@ fn exit_possible(
 /// A read behind one this wallet already settled on: an input's nonce
 /// below one a done record signed. Planning on it would sign a nonce
 /// Platform already took, and the next read would show it "reached".
-fn behind(moves: &[MoveRecord], seen: &Seen) -> Result<(), PlatformError> {
+/// `every`: any done record counts; else only a top-up from Platform's.
+fn behind(moves: &[MoveRecord], seen: &Seen, every: bool) -> Result<(), PlatformError> {
     let stale = (moves.iter())
         .filter(|m| m.state == PlatformActivityState::Done)
+        .filter(|m| every || m.kind == MoveKind::ToIdentity)
         .flat_map(|m| &m.inputs)
         .any(|i| seen.nonce(&i.address).is_some_and(|n| n < i.nonce));
     if stale {
@@ -2529,10 +2551,18 @@ pub(crate) async fn quote(
     {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
+    // A top-up from Platform not settled: its exit takes exactly its inputs
+    // (C-routes C3-9), so Confirm shows that move; one Platform has not
+    // answered holds the next move, as the move refuses it.
+    let top_up = (moves.iter()).find(|m| m.kind == MoveKind::ToIdentity && m.holds());
+    if let Some(h) = top_up.filter(|h| h.state == PlatformActivityState::Pending) {
+        return Err(CreditsError::MovePending { id: h.id.clone() });
+    }
     let version = net.version();
     let target = Target::Core("");
     let limits = target.limits(version)?;
-    let planned = target.plan(&proved_balances(&pool, &seen, network), amount, &limits)?;
+    let balances = proved_balances(&pool, &seen, network);
+    let planned = plan_beside(&target, balances, amount, &limits, top_up, network)?;
     let to = session
         .current_receiving_address(wallet_id)
         .await
@@ -2718,7 +2748,7 @@ pub(crate) async fn top_up_quote(
     if let Some(h) = moves.iter().find(|m| m.holds()) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    behind(&moves, &seen)?;
+    behind(&moves, &seen, true)?;
     let limits = Limits::top_up_at(version);
     let balances = proved_balances(&pool, &seen, network);
     let planned = top_up_plan(&balances, amount, &limits)?;
@@ -2918,9 +2948,7 @@ async fn run(
     let version = net.version();
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
-    if let Target::Identity(_) = target {
-        behind(&moves, &seen)?;
-    }
+    behind(&moves, &seen, matches!(target, Target::Identity(_)))?;
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
     // only its exact retry, and a retry of one that landed pays nothing.
