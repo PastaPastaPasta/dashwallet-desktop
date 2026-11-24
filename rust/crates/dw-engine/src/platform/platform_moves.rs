@@ -3324,18 +3324,19 @@ pub(crate) async fn quote(
     {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    // A top-up from Platform not settled: its exit takes exactly its inputs
-    // (C-routes C3-9), so Confirm shows that move; one Platform has not
-    // answered holds the next move, as the move refuses it.
-    let top_up = (moves.iter()).find(|m| m.kind == MoveKind::ToIdentity && m.holds());
-    if let Some(h) = top_up.filter(|h| h.state == PlatformActivityState::Pending) {
+    // A move, contact payment or top-up not settled: the move beside it
+    // takes exactly its inputs (C-routes C3-9), as `run` plans it, so
+    // Confirm shows that move; one Platform has not answered holds the next
+    // move, as the move refuses it.
+    let held = (moves.iter()).find(|m| m.holds() && !m.reached(&seen));
+    if let Some(h) = held.filter(|h| h.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
     let version = net.version();
     let target = Target::Core("");
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
-    let planned = plan_beside(&target, balances, amount, &limits, top_up, network)?;
+    let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
     let to = session
         .current_receiving_address(wallet_id)
         .await
@@ -4010,7 +4011,7 @@ pub(crate) async fn run(
     }
     let mut script = match target {
         Target::Core(to) => match own_core_destination(session, wallet_id, network, to).await {
-            Err(_) if off => return Err(flag()),
+            Err(PlatformError::InvalidArgument { .. }) if off => return Err(flag()),
             script => Some(script?),
         },
         Target::Platform(_) | Target::Contact | Target::Identity(_) => None,

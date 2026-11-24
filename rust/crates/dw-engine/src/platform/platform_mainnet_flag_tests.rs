@@ -470,3 +470,30 @@ fn a_smaller_exit_on_part_of_the_held_inputs_is_off_on_mainnet() {
     assert!(w.net.recorded_before_signing.lock().unwrap().is_empty());
     assert!(w.f.unused(&grant));
 }
+
+#[test]
+fn a_held_moves_quote_takes_what_its_exit_signs() {
+    for network in [DashNetwork::Testnet, DashNetwork::Mainnet] {
+        let w = World::on(network.clone());
+        let (a, b) = (w.address(0), w.address(1));
+        w.net.fund(a, 3 * DASH);
+        w.net.fund(b, 9 * DASH);
+        w.seed(&held(
+            "move-1-0",
+            MoveKind::ToCore,
+            (&bech32m(&a, w.network()), 1, 3 * DASH, 3 * DASH),
+            &w.to.clone(),
+        ));
+        let quote = w.quote(WithdrawAmount::All).unwrap();
+        let exit = w.move_all(&w.f.grant(quote.credits)).unwrap();
+        assert_eq!(exit.state, PlatformActivityState::Done, "{network:?}");
+        let sent = w.net.sent();
+        assert_eq!(sent.len(), 1, "{network:?}");
+        assert_eq!(sent[0].keys().collect::<Vec<_>>(), vec![&a], "{network:?}");
+        let signed: u64 = sent[0].values().map(|(_, credits)| *credits).sum();
+        assert_eq!(
+            quote.credits, signed,
+            "{network:?}: Confirm showed what was signed"
+        );
+    }
+}
