@@ -62,7 +62,7 @@ describe("matching keys to known masternodes (D8)", () => {
 });
 
 describe("when key matches are settled (D8)", () => {
-  const read = <T>(data: T | undefined, over: Partial<ReadState<T>> = {}): ReadState<T> => ({ data, isError: false, isPending: data === undefined, isFetching: false, ...over });
+  const read = <T>(data: T | undefined, over: Partial<ReadState<T>> = {}): ReadState<T> => ({ data, isError: false, isPending: data === undefined, isFetching: false, isPaused: false, ...over });
   const office = detail("11", { owner: "yOffice" });
 
   it("matches only once the list and every detail have settled with success", () => {
@@ -74,6 +74,11 @@ describe("when key matches are settled (D8)", () => {
   it("is checking, with no match from cached data, while a refresh runs", () => {
     expect(knownMatches(read(["11"], { isFetching: true }), [read(office)])).toEqual({ details: [], state: "checking" });
     expect(knownMatches(read(["11"]), [read(office, { isFetching: true })])).toEqual({ details: [], state: "checking" });
+  });
+
+  it("is checking, with no match from cached data, while a refresh waits offline", () => {
+    expect(knownMatches(read(["11"]), [read(office, { isPaused: true })])).toEqual({ details: [], state: "checking" });
+    expect(knownMatches(read(["11"], { isPaused: true }), [read(office)])).toEqual({ details: [], state: "checking" });
   });
 
   it("is failed, with no match from cached data, after a refresh fails", () => {

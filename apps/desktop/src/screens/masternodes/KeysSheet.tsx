@@ -85,8 +85,13 @@ export function MasternodeKeysSheet({
             ))}
           </div>
           {keys.error !== null && (
-            <p className="form-problem" role="alert" data-testid="mn-keys-failed">
-              {keys.error}
+            <p className="mg-notice-row" data-testid="mn-keys-failed">
+              <span className="field-error" role="alert">
+                {keys.error}
+              </span>
+              <DashButton variant="tintedBlue" size="small" data-testid="mn-keys-retry" disabled={keys.retrying} onClick={keys.retry}>
+                {t("components.phrase.tryAgain")}
+              </DashButton>
             </p>
           )}
           {keys.loading && rows.length === 0 ? (
@@ -170,6 +175,11 @@ function useKeyPages(walletId: string, role: MasternodeKeyRoleName, pages: numbe
     error: failed !== null && !watchOnly ? keysErrorText(failed) : null,
     loading: results.some((r) => r.isPending),
     more: last?.data?.length === KEYS_PAGE,
+    /** Reads the failed pages again; the pages already in stay on screen. */
+    retry: () => {
+      for (const r of results) if (r.isError) void r.refetch();
+    },
+    retrying: results.some((r) => r.isError && r.isFetching),
   };
 }
 

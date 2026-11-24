@@ -120,6 +120,8 @@ export interface MasternodesWorld {
   /** Wallets whose seed is gone but whose provider accounts stay (Forgot Passphrase): `mn_keys`
    * lists their public keys, `mn_reveal_key` still refuses. */
   keysWithoutSeed?: string[];
+  /** `mn_keys` fails for pages after the first (a keychain read that fails mid-list). */
+  keyPagesFail?: boolean;
   /** A held registration's operator reward in hundredths of a percent; absent: 0. */
   operatorRewards: Record<string, number>;
   /** The wallet's ProTx operations, newest first (mn-engine §2.3). */
@@ -994,6 +996,7 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
       if (count > 100) throw fail("invalid_argument", "count above 100");
       if (wallet(world, walletId).summary.watchOnly && !world.masternodes.keysWithoutSeed?.includes(walletId))
         throw fail("masternode.watch_only", "fixture: a watch-only wallet has no provider account");
+      if (start > 0 && world.masternodes.keyPagesFail) throw fail("internal", "fixture: the keychain read failed");
       const end = Math.min(start + count, POOL[role]);
       return Array.from({ length: Math.max(0, end - start) }, (_, i) => keyInfo(role, start + i));
     },

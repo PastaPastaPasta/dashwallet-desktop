@@ -130,6 +130,21 @@ test("a refresh that fails after a match says Couldn't check, not the old match"
   await expect(sheet.getByTestId("mn-key-1-match")).toHaveText("Matched to Office node · 203.0.113.9:19999");
 });
 
+test("a key page that fails to load offers Try again and keeps the rows already in", async ({ page }) => {
+  await open(page, "light");
+  const sheet = page.getByTestId("mn-keys");
+  await sheet.getByTestId("mn-keys-role-operator").click();
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = true));
+  await sheet.getByTestId("mn-keys-more").click();
+  await expect(sheet.getByTestId("mn-keys-failed")).toBeVisible();
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = false));
+  await sheet.getByTestId("mn-keys-retry").click();
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(25);
+  await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
+});
+
 test("a wallet without its seed lists public keys and offers no Reveal", async ({ page }) => {
   await open(page, "light", "mn-watchonly", () =>
     page.evaluate((id) => (window.__dwFixture!.world.masternodes.keysWithoutSeed = [id]), FIXTURE_WALLET_ID),
