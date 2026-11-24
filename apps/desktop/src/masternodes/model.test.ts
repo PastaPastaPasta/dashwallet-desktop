@@ -331,6 +331,9 @@ describe("Activity and errors", () => {
   it("turns masternode codes into §3.8's sentences and keeps unknown messages", () => {
     const e = (code: string, message = "engine text") => ({ code, message, data: null });
     expect(mnErrorText(e("masternodes.update_pending"))).toMatch(/^An earlier change to this masternode/);
+    expect(mnErrorText(e("masternodes.update_abandoned_pending"))).toBe(
+      "An abandoned change to this masternode may still confirm, and it would undo this one. To clear it, send one of that change's coins to yourself. You can make this change once that payment is in a block.",
+    );
     expect(mnErrorText(e("masternodes.in_flight"))).toBe("Another step on this masternode is still running.");
     expect(mnErrorText(e("masternodes.no_owner_key"))).toBe("This wallet doesn't hold this masternode's owner key.");
     expect(mnErrorText(e("masternodes.shared_registration_unknown"))).toBe("This wallet's history doesn't hold this masternode's registration.");
