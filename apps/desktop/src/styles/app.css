@@ -2118,6 +2118,26 @@ input[type="radio"]:disabled {
   border-radius: var(--dw-radius-card);
 }
 
+/* Pay ▸ added recipients (QT-052). */
+.pay-more-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pay-more-title {
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.pay-more-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
 .pay-scan-row {
   display: flex;
   flex-wrap: wrap;
@@ -4793,6 +4813,11 @@ button.bell-row-open:focus-visible {
   opacity: var(--dw-opacity-disabled);
 }
 
+.export-staging-path {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* ------------------------------------------------------------------ Prices (MP-01) */
 
 .rates-consent-card {
@@ -5493,8 +5518,16 @@ button.bell-row-open:focus-visible {
 
 .mg-header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--dw-space-s);
+  min-width: 0;
+}
+
+/* A disabled action's reason wraps under it, end-aligned, instead of widening the header. */
+.mg-header-actions > .dash-button-why {
+  text-align: end;
 }
 
 .page-masternodes .page-column {
@@ -6236,15 +6269,19 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-text-tertiary);
 }
 
-/* A group, not a fieldset, as on Restore options (issue 108): a flex fieldset's legend could move
-   the centred sheet under the first click on WebKitGTK. */
+/* The vote sheet's group is a div, as on Restore options (issue 108): a flex fieldset's legend could
+   move the centred sheet under the first click on WebKitGTK. The registration and Change keys sheets
+   still use fieldsets, so their browser box is reset here. */
 .mg-choices {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
-.mg-choices > .mg-section-title {
+div.mg-choices > .mg-section-title {
   margin: 0;
   padding-inline: 2px;
 }
