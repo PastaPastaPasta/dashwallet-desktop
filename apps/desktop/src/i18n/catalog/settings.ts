@@ -31,7 +31,7 @@ export const settings = {
     languageUnavailable: "{tag} (not available, using System default)",
     languageHint: "The language of Dash Wallet's own screens. Messages that come from the network stay in English.",
     showMasternodes: "Show Masternodes",
-    showMasternodesHint: "Shows Masternodes in the sidebar, where you follow masternodes and vote on proposals and usernames. Auto shows it while this wallet holds a masternode or one of its keys, tracks a masternode, holds a coin of exactly 1,000 or 4,000 Dash, or has a proposal in progress.",
+    showMasternodesHint: "Shows Masternodes in the sidebar, where you set up and follow masternodes and vote on proposals and usernames. Auto shows it while this wallet holds a masternode or one of its keys, tracks a masternode, holds a coin of exactly 1,000 or 4,000 Dash, has a registration in progress, or has a proposal in progress.",
     masternodesAuto: "Auto",
     masternodesOn: "On",
     masternodesOff: "Off",
