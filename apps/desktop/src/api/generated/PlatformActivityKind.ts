@@ -5,6 +5,8 @@
  * `moveToCore`: a "Move to Dash wallet" of this wallet; `send`: a send of
  * this wallet to a Platform address (`to`); `fromCore`: an "Add from Dash
  * wallet" of this wallet to its Platform address (`address`), pending
- * until Platform proves it applied.
+ * until Platform proves it applied; `fromShielded`: an unshield of this
+ * wallet to its Platform address (`address`), pending until Platform
+ * executed it (`done`) or did not (`failed`).
  */
-export type PlatformActivityKind = "incoming" | "outgoing" | "moveToCore" | "send" | "fromCore";
+export type PlatformActivityKind = "incoming" | "outgoing" | "moveToCore" | "send" | "fromCore" | "fromShielded";

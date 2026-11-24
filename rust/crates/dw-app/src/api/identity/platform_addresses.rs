@@ -76,7 +76,9 @@ impl From<engine::PlatformAddressRow> for PlatformAddressRow {
 /// `moveToCore`: a "Move to Dash wallet" of this wallet; `send`: a send of
 /// this wallet to a Platform address (`to`); `fromCore`: an "Add from Dash
 /// wallet" of this wallet to its Platform address (`address`), pending
-/// until Platform proves it applied.
+/// until Platform proves it applied; `fromShielded`: an unshield of this
+/// wallet to its Platform address (`address`), pending until Platform
+/// executed it (`done`) or did not (`failed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityKind {
@@ -85,10 +87,11 @@ pub enum PlatformActivityKind {
     MoveToCore,
     Send,
     FromCore,
+    FromShielded,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore, Send, FromCore
+    Incoming, Outgoing, MoveToCore, Send, FromCore, FromShielded
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);

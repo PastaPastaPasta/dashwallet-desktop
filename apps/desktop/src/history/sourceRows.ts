@@ -21,6 +21,8 @@ export const SourceRowText = {
   platformSend: "Sent to a Platform address",
   /** "Add from Dash wallet": the lock of the Core coins and what Platform added for it. */
   fromCore: "Moved from Dash wallet",
+  /** An unshield to this wallet's own Platform address, seen from the address (C-routes D-C1). */
+  fromShielded: "From Shielded",
   /** A move the engine superseded with a retry: neither a loss nor a completed move. */
   replaced: "Replaced by a retry",
   /** A move or send that failed by height but may still execute: not "Not accepted". */
@@ -71,8 +73,8 @@ const base = (txid: string, status: TxRow["status"], timestamp: number | null, a
 export function platformRow(a: PlatformActivity): TxRow {
   const move = a.kind === "moveToCore";
   const replaced = a.state === "replaced";
-  // What a fund adds to the Platform addresses reads as a receipt there.
-  const received = a.kind === "incoming" || a.kind === "fromCore";
+  // What a fund or an unshield adds to the Platform addresses reads as a receipt there.
+  const received = a.kind === "incoming" || a.kind === "fromCore" || a.kind === "fromShielded";
   // A move with no proved arrival shows what left (`credits`), never an amount that "arrives".
   const amount = replaced ? 0 : move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
   const mayLand = a.state === "failed" && a.mayLand && (move || a.kind === "send");
@@ -104,7 +106,7 @@ export function shieldedRow(a: ShieldedActivity): TxRow {
 
 export function sourceRowTitle(row: TxRow): string {
   const kind = row.txid.split(":")[1];
-  if (rowSource(row) === "platform") return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "send" ? SourceRowText.platformSend : kind === "fromCore" ? SourceRowText.fromCore : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
+  if (rowSource(row) === "platform") return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "send" ? SourceRowText.platformSend : kind === "fromCore" ? SourceRowText.fromCore : kind === "fromShielded" ? SourceRowText.fromShielded : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
   switch (kind) {
     case "shield":
     case "shieldFromCore":

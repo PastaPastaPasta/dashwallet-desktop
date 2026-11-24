@@ -147,6 +147,7 @@ const BASELINE_KEY: &str = "platform_address/baseline";
 const ROW_PREFIX: &str = "platform_address/row/";
 pub(super) const MOVE_PREFIX: &str = "platform_address/move/";
 const FUND_PREFIX: &str = "platform_address/fund/";
+const FROM_SHIELDED_PREFIX: &str = "platform_address/from_shielded/";
 
 /// What a move pays: the wallet's Core address, or a Platform address.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,6 +421,131 @@ impl FundRecord {
     }
 }
 
+/// Where a [`FromShieldedRecord`]'s credits come from. Tagged, so a later
+/// source can carry its own fields (C-funding F13's registration refund
+/// names its draft).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum FromShieldedSource {
+    /// `unshield_to_platform`: armed by the dispatch hook's accept, settled
+    /// by the spend's artifact.
+    Unshield,
+}
+
+/// Credits on their way from the wallet's shielded notes to one of its
+/// Platform addresses (C-routes C1-9), so the address's rise is no
+/// `incoming` row. Written unarmed before the spend's dispatch artifact
+/// and armed after it, before any send; only an armed record is a row.
+/// Armed, while pending it absorbs a rise of `to` up to `credits`; it is
+/// `done` only once its artifact reads executed (what it did not absorb is
+/// then the first rise's still to read, as an applied fund's), and
+/// `failed` once its artifact reads not executed, what it absorbed going
+/// first to the other records of `to` and the rest given back as
+/// `incoming`. It holds no address nonce and never blocks a move.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FromShieldedRecord {
+    /// The spend's shielded activity id, hex: its dispatch artifact's key.
+    pub(crate) activity: String,
+    /// Platform's hash of the spend's transition, hex.
+    pub(crate) st_hash: String,
+    pub(crate) source: FromShieldedSource,
+    /// bech32m.
+    pub(crate) to: String,
+    /// What the transition credits `to`.
+    pub(crate) credits: u64,
+    pub(crate) state: PlatformActivityState,
+    /// Only an armed record absorbs a rise while pending.
+    pub(crate) armed: bool,
+    #[serde(default)]
+    pub(crate) absorbed: u64,
+    /// Once done: the rise of `to` still to be read as the record's.
+    #[serde(default)]
+    pub(crate) unseen: u64,
+    pub(crate) at: u64,
+}
+
+impl FromShieldedRecord {
+    /// A pending record of the spend `activity` crediting `to`, not yet
+    /// armed.
+    pub(crate) fn staged(
+        source: FromShieldedSource,
+        (activity, st_hash): ([u8; 32], [u8; 32]),
+        to: String,
+        credits: u64,
+    ) -> Self {
+        Self {
+            activity: hex::encode(activity),
+            st_hash: hex::encode(st_hash),
+            source,
+            to,
+            credits,
+            state: PlatformActivityState::Pending,
+            armed: false,
+            absorbed: 0,
+            unseen: 0,
+            at: unix_now(),
+        }
+    }
+
+    /// The `id` of its activity row.
+    pub(crate) fn id(&self) -> String {
+        format!("from-shielded-{}", self.activity)
+    }
+
+    fn activity(&self) -> PlatformActivity {
+        PlatformActivity {
+            id: self.id(),
+            kind: PlatformActivityKind::FromShielded,
+            state: self.state,
+            credits: self.credits,
+            address: Some(self.to.clone()),
+            to: None,
+            expected_duffs: None,
+            fee_credits: None,
+            at: self.at,
+            may_land: self.state == PlatformActivityState::Pending,
+            estimated: false,
+        }
+    }
+
+    fn expects(&self) -> u64 {
+        if self.state == PlatformActivityState::Pending && self.armed {
+            self.credits.saturating_sub(self.absorbed)
+        } else {
+            0
+        }
+    }
+
+    fn executed(&mut self) {
+        self.state = PlatformActivityState::Done;
+        self.unseen = self.credits.saturating_sub(self.absorbed);
+    }
+
+    /// Failed, what it absorbed given back once as `incoming`: that row's
+    /// write.
+    fn not_executed(&mut self) -> Result<Vec<Write>, PlatformError> {
+        self.state = PlatformActivityState::Failed;
+        self.unseen = 0;
+        released(&self.to, std::mem::take(&mut self.absorbed), &self.id())
+    }
+
+    /// Takes up to `credits` of a rise of `to` another record had read as
+    /// its own: a pending armed record up to what it still expects, a done
+    /// one up to what it has still to read. What it took.
+    fn take_over(&mut self, credits: u64) -> u64 {
+        let n = match self.state {
+            PlatformActivityState::Pending => self.expects().min(credits),
+            PlatformActivityState::Done => self.unseen.min(credits),
+            _ => 0,
+        };
+        self.absorbed += n;
+        if self.state == PlatformActivityState::Done {
+            self.unseen -= n;
+        }
+        n
+    }
+}
+
 /// `credits` of `address`'s rise that a record had read as its own, an
 /// `incoming` row again (none for 0), its key unique by `tag`.
 fn released(address: &str, credits: u64, tag: &str) -> Result<Vec<Write>, PlatformError> {
@@ -442,6 +568,137 @@ fn released(address: &str, credits: u64, tag: &str) -> Result<Vec<Write>, Platfo
     };
     let key = format!("{ROW_PREFIX}{at:020}/released/{tag}");
     Ok(vec![(key, Some(json(&row)?))])
+}
+
+/// Writes `record`, unarmed, from the dispatch hook's accept before the
+/// spend's artifact. A record of the spend already there stands, but for
+/// an unarmed one of another transition (the library armed the activity
+/// again before any artifact). Under the move lock, which the hook takes
+/// after the shielded wallet lock (C-routes §0 lock order).
+pub(crate) async fn stage_from_shielded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    record: FromShieldedRecord,
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    if let Some(old) = store.shielded_record(&record.activity).await?
+        && (old.armed || old.st_hash == record.st_hash)
+    {
+        return Ok(());
+    }
+    #[cfg(test)]
+    if tests::outcome_write_fails(&store.appdb) {
+        return Err(PlatformError::Storage {
+            detail: "injected".into(),
+        });
+    }
+    store.commit(vec![from_shielded_write(&record)?]).await
+}
+
+/// Arms the record of the spend `activity`, after its artifact and before
+/// any send of it: from the dispatch hook's accept, and again from its
+/// admission of a re-send, so a spend whose arming a stop cut off is armed
+/// before it leaves (C-routes C1-9). Whether the spend has a record: one
+/// with none was dispatched before records were kept.
+pub(crate) async fn arm_from_shielded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    activity: [u8; 32],
+) -> Result<bool, PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    let Some(mut record) = store.shielded_record(&hex::encode(activity)).await? else {
+        return Ok(false);
+    };
+    if !record.armed && record.state == PlatformActivityState::Pending {
+        #[cfg(test)]
+        if tests::arm_write_fails(&store.appdb) {
+            return Err(PlatformError::Storage {
+                detail: "injected".into(),
+            });
+        }
+        record.armed = true;
+        store.commit(vec![from_shielded_write(&record)?]).await?;
+    }
+    Ok(true)
+}
+
+/// The wallet's `FromShielded` records, each pending one settled by its
+/// spend's artifact as the dispatch journal reads it now: executed,
+/// `done`; not executed, `failed`, what it absorbed taken over by the
+/// other records of its address, the oldest first, and the rest given
+/// back. An artifact that cannot be read, or reads anything else, settles
+/// nothing.
+async fn from_shielded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    store: &Store,
+) -> Result<(Vec<FromShieldedRecord>, bool), PlatformError> {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let mut records = store.shielded_records().await?;
+    let before = records.clone();
+    let mut writes = Vec::new();
+    for i in 0..records.len() {
+        let record = &mut records[i];
+        if record.state != PlatformActivityState::Pending {
+            continue;
+        }
+        let Some(activity) = hex32(&record.activity) else {
+            continue;
+        };
+        let artifact = match session.leases.shielded_artifact(wallet, activity).await {
+            Ok(Some(a)) if a.st_hash.map(hex::encode).as_deref() == Some(&record.st_hash) => a,
+            Ok(_) => continue,
+            Err(e) => {
+                tracing::warn!(%e, "a FromShielded record's artifact could not be read");
+                continue;
+            }
+        };
+        match artifact.status {
+            ArtifactStatus::Executed => record.executed(),
+            ArtifactStatus::NotExecuted => {
+                let (to, mut left) = (record.to.clone(), std::mem::take(&mut record.absorbed));
+                for (j, other) in records.iter_mut().enumerate() {
+                    if j != i && other.to == to && other.armed {
+                        left -= other.take_over(left);
+                    }
+                }
+                records[i].absorbed = left;
+                writes.extend(records[i].not_executed()?);
+            }
+            _ => {}
+        }
+    }
+    for (r, was) in records.iter().zip(&before) {
+        if r != was {
+            writes.push(from_shielded_write(r)?);
+        }
+    }
+    let changed = !writes.is_empty();
+    if changed {
+        commit_outcome(store, writes).await?;
+    }
+    Ok((records, changed))
+}
+
+/// **Test only**: the wallet's `FromShielded` records as stored.
+#[cfg(test)]
+pub(crate) async fn from_shielded_records(
+    session: &NetworkSession,
+    wallet: WalletId,
+) -> Vec<FromShieldedRecord> {
+    Store::of(session, wallet)
+        .unwrap()
+        .shielded_records()
+        .await
+        .unwrap()
+}
+
+fn hex32(text: &str) -> Option<[u8; 32]> {
+    hex::decode(text).ok()?.try_into().ok()
 }
 
 /// What a read knows of the wallet's fund locks
@@ -1679,6 +1936,26 @@ impl Store {
             .collect())
     }
 
+    async fn shielded_records(&self) -> Result<Vec<FromShieldedRecord>, PlatformError> {
+        let mut records: Vec<FromShieldedRecord> = (self.all(FROM_SHIELDED_PREFIX).await?)
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect();
+        records.sort_by(|a, b| (a.at, &a.activity).cmp(&(b.at, &b.activity)));
+        Ok(records)
+    }
+
+    async fn shielded_record(
+        &self,
+        activity: &str,
+    ) -> Result<Option<FromShieldedRecord>, PlatformError> {
+        let key = format!("{FROM_SHIELDED_PREFIX}{activity}");
+        let value = self
+            .blocking(move |db, scope| db.setting(scope, &key))
+            .await?;
+        Ok(value.and_then(|v| serde_json::from_str(&v).ok()))
+    }
+
     async fn fund(&self, txid: &str) -> Result<Option<FundRecord>, PlatformError> {
         let key = format!("{FUND_PREFIX}{txid}");
         let value = self
@@ -1720,6 +1997,13 @@ type Write = (String, Option<String>);
 
 fn fund_write(record: &FundRecord) -> Result<Write, PlatformError> {
     Ok((format!("{FUND_PREFIX}{}", record.txid), Some(json(record)?)))
+}
+
+fn from_shielded_write(record: &FromShieldedRecord) -> Result<Write, PlatformError> {
+    Ok((
+        format!("{FROM_SHIELDED_PREFIX}{}", record.activity),
+        Some(json(record)?),
+    ))
 }
 
 fn fund_delete(txid: &str) -> Write {
@@ -1854,12 +2138,17 @@ pub(crate) async fn sync(
 /// compared. Whether anything changed.
 async fn observe(
     store: &Store,
-    (moves, funds): (&mut [MoveRecord], &mut [FundRecord]),
+    (moves, funds, shielded): (
+        &mut [MoveRecord],
+        &mut [FundRecord],
+        &mut [FromShieldedRecord],
+    ),
     held_funds: BTreeSet<String>,
     seen: &Seen,
 ) -> Result<bool, PlatformError> {
     let before = moves.to_vec();
     let funds_before = funds.to_vec();
+    let shielded_before = shielded.to_vec();
     settle(moves, seen);
     let baseline = store.baseline().await?;
     let mut writes = Vec::new();
@@ -1881,8 +2170,11 @@ async fn observe(
             *arriving.entry(fund.address.clone()).or_default() += fund.unseen;
             *expected.entry(fund.address.clone()).or_default() += fund.expects();
         }
+        for record in shielded.iter() {
+            *expected.entry(record.to.clone()).or_default() += record.expects();
+        }
         let mut expecting = expected.clone();
-        let (found, next) = changes(
+        let (mut found, next) = changes(
             baseline.as_ref().map(|b| &b.balances),
             &seen.balances(),
             &held,
@@ -1908,6 +2200,13 @@ async fn observe(
                 *left -= n;
             }
         }
+        for record in shielded.iter_mut().filter(|r| r.expects() > 0) {
+            if let Some(left) = took.get_mut(&record.to) {
+                let n = record.expects().min(*left);
+                record.absorbed += n;
+                *left -= n;
+            }
+        }
         // A done move's fall and an applied fund's rise, once read, are
         // spent.
         for input in moves.iter_mut().flat_map(|m| &mut m.inputs) {
@@ -1920,6 +2219,21 @@ async fn observe(
                 fund.unseen = 0;
             }
         }
+        // A done record's rise still to read is what this read found
+        // incoming on its address, as far as it reaches, the oldest
+        // record's first (they are stored in that order).
+        for record in shielded.iter_mut().filter(|r| r.unseen > 0) {
+            let row = (found.iter_mut()).find(|row| {
+                row.kind == PlatformActivityKind::Incoming
+                    && row.address.as_deref() == Some(record.to.as_str())
+            });
+            if let Some(row) = row {
+                let n = record.unseen.min(row.credits);
+                record.unseen -= n;
+                row.credits -= n;
+            }
+        }
+        found.retain(|row| row.credits > 0);
         for row in &found {
             let address = row.address.as_deref().unwrap_or("");
             let key = format!("{ROW_PREFIX}{:020}/{:020}/{address}", row.at, seen.height);
@@ -1945,6 +2259,11 @@ async fn observe(
     for (f, was) in funds.iter().zip(&funds_before) {
         if f != was {
             writes.push(fund_write(f)?);
+        }
+    }
+    for (r, was) in shielded.iter().zip(&shielded_before) {
+        if r != was {
+            writes.push(from_shielded_write(r)?);
         }
     }
     store.commit(writes).await?;
@@ -1997,15 +2316,19 @@ pub(crate) async fn activity(
         .filter_map(FundRecord::outpoint);
     let ev = super::unfinished_funds::fund_evidence(session, wallet_id, wallet, pending).await;
     let completed = reconcile(&store, &mut funds, &ev, &held).await?;
+    let (mut shielded, settled) = from_shielded(session, wallet_id, &store).await?;
     let observed = match read(session, net, addresses, false).await {
-        Ok(seen) => observe(&store, (&mut moves, &mut funds), held, &seen).await?,
+        Ok(seen) => {
+            let records = (&mut moves[..], &mut funds[..], &mut shielded[..]);
+            observe(&store, records, held, &seen).await?
+        }
         Err(e) => {
             // Nothing is known: what is stored stands.
             tracing::info!("reading the Platform addresses for their activity: {e}");
             false
         }
     };
-    let changed = completed || observed;
+    let changed = completed || settled || observed;
     let mut stored = store.all::<PlatformActivity>(ROW_PREFIX).await?;
     // Keys sort by time: the oldest beyond the kept ones go.
     while stored.len() > ROWS_KEPT {
@@ -2021,6 +2344,12 @@ pub(crate) async fn activity(
     let mut out: Vec<PlatformActivity> = (stored.into_iter().map(|(_, r)| r))
         .chain(moves.iter().map(MoveRecord::activity))
         .chain(funds.iter().map(FundRecord::activity))
+        .chain(
+            shielded
+                .iter()
+                .filter(|r| r.armed)
+                .map(FromShieldedRecord::activity),
+        )
         .collect();
     out.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| b.id.cmp(&a.id)));
     Ok(out)
@@ -2533,8 +2862,10 @@ async fn run(
     // Rule 5 and the one read every decision below rests on.
     let seen = read(session, net, covered(&pool, &moves), true).await?;
     let mut funds = store.funds().await?;
+    let (mut shielded, _) = from_shielded(session, wallet_id, &store).await?;
     let held = fund_holds(session, wallet_id);
-    if observe(&store, (&mut moves, &mut funds), held, &seen).await? {
+    let records = (&mut moves[..], &mut funds[..], &mut shielded[..]);
+    if observe(&store, records, held, &seen).await? {
         session
             .hub
             .pump

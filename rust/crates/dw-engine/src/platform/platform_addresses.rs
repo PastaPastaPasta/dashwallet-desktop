@@ -66,6 +66,10 @@ pub enum PlatformActivityKind {
     /// wallet applied to its Platform address (`address`); `Pending` until
     /// a proved apply, then `Done` with the credits it added.
     FromCore,
+    /// An unshield of this wallet's to its Platform address (`address`,
+    /// C-routes C1-9): `Pending` from the dispatch hook's accept until its
+    /// artifact reads executed (`Done`) or not executed (`Failed`).
+    FromShielded,
 }
 
 /// Where an activity row stands.

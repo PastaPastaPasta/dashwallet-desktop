@@ -981,9 +981,35 @@ fn an_older_proof_records_no_activity() {
 static FAILING_OUTCOME_WRITES: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 
 /// `commit_outcome`'s injected failure: once, for `appdb`.
+/// The next outcome write of `session` fails.
+pub(crate) fn fail_next_outcome_write_of(session: &NetworkSession) {
+    let appdb = session.live().unwrap().appdb;
+    let key = Arc::as_ptr(&appdb) as usize;
+    FAILING_OUTCOME_WRITES.lock().unwrap().insert(key);
+}
+
 pub(crate) fn outcome_write_fails(appdb: &Arc<dw_appdb::AppDb>) -> bool {
     let key = Arc::as_ptr(appdb) as usize;
     FAILING_OUTCOME_WRITES.lock().unwrap().remove(&key)
+}
+
+static FAILING_ARMS: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+
+/// The next arming of a `FromShielded` record of the session's wallets
+/// fails (a stop between the artifact and the arming).
+pub(crate) fn fail_next_arm_of(session: &NetworkSession) {
+    let appdb = session.live().unwrap().appdb;
+    FAILING_ARMS
+        .lock()
+        .unwrap()
+        .insert(Arc::as_ptr(&appdb) as usize);
+}
+
+pub(crate) fn arm_write_fails(appdb: &Arc<dw_appdb::AppDb>) -> bool {
+    FAILING_ARMS
+        .lock()
+        .unwrap()
+        .remove(&(Arc::as_ptr(appdb) as usize))
 }
 
 impl World {
@@ -2778,3 +2804,308 @@ fn only_a_rise_beyond_an_applied_fund_is_incoming() {
 
 #[path = "platform_shield_tests.rs"]
 mod shield;
+
+// ---- C-routes C1b-2: credits from Shielded ----
+
+impl World {
+    /// The dispatch artifact of unshield `n`, registered as the hook
+    /// writes it before the first send.
+    fn unshield_artifact(&self, n: u8) {
+        use dw_appdb::dispatch::{ArtifactKind, ArtifactOrigin, NewShieldedArtifact};
+        let artifact = NewShieldedArtifact {
+            activity: [n; 32],
+            origin: ArtifactOrigin::Dispatched,
+            st_hash: Some([n.wrapping_add(1); 32]),
+            kind: Some(ArtifactKind::Unshield),
+            anchor: Some([0xa0; 32]),
+            identity_id: None,
+            selected: vec![[n.wrapping_add(100); 32]],
+            published: vec![[n.wrapping_add(100); 32], [0xee; 32]],
+        };
+        let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
+        let wrote = (self.f.engine)
+            .block_on(async move { s.leases.record_shielded_artifact(id, artifact).await });
+        assert_eq!(wrote, Ok(true));
+    }
+
+    /// The hook's accept of unshield `n` crediting `to` with `credits`: its
+    /// record, its artifact, then the record armed.
+    fn arm_unshield(&self, n: u8, to: PlatformAddress, credits: u64) -> Result<(), PlatformError> {
+        self.stage_unshield(n, to, credits, n.wrapping_add(1))?;
+        self.unshield_artifact(n);
+        let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
+        let armed =
+            (self.f.engine).block_on(async move { arm_from_shielded(&s, id, [n; 32]).await });
+        assert_eq!(armed, Ok(true));
+        Ok(())
+    }
+
+    /// Unshield `n`'s record as the hook writes it before the artifact,
+    /// unarmed, its transition hash `[hash; 32]`.
+    fn stage_unshield(
+        &self,
+        n: u8,
+        to: PlatformAddress,
+        credits: u64,
+        hash: u8,
+    ) -> Result<(), PlatformError> {
+        let record = FromShieldedRecord::staged(
+            FromShieldedSource::Unshield,
+            ([n; 32], [hash; 32]),
+            bech32m(&to, Network::Regtest),
+            credits,
+        );
+        let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
+        (self.f.engine).block_on(async move { stage_from_shielded(&s, id, record).await })
+    }
+
+    fn shielded_rows(&self) -> Vec<PlatformActivity> {
+        (self.activity().into_iter())
+            .filter(|r| r.kind == PlatformActivityKind::FromShielded)
+            .collect()
+    }
+
+    /// Unshield `n`'s artifact as the library's disposition settles it.
+    fn settle_unshield(&self, n: u8, status: dw_appdb::dispatch::ArtifactStatus) {
+        let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
+        let settled = (self.f.engine).block_on(async move {
+            (s.leases)
+                .settle_shielded_artifact(id, [n.wrapping_add(1); 32], status, None, false)
+                .await
+        });
+        assert_eq!(settled, Ok(dw_appdb::dispatch::ArtifactSettled::Settled));
+    }
+
+    fn shielded_row(&self, n: u8) -> PlatformActivity {
+        let id = format!("from-shielded-{}", hex::encode([n; 32]));
+        let activity = self.activity();
+        (activity.into_iter().find(|r| r.id == id)).expect("the FromShielded row")
+    }
+}
+
+fn incoming_total(activity: &[PlatformActivity]) -> u64 {
+    (activity.iter())
+        .filter(|r| r.kind == PlatformActivityKind::Incoming)
+        .map(|r| r.credits)
+        .sum()
+}
+
+/// Before the hook's accept a rise of the address is `incoming`. Once the
+/// record is armed it absorbs the rise, up to its credits: no `incoming`
+/// row for it, the excess `incoming`. An artifact read `not_executed` fails
+/// the record and gives back what it absorbed as `incoming`, once.
+#[test]
+fn from_shielded_absorbs_only_while_armed() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    assert!(w.activity().is_empty());
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), DASH, "unarmed: incoming");
+
+    w.arm_unshield(1, a, 2 * DASH).unwrap();
+    let row = w.shielded_row(1);
+    assert_eq!(
+        (row.kind, row.state, row.credits, row.may_land),
+        (
+            PlatformActivityKind::FromShielded,
+            PlatformActivityState::Pending,
+            2 * DASH,
+            true
+        )
+    );
+    assert_eq!(row.address, Some(bech32m(&a, Network::Regtest)));
+    w.net.fund(a, 2 * DASH + DASH / 2);
+    let activity = w.activity();
+    assert_eq!(
+        incoming_total(&activity),
+        DASH + DASH / 2,
+        "armed: the rise up to its credits is the record's, the excess incoming"
+    );
+
+    // A second record, its rise absorbed, then not executed: given back.
+    let b = w.address(1);
+    w.arm_unshield(2, b, DASH).unwrap();
+    w.net.fund(b, DASH / 4);
+    let before = incoming_total(&w.activity());
+    w.settle_unshield(2, ArtifactStatus::NotExecuted);
+    let activity = w.activity();
+    assert_eq!(w.shielded_row(2).state, PlatformActivityState::Failed);
+    assert!(!w.shielded_row(2).may_land);
+    assert_eq!(
+        incoming_total(&activity),
+        before + DASH / 4,
+        "given back once"
+    );
+    assert_eq!(incoming_total(&w.activity()), before + DASH / 4);
+    // Failed, it absorbs nothing more.
+    w.net.fund(b, DASH);
+    assert_eq!(incoming_total(&w.activity()), before + DASH / 4 + DASH);
+}
+
+/// The record is `done` only on an executed artifact, never on its own
+/// absorbing or on time; once done, what it did not absorb is the first
+/// rise's, and a later rise is `incoming`. It never holds a move.
+#[test]
+fn from_shielded_done_only_on_executed_artifact() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let (a, b) = (w.address(0), w.address(1));
+    w.arm_unshield(1, a, 2 * DASH).unwrap();
+    w.net.fund(a, 2 * DASH);
+    for _ in 0..3 {
+        assert_eq!(w.shielded_row(1).state, PlatformActivityState::Pending);
+    }
+    assert_eq!(incoming_total(&w.activity()), 0);
+    w.settle_unshield(1, ArtifactStatus::Unresolved { unrecorded: false });
+    assert_eq!(w.shielded_row(1).state, PlatformActivityState::Pending);
+    w.settle_unshield(1, ArtifactStatus::Executed);
+    assert_eq!(w.shielded_row(1).state, PlatformActivityState::Done);
+    w.net.fund(a, 3 * DASH);
+    assert_eq!(
+        incoming_total(&w.activity()),
+        3 * DASH,
+        "after done: incoming"
+    );
+
+    // Executed before its rise was read: the first rise is its own.
+    w.arm_unshield(2, b, DASH).unwrap();
+    w.settle_unshield(2, ArtifactStatus::Executed);
+    assert_eq!(w.shielded_row(2).state, PlatformActivityState::Done);
+    w.net.fund(b, DASH);
+    assert_eq!(incoming_total(&w.activity()), 3 * DASH);
+    w.net.fund(b, 2 * DASH);
+    assert_eq!(incoming_total(&w.activity()), 5 * DASH);
+
+    // A pending record holds no move.
+    w.arm_unshield(3, a, DASH).unwrap();
+    let out = w.move_all(&w.f.grant(10 * DASH)).unwrap();
+    assert_ne!(out.state, PlatformActivityState::Failed);
+}
+
+/// Armed once per spend; a write that fails is an error (the hook refuses
+/// the send); the record survives a restart, pending until its artifact
+/// settles it.
+#[test]
+fn from_shielded_is_durable_and_armed_once() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let mut w = World::new();
+    let a = w.address(0);
+    w.fail_next_outcome_write();
+    assert!(w.arm_unshield(1, a, DASH).is_err());
+    let id = format!("from-shielded-{}", hex::encode([1u8; 32]));
+    assert!(w.activity().iter().all(|r| r.id != id), "nothing written");
+
+    w.arm_unshield(2, a, DASH).unwrap();
+    w.stage_unshield(2, a, 5 * DASH, 9).unwrap();
+    assert_eq!(w.shielded_row(2).credits, DASH, "an armed record stands");
+
+    w.reopen();
+    let row = w.shielded_row(2);
+    assert_eq!(
+        (row.state, row.credits),
+        (PlatformActivityState::Pending, DASH)
+    );
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), 0);
+    w.settle_unshield(2, ArtifactStatus::Executed);
+    assert_eq!(w.shielded_row(2).state, PlatformActivityState::Done);
+}
+
+/// Written before its artifact, a record is no row and absorbs nothing
+/// until armed; an unarmed one is replaced by the record of the
+/// transition the library armed again; a spend with no record (dispatched
+/// before records were kept) arms nothing.
+#[test]
+fn from_shielded_unarmed_is_no_row() {
+    let w = World::new();
+    let a = w.address(0);
+    w.stage_unshield(1, a, DASH, 7).unwrap();
+    w.stage_unshield(1, a, 2 * DASH, 2).unwrap();
+    w.net.fund(a, DASH);
+    assert!(w.shielded_rows().is_empty(), "unarmed: no row");
+    assert_eq!(
+        incoming_total(&w.activity()),
+        DASH,
+        "unarmed: absorbs nothing"
+    );
+    w.unshield_artifact(1);
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    let armed = (w.f.engine).block_on(async move { arm_from_shielded(&s, id, [1; 32]).await });
+    assert_eq!(armed, Ok(true));
+    let row = w.shielded_row(1);
+    assert_eq!(
+        (row.state, row.credits),
+        (PlatformActivityState::Pending, 2 * DASH),
+        "the second transition's"
+    );
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    let none = (w.f.engine).block_on(async move { arm_from_shielded(&s, id, [5; 32]).await });
+    assert_eq!(none, Ok(false));
+}
+
+/// Two records of one address, both executed before either rise is read:
+/// each rise is one record's, and the next one is `incoming` (a read that
+/// takes part of what the records have still to read takes it from the
+/// oldest, not from none or all).
+#[test]
+fn from_shielded_two_executed_take_one_rise_each() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    w.arm_unshield(1, a, DASH).unwrap();
+    w.arm_unshield(2, a, DASH).unwrap();
+    w.settle_unshield(1, ArtifactStatus::Executed);
+    w.settle_unshield(2, ArtifactStatus::Executed);
+    assert_eq!(w.shielded_row(2).state, PlatformActivityState::Done);
+    for _ in 0..2 {
+        w.net.fund(a, DASH);
+        assert_eq!(incoming_total(&w.activity()), 0);
+    }
+    w.net.fund(a, DASH);
+    assert_eq!(
+        incoming_total(&w.activity()),
+        DASH,
+        "the third rise is incoming"
+    );
+}
+
+/// Two pending records of one address, the older absorbing the one rise:
+/// when the older fails and the newer executes, the rise is the newer's,
+/// in either order of settling, and no `incoming` row shows it.
+#[test]
+fn from_shielded_failed_records_rise_goes_to_the_other() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    for (address, newer_first) in [(0, false), (1, true)] {
+        let a = w.address(address);
+        let (old, new) = (10 + 2 * address as u8, 11 + 2 * address as u8);
+        w.arm_unshield(old, a, DASH).unwrap();
+        w.arm_unshield(new, a, DASH).unwrap();
+        let before = incoming_total(&w.activity());
+        w.net.fund(a, DASH);
+        assert_eq!(incoming_total(&w.activity()), before);
+        if newer_first {
+            w.settle_unshield(new, ArtifactStatus::Executed);
+            assert_eq!(w.shielded_row(new).state, PlatformActivityState::Done);
+            w.settle_unshield(old, ArtifactStatus::NotExecuted);
+        } else {
+            w.settle_unshield(old, ArtifactStatus::NotExecuted);
+            w.settle_unshield(new, ArtifactStatus::Executed);
+        }
+        let activity = w.activity();
+        assert_eq!(w.shielded_row(old).state, PlatformActivityState::Failed);
+        assert_eq!(w.shielded_row(new).state, PlatformActivityState::Done);
+        assert_eq!(
+            incoming_total(&activity),
+            before,
+            "no incoming for the one rise ({newer_first})"
+        );
+        w.net.fund(a, DASH);
+        assert_eq!(
+            incoming_total(&w.activity()),
+            before + DASH,
+            "the next rise is incoming ({newer_first})"
+        );
+    }
+}

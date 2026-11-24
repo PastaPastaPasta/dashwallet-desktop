@@ -205,6 +205,7 @@ import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
+import type { UnshieldToPlatformOutcome } from "./UnshieldToPlatformOutcome";
 import type { UntrackOutcome } from "./UntrackOutcome";
 import type { UpdateRegistrarPreview } from "./UpdateRegistrarPreview";
 import type { UpdateRegistrarRequest } from "./UpdateRegistrarRequest";
@@ -2190,8 +2191,8 @@ export function unshieldToPlatformQuote(walletId: string, credits: string, to: s
  * Shielded → Platform: unshields `credits` to the wallet's own Platform
  * address `to` under `grant`.
  */
-export function unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
-  return invoke<ShieldedSpendOutcome>("unshield_to_platform", { walletId, credits, to, grant, confirmUnrecorded });
+export function unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<UnshieldToPlatformOutcome> {
+  return invoke<UnshieldToPlatformOutcome>("unshield_to_platform", { walletId, credits, to, grant, confirmUnrecorded });
 }
 
 /**
@@ -3714,7 +3715,7 @@ export type CommandResults = {
   unshield_quote: ShieldedSpendQuote;
   unshield_to_core: ShieldedSpendOutcome;
   unshield_to_platform_quote: ShieldedSpendQuote;
-  unshield_to_platform: ShieldedSpendOutcome;
+  unshield_to_platform: UnshieldToPlatformOutcome;
   shielded_history: Array<ShieldedActivity>;
   unfinished_transfers: UnfinishedTransfers;
   finish_transfer: LockFinish;
