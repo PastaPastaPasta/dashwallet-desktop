@@ -1069,8 +1069,8 @@ impl TxDraft {
             CoinSource::Outpoints(_) => InputChoice::UseAll(&coins),
             _ => InputChoice::Select(&coins),
         };
-        let plan =
-            plan::plan(choice, &outputs, state.fee, change_len, height).map_err(|e| match e {
+        let plan = plan::plan_with(choice, &outputs, state.fee, change_len, height, coinjoin)
+            .map_err(|e| match e {
                 // The CoinJoin page's own message (dash-qt "Insufficient
                 // mixed funds").
                 PlanError::AmountExceedsBalance { available }
