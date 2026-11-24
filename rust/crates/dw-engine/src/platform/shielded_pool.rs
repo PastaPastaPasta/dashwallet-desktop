@@ -2349,7 +2349,7 @@ impl ShieldedDispatch for EngineDispatch {
         let wallet = WalletId(payload.wallet_id);
         // A contact payout's row names the transition before its artifact
         // exists (C-funding P6).
-        (session
+        let named = (session
             .accept_payout_spend(wallet, &payload.kind, payload.st_hash)
             .await)
             .map_err(refused)?;
@@ -2359,22 +2359,9 @@ impl ShieldedDispatch for EngineDispatch {
         match (session.leases.record_shielded_artifact(wallet, artifact)).await {
             // A contact payout's dispatch is recorded beside its row before
             // the library may send it (C-funding P6); refused unsent if not.
-            Ok(true) => match session
-                .confirm_payout_dispatch(wallet, payload.st_hash)
+            Ok(true) => (session.confirm_payout_dispatch(wallet, named, payload.st_hash))
                 .await
-            {
-                Ok(()) => Ok(()),
-                Err(why) => {
-                    let unsent = ArtifactStatus::NotExecuted;
-                    let settled = (session.leases)
-                        .settle_shielded_artifact(wallet, payload.st_hash, unsent, None, false)
-                        .await;
-                    if let Err(e) = settled {
-                        tracing::warn!(wallet_id = %wallet, error = %e, "a refused payout spend's artifact was not settled");
-                    }
-                    Err(refused(why))
-                }
-            },
+                .map_err(refused),
             Ok(false) => Err(refused("the activity already has an artifact")),
             Err(e) => Err(refused(format!("the artifact was not written: {e}"))),
         }

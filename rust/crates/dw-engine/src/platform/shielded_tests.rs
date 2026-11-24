@@ -595,7 +595,7 @@ impl FakeShielded {
                 reason,
             }))
         };
-        (session.accept_payout_spend(wallet, &kind, st_hash).await).map_err(refused)?;
+        let named = (session.accept_payout_spend(wallet, &kind, st_hash).await).map_err(refused)?;
         if self.drops_artifact.load(Ordering::SeqCst) {
             return Err(refused("the artifact was not written".into()));
         }
@@ -614,7 +614,10 @@ impl FakeShielded {
             .record_shielded_artifact(wallet, artifact)
             .await
         {
-            Ok(true) => (session.confirm_payout_dispatch(wallet, st_hash).await).map_err(refused),
+            Ok(true) => (session
+                .confirm_payout_dispatch(wallet, named, st_hash)
+                .await)
+                .map_err(refused),
             other => Err(refused(format!("the artifact was not written: {other:?}"))),
         }
     }

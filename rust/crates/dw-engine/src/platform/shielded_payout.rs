@@ -207,16 +207,17 @@ impl NetworkSession {
 
     /// The hook's accept of a spend of `wallet` (P6): with a payout armed,
     /// only a withdrawal to Core, and only once its transition `st_hash`
-    /// is named in the payout's row, durably. Any failure refuses the
-    /// spend, so nothing is sent. Nothing to do with no payout armed.
+    /// is named in the payout's row, durably: the payout it named. Any
+    /// failure refuses the spend, so nothing is sent. Nothing to do with no
+    /// payout armed.
     pub(crate) async fn accept_payout_spend(
         &self,
         wallet: WalletId,
         kind: &ShieldedDispatchKind,
         st_hash: [u8; 32],
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let reference = match guard(&self.platform.payments.armed).get(&wallet) {
-            None => return Ok(()),
+            None => return Ok(None),
             Some(armed) if armed.named.is_some() => {
                 return Err("the contact payout's spend was accepted already".into());
             }
@@ -241,28 +242,49 @@ impl NetworkSession {
         {
             armed.named = Some(st_hash);
         }
-        Ok(())
+        Ok(Some(reference))
     }
 
-    /// After the hook wrote the artifact of the armed payout's spend
-    /// `st_hash`: records, durably, that the library may now send it
-    /// ([`dw_appdb::dp_payout_dispatched`]). Nothing to do with no payout
-    /// armed for that spend. A failure refuses the spend.
+    /// After the hook wrote the artifact of the spend `st_hash`, which
+    /// [`Self::accept_payout_spend`] named in payout `named`'s row:
+    /// records, durably, that the library may now send it
+    /// ([`dw_appdb::dp_payout_dispatched`]). A failure settles the artifact
+    /// `not_executed` and refuses the spend. Nothing to do for no payout.
     pub(crate) async fn confirm_payout_dispatch(
         &self,
         wallet: WalletId,
+        named: Option<String>,
         st_hash: [u8; 32],
     ) -> Result<(), String> {
-        let reference = match guard(&self.platform.payments.armed).get(&wallet) {
-            Some(armed) if armed.named == Some(st_hash) => armed.reference.clone(),
-            _ => return Ok(()),
+        let Some(reference) = named else {
+            return Ok(());
         };
         let scope = dw_appdb::local_scope(&wallet.to_string());
         let key = dw_appdb::dp_payout_dispatched(&reference);
-        (self
-            .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1")))
-            .await)
-            .map_err(|e| format!("the contact payout's dispatch was not recorded: {e}"))
+        #[cfg(test)]
+        let failing =
+            (self.platform.payments.fail_dispatch_record).load(std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let failing = false;
+        let written = match failing {
+            true => Err("injected".to_owned()),
+            false => (self.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1"))))
+                .await
+                .map_err(|e| e.to_string()),
+        };
+        let Err(e) = written else {
+            return Ok(());
+        };
+        let unsent = ArtifactStatus::NotExecuted;
+        let settled = (self.leases)
+            .settle_shielded_artifact(wallet, st_hash, unsent, None, false)
+            .await;
+        if let Err(e) = settled {
+            tracing::warn!(wallet_id = %wallet, error = %e, "a refused payout spend's artifact was not settled");
+        }
+        Err(format!(
+            "the contact payout's dispatch was not recorded: {e}"
+        ))
     }
 
     /// What the journal proves of the shielded payout `reference` whose
@@ -305,8 +327,10 @@ impl NetworkSession {
     }
 
     /// Settles a shielded payout from its own call's end. `Done` is sent.
-    /// A spend whose transition never reached the journal (none named, or
-    /// one with no artifact and no recorded dispatch) was never sent: not sent, and its address
+    /// A spend the journal proves unsent is not sent: one whose transition
+    /// never reached it (none named, or one with no artifact and no
+    /// recorded dispatch) gives its address back, one refused after its
+    /// artifact (settled `not_executed`) keeps it consumed: not sent, and its address
     /// goes back to the pair. Anything else holds the contact until the
     /// journal settles it: a pending result, a pool-floor refusal (P5)
     /// and any other failure once its artifact exists.
@@ -341,16 +365,13 @@ impl NetworkSession {
             Err(e) => e,
         };
         // A read failure is not proof: the contact stays held.
-        let never_journaled = match named {
-            None => true,
-            Some(hash) => matches!(
-                self.shielded_payout_evidence(wallet, reference, hash).await,
-                PayoutEvidence::NotSent { give_back: true }
-            ),
+        let evidence = match named {
+            None => PayoutEvidence::NotSent { give_back: true },
+            Some(hash) => self.shielded_payout_evidence(wallet, reference, hash).await,
         };
-        if never_journaled {
+        if let PayoutEvidence::NotSent { give_back } = evidence {
             let state = PayoutState::NotSent;
-            let back = Some(address);
+            let back = give_back.then_some(address);
             self.settle_payout(wallet, pair, (source, reference), state, back)
                 .await;
             return Err(e.into());

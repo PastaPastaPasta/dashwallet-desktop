@@ -681,6 +681,8 @@ fn a_flow_lease_pays_one_payout() {
     ];
     let paid: Vec<_> = outcomes.iter().filter(|o| o.is_ok()).collect();
     assert_eq!(paid.len(), 1, "{outcomes:?}");
+    let refused = outcomes.iter().find_map(|o| o.as_ref().err()).unwrap();
+    assert_eq!(code(refused), "platform.lease_expired", "the lease ended");
     assert_eq!(lib.withdrawn_to().len(), 1, "paid once");
     assert_eq!(f.payout_rows().len(), 1);
     assert!(f.reserved(BOB).is_none(), "no second address reserved");
@@ -803,4 +805,24 @@ fn an_execution_the_library_could_not_attribute_keeps_the_contact_locked() {
     f.after_pass();
     assert!(f.lock(BOB).is_none());
     assert_eq!(f.payout_rows()[0].1, "sent");
+}
+
+/// P6, P5: a spend the hook refused because it could not record its
+/// dispatch is settled not sent on the call's own end, its address
+/// consumed (its artifact exists, settled `not_executed`), and the contact
+/// is free to pay again at a new address.
+#[test]
+fn a_payout_whose_dispatch_was_not_recorded_is_not_sent_with_its_address_consumed() {
+    let f = fixture(false);
+    let lib = f.hooked();
+    (f.session.platform.payments.fail_dispatch_record)
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = f.shielded(&lib, BOB, &f.credits_grant()).unwrap_err();
+    assert_eq!(code(&refused), "shielded.spend_refused");
+    let rows = f.payout_rows();
+    assert_eq!(rows[0].1, "not_sent");
+    assert!(f.lock(BOB).is_none());
+    assert!(f.reserved(BOB).is_none(), "its address stays consumed");
+    assert!(lib.withdrawn_to().is_empty(), "the library sent nothing");
+    assert!(!f.dispatched(&rows[0].0));
 }

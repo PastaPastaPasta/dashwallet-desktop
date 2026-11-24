@@ -1178,11 +1178,23 @@ fn payout_hash(f: &topup_tests::Fixture, reference: &str) -> Option<String> {
         .and_then(|r| r.st_hash)
 }
 
+/// Whether the hook recorded the dispatch of payout `reference`.
+fn dispatched(f: &topup_tests::Fixture, reference: &str) -> bool {
+    let scope = dw_appdb::local_scope(&f.wallet.to_string());
+    let key = dw_appdb::dp_payout_dispatched(reference);
+    (f.engine)
+        .block_on(f.session.appdb_op(move |db| db.setting(&scope, &key)))
+        .unwrap()
+        .is_some()
+}
+
 /// C-funding P6: with a contact payout armed, the hook names the spend's
 /// transition in the payout's row, durably, before it writes the spend's
-/// artifact; a spend that is not a withdrawal, or whose row it cannot
-/// name, is refused with no artifact written, so nothing is sent.
-/// Mutant: write the artifact first (the held write finds it).
+/// artifact, and records its dispatch once the artifact exists, before it
+/// lets the library send; a spend that is not a withdrawal, or whose row
+/// it cannot name, is refused with no artifact written, so nothing is
+/// sent. Mutants: write the artifact first (the held write finds it);
+/// skip the dispatch record.
 #[test]
 fn a_payout_spend_is_named_in_its_row_before_its_artifact() {
     let h = Hooked::new();
@@ -1209,8 +1221,13 @@ fn a_payout_spend_is_named_in_its_row_before_its_artifact() {
         h.artifact(2).is_none(),
         "no artifact before the row names it"
     );
+    assert!(!dispatched(&h.f, "sh-a"));
     pause.release.notify_one();
     h.f.engine.block_on(accepted).unwrap().unwrap();
+    assert!(
+        dispatched(&h.f, "sh-a"),
+        "recorded before the hook returned"
+    );
     assert_eq!(payout_hash(&h.f, "sh-a"), Some(hex::encode(st_hash(2))));
     assert_eq!(h.artifact(2).unwrap().st_hash, Some(st_hash(2)));
 
@@ -1238,4 +1255,24 @@ fn a_payout_spend_is_named_in_its_row_before_its_artifact() {
         "a refused accept writes no artifact"
     );
     assert_eq!(payout_hash(&h.f, "sh-b"), None);
+}
+
+/// P6: when the hook cannot record a payout's dispatch after writing its
+/// artifact, it settles the artifact `not_executed` and refuses the spend,
+/// so the library sends nothing and the journal proves it unsent.
+#[test]
+fn a_payout_spend_whose_dispatch_is_not_recorded_is_refused_unsent() {
+    let h = Hooked::new();
+    let (session, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    payout_row(&h.f, "sh-c");
+    let _arm = session.arm_payout(wallet, "sh-c");
+    (session.platform.payments.fail_dispatch_record)
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut withdrawal = h.staged(5, &[5]);
+    withdrawal.kind = ShieldedDispatchKind::Withdraw;
+    let refused = h.dispatch(withdrawal).unwrap_err();
+    assert!(refused.contains("dispatch was not recorded"), "{refused}");
+    assert_eq!(h.artifact(5).unwrap().status, ArtifactStatus::NotExecuted);
+    assert!(!dispatched(&h.f, "sh-c"));
+    assert_eq!(payout_hash(&h.f, "sh-c"), Some(hex::encode(st_hash(5))));
 }
