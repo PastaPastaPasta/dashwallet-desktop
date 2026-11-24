@@ -180,9 +180,11 @@ function ResendSheet({ op, wallet, network, onClose }: { op: ProTxOperation; wal
     if (busy || !credential.ready || !actsOn(op, proTxSends(network))) return;
     const gen = lockGeneration();
     setBusy(true);
+    let granted: string | null = null;
     try {
       const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: resendCap(op) });
       if (!grant) return;
+      granted = grant.id;
       if (!mounted.current || walletGateClosed() || lockGeneration() !== gen) {
         void b.revokeGrant(grant.id).catch(() => null);
         return;
@@ -191,6 +193,7 @@ function ResendSheet({ op, wallet, network, onClose }: { op: ProTxOperation; wal
       void refresh();
       if (mounted.current) onClose();
     } catch (e) {
+      if (granted) void b.revokeGrant(granted).catch(() => null);
       if (refusedWhileLocked(e) || !mounted.current) return;
       credential.setError(mnErrorText(e));
       void refresh();

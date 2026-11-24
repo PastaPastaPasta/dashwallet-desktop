@@ -547,7 +547,7 @@ export function RegisterSheet({
       <>
         <h4 className="mg-section-title">{t(`${R}.prove.heading`)}</h4>
         <p className="mg-small">{t(`${R}.prove.text`, { outpoint: op.terms.collateralOutpoint ? shortOutpoint(op.terms.collateralOutpoint) : "" })}</p>
-        {op.signRequest && (
+        {op.signRequest && !needsNewMessage && (
         <dl className="detail-list card-l1" data-testid="reg-sign-request">
           <DetailRow label={t(`${R}.prove.address`)}>
             <span className="copy-value">

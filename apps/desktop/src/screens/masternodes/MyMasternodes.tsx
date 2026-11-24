@@ -70,27 +70,6 @@ export function MyMasternodes({
   const [selected, setSelected] = useState<string | null>(null);
   const [retiredOpen, setRetiredOpen] = useState(false);
 
-  if (list.isPending) return <LoadingState testId="mn-loading" text={MnText.loading} />;
-  if (list.isError)
-    return (
-      <Notice
-        tone="warning"
-        testId="mn-list-failed"
-        action={
-          <DashButton variant="filledBlue" size="small" data-testid="mn-retry" onClick={() => void refresh()}>
-            {MnText.tryAgain}
-          </DashButton>
-        }
-      >
-        <strong>{MnText.failed}</strong> {mnErrorText(list.error)}
-      </Notice>
-    );
-  const o = list.data;
-  const watchNotice = wallet.watchOnly && (
-    <Notice tone="info" testId="mn-notice-watch-only">
-      <strong>{MnText.watchOnly}</strong> {MnText.watchOnlyText}
-    </Notice>
-  );
   const work = ops.data ?? [];
   // A failed or pending read is not an empty one: saved work stays named until the read answers.
   const progress = (
@@ -110,6 +89,30 @@ export function MyMasternodes({
       )}
       {ops.isPending ? <LoadingState testId="mn-ops-loading" text={MnText.opsLoading} /> : <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />}
     </>
+  );
+  if (list.isPending) return <LoadingState testId="mn-loading" text={MnText.loading} />;
+  if (list.isError)
+    return (
+      <>
+        <Notice
+          tone="warning"
+          testId="mn-list-failed"
+          action={
+            <DashButton variant="filledBlue" size="small" data-testid="mn-retry" onClick={() => void refresh()}>
+              {MnText.tryAgain}
+            </DashButton>
+          }
+        >
+          <strong>{MnText.failed}</strong> {mnErrorText(list.error)}
+        </Notice>
+        {progress}
+      </>
+    );
+  const o = list.data;
+  const watchNotice = wallet.watchOnly && (
+    <Notice tone="info" testId="mn-notice-watch-only">
+      <strong>{MnText.watchOnly}</strong> {MnText.watchOnlyText}
+    </Notice>
   );
   if (isEmpty(o) && inProgress(work).length === 0 && conflicted(work).length === 0)
     return (

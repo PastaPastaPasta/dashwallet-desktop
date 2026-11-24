@@ -533,6 +533,47 @@ for (const theme of ["light", "dark"] as const)
     expect(errors.filter((e) => !e.includes("mn_operations"))).toEqual([]);
   });
 
+test("fee coins spent while Prove is open: the refusal hides the old message and offers a new one (issue 460)", async ({ page }) => {
+  const errors = await open(page, "reg-prepared");
+  await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
+  await expect(page.getByTestId("reg-sign-request")).toBeVisible();
+  await page.evaluate(() => {
+    window.__dwFixture!.world.masternodes.spendInputs = true;
+  });
+  const before = await revokes(page);
+  await page.getByTestId("reg-signature").fill(EXTERNAL_SIGNATURE);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-submit").click();
+  await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
+  await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+  await expect.poll(() => revokes(page)).toBe(before + 1);
+  await page.getByTestId("reg-new-message").click();
+  await expect(page.getByTestId("reg-sign-request")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("a refused Send again from In progress revokes its grant (issue 460)", async ({ page }) => {
+  const errors = await open(page, "mn-ops");
+  await page.getByTestId(`mn-op-resend-${OP_SIGNED}`).click();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_resend_operation", "rpc"));
+  const before = await revokes(page);
+  await page.getByTestId("mn-op-resend-passphrase").fill("demo");
+  await page.getByTestId("mn-op-resend-confirm").click();
+  await expect.poll(() => revokes(page)).toBe(before + 1);
+  await expect(page.getByTestId("mn-op-resend-sheet")).toBeVisible();
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
+test("a failed masternode list read still shows the work in progress (issue 460)", async ({ page }) => {
+  const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-${OP_PREPARED}`)).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_list", "rpc"));
+  await page.evaluate(() => window.__dwFixture!.emit({ kind: "masternodes", network: window.__dwFixture!.world.launch.network.dirName }));
+  await expect(page.getByTestId("mn-list-failed")).toBeVisible();
+  await expect(page.getByTestId(`mn-op-continue-${OP_PREPARED}`)).toBeVisible();
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
 test("a released collateral offers Lock it again on testnet", async ({ page }) => {
   const errors = await open(page, "mn-released");
   await page.getByTestId(`mn-row-${HOME}`).click();
