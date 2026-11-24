@@ -47,6 +47,13 @@ test.describe("Unfinished transfers", () => {
     await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
   });
 
+  test("recovery-checking-two: the card says the plural Checking line", async ({ page }) => {
+    await open(page, "recovery-checking-two");
+    await expect(page.getByTestId("unfinished-text")).toHaveText(
+      "2 transfers may already be finished. Choose Check again to confirm them. If an amount wasn't added yet, Check again tries to add it. If any still show Checking, try again later.",
+    );
+  });
+
   test("recovery-checking: Check again reaches the backend, and the second try applies the lock", async ({ page }) => {
     await open(page, "recovery-checking");
     await expect(page.getByTestId("unfinished-text")).toContainText("1 transfer may already be finished");

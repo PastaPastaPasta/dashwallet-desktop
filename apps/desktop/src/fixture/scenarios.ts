@@ -911,6 +911,13 @@ const SCENARIOS = {
     w.pending.recovery.checksBeforeApply = 1;
     return w;
   },
+  /** Two restored locks that may already be applied: the card's plural Checking line. */
+  "recovery-checking-two": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking"), restoredLock(2, 25_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 1;
+    return w;
+  },
   /** A restore read back a Core → Shielded lock Platform already took: it may already be finished, and Check again hears the network say it was added. */
   "recovery-restored-finished": (t) => {
     const w = base(t);
