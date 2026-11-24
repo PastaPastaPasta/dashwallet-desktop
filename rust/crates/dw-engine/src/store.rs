@@ -28,6 +28,10 @@ pub(crate) struct WalletStore {
     inner: Arc<SqlitePersister>,
     /// `inner`'s file.
     db_path: std::path::PathBuf,
+    /// Wallets whose stored lock statuses a load has checked
+    /// ([`crate::finality_recheck`]) since the manager last took them: a
+    /// wallet the manager holds is not checked again from a snapshot.
+    rechecked: std::sync::Mutex<HashSet<RawWalletId>>,
     /// Wallets `load` leaves out.
     unloaded: RwLock<HashSet<RawWalletId>>,
     tap: Arc<ChangesetTap>,
@@ -71,6 +75,7 @@ impl WalletStore {
         Self {
             inner,
             db_path,
+            rechecked: Default::default(),
             unloaded: RwLock::new(unloaded),
             tap,
             leases: std::sync::OnceLock::new(),
@@ -111,6 +116,12 @@ impl WalletStore {
         } else {
             set.remove(&id)
         }
+    }
+
+    /// Wallet `id` has left the manager: its next load checks its stored
+    /// lock statuses again.
+    pub(crate) fn forget_rechecked(&self, id: &RawWalletId) {
+        (self.rechecked.lock().unwrap_or_else(|p| p.into_inner())).remove(id);
     }
 
     /// Wallet `id`'s filter checkpoint when it was last loaded.
@@ -287,8 +298,22 @@ impl PlatformWalletPersistence for WalletStore {
         state
             .platform_addresses
             .retain(|id, _| !unloaded.contains(id));
-        // Before the manager holds any of it.
-        crate::finality_recheck::recheck_start_state(&self.inner, &self.db_path, &mut state);
+        // Only wallets the manager does not hold yet: a reload hands back
+        // every open wallet, and the manager keeps its live state for those.
+        {
+            let mut rechecked = self.rechecked.lock().unwrap_or_else(|p| p.into_inner());
+            let fresh: HashSet<RawWalletId> = (state.wallets.keys())
+                .filter(|id| !rechecked.contains(*id))
+                .copied()
+                .collect();
+            crate::finality_recheck::recheck_start_state(
+                &self.inner,
+                &self.db_path,
+                &mut state,
+                &fresh,
+            );
+            rechecked.extend(fresh);
+        }
         let mut loaded_at = self.loaded_at.lock().unwrap_or_else(|p| p.into_inner());
         loaded_at.retain(|id, _| state.wallets.contains_key(id));
         for (id, wallet) in &state.wallets {

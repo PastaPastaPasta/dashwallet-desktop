@@ -26,12 +26,16 @@
 //! the resume then proves again from verified evidence, and `Pending` for a
 //! payment, which the reconcile confirms again on a verified lock or a block.
 //!
-//! It runs on the start state the store hands the wallet manager, before the
-//! manager holds the wallet, so nothing reads the old statuses and no live
-//! event races it. The corrections are written back through the store. It
-//! keeps no marker: once the statuses agree with the store a run changes
-//! nothing, and a run at every load leaves nothing a lost write could make
-//! disagree with the store.
+//! It runs on the start state the store hands the wallet manager, for each
+//! wallet the manager does not hold yet: its first load in the session, or
+//! the first after an unload. Nothing has read the old statuses then, and no
+//! live event races it. A reload hands back every open wallet as well, but
+//! the manager keeps its live state for those, so they are skipped: writing a
+//! snapshot's correction under a live wallet would part the store from
+//! memory. The corrections are written back through the store. It keeps no
+//! marker: once the statuses agree with the store a run changes nothing, and
+//! a run at each load leaves nothing a lost write could make disagree with
+//! the store.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -141,15 +145,20 @@ pub(crate) struct Rechecked {
     pub(crate) payments: Vec<(Identifier, String)>,
 }
 
-/// Runs the check (module doc) over `state`, the start state just read from
-/// `persister`, whose file is `db_path`.
+/// Runs the check (module doc) over the wallets of `state` in `only`;
+/// `state` is the start state just read from `persister`, whose file is
+/// `db_path`.
 pub(crate) fn recheck_start_state(
     persister: &SqlitePersister,
     db_path: &Path,
     state: &mut ClientStartState,
+    only: &HashSet<RawWalletId>,
 ) -> BTreeMap<RawWalletId, Rechecked> {
     let mut done = BTreeMap::new();
     for (wallet, start) in state.wallets.iter_mut() {
+        if !only.contains(wallet) {
+            continue;
+        }
         let has_locks = (start.unused_asset_locks.values())
             .flat_map(|m| m.values())
             .any(|l| l.status == AssetLockStatus::InstantSendLocked);

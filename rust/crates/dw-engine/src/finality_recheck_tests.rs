@@ -395,3 +395,83 @@ fn a_lock_status_without_verified_evidence_is_put_back_on_the_next_open() {
     assert_eq!(again.locks, after.locks, "the store kept them");
     assert_eq!(again.payments, after.payments);
 }
+
+/// Stores asset lock `tx` `InstantSendLocked` with its proof, and its record
+/// mined, for wallet `id`: a status the check puts back.
+fn store_mined_locked(session: &NetworkSession, id: WalletId, tx: &Transaction) {
+    let live = session.live().unwrap();
+    live.persister
+        .store(
+            id.0,
+            PlatformWalletChangeSet {
+                core: Some(CoreChangeSet {
+                    records: vec![record(
+                        tx,
+                        TransactionContext::InBlock(BlockInfo::new(
+                            600,
+                            BlockHash::from_byte_array([0x0C; 32]),
+                            1_700_000_000,
+                        )),
+                    )],
+                    ..Default::default()
+                }),
+                asset_locks: Some(AssetLockChangeSet {
+                    asset_locks: BTreeMap::from([(
+                        OutPoint::new(tx.txid(), 0),
+                        entry(tx, AssetLockStatus::InstantSendLocked),
+                    )]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    live.persister.flush(id.0).unwrap();
+}
+
+/// A load hands back every open wallet's start state; only a wallet the
+/// manager does not hold yet is checked. One it holds keeps what it stored.
+#[test]
+fn a_wallet_the_manager_holds_is_not_checked_when_another_loads() {
+    let (_dir, engine, session, a) = engine_wallet();
+    let b = engine
+        .block_on(
+            session.import_wallet(
+                Zeroizing::new(
+                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
+                        .to_vec(),
+                ),
+                Zeroizing::new(Vec::new()),
+                ImportOptions::default(),
+            ),
+        )
+        .unwrap();
+    engine.block_on(session.unload_wallet(b)).unwrap();
+    let held = lock_tx(0xB1);
+    let closed = lock_tx(0xB2);
+    store_mined_locked(&session, a, &held);
+    store_mined_locked(&session, b, &closed);
+
+    engine.block_on(session.load_wallet(b)).unwrap();
+
+    assert_eq!(
+        stored_status(&session, a, OutPoint::new(held.txid(), 0)),
+        AssetLockStatus::InstantSendLocked,
+        "the open wallet's stored status is left to its live state"
+    );
+    assert_eq!(
+        stored_status(&session, b, OutPoint::new(closed.txid(), 0)),
+        AssetLockStatus::Broadcast,
+        "the wallet just loaded is checked"
+    );
+    let manager = session.manager().unwrap();
+    let loaded = engine.block_on(async move {
+        let wallet = manager.get_wallet(&b.0).await.unwrap();
+        let state = wallet.state().await;
+        (state
+            .tracked_asset_locks
+            .get(&OutPoint::new(closed.txid(), 0)))
+        .map(|l| (l.status.clone(), l.proof.is_some()))
+    });
+    assert_eq!(loaded, Some((AssetLockStatus::Broadcast, false)));
+}

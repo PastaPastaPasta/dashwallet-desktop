@@ -374,6 +374,7 @@ impl NetworkSession {
                 this.spawn_ensure_background();
                 return Err(e);
             }
+            live.store.forget_rechecked(&id.0);
             this.hub.unload_wallet(&id);
             this.spends.forget_wallet(&id);
             this.coin_fences.forget(&id);
