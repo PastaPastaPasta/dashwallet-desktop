@@ -35,6 +35,7 @@ function setup(lock = { encrypted: false }) {
         }),
     ),
     unshieldToCore: vi.fn(async (_w: string, c: string, to: string | null, grant: string, _confirm: boolean) => (calls.push(`out ${c} ${to} ${grant}`), SPEND)),
+    unshieldToPlatform: vi.fn(async (_w: string, c: string, to: string | null, grant: string, confirm: boolean) => (calls.push(`toPlatform ${c} ${to} ${grant} ${confirm}`), SPEND)),
   };
   const flow = new ShieldedFlow(api, WALLET_A);
   return { flow, api, vault, calls, answer: (o: ShieldedSpendOutcome) => answer!(o) };
@@ -79,6 +80,20 @@ describe("the shielded flow", () => {
     flow.next({ kind: "out", credits: "10000000000" });
     await flow.run(GRANT);
     expect(calls.at(-1)).toBe("out 10000000000 null grant-2");
+  });
+
+  it("moves to the wallet's own Platform receive address (null), passing the user's confirmation", async () => {
+    const { flow, calls } = setup();
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT);
+    expect(calls).toEqual(["toPlatform 10000000000 null grant-1 false"]);
+    expect([flow.step, flow.result]).toEqual(["done", { kind: "spend", outcome: SPEND }]);
+    flow.close();
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT, true);
+    expect(calls.at(-1)).toBe("toPlatform 10000000000 null grant-2 true");
   });
 
   it("finishes a lock that was not applied with one duff of grant and no confirm step", async () => {

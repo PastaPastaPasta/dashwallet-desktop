@@ -109,6 +109,8 @@ export class IpcBackend implements Backend {
   shieldedSend = (...a: Parameters<typeof cmd.shieldedSend>) => orUnavailable(cmd.shieldedSend(...a));
   unshieldQuote = (...a: Parameters<typeof cmd.unshieldQuote>) => orUnavailable(cmd.unshieldQuote(...a));
   unshieldToCore = (...a: Parameters<typeof cmd.unshieldToCore>) => orUnavailable(cmd.unshieldToCore(...a));
+  unshieldToPlatformQuote = (...a: Parameters<typeof cmd.unshieldToPlatformQuote>) => orUnavailable(cmd.unshieldToPlatformQuote(...a));
+  unshieldToPlatform = (...a: Parameters<typeof cmd.unshieldToPlatform>) => orUnavailable(cmd.unshieldToPlatform(...a));
   shieldedHistory = (walletId: string, offset: number, limit: number) => orAbsent(cmd.shieldedHistory(walletId, offset, limit));
   platformAddresses = (walletId: string) => orAbsent(cmd.platformAddresses(walletId));
   platformActivity = (walletId: string) => orAbsent(cmd.platformActivity(walletId));

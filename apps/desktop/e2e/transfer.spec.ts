@@ -59,6 +59,19 @@ test.describe("Transfer grants", () => {
     await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
   });
 
+  test("Shielded → Platform: a platformOp grant of the credits and the fee, paid to the receive address", async ({ page }) => {
+    await open(page, "funded");
+    await openTransfer(page, "shieldedToPlatform");
+    await page.getByTestId("transfer-amount").fill("0.5");
+    expect(await grantOf(page, "shielded-go")).toEqual({ kind: "platformOp", maxDuffs: 0, maxCredits: "50020000000" });
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
+    expect(await callsOf(page, "unshield_to_platform")).toBe(1);
+    expect(await callsOf(page, "unshield_to_core")).toBe(0);
+    // Platform's balance follows: Home's breakdown shows the 0.5 the move added.
+    await page.getByTestId("shielded-done").click();
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.90");
+  });
+
   test("Platform → Dash wallet: a platformOp grant of the whole balance", async ({ page }) => {
     await open(page, "funded");
     await openTransfer(page, "platformToCore");
@@ -176,9 +189,14 @@ test.describe("Transfer quotes", () => {
     await pick("to", "platform");
     await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "coreToPlatform");
     await expect.poll(focused).toBe("transfer-amount");
-    // Shielded → Platform has no command: no amount, focus back on From.
+    // Shielded → Platform runs: focus on its amount.
     await pick("from", "shielded");
     await pick("to", "platform");
+    await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "shieldedToPlatform");
+    await expect.poll(focused).toBe("transfer-amount");
+    // Platform → Shielded has no command: no amount, focus back on To.
+    await pick("from", "platform");
+    await pick("to", "shielded");
     await expect(page.getByTestId("transfer-unavailable")).toBeVisible();
     await expect.poll(focused).toBe("transfer-to");
     await page.keyboard.press("Escape");

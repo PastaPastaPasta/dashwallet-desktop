@@ -22,17 +22,19 @@ import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 
 export type ShieldedApi = Pick<
   Backend,
-  "shieldFromCore" | "resumeShield" | "shieldedSend" | "unshieldToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
+  "shieldFromCore" | "resumeShield" | "shieldedSend" | "unshieldToCore" | "unshieldToPlatform" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
 >;
 
-/** What a sheet is for: the three moves, and finishing a lock that was not applied. */
-export type ShieldedKind = "add" | "send" | "out" | "resume";
+/** What a sheet is for: the moves, and finishing a lock that was not applied. `toPlatform` moves to the
+ * wallet's own Platform receive address. */
+export type ShieldedKind = "add" | "send" | "out" | "toPlatform" | "resume";
 
 /** What the confirm step quotes and sends. Credits are decimal strings, a duff is 1000 of them. */
 export type ShieldedRequest =
   | { kind: "add"; duffs: number }
   | { kind: "send"; credits: string; to: string; memo: string | null }
   | { kind: "out"; credits: string }
+  | { kind: "toPlatform"; credits: string }
   | { kind: "resume"; txid: string };
 
 export type ShieldedStep = "form" | "confirm" | "running" | "done" | "refused";
@@ -92,6 +94,9 @@ export const SHIELDED_COPY = {
     },
     get out() {
       return t("transfer.shielded.form.out");
+    },
+    get toPlatform() {
+      return t("transfer.shielded.form.toPlatform");
     },
     get to() {
       return t("transfer.shielded.form.to");
@@ -224,6 +229,12 @@ export const SHIELDED_COPY = {
         return t("transfer.shielded.done.out.title");
       },
       text: (amount: string) => t("transfer.shielded.done.out.text", { amount }),
+    },
+    toPlatform: {
+      get title() {
+        return t("transfer.shielded.done.out.title");
+      },
+      text: (addr: string) => t("transfer.shielded.done.toPlatform.text", { addr }),
     },
   },
   /** The confirmation a send or move from a wallet with an unrecorded spend needs (DEC-1057). */
@@ -497,6 +508,8 @@ export class ShieldedFlow extends Model {
         return { kind: "spend", outcome: await this.api.shieldedSend(this.walletId, r.to, r.credits, r.memo, grant, confirmUnrecorded) };
       case "out":
         return { kind: "spend", outcome: await this.api.unshieldToCore(this.walletId, r.credits, null, grant, confirmUnrecorded) };
+      case "toPlatform":
+        return { kind: "spend", outcome: await this.api.unshieldToPlatform(this.walletId, r.credits, null, grant, confirmUnrecorded) };
     }
   }
 }

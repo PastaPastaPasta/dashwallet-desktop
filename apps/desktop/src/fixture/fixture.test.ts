@@ -92,6 +92,7 @@ describe("fixture backend", () => {
       "topup.test.ts",
       "topup.ts",
       "transfer.ts",
+      "unshieldToPlatform.test.ts",
       "updates.ts",
       "vault.ts",
       "vectors/accept.json",
@@ -147,7 +148,8 @@ describe("fixture backend", () => {
       const launch = await b.launchInfo();
       expect(launch.engineVersion, scenario).toBe("fixture");
       // Prices are Mainnet's (MP-01): the fiat scenarios open it, as does a first run with no choice saved.
-      const network = scenario.startsWith("fiat") || scenario === "no-wallet-mainnet" ? "mainnet" : scenario === "network-pinned" ? "regtest" : "testnet";
+      // transfer-mainnet shows Transfer's routes off on mainnet.
+      const network = scenario.startsWith("fiat") || scenario === "no-wallet-mainnet" || scenario === "transfer-mainnet" ? "mainnet" : scenario === "network-pinned" ? "regtest" : "testnet";
       expect((await b.openNetwork()).network.dirName, scenario).toBe(network);
       const wallets = await b.listWallets();
       const count = scenario.startsWith("no-wallet") || scenario === "fiat-first-run" ? 0 : scenario.endsWith("two-wallets") ? 2 : 1;

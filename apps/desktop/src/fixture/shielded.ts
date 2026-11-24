@@ -22,6 +22,7 @@ import type { Utxo } from "../api/generated/Utxo";
 import { SHIELDED_CODES } from "../api/pending";
 import { coinJoinAccount, DRAIN_STEP, mixerBusy, SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { checkGrant, fundDuffs, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import type { PlatformWorld } from "./pending";
 import type { FixtureWallet } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 
@@ -269,6 +270,32 @@ function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "
   return { state: "done", unresolved: null };
 }
 
+/** The engine's flag for Shielded → Platform: off on mainnet. */
+export const UNSHIELD_TO_PLATFORM = "unshield_to_platform";
+
+function refuseOnMainnet(ctx: Ctx) {
+  if (ctx.world.launch.network.kind === "mainnet") raise("platform.feature_off", UNSHIELD_TO_PLATFORM, { kind: "feature", feature: UNSHIELD_TO_PLATFORM });
+}
+
+/** The quote of an unshield to the wallet's own Platform address `to` (its receive address when `null`):
+ * off on mainnet first, then the gates, then the own-address rule, then the spend's refusals. */
+function toPlatformQuote(ctx: Ctx, walletId: string, credits: string, to: string | null, call: string): { quote: ShieldedSpendQuote; platform: PlatformWorld; address: string } {
+  refuseOnMainnet(ctx);
+  shieldedOf(ctx, walletId, call);
+  const p = ctx.world.pending.platform;
+  if (!p) return raise("platform.unavailable", "the fixture has no Platform addresses");
+  const address = to?.trim() ?? p.receive.address;
+  if (address !== p.receive.address && !p.addresses.some((a) => a.address === address)) raise(SHIELDED_CODES.invalidAddress, "not this wallet's Platform address", { kind: "reason", reason: "not this wallet's Platform address" });
+  return { quote: spendQuote(ctx, walletId, credits, false, call), platform: p, address };
+}
+
+function creditPlatform(p: PlatformWorld, address: string, credits: bigint) {
+  const held = p.addresses.find((a) => a.address === address);
+  if (held) held.credits = String(BigInt(held.credits) + credits);
+  else p.addresses = [...p.addresses, { address, credits: String(credits) }];
+  p.activity = [{ id: `unshield-${p.activity.length + 1}`, kind: "incoming", state: "done", credits: String(credits), address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: false, estimated: false }, ...p.activity];
+}
+
 /** While the wallet holds an unrecorded spend, a send or unshield needs the user's confirmation (DEC-1057). */
 function gateUnrecorded(ctx: Ctx, walletId: string, call: string, confirmed: boolean): void {
   const s = shieldedOf(ctx, walletId, call);
@@ -383,6 +410,19 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
     const end = endSpend(s, BigInt(q.totalCredits), { kind: "withdrawal", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo: null });
     return { credits, balance: s.balance, to, ...end };
+  },
+  unshield_to_platform_quote: ({ walletId, credits, to }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => toPlatformQuote(ctx, walletId, credits, to, "unshield_to_platform_quote").quote,
+  unshield_to_platform: ({ walletId, credits, to, grant, confirmUnrecorded }: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
+    refuseOnMainnet(ctx);
+    gateUnrecorded(ctx, walletId, "unshield_to_platform", confirmUnrecorded);
+    const { quote: q, platform: p, address } = toPlatformQuote(ctx, walletId, credits, to, "unshield_to_platform");
+    const s = ctx.world.pending.shielded!;
+    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool too small", { kind: "poolNotes", notes: 120, required: 250 });
+    spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
+    const end = endSpend(s, BigInt(q.totalCredits), { kind: "unshield", direction: "out", credits, feeCredits: q.feeCredits, counterparty: address, memo: null });
+    // Until the From Shielded attribution lands, the address's rise reads as an incoming row.
+    if (end.state === "done") creditPlatform(p, address, BigInt(credits));
+    return { credits, balance: s.balance, to: address, ...end };
   },
   shielded_history: ({ walletId, offset, limit }: { walletId: string; offset: number; limit: number }, ctx: Ctx) => {
     const s = shieldedOf(ctx, walletId, "shielded_history");

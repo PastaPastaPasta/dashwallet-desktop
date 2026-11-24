@@ -111,7 +111,7 @@ export async function lateFrames(page: Page, ms = 500) {
   };
 }
 
-export type TransferRoute = "coreToShielded" | "coreToPlatform" | "shieldedToCore" | "platformToCore";
+export type TransferRoute = "coreToShielded" | "coreToPlatform" | "shieldedToCore" | "shieldedToPlatform" | "platformToCore";
 
 /** Home's Transfer shortcut, choosing the requested source and destination pools. */
 export async function openTransfer(page: Page, route: TransferRoute) {
@@ -119,13 +119,13 @@ export async function openTransfer(page: Page, route: TransferRoute) {
   await page.getByTestId("shortcut-transfer").click();
   await body.waitFor();
   if ((await body.getAttribute("data-view")) === "steps" && (await body.getAttribute("data-route")) !== route) await page.getByTestId("transfer-choose-route").click();
-  if (route === "platformToCore" || route === "shieldedToCore") {
+  if (route === "platformToCore" || route === "shieldedToCore" || route === "shieldedToPlatform") {
     const pool = route === "platformToCore" ? "platform" : "shielded";
     if (!(await page.getByTestId(`transfer-picker-${pool}`).isVisible())) await page.getByTestId("transfer-from").click();
     await page.getByTestId(`transfer-picker-${pool}`).click();
     if ((await body.getAttribute("data-route")) !== route) {
       await page.getByTestId("transfer-to").click();
-      await page.getByTestId("transfer-picker-core").click();
+      await page.getByTestId(route === "shieldedToPlatform" ? "transfer-picker-platform" : "transfer-picker-core").click();
     }
   } else if ((await body.getAttribute("data-route")) !== route) {
     await page.getByTestId("transfer-to").click();
