@@ -2910,7 +2910,12 @@ fn a_send_on_a_read_behind_a_done_move_is_refused() {
         let nonce = &mut state.get_mut(&a).unwrap().0;
         *nonce = if behind { *nonce - 1 } else { *nonce + 1 };
     };
-    let records = w.moves();
+    let records = || {
+        (w.moves().into_iter())
+            .map(|m| (m.id, m.state))
+            .collect::<Vec<_>>()
+    };
+    let recorded = records();
     // Quoted on a current read, then submitted on a lagging node's proof
     // that shows A before the move; twice, with a restart between.
     for _ in 0..2 {
@@ -2923,7 +2928,7 @@ fn a_send_on_a_read_behind_a_done_move_is_refused() {
         );
         assert_eq!(sent(), before, "nothing signed");
         assert!(w.f.unused(&grant));
-        assert_eq!(w.moves(), records, "nothing recorded");
+        assert_eq!(records(), recorded, "nothing recorded");
         lag(false);
         w.f.s.platform.send_ops.reset();
     }

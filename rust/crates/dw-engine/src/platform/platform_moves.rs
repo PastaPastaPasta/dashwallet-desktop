@@ -2947,10 +2947,10 @@ async fn run(
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
     // A retry of a send that landed pays nothing and signs nothing.
-    if let (Target::Platform(to), Some(id)) = (target, retry_of) {
-        if let Some(settled) = retry_decision(&moves, id, (&bech32m(&to, network), amount))? {
-            return Ok((settled.clone(), None));
-        }
+    if let (Target::Platform(to), Some(id)) = (target, retry_of)
+        && let Some(settled) = retry_decision(&moves, id, (&bech32m(&to, network), amount))?
+    {
+        return Ok((settled.clone(), None));
     }
     // Every spend that may sign, before anything is planned (#533).
     behind(&moves, &seen)?;
