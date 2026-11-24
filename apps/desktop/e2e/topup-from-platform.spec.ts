@@ -4,8 +4,8 @@ import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme 
 
 // C-routes D-C3 (C3-8): the top-up sheet's "Pay with" on the fixture backend. Dash wallet is
 // chosen every time; Platform pays from the wallet's Platform addresses with Max, its confirm
-// copy and outcomes, a held top-up offering "Move to Dash wallet"; Shielded is listed and not
-// offered yet. `DW_SHOTS_DIR` also writes each state's screenshot for the pull request.
+// copy and outcomes, a held top-up that may still go through (no "Move to Dash wallet" until the
+// engine binds that move to it); Shielded is listed and not offered yet. `DW_SHOTS_DIR` also writes each state's screenshot for the pull request.
 
 // Each walk runs two or three axe scans, which take WebKit most of the default budget.
 test.describe.configure({ timeout: 60_000 });
@@ -64,7 +64,7 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
-  test(`a held top-up from Platform offers Move to Dash wallet and holds the source (${theme})`, async ({ page }) => {
+  test(`a held top-up from Platform may still go through and holds the source (${theme})`, async ({ page }) => {
     const errors = await openTopUp(page, theme, "held");
     await page.getByTestId("topup-source-platform").click();
     await page.getByTestId("topup-next").click();
@@ -72,27 +72,32 @@ for (const theme of THEMES) {
     await page.getByTestId("topup-pay").click();
     await authorize(page);
     await expect(page.getByTestId("topup-outcome-title")).toHaveText("The credits were not added yet");
-    await expect(page.getByTestId("topup-outcome-text")).toContainText("move these credits to your Dash wallet");
-    await expect(page.getByTestId("topup-move-to-core")).toBeVisible();
+    await expect(page.getByTestId("topup-outcome-text")).toContainText("This top-up may still go through.");
+    await expect(page.getByTestId("topup-move-to-core")).toHaveCount(0);
     await shot(page, theme, "platform-held");
     expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("topup-done").click();
 
-    // Move to Dash wallet: Home's transfer, at the move to the Dash wallet.
-    await page.getByTestId("topup-move-to-core").click();
-    await expect(page.getByTestId("page-home")).toBeVisible();
-    await expect(page.getByTestId("transfer-sheet")).toBeVisible();
-    await page.keyboard.press("Escape");
-
-    // Until it settles the Platform source says why it can't pay.
-    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "profile" }));
+    // Until it settles the Platform source says why it can't pay, with no move offered.
     await page.getByTestId("profile-top-up").click();
-    await expect(page.getByTestId("topup-source-platform")).toContainText("This top-up hasn't gone through yet");
+    await expect(page.getByTestId("topup-source-platform")).toContainText("This top-up may still go through.");
     await expect(page.getByTestId("topup-source-platform").locator("input")).toBeDisabled();
-    await expect(page.getByTestId("topup-source-move-to-core")).toBeVisible();
+    await expect(page.getByTestId("topup-source-move-to-core")).toHaveCount(0);
     await shot(page, theme, "pay-with-platform-held");
     expect(await seriousAxeViolations(page)).toEqual([]);
-    await page.getByTestId("topup-source-move-to-core").click();
-    await expect(page.getByTestId("transfer-sheet")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`Max from Platform pays the amount Confirm showed (${theme})`, async ({ page }) => {
+    const errors = await openTopUp(page, theme);
+    await page.getByTestId("topup-source-platform").click();
+    await page.getByTestId("topup-max").click();
+    await page.getByTestId("topup-next").click();
+    await expect(page.getByTestId("topup-quote")).toBeVisible();
+    await page.getByTestId("topup-pay").click();
+    await authorize(page);
+    await expect(sheet(page)).toHaveAttribute("data-outcome", "done");
+    await expect(page.getByTestId("topup-outcome-title")).toHaveText("Credits added");
     expect(errors).toEqual([]);
   });
 
