@@ -8,7 +8,8 @@
    focusPage), or a sheet focused because nothing in it can be pressed, shows no ring: it is not a
    control. */
 .page h1[tabindex="-1"]:focus,
-.sheet[tabindex="-1"]:focus {
+.sheet[tabindex="-1"]:focus,
+.mg-key-list[tabindex="-1"]:focus {
   outline: none;
 }
 
@@ -5336,6 +5337,20 @@ button.bell-row-open:focus-visible {
 
 .topup-choice:has(input:checked) {
   border-color: var(--dw-role-text-link);
+}
+
+/* "Pay with": a source that cannot pay says why under it. */
+.topup-choice[data-disabled] {
+  cursor: default;
+}
+
+.topup-sources {
+  margin-bottom: var(--dw-space-s);
+}
+
+/* A top-up from Platform names the address its fee is taken from: a long run that wraps. */
+.topup-platform-message {
+  overflow-wrap: anywhere;
 }
 
 .topup-choice-amount {

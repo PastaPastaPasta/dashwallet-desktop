@@ -127,6 +127,8 @@ describe("fixture send engine", () => {
     };
     expect(await mixed(pay(10_000_000))).toMatchObject({ code: "send.absurd_fee", data: { kind: "fee", fee: 10_000_200 } });
     expect(await mixed(pay(10_000_000, { subtractFeeFromAmount: true }))).toEqual({ fee: 192, sizeBytes: 192, inputCount: 1, change: null, totalSent: 9_999_908, leftOver: 0 });
+    // A rest that covers the fee pays it: the payee is charged nothing and no change is priced (#464).
+    expect(await mixed(pay(9_000_000, { subtractFeeFromAmount: true }))).toEqual({ fee: 1_000_100, sizeBytes: 192, inputCount: 1, change: null, totalSent: 9_000_000, leftOver: 999_908 });
   });
 
   it("names a fully mixed spend's left-over, which its fee already holds (U-06b)", async () => {
