@@ -2995,10 +2995,16 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
         "{:?}",
         started.elapsed()
     );
-    // Refused as held, before the lease is taken from the grant (close
-    // then revokes every grant, so the vault can't be asked after).
+    // Refused at readiness, before the lease is taken from the grant (close
+    // then revokes every grant, so the vault can't be asked after): held
+    // on the bring-up, or, once the close has gone further, by the
+    // protocol gate.
     assert!(
-        matches!(&finished, Ok(super::LockFinish::NotApplied { error }) if error == "platform.unavailable"),
+        matches!(
+            &finished,
+            Ok(super::LockFinish::NotApplied { error })
+                if error == "platform.unavailable" || error == "platform.context_unavailable"
+        ),
         "{finished:?}"
     );
     pause.release.notify_one();
