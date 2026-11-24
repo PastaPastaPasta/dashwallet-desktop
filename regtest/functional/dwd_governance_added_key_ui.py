@@ -62,6 +62,10 @@ def leaks(root, secrets):
 
 
 class DwdGovernanceAddedKeyUi(DwdGovernanceUi):
+    def set_test_params(self):
+        # The framework wants it defined here; the network is dwd_governance_ui.py's.
+        super().set_test_params()
+
     def run_test(self):
         node = self.nodes[0]
         time.sleep(1.5)  # peers keep a spork signed in the same second as the one they have
