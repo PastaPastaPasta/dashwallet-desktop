@@ -99,6 +99,15 @@ describe("routes", () => {
     expect(canSwap("shielded", "platform")).toBe(false);
   });
 
+  it("on mainnet the off routes name no detour through the Dash wallet, whose move to Platform is off there too", () => {
+    expect(unsupportedText("shielded", "platform", true)).toBe("This version can move from Shielded to Platform on test networks only.");
+    expect(unsupportedText("platform", "shielded", true)).toBe("Moving from Platform to Shielded isn't available in this version.");
+    expect(unsupportedText("core", "platform", true)).toBe("This version can add Dash to Platform on test networks only.");
+    for (const [from, to] of [["shielded", "platform"], ["platform", "shielded"], ["core", "platform"]] as const) expect(unsupportedText(from, to, true)).not.toMatch(/Dash wallet first/);
+    expect(unsupportedText("shielded", "platform")).toBe(TRANSFER_COPY.offOnNetwork);
+    expect(unsupportedText("platform", "shielded")).toBe(TRANSFER_COPY.unsupported);
+  });
+
   it("Shielded → Platform and Dash wallet → Platform are off on mainnet, each by its flag; the others are unchanged", () => {
     expect(routeOf("shielded", "platform", true)).toBe("unsupported");
     expect(unsupportedText("shielded", "platform")).toBe(TRANSFER_COPY.offOnNetwork);

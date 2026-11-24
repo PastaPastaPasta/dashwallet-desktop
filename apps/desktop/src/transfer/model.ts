@@ -41,9 +41,14 @@ export function routeOf(from: Pool, to: Pool, mainnet = false): RouteId | "unsup
   return id && !(mainnet && OFF_ON_MAINNET.has(id)) ? id : "unsupported";
 }
 
-/** Why the ends make no route: off on this network, or no command for it. */
-export const unsupportedText = (from: Pool, to: Pool): string =>
-  from === "shielded" && to === "platform" ? TRANSFER_COPY.offOnNetwork : from === "core" && to === "platform" ? MAINNET_OFF_COPY.add : TRANSFER_COPY.unsupported;
+/** Why the ends make no route: off on this network, or no command for it. On mainnet, where Dash
+ * wallet → Platform is off too, the line names no detour through the Dash wallet. */
+export function unsupportedText(from: Pool, to: Pool, mainnet = false): string {
+  if (from === "core" && to === "platform") return MAINNET_OFF_COPY.add;
+  if (from === "shielded" && to === "platform") return mainnet ? TRANSFER_COPY.offOnMainnet.shieldedToPlatform : TRANSFER_COPY.offOnNetwork;
+  if (from === "platform" && to === "shielded" && mainnet) return TRANSFER_COPY.offOnMainnet.platformToShielded;
+  return TRANSFER_COPY.unsupported;
+}
 
 /** Platform → Dash wallet where this version keeps it off (mainnet): the line in place of its form;
  * `null` where the route is on, a held move's exit is what it offers, or a record Platform has not
@@ -127,6 +132,14 @@ export const TRANSFER_COPY = {
   },
   get offOnNetwork() {
     return t("transfer.offOnNetwork");
+  },
+  offOnMainnet: {
+    get shieldedToPlatform() {
+      return t("transfer.offOnMainnet.shieldedToPlatform");
+    },
+    get platformToShielded() {
+      return t("transfer.offOnMainnet.platformToShielded");
+    },
   },
   none: {
     get absent() {

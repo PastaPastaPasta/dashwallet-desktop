@@ -500,7 +500,7 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
       {route === "unsupported" ? (
         <>
           <p className="field-hint" role="status" data-testid="transfer-unavailable">
-            {unsupportedText(t.from, t.to)}
+            {unsupportedText(t.from, t.to, t.mainnet)}
           </p>
           {t.from === "core" && t.to === "platform" && <StuckAdds walletId={walletId} network={network} />}
         </>

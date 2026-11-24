@@ -28,6 +28,11 @@ export const transfer = {
   unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
   /** Shielded → Platform on a network where it is off (mainnet). */
   offOnNetwork: "Moving from Shielded to Platform isn't available on this network yet. Move the funds to your Dash wallet first, then to Platform.",
+  /** The off routes on mainnet, where Dash wallet → Platform is off too: no detour through it. */
+  offOnMainnet: {
+    shieldedToPlatform: "This version can move from Shielded to Platform on test networks only.",
+    platformToShielded: "Moving from Platform to Shielded isn't available in this version.",
+  },
   /** An Activity row whose group settled with no evidence of which payment or move went through. */
   status: {
     settledUnknown: {
