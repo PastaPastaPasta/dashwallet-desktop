@@ -138,6 +138,41 @@ fn a_start_checks_the_quoted_numbers_and_writes_nothing() {
     assert!(f.rows().is_empty());
 }
 
+/// F5: a lease named as a Platform registration's grant that does not
+/// carry the Platform-address signer is `grant_invalid`: no row, nothing
+/// funded or created, the lease's credits untouched and still no signer.
+#[test]
+fn a_lease_without_the_platform_signer_starts_no_platform_registration() {
+    let f = fixture(false);
+    let lib = f.fake();
+    funded(&lib);
+    let q = quote(&f, &lib).unwrap();
+    let p = q.platform.clone().unwrap();
+    let g = f.grant(0, q.grant.max_credits, Credential::None);
+    let lease = (f.engine)
+        .block_on(
+            f.session
+                .begin_lease(f.wallet, FlowKind::Registration, &[g]),
+        )
+        .unwrap();
+    assert!(lease.call_platform_address_signer().is_err());
+    let before = lease.available(BudgetPurpose::Credits);
+    let e = (f.engine)
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            quoted(&p),
+            lease.id_string(),
+        ))
+        .unwrap_err();
+    assert_eq!(e.code(), "platform.grant_invalid", "{e:?}");
+    assert!(f.rows().is_empty());
+    assert_eq!(lib.counts(), (0, 0), "nothing funded or created");
+    assert_eq!(lease.available(BudgetPurpose::Credits), before);
+    assert!(lease.call_platform_address_signer().is_err());
+}
+
 /// F2: this build reads and runs a Platform row, planned or not.
 #[test]
 fn a_platform_row_is_run_by_this_build() {
