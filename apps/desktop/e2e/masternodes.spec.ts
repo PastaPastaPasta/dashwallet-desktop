@@ -159,28 +159,48 @@ test("a failed pane re-read drops the detail facts and the unlock line", async (
   await expect(page.getByTestId("mn-unlock")).toHaveCount(0);
 });
 
-// The list height line comes from its own read, which the page starts when it opens. Until it
-// answers, its line keeps its place, so nothing below moves under a click when it lands.
-for (const [name, scenario, extra] of [
-  ["answers", "mn-list", ""],
-  ["fails", "mn-list", "&fail=mn_list_state:none"],
-  ["says the list is syncing", "mn-syncing", ""],
+// Three reads land after a row is picked: the list height line (the page's), the masternode's
+// detail and an owned one's payouts (the pane's). The line keeps its place, the pane's actions sit
+// above what its reads fill in, and Change keys or payout keeps its place while the detail is out:
+// More stays under the pointer as each one answers or fails, at both widths.
+const READS = ["mn_list_state", "mn_payouts", "mn_masternode"] as const;
+for (const [name, scenario, extra, hash, shows] of [
+  ["answer", "mn-list", "", HOME, ["mn-fact-registered", "mn-payouts"]],
+  ["fail", "mn-list", READS.map((r) => `&fail=${r}:none`).join(""), HOME, ["mn-detail-failed", "mn-payouts-failed"]],
+  ["answer on a syncing list", "mn-syncing", "", OFFICE, ["mn-fact-registered"]],
 ] as const)
-  test(`nothing moves when the list height read ${name}`, async ({ page }) => {
-    const errors = await open(page, scenario, "light", `&hold=mn_list_state${extra}`);
-    await row(page, HOME).click();
-    const more = page.getByTestId("mn-more");
-    await more.scrollIntoViewIfNeeded();
-    const before = await more.boundingBox();
-    await page.evaluate(() => window.__dwFixture!.release("mn_list_state"));
-    await expect(page.getByTestId("mn-list-height")).toHaveCount(name === "answers" ? 1 : 0);
-    // A failed or unsynced answer shows nothing to wait for: give it time to land.
-    await page.waitForTimeout(300);
-    expect(await more.boundingBox()).toEqual(before);
-    await page.mouse.click(before!.x + before!.width / 2, before!.y + before!.height / 2);
-    await expect(page.getByTestId("mn-more-rename")).toBeVisible();
-    expect(errors).toEqual([]);
-  });
+  for (const [width, height] of [
+    [1280, 820],
+    [920, 600],
+  ])
+    test(`More stays put while the reads ${name}, ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height });
+      const errors = await open(page, scenario, "light", `&hold=mn_list_state${extra}`);
+      // The first row's pane has made its reads: hold the next ones, the picked row's.
+      await expect(row(page, hash)).not.toHaveAttribute("aria-current");
+      await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls)).toEqual(expect.arrayContaining(["mn_masternode", "mn_payouts"]));
+      await page.evaluate(() => {
+        const f = window.__dwFixture!;
+        const held = { mn_payouts: f.hold("mn_payouts"), mn_masternode: f.hold("mn_masternode"), mn_list_state: () => f.release("mn_list_state") };
+        (window as unknown as { __held: Record<string, () => void> }).__held = held;
+      });
+      await row(page, hash).click();
+      await expect(pane(page)).toHaveAttribute("aria-busy", "true");
+      const more = page.getByTestId("mn-more");
+      await more.scrollIntoViewIfNeeded();
+      const before = await more.boundingBox();
+      for (const read of READS) {
+        await page.evaluate((r) => (window as unknown as { __held: Record<string, () => void> }).__held[r](), read);
+        // A failed or empty answer shows nothing to wait for: give it time to land.
+        await page.waitForTimeout(300);
+        expect(await more.boundingBox(), `after ${read}`).toEqual(before);
+      }
+      await expect(pane(page)).not.toHaveAttribute("aria-busy");
+      for (const id of shows) await expect(page.getByTestId(id)).toBeVisible();
+      await page.mouse.click(before!.x + before!.width / 2, before!.y + before!.height / 2);
+      await expect(page.getByTestId("mn-more-rename")).toBeVisible();
+      expect(errors).toEqual([]);
+    });
 
 test("states: empty, collateral coin, syncing, failed, watch-only", async ({ page }) => {
   await open(page, "mn-empty");
