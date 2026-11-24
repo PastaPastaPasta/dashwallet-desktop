@@ -488,8 +488,9 @@ fn abandoning_a_relayed_marked_payment_of_an_unknown_coin_rescans_from_the_birth
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     mined(&engine, &session, id, TIP, vec![paid]);
     let own = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    // Not [7; 32], whose output 0 the test wallet's funding spends.
     let coin = OutPoint::new(
-        <Txid as dashcore::hashes::Hash>::from_byte_array([7; 32]),
+        <Txid as dashcore::hashes::Hash>::from_byte_array([0x5c; 32]),
         0,
     );
     let payment = super::spend_of(
@@ -606,10 +607,7 @@ fn remove_unconfirmed_retires_a_damaged_payment_and_frees_its_coin() {
     assert!(!held(&engine, &session, id).contains(&a), "A is out");
     assert!(!held(&engine, &session, id).contains(&b), "B is out");
 
-    engine.block_on(session.start_spv()).unwrap();
-    super::own_spend_disk_tests::eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
     let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
     assert_eq!(dropped, 1, "the damaged payment is counted");
     assert!(
@@ -1435,8 +1433,5 @@ fn damaged_payment_whose_marks_did_not_delete() -> (
 }
 
 fn spv_running(engine: &Engine, session: &Arc<NetworkSession>) {
-    engine.block_on(session.start_spv()).unwrap();
-    super::own_spend_disk_tests::eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
+    super::own_spend_disk_tests::start_offline_spv(engine, session);
 }

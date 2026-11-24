@@ -352,6 +352,7 @@ export function StatusBar({
   unitName,
   hd,
   onUnlock,
+  onSync,
   governance = null,
 }: {
   sync: SyncStatus | undefined;
@@ -360,6 +361,8 @@ export function StatusBar({
   hd: boolean;
   /** Opens the unlock sheet: the lock state is a button while unlocked for mixing only (U-02 D12). */
   onUnlock: () => void;
+  /** Opens Sync progress. */
+  onSync?: () => void;
   /** Masternodes' voting item (MG-09 D7), before the sync state as in MG-00's frame. */
   governance?: ReactNode;
 }) {
@@ -390,7 +393,14 @@ export function StatusBar({
         )}
         {sync && <span>{t("shell.status.peers", { count: sync.connectedPeers })}</span>}
         {governance}
-        {sync && <span>{!sync.running ? t("shell.status.offline") : sync.caughtUp ? t("shell.status.synced") : t("shell.status.syncing")}</span>}
+        {sync &&
+          (onSync ? (
+            <button type="button" className="status-button" data-testid="status-sync" title={t("shell.status.showSync")} onClick={onSync}>
+              {!sync.running ? t("shell.status.offline") : sync.caughtUp ? t("shell.status.synced") : t("shell.status.syncing")}
+            </button>
+          ) : (
+            <span>{!sync.running ? t("shell.status.offline") : sync.caughtUp ? t("shell.status.synced") : t("shell.status.syncing")}</span>
+          ))}
       </span>
     </footer>
   );

@@ -26,6 +26,7 @@ import {
   keepsRecordedPayout,
   pinToPreview,
   recordedPayout,
+  REGISTRAR_UPDATE_SENDS,
   reviewLines,
   signerLine,
   unsentUpdate,
@@ -111,7 +112,7 @@ export function ChangeKeysSheet({
 
   const sending = useRef(false);
   const send = async () => {
-    if (sending.current || busy || !request || !current || !signable || !credential.ready) return;
+    if (!REGISTRAR_UPDATE_SENDS || sending.current || busy || !request || !current || !signable || !credential.ready) return;
     sending.current = true;
     setBusy(true);
     try {
@@ -177,7 +178,7 @@ export function ChangeKeysSheet({
         className="mg-sheet-body mg-change-keys"
         onSubmit={(e) => {
           e.preventDefault();
-          void send();
+          if (REGISTRAR_UPDATE_SENDS) void send();
         }}
       >
         <p className="mg-muted mg-small mg-flush">{t(`${P}.intro`)}</p>
@@ -259,16 +260,18 @@ export function ChangeKeysSheet({
             <p className="mg-muted mg-small mg-flush">{t(`${P}.review.checking`)}</p>
           ) : null}
         </section>
-        <CredentialField c={credential} busy={busy} testId="mn-change" />
+        {REGISTRAR_UPDATE_SENDS ? <CredentialField c={credential} busy={busy} testId="mn-change" /> : <HeldLine />}
         <footer className="mg-sheet-footer">
           <span />
           <span className="mg-actions">
             <DashButton variant="tintedGray" size="medium" data-testid="mn-change-cancel" disabled={busy} onClick={onClose}>
               {t("common.cancel")}
             </DashButton>
-            <DashButton type="submit" variant="filledBlue" size="medium" data-testid="mn-change-send" disabled={busy || !signable || !credential.ready}>
-              {busy ? t(`${P}.sending`) : t(`${P}.send`)}
-            </DashButton>
+            {REGISTRAR_UPDATE_SENDS && (
+              <DashButton type="submit" variant="filledBlue" size="medium" data-testid="mn-change-send" disabled={busy || !signable || !credential.ready}>
+                {busy ? t(`${P}.sending`) : t(`${P}.send`)}
+              </DashButton>
+            )}
           </span>
         </footer>
       </form>
@@ -299,7 +302,7 @@ function UnsentUpdate({
   const credential = useCredential(wallet.walletId, t(`${P}.notSent.ask`), null);
   const acting = useRef(false);
   const act = async (what: "resend" | "discard") => {
-    if (acting.current || busy || (what === "resend" && !credential.ready)) return;
+    if (acting.current || busy || (what === "resend" && (!REGISTRAR_UPDATE_SENDS || !credential.ready))) return;
     acting.current = true;
     setBusy(true);
     try {
@@ -324,14 +327,23 @@ function UnsentUpdate({
       data-testid="mn-change-unsent"
       onSubmit={(e) => {
         e.preventDefault();
-        void act("resend");
+        if (REGISTRAR_UPDATE_SENDS) void act("resend");
       }}
     >
       <p className="mg-notice mg-notice-warning">
         <strong>{t(`${P}.notSent.title`)}</strong> {t(`${P}.notSent.text`)}
       </p>
       {op.lastError === "send.no_peers" && <p className="mg-muted mg-small mg-flush">{t(`${P}.notSent.noPeers`)}</p>}
-      <CredentialField c={credential} busy={busy} testId="mn-change-unsent" />
+      {REGISTRAR_UPDATE_SENDS ? (
+        <CredentialField c={credential} busy={busy} testId="mn-change-unsent" />
+      ) : (
+        <>
+          <HeldLine />
+          <p className="form-problem" role="alert" data-testid="mn-change-unsent-error">
+            {credential.error}
+          </p>
+        </>
+      )}
       <footer className="mg-sheet-footer">
         <span>
           <DashButton variant="tintedGray" size="medium" data-testid="mn-change-unsent-discard" disabled={busy} onClick={() => void act("discard")}>
@@ -342,12 +354,23 @@ function UnsentUpdate({
           <DashButton variant="tintedGray" size="medium" disabled={busy} onClick={onClose}>
             {t("common.cancel")}
           </DashButton>
-          <DashButton type="submit" variant="filledBlue" size="medium" data-testid="mn-change-unsent-resend" disabled={busy || !credential.ready}>
-            {busy ? t(`${P}.notSent.resending`) : t(`${P}.notSent.resend`)}
-          </DashButton>
+          {REGISTRAR_UPDATE_SENDS && (
+            <DashButton type="submit" variant="filledBlue" size="medium" data-testid="mn-change-unsent-resend" disabled={busy || !credential.ready}>
+              {busy ? t(`${P}.notSent.resending`) : t(`${P}.notSent.resend`)}
+            </DashButton>
+          )}
         </span>
       </footer>
     </form>
+  );
+}
+
+function HeldLine() {
+  const t = useT();
+  return (
+    <p className="mg-notice mg-notice-warning" data-testid="mn-change-held">
+      {t(`${P}.held`)}
+    </p>
   );
 }
 

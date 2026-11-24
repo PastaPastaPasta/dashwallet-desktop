@@ -840,6 +840,7 @@ impl NetworkSession {
                 .await;
         }
         session.load_history().await?;
+        session.clean_export_staging().await;
         session.start_pump(&manager, appdb);
         session.back_up_every_wallet_once();
         session.spawn_ensure_background();

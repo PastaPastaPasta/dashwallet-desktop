@@ -120,17 +120,58 @@ describe("fixture unfinished transfers", () => {
     expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
   });
 
-  it("Finish transfers counts as the engine does: ready applied, checking not tried and pending", async () => {
+  it("Finish transfers counts as the engine does: ready applied, a restored checking one tried and still checking", async () => {
     open("recovery-restored-mixed");
     expect(await cmd.finishAssetLocks(W, await grant())).toEqual({
-      resumed: 2,
+      resumed: 3,
       completed: 2,
       stillPending: 1,
       alreadyUsed: 0,
-      byKind: [{ kind: "shielded", resumed: 2, completed: 2, stillPending: 1 }],
+      byKind: [{ kind: "shielded", resumed: 3, completed: 2, stillPending: 1 }],
       unread: [],
     });
     expect((await cmd.unfinishedTransfers(W)).locks.map((l) => l.state)).toEqual(["checking"]);
+  });
+
+  it("a restored lock Platform already took reads checking; Check again is answered already used, adds nothing and leaves the list", async () => {
+    for (const scenario of ["recovery-restored-finished", "paddr-recovery-restored-finished"] as const) {
+      open(scenario);
+      const [l] = (await cmd.unfinishedTransfers(W)).locks;
+      expect([l.origin, l.state]).toEqual(["restored", "checking"]);
+      const shielded = (await cmd.shieldedStatus(W)).balance;
+      const credits = (await cmd.platformAddresses(W))?.credits;
+      expect(await cmd.finishTransfer(W, l.kind, l.txid, l.vout, await grant())).toEqual({ kind: "reportedUsed" });
+      expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
+      expect((await cmd.shieldedStatus(W)).balance).toBe(shielded);
+      expect((await cmd.platformAddresses(W))?.credits).toBe(credits);
+      expect((await cmd.platformActivity(W))?.filter((a) => a.id === `fund-${l.txid}`)).toEqual([]);
+    }
+  });
+
+  it("Finish transfers tries a restored lock Platform already took and counts it already used", async () => {
+    open("recovery-restored-finished");
+    expect(await cmd.finishAssetLocks(W, await grant())).toEqual({
+      resumed: 1,
+      completed: 0,
+      stillPending: 0,
+      alreadyUsed: 1,
+      byKind: [{ kind: "shielded", resumed: 1, completed: 0, stillPending: 0 }],
+      unread: [],
+    });
+    expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
+  });
+
+  it("a restored checking lock Platform never took is applied by Check again, and by Finish transfers", async () => {
+    open("recovery-restored-unapplied");
+    const [l] = (await cmd.unfinishedTransfers(W)).locks;
+    expect([l.origin, l.state]).toEqual(["restored", "checking"]);
+    const before = BigInt((await cmd.shieldedStatus(W)).balance);
+    expect(await cmd.finishTransfer(W, l.kind, l.txid, l.vout, await grant())).toEqual({ kind: "applied" });
+    expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
+    expect(BigInt((await cmd.shieldedStatus(W)).balance)).toBe(before + 50_000_000n * 1000n - 10_000_000n);
+    open("recovery-restored-unapplied");
+    expect(await cmd.finishAssetLocks(W, await grant())).toMatchObject({ resumed: 1, completed: 1, stillPending: 0, alreadyUsed: 0 });
+    expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
   });
 
   it("Finish transfers does not try confirming or not-active locks, and lists their kind", async () => {

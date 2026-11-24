@@ -449,7 +449,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       changed(ctx, walletId, draft);
       return null;
     },
-    // Tools ▸ Repair "Finish transfers": every row whose funds wait for a decision runs again, and so does every ready restored Shielded lock.
+    // Tools ▸ Repair "Finish transfers": every row whose funds wait for a decision runs again, and so does every ready lock and every restored checking one.
     finish_asset_locks: ({ walletId, grant }, ctx) => {
       const { world } = ctx;
       const dp = d.dashpay(world, walletId);

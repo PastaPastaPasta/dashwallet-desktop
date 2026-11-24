@@ -50,7 +50,7 @@ export interface AddContactIntent {
 export type Protection = "off" | "pending" | "on" | "failed";
 
 /** `recoveryPhrase`: Show Recovery Phrase (U-02 D13); `unlock`: the full unlock from mixing only (D12). */
-export type Dialog = "openUri" | "about" | "recoveryPhrase" | "unlock" | "savedLinks";
+export type Dialog = "openUri" | "about" | "recoveryPhrase" | "unlock" | "savedLinks" | "sync";
 
 /** Activity's filter from Masternodes (MG-10 §1.9): one node's payout txids, or coinbase income. */
 export type ActivityFilter = { kind: "txids"; title: string; txids: string[] } | { kind: "generated" };
@@ -130,7 +130,7 @@ export const DEFAULT_PREFS: UiSettings = {
   autohideBalance: false,
   autoLockSecs: null,
   subtractFeeByDefault: false,
-  showMasternodes: false,
+  masternodesItem: "auto",
   masternodesTab: "myMasternodes",
   preReleaseNoticeDismissed: false,
   language: null,
