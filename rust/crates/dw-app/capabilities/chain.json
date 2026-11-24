@@ -15,6 +15,7 @@
     "allow-cancel-rescan",
     "allow-node-info",
     "allow-warnings",
+    "allow-history-gap",
     "allow-reset-chain-data",
     "allow-set-birth-height",
     "allow-start-spv",
