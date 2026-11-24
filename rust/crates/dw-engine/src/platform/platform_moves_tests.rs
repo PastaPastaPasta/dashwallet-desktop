@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use dpp::identity::signer::Signer;
 
@@ -475,6 +475,8 @@ pub(crate) struct FakeMoves {
     pub(crate) document_lag: AtomicU64,
     /// Each signing's count of `pending` contact payout rows on disk.
     pub(crate) payout_rows_at_signing: Mutex<Vec<usize>>,
+    /// The withdrawal document reads made so far.
+    withdrawal_reads: AtomicUsize,
 }
 
 impl FakeMoves {
@@ -503,7 +505,13 @@ impl FakeMoves {
             read_release: tokio::sync::Notify::new(),
             document_lag: AtomicU64::new(0),
             payout_rows_at_signing: Mutex::default(),
+            withdrawal_reads: AtomicUsize::new(0),
         })
+    }
+
+    /// The withdrawal document reads made so far: none without a payout.
+    pub(crate) fn withdrawal_reads(&self) -> usize {
+        self.withdrawal_reads.load(Ordering::SeqCst)
     }
 
     /// The executed withdrawal documents.
@@ -800,6 +808,7 @@ impl MoveNet for FakeMoves {
     }
 
     async fn withdrawal(&self, id: dpp::prelude::Identifier) -> Result<(bool, u64), PlatformError> {
+        self.withdrawal_reads.fetch_add(1, Ordering::SeqCst);
         trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
         let height = self.height.load(Ordering::SeqCst);
         let lag = self.document_lag.load(Ordering::SeqCst);
@@ -1038,6 +1047,8 @@ fn an_unknown_move_holds_its_inputs_until_settled() {
         .filter(|r| r.kind == PlatformActivityKind::Outgoing)
         .count();
     assert_eq!(outgoing, 0);
+    // Without a contact payout, settling reads no withdrawal document.
+    assert_eq!(w.net.withdrawal_reads(), 0);
 }
 
 /// A move that executed but whose answer was lost is done on its nonce.
@@ -1881,6 +1892,8 @@ fn a_send_pays_the_recipient_and_shows_as_a_send() {
             .iter()
             .any(|r| r.kind == PlatformActivityKind::Outgoing)
     );
+    // Without a contact payout, settling reads no withdrawal document.
+    assert_eq!(w.net.withdrawal_reads(), 0);
 }
 
 /// A send that may still land holds its inputs' nonces against a move to

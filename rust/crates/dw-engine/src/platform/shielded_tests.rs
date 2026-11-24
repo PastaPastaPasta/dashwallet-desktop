@@ -60,6 +60,7 @@ use super::unfinished_locks::SpentRead;
 use super::withdrawal::{Rules, expected_duffs};
 use crate::{DashNetwork, ImportOptions, NetworkSession};
 
+mod to_platform;
 mod unfinished;
 
 const LATEST: u32 = 15;
@@ -78,6 +79,15 @@ fn payee() -> OrchardAddress {
 
 fn payee_text() -> String {
     payee().to_bech32m_string(Network::Regtest)
+}
+
+/// The `n`th address of the wallet's Platform payment account.
+fn own_platform(n: u8) -> PlatformAddress {
+    PlatformAddress::P2pkh([n.wrapping_add(0x50); 20])
+}
+
+fn platform_text(address: PlatformAddress) -> String {
+    address.to_bech32m_string(Network::Regtest)
 }
 
 fn core_address(n: u8) -> Address {
@@ -241,6 +251,10 @@ struct FakeShielded {
     /// The coins a funding may select.
     coins: Vec<u64>,
     receive: String,
+    /// The wallet's Platform payment account; its pool read fails when
+    /// `None`.
+    platform: Mutex<Option<pool::PlatformPool>>,
+    network: Network,
     /// The next spend's failure, after the keys are out.
     fails: Mutex<Option<PlatformWalletError>>,
     spent: Mutex<Vec<Spent>>,
@@ -436,6 +450,11 @@ impl Default for FakeShielded {
             },
             coins: vec![10_000_000_000],
             receive: core_address(9).to_string(),
+            platform: Mutex::new(Some(pool::PlatformPool {
+                receive: own_platform(0),
+                addresses: (0..3).map(own_platform).collect(),
+            })),
+            network: Network::Regtest,
             fails: Mutex::new(None),
             spent: Mutex::new(Vec::new()),
             unresolved: Mutex::default(),
@@ -662,7 +681,7 @@ fn unresolved(n: u8) -> UnresolvedSpend {
 
 impl ShieldedLib for FakeShielded {
     fn network(&self) -> Network {
-        Network::Regtest
+        self.network
     }
 
     fn protocol_version(&self) -> u32 {
@@ -749,6 +768,21 @@ impl ShieldedLib for FakeShielded {
     async fn receive_address(&self) -> Result<String, PlatformError> {
         self.issued.fetch_add(1, Ordering::SeqCst);
         Ok(self.receive.clone())
+    }
+
+    async fn unshield(
+        &self,
+        permit: &CallPermit,
+        to: &PlatformAddress,
+        credits: u64,
+    ) -> Result<(), SpendError> {
+        self.spend(permit, "unshield", platform_text(*to), credits, &[])
+    }
+
+    async fn platform_pool(&self) -> Result<pool::PlatformPool, PlatformError> {
+        (self.platform.lock().unwrap().clone()).ok_or(PlatformError::Storage {
+            detail: "the payment account could not be read".into(),
+        })
     }
 
     async fn shield_locks(&self) -> Vec<LockInfo> {
