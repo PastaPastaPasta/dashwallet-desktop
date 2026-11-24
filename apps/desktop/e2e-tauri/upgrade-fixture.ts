@@ -21,13 +21,13 @@
 // release and starts this under a fresh session bus and Xvfb display; run directly, it refuses.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { accountTpub } from "./bip32.ts";
 import { Dashd, freePort, paysTo, type RawTx } from "./dashd.ts";
-import { ownedProbe } from "./listeners.ts";
+import { ownedProbe, processGroup, ssListing } from "./listeners.ts";
 import { type Coin, outpointProblem, type TxOut } from "./outpoint.ts";
 import { APP, CHAIN, driverGone, driverReady, env, poll, spawnDriver, stopDriver, WebDriver } from "./driver.ts";
 
@@ -82,20 +82,6 @@ const answers = (port: number) =>
         }),
     ),
   ).then((r) => r.some(Boolean));
-
-function ssListing() {
-  const r = spawnSync("ss", ["-Hltnp"], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ss: ${r.stderr}`);
-  return r.stdout;
-}
-
-function processGroup(pid: string) {
-  try {
-    return Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[2]);
-  } catch {
-    return null;
-  }
-}
 
 /** tauri-driver and WebKitWebDriver on two free ports, refused if either answered before the
  * spawn, and accepted only when every listener on both ports is in the spawned driver's group. */
