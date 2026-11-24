@@ -92,11 +92,30 @@ export function MyMasternodes({
     </Notice>
   );
   const work = ops.data ?? [];
-  const progress = <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />;
+  // A failed or pending read is not an empty one: saved work stays named until the read answers.
+  const progress = (
+    <>
+      {ops.isError && (
+        <Notice
+          tone="warning"
+          testId="mn-ops-failed"
+          action={
+            <DashButton variant="filledBlue" size="small" data-testid="mn-ops-retry" onClick={() => void ops.refetch()}>
+              {MnText.tryAgain}
+            </DashButton>
+          }
+        >
+          <strong>{MnText.opsFailed}</strong> {mnErrorText(ops.error)}
+        </Notice>
+      )}
+      {ops.isPending ? <LoadingState testId="mn-ops-loading" text={MnText.opsLoading} /> : <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />}
+    </>
+  );
   if (isEmpty(o) && inProgress(work).length === 0 && conflicted(work).length === 0)
     return (
       <>
         {watchNotice}
+        {!ops.isSuccess && progress}
         <section className="mg-empty card-l1" data-testid="mn-empty">
           <h2>{MnText.emptyTitle}</h2>
           <p>{MnText.emptyText}</p>
