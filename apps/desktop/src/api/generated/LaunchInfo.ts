@@ -24,4 +24,9 @@ selftestLinkTrace: boolean, theme: ThemeName | null,
  * The network `open_network` opens when it names none: the window's
  * (the launch network until `switch_network` opens another).
  */
-network: NetworkInfo, appVersion: string, engineVersion: string, };
+network: NetworkInfo, appVersion: string, engineVersion: string,
+/**
+ * The version the build was stamped with (`0.3.0`, `0.3.0-rc.1`,
+ * `0.3.0-dev.1230.gb04c5c7`); an unstamped build reads `X.Y.Z-dev`.
+ */
+buildVersion: string, };
