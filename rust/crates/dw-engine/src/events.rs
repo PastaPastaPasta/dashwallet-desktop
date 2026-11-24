@@ -1648,6 +1648,19 @@ impl SessionHub {
                             (e.tx.input.iter()).any(|i| i.previous_output.txid == *superseded_by)
                         })
                     });
+                    if claim
+                        && (txids.iter()).all(|t| {
+                            h.txs.get(t).is_none_or(|e| {
+                                !(e.tx.input.iter())
+                                    .any(|i| i.previous_output.txid == *superseded_by)
+                            })
+                        })
+                    {
+                        let unheld: Vec<&Txid> =
+                            (txids.iter()).filter(|t| !h.txs.contains_key(*t)).collect();
+                        tracing::debug!(wallet = %id, ?unheld, winner = %superseded_by,
+                            "a sweep is taken as a claim only because the history lacks a swept transaction");
+                    }
                     let children = match claim {
                         true => BTreeSet::new(),
                         false => crate::history::unmined_children(&h.txs, txids),

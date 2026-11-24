@@ -152,14 +152,21 @@ pub(crate) fn note_claims_swept(
     appdb.set_settings_durable(&wallet.to_string(), &writes)
 }
 
-/// The transactions of `wallet` swept as claims ([`note_claims_swept`]).
+/// The transactions of `wallet` swept as claims ([`note_claims_swept`]); a
+/// note whose key names no transaction is left out.
 pub(crate) fn claims_swept(
     appdb: &AppDb,
     wallet: WalletId,
 ) -> Result<HashSet<Txid>, dw_appdb::AppDbError> {
     let rows = appdb.settings_with_prefix_lossy(&wallet.to_string(), CLAIM_SWEPT_PREFIX)?;
     Ok((rows.into_iter())
-        .filter_map(|(key, _)| Txid::from_str(&key[CLAIM_SWEPT_PREFIX.len()..]).ok())
+        .filter_map(|(key, _)| {
+            let txid = Txid::from_str(&key[CLAIM_SWEPT_PREFIX.len()..]).ok();
+            if txid.is_none() {
+                tracing::warn!(%wallet, "a claim swept note names no transaction");
+            }
+            txid
+        })
         .collect())
 }
 
