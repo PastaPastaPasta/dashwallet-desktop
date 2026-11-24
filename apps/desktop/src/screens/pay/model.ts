@@ -37,6 +37,22 @@ export interface Advanced {
   changeAddress: string | null;
 }
 
+/** A mixed payment of this many coins or more warns about privacy (U-06b D3, dash-qt sendcoinsdialog.cpp). */
+export const MIXED_INPUT_WARNING = 10;
+
+export interface MixedSendNotes {
+  inputCount: number;
+  manyCoins: boolean;
+  /** What the fee holds beyond the rate (the estimate's `leftOver`); `null` when nothing is left over. */
+  leftOver: number | null;
+}
+
+/** What the confirm sheet says about a payment from fully mixed coins (U-06b); `null` for any other source. */
+export function mixedSendNotes(coins: CoinChoice, estimate: Pick<TxEstimate, "inputCount" | "leftOver">): MixedSendNotes | null {
+  if (coins !== "mixed") return null;
+  return { inputCount: estimate.inputCount, manyCoins: estimate.inputCount >= MIXED_INPUT_WARNING, leftOver: estimate.leftOver > 0 ? estimate.leftOver : null };
+}
+
 /** dash-qt's default confirmation target (6 blocks), the engine draft's too. */
 export const DEFAULT_TARGET_BLOCKS = 6;
 
@@ -465,6 +481,9 @@ export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
   const back = sum(s.outputs.filter((o) => o.isMine && (!o.isChange || c.changeAddress !== null)));
   return (
     shown &&
+    // As many coins as the sheet counted: denominations can make the same total from other coins,
+    // ten mixed ones where it showed one (the input count is what the mixed-coin warnings read).
+    s.inputs.length === estimate.inputCount &&
     paid === estimate.totalSent &&
     s.totalSent === estimate.totalSent &&
     s.fee === estimate.fee &&
