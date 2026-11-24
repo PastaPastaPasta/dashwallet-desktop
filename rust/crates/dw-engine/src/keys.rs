@@ -1136,18 +1136,27 @@ impl NetworkSession {
         // start if it is below.
         // A refused attach puts back the lookahead row, the birth and the
         // marker it replaced, in that order: an exit in between leaves a
-        // replay owed. Keys attached alone with a birth below the wallet's
-        // replay from it the same way.
-        // Not for a backup restore, which rewinds no wallet that was there
-        // before until it commits (`restore_one`).
+        // replay owed. A failed seed write puts back none of them: the vault
+        // may hold the seed all the same. Keys attached alone with a birth
+        // below the wallet's, or to a wallet that still owes a replay, replay
+        // from the earlier start the same way, except for a backup restore
+        // (`restore_one`), which lowers and rewinds a wallet that was there
+        // before only when its bundle carries Dash Core's counters.
         let birth = birth_checkpoint(&manager, wallet_id).await;
-        let earlier_birth = registered
-            && state.rows.is_none()
-            && birth_height.is_some_and(|h| h.saturating_sub(1) < birth);
+        let owed = if registered && state.rows.is_none() {
+            let marker = self.wide_scan(wallet_id).await;
+            marker.ok().flatten().and_then(|m| m.owed_from(birth))
+        } else {
+            None
+        };
+        let earlier = birth_height
+            .map(|h| h.saturating_sub(1))
+            .filter(|&h| h < birth);
+        let ranged = state.issued.is_some() || lookahead.is_some();
+        let replay_due =
+            registered && state.rows.is_none() && (earlier.is_some() || owed.is_some());
         let mut undo = (None, None, None);
-        let attached = if registered
-            && (state.issued.is_some() || lookahead.is_some() || earlier_birth)
-        {
+        let attached = if registered && (ranged || replay_due) {
             // The wallet keeps the larger of its own lookahead (the default
             // when none is stored, or none that parses) and the import's.
             let previous_gap = match lookahead {
@@ -1159,15 +1168,19 @@ impl NetworkSession {
                 .flatten()
                 .and_then(|v| parse_lookahead(&v));
             let lookahead = lookahead.map(|gap| gap.max(stored.unwrap_or(DEFAULT_LOOKAHEAD)));
-            let requested = birth_height.map_or(birth, |h| h.saturating_sub(1).min(birth));
+            let requested = if ranged {
+                birth_height.map_or(birth, |h| h.saturating_sub(1).min(birth))
+            } else {
+                earlier.into_iter().chain(owed).min().unwrap_or(birth)
+            };
             let (from, replaced) = (self.note_narrow_below(&manager, wallet_id, requested)).await?;
             undo = (previous_gap, None, replaced);
-            // Lowered to the attach's own start now, with the replay marked,
-            // not once the keys are stored: a quit in between would keep the
-            // old birth for good when no rewind is owed. A failure leaves the
-            // replay owed.
-            if requested < birth {
-                let lowered = requested.saturating_add(1);
+            // Lowered to the start the replay owes now, with the replay
+            // marked, not once the keys are stored: a quit in between would
+            // keep the old birth for good when no rewind is owed. A failure
+            // leaves the replay owed.
+            if from < birth {
+                let lowered = from.saturating_add(1);
                 (self.lower_birth_height(&manager, wallet_id, lowered)).await?;
                 undo.1 = Some((lowered, birth.saturating_add(1)));
             }
@@ -1244,13 +1257,8 @@ impl NetworkSession {
                 Ok(existed) => existed,
                 Err(e) => {
                     if registered {
-                        // Core's rows left stored keep the replay owed.
-                        let restored = match prior {
-                            Some(prior) => self.restore_imported_state(prior).await,
-                            None => true,
-                        };
-                        if restored {
-                            self.undo_attach(wallet_id, undo.0, undo.1, undo.2).await;
+                        if let Some(prior) = prior {
+                            self.restore_imported_state(prior).await;
                         }
                     } else {
                         self.record_removed_again(held, wallet_id).await;
