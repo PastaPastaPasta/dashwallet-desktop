@@ -40,6 +40,7 @@ import {
   spendBackAction,
   spendBackLine,
   wayOutShown,
+  wayOutTxids,
 } from "./shared";
 
 const shares = (...amounts: number[]) => amounts.map((a, i) => ({ label: `P${i}`, amount: a * COIN }));
@@ -373,6 +374,15 @@ describe("Abandon", () => {
     expect(handoffLine(sentAbandoned, refused), "lastError is the spend back's").toBeNull();
     expect(renderSession(sentAbandoned, S5_SLICE).row).toBe("abandoning");
     expect(wayOutShown(sentAbandoned, "abandoning"), "the spend back's row has its own action").toBeNull();
+    const recorded = spend("in_history", { activityTxids: ["a8".repeat(32)] });
+    expect(wayOutShown(recorded, "abandoning"), "Activity offers the spend back's exit").toBe("collapsed");
+    expect(wayOutTxids(recorded, "abandoning"), "routed to the spend back, not the registration").toEqual(["a8".repeat(32)]);
+    const overdueRecorded = { ...recorded, abandonSpend: { ...recorded.abandonSpend!, overdue: true } };
+    expect(wayOutShown(overdueRecorded, "abandoning"), "expanded once the spend back is overdue").toBe("expanded");
+    const legacyExits = spend("legacy", { activityTxids: ["a8".repeat(32)] });
+    expect(spendBackAction(legacyExits), "a recorded legacy spend back has no sheet action").toBeNull();
+    expect(wayOutShown(legacyExits, "abandoning"), "but Activity's exits are shown").toBe("collapsed");
+    expect(wayOutTxids(sentAbandoned, "sent"), "elsewhere the registration").toEqual(["7e".repeat(32)]);
     expect(wayOutShown({ ...sentAbandoned, abandonSpend: null, next: "wait" }, "sent")).toBe("collapsed");
     for (const state of ["uncertain", "in_history", "abandoned_in_activity", "legacy"] as const) {
       expect(spendBackLine(spend(state), refused), state).not.toMatch(/didn't go out/);

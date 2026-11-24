@@ -1260,6 +1260,8 @@ export const masternodes = {
       sendAgain: "Send again",
       tryAgain: "Try again",
       abandonAgain: "Abandon again",
+      /** The way out under the spend back's row, while Activity offers its Abandon or Send again. */
+      wayOut: "Activity can send this spend back again or abandon it. Once it's abandoned there, Abandon again here makes a new spend of the same coins.",
       /** Send again's confirm: `{charge}` is the replay's grant cap. */
       resendConfirm: "Send the same spend again. It's the same transaction, so it costs at most {charge}, once.",
       /** Try again's and Abandon again's confirm adds this to `abandon.question`. */

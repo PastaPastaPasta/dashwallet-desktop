@@ -483,6 +483,10 @@ pub struct SharedSession {
     /// The recovery read lists `mn_shared_resend_abandon`: the latest abandon
     /// spend's saved bytes again, charged exactly this, its grant cap.
     pub resend_abandon_charge: Option<u64>,
+    /// The recorded transactions whose Abandon or Send again Activity offers
+    /// now: the spend back, or this wallet's own transaction spending a
+    /// reserved coin. The sheet's way out opens Activity on these.
+    pub activity_txids: Vec<String>,
 }
 
 impl From<engine::SharedSession> for SharedSession {
@@ -525,6 +529,15 @@ impl From<engine::SharedSession> for SharedSession {
             engine::RecoveryAction::ResendAbandon { charge } => Some(*charge),
             _ => None,
         });
+        let mut activity_txids: Vec<String> = Vec::new();
+        for a in &recovery.actions {
+            if let engine::RecoveryAction::AbandonWalletTx { txid }
+            | engine::RecoveryAction::ResendWalletTx { txid } = a
+                && !activity_txids.contains(txid)
+            {
+                activity_txids.push(txid.clone());
+            }
+        }
         let handoff_code = recovery
             .handoff_error
             .filter(|e| e.tx == engine::HandoffTx::Abandon)
@@ -567,6 +580,7 @@ impl From<engine::SharedSession> for SharedSession {
             overdue: recovery.overdue,
             abandon_spend,
             resend_abandon_charge,
+            activity_txids,
         }
     }
 }

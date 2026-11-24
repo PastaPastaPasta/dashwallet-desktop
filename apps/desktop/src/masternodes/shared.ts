@@ -299,13 +299,24 @@ export function canAbandon(s: SharedSession): boolean {
 
 /** MG's way-out line: wherever this wallet holds the registration (`txid`), at `sent`, and
  * wherever `row.signedOut` or `unvalued_inputs_out` is hidden because Abandon isn't offered.
- * Not under the spend back's own row (`abandoning`). Collapsed until the session is `overdue` (D49), then expanded; `null` where it isn't shown. */
+ * Collapsed until the session is `overdue` (D49), then expanded. Under the spend back's own row
+ * (`abandoning`) only while Activity offers the spend back's Abandon or Send again
+ * (`activityTxids`), expanded once the spend back is overdue. `null` where it isn't shown. */
 export function wayOutShown(s: SharedSession, row: RowKey): "collapsed" | "expanded" | null {
   const settled = s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
-  if (!s.txid || !isRegistration(s) || settled || row === "abandoning") return null;
+  if (!isRegistration(s) || settled) return null;
+  if (row === "abandoning") return s.activityTxids.length === 0 ? null : s.abandonSpend?.overdue ? "expanded" : "collapsed";
+  if (!s.txid) return null;
   const shown = s.stage.kind === "sent" || (!canAbandon(s) && (row === "signedOut" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs"))));
   if (!shown) return null;
   return s.overdue ? "expanded" : "collapsed";
+}
+
+/** The transactions the way out opens in Activity: the spend back's under its own row, otherwise
+ * the registration. */
+export function wayOutTxids(s: SharedSession, row: RowKey): string[] {
+  if (row === "abandoning") return s.activityTxids;
+  return s.txid ? [s.txid] : [];
 }
 
 /** The session sheet's Network fee row value, under its own "Network fee" label: the fee for the

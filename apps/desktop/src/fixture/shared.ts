@@ -141,6 +141,7 @@ function session(id: string, role: SharedSession["role"], patch: Partial<SharedS
     abandonCharge: null,
     abandonSpend: null,
     resendAbandonCharge: null,
+    activityTxids: [],
     ...patch,
   });
 }
@@ -660,6 +661,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       s.abandonable = outcome !== null;
       s.abandonCharge = outcome === "refused" ? fee : null;
       s.resendAbandonCharge = state === "refused" ? null : fee;
+      s.activityTxids = state === "in_history" ? [s.abandonSpend.txid] : [];
       if (s.next === "copy" || s.next === "send" || s.next === "sign" || s.next === "wait") s.next = "nothing";
       if (st === "sent") world.shared.abandoned.push(s.id);
       const out = put(world, s);
@@ -678,6 +680,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       capped(world, walletId, grantId, s.resendAbandonCharge);
       s.abandonSpend = { ...s.abandonSpend, state: "in_history", code: null };
       s.abandonable = false;
+      s.activityTxids = [s.abandonSpend.txid];
       const out = put(world, s);
       changed(ctx);
       return out;
