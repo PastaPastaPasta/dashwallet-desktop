@@ -312,10 +312,24 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
       runCommand(command, lockNow);
     };
     if (!inTauri()) window.addEventListener("keydown", onKey);
-    // A link dropped on the window opens as Open URI… would; what stops it is said in a toast.
+    // A payment link dropped on the window opens as Open URI… would; what stops it is said in a
+    // toast. Not during setup or a wipe (routing would save it in the stash) or a switch. The
+    // newest drop wins: an older one's late reply, or one after the page went, is dropped.
+    let dropped = 0;
+    let live = true;
     setLinkDrop((text) => {
-      if (ui.get().switching) return;
-      void openLinkText(backend, network, text).then((why) => why && showShellToast(why));
+      const { switching, wiping, onboarding } = ui.get();
+      if (switching || wiping || onboarding) return;
+      const mine = ++dropped;
+      void backend.routeLink(network, text).then(
+        (route) => {
+          if (!live || mine !== dropped || ui.get().switching || ui.get().wiping) return;
+          const why = linkProblem(route);
+          if (why) showShellToast(why);
+          else applyLink(route);
+        },
+        (e) => live && mine === dropped && showShellToast(errorMessage(e)),
+      );
     });
     let switching = ui.get().switching;
     const stopWatching = ui.subscribe(() => {
@@ -327,6 +341,7 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
       void unlisten.then((f) => f());
       window.removeEventListener("keydown", onKey);
       setLinkDrop(null);
+      live = false;
       stopWatching();
     };
   }, [backend, network, trace]);

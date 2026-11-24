@@ -1,9 +1,10 @@
 // DP2-08 D11: Tauri's own drop handler is off (`dragDropEnabled: false`), so the webview gets
 // HTML5 drops. A drop area (Add Contact's Scan) handles its own and cancels the default; a text
 // field takes a dragged text as typing it would (an address into Pay); anywhere else the document
-// refuses the drop, so a dropped file or link never navigates the webview. A dropped `dash:`,
-// `pay:`, `dashwallet:` or `dashpay:` link opens as File ▸ Open URI… would open it (QT-019), once
-// the shell bridge set the handler.
+// refuses the drop, so a dropped file or link never navigates the webview. A dropped payment link
+// (`dash:` or `pay:`) opens Pay as File ▸ Open URI… would (QT-019), once the shell bridge set the
+// handler. Other links (contacts, invitations) are not taken by a drop: routing those can save them
+// in the link stash, which a stray drag must not do; Open URI… and a click still open them.
 
 /** The input types a dragged text can be typed into. */
 const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "password", "number"]);
@@ -18,8 +19,8 @@ function intoTextField(e: DragEvent): boolean {
   return field && !t.readOnly && !t.disabled;
 }
 
-/** A link the app opens: one line, one of its schemes, no spaces. */
-const LINK = /^(dash|pay|dashwallet|dashpay):\S+$/i;
+/** A payment link: one line, `dash:` or `pay:`, no spaces. */
+const LINK = /^(dash|pay):\S+$/i;
 
 let onLink: ((text: string) => void) | null = null;
 
@@ -39,8 +40,9 @@ function mayCarryLink(e: DragEvent): boolean {
  * else the plain text. */
 export function droppedLink(data: Pick<DataTransfer, "getData"> | null | undefined): string | null {
   if (!data) return null;
-  const list = data.getData("text/uri-list");
-  const text = (list ? list.split(/\r?\n/).find((l) => l.trim() && !l.startsWith("#")) : data.getData("text/plain"))?.trim() ?? "";
+  // A list of comments only names no URI: the plain text may.
+  const listed = data.getData("text/uri-list").split(/\r?\n/).find((l) => l.trim() && !l.startsWith("#"));
+  const text = (listed ?? data.getData("text/plain")).trim();
   return LINK.test(text) ? text : null;
 }
 
@@ -48,7 +50,8 @@ export function installDropGuard(doc: Document = document) {
   doc.addEventListener("dragover", (e) => {
     if (e.defaultPrevented || intoTextField(e)) return;
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = mayCarryLink(e) ? "copy" : "none";
+    // The effect the source allows: a source that allows only a link operation is refused a copy.
+    if (e.dataTransfer) e.dataTransfer.dropEffect = mayCarryLink(e) ? (/copy|all|uninitialized/i.test(e.dataTransfer.effectAllowed ?? "") ? "copy" : /link/i.test(e.dataTransfer.effectAllowed ?? "") ? "link" : "copy") : "none";
   });
   doc.addEventListener("drop", (e) => {
     if (intoTextField(e)) return;

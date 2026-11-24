@@ -37,6 +37,20 @@ test("a dash: link dropped on the window opens Pay with it; one Dash can't read 
   expect(errors).toEqual([]);
 });
 
+test("a contact or invitation link dropped on the window is not routed (it could be saved); a drop during setup isn't either", async ({ page }) => {
+  await open(page);
+  const routed = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "route_link").length);
+  const before = await routed();
+  await dropLink(page, '[data-testid="hero"]', "dashpay:contact?du=alice");
+  await dropLink(page, '[data-testid="hero"]', "dashwallet:invite?du=bob");
+  expect(await routed()).toBe(before);
+  await page.goto(fixtureUrl("no-wallet", "light"));
+  await page.getByTestId("onboarding-welcome").waitFor();
+  const atSetup = await routed();
+  await dropLink(page, '[data-testid="onboarding"]', `dash:${PAYEE}`);
+  expect(await routed()).toBe(atSetup);
+});
+
 test("a link dropped into a text field is typed there, not opened", async ({ page }) => {
   await open(page);
   await page.getByTestId("sidebar-pay").click();
