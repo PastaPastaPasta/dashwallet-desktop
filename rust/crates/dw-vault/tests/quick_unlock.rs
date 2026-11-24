@@ -546,3 +546,63 @@ fn a_deleted_policy_counts_as_limit_zero() {
     v.authorize(spend(1), Some(&wallet(1)), Credential::QuickUnlock(&key))
         .expect("the limit the user set again");
 }
+
+/// #173 item 10, with quick unlock enrolled: a sealed limit that no longer
+/// authenticates refuses quick-unlock payments, the passphrase still checks
+/// (it no longer refreshes a policy it can't open), and Settings can set a
+/// new limit, which holds after a reopen.
+#[test]
+fn a_damaged_limit_on_an_enrolled_vault_can_be_set_again() {
+    let fx = Fixture::new();
+    let (v, key) = enrolled(&fx);
+    let w = wallet(1);
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    v.set_quick_unlock_spend_limit(
+        &change_credential_grant(&v),
+        DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
+    )
+    .unwrap();
+    drop(v);
+    let mut json = fx.read_json();
+    let ct = json["quick_unlock"]["sealed"]["ct"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let flipped = format!(
+        "{}{}",
+        if ct.starts_with('0') { '1' } else { '0' },
+        &ct[1..]
+    );
+    json["quick_unlock"]["sealed"]["ct"] = serde_json::json!(flipped);
+    fx.write_json(&json);
+
+    let v = fx.open();
+    // The damaged limit counts as none: a quick-unlock payment is refused.
+    assert!(
+        v.authorize(spend(1), Some(&w), Credential::QuickUnlock(&key))
+            .is_err()
+    );
+    // The passphrase still checks, and Settings' grant is issued.
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    let limit = QUICK_UNLOCK_SPEND_LIMITS
+        .iter()
+        .copied()
+        .find(|&l| l > 0 && l != DEFAULT_QUICK_UNLOCK_SPEND_LIMIT)
+        .unwrap();
+    v.set_quick_unlock_spend_limit(&change_credential_grant(&v), limit)
+        .unwrap();
+    assert_eq!(v.quick_unlock_policy().spend_limit_duffs, limit);
+    drop(v);
+
+    // After a reopen the new limit is the one enforced.
+    let v = fx.open();
+    assert_eq!(v.quick_unlock_policy().spend_limit_duffs, limit);
+    assert!(
+        v.authorize(spend(limit), Some(&w), Credential::QuickUnlock(&key))
+            .is_ok()
+    );
+    assert!(
+        v.authorize(spend(limit + 1), Some(&w), Credential::QuickUnlock(&key))
+            .is_err()
+    );
+}
