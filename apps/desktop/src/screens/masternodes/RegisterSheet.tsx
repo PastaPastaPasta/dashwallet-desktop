@@ -602,6 +602,7 @@ export function RegisterSheet({
       <Done
         op={op}
         self={d.runner === "self"}
+        nodeSecret={d.runner === "self" && d.kind === "evonode" && d.nodeFromWallet}
         // Only an operator key from this wallet's masternode keys has its secret there.
         onOpenKeys={
           d.runner === "self" && d.operatorFromWallet
@@ -804,7 +805,7 @@ function Review({ d, p, amount, changed }: { d: RegDraft; p: MnRegistrationPrevi
   );
 }
 
-function Done({ op, self, onOpenKeys }: { op: ProTxOperation; self: boolean; onOpenKeys: (() => void) | null }) {
+function Done({ op, self, nodeSecret, onOpenKeys }: { op: ProTxOperation; self: boolean; nodeSecret: boolean; onOpenKeys: (() => void) | null }) {
   const t = useT();
   if (op.state.kind === "not_sent")
     return (
@@ -830,7 +831,7 @@ function Done({ op, self, onOpenKeys }: { op: ProTxOperation; self: boolean; onO
       )}
       <ol className="mg-small">
         <li>
-          {t(self ? `${R}.doneScreen.stepSelf` : `${R}.doneScreen.stepHosted`)}
+          {t(!self ? `${R}.doneScreen.stepHosted` : nodeSecret ? `${R}.doneScreen.stepSelfEvo` : `${R}.doneScreen.stepSelf`)}
           {onOpenKeys && (
             <>
               {" "}

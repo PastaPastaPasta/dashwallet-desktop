@@ -181,6 +181,13 @@ test("self-run evonode: the wallet's operator key and Platform node, to Review",
   await expect(review).toContainText(`${keyInfo("platform_node", 0).platformNodeId!.slice(0, 8)} · 36656 / 22001`);
   await expect(page.getByTestId("reg-review-fee")).toContainText("0.00000567");
   await expectRegister(page);
+  // Sent names both secrets, and Open Masternode keys opens on the operator role.
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-register").click();
+  await expect(page.getByTestId("reg-done-body")).toContainText("Copy the operator secret and the Platform node secret from Masternode keys");
+  await page.getByTestId("reg-open-keys").click();
+  await expect(page.getByTestId("mn-keys")).toBeVisible();
+  await expect(page.getByTestId("mn-keys-role-operator")).toHaveAttribute("aria-pressed", "true");
   expect(errors).toEqual([]);
 });
 
