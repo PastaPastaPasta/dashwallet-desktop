@@ -398,6 +398,7 @@ impl NetworkSession {
                     match settled.await {
                         Ok(true) => {
                             payout.state = state;
+                            self.release_in_memory(id, pair, &row.reference);
                             if give_back && let Some(address) = row_address(&row, network) {
                                 payments.keep(id, pair, address, false);
                             }
@@ -462,7 +463,8 @@ impl NetworkSession {
                 else {
                     return never_signed;
                 };
-                self.shielded_payout_evidence(id, hash).await
+                self.shielded_payout_evidence(id, &row.reference, hash)
+                    .await
             }
             _ => PayoutEvidence::Unknown,
         }
@@ -873,10 +875,15 @@ impl NetworkSession {
             })?;
         let Some(holder) = held else {
             if let Some(payout) = payout {
-                let mut payouts = guard(&self.platform.payments.payouts);
-                let rows = payouts.entry(id).or_default();
-                rows.retain(|p| p.reference != payout.reference);
-                rows.push(payout);
+                let lock = (payout.source, payout.reference.clone());
+                {
+                    let mut payouts = guard(&self.platform.payments.payouts);
+                    let rows = payouts.entry(id).or_default();
+                    rows.retain(|p| p.reference != payout.reference);
+                    rows.push(payout.clone());
+                }
+                // The row is the pair's lock (P6): shown from now on.
+                self.hold_in_memory(id, pair, (lock.0, &lock.1), payout.since);
             }
             return Ok(());
         };
@@ -894,6 +901,16 @@ impl NetworkSession {
         };
         self.hold_in_memory(id, pair, (source, &txid), since);
         Err(ContactError::PaymentLocked { txid })
+    }
+
+    /// Drops `pair`'s lock from memory if it is `reference`'s.
+    fn release_in_memory(&self, id: WalletId, pair: Pair, reference: &str) {
+        if let Some(wallet) = guard(&self.platform.payments.locks).get_mut(&id)
+            && wallet.get(&pair).is_some_and(|l| l.reference == reference)
+        {
+            wallet.remove(&pair);
+            self.signal_payments(id, &pair.0);
+        }
     }
 
     /// Puts `reference`'s lock on `pair` in memory, unless the pair has one.
@@ -946,16 +963,21 @@ impl NetworkSession {
             .appdb_op(move |db| db.settle_dp_contact_payout(&wallet, &r, state_str(state)))
             .await;
         let payments = &self.platform.payments;
-        if let Err(e) = written {
-            tracing::warn!(wallet_id = %id, %reference, error = %e, "could not settle a payout");
-            self.hold_in_memory(id, pair, (source, reference), crate::events::unix_now());
-            return false;
+        match written {
+            Ok(true) => {}
+            // Settled already, by the settlement that wrote it and gave
+            // its address back if it was owed: none of that again.
+            Ok(false) => {
+                self.release_in_memory(id, pair, reference);
+                return false;
+            }
+            Err(e) => {
+                tracing::warn!(wallet_id = %id, %reference, error = %e, "could not settle a payout");
+                self.hold_in_memory(id, pair, (source, reference), crate::events::unix_now());
+                return false;
+            }
         }
-        if let Some(wallet) = guard(&payments.locks).get_mut(&id)
-            && wallet.get(&pair).is_some_and(|l| l.reference == reference)
-        {
-            wallet.remove(&pair);
-        }
+        self.release_in_memory(id, pair, reference);
         if let Some(rows) = guard(&payments.payouts).get_mut(&id) {
             for p in rows.iter_mut().filter(|p| p.reference == reference) {
                 p.state = state;
@@ -977,6 +999,12 @@ impl NetworkSession {
         pair: Pair,
         reference: &str,
     ) -> LockResolution {
+        // Under way: its own call settles it (a row with no `st_hash` is
+        // only a crash's after a restart).
+        if guard(&self.platform.payments.in_flight).get(&(id, pair)) == Some(&reference.to_owned())
+        {
+            return LockResolution::Unknown;
+        }
         let wallet = id.to_string();
         let rows = self
             .appdb_op(move |db| db.dp_contact_payouts(&wallet))

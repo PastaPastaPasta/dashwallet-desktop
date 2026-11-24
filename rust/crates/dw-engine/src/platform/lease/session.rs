@@ -116,6 +116,16 @@ pub(crate) fn issue(
     vault
         .window_lease_allowed(grants)
         .map_err(|_| LeaseError::Invalid)?;
+    // A payout's grant must cap credits; refused before it is redeemed.
+    if flow == FlowKind::ContactPayFromBalance {
+        for g in grants {
+            let purpose = vault.grant_purpose(g, GrantKind::PlatformOp, Some(&wallet.0));
+            if !matches!(purpose, Ok(GrantPurpose::PlatformOp { max_credits, .. }) if max_credits > 0)
+            {
+                return Err(LeaseError::Invalid);
+            }
+        }
+    }
     // The key-checked redemption first, so a key the vault does not hold
     // leaves every grant unused.
     let mut order: Vec<_> = grants.iter().zip(&kinds).collect();

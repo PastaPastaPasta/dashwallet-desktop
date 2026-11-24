@@ -7,6 +7,7 @@
 //! contact with its address consumed.
 
 use dpp::version::PlatformVersion;
+use dw_appdb::DpContactPayoutRow;
 use dw_appdb::dispatch::ArtifactStatus;
 use platform_wallet::PlatformWalletError;
 
@@ -15,7 +16,7 @@ use crate::platform::payment_locks::PayCall;
 use crate::platform::shielded_payout;
 use crate::platform::shielded_tests::FakeShielded;
 use crate::platform::withdrawal::Rules;
-use crate::platform::{ContactPayOutcome, PaymentSource, PayoutState, ShieldedError};
+use crate::platform::{ContactPayOutcome, PaymentSource, PayoutState};
 
 /// What the scripted library's notes hold, in credits.
 const SHIELDED: u64 = 600_000_000;
@@ -111,6 +112,34 @@ impl Fixture {
                     .await
             })
             .unwrap();
+    }
+
+    /// The journal settles the artifact of `st_hash` as `status` with the
+    /// library's `disposition` as stored.
+    fn settle_artifact_as(
+        &self,
+        st_hash: [u8; 32],
+        status: ArtifactStatus,
+        disposition: (&'static str, Option<&'static str>),
+    ) {
+        let (s, w) = (Arc::clone(&self.session), self.wallet);
+        (self.engine)
+            .block_on(async move {
+                (s.leases)
+                    .settle_shielded_artifact(w, st_hash, status, Some(disposition), false)
+                    .await
+            })
+            .unwrap();
+    }
+
+    /// Whether the hook recorded the dispatch of payout `reference`.
+    fn dispatched(&self, reference: &str) -> bool {
+        let scope = dw_appdb::local_scope(&self.wallet.to_string());
+        let key = dw_appdb::dp_payout_dispatched(reference);
+        (self.engine)
+            .block_on(self.session.appdb_op(move |db| db.setting(&scope, &key)))
+            .unwrap()
+            .is_some()
     }
 
     /// What a shielded pass's tail settles of the wallet's payouts.
@@ -248,47 +277,53 @@ fn a_spend_the_hook_refused_returns_the_address() {
     assert!(lib.withdrawn_to().is_empty(), "the library sent nothing");
 }
 
-/// C5a, P5: a pool-floor refusal holds the lock and keeps the address
-/// consumed; a Core payment to the contact is refused meanwhile; A5's
-/// definitely unsent clears the lock and the address is not reused.
-/// Mutant: give the address back on the refusal.
+/// C5a, P5: a pool-floor refusal of a hooked spend, as the pinned library
+/// leaves it (its notes held, `Unresolved(Cancelled)`), is pending: the
+/// lock stays and the address is consumed; a Core payment to the contact
+/// is refused meanwhile, and a relaunch keeps it. Only the journal's
+/// definitely unsent, read by a pass, clears the lock, and the address is
+/// never reused. Mutant: give the address back on the refusal.
 #[test]
 fn a_pool_floor_refusal_holds_the_contact_with_its_address_consumed() {
     let f = fixture(false);
     let lib = f.hooked();
+    lib.hold_failed();
     lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed(
         "state transition broadcast failed: Shielded pool has insufficient notes for \
          outgoing transition: pool has 3 notes but minimum 250 required"
             .into(),
     ));
-    let floor = f.shielded(&lib, BOB, &f.credits_grant()).unwrap_err();
+    let floor = f.shielded(&lib, BOB, &f.credits_grant()).unwrap();
+    assert_eq!(floor.state, PayoutState::Pending);
+    assert!(f.has_artifact(FakeShielded::st_hash(0)));
     assert_eq!(
-        floor,
-        ContactError::Shielded(ShieldedError::PoolTooSmall {
-            notes: 3,
-            required: 250
-        })
+        f.lock(BOB).map(|l| (l.source, l.reference)),
+        Some((PaymentSource::Shielded, floor.reference.clone()))
     );
-    assert_eq!(f.lock(BOB).map(|l| l.source), Some(PaymentSource::Shielded));
     assert!(f.reserved(BOB).is_none(), "consumed, not given back");
     let d = f.session.new_tx_draft(f.wallet).unwrap();
     assert!(matches!(
         contact_error(d.set_contact_recipient(f.pay(BOB, AMOUNT))),
         ContactError::PaymentLocked { .. }
     ));
+    f.after_pass();
+    assert!(
+        f.lock(BOB).is_some(),
+        "an unresolved artifact settles nothing"
+    );
     f.restart_payments();
     assert!(f.lock(BOB).is_some(), "a relaunch keeps it");
 
     f.settle_artifact(FakeShielded::st_hash(0), ArtifactStatus::NotExecuted, true);
-    assert_eq!(f.resolve(BOB), LockResolution::NotSent);
+    f.after_pass();
     assert!(f.lock(BOB).is_none());
+    let rows = f.payout_rows();
+    let refused = rows.iter().find(|r| r.0 == floor.reference).unwrap();
+    assert_eq!(refused.1, "not_sent");
     assert!(f.reserved(BOB).is_none(), "still consumed");
     let next = f.shielded(&lib, BOB, &f.credits_grant()).unwrap();
     assert_eq!(next.state, PayoutState::Sent);
-    assert_eq!(
-        lib.withdrawn_to().last(),
-        Some(&f.contact_address(BOB, 1).to_string())
-    );
+    assert_ne!(lib.withdrawn_to().last(), Some(&refused.3), "a new address");
 }
 
 /// C5a: `shielded.unrecorded_spend` refuses unless confirmed, and the
@@ -411,12 +446,14 @@ fn a_kill_at_each_step_relaunches_into_what_the_records_prove() {
     assert!(f.lock(BOB).is_none());
     assert!(reserved(&row), "the address went back to the pair");
     assert!(lib.withdrawn_to().is_empty(), "nothing was sent");
+    assert!(!f.dispatched(&row.0), "the hook never let it go");
 
     // After the artifact and the send, before the call settled.
     let pause = Arc::new(crate::coins::TestPause::default());
     (f.session.platform.payments).pause_settle(Arc::clone(&pause));
     let row = kill_at(&pause);
     assert_eq!(row.1, "pending");
+    assert!(f.dispatched(&row.0), "recorded before the library sent it");
     let hash = FakeShielded::st_hash(0);
     assert_eq!(row.2, Some(hex::encode(hash)));
     assert_eq!(f.lock(BOB).map(|l| l.reference), Some(row.0.clone()));
@@ -560,4 +597,210 @@ fn mainnet_refuses_a_shielded_payout_before_anything_is_written() {
             .is_none()
     );
     assert!(lib.withdrawn_to().is_empty(), "nothing sent");
+}
+
+/// A load that settles a payout an earlier load locked drops that lock
+/// from memory: a second bring-up without a restart leaves no stale lock.
+#[test]
+fn a_second_load_clears_a_payout_the_journal_settled() {
+    let f = fixture(false);
+    let lib = f.hooked();
+    lib.fail_with(PlatformWalletError::ShieldedSpendUnconfirmed {
+        operation: "withdraw",
+        reason: "timeout".into(),
+    });
+    let paid = f.shielded(&lib, BOB, &f.credits_grant()).unwrap();
+    f.restart_payments();
+    assert_eq!(f.lock(BOB).map(|l| l.reference), Some(paid.reference));
+    f.settle_artifact(FakeShielded::st_hash(0), ArtifactStatus::Executed, false);
+    (f.engine).block_on(f.session.load_payment_locks(f.wallet));
+    assert!(f.lock(BOB).is_none());
+    assert_eq!(f.payout_rows()[0].1, "sent");
+}
+
+/// Two settlements of one payout: only the one that wrote its row gives
+/// its address back. Between them the address went to another payment,
+/// which the second must not hand out again.
+#[test]
+fn a_payout_settled_twice_gives_its_address_back_once() {
+    let f = fixture(false);
+    let pair = (id(ME), id(BOB));
+    let address = f.contact_address(BOB, 0);
+    let row = DpContactPayoutRow {
+        reference: "sh-twice".into(),
+        identity: b58(ME),
+        contact: b58(BOB),
+        source: "shielded".into(),
+        st_hash: None,
+        address: address.to_string(),
+        credits: credits(),
+        expected_duffs: 1,
+        note: None,
+        state: "pending".into(),
+        since: 1,
+    };
+    let s = &f.session;
+    f.engine
+        .block_on(s.record_payout(f.wallet, pair, row))
+        .unwrap();
+    assert!(f.lock(BOB).is_some(), "the row is the lock");
+    let settle = || {
+        let key = (PaymentSource::Shielded, "sh-twice");
+        let back = Some(address.clone());
+        (f.engine).block_on(s.settle_payout(f.wallet, pair, key, PayoutState::NotSent, back))
+    };
+    assert!(settle());
+    assert_eq!(f.reserved(BOB), Some(address.clone()));
+    let claimed = s.claim_payment(f.wallet, pair, "next", &address);
+    assert!(claimed.is_ok());
+    assert!(!settle(), "settled already");
+    assert!(f.reserved(BOB).is_none(), "not handed out again");
+    assert!(f.lock(BOB).is_none());
+}
+
+/// A `begin_flow(ContactPayFromBalance, shielded)` lease with room for
+/// two payouts pays one: a repeated call with it is refused before an
+/// address, however much credit the lease has left.
+#[test]
+fn a_flow_lease_pays_one_payout() {
+    let f = fixture(false);
+    let lib = f.hooked();
+    let s = Arc::clone(&f.session);
+    let grants = vec![f.credits_grant()];
+    let lease = (f.engine)
+        .block_on(async move {
+            let flow = FlowKind::ContactPayFromBalance;
+            (s.begin_flow(f.wallet, flow, grants, Some(PaymentSource::Shielded))).await
+        })
+        .unwrap();
+    let first = f.spawn_shielded(&lib, f.call(BOB, credits(), &lease, false));
+    let second = f.spawn_shielded(&lib, f.call(BOB, credits(), &lease, false));
+    let outcomes = [
+        f.engine.block_on(first).unwrap(),
+        f.engine.block_on(second).unwrap(),
+    ];
+    let paid: Vec<_> = outcomes.iter().filter(|o| o.is_ok()).collect();
+    assert_eq!(paid.len(), 1, "{outcomes:?}");
+    assert_eq!(lib.withdrawn_to().len(), 1, "paid once");
+    assert_eq!(f.payout_rows().len(), 1);
+    assert!(f.reserved(BOB).is_none(), "no second address reserved");
+}
+
+/// A payout's `begin_flow` refuses a `PlatformOp` grant that caps no
+/// credits before redeeming it: the grant stays for another try.
+#[test]
+fn a_payout_lease_refuses_a_grant_without_credits_and_keeps_it() {
+    let f = fixture(false);
+    let grant = f.grant(GrantPurpose::PlatformOp {
+        max_duffs: 1_000,
+        max_credits: 0,
+    });
+    let s = Arc::clone(&f.session);
+    let g = grant.clone();
+    let begun = f.engine.block_on(async move {
+        let flow = FlowKind::ContactPayFromBalance;
+        (s.begin_flow(f.wallet, flow, vec![g], Some(PaymentSource::Shielded))).await
+    });
+    assert!(begun.is_err());
+    assert!(f.grant_kept(&grant));
+}
+
+/// While a payout's call runs, its row is the pair's shown lock, and
+/// neither "Check again" nor a pass settles it from under the call (its
+/// row names no transition yet only because the call has not got there).
+#[test]
+fn a_payout_under_way_is_shown_locked_and_left_to_its_call() {
+    let f = fixture(false);
+    let lib = f.hooked();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.platform.payments.hold_st_hash.lock().unwrap() = Some(Arc::clone(&pause));
+    let task = f.spawn_shielded(&lib, f.call(BOB, credits(), &f.credits_grant(), false));
+    assert!(pause.wait_reached(Duration::from_secs(60)));
+    let lock = f.lock(BOB).expect("shown while under way");
+    assert_eq!(lock.source, PaymentSource::Shielded);
+    assert_eq!(f.resolve(BOB), LockResolution::Unknown);
+    f.after_pass();
+    assert_eq!(f.payout_rows()[0].1, "pending");
+    assert!(f.reserved(BOB).is_none(), "not given back mid-call");
+    pause.release.notify_one();
+    let paid = f.engine.block_on(task).unwrap().unwrap();
+    assert_eq!(paid.state, PayoutState::Sent);
+    assert_eq!(paid.reference, lock.reference);
+    assert!(f.lock(BOB).is_none());
+}
+
+/// C-funding P6 with a lost or older dispatch journal: a payout whose row
+/// names its transition and whose dispatch the hook recorded stays held
+/// when the journal has no artifact for it: on a load, a pass and "Check
+/// again" alike, with its address consumed. Only a row the hook never let
+/// go (no dispatch recorded) reads as never sent.
+#[test]
+fn a_dispatched_payout_whose_artifact_is_missing_stays_locked() {
+    let f = fixture(false);
+    let pair = (id(ME), id(BOB));
+    let reference = "sh-lost-journal";
+    let row = DpContactPayoutRow {
+        reference: reference.into(),
+        identity: b58(ME),
+        contact: b58(BOB),
+        source: "shielded".into(),
+        st_hash: Some(hex::encode(FakeShielded::st_hash(9))),
+        address: f.contact_address(BOB, 0).to_string(),
+        credits: credits(),
+        expected_duffs: 1,
+        note: None,
+        state: "pending".into(),
+        since: 1,
+    };
+    let s = &f.session;
+    f.engine
+        .block_on(s.record_payout(f.wallet, pair, row))
+        .unwrap();
+    let scope = dw_appdb::local_scope(&f.wallet.to_string());
+    let key = dw_appdb::dp_payout_dispatched(reference);
+    (f.engine)
+        .block_on(s.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1"))))
+        .unwrap();
+    assert!(
+        !f.has_artifact(FakeShielded::st_hash(9)),
+        "the journal lost it"
+    );
+
+    f.restart_payments();
+    assert_eq!(f.lock(BOB).map(|l| l.reference), Some(reference.into()));
+    f.after_pass();
+    assert_eq!(f.resolve(BOB), LockResolution::Unknown);
+    assert!(f.lock(BOB).is_some());
+    assert_eq!(f.payout_rows()[0].1, "pending");
+    assert!(f.reserved(BOB).is_none(), "its address may have been paid");
+}
+
+/// P7: only the library's own `executed` disposition is proof. A spend it
+/// could not attribute, which the journal reads as executed for display
+/// once its history row is confirmed, keeps the contact locked on a pass,
+/// "Check again" and a load; the stored `executed` disposition clears it.
+#[test]
+fn an_execution_the_library_could_not_attribute_keeps_the_contact_locked() {
+    let f = fixture(false);
+    let lib = f.hooked();
+    lib.fail_with(PlatformWalletError::ShieldedSpendUnconfirmed {
+        operation: "withdraw",
+        reason: "timeout".into(),
+    });
+    let paid = f.shielded(&lib, BOB, &f.credits_grant()).unwrap();
+    assert_eq!(paid.state, PayoutState::Pending);
+    let hash = FakeShielded::st_hash(0);
+    let unattributed = ("unresolved", Some("unattributable"));
+    f.settle_artifact_as(hash, ArtifactStatus::Executed, unattributed);
+    f.after_pass();
+    assert!(f.lock(BOB).is_some(), "a pass");
+    assert_eq!(f.resolve(BOB), LockResolution::Unknown);
+    f.restart_payments();
+    assert!(f.lock(BOB).is_some(), "a load");
+    assert_eq!(f.payout_rows()[0].1, "pending");
+
+    f.settle_artifact_as(hash, ArtifactStatus::Executed, ("executed", None));
+    f.after_pass();
+    assert!(f.lock(BOB).is_none());
+    assert_eq!(f.payout_rows()[0].1, "sent");
 }

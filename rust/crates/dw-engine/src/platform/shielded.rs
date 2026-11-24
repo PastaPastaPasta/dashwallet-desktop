@@ -395,6 +395,7 @@ pub struct ShieldedActivity {
     pub created_at: Option<u64>,
     /// The DashPay contact a withdrawal paid (C-funding P10): from the
     /// contact payout's row, else by the destination address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<Counterparty>,
 }
 

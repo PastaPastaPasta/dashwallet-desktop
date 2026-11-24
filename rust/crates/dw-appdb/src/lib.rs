@@ -108,6 +108,14 @@ pub fn dp_payout_marker(reference: &str) -> String {
     format!("dp_payout/{reference}")
 }
 
+/// The `local:` key the shielded dispatch hook writes, durably, once a
+/// payout's artifact is in the journal and before the library may send
+/// it: with it, a missing artifact proves nothing (a lost or older
+/// journal), so the payout stays held (C-funding P6).
+pub fn dp_payout_dispatched(reference: &str) -> String {
+    format!("dp_payout_dispatched/{reference}")
+}
+
 /// The lock file next to the database at `path` (`<file>.lock`), never the
 /// database itself, whose bytes SQLite locks by range.
 fn lock_path(path: &Path) -> PathBuf {

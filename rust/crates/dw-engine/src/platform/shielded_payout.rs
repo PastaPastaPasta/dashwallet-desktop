@@ -19,7 +19,9 @@ use super::VaultContactCrypto;
 use super::errors::{ContactError, PlatformError, ShieldedError};
 use super::flows::FlowKind;
 use super::payment_locks::{ClaimRefused, Pair, PayCall, PayoutEvidence};
-use super::payments::{ContactPayOutcome, ContactPayQuote, PaymentSource, PayoutState};
+use super::payments::{
+    ContactPayOutcome, ContactPayQuote, Counterparty, PaymentSource, PayoutState,
+};
 use super::registration_flow::b58;
 use super::runtime::guard;
 use super::shielded::{ShieldedActivity, ShieldedActivityKind, ShieldedSpendState};
@@ -133,6 +135,9 @@ pub(crate) async fn pay_gated(
     pool::unshield_plan(lib, call.credits).await?;
     let quoting = (call.credits, Quoting::Withdraw);
     let flow = FlowKind::ContactPayFromBalance;
+    // A `begin_flow` lease pays one payout: it ends once that one may
+    // have been sent, so a repeated call cannot pay the contact again.
+    let flow_lease = session.lease_for(&wallet, &call.grant).is_some();
     let armed = pool::arm(session, wallet, lib, quoting, &call.grant, flow).await?;
     let crypto = match armed.lease.contact_crypto() {
         Ok(crypto) => Some(crypto),
@@ -166,6 +171,9 @@ pub(crate) async fn pay_gated(
     let to = To::Core(address.clone());
     let sent = pool::send_armed(session, wallet, lib, armed, &to, [0; MEMO_BYTES]).await;
     let named = arm.disarm();
+    if flow_lease {
+        let _ = session.end_flow(call.grant);
+    }
     #[cfg(test)]
     if let Some(pause) = session.platform.payments.settle_pause() {
         pause.mark_reached();
@@ -236,21 +244,59 @@ impl NetworkSession {
         Ok(())
     }
 
-    /// What the journal proves of the shielded payout whose transition is
-    /// `st_hash` (P6, P7, P9): no artifact, never sent; executed, sent;
-    /// not executed, not sent with its address consumed (P5). Anything
-    /// else, a read failure included, is unknown.
+    /// After the hook wrote the artifact of the armed payout's spend
+    /// `st_hash`: records, durably, that the library may now send it
+    /// ([`dw_appdb::dp_payout_dispatched`]). Nothing to do with no payout
+    /// armed for that spend. A failure refuses the spend.
+    pub(crate) async fn confirm_payout_dispatch(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+    ) -> Result<(), String> {
+        let reference = match guard(&self.platform.payments.armed).get(&wallet) {
+            Some(armed) if armed.named == Some(st_hash) => armed.reference.clone(),
+            _ => return Ok(()),
+        };
+        let scope = dw_appdb::local_scope(&wallet.to_string());
+        let key = dw_appdb::dp_payout_dispatched(&reference);
+        (self
+            .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1")))
+            .await)
+            .map_err(|e| format!("the contact payout's dispatch was not recorded: {e}"))
+    }
+
+    /// What the journal proves of the shielded payout `reference` whose
+    /// transition is `st_hash` (P6, P7, P9): no artifact, never sent, but
+    /// only while the hook never recorded its dispatch (else the journal is
+    /// lost or older: unknown); executed by the library's own disposition,
+    /// sent; not executed, not sent with its address consumed (P5).
+    /// Anything else, a read failure and an execution the library could not
+    /// attribute included, is unknown.
     pub(crate) async fn shielded_payout_evidence(
         &self,
         wallet: WalletId,
+        reference: &str,
         st_hash: [u8; 32],
     ) -> PayoutEvidence {
         let Ok(artifacts) = self.leases.shielded_artifacts(wallet).await else {
             return PayoutEvidence::Unknown;
         };
+        let executed = |a: &dw_appdb::dispatch::ShieldedArtifact| {
+            a.status == ArtifactStatus::Executed
+                && a.disposition
+                    .as_ref()
+                    .is_some_and(|(kind, _)| kind == "executed")
+        };
         match artifacts.iter().find(|a| a.st_hash == Some(st_hash)) {
-            None => PayoutEvidence::NotSent { give_back: true },
-            Some(a) if a.status == ArtifactStatus::Executed => PayoutEvidence::Sent,
+            None => {
+                let scope = dw_appdb::local_scope(&wallet.to_string());
+                let key = dw_appdb::dp_payout_dispatched(reference);
+                match self.appdb_op(move |db| db.setting(&scope, &key)).await {
+                    Ok(None) => PayoutEvidence::NotSent { give_back: true },
+                    Ok(Some(_)) | Err(_) => PayoutEvidence::Unknown,
+                }
+            }
+            Some(a) if executed(a) => PayoutEvidence::Sent,
             Some(a) if a.status == ArtifactStatus::NotExecuted => {
                 PayoutEvidence::NotSent { give_back: false }
             }
@@ -260,7 +306,7 @@ impl NetworkSession {
 
     /// Settles a shielded payout from its own call's end. `Done` is sent.
     /// A spend whose transition never reached the journal (none named, or
-    /// one with no artifact) was never sent: not sent, and its address
+    /// one with no artifact and no recorded dispatch) was never sent: not sent, and its address
     /// goes back to the pair. Anything else holds the contact until the
     /// journal settles it: a pending result, a pool-floor refusal (P5)
     /// and any other failure once its artifact exists.
@@ -298,8 +344,8 @@ impl NetworkSession {
         let never_journaled = match named {
             None => true,
             Some(hash) => matches!(
-                self.leases.has_shielded_artifact(wallet, hash).await,
-                Ok(false)
+                self.shielded_payout_evidence(wallet, reference, hash).await,
+                PayoutEvidence::NotSent { give_back: true }
             ),
         };
         if never_journaled {
@@ -450,9 +496,17 @@ impl NetworkSession {
                 let script = address.require_network(network).ok()?.script_pubkey();
                 payees.sent_to(&script)
             };
-            row.contact = by_row
-                .or_else(by_address)
-                .and_then(|c| payees.counterparty(&c));
+            // The payout's row names its contact even once the payee
+            // cache no longer has it; the address fallback needs the cache.
+            row.contact = match by_row {
+                Some(c) => Some(payees.counterparty(&c).unwrap_or_else(|| Counterparty {
+                    identity: b58(&c),
+                    username: None,
+                    display_name: None,
+                    avatar_url: None,
+                })),
+                None => by_address().and_then(|c| payees.counterparty(&c)),
+            };
         }
     }
 }

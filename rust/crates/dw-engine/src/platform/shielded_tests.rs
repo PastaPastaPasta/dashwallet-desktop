@@ -614,7 +614,7 @@ impl FakeShielded {
             .record_shielded_artifact(wallet, artifact)
             .await
         {
-            Ok(true) => Ok(()),
+            Ok(true) => (session.confirm_payout_dispatch(wallet, st_hash).await).map_err(refused),
             other => Err(refused(format!("the artifact was not written: {other:?}"))),
         }
     }
@@ -622,6 +622,12 @@ impl FakeShielded {
     /// The next withdrawal's artifact write fails after the accept.
     pub(crate) fn drop_artifacts(&self) {
         self.drops_artifact.store(true, Ordering::SeqCst);
+    }
+
+    /// A failed send's notes stay held, as the pinned library leaves a
+    /// hooked spend whose broadcast failed (`Unresolved(Cancelled)`).
+    pub(crate) fn hold_failed(&self) {
+        *self.after_failure.lock().unwrap() = AfterFailure::Held;
     }
 
     /// The addresses the withdrawals paid, in order.
