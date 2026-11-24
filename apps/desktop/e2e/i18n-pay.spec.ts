@@ -181,7 +181,8 @@ const STATES: State[] = [
   {
     name: "pay-contact-form",
     roots: ["pay-contact-form"],
-    data: CONTACTS,
+    // The From step's balances (C-funding P16).
+    data: [...CONTACTS, /^[\p{Nd}.,]+ t?DASH$/u],
     open: async (page, theme, lang) => {
       await contactForm(page, theme, lang);
       await page.getByTestId("pay-amount").fill("0.02");

@@ -27,7 +27,7 @@ const AREAS: Record<string, string[]> = {
 
   home: ["screens/Overview.tsx", "screens/UnfinishedTransfersCard.tsx", "screens/ProtocolAdvisoryBanner.tsx"],
 
-  activity: [],
+  activity: ["screens/SourceDetailSheet.tsx"],
 
   receive: ["screens/Receive.tsx"],
 

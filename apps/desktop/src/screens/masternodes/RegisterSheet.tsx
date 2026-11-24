@@ -18,6 +18,7 @@ import type { ProTxKeys } from "../../api/generated/ProTxKeys";
 import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useBackend } from "../../api/queries";
+import { ui } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
 import { CopyIconButton } from "../../components/copy";
 import { DetailRow } from "../../components/detail";
@@ -83,7 +84,8 @@ export function RegisterSheet({
   const id = useId();
   const refresh = useMasternodesRefresh();
   const queryClient = useQueryClient();
-  const overview = useMasternodes(wallet.walletId);
+  // Held, the wizard follows the page's list but never reads it again on its own; Try again is the page's.
+  const overview = useMasternodes(wallet.walletId, true, sends);
   const [step, setStep] = useState<Step>(resume ? "prove" : "type");
   const [d, setD] = useState<RegDraft>(newDraft);
   const [errors, setErrors] = useState<FieldErrors>({});
@@ -146,7 +148,7 @@ export function RegisterSheet({
   }, [keys.isError, keys.error]);
 
   const cap = op && step === "prove" ? op.debit : op && op.state.kind === "not_sent" ? op.debit : figures ? registerCap(figures) : null;
-  const credential = useCredential(wallet.walletId, t(`${R}.review.ask`), cap);
+  const credential = useCredential(wallet.walletId, t(`${R}.review.ask`), cap, sends);
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -610,7 +612,25 @@ export function RegisterSheet({
         </p>
       </>
     );
-  else if (step === "done" && op) body = <Done op={op} self={d.runner === "self"} />;
+  else if (step === "done" && op)
+    body = (
+      <Done
+        op={op}
+        self={d.runner === "self"}
+        nodeSecret={d.runner === "self" && d.kind === "evonode" && d.nodeFromWallet}
+        // Only an operator key from this wallet's masternode keys has its secret there.
+        onOpenKeys={
+          d.runner === "self" && d.operatorFromWallet
+            ? () => {
+                // Sent is done, so the sheet closes. The app drops a dialog while a sheet still holds
+                // the layer, so Masternode keys opens a frame later, once this sheet has let go.
+                onClose();
+                requestAnimationFrame(() => ui.set({ dialog: "mnKeys", mnKeysRole: "operator" }));
+              }
+            : null
+        }
+      />
+    );
 
   const reviewing = step === "review";
   const proving = step === "prove";
@@ -800,7 +820,7 @@ function Review({ d, p, amount, changed }: { d: RegDraft; p: MnRegistrationPrevi
   );
 }
 
-function Done({ op, self }: { op: ProTxOperation; self: boolean }) {
+function Done({ op, self, nodeSecret, onOpenKeys }: { op: ProTxOperation; self: boolean; nodeSecret: boolean; onOpenKeys: (() => void) | null }) {
   const t = useT();
   if (op.state.kind === "not_sent")
     return (
@@ -825,7 +845,17 @@ function Done({ op, self }: { op: ProTxOperation; self: boolean }) {
         </dl>
       )}
       <ol className="mg-small">
-        <li>{t(self ? `${R}.doneScreen.stepSelf` : `${R}.doneScreen.stepHosted`)}</li>
+        <li>
+          {t(!self ? `${R}.doneScreen.stepHosted` : nodeSecret ? `${R}.doneScreen.stepSelfEvo` : `${R}.doneScreen.stepSelf`)}
+          {onOpenKeys && (
+            <>
+              {" "}
+              <DashButton variant="plainBlue" size="small" data-testid="reg-open-keys" onClick={onOpenKeys}>
+                {t(`${R}.doneScreen.openKeys`)}
+              </DashButton>
+            </>
+          )}
+        </li>
         <li>{t(`${R}.doneScreen.stepActive`)}</li>
         <li>{t(`${R}.doneScreen.stepPayouts`)}</li>
       </ol>
