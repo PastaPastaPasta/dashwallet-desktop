@@ -295,6 +295,8 @@ function Pane({
   const t = useT();
   const detail = useMasternode(wallet.walletId, row.proTxHash);
   const backend = useBackend();
+  const [since] = useState(() => Math.floor(backend.now().getTime() / 1000) - 30 * DAY);
+  const payouts = useMasternodePayouts(wallet.walletId, row.proTxHash, since, row.mine && !row.sharedUnsupported);
   const refresh = useMasternodesRefresh();
   const [renaming, setRenaming] = useState(false);
   const [releasing, setReleasing] = useState(false);
@@ -317,8 +319,9 @@ function Pane({
   const outpoint = row.collateral.kind === "known" ? row.collateral.outpoint : null;
   const line = d ? registrarLine(d) : null;
   const canChange = d?.registrar.kind === "available" && !wallet.watchOnly && row.status !== "removed";
+  const mayChange = detail.isPending && !wallet.watchOnly && row.status !== "removed";
   return (
-    <aside className="contacts-pane" aria-label={t("masternodes.myMasternodes.pane")} data-testid="mn-pane">
+    <aside className="contacts-pane" aria-label={t("masternodes.myMasternodes.pane")} aria-busy={detail.isLoading || payouts.isLoading || undefined} data-testid="mn-pane">
       <section className="mg-pane card-l1">
         <div>
           <h2 className="mg-pane-title" data-testid="mn-pane-title">
@@ -328,6 +331,44 @@ function Pane({
             <StatusChip chip={statusChip(row.status)} testId="mn-pane-chip" />
             <span className="chip chip-neutral">{kindText(row.kind)}</span>
           </div>
+        </div>
+        <div className="mg-pane-actions">
+          <div className="mg-actions">
+            {(row.mine || row.tracked) && (
+              <DashButton variant="tintedBlue" size="small" data-testid="mn-vote" disabled={blocked !== null} why={blocked} onClick={onVote}>
+                {MnText.vote}
+              </DashButton>
+            )}
+            {canChange ? (
+              <DashButton variant="tintedBlue" size="small" data-testid="mn-change-keys" onClick={() => setSheet("change-keys")}>
+                {t("masternodes.myMasternodes.changeKeys.action")}
+              </DashButton>
+            ) : (
+              mayChange && (
+                <DashButton variant="tintedBlue" size="small" className="mg-reserved" aria-hidden tabIndex={-1} disabled>
+                  {t("masternodes.myMasternodes.changeKeys.action")}
+                </DashButton>
+              )
+            )}
+          </div>
+          <MoreMenu
+            testId="mn-more"
+            items={[
+              { id: "rename", title: MnText.rename, onSelect: () => setRenaming(true) },
+              { id: "copy-hash", title: MnText.copyHash, onSelect: () => void copyWithToast(row.proTxHash) },
+              ...(outpoint ? [{ id: "copy-outpoint", title: MnText.copyOutpoint, onSelect: () => void copyWithToast(outpoint) }] : []),
+              ...(holdsCollateral && sends
+                ? [
+                    row.collateralReleased
+                      ? { id: "lock-again", title: t("masternodes.release.lockAgain"), onSelect: () => void lockAgain() }
+                      : { id: "release", title: t("masternodes.release.action"), onSelect: () => setReleasing(true) },
+                  ]
+                : []),
+              ...(row.status !== "removed" ? [{ id: "operator", title: t("masternodes.myMasternodes.operatorSheet.menu"), onSelect: () => setSheet("operator") }] : []),
+              ...(offersAddKey(row) ? [{ id: "add-keys", title: t("masternodes.myMasternodes.keys.menu"), onSelect: onAddKey }] : []),
+              ...(row.tracked ? [{ id: "untrack", title: t("masternodes.myMasternodes.untrack.menu"), onSelect: () => setSheet("untrack") }] : []),
+            ]}
+          />
         </div>
         {row.status === "pose_banned" && (
           <p className="mg-notice mg-notice-danger mn-banned-notice" data-testid="mn-banned">
@@ -354,7 +395,7 @@ function Pane({
         <dl className="mg-facts" data-testid="mn-facts">
           <Facts row={row} detail={d} shown={shown} />
         </dl>
-        <Payouts walletId={wallet.walletId} row={row} rows={rows} name={name} shown={shown} />
+        <Payouts payouts={payouts} row={row} rows={rows} name={name} shown={shown} />
         <div>
           <h3 className="mg-section-title">{t("masternodes.myMasternodes.inWallet")}</h3>
           <ul className="mg-roles" data-testid="mn-roles">
@@ -377,36 +418,6 @@ function Pane({
             )}
           </p>
         )}
-        <div className="mg-actions">
-          {(row.mine || row.tracked) && (
-            <DashButton variant="tintedBlue" size="small" data-testid="mn-vote" disabled={blocked !== null} why={blocked} onClick={onVote}>
-              {MnText.vote}
-            </DashButton>
-          )}
-          {canChange && (
-            <DashButton variant="tintedBlue" size="small" data-testid="mn-change-keys" onClick={() => setSheet("change-keys")}>
-              {t("masternodes.myMasternodes.changeKeys.action")}
-            </DashButton>
-          )}
-          <MoreMenu
-            testId="mn-more"
-            items={[
-              { id: "rename", title: MnText.rename, onSelect: () => setRenaming(true) },
-              { id: "copy-hash", title: MnText.copyHash, onSelect: () => void copyWithToast(row.proTxHash) },
-              ...(outpoint ? [{ id: "copy-outpoint", title: MnText.copyOutpoint, onSelect: () => void copyWithToast(outpoint) }] : []),
-              ...(holdsCollateral && sends
-                ? [
-                    row.collateralReleased
-                      ? { id: "lock-again", title: t("masternodes.release.lockAgain"), onSelect: () => void lockAgain() }
-                      : { id: "release", title: t("masternodes.release.action"), onSelect: () => setReleasing(true) },
-                  ]
-                : []),
-              ...(row.status !== "removed" ? [{ id: "operator", title: t("masternodes.myMasternodes.operatorSheet.menu"), onSelect: () => setSheet("operator") }] : []),
-              ...(offersAddKey(row) ? [{ id: "add-keys", title: t("masternodes.myMasternodes.keys.menu"), onSelect: onAddKey }] : []),
-              ...(row.tracked ? [{ id: "untrack", title: t("masternodes.myMasternodes.untrack.menu"), onSelect: () => setSheet("untrack") }] : []),
-            ]}
-          />
-        </div>
       </section>
       {renaming && <RenameSheet row={row} onClose={() => setRenaming(false)} />}
       {releasing && <ReleaseSheet row={row} wallet={wallet} network={network} onClose={() => setReleasing(false)} />}
@@ -473,11 +484,8 @@ function Facts({ row, detail, shown }: { row: MasternodeRow; detail: MasternodeD
   );
 }
 
-function Payouts({ walletId, row, rows, name, shown }: { walletId: string; row: MasternodeRow; rows: MasternodeRow[]; name: string; shown: Display }) {
+function Payouts({ payouts, row, rows, name, shown }: { payouts: ReturnType<typeof useMasternodePayouts>; row: MasternodeRow; rows: MasternodeRow[]; name: string; shown: Display }) {
   const t = useT();
-  const backend = useBackend();
-  const [since] = useState(() => Math.floor(backend.now().getTime() / 1000) - 30 * DAY);
-  const payouts = useMasternodePayouts(walletId, row.proTxHash, since, row.mine && !row.sharedUnsupported);
   if (payouts.isError)
     return (
       <p className="mg-small mg-notice-row" data-testid="mn-payouts-failed">
