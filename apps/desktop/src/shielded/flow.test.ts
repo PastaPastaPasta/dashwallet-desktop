@@ -193,6 +193,18 @@ describe("shielded refusal copy", () => {
     for (const kind of ["send", "out"] as const) expect(shieldedErrorText(unknown, credits, duffs, kind)).toBe("It may have been sent. Check Activity before trying again.");
   });
 
+  it("never invites a second move after an unshield to Platform that may be out", async () => {
+    const { flow, api } = setup();
+    api.unshieldToPlatform.mockRejectedValueOnce(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "shielded unshield" }));
+    flow.begin("toPlatform");
+    flow.next({ kind: "toPlatform", credits: "10000000000" });
+    await flow.run(GRANT);
+    expect([flow.step, shieldedCanChange(flow.error)]).toEqual(["refused", false]);
+    const words = shieldedErrorText(flow.error, credits, duffs, flow.kind);
+    expect(words).toBe("This move may still go through. Your Shielded funds stay held until it does; don't move them again until Activity shows it as done.");
+    expect(words).not.toMatch(/try(ing)? again/i);
+  });
+
   it("DEC1058_syncingNeverReadsAsPlatformDown", () => {
     const syncing = (code: string, on: boolean) => shieldedErrorText(appError(code as never, null as never), credits, duffs, "add", on);
     const SAID = "Shielded is still syncing; try again when it finishes.";

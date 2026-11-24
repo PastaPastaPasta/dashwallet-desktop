@@ -160,6 +160,7 @@ const STATES: Record<string, State> = {
   "out-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "shieldedToCore") },
   "toPlatform-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "shieldedToPlatform") },
   "toPlatform-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "shieldedToPlatform") },
+  "toPlatform-may-be-out": { scenario: "funded", extra: "&fail=unshield_to_platform:artifact", routeHeader: true, go: (page) => run(page, "shieldedToPlatform") },
   "fund-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "coreToPlatform") },
   "fund-progress": {
     scenario: "funded",

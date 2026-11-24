@@ -8,7 +8,7 @@ import { IpcBackend } from "../api/tauri";
 import { installFixture, type FixtureHandle } from "./index";
 import { PLATFORM_PAYEE } from "./pending";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W } from "./scenarios";
-import { UNSHIELD_TO_PLATFORM } from "./shielded";
+import { noteSelectionFee, UNSHIELD_ADDRESS_FEE_CREDITS, UNSHIELD_TO_PLATFORM } from "./shielded";
 
 let fixture: FixtureHandle;
 let backend: IpcBackend;
@@ -35,6 +35,10 @@ describe("fixture Shielded → Platform", () => {
     const q = await backend.unshieldToPlatformQuote(W, "10000000000", null);
     expect(q).toMatchObject({ credits: "10000000000", expectedDuffs: null, grant: { maxDuffs: 0, maxCredits: q.totalCredits } });
     expect(BigInt(q.totalCredits)).toBe(10000000000n + BigInt(q.feeCredits));
+    // The engine's unshield fee: the spend's, plus the flat cost of the address it credits.
+    const toCore = await backend.unshieldQuote(W, "10000000000", null);
+    expect(UNSHIELD_ADDRESS_FEE_CREDITS).toBe(6_082_800n);
+    expect(BigInt(q.feeCredits)).toBe(BigInt(toCore.feeCredits) + UNSHIELD_ADDRESS_FEE_CREDITS);
     // The wallet's own Platform addresses are taken; anyone else's is refused before the grant.
     await expect(backend.unshieldToPlatformQuote(W, "10000000000", platform().addresses[0].address)).resolves.toMatchObject({ credits: "10000000000" });
     await expect(backend.unshieldToPlatformQuote(W, "10000000000", PLATFORM_PAYEE)).rejects.toMatchObject({ code: SHIELDED_CODES.invalidAddress });
@@ -55,16 +59,40 @@ describe("fixture Shielded → Platform", () => {
     expect(platform().activity[0]).toMatchObject({ kind: "incoming", credits: "10000000000", address: platform().receive.address });
   });
 
-  it("pending: nothing reaches Platform, the notes stay reserved and the row stays pending", async () => {
+  it("pending: nothing reaches Platform, the spend's total stays reserved and the row stays pending", async () => {
     shielded().next = "unknown";
-    const before = shielded().balance;
+    const before = BigInt(shielded().balance);
     const was = onReceive();
     const q = await backend.unshieldToPlatformQuote(W, "10000000000", null);
     const out = await backend.unshieldToPlatform(W, "10000000000", null, (await opGrant(q.totalCredits)).id, false);
     expect(out.state).toBe("pending");
     expect(out.unresolved).not.toBeNull();
-    expect([shielded().balance, onReceive()]).toEqual([before, was]);
+    expect([BigInt(shielded().balance), onReceive()]).toEqual([before - BigInt(q.totalCredits), was]);
     expect(shielded().activity[0]).toMatchObject({ kind: "unshield", status: "pending" });
+    // The reserved credits are not spendable again: the old Max is now short.
+    const max = String(before - BigInt(q.feeCredits));
+    await expect(backend.unshieldToPlatformQuote(W, max, null)).rejects.toMatchObject({ code: SHIELDED_CODES.insufficientFunds });
+  });
+
+  it("pending with notes: the notes the spend took are held back whole, change and all", async () => {
+    shielded().notes = ["60000000000", "40000000000", "25000000000"];
+    shielded().next = "unknown";
+    const q = await backend.unshieldToPlatformQuote(W, "50000000000", null);
+    expect(BigInt(q.feeCredits)).toBe(noteSelectionFee([60000000000n, 40000000000n, 25000000000n], 50000000000n, UNSHIELD_ADDRESS_FEE_CREDITS));
+    await backend.unshieldToPlatform(W, "50000000000", null, (await opGrant(q.totalCredits)).id, false);
+    expect([shielded().notes, shielded().balance]).toEqual([["40000000000", "25000000000"], "65000000000"]);
+  });
+
+  it("checks the grant before Platform's pool floor, and the floor refusal uses the grant up", async () => {
+    shielded().poolTooSmall = true;
+    const before = [shielded().balance, onReceive()];
+    const q = await backend.unshieldToPlatformQuote(W, "10000000000", null);
+    await expect(backend.unshieldToPlatform(W, "10000000000", null, "no-grant", false)).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    const grant = await opGrant(q.totalCredits);
+    await expect(backend.unshieldToPlatform(W, "10000000000", null, grant.id, false)).rejects.toMatchObject({ code: SHIELDED_CODES.poolTooSmall });
+    shielded().poolTooSmall = false;
+    await expect(backend.unshieldToPlatform(W, "10000000000", null, grant.id, false)).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    expect([shielded().balance, onReceive()]).toEqual(before);
   });
 
   it("refuses a grant smaller than the total, a foreign address and an unconfirmed lost-record spend, and moves nothing", async () => {

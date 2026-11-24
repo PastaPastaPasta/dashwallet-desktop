@@ -63,7 +63,8 @@ test.describe("Transfer grants", () => {
     await open(page, "funded");
     await openTransfer(page, "shieldedToPlatform");
     await page.getByTestId("transfer-amount").fill("0.5");
-    expect(await grantOf(page, "shielded-go")).toEqual({ kind: "platformOp", maxDuffs: 0, maxCredits: "50020000000" });
+    expect(await grantOf(page, "shielded-go")).toEqual({ kind: "platformOp", maxDuffs: 0, maxCredits: "50026082800" });
+    // The fee is the spend's 20000000 plus the flat 6082800 of the Platform address it credits.
     await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
     expect(await callsOf(page, "unshield_to_platform")).toBe(1);
     expect(await callsOf(page, "unshield_to_core")).toBe(0);
@@ -293,5 +294,36 @@ test.describe("Transfer quotes", () => {
     await page.getByTestId("platform-move-show").click();
     await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "platformToCore");
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
+  });
+
+  test("an unseen Shielded → Platform result holds the card's Finish and Pay's Send until it is seen", async ({ page }) => {
+    await open(page, "transfer-shield-pending");
+    await hold(page, "unshield_to_platform");
+    await openTransfer(page, "shieldedToPlatform");
+    await page.getByTestId("transfer-amount").fill("0.5");
+    await page.getByTestId("transfer-continue").click();
+    await page.getByTestId("shielded-go").click();
+    await authorize(page);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+    await release(page);
+    await expect(page.getByTestId("shielded-unseen")).toBeVisible();
+    await expect(page.getByTestId("shielded-finish")).toBeDisabled();
+    // Its reason is the card's own unseen line, not a second copy of it.
+    await expect(page.getByTestId("shielded-finish")).toHaveAttribute("aria-describedby", "shielded-unseen-line");
+    await expect(page.getByTestId("unfinished-card").locator(".dash-button-why")).toHaveCount(0);
+    await page.getByTestId("sidebar-pay").click();
+    await expect(page.getByTestId("shielded-send")).toBeDisabled();
+    await expect(page.getByTestId("pay-shielded")).toContainText("Your Shielded move has an update.");
+    await page.getByTestId("sidebar-home").click();
+    await page.getByTestId("shielded-show").click();
+    await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "shieldedToPlatform");
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
+    await page.getByTestId("shielded-done").click();
+    // Seen: Finish and Send are offered again, and nothing ran in between.
+    await expect(page.getByTestId("shielded-finish")).toBeEnabled();
+    expect(await callsOf(page, "resume_shield")).toBe(0);
+    await page.getByTestId("sidebar-pay").click();
+    await expect(page.getByTestId("shielded-send")).toBeEnabled();
   });
 });

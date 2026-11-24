@@ -339,7 +339,8 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
     case "platform.feature_off":
       return t("transfer.shielded.error.featureOff");
     case "platform.broadcast_unknown":
-      return kind === "add" ? SHIELDED_COPY.fundingUnknown : moveErrorText(e, credits);
+      if (kind === "add") return SHIELDED_COPY.fundingUnknown;
+      return kind === "toPlatform" ? t("transfer.shielded.error.toPlatformUnknown") : moveErrorText(e, credits);
     default:
       return moveErrorText(e, credits);
   }
