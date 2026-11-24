@@ -176,7 +176,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
   function fromPlatformChecks(world: World, amount: WithdrawAmount) {
     if (world.launch.network.dirName === "mainnet") throw fail("platform.feature_off", TOP_UP_FROM_PLATFORM, { kind: "feature", feature: TOP_UP_FROM_PLATFORM });
     const p = world.pending.platform;
-    if (p === null) throw fail("platform.feature_off", "platform_addresses", { kind: "feature", feature: "platform_addresses" });
+    if (p === null || p.sendsActive === false) throw fail("platform.feature_off", "platform_addresses", { kind: "feature", feature: "platform_addresses" });
     const held = p.activity.find(isHeldOp);
     if (held) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: held.id });
     return { p, ...fromPlatformPlan(p.addresses, amount) };
@@ -255,10 +255,13 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       const fee = FROM_PLATFORM_RULES.fee;
       return { credits: String(credits), feeCredits: String(fee), debitCredits: String(debit), inputs, grant: { maxDuffs: 0, maxCredits: String(debit) } };
     },
-    credits_top_up_from_platform: ({ walletId, identity, amount, grant }, ctx) => {
+    credits_top_up_from_platform: ({ walletId, identity, amount, feeInput, grant }, ctx) => {
       const { world } = ctx;
       const dp = d.dashpay(world, walletId, identity);
       const { p, credits, inputs, debit } = fromPlatformChecks(world, amount);
+      // As the engine: the fee source and its claim Confirm showed, or nothing (before the grant).
+      if (feeInput && (inputs[0]?.address !== feeInput.address || inputs[0]?.credits !== feeInput.credits))
+        throw fail("credits.quote_changed", "the fee input changed since this top-up was quoted");
       const fee = FROM_PLATFORM_RULES.fee;
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");

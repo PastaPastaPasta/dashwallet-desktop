@@ -50,7 +50,7 @@ export const FROM_PLATFORM_COPY = withTable(messageTable("dashpay.topUp.fromPlat
     },
   }),
   failed: from("failed", ["title", "text"]),
-  error: withTable(from("error", ["short"]), {
+  error: withTable(from("error", ["short", "quoteChanged"]), {
     below: (min: string) => t("dashpay.topUp.fromPlatform.error.below", { min }),
   }),
 });
@@ -83,8 +83,8 @@ export function liveOutcome(o: TopUpFromPlatformOutcome, activity: readonly Plat
 export interface SourceInputs {
   /** The Dash wallet's spendable balance. */
   coreDuffs: number | undefined;
-  /** The Platform addresses; `null` when this network has none (below protocol version 11, or
-   * the commands are absent); `"unread"` when they or Activity could not be read. */
+  /** The Platform addresses; `null` when this network has none (the commands are absent), and not
+   * offered below protocol version 11 (`sendsActive`); `"unread"` when they or Activity could not be read. */
   platform: PlatformAddressBalance | null | undefined | "unread";
   hold: PlatformHold;
   /** Mainnet: a top-up from Platform is off there until its funds ruling. */
@@ -113,7 +113,7 @@ export function topUpSources(i: SourceInputs): SourceRow[] {
       ? SOURCE_COPY.loading
       : p === "unread"
         ? SOURCE_COPY.unread
-        : p === null || i.mainnet
+        : p === null || i.mainnet || !p.sendsActive
         ? SOURCE_COPY.notOffered
         : i.hold !== null && !i.hold.topUp
           ? SOURCE_COPY.heldByOther
@@ -158,6 +158,8 @@ export function fromPlatformErrorText(e: unknown, amount: (duffs: number) => str
       return e.data?.kind === "creditMinimum" ? FROM_PLATFORM_COPY.error.below(amount(creditsToDuffs(e.data.min))) : FROM_PLATFORM_COPY.error.short;
     case "platform.insufficient_credits":
       return FROM_PLATFORM_COPY.error.short;
+    case "credits.quote_changed":
+      return FROM_PLATFORM_COPY.error.quoteChanged;
     case "platform.feature_off":
       return SOURCE_COPY.notOffered;
     default:
