@@ -16,6 +16,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use dashcore::bip158::{BlockFilter, FilterQuery};
+use dashcore::hashes::Hash as _;
 use dashcore::{Address, Block, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use platform_wallet::key_wallet_manager::WalletInterface;
 
@@ -322,28 +323,61 @@ impl Fx {
             "{state}: a payment of everything: {all:?}"
         );
     }
+
+    /// A stays spent by W although the store holds no record of W: it is
+    /// not held, not stored unspent, not listed, not counted and not
+    /// offered, and no payment can be prepared from it.
+    fn assert_still_spent(&self, state: &str) {
+        assert!(!self.held(), "{state}: A is held");
+        assert!(
+            !stored_coins(&self.session, self.id).contains(&self.a),
+            "{state}: A is stored unspent"
+        );
+        assert!(!self.listed(), "{state}: coin control lists A");
+        assert_eq!(
+            self.total(),
+            (COINS as u64 - 1) * COIN,
+            "{state}: A is counted"
+        );
+        assert!(
+            !spendable(&self.engine, &self.session, self.id, self.a),
+            "{state}: A is offered"
+        );
+        let from_a = self.prepare_from_a();
+        assert!(
+            from_a.is_err(),
+            "{state}: a payment from A alone: {from_a:?}"
+        );
+    }
 }
 
 /// The wallet holds [`COINS`] coins of one DASH, A among them; it sends P
-/// from A, unconfirmed, and Dash Wallet restarts. W, a foreign spend of A
-/// paying only someone else, is mined and ChainLocked; with
-/// `restart_after_lock` Dash Wallet restarts again. The user then removes
-/// P `how`, and Dash Wallet restarts before the remove's rescan passes W's
-/// block again. Returns that session.
-fn brought_back(restart_after_lock: bool, how: Removal) -> Fx {
+/// from A, unconfirmed, and Dash Wallet restarts. W, a foreign spend paying
+/// only someone else, of A when `w_spends_a` and of a coin no wallet holds
+/// otherwise, is mined and ChainLocked; with `restart_after_lock` Dash
+/// Wallet restarts again. The user then removes P `how`, and Dash Wallet
+/// restarts before the remove's rescan passes W's block again. Returns that
+/// session.
+fn removed(restart_after_lock: bool, how: Removal, w_spends_a: bool) -> Fx {
     let (dir, engine, session, id) = engine_wallet();
     let to: Vec<Address> = (0..COINS)
         .map(|_| fresh_address(&engine, &session, id))
         .collect();
     let funded = funding(7, &to, COIN);
     let a = OutPoint::new(funded.txid(), 0);
-    let w = super::signed_by_wallet(
-        &engine,
-        &session,
-        id,
-        &to[0],
-        super::spend_of(a, vec![(elsewhere(), COIN - 1_000)]),
-    );
+    let w = match w_spends_a {
+        true => super::signed_by_wallet(
+            &engine,
+            &session,
+            id,
+            &to[0],
+            super::spend_of(a, vec![(elsewhere(), COIN - 1_000)]),
+        ),
+        false => super::spend_of(
+            OutPoint::new(Txid::from_byte_array([0x68; 32]), 0),
+            vec![(elsewhere(), COIN - 1_000)],
+        ),
+    };
     let mut fx = Fx {
         _dir: dir,
         engine,
@@ -374,13 +408,19 @@ fn brought_back(restart_after_lock: bool, how: Removal) -> Fx {
         !fx.matches(&block, &fx.filter(&block, false)),
         "W's block matches only through A's spent script"
     );
-    assert!(fx.scan(w_block.0, &w_block.1), "the scan fetches W's block");
     assert_eq!(
-        fx.noted_spends().get(&a),
-        Some(&(TIP + 1)),
-        "key-wallet notes W's spend of A"
+        fx.scan(w_block.0, &w_block.1),
+        w_spends_a,
+        "the scan fetches W's block only when W spends A"
     );
-    assert!(!fx.held(), "W's block spends A");
+    if w_spends_a {
+        assert_eq!(
+            fx.noted_spends().get(&a),
+            Some(&(TIP + 1)),
+            "key-wallet notes W's spend of A"
+        );
+    }
+    assert!(!fx.held(), "W's block spends A, or P claims it");
     assert!(
         (fx.session.hub.history.get(&id, &fx.p.txid())).is_some_and(|e| !e.abandoned),
         "P stays: key-wallet held no record of it to sweep"
@@ -405,7 +445,12 @@ fn brought_back(restart_after_lock: bool, how: Removal) -> Fx {
             .unwrap(),
     }
     assert!(!fx.held(), "{how:?}: A stays out until the restart");
-    let fx = fx.reopen();
+    fx.reopen()
+}
+
+/// [`removed`] with W spending A, its rescan owed from A's funding block.
+fn brought_back(restart_after_lock: bool, how: Removal) -> Fx {
+    let fx = removed(restart_after_lock, how, true);
     assert_eq!(
         fx.synced(),
         FUNDED_AT - 1,
@@ -414,15 +459,20 @@ fn brought_back(restart_after_lock: bool, how: Removal) -> Fx {
     fx
 }
 
-/// Every order of the story: the ChainLock in the remove's session or
-/// before a restart, removed by Remove unconfirmed or Abandon.
-fn each_story(check: impl Fn(Fx, &str)) {
+/// Every order of the story `build` tells: the ChainLock in the remove's
+/// session or before a restart, removed by Remove unconfirmed or Abandon.
+fn each_order(build: impl Fn(bool, Removal) -> Fx, check: impl Fn(Fx, &str)) {
     for restart_after_lock in [false, true] {
         for how in [Removal::Remove, Removal::Abandon] {
             let state = format!("{how:?}, restart after the lock: {restart_after_lock}");
-            check(brought_back(restart_after_lock, how), &state);
+            check(build(restart_after_lock, how), &state);
         }
     }
+}
+
+/// Every order of the story [`brought_back`] tells.
+fn each_story(check: impl Fn(Fx, &str)) {
+    each_order(brought_back, check);
 }
 
 /// The known gap of #268: after the restart A is back, counted and listed
@@ -509,6 +559,64 @@ fn known_gap_268_remove_unconfirmed_again_leaves_the_coin_brought_back() {
     let fx = fx.reopen();
     assert_eq!(fx.synced(), FUNDED_AT - 1);
     fx.assert_back("removed again, a restart");
+}
+
+/// #268 fixed: the ChainLocked block's spend of A outlives the ChainLock's
+/// prune of key-wallet's note, so removing P leaves A spent, in the
+/// remove's session and after the restarts that follow.
+#[test]
+fn a_removed_payment_leaves_spent_a_coin_a_chain_locked_block_spent() {
+    each_order(
+        |restart_after_lock, how| removed(restart_after_lock, how, true),
+        |fx, state| {
+            fx.assert_still_spent(state);
+            let fx = fx.reopen();
+            fx.assert_still_spent(&format!("{state}, another restart"));
+        },
+    );
+}
+
+/// #268 fixed: Remove unconfirmed again finds nothing to remove, and A
+/// stays spent, after another restart too.
+#[test]
+fn remove_unconfirmed_again_leaves_spent_a_coin_a_chain_locked_block_spent() {
+    let fx = removed(false, Removal::Remove, true);
+    start_spv(&fx);
+    assert_eq!(
+        (fx.engine)
+            .block_on(fx.session.drop_unconfirmed(Some(fx.id)))
+            .unwrap(),
+        0
+    );
+    fx.assert_still_spent("removed again");
+    let fx = fx.reopen();
+    fx.assert_still_spent("removed again, a restart");
+}
+
+/// A coin whose only spender was the removed payment comes back: W spends
+/// a coin no wallet holds, so its block is never fetched, and removing P
+/// frees A for good, once the remove's rescan is done and after another
+/// restart.
+#[test]
+fn a_coin_only_the_removed_payment_spent_comes_back() {
+    each_order(
+        |restart_after_lock, how| removed(restart_after_lock, how, false),
+        |fx, state| {
+            fx.assert_back(state);
+            start_spv(&fx);
+            assert_eq!(fx.replay(), [true, false, false], "{state}");
+            fx.assert_back(&format!("{state}, the rescan done"));
+            assert!(spendable(&fx.engine, &fx.session, fx.id, fx.a), "{state}");
+            assert_eq!(
+                fx.prepare_from_a().ok(),
+                Some(BTreeSet::from([fx.a])),
+                "{state}: a payment from A alone"
+            );
+            let fx = fx.reopen();
+            fx.assert_back(&format!("{state}, the rescan done, a restart"));
+            assert!(spendable(&fx.engine, &fx.session, fx.id, fx.a), "{state}");
+        },
+    );
 }
 
 /// Reset chain data on its own: the remove's rescan is cancelled first,
