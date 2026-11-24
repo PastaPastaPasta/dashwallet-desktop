@@ -402,6 +402,44 @@ mv "$work/fout/dash-wallet-0.0.9-macos-universal.app.tar.gz" "$work/fout/dash-wa
 tag_bundles 0.1.0; fs_reset
 FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0;         refused "another version's feed is refused"
 
+# --- PGP SHA256SUMS.asc: optional on tags, attested and published when present, required on final tags only when DW_SIGNING_REQUIRED=1
+tag_bundles 0.1.0; printf -- '-----BEGIN PGP SIGNATURE-----\ntest\n-----END PGP SIGNATURE-----\n' > "$work/tagdist/SHA256SUMS.asc"; fs_reset
+DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 with SHA256SUMS.asc: attested and published (9 assets)" \
+  '[[ $status -eq 0 && -f "$OUT/attest/SHA256SUMS.asc" ]] && log_has "release create v0.1.0 " && log_has "/SHA256SUMS.asc"'
+DIST=$work/tagdist FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=9 run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 with SHA256SUMS.asc, rerun: complete release (9 assets) is left as it is" \
+  '[[ $status -eq 0 ]] && ! log_has "release create"'
+feed_of 0.1.0 "${ALL_UPDATER[@]}"
+fs_reset
+FEED=$work/fout DIST=$work/tagdist DW_SIGNING_REQUIRED=1 DW_UPDATER_REQUIRED=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 with SHA256SUMS.asc and feed: all 11 assets attested and published" \
+  '[[ $status -eq 0 && -f "$OUT/attest/SHA256SUMS.asc" && -f "$OUT/attest/latest.json" ]] && log_has "/SHA256SUMS.asc" && log_has "/latest.json"'
+FEED=$work/fout DIST=$work/tagdist FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=11 run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 with SHA256SUMS.asc and feed, rerun: complete release (11 assets) is left as it is" \
+  '[[ $status -eq 0 ]] && ! log_has "release create"'
+tag_bundles 0.1.0; fs_reset
+DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 without SHA256SUMS.asc: succeeds without DW_SIGNING_REQUIRED" \
+  '[[ $status -eq 0 && ! -f "$OUT/attest/SHA256SUMS.asc" ]] && ! log_has "SHA256SUMS.asc"'
+fs_reset
+DIST=$work/tagdist DW_SIGNING_REQUIRED=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
+refused "DW_SIGNING_REQUIRED=1: final tag without SHA256SUMS.asc is refused"
+check "DW_SIGNING_REQUIRED=1: publish refusal names missing PGP secrets" \
+  'grep -qF "RELEASE_PGP_PRIVATE_KEY" "$work/prep.out"'
+tag_bundles 0.1.0-rc.1; fs_reset
+DIST=$work/tagdist DW_SIGNING_REQUIRED=1 run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+check "DW_SIGNING_REQUIRED=1: release candidate without SHA256SUMS.asc still succeeds" \
+  '[[ $status -eq 0 ]] && log_has "release create v0.1.0-rc.1 " && ! log_has "SHA256SUMS.asc"'
+printf -- '-----BEGIN PGP SIGNATURE-----\nrc\n-----END PGP SIGNATURE-----\n' > "$work/tagdist/SHA256SUMS.asc"; fs_reset
+DIST=$work/tagdist run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+check "signed candidate v0.1.0-rc.1 with SHA256SUMS.asc: attested and published as prerelease" \
+  '[[ $status -eq 0 && -f "$OUT/attest/SHA256SUMS.asc" ]] && log_has "release create v0.1.0-rc.1 " && log_has "/SHA256SUMS.asc" && log_has "--prerelease"'
+rm -rf "$work/maindist"; cp -R "$dist" "$work/maindist"
+printf -- '-----BEGIN PGP SIGNATURE-----\nmain\n-----END PGP SIGNATURE-----\n' > "$work/maindist/SHA256SUMS.asc"; fs_reset; unset FAKE_CONT_RELEASE
+DIST=$work/maindist run push refs/heads/main "$c2" "$ver"
+refused "main never publishes SHA256SUMS.asc"
+
 # --- tauri-build.sh: the key decides the updater; a stable tag without it warns, or fails when required
 tb() { # tb EVENT REF KEY REQUIRED: runs tauri-build.sh with a fake pnpm; sets $tbs, $TB (its output)
   local env_file=$work/tb-env
@@ -426,6 +464,23 @@ tb push refs/tags/v0.1.0-rc.1 "" 1
 check "tauri-build: a release candidate or a dry run without the key builds quietly" '[[ $tbs -eq 0 && "$TB" != *"::"* ]]'
 tb workflow_dispatch refs/tags/v0.1.0 "" 1
 check "tauri-build: a dispatch on a tag (never given the key) builds quietly" '[[ $tbs -eq 0 && "$TB" != *"::"* ]]'
+# Empty APPLE_* variables must be unset so tauri.conf.json's ad-hoc "-" identity is not overwritten by "".
+cat > "$work/tb-bin/pnpm-env" <<'PNPM_ENV'
+#!/usr/bin/env bash
+printf 'APPLE_SIGNING_IDENTITY=%s APPLE_CERTIFICATE=%s\n' "${APPLE_SIGNING_IDENTITY-<unset>}" "${APPLE_CERTIFICATE-<unset>}"
+PNPM_ENV
+chmod +x "$work/tb-bin/pnpm-env"
+mv "$work/tb-bin/pnpm" "$work/tb-bin/pnpm.orig"
+mv "$work/tb-bin/pnpm-env" "$work/tb-bin/pnpm"
+TB_EMPTY=$(cd "$work" && PATH="$work/tb-bin:$PATH" GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main \
+  APPLE_SIGNING_IDENTITY="" APPLE_CERTIFICATE="" "$here/tauri-build.sh" --bundles dmg 2>&1)
+check "tauri-build: empty APPLE_* env vars are unset before pnpm tauri build" \
+  '[[ "$TB_EMPTY" == *"APPLE_SIGNING_IDENTITY=<unset> APPLE_CERTIFICATE=<unset>"* ]]'
+TB_SET=$(cd "$work" && PATH="$work/tb-bin:$PATH" GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v0.1.0 \
+  APPLE_SIGNING_IDENTITY="Developer ID Application: Test" APPLE_CERTIFICATE="cert" "$here/tauri-build.sh" --bundles dmg 2>&1)
+check "tauri-build: non-empty APPLE_* env vars are preserved" \
+  '[[ "$TB_SET" == *"APPLE_SIGNING_IDENTITY=Developer ID Application: Test APPLE_CERTIFICATE=cert"* ]]'
+mv "$work/tb-bin/pnpm.orig" "$work/tb-bin/pnpm"
 export GITHUB_SHA=$c2
 
 # --- classify and decide
@@ -455,12 +510,104 @@ signing() { decide "$@" > /dev/null; sed -n 's/^signing=//p' "$work/decide.out";
 check "decide: only a stable tag on main gets the updater key" '[[ $(signing push refs/tags/v0.1.0 "$c2" "") == true ]]'
 check "decide: an rc, a dry run, a tag off main, main and a dispatch get no key" \
   '[[ "$(signing push refs/tags/v0.1.0-rc.1 "$c2" "") $(signing push refs/tags/v0.0.0-rel8 "$c2" "") $(signing push refs/tags/v0.1.0 "$side" "") $(signing push refs/heads/main "$c2" "") $(signing workflow_dispatch refs/tags/v0.1.0 "$c2" "")" == "false false false false false" ]]'
+check "decide: DW_SIGN_CANDIDATES=1 allows signing on a candidate on main only" \
+  '[[ "$(DW_SIGN_CANDIDATES=1 signing push refs/tags/v0.1.0-rc.1 "$c2" "") $(DW_SIGN_CANDIDATES=1 signing push refs/tags/v0.1.0-rc.1 "$side" "") $(DW_SIGN_CANDIDATES=1 signing push refs/tags/v0.0.0-rel8 "$c2" "") $(DW_SIGN_CANDIDATES=1 signing push refs/heads/main "$c2" "") $(DW_SIGN_CANDIDATES=1 signing workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" "")" == "true false false false false" ]]'
 check "decide: a docs-only pull request does not build" '[[ $(decide pull_request refs/pull/9/merge "$newer" "$c2") == "false false" ]]'
 check "decide: a code change builds" '[[ $(decide push refs/heads/dw/x "$code" "$c2") == "false true" ]]'
 check "decide: a docs-only push after a code push on the branch still builds (measured from main, not the last push)" '[[ $(decide push refs/heads/dw/x "$docsafter" "$code") == "false true" ]]'
 check "decide: moving a source file into docs/ is a code change" '[[ $(decide pull_request refs/pull/9/merge "$moved" "$code") == "false true" ]]'
 check "decide: a pull request with no known base builds" '[[ $(decide pull_request refs/pull/9/merge "$newer" "") == "false true" ]]'
 check "decide: a docs-only change on a tag still builds" '[[ $(decide push refs/tags/v0.1.0 "$newer" "$c2") == "false true" ]]'
+
+# --- release-signing-check.sh: DW_SIGNING_REQUIRED, missing-secret errors, warnings, and candidates
+sc() { # sc <target> [VAR=VAL ...]: runs release-signing-check.sh in a clean env; sets $scs, $SC, $SC_ENV
+  local target=$1; shift
+  local env_file=$work/sc-env
+  : > "$env_file"
+  scs=0
+  SC=$(env -i PATH="$PATH" GITHUB_ENV="$env_file" "$@" "$here/release-signing-check.sh" "$target" 2>&1) || scs=$?
+  SC_ENV=$(cat "$env_file")
+}
+sc macos GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0 DW_SIGNING_ENABLED=true DW_SIGNING_REQUIRED=1
+check "signing-check macos: DW_SIGNING_REQUIRED=1 refuses final tag missing secrets and names them" \
+  '[[ $scs -ne 0 && "$SC" == *"::error::"* && "$SC" == *"APPLE_CERTIFICATE"* && "$SC" == *"APPLE_CERTIFICATE_PASSWORD"* && "$SC" == *"APPLE_SIGNING_IDENTITY"* && "$SC" == *"APPLE_API_ISSUER"* && "$SC" == *"APPLE_API_KEY"* && "$SC" == *"APPLE_API_KEY_P8"* && "$SC" == *"APPLE_TEAM_ID"* ]]'
+sc macos GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0 DW_SIGNING_ENABLED=true DW_SIGNING_REQUIRED=1 \
+  APPLE_CERTIFICATE=SECRET_VAL_1 APPLE_CERTIFICATE_PASSWORD=SECRET_VAL_2 APPLE_SIGNING_IDENTITY=SECRET_VAL_3 \
+  APPLE_API_ISSUER=SECRET_VAL_4 APPLE_API_KEY=SECRET_VAL_5 APPLE_TEAM_ID=TEAM123
+check "signing-check macos: partial set fails naming only missing secret and never leaks values" \
+  '[[ $scs -ne 0 && "$SC" == *"APPLE_API_KEY_P8"* && "$SC" != *"APPLE_CERTIFICATE"* && "$SC" != *"SECRET_VAL_"* ]]'
+sc windows GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0 DW_SIGNING_ENABLED=true DW_SIGNING_REQUIRED=1
+check "signing-check windows: DW_SIGNING_REQUIRED=1 refuses final tag missing Azure set and names them" \
+  '[[ $scs -ne 0 && "$SC" == *"::error::"* && "$SC" == *"AZURE_TENANT_ID"* && "$SC" == *"AZURE_CLIENT_ID"* && "$SC" == *"AZURE_CLIENT_SECRET"* && "$SC" == *"AZURE_SIGNING_ENDPOINT"* && "$SC" == *"AZURE_SIGNING_ACCOUNT"* && "$SC" == *"AZURE_SIGNING_PROFILE"* ]]'
+sc pgp GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0 DW_SIGNING_ENABLED=true DW_SIGNING_REQUIRED=1
+check "signing-check pgp: DW_SIGNING_REQUIRED=1 refuses final tag missing PGP set and names them" \
+  '[[ $scs -ne 0 && "$SC" == *"::error::"* && "$SC" == *"RELEASE_PGP_PRIVATE_KEY"* && "$SC" == *"RELEASE_PGP_PASSPHRASE"* && "$SC" == *"RELEASE_PGP_FINGERPRINT"* ]]'
+sc macos GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0 DW_SIGNING_ENABLED=true
+check "signing-check macos: final tag without secrets or DW_SIGNING_REQUIRED warns once and sets MACOS_SIGN=0" \
+  '[[ $scs -eq 0 && "$SC" == *"::warning::"* && "$SC_ENV" == "MACOS_SIGN=0" ]]'
+sc windows GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0 DW_SIGNING_ENABLED=true
+check "signing-check windows: final tag without secrets or DW_SIGNING_REQUIRED warns once and sets WINDOWS_SIGN=0" \
+  '[[ $scs -eq 0 && "$SC" == *"::warning::"* && "$SC_ENV" == "WINDOWS_SIGN=0" ]]'
+sc pgp GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0 DW_SIGNING_ENABLED=true
+check "signing-check pgp: final tag without secrets or DW_SIGNING_REQUIRED warns once and sets PGP_SIGN=0" \
+  '[[ $scs -eq 0 && "$SC" == *"::warning::"* && "$SC_ENV" == "PGP_SIGN=0" ]]'
+sc macos GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0 DW_SIGNING_ENABLED=true DW_SIGNING_REQUIRED=1 \
+  APPLE_CERTIFICATE=c APPLE_CERTIFICATE_PASSWORD=p APPLE_SIGNING_IDENTITY=i \
+  APPLE_API_ISSUER=iss APPLE_API_KEY=k APPLE_API_KEY_P8=p8 APPLE_TEAM_ID=t
+check "signing-check macos: complete set enables MACOS_SIGN=1" '[[ $scs -eq 0 && "$SC_ENV" == "MACOS_SIGN=1" ]]'
+sc windows GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0 DW_SIGNING_ENABLED=true DW_SIGNING_REQUIRED=1 \
+  AZURE_TENANT_ID=t AZURE_CLIENT_ID=c AZURE_CLIENT_SECRET=s \
+  AZURE_SIGNING_ENDPOINT=https://eus.codesigning.azure.net AZURE_SIGNING_ACCOUNT=a AZURE_SIGNING_PROFILE=p
+check "signing-check windows: complete set enables WINDOWS_SIGN=1" '[[ $scs -eq 0 && "$SC_ENV" == "WINDOWS_SIGN=1" ]]'
+sc pgp GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0 DW_SIGNING_ENABLED=true DW_SIGNING_REQUIRED=1 \
+  RELEASE_PGP_PRIVATE_KEY=k RELEASE_PGP_PASSPHRASE=p RELEASE_PGP_FINGERPRINT=0123456789ABCDEF0123456789ABCDEF01234567
+check "signing-check pgp: complete set enables PGP_SIGN=1" '[[ $scs -eq 0 && "$SC_ENV" == "PGP_SIGN=1" ]]'
+for t in macos windows pgp; do
+  sc "$t" GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0-rc.1 DW_SIGNING_ENABLED=false DW_SIGNING_REQUIRED=1 APPLE_TEAM_ID=T AZURE_SIGNING_ACCOUNT=A RELEASE_PGP_FINGERPRINT=F
+  check "signing-check $t: candidate (signing disabled) never requires signing" '[[ $scs -eq 0 && "$SC" != *"::error::"* && "$SC_ENV" == *"=0" ]]'
+  sc "$t" GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.0.0-rc.1 DW_SIGNING_ENABLED=true DW_SIGNING_REQUIRED=1
+  check "signing-check $t: candidate (DW_SIGN_CANDIDATES=1) still never requires signing" '[[ $scs -eq 0 && "$SC" != *"::error::"* && "$SC_ENV" == *"=0" ]]'
+done
+sc macos GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main DW_SIGNING_ENABLED=false DW_SIGNING_REQUIRED=1 APPLE_TEAM_ID=TEAM123
+check "signing-check macos: main push with repo var set builds quietly without secrets" \
+  '[[ $scs -eq 0 && "$SC" != *"::"* && "$SC_ENV" == "MACOS_SIGN=0" ]]'
+
+# --- release-pgp-sign.sh: subkey import, fingerprint pin, detached signature, verification, and cleanup
+if command -v gpg >/dev/null 2>&1; then
+  gpg_gen=$work/gpg-gen
+  mkdir -p "$gpg_gen" && chmod 700 "$gpg_gen"
+  GNUPGHOME=$gpg_gen gpg --batch --passphrase "subkey-pass" --quick-generate-key "Release Test <rel@example.com>" ed25519 cert never >/dev/null 2>&1
+  gpg_fpr=$(GNUPGHOME=$gpg_gen gpg --batch --with-colons --list-secret-keys | awk -F: '$1=="sec"{s=1;next} s&&$1=="fpr"{print $10; exit}')
+  GNUPGHOME=$gpg_gen gpg --batch --pinentry-mode loopback --passphrase "subkey-pass" --quick-add-key "$gpg_fpr" ed25519 sign never >/dev/null 2>&1
+  gpg_subkey=$(GNUPGHOME=$gpg_gen gpg --batch --pinentry-mode loopback --passphrase "subkey-pass" --armor --export-secret-subkeys "$gpg_fpr" 2>/dev/null)
+  gpg_pub=$(GNUPGHOME=$gpg_gen gpg --batch --armor --export "$gpg_fpr" 2>/dev/null)
+  GNUPGHOME=$gpg_gen gpgconf --kill gpg-agent >/dev/null 2>&1 || true
+
+  pgp_sums=$work/pgp-SHA256SUMS
+  printf 'deadbeef  dash-wallet-1.0.0-linux-x86_64.AppImage\n' > "$pgp_sums"
+  pgp_rt=$work/pgp-runner-temp
+  mkdir -p "$pgp_rt"
+
+  pgp_rc=0
+  RUNNER_TEMP=$pgp_rt RELEASE_PGP_PRIVATE_KEY=$gpg_subkey RELEASE_PGP_PASSPHRASE=subkey-pass \
+    RELEASE_PGP_FINGERPRINT=$gpg_fpr "$here/release-pgp-sign.sh" "$pgp_sums" > "$work/pgp.out" 2>&1 || pgp_rc=$?
+  check "release-pgp-sign: signs SHA256SUMS with subkey, verifies against primary fingerprint, and removes GNUPGHOME" \
+    '[[ $pgp_rc -eq 0 && -s "$pgp_sums.asc" && ! -e "$pgp_rt/gnupg-release" ]]'
+
+  gpg_ver=$work/gpg-verify
+  mkdir -p "$gpg_ver" && chmod 700 "$gpg_ver"
+  GNUPGHOME=$gpg_ver gpg --batch --quiet --import <<<"$gpg_pub" >/dev/null 2>&1
+  check "release-pgp-sign: produced SHA256SUMS.asc verifies cleanly with the public key" \
+    'GNUPGHOME=$gpg_ver gpg --batch --verify "$pgp_sums.asc" "$pgp_sums" >/dev/null 2>&1'
+  GNUPGHOME=$gpg_ver gpgconf --kill gpg-agent >/dev/null 2>&1 || true
+
+  rm -f "$pgp_sums.asc"
+  pgp_bad_rc=0
+  RUNNER_TEMP=$pgp_rt RELEASE_PGP_PRIVATE_KEY=$gpg_subkey RELEASE_PGP_PASSPHRASE=subkey-pass \
+    RELEASE_PGP_FINGERPRINT=0000000000000000000000000000000000000000 "$here/release-pgp-sign.sh" "$pgp_sums" > "$work/pgp-bad.out" 2>&1 || pgp_bad_rc=$?
+  check "release-pgp-sign: mismatched RELEASE_PGP_FINGERPRINT fails and writes no signature" \
+    '[[ $pgp_bad_rc -ne 0 && ! -e "$pgp_sums.asc" && ! -e "$pgp_rt/gnupg-release" ]] && grep -qF "does not match RELEASE_PGP_FINGERPRINT" "$work/pgp-bad.out"'
+fi
 
 # --- release-version.sh
 cd "$here/../.."
