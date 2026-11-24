@@ -966,7 +966,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 4bd47d28959724cf2e01391e3f652370e1cf409910448c92c23d9d3b3aa57a64 version: 77 -->
+<!-- surface-sha256: a0fee2cdb7da644b68b9bd78f0e9dee5fdf151eadecd31a6656ead4e160e7114 version: 78 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2292,6 +2292,7 @@ pub struct RegistrationStatus {
     pub name_failure: Option<String>,
     pub profile_failure: Option<String>,
     pub invitation: Option<RegistrationInvitation>,
+    pub from_platform: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
