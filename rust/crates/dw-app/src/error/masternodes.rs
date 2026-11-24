@@ -272,6 +272,8 @@ mod tests {
                 operation: "op2".into()
             }),
             serde_json::json!({ "kind": "operation", "operation": "op2" })
+        );
+        assert_eq!(
             data(MasternodesError::SharedMessage {
                 reason: "bad_signature".into(),
                 share: Some(2)

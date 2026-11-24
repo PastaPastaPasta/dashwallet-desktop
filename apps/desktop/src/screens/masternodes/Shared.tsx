@@ -1,8 +1,9 @@
 // Shared masternodes (MG-10 §2, MG-10b S5): Start or join (`sh-start`), the coordinator's setup
 // wizard (`sh-setup`, `sh-terms`), and the session sheet (`sh-session`, `sh-join`, `sh-close`).
 // Every session screen renders the engine's `next` (D2); Discard shows only while the engine says
-// the session is `discardable`; Abandon only while the engine says it is `abandonable`. Signing and
-// sending are absent until EP 4 (D14).
+// the session is `discardable`; Abandon only while the engine says it is `abandonable`. Sign, Send
+// and Send again confirm the exact `debit` and take a `masternodeOp{debit}` grant, where this network
+// sends (`sh-sign-confirm`, `sh-send-confirm`, `sh-resend-confirm`).
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -10,13 +11,13 @@ import type { SharedImport } from "../../api/generated/SharedImport";
 import type { SharedSession } from "../../api/generated/SharedSession";
 import type { UnreadableSession } from "../../api/generated/UnreadableSession";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
-import { useBackend } from "../../api/queries";
-import { navigate } from "../../app/ui";
+import { useBackend, useSyncStatus } from "../../api/queries";
 import { saveText } from "../../app/files";
+import { navigate } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { showToast } from "../../components/toast";
-import { useDisplay } from "../../format/display";
+import { chainOf, useDisplay } from "../../format/display";
 import { shortDate } from "../../governance/model";
 import { useT } from "../../i18n";
 import { useMasternodesRefresh, useSharedCapability, useSharedSession, useSharedSessions, useSharedUnreadable } from "../../masternodes/queries";
@@ -29,16 +30,24 @@ import {
   MAX_SHARED_FEE,
   fundingLine,
   grantCap,
+  handoffLine,
   joinEstimate,
+  mainnetHoldsBack,
   renderSession,
+  reservationNote,
+  type SendAction,
+  sendOffer,
   sessionsInProgress,
   sharedErrorText,
   signedOutText,
+  sliceFor,
   stageStep,
   termsDiff,
   unreadableInProgress,
   warningText,
+  wayOutShown,
 } from "../../masternodes/shared";
+import { sendErrorText } from "../pay/model";
 import { CredentialField, useCredential } from "./credential";
 import { MoreMenu, Notice } from "./common";
 import { SharedSetup } from "./SharedSetup";
@@ -391,10 +400,15 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const [unlocking, setUnlocking] = useState(false);
   const [abandoning, setAbandoning] = useState(false);
   const [pickedShare, setPickedShare] = useState<number | null>(null);
+  const [confirming, setConfirming] = useState<SendAction | null>(null);
+  const [wayOut, setWayOut] = useState(false);
   const replyId = useId();
   const s = pick(query.data, latest);
   const debit = s?.debit ?? 0;
   const credential = useCredential(wallet.walletId, t(`${P}.session.ask`), 0);
+  const sync = useSyncStatus();
+  /** A hand-off needs SPV running with a peer (§2.3.3); signing a contribution doesn't. */
+  const disconnected = !!sync.data && (!sync.data.running || sync.data.connectedPeers === 0);
 
   if (!s)
     return (
@@ -422,7 +436,12 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
         </div>
       </Sheet>
     );
-  const v = renderSession(s);
+  const v = renderSession(s, sliceFor(network));
+  const offered = sendOffer(s, network, wallet.watchOnly);
+  const handoffHeld = disconnected && (offered === "send" || offered === "resend");
+  const mainnetOff = mainnetHoldsBack(s, network);
+  const showWayOut = wayOutShown(s, v.row);
+  const handoff = handoffLine(s, (code) => sendErrorText({ code, message: "", data: null }, chainOf(network))?.text ?? null);
   const openShares = s.rows.filter((r) => !r.ownerAddress);
   const joinShare = openShares.length === 1 ? openShares[0]!.index : pickedShare;
   const joinRow = s.rows.find((r) => r.index === joinShare) ?? null;
@@ -576,6 +595,21 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
       />
     );
 
+  if (confirming && confirming === offered)
+    return (
+      <SendConfirm
+        wallet={wallet}
+        network={network}
+        session={s}
+        action={confirming}
+        held={handoffHeld}
+        onDone={(next) => {
+          if (next) setLatest(next);
+          setConfirming(null);
+        }}
+      />
+    );
+
   if (feeOpen) return <FeeSheet wallet={wallet} network={network} session={s} onDone={(next) => (next && setLatest(next), setFeeOpen(false))} />;
 
   return (
@@ -661,8 +695,51 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
         {v.row === "join" && joinShare !== null && <p className="mg-muted">{joinEstimate(s, joinShare, dash)}</p>}
         {v.primary === "join" && (
           <p className="mg-muted mg-small" data-testid="sh-reservation-note">
-            {t(`${P}.reservationNote`)}
+            {reservationNote(network)}
           </p>
+        )}
+        {handoff && (
+          <p className="mg-muted" data-testid="sh-handoff">
+            {handoff}
+          </p>
+        )}
+        {showWayOut && (
+          <div data-testid="sh-way-out">
+            <DashButton variant="plainBlue" size="small" aria-expanded={wayOut} data-testid="sh-way-out-toggle" onClick={() => setWayOut((o) => !o)}>
+              {t(`${P}.wayOut.title`)}
+            </DashButton>
+            {wayOut && (
+              <p className="mg-muted mg-small" data-testid="sh-way-out-text">
+                {t(`${P}.abandon.ownFirst`)}{" "}
+                <DashButton
+                  variant="plainBlue"
+                  size="small"
+                  data-testid="sh-way-out-activity"
+                  onClick={() => {
+                    onClose();
+                    navigate("activity", { activityFilter: { kind: "txids", title: t(`${P}.sessionRow`, { code: s.code }), txids: [s.txid!] } });
+                  }}
+                >
+                  {t(`${P}.abandon.openActivity`)}
+                </DashButton>
+                {canAbandon(s) && (
+                  <DashButton variant="plainRed" size="small" data-testid="sh-way-out-abandon" disabled={busy || wallet.watchOnly} onClick={() => setAbandoning(true)}>
+                    {t(`${P}.session.abandon`)}
+                  </DashButton>
+                )}
+              </p>
+            )}
+          </div>
+        )}
+        {handoffHeld && (
+          <p className="mg-muted mg-small" data-testid="sh-spv-stopped">
+            {t(`${P}.row.spvStopped`)}
+          </p>
+        )}
+        {mainnetOff && (
+          <Notice tone="info" testId="sh-mainnet-note">
+            {t(`${P}.mainnetSignNote`)}
+          </Notice>
         )}
         {imported && (
           <div className="mg-notice mg-notice-info" data-testid="sh-import-panel">
@@ -743,6 +820,11 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
                 {t(`${P}.row.approveButton`)}
               </DashButton>
             )}
+            {offered && (
+              <DashButton variant={offered === "resend" ? "tintedGray" : "filledBlue"} size="medium" data-testid={`sh-${offered}`} disabled={busy || handoffHeld} onClick={() => setConfirming(offered)}>
+                {t(SEND_LABEL[offered])}
+              </DashButton>
+            )}
           </span>
         </footer>
       </div>
@@ -805,6 +887,7 @@ function rowCopy(
     case "approvedCount":
       return t(`${P}.row.approvedCount`, { approved: counts.approved, total: counts.total });
     case "sign":
+      return s.debit === null ? "" : t(`${P}.row.signText`, { debit, coordinator });
     case "signLater":
       return t(`${P}.row.signLater`);
     case "signedOut":
@@ -814,7 +897,7 @@ function rowCopy(
     case "waitingSigned":
       return t(`${P}.row.waitingSigned`, { signed: counts.signed, total: others });
     case "send":
-      return t(`${P}.row.everyoneSigned`, { debit });
+      return s.debit === null ? "" : t(`${P}.row.everyoneSigned`, { debit });
     case "sent":
       return t(`${P}.row.sent`);
     case "confirmed":
@@ -824,6 +907,77 @@ function rowCopy(
     default:
       return "";
   }
+}
+
+const SEND_LABEL = { sign: `${P}.row.signButton`, send: `${P}.row.sendButton`, resend: `${P}.row.resendButton` } as const;
+
+/** The confirm before Sign, Send or Send again (§2.3.1, §2.3.3): what leaves this wallet, the exact
+ * `debit` that caps the `masternodeOp` grant, the passphrase, then the call. */
+function SendConfirm({ wallet, network, session: s, action, held, onDone }: { wallet: WalletSummary; network: NetworkInfo; session: SharedSession; action: SendAction; held: boolean; onDone: (next: SharedSession | null) => void }) {
+  const t = useT();
+  const b = useBackend();
+  const refresh = useMasternodesRefresh();
+  const { dash, networkName } = useSharedText(network);
+  const cap = grantCap(action, s) ?? 0;
+  const ask = t(action === "sign" ? `${P}.row.signAsk` : `${P}.row.sendAsk`);
+  // A grant of a share's whole debit always asks on an encrypted vault: the signing window never covers it.
+  const credential = useCredential(wallet.walletId, ask, null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const text =
+    action === "sign"
+      ? t(`${P}.row.signText`, { debit: dash(cap), coordinator: s.rows[0]?.label ?? "" })
+      : action === "send"
+        ? t(`${P}.row.everyoneSigned`, { debit: dash(cap) })
+        : t(`${P}.row.resendText`, { charge: dash(cap) });
+  const funding = action === "resend" ? null : fundingLine(s, dash);
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const grant = await credential.authorize({ kind: "masternodeOp", maxDuffs: cap });
+      if (!grant) return;
+      const out = action === "sign" ? await b.mnSharedSign(wallet.walletId, s.id, grant.id) : await b.mnSharedSend(wallet.walletId, s.id, grant.id);
+      onDone(out.session);
+    } catch (e) {
+      setError(sharedErrorText(e, { network: networkName, session: s, dash }));
+    } finally {
+      setBusy(false);
+      void refresh();
+    }
+  };
+  return (
+    <Sheet title={t(SEND_LABEL[action])} width="small" testId={`sh-${action}-confirm`} onClose={() => !busy && onDone(null)}>
+      <div className="mg-sheet-body mg-step">
+        <p data-testid={`sh-${action}-text`}>{text}</p>
+        {funding && (
+          <p className="mg-muted" data-testid={`sh-${action}-funding`}>
+            {funding}
+          </p>
+        )}
+        {credential.prompt === "passphrase" && <p className="mg-muted mg-small">{ask}</p>}
+        <CredentialField c={credential} busy={busy} testId={`sh-${action}-credential`} />
+        {held && (
+          <p className="mg-muted mg-small" data-testid={`sh-${action}-spv-stopped`}>
+            {t(`${P}.row.spvStopped`)}
+          </p>
+        )}
+        <p className="form-problem" role="alert" data-testid={`sh-${action}-error`}>
+          {error}
+        </p>
+        <footer className="mg-sheet-footer">
+          <span className="mg-actions">
+            <DashButton variant="tintedGray" size="medium" data-testid={`sh-${action}-cancel`} disabled={busy} onClick={() => onDone(null)}>
+              {t(`${P}.close.cancel`)}
+            </DashButton>
+            <DashButton variant="filledBlue" size="medium" data-testid={`sh-${action}-go`} disabled={busy || held || !credential.ready || credential.waitSecs > 0} onClick={() => void run()}>
+              {t(SEND_LABEL[action])}
+            </DashButton>
+          </span>
+        </footer>
+      </div>
+    </Sheet>
+  );
 }
 
 /** More ▸ Change network fee… (§2.2): only in a draft before any reply. */

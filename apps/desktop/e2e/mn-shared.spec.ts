@@ -5,9 +5,10 @@ import { SH_TEXT } from "../src/fixture/shared";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 
-// Shared masternodes (MG-10b S5) on the fixture: Start or join, the coordinator's setup to its
-// invitation, the session sheet's stages, a pasted invitation joined, and Close offering Discard only
-// while the engine reads the session as discardable. DW_SHOTS=<dir> also writes each state's PNG.
+// Shared masternodes (MG-10b S5, S5b) on the fixture: Start or join, the coordinator's setup to its
+// invitation, the session sheet's stages, a pasted invitation joined, Close offering Discard only
+// while the engine reads the session as discardable, and Sign, Send and Send again with their
+// confirm, refusal and mainnet states. DW_SHOTS=<dir> also writes each state's PNG.
 
 const SHOTS = process.env.DW_SHOTS;
 
@@ -19,6 +20,21 @@ const open = async (page: Page, scenario: string, theme: Theme, extra = "") => {
   await page.getByTestId("sidebar-masternodes").click();
   await expect(page.getByTestId("page-masternodes")).toBeVisible();
   return errors;
+};
+
+const openSession = async (page: Page, scenario: string, theme: Theme) => {
+  const errors = await open(page, scenario, theme);
+  await page.getByTestId("mn-shared").click();
+  await page.getByTestId("sh-in-progress").getByRole("button").first().click();
+  await expect(page.getByTestId("sh-session")).toBeVisible();
+  return errors;
+};
+
+/** Fills the passphrase when the confirm asks for one, then confirms. */
+const confirmWith = async (page: Page, action: string) => {
+  const field = page.getByTestId(`sh-${action}-credential-passphrase`);
+  if (await field.isVisible()) await field.fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId(`sh-${action}-go`).click();
 };
 
 const shot = async (page: Page, name: string, theme: Theme) => {
@@ -87,7 +103,7 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
-  test(`shared masternode ${theme}: locked terms to approve, and a session that may be out has no Discard`, async ({ page }, info) => {
+  test(`shared masternode ${theme}: locked terms to approve, and a signed session that may be out has no Discard`, async ({ page }, info) => {
     await open(page, "sh-participant-approve", theme);
     await page.getByTestId("mn-shared").click();
     await page.getByTestId("sh-in-progress").getByRole("button").first().click();
@@ -106,8 +122,7 @@ for (const theme of THEMES) {
     await page.getByTestId("mn-shared").click();
     await page.getByTestId("sh-in-progress").getByRole("button").first().click();
     await expect(page.getByTestId("sh-session")).toBeVisible();
-    await expect(page.getByTestId("sh-copy")).toHaveCount(0);
-    await expect(page.getByTestId("sh-row-signedOut")).toContainText("can't be discarded");
+    await expect(page.getByTestId("sh-row-sendSigned")).toBeVisible();
     await expect(page.getByTestId("sh-session")).not.toContainText("nothing has left this wallet");
     await page.getByTestId("sh-close-button").click();
     await expect(page.getByTestId("sh-close")).toHaveCount(0);
@@ -153,10 +168,9 @@ for (const theme of THEMES) {
     const errors = await open(page, "sh-close-out", theme);
     await page.getByTestId("mn-shared").click();
     await page.getByTestId("sh-in-progress").getByRole("button").first().click();
-    const row = page.getByTestId("sh-row-signedOut");
-    await expect(row).toContainText("To cancel it, choose Abandon");
+    // Where sends are on, the signed-out participant's row is the hand-off; Abandon stands beside it.
+    await expect(page.getByTestId("sh-row-sendSigned")).toBeVisible();
     await expect(page.getByTestId("sh-abandon-button")).toHaveText("Abandon");
-    if (info.project.name === "chromium") await shot(page, "sh-signed-out-abandon", theme);
     await page.getByTestId("sh-abandon-button").click();
     await expect(page.getByTestId("sh-abandon")).toBeVisible();
     await expect(page.getByTestId("sh-abandon-text")).toContainText(`paying a ${(SHARED_ABANDON_FEE / 1e8).toFixed(8)} tDASH network fee`);
@@ -178,6 +192,7 @@ for (const theme of THEMES) {
     await page.getByTestId("mn-shared").click();
     await page.getByTestId("sh-in-progress").getByRole("button").first().click();
     await expect(page.getByTestId("sh-row-signedOut")).toContainText("To cancel it, choose Abandon");
+    if (info.project.name === "chromium") await shot(page, "sh-signed-out-abandon", theme);
     await page.getByTestId("sh-abandon-button").click();
     await expect(page.getByTestId("sh-abandon-text")).toContainText(`paying a ${(SHARED_ABANDON_FEE / 1e8).toFixed(8)} DASH network fee`);
     await page.getByTestId("sh-abandon-passphrase").fill(FIXTURE_PASSPHRASE);
@@ -224,6 +239,115 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-unreadable-abandon-confirm")).toBeHidden();
     await expect(page.getByTestId("sh-unreadable-9E9E9E")).toBeVisible();
     await expect(page.getByTestId("sh-unreadable-abandon-9E9E9E")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: a participant signs its coins, and the stage advances`, async ({ page }, info) => {
+    const errors = await openSession(page, "sh-participant-combined", theme);
+    await expect(page.getByTestId("sh-row-sign")).toContainText("leaves this wallet when Alice sends it");
+    await page.getByTestId("sh-sign").click();
+    await expect(page.getByTestId("sh-sign-confirm")).toBeVisible();
+    await expect(page.getByTestId("sh-sign-text")).toContainText("300");
+    if (info.project.name === "chromium") await shot(page, "sh-sign-confirm", theme);
+    await confirmWith(page, "sign");
+    await expect(page.getByTestId("sh-sign-confirm")).toBeHidden();
+    await expect(page.getByTestId("sh-row-sendSigned")).toBeVisible();
+    await expect(page.getByTestId("sh-copy")).toBeVisible();
+    await expect(page.getByTestId("sh-sign")).toHaveCount(0);
+    if (info.project.name === "chromium") await shot(page, "sh-after-sign", theme);
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: the coordinator sends the registration, which reads sent`, async ({ page }, info) => {
+    const errors = await openSession(page, "sh-coordinator-send", theme);
+    await expect(page.getByTestId("sh-row-send")).toContainText("Everyone signed.");
+    await page.getByTestId("sh-send").click();
+    await expect(page.getByTestId("sh-send-confirm")).toBeVisible();
+    await expect(page.getByTestId("sh-send-text")).toContainText("400.001");
+    if (info.project.name === "chromium") await shot(page, "sh-send-confirm", theme);
+    await confirmWith(page, "send");
+    await expect(page.getByTestId("sh-send-confirm")).toBeHidden();
+    await expect(page.getByTestId("sh-row-sent")).toContainText("waiting for 1 confirmation");
+    await expect(page.getByTestId("sh-resend")).toBeVisible();
+    await expect(page.getByTestId("sh-handoff")).toHaveCount(0);
+    if (info.project.name === "chromium") await shot(page, "sh-after-send", theme);
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: mainnet offers no Sign or Send and says why`, async ({ page }, info) => {
+    const errors = await openSession(page, "sh-participant-combined-mainnet", theme);
+    await expect(page.getByTestId("sh-mainnet-note")).toBeVisible();
+    await expect(page.getByTestId("sh-sign")).toHaveCount(0);
+    await expect(page.getByTestId("sh-row-signLater")).toBeVisible();
+    if (info.project.name === "chromium") await shot(page, "sh-mainnet-sign", theme);
+    await openSession(page, "sh-coordinator-send-mainnet", theme);
+    await expect(page.getByTestId("sh-mainnet-note")).toBeVisible();
+    await expect(page.getByTestId("sh-send")).toHaveCount(0);
+    if (info.project.name === "chromium") await shot(page, "sh-mainnet-send", theme);
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: Send again on an abandoned registration is refused with its reason`, async ({ page }, info) => {
+    const errors = await openSession(page, "sh-coordinator-sent-abandoned", theme);
+    await page.getByTestId("sh-resend").click();
+    await expect(page.getByTestId("sh-resend-text")).toContainText("Send the same transaction again");
+    if (info.project.name === "chromium") await shot(page, "sh-resend-confirm", theme);
+    await confirmWith(page, "resend");
+    await expect(page.getByTestId("sh-resend-error")).toContainText("abandoned, so it can't be sent again");
+    if (info.project.name === "chromium") await shot(page, "sh-refusal", theme);
+    await openSession(page, "sh-coordinator-sent-unknown", theme);
+    await expect(page.getByTestId("sh-handoff")).toContainText("It may still confirm.");
+    if (info.project.name === "chromium") await shot(page, "sh-handoff-unknown", theme);
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: a sent registration's way out opens it in Activity`, async ({ page }, info) => {
+    const errors = await openSession(page, "sh-coordinator-sent", theme);
+    await expect(page.getByTestId("sh-way-out-text")).toHaveCount(0);
+    await page.getByTestId("sh-way-out-toggle").click();
+    await expect(page.getByTestId("sh-way-out-text")).toContainText("first abandon the registration transaction in Activity");
+    if (info.project.name === "chromium") await shot(page, "sh-way-out", theme);
+    await page.getByTestId("sh-way-out-activity").click();
+    await expect(page.getByTestId("sh-session")).toBeHidden();
+    const chip = page.getByTestId("tx-route-filter");
+    await expect(chip).toContainText("Session 3F9A2C");
+    await expect(chip).toHaveAttribute("data-txids", "7e".repeat(32));
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: after Send, the way out abandons the registration in Activity, then Abandon here spends the coins back`, async ({ page }, info) => {
+    const errors = await openSession(page, "sh-coordinator-send", theme);
+    await page.getByTestId("sh-send").click();
+    await confirmWith(page, "send");
+    await expect(page.getByTestId("sh-row-sent")).toBeVisible();
+    await expect(page.getByTestId("sh-way-out-text")).toHaveCount(0);
+    await page.getByTestId("sh-way-out-toggle").click();
+    await expect(page.getByTestId("sh-way-out-text")).toContainText("first abandon the registration transaction in Activity");
+    await expect(page.getByTestId("sh-abandon-button"), "the registration still spends the coins").toHaveCount(0);
+    await expect(page.getByTestId("sh-way-out-abandon")).toHaveCount(0);
+    if (info.project.name === "chromium") await shot(page, "sh-after-send-way-out", theme);
+    await page.getByTestId("sh-way-out-activity").click();
+    await expect(page.getByTestId("tx-route-filter")).toHaveAttribute("data-txids", "7e".repeat(32));
+    await page.locator(`.tx-row[data-txid="${"7e".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
+    await page.getByTestId("sidebar-masternodes").click();
+    await page.getByTestId("mn-shared").click();
+    await page.getByTestId("sh-in-progress").getByRole("button").first().click();
+    await page.getByTestId("sh-way-out-toggle").click();
+    await expect(page.getByTestId("sh-way-out-abandon")).toBeVisible();
+    await expect(page.getByTestId("sh-abandon-button")).toBeVisible();
+    await page.getByTestId("sh-way-out-abandon").click();
+    await expect(page.getByTestId("sh-abandon")).toBeVisible();
+    await page.getByTestId("sh-abandon-passphrase").fill(FIXTURE_PASSPHRASE);
+    await page.getByTestId("sh-abandon-understand").check();
+    await page.getByTestId("sh-abandon-abandon").click();
+    await expect(page.getByTestId("sh-abandon")).toBeHidden();
+    await expect(page.getByTestId("sh-abandon-button")).toHaveCount(0);
+    await page.getByTestId("sh-resend").click();
+    await confirmWith(page, "resend");
+    await expect(page.getByTestId("sh-resend-error")).toContainText("abandoned, so it can't be sent again");
     expect(errors).toEqual([]);
   });
 }

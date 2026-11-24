@@ -4,6 +4,7 @@
 // (§3.8). The engine decides every stage and every exit; nothing here infers one.
 
 import { isAppError } from "../api/backend";
+import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShareTermsView } from "../api/generated/ShareTermsView";
 import type { SharedSession } from "../api/generated/SharedSession";
 import type { SharedWarning } from "../api/generated/SharedWarning";
@@ -25,16 +26,31 @@ export const PERIOD_PRESETS = [
   { blocks: 420_480, key: "y2" },
 ] as const;
 
-/** What this build can act on. S5 in 0.4 renders start, join, lock and approve; signing, sending
- * and recovery come with EP 4 (S5b). A slice shows and badges nothing it can't act on (D14). */
+/** What this build can act on: start, join, lock and approve, and with S5b signing and sending
+ * the registration where sends are on. Recovery comes with EP 4. A slice shows and badges nothing
+ * it can't act on (D14). */
 export interface SharedSlice {
   sign: boolean;
   send: boolean;
 }
-export const S5_SLICE: SharedSlice = { sign: false, send: false };
+export const S5_SLICE: SharedSlice = { sign: true, send: true };
+/** The slice before sends: what mainnet renders. */
+export const NO_SENDS: SharedSlice = { sign: false, send: false };
+
+/** MG's ruling: this version sends shared-masternode transactions everywhere but mainnet. Reads,
+ * approvals, standby create and export, and the maintenance starts stay on. */
+export const sharedSendsOn = (network: Pick<NetworkInfo, "kind">) => network.kind !== "mainnet";
+
+/** The slice the screens render under on `network`. */
+export const sliceFor = (network: Pick<NetworkInfo, "kind">): SharedSlice => (sharedSendsOn(network) ? S5_SLICE : NO_SENDS);
+
+/** B7, before Create invitation and Join: its last sentence ("can't sign or send yet") only where
+ * sends are off. */
+export const reservationNote = (network: Pick<NetworkInfo, "kind">) =>
+  sharedSendsOn(network) ? t("masternodes.shared.reservationNoteSends") : t("masternodes.shared.reservationNote");
 
 /** A session sheet's actions. `copy` is the message to copy or save; the rest are calls. */
-export type SharedAction = "join" | "copy" | "lock" | "approve" | "sign" | "send";
+export type SharedAction = "join" | "copy" | "lock" | "approve" | "sign" | "send" | "resend";
 
 /** One row of §2.3.1's registration table. */
 export type RowKey =
@@ -72,7 +88,7 @@ const isRegistration = (s: SharedSession) => s.kind === "registration";
 const coordinator = (s: SharedSession) => s.role === "coordinator";
 
 /** §2.3.1, registration rows: the render key is `next` (D2), read with the stage and role. */
-export function renderSession(s: SharedSession, slice: SharedSlice = S5_SLICE): SessionRender {
+export function renderSession(s: SharedSession, slice: SharedSlice = NO_SENDS): SessionRender {
   const r = (row: RowKey, primary: SessionRender["primary"], copy = false, known = true): SessionRender => ({ row: row === "signLater" && !s.discardable ? "signedOut" : row, primary, copy, known });
   if (!isRegistration(s)) return r("unknown", null, false, false);
   const stage = s.stage.kind;
@@ -85,7 +101,8 @@ export function renderSession(s: SharedSession, slice: SharedSlice = S5_SLICE): 
     case "approve":
       return stage === "signing" && !c ? r("approve", "approve") : r("unknown", "approve", false, false);
     case "sign":
-      return stage === "combined" && !c ? r("sign", slice.sign ? "sign" : null) : r("unknown", slice.sign ? "sign" : null, false, false);
+      if (stage !== "combined" || c) return r("unknown", slice.sign ? "sign" : null, false, false);
+      return slice.sign ? r("sign", "sign") : r("signLater", null);
     case "send":
       if (!slice.send) return (stage === "combined" || stage === "funding_signed") && c ? r("signLater", null) : r("unknown", null, false, false);
       return (stage === "combined" || stage === "funding_signed") && c ? r("send", "send") : r("unknown", "send", false, false);
@@ -96,7 +113,8 @@ export function renderSession(s: SharedSession, slice: SharedSlice = S5_SLICE): 
       if ((stage === "combined" || stage === "funding_signed") && c) return slice.sign ? r("waitingSigned", null, true) : r("signLater", null);
       return r("unknown", null, true, false);
     case "wait":
-      return stage === "sent" ? r("sent", null) : r("unknown", null, false, false);
+      if (stage !== "sent") return r("unknown", null, false, false);
+      return r("sent", c && slice.send ? "resend" : null);
     case "create_standby":
     case "nothing":
       if (stage === "confirmed") return r("confirmed", null);
@@ -108,15 +126,30 @@ export function renderSession(s: SharedSession, slice: SharedSlice = S5_SLICE): 
   }
 }
 
-/** §3.6's S5 badge entries: registration sessions whose `next` this slice acts on. Never `copy`,
- * `wait` or `nothing`, and never a step whose screen the slice doesn't build. */
-export function sessionNeedsAction(s: SharedSession, slice: SharedSlice = S5_SLICE): boolean {
-  if (!isRegistration(s)) return false;
-  const v = renderSession(s, slice);
-  return v.known && v.primary !== null;
+export type SendAction = "sign" | "send" | "resend";
+
+/** The Sign, Send or Send again a session sheet offers on `network`: only where this network sends,
+ * and only with the exact `debit` that caps its grant (no `debit`, no offer). */
+export function sendOffer(s: SharedSession, network: Pick<NetworkInfo, "kind">, watchOnly: boolean): SendAction | null {
+  const v = renderSession(s, sliceFor(network));
+  const p = v.primary;
+  if (!v.known || (p !== "sign" && p !== "send" && p !== "resend")) return null;
+  return watchOnly || grantCap(p, s) === null ? null : p;
 }
 
-export const sharedBadgeCount = (sessions: readonly SharedSession[] | undefined, slice: SharedSlice = S5_SLICE) =>
+/** Whether mainnet holds back a Sign, Send or Send again this session would offer elsewhere. */
+export const mainnetHoldsBack = (s: SharedSession, network: Pick<NetworkInfo, "kind">) =>
+  !sharedSendsOn(network) && renderSession(s, S5_SLICE).primary !== renderSession(s, NO_SENDS).primary;
+
+/** §3.6's S5 badge entries: registration sessions whose `next` this slice acts on. Never `copy`,
+ * `wait` or `nothing`, and never a step whose screen the slice doesn't build. */
+export function sessionNeedsAction(s: SharedSession, slice: SharedSlice = NO_SENDS): boolean {
+  if (!isRegistration(s)) return false;
+  const v = renderSession(s, slice);
+  return v.known && v.primary !== null && v.primary !== "resend";
+}
+
+export const sharedBadgeCount = (sessions: readonly SharedSession[] | undefined, slice: SharedSlice = NO_SENDS) =>
   (sessions ?? []).filter((s) => sessionNeedsAction(s, slice)).length;
 
 /** The unreadable rows "Sessions in progress" lists: one it may discard, or one still holding
@@ -164,11 +197,31 @@ export function debitParts(s: SharedSession): DebitParts | null {
   return { debit: s.debit, share: mine.amount, fee, dust: Math.max(0, s.debit - mine.amount - fee) };
 }
 
-/** The grant cap for a session call (§3.4): 0 for lock and approve (they sign consent only), the
- * same `debit` the confirm prints for sign and send. `null` when there is nothing to cap. */
+/** The grant cap for a session call (§3.4): 0 for lock and approve (they sign consent only), and
+ * exactly the session's `debit` for sign, send and resend, the amount their confirm prints (D18,
+ * dwcli's `debit_grant`). `null` without a `debit`: the sheet then offers no such call. */
 export function grantCap(action: Exclude<SharedAction, "copy" | "join">, s: SharedSession): number | null {
   if (action === "lock" || action === "approve") return 0;
-  return debitParts(s)?.debit ?? null;
+  return s.debit;
+}
+
+/** The stored hand-off codes the engine reads as refused (its `outcome_of_code`, MG-10 §4.4 rule
+ * 3): nothing left. Any other code, the resend marker included, may have left. */
+export const REFUSED_HANDOFF: readonly string[] = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent", "send.cancelled", "network_not_open", "wallet_not_found", "send.held_until_restart"];
+
+/** §2.3.3's hand-off line under a sent registration, `null` when the hand-off left no error. A
+ * refused code reads as `refused`'s sentence; an unknown one as this sheet's own lower-case
+ * sentence (the resend marker, the timeout), else as the bare code. */
+export function handoffLine(s: SharedSession, refused: (code: string) => string | null): string | null {
+  if (s.stage.kind !== "sent" || !s.lastError) return null;
+  const code = s.lastError;
+  const bare = () => t("masternodes.shared.row.handoffCode", { code });
+  if (REFUSED_HANDOFF.includes(code)) {
+    return t("masternodes.shared.row.handoffRefused", { sentence: (refused(code) ?? bare()).replace(/[.。]\s*$/, "") });
+  }
+  const sentence =
+    code === "send.resend_in_progress" ? t("masternodes.shared.row.handoffResending") : code === "send.broadcast_unknown" ? t("masternodes.shared.row.handoffTimeout") : bare();
+  return t("masternodes.shared.row.handoffUnknown", { sentence });
 }
 
 /** `row.signedOut` with its `{abandon}` filled by the Abandon button's own label. Shown only
@@ -189,6 +242,14 @@ export function abandonNeedsOwnFirst(e: unknown): boolean {
 export function canAbandon(s: SharedSession): boolean {
   const settled = s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
   return isRegistration(s) && !s.discardable && !settled && s.reserved.length > 0 && s.abandonable;
+}
+
+/** MG's way-out line, collapsed: wherever this wallet holds the registration (`txid`), at `sent`,
+ * and wherever `row.signedOut` or `unvalued_inputs_out` is hidden because Abandon isn't offered. */
+export function wayOutShown(s: SharedSession, row: RowKey): boolean {
+  if (!s.txid || !isRegistration(s)) return false;
+  if (s.stage.kind === "sent") return true;
+  return !canAbandon(s) && (row === "signedOut" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs")));
 }
 
 /** The exact funding line (§2.3.2): what leaves this wallet and why, from `debit`. */
@@ -351,7 +412,12 @@ export function sharedErrorText(e: unknown, ctx: { network: string; session?: Sh
     case "masternodes.shared_funding_mismatch":
       return data.reason === "fee_low" && data.needed != null ? t("masternodes.shared.error.fee_low", { needed: ctx.dash(data.needed) }) : t("masternodes.shared.error.funding");
     case "masternodes.shared_stage":
-      return data.stage === "replied" ? t("masternodes.shared.error.replied") : t("masternodes.shared.error.stage");
+      if (data.stage === "replied") return t("masternodes.shared.error.replied");
+      if (data.stage === "unsigned") return t("masternodes.shared.error.unsigned");
+      if (data.stage === "abandoned") return t("masternodes.shared.error.abandoned");
+      return t("masternodes.shared.error.stage");
+    case "masternodes.unsupported":
+      return t("masternodes.shared.error.unsupported");
     case "masternodes.shared_session_not_found":
       return t("masternodes.shared.error.notFound");
     case "send.grant_exceeded":
@@ -360,6 +426,10 @@ export function sharedErrorText(e: unknown, ctx: { network: string; session?: Sh
       return t("masternodes.shared.error.fileRead");
     case "app.file_too_large":
       return t("masternodes.shared.error.too_large");
+    case "app.shared_send_off":
+      return t("masternodes.shared.error.mainnet_send_off");
+    case "app.shared_send_unsupported":
+      return t("masternodes.shared.error.send_unsupported");
     default:
       return t("masternodes.shared.error.fallback", { code: e.code });
   }

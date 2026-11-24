@@ -198,6 +198,14 @@ codes! {
         /// Install or Restart would close the engine while something runs
         /// ([`ErrorData::UpdateBusy`] names it). Nothing changed.
         UpdateBusy = "app.update_busy",
+        /// A shared-masternode send on a network this release doesn't send
+        /// them on ([`ErrorData::SharedSendNetwork`]): mainnet. Nothing was
+        /// signed or sent.
+        SharedSendOff = "app.shared_send_off",
+        /// `mn_shared_send_maintenance` on a session kind this release
+        /// doesn't send ([`ErrorData::SharedUnsupported`]): a key change.
+        /// Nothing was signed or sent.
+        SharedSendUnsupported = "app.shared_send_unsupported",
     }
 }
 
@@ -415,6 +423,13 @@ pub enum ErrorData {
     /// `masternodes.shared_actor_fee`: the fee in duffs the request takes
     /// from this wallet's share.
     SharedActorFee { fee: u64 },
+    /// `app.shared_send_off`: the network the send was refused on, by its
+    /// directory name (`mainnet`).
+    SharedSendNetwork { network: String },
+    /// `app.shared_send_unsupported`: the session kind whose send was refused.
+    SharedUnsupported {
+        session_kind: crate::dto::masternodes::SharedKindName,
+    },
     /// `masternodes.unsupported`: what the call needs that the libraries
     /// lack, and the field that needs it.
     Unsupported {

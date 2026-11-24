@@ -1077,6 +1077,15 @@ export const masternodes = {
     /** Before Create invitation and before Join, on every network. */
     reservationNote:
       "Your share is paid from whole coins, and every coin chosen for it stays unavailable for other payments until you discard the session, even the part above your share. This version can't sign or send the registration yet.",
+    /** B7 where sends are on: without its last sentence. */
+    reservationNoteSends:
+      "Your share is paid from whole coins, and every coin chosen for it stays unavailable for other payments until you discard the session, even the part above your share.",
+    /** Collapsed (no overdue signal yet) where this wallet holds the registration; expanded it shows `abandon.ownFirst`. */
+    wayOut: {
+      title: "Changed your mind? Ways to get your coins back ▸",
+    },
+    /** On mainnet, where a sign or send row would be. */
+    mainnetSignNote: "This version can't sign or send a shared masternode registration on mainnet yet.",
     /** A session's row: its code, then what it is waiting for. */
     sessionRow: "Session {code}",
     sessionStarted: "started {date}",
@@ -1187,6 +1196,21 @@ export const masternodes = {
       approvedCount: "{approved} of {total} approved the locked terms",
       copyLocked: "Copy locked terms",
       signText: "Sign your coins into the registration: {debit} leaves this wallet when {coordinator} sends it. After you sign, only Abandon gets them back.",
+      signButton: "Sign my coins",
+      signAsk: "Enter your passphrase to sign your coins into the registration.",
+      sendButton: "Send registration",
+      sendAsk: "Enter your passphrase to send the registration.",
+      resendButton: "Send again",
+      resendText: "Send the same transaction again. It uses the same coins and costs at most {charge}.",
+      handoffRefused: "The wallet couldn't hand the registration to the network: {sentence}.",
+      handoffUnknown: "The wallet couldn't confirm the registration reached the network: {sentence}. It may still confirm.",
+      /** `{sentence}` above for the resend marker; handoffCode for a code with no sentence of its own. */
+      handoffResending: "a resend was still in progress when Dash Wallet last closed",
+      handoffCode: "error {code}",
+      /** `{sentence}` for `send.broadcast_unknown`. */
+      handoffTimeout: "the network didn't answer in time",
+      /** Send and Send again while SPV is stopped or has no peer. */
+      spvStopped: "Available once the wallet is connected.",
       signLater: "Signing comes in a later version of the wallet. Keep this session: nothing has left this wallet, and your coins stay reserved until you discard it.",
       signedOut:
         "This wallet may already have sent its funding signature, so this session can't be discarded. Its coins stay reserved until the registration confirms. To cancel it, choose {abandon}: this wallet spends one of its coins back to itself, so the registration can't confirm, and the others come back about 15 minutes later.",
@@ -1329,6 +1353,14 @@ export const masternodes = {
       fileNotMessage: "This file isn't a shared-masternode message.",
       grantExceeded: "The amount changed. Check the figures again.",
       notFound: "This session isn't in this wallet any more.",
+      /** MG's ruling: the binding's refusal of a send on mainnet. */
+      mainnet_send_off: "This version sends shared-masternode transactions on test networks only.",
+      send_unsupported: "This version can't send a key change yet.",
+      /** Send before every other participant's inputs are signed (`shared_stage{unsigned}`). */
+      unsigned: "Not everyone has signed yet. Paste the missing signed contributions, then send.",
+      /** Send again after the registration was abandoned (`shared_stage{abandoned}`). */
+      abandoned: "This registration was abandoned, so it can't be sent again.",
+      unsupported: "This version of Dash Wallet can't do this yet.",
     },
   },
   /** Masternode keys (IOS-083, MG-10 §1.5, MG-00 D7): the keychain's keys and the one reveal of a secret. */

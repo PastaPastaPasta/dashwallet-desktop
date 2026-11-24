@@ -44,7 +44,6 @@ import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld }
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
-import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { newSharedWorld, sharedScenarios, type SharedWorld } from "./shared";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
@@ -263,7 +262,6 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
     masternodes: noMasternodesWorld(),
-    masternodes: newMasternodesWorld(),
     shared: newSharedWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),

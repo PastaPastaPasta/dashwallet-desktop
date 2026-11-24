@@ -382,6 +382,8 @@ export class IpcBackend implements Backend {
   mnSharedDiscard = cmd.mnSharedDiscard;
   mnSharedAbandon = cmd.mnSharedAbandon;
   mnSharedAbandonUnreadable = cmd.mnSharedAbandonUnreadable;
+  mnSharedSign = cmd.mnSharedSign;
+  mnSharedSend = cmd.mnSharedSend;
   mnSharedImport = cmd.mnSharedImport;
   mnSharedImportFile = cmd.mnSharedImportFile;
   onEvent = (listener: (e: AppEvent) => void) => tracked(listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload)));

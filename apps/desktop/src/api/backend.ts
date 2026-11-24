@@ -724,6 +724,9 @@ export interface Backend {
   mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession>;
   /** The same for a session this wallet can no longer read. */
   mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession>;
+  /** Refused on mainnet (`app.shared_send_off`) before the engine. Grant: `masternodeOp{session.debit}`. */
+  mnSharedSign(walletId: string, session: string, grant: string): Promise<SharedOutcome>;
+  mnSharedSend(walletId: string, session: string, grant: string): Promise<SharedOutcome>;
   mnSharedImport(walletId: string, text: string, target: string | null): Promise<SharedImport>;
   /** The open dialog runs in dw-app; the file's text never reaches the renderer. `null` on cancel. */
   mnSharedImportFile(walletId: string, target: string | null): Promise<SharedImport[] | null>;
