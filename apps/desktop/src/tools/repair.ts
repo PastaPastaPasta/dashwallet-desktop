@@ -27,6 +27,12 @@ export const RepairText = {
   get resetChainDataQuestion() {
     return t("tools.repair.resetChainDataQuestion");
   },
+  get resetChainDataButton() {
+    return t("tools.repair.resetChainDataButton");
+  },
+  get resetAction() {
+    return t("tools.repair.resetAction");
+  },
   get dropUnconfirmed() {
     return t("tools.repair.dropUnconfirmed");
   },
@@ -183,6 +189,23 @@ export interface StuckTopUp {
   name: string | null;
 }
 
+export type ResyncApi = Pick<Backend, "stopSpv" | "resetChainData" | "startSpv">;
+
+/** "Reset chain data and resync" (D11), from Repair or Home's history-gap notice. The engine
+ * resets only a stopped client; sync starts again whatever the stop or the reset did (the stop can
+ * fail after SPV stopped, on a Platform drain). The first failure is the one thrown; a restart that
+ * then fails too would only hide it. */
+export async function resetChainAndResync(api: ResyncApi) {
+  try {
+    await api.stopSpv();
+    await api.resetChainData();
+  } catch (e) {
+    await api.startSpv().catch(() => undefined);
+    throw e;
+  }
+  await api.startSpv();
+}
+
 export type Confirmation = "resetChainData" | "dropUnconfirmed" | "resolveStuck";
 
 export type RepairState =
@@ -322,17 +345,7 @@ export class RepairModel extends Model {
     }
     await this.#run(async () => {
       if (what === "dropUnconfirmed") return { kind: "done", text: RepairText.dropped(await this.api.dropUnconfirmed(this.walletId)) };
-      // The engine resets only a stopped client; sync starts again whatever the stop or the reset
-      // did (the stop can fail after SPV stopped, on a Platform drain, D11).
-      // The first failure is the one shown; a restart that then fails too would only hide it.
-      try {
-        await this.api.stopSpv();
-        await this.api.resetChainData();
-      } catch (e) {
-        await this.api.startSpv().catch(() => undefined);
-        throw e;
-      }
-      await this.api.startSpv();
+      await resetChainAndResync(this.api);
       return { kind: "done", text: RepairText.resetDone };
     });
   }

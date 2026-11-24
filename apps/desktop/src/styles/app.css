@@ -4831,6 +4831,26 @@ button.bell-row-open:focus-visible {
   opacity: var(--dw-opacity-disabled);
 }
 
+.history-gap-notice {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+}
+
+.history-gap-title {
+  margin: 0;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.history-gap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+  margin-top: var(--dw-space-xs);
+}
+
 .export-staging-path {
   user-select: text;
   -webkit-user-select: text;

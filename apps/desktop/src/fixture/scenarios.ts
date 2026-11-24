@@ -1247,6 +1247,19 @@ const SCENARIOS = {
     w.tools.rescanStep = 0;
     return w;
   },
+  /** The wallet's history starts before the block data this install keeps: Home says its older
+   * payments aren't shown and offers Repair's reset, which clears it. */
+  "history-gap": (t) => {
+    const w = base(t);
+    w.tools.historyGap = { startHeight: 1_100_000, walletIds: [w.wallets[0].summary.walletId] };
+    return w;
+  },
+  /** The same for two wallets. */
+  "history-gap-two-wallets": (t) => {
+    const w = twoWallets(base(t));
+    w.tools.historyGap = { startHeight: 1_100_000, walletIds: w.wallets.map((x) => x.summary.walletId) };
+    return w;
+  },
   /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */
   "wallet-behind-stopped": (t) => walletBehind(t, true, false),
   /** The same with nothing found yet: Home shows 0. */

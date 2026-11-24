@@ -68,6 +68,7 @@ export const keys = {
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
   rescanProgress: ["rescanProgress"] as const,
+  historyGap: ["historyGap"] as const,
   scanHeightAll: ["scanHeight"] as const,
   scanHeight: (walletId: string) => ["scanHeight", walletId] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
@@ -649,6 +650,36 @@ export function useNodeInfo() {
 export function useRescanProgress() {
   const b = useBackend();
   return useQuery({ queryKey: keys.rescanProgress, queryFn: () => b.rescanProgress(), refetchInterval: 5_000 });
+}
+
+/** When `history_gap` is read after SPV starts or the open wallets change: at once, then while it
+ * answers `null`, since the engine's first header anchor reaches disk some seconds after the start
+ * and no event says so. */
+const HISTORY_GAP_READS_MS = [0, 6_000, 20_000, 60_000];
+
+/** Reads `history_gap` (about 1 MB of headers on disk) for the app shell: never on a sync tick.
+ * `walletIds` is the open wallets' ids, joined. */
+const historyGapQuery = (b: Backend) => ({ queryKey: keys.historyGap, queryFn: () => b.historyGap() });
+
+export function useHistoryGapReads(running: boolean, walletIds: string) {
+  const b = useBackend();
+  const client = useQueryClient();
+  useEffect(() => {
+    if (!running) return;
+    const timers = HISTORY_GAP_READS_MS.map((ms) =>
+      setTimeout(() => {
+        if (ms > 0 && client.getQueryData(keys.historyGap) != null) return;
+        void client.fetchQuery({ ...historyGapQuery(b), staleTime: 0 }).catch(() => undefined);
+      }, ms),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [b, client, running, walletIds]);
+}
+
+/** The last `history_gap` answer the shell read; this never reads itself. */
+export function useHistoryGap() {
+  const b = useBackend();
+  return useQuery({ ...historyGapQuery(b), enabled: false });
 }
 
 export function useProtocolCompatibility() {

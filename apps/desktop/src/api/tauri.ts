@@ -269,6 +269,7 @@ export class IpcBackend implements Backend {
   stopSpv = () => cmd.stopSpv();
   startSpv = () => cmd.startSpv();
   resetChainData = () => cmd.resetChainData();
+  historyGap = () => cmd.historyGap();
   setBirthHeight = cmd.setBirthHeight;
   dropUnconfirmed = cmd.dropUnconfirmed;
   registrations = cmd.registrations;
