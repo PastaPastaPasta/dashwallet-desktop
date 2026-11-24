@@ -3,6 +3,8 @@ import type { WalletSummary } from "../api/generated/WalletSummary";
 import { appError } from "../onboarding/testWorld";
 import { historyGapModel, HistoryGapModel, HistoryGapText } from "./historyGap";
 import { RepairText, resetChainAndResync } from "./repair";
+import { guardWhileLocked, refusedWhileLocked, resetWalletGate } from "../api/lockGate";
+import type { Backend } from "../api/backend";
 
 const wallet = (walletId: string, name: string): WalletSummary => ({ walletId, name, watchOnly: false, hasMnemonic: true, hd: true, birthHeight: 900_000, createdAt: null, balances: null });
 
@@ -78,6 +80,26 @@ describe("history gap notice", () => {
     model.notNow(["a"]);
     expect(model.hides(["a"])).toBe(true);
     expect(model.hides(["a", "b"])).toBe(false);
+  });
+
+  it("a lock after the stop refuses the reset but starts sync again", async () => {
+    const { calls, api } = fakeApi();
+    resetWalletGate(false);
+    const locking = {
+      ...api,
+      stopSpv: async () => {
+        await api.stopSpv();
+        resetWalletGate(true);
+        return null;
+      },
+    };
+    const guarded = guardWhileLocked(locking as unknown as Backend);
+    try {
+      await expect(resetChainAndResync(guarded)).rejects.toSatisfy(refusedWhileLocked);
+      expect(calls).toEqual(["stop", "start"]);
+    } finally {
+      resetWalletGate(false);
+    }
   });
 
   it("Home and Repair asking at once share one reset", async () => {

@@ -6,6 +6,7 @@
 // coins back to the wallet at a fee shown first; Finish transfers (DP1-09 D10).
 
 import { hasCode, isAppError, type Backend } from "../api/backend";
+import { startSpvPastLock } from "../api/lockGate";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
@@ -216,10 +217,10 @@ async function runReset(api: ResyncApi) {
     await api.stopSpv();
     await api.resetChainData();
   } catch (e) {
-    await api.startSpv().catch(() => undefined);
+    await startSpvPastLock(api).catch(() => undefined);
     throw e;
   }
-  await api.startSpv();
+  await startSpvPastLock(api);
 }
 
 export type Confirmation = "resetChainData" | "dropUnconfirmed" | "resolveStuck";
