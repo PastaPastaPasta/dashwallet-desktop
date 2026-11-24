@@ -40,17 +40,28 @@ export interface Advanced {
 /** A mixed payment of this many coins or more warns about privacy (U-06b D3, dash-qt sendcoinsdialog.cpp). */
 export const MIXED_INPUT_WARNING = 10;
 
+/** A mixed payment whose left-over reaches this many duffs (0.01 DASH) warns, unless the 10% fee warning shows. */
+export const MIXED_LEFT_OVER_WARNING = 1_000_000;
+
 export interface MixedSendNotes {
   inputCount: number;
   manyCoins: boolean;
   /** What the fee holds beyond the rate (the estimate's `leftOver`); `null` when nothing is left over. */
   leftOver: number | null;
+  /** The left-over reaches `MIXED_LEFT_OVER_WARNING` and the fee warning is not showing: the
+   * warning takes the left-over note's place. */
+  largeLeftOver: boolean;
 }
 
 /** What the confirm sheet says about a payment from fully mixed coins (U-06b); `null` for any other source. */
-export function mixedSendNotes(coins: CoinChoice, estimate: Pick<TxEstimate, "inputCount" | "leftOver">): MixedSendNotes | null {
+export function mixedSendNotes(coins: CoinChoice, estimate: Pick<TxEstimate, "inputCount" | "leftOver">, feeWarned: boolean): MixedSendNotes | null {
   if (coins !== "mixed") return null;
-  return { inputCount: estimate.inputCount, manyCoins: estimate.inputCount >= MIXED_INPUT_WARNING, leftOver: estimate.leftOver > 0 ? estimate.leftOver : null };
+  return {
+    inputCount: estimate.inputCount,
+    manyCoins: estimate.inputCount >= MIXED_INPUT_WARNING,
+    leftOver: estimate.leftOver > 0 ? estimate.leftOver : null,
+    largeLeftOver: estimate.leftOver >= MIXED_LEFT_OVER_WARNING && !feeWarned,
+  };
 }
 
 /** dash-qt's default confirmation target (6 blocks), the engine draft's too. */
