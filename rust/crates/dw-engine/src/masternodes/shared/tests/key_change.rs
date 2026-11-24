@@ -1223,8 +1223,7 @@ fn test_an_unreadable_key_change_before_out_releases_once_a_coin_is_spent() {
 }
 
 /// An unreadable key change that may be out keeps its coins until a spend
-/// of one of them is buried, then releases them: no unreadable session
-/// holds coins with no way out.
+/// of one of them is buried, then releases them.
 #[test]
 fn test_an_unreadable_out_key_change_releases_on_a_buried_spend() {
     let f = fx(3, true);
@@ -1257,6 +1256,41 @@ fn test_an_unreadable_out_key_change_releases_on_a_buried_spend() {
     f.tip(205);
     f.follow();
     assert!(f.locked(0).is_empty());
+}
+
+/// An unreadable key change whose own stored transaction is mined waits
+/// for it to be buried, as the readable path does: kept at 1 and 5 deep,
+/// released at 6. Its own transaction is not taken for a conflicting spend.
+#[test]
+fn test_an_unreadable_key_change_mined_by_its_stored_txid_releases_once_buried() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    let fee = f.session_of(0, &id).fee.unwrap();
+    send(&f, 0, &id, fee).unwrap();
+    let tx = f.net.sent().pop().unwrap();
+    assert_eq!(
+        f.row(0, &id).txid.as_deref(),
+        Some(tx.txid().to_string().as_str())
+    );
+    let reserved = reserved_of(&f.row(0, &id));
+    f.rewrite(0, &id, |u| u.envelope = "{".into());
+    f.mine(tx, 101);
+    f.tip(101);
+    f.follow();
+    assert!(
+        reserved.iter().all(|o| f.locked(0).contains(o)),
+        "one deep: kept"
+    );
+    f.tip(105);
+    f.follow();
+    assert!(
+        reserved.iter().all(|o| f.locked(0).contains(o)),
+        "five deep: kept"
+    );
+    f.tip(106);
+    f.follow();
+    assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
 }
 
 /// A funder's unsent key change reads `discardable`, and Discard releases

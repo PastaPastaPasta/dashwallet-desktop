@@ -1509,7 +1509,7 @@ the caller reviewed (MG-04b D56).
 registration or key change while `out_at` is unset; a dissolve-together session by that call's own rule below. It is
 computed by the rule the call refuses by, so for a registration or key change it is `false` from the `out_at` write
 on, before the call that wrote it returns. A dissolve-together session can stay `discardable` after `out_at` while no
-operation row holds its txid; it reserves and debits nothing, so that discard frees no coin. The flag is
+operation row holds its txid; it reserves no coins, so that discard frees none. The flag is
 eligibility as of the read: the call can still refuse, `masternodes.in_flight` while another call holds the session,
 or by the rule on a newer state.
 

@@ -542,7 +542,12 @@ pub(crate) fn releasable_by_columns(
 ) -> bool {
     let stored = stored_txid(row);
     let reserved = reserved_of(row);
-    if stored.is_some_and(|t| chain.confirmed_height(&t).is_some()) {
+    let confirmed = stored.and_then(|t| chain.confirmed_height(&t));
+    if kind_of(&row.kind) == SharedKind::KeyChange {
+        if confirmed.is_some_and(&buried) {
+            return true;
+        }
+    } else if confirmed.is_some() {
         return true;
     }
     if row.out_at.is_none() {
