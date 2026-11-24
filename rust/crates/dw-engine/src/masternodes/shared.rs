@@ -951,8 +951,9 @@ impl Masternodes {
     /// not out are `shared_stage{stage}`; then with no abandon spend signed
     /// the out stage (`sent` / `funding_signed`), a legacy spend with no
     /// bytes `legacy`, one abandoned in Activity `abandon_cancelled`, one
-    /// definitely refused `abandon_refused`; then another pending spend
-    /// holding one of its inputs. Charged the spend's fee; the hand-off
+    /// definitely refused `abandon_refused`; then `legacy` when neither its
+    /// log entry nor the wallet's coins show its fee; then another pending
+    /// spend holding one of its inputs. Charged the spend's fee; the hand-off
     /// runs as a replay, whose refusal never reads as its first.
     pub async fn resend_shared_abandon(
         &self,

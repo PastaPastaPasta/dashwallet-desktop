@@ -150,6 +150,32 @@ impl Fx {
         assert_eq!(n, 1);
     }
 
+    /// The latest abandon spend's log entry as an older build wrote it (no
+    /// fee, no inputs, the legacy mark), its bytes kept: what a spend
+    /// signed again with that entry's txid leaves.
+    fn unlogged_fee(&self, w: usize, id: &str) {
+        let row = self.row(w, id);
+        let mut log: Vec<serde_json::Value> =
+            serde_json::from_str(row.abandon_log.as_deref().unwrap()).unwrap();
+        let entry = log.last_mut().unwrap();
+        entry["fee"] = serde_json::Value::Null;
+        entry["inputs"] = serde_json::json!([]);
+        entry["legacy"] = serde_json::json!(true);
+        let conn = rusqlite::Connection::open(self.session.data_dir().join(dw_appdb::APP_DB_FILE))
+            .unwrap();
+        let n = conn
+            .execute(
+                "UPDATE shared_mn_sessions SET abandon_log = ?1 WHERE wallet_id = ?2 AND id = ?3",
+                rusqlite::params![
+                    serde_json::Value::from(log).to_string(),
+                    self.wallets[w].to_string(),
+                    id
+                ],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
     /// The tip at `height`, its time `time`.
     fn tip_at(&self, height: u32, time: u64) {
         self.tip(height);
@@ -996,6 +1022,55 @@ fn test_a_spend_back_whose_input_another_spend_holds_is_not_sent_again() {
             charge: spend_fee(1)
         }]
     );
+}
+
+/// A spend back whose log entry has no fee (an older build's entry, kept
+/// by a spend signed again with its txid) is never replayed uncharged: its
+/// replay is listed and charged what its bytes pay, its coin valued while
+/// held, then from its history entry; with neither, no replay is listed
+/// and the call refuses `legacy`, Activity's abandon its exit.
+#[test]
+fn test_a_spend_back_logged_without_its_fee_is_charged_what_it_pays() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.abandon(1, &id).unwrap();
+    f.spv(true, 1);
+    let (fee, spend) = (spend_fee(1), f.net.sent()[0].clone());
+    let replay = RecoveryAction::ResendAbandon { charge: fee };
+    f.unlogged_fee(1, &id);
+    assert!(f.row(1, &id).abandon_tx.is_some());
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.abandon_spend.as_ref().map(|s| (s.legacy, s.state)),
+        Some((true, Some(AbandonSpendState::Uncertain)))
+    );
+    assert_eq!(r.actions, std::slice::from_ref(&replay));
+    grant_exceeded(f.resend_abandon(1, &id, fee - 1));
+    assert_eq!(f.net.sent().len(), 1);
+    f.resend_abandon(1, &id, fee).unwrap();
+    assert_eq!(f.net.sent().len(), 2);
+
+    f.record(1, &spend);
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.abandon_spend.as_ref().and_then(|s| s.state),
+        Some(AbandonSpendState::InHistory)
+    );
+    assert!(r.actions.contains(&replay), "{r:?}");
+    grant_exceeded(f.resend_abandon(1, &id, fee - 1));
+
+    f.history_edit(1, spend.txid(), |e| e.own_inputs.clear());
+    let r = f.recovery(1, &id);
+    assert_eq!(
+        r.actions,
+        [RecoveryAction::AbandonWalletTx {
+            txid: spend.txid().to_string()
+        }]
+    );
+    for cap in [0, COIN] {
+        assert_stage(f.resend_abandon(1, &id, cap).unwrap_err(), "legacy");
+    }
+    assert_eq!(f.net.sent().len(), 2, "nothing sent again");
 }
 
 /// Wallet `w`'s row of `id` written back as `before` left it (a database

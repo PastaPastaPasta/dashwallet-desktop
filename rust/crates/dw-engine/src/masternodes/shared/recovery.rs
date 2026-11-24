@@ -387,6 +387,49 @@ impl NetworkSession {
         })
     }
 
+    /// The latest abandon spend's fee: its log entry's, else what its saved
+    /// bytes pay when every input is a reserved coin the wallet values (one
+    /// it holds, or an own input of the spend's history entry), less their
+    /// one output. `None` when neither shows it.
+    pub(super) async fn abandon_fee(
+        &self,
+        wallet: WalletId,
+        row: &SharedSessionRow,
+        entry: Option<&LogEntry>,
+        history: &HashMap<Txid, TxEntry>,
+    ) -> Result<Option<u64>, MasternodesError> {
+        if let Some(fee) = entry.and_then(|e| e.fee) {
+            return Ok(Some(fee));
+        }
+        let Some(tx) = (row.abandon_tx.as_deref())
+            .and_then(|b| dashcore::consensus::deserialize::<dashcore::Transaction>(b).ok())
+        else {
+            return Ok(None);
+        };
+        let ([output], reserved) = (tx.output.as_slice(), reserved_of(row)) else {
+            return Ok(None);
+        };
+        let recorded = history.get(&tx.txid());
+        let w = self.wallet(&wallet).await?;
+        let state = crate::wallet_read::info_of(&w).await?;
+        let coins = read_coins(&state.core_wallet).coins;
+        let mut total = 0u64;
+        for (index, input) in tx.input.iter().enumerate() {
+            let o = input.previous_output;
+            let value = (coins.iter().find(|c| c.utxo.outpoint == o))
+                .map(|c| c.utxo.value())
+                .or_else(|| {
+                    let own = recorded?.own_inputs.get(&u32::try_from(index).ok()?)?;
+                    Some(own.0)
+                });
+            match value {
+                Some(v) if reserved.contains(&o) => total = total.saturating_add(v),
+                _ => return Ok(None),
+            }
+        }
+        Ok(total.checked_sub(output.value))
+    }
+
     /// `shared_stage{stage: "abandoning"}` while the latest abandon spend of
     /// `row` may be out: recorded unconfirmed, or of unknown outcome. Only a
     /// copy of the same bytes may go then (MG-10 §4.4 change 4).
@@ -694,11 +737,15 @@ impl NetworkSession {
             Some(AbandonSpendState::InHistory) => row.abandon_tx.is_some(),
             _ => false,
         };
-        if ctx.can_send && replayable && self.abandon_replay_passes(wallet, row) {
+        let charge = match ctx.can_send && replayable {
+            true => self.abandon_fee(wallet, row, entry, &chain.history).await?,
+            false => None,
+        };
+        if let Some(charge) = charge
+            && self.abandon_replay_passes(wallet, row)
+        {
             match ctx.spv_running {
-                true => r.actions.push(RecoveryAction::ResendAbandon {
-                    charge: entry.and_then(|e| e.fee).unwrap_or(0),
-                }),
+                true => r.actions.push(RecoveryAction::ResendAbandon { charge }),
                 false => spv_held = true,
             }
         }
