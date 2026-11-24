@@ -22,6 +22,7 @@ import { Overview } from "../screens/Overview";
 import { PreReleaseNotice } from "../screens/PreReleaseNotice";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
+import { MasternodeKeysSheet } from "../screens/masternodes/KeysSheet";
 import { CoinJoinPage } from "../screens/coinjoin/CoinJoinPage";
 import { MasternodesPage } from "../screens/masternodes/MasternodesPage";
 import { GovernanceStatusItem } from "../screens/masternodes/StatusItem";
@@ -56,7 +57,7 @@ import { UpdateRestartNotice } from "../screens/settings/Updates";
 import { useModel } from "../onboarding/model";
 import { navigate, ui, useUi } from "./ui";
 
-const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null });
+const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null, mnKeysRole: null });
 const closeOnboarding = () => ui.set({ onboarding: false });
 const closeForgot = () => ui.set({ forgotPassphrase: false });
 
@@ -256,6 +257,7 @@ function Shell() {
   const detail = useUi((s) => s.detail);
   const dialog = useUi((s) => s.dialog);
   const recoveryWallet = useUi((s) => s.recoveryWallet);
+  const mnKeysRole = useUi((s) => s.mnKeysRole);
   const walletId = useUi((s) => s.walletId);
   const discreet = useUi((s) => s.discreet);
   const addWallet = useUi((s) => s.onboarding);
@@ -385,6 +387,7 @@ function Shell() {
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
+      {shown === "mnKeys" && wallet && <MasternodeKeysSheet key={wallet.walletId} walletId={wallet.walletId} watchOnly={wallet.watchOnly} role={mnKeysRole} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
       {shown === "sync" && <SyncSheet onClose={closeDialog} />}
       {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}
