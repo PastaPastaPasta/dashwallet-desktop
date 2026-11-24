@@ -5208,3 +5208,70 @@ pub(super) fn chain_lock(
         })
     });
 }
+
+/// #268, exploratory: a payment P of A; another device's W spends A, is
+/// mined and ChainLocked; the user removes P; Dash Wallet restarts. Prints
+/// what the wallet holds at each step, then after each way out the user has
+/// (Repair ▸ Rescan from the wallet's birth; remove and restore).
+#[test]
+#[ignore = "exploratory: run with --ignored --nocapture"]
+fn explore_268_way_out() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    let owner =
+        Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let w = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(a, vec![(elsewhere(), COIN - 1_000)]),
+    );
+    mined(&engine, &session, id, TIP, vec![w.clone()]);
+    chain_lock(
+        &engine,
+        &session,
+        id,
+        TIP,
+        super::block_with(vec![w.clone()]).block_hash(),
+    );
+    let report = |s: &Arc<NetworkSession>, step: &str| {
+        eprintln!(
+            "268 {step}: A held {} offered {}",
+            held(&engine, s, id).contains(&a),
+            spendable(&engine, s, id, a)
+        );
+    };
+    report(&session, "W ChainLocked, P pending");
+    abandon(&engine, &session, id, p.txid());
+    report(&session, "P removed");
+    let session = reopen(&engine, session);
+    report(&session, "restart");
+
+    start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    mined(&engine, &session, id, TIP, vec![w.clone()]);
+    report(&session, "rescan from birth, W's block replayed");
+    chain_lock(
+        &engine,
+        &session,
+        id,
+        TIP,
+        super::block_with(vec![w.clone()]).block_hash(),
+    );
+    report(&session, "and its ChainLock");
+    let session = reopen(&engine, session);
+    report(&session, "rescan, then a restart");
+}
