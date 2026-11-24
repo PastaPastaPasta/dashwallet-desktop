@@ -108,6 +108,11 @@ export interface PlatformWorld {
   nextSend: SendResult;
   /** What the next "Add from Dash wallet" comes to. */
   nextFund: FundResult;
+  /** What the next top-up of an identity from these addresses comes to: done, unanswered
+   * (`pending`), failed by height and able to land still (`held`), or never executing (`failed`). */
+  nextTopUp: "done" | "pending" | "held" | "failed";
+  /** The addresses each top-up from Platform not done yet signed at (by id): its exit moves those. */
+  heldInputs?: Record<string, string[]>;
   /** What the next Finish of one of those adds comes to. */
   nextResume: ResumeResult;
   /** The locks of "Add from Dash wallet" not applied yet. */
@@ -156,6 +161,7 @@ export const newPlatformWorld = (): PlatformWorld => ({
   nextMove: "done",
   nextSend: "done",
   nextFund: "done",
+  nextTopUp: "done",
   nextResume: "done",
   funds: [],
   thenSend: null,
@@ -228,7 +234,20 @@ function moveWorld(world: World, to: ChosenNetwork) {
   Object.assign(world, next);
 }
 
-const total = (p: PlatformWorld) => p.addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
+const sum = (addresses: PlatformWorld["addresses"]) => addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
+const total = (p: PlatformWorld) => sum(p.addresses);
+
+/** The inputs of a held top-up from Platform: its exit (C3-9) moves those only. `null`: no such hold. */
+function exitInputs(p: PlatformWorld): string[] | null {
+  const held = p.activity.find((a) => a.kind === "toIdentity" && isHeldOp(a));
+  return held ? (p.heldInputs?.[held.id] ?? null) : null;
+}
+
+/** The addresses a move takes from: a held top-up's inputs, or all of them. */
+function moveSources(p: PlatformWorld) {
+  const only = exitInputs(p);
+  return only ? p.addresses.filter((a) => only.includes(a.address)) : p.addresses;
+}
 
 /** What a move of everything would take: nothing when it would be refused (it does not clear the fee). */
 const movable = (p: PlatformWorld) => (total(p) > MOVE_FEE_CREDITS ? total(p) : 0n);
@@ -246,7 +265,7 @@ function platformOf(world: Ctx["world"], call: string): PlatformWorld {
 
 /** The credits a move of `amount` takes: all of them, or that many (the quote's refusals). */
 function moveCredits(p: PlatformWorld, amount: WithdrawAmount): bigint {
-  const available = total(p);
+  const available = sum(moveSources(p));
   const credits = amount.kind === "all" ? available : BigInt(amount.credits);
   if (available === 0n || credits <= MOVE_FEE_CREDITS) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(MOVE_FEE_CREDITS + 1n), available: String(available) });
   if (credits > available) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(credits), available: String(available) });
@@ -635,13 +654,22 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const expectedDuffs = p.nextMove === "unproved" ? null : q.expectedDuffs;
     const id = `pm-${p.activity.length + 1}`;
     const feeCredits = state === "done" ? q.feeCredits : null;
+    const exit = exitInputs(p);
     // Of a group of moves at the same inputs at most one executes: the new one replaces the held ones.
     p.activity = [
       { id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: state === "pending", estimated: false },
-      ...p.activity.map((a) => (supersedes.includes(a.id) ? { ...a, state: "replaced" as const, mayLand: false } : a)),
+      // A held top-up and its exit: at most one executes. Once the exit is done (C3-9) the top-up can no
+      // longer; while the exit is pending either may still.
+      ...p.activity.map((a) =>
+        supersedes.includes(a.id)
+          ? { ...a, state: "replaced" as const, mayLand: false }
+          : state === "done" && a.kind === "toIdentity" && isHeldOp(a)
+            ? { ...a, state: "failed" as const, mayLand: false }
+            : a,
+      ),
     ];
     // A move that is `done` has emptied the addresses it took from; a `pending` one has not been seen yet.
-    if (state === "done") p.addresses = [];
+    if (state === "done") p.addresses = exit ? p.addresses.filter((a) => !exit.includes(a.address)) : [];
     return { id, credits: q.credits, expectedDuffs, to: q.to, state, feeCredits };
   },
 };

@@ -142,6 +142,25 @@ describe("the shielded flow", () => {
     expect([flow.kind, flow.step, flow.error]).toEqual(["resume", "done", null]);
   });
 
+  it("Pay's Shielded address opens a fresh send filled with it, and a call still going shows instead", async () => {
+    const { flow, answer } = setup();
+    flow.begin("out");
+    flow.setText("3");
+    flow.sendTo(TO, "0.2");
+    expect([flow.open, flow.kind, flow.step, flow.to, flow.text, flow.memo]).toEqual([true, "send", "form", TO, "0.2", ""]);
+    flow.next({ kind: "send", credits: "20000000000", to: TO, memo: null });
+    const going = flow.run(GRANT);
+    await vi.waitFor(() => expect(flow.step).toBe("running"));
+    flow.close();
+    flow.sendTo("tdash1zother", "1");
+    expect([flow.open, flow.step, flow.to, flow.text]).toEqual([true, "running", TO, "0.2"]);
+    answer(SPEND);
+    await going;
+    flow.close();
+    flow.sendTo("tdash1zother", "1");
+    expect([flow.step, flow.to, flow.text]).toEqual(["form", "tdash1zother", "1"]);
+  });
+
   it("keeps one flow per wallet while the app runs", () => {
     const { api } = setup();
     expect(shieldedFor(api, WALLET_A)).toBe(shieldedFor(api, WALLET_A));

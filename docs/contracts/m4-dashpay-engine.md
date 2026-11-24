@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 76
+Contract-Version: 77
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -215,8 +215,8 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, what the funding can spend now (`available_duffs`, item 52), and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. A `Shielded` request's quote also carries `readiness`, and ignores the request's `denomination` (§7 item 94). | `RegistrationError` |
-| `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. `Shielded` is checked again before anything is written and refused (§7 item 94): a readiness check that does not hold is `registration.shielded_not_ready{reason, ready_at}` (no override), another denomination than the quote's is `registration.quote_changed`, and a ready one is `platform.feature_off{feature: "shielded_registration"}` until its flow step lands. | `RegistrationError` |
+| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, what the funding can spend now (`available_duffs`, item 52), and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. A `Shielded` request's quote also carries `readiness`, and ignores the request's `denomination` (§7 item 94). A `PlatformAddresses` request's quote carries `platform`, from one proved read of the Platform addresses, and ignores the request's numbers; on mainnet it is `platform.feature_off{feature: "platform_registration"}` (§7 item 97). | `RegistrationError` |
+| `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. `Shielded` is checked again before anything is written and refused (§7 item 94): a readiness check that does not hold is `registration.shielded_not_ready{reason, ready_at}` (no override), another denomination than the quote's is `registration.quote_changed`, and a ready one is `platform.feature_off{feature: "shielded_registration"}` until its flow step lands. `PlatformAddresses` is planned again before anything is written: other numbers than the plan's are `registration.quote_changed`, and the quoted ones are `platform.feature_off{feature: "platform_registration"}` until its flow step lands (§7 item 97). | `RegistrationError` |
 | `start_registration_past_unknown_funding(req, grant, past)` | async | `start_registration` past earlier registrations whose funding is unknown (DEC-197, "In progress" below). `past` names each blocker the user confirmed, as `registration.in_progress` names it. Call it only after the user confirmed the wedge copy. A named blocker passes only if every funding step it waits on is wedged; anything else still returns `registration.in_progress`. SPV must be synced (`registration.not_synced`), and each passed step's funding must have been released at least an hour ago (`registration.funding_unknown_recent { draft, wait_secs }`). A malformed name is `invalid_argument`; a well-formed one that blocks nothing is ignored. | `RegistrationError` |
 | `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5), and, read-only, every outstanding funding step whose row is gone (draft `registration/<n>/funding`; §2.2 "The registration ledger"). | `RegistrationError` |
 | `registration_resume_grant(draft)` | async | An invitation claim row's resume grant (item 64): no duffs, and the credits of the steps it has left (the identity's creation while it has no identity, the name until it is registered, a pending profile, and the request while one is asked), from the row alone: never from `invitation_status`, which reads `Claimed` once the row's own claim landed. Another row is `invalid_argument`. | `RegistrationError` |
@@ -485,8 +485,8 @@ bodies decided where the rows leave room:
 | `payment_lock(identity, contact)` | sync | The lock an ambiguous broadcast set (`dp_payment_lock`), if any: a contact payment whose broadcast outcome was unknown (`send.broadcast_unknown`), or a `pending` payout from the Shielded or Platform balance (`dp_contact_payout`, item 90). `source` says which; `txid` equals `reference` and is a Core txid only for `core`. Memory only; the locks load with the wallet's identity choices. While it stands, a new payment to the contact from any source is `contact.payment_locked{txid}` (item 48). **Implemented (DP3-01).** | `ContactError` |
 | `resolve_payment_lock(identity, contact)` | async | Reconciles the lock with E0-04 §16.6's evidence (§4.1) for the locked payment's txid. `Sent` (an attempt or a Resend finished `Sent`, or the wallet has seen the transaction) clears the lock. `NotSent` clears it only on **positive evidence**: in this process, `dispatch_status(txid)` is `Some(NotSent)` (the send's tombstone), or a ChainLocked conflicting spend of one of its inputs exists. Never "not found on chain or in the wallet": a peer may be withholding it. Anything else is `Unknown`, which reads like `MaybeSent` and `None`: the lock stays. The wallet's sighting means a block or an InstantSend lock, never its mempool view (BL-76); the inputs come from the wallet's record of the payment, else this process's. A payout's lock is settled by its source's evidence (item 90); until a source lands it is `Unknown`. No lock for the pair is `invalid_argument`. **Implemented (DP3-01).** | `ContactError` |
 | `contact_activity(identity, contact, cursor, f)` | async | Payments to and from the contact, newest first, filtered All / Sent / Received; 50 per page, `cursor` the previous page's `next_cursor`. Attributed as history records are (item 47): one item per transaction and direction, `amount` what the contact got or sent (no fee), mined ones by block time with unmined ones first (`timestamp` the block time, else first-seen), abandoned, not-accepted and conflicted ones left out. A contact never paid is an empty page, not an error. Re-query on `Platform{Payments}`, `Platform{Contacts}` and the wallet's `HistoryChanged`. **Implemented (DP3-02).** | `ContactError`: unknown wallet; `invalid_argument` (an id, or a cursor this call did not issue, including one another query issued); `contact.self`; `identity.not_found` (not this wallet's) |
-| `contact_pay_quote(identity, contact, credits, source)` | async | What paying `contact` `credits` from the `shielded` or `platform` balance costs (C-funding P1, P13): `credits` leaves the balance, `expected_duffs` is what the contact receives, about, with the fee estimate and the `PlatformOp` grant to ask for. No Max (M3). `core` is `invalid_argument` first (its payment is the `TxDraft`). Then the payee as `set_contact_recipient` checks it and the pair's lock, then the source. `shielded` is `platform.feature_off{shielded_contact_payment}` until its slice lands (C5a). `platform` (C5b, item 96): below address funds `platform.feature_off{platform_addresses}`; then one proved read of the payment account under rule 5, refused `credits.move_pending{id}` beside any Platform move that may still execute, and planned as a withdrawal of `credits` whose fee source keeps three fee estimates (P8): `fee_credits` is the estimate, `grant.max_credits` the amount plus that band. **Implemented (C5-0; `platform` C5b).** | `ContactError`: unknown wallet; `invalid_argument` (an id, a zero amount, not a contact); `contact.self`; `contact.ineligible`; `contact.channel_broken`; `contact.payment_locked`; `platform.feature_off`; `platform`: `credits.move_pending`, `credits.withdrawal_out_of_range{min, max}`, `platform.insufficient_credits`, rule 5's `platform.context_unavailable` |
-| `contact_pay(identity, contact, credits, source, note, grant, confirm_unrecorded)` | async | Pays `contact` from the `shielded` or `platform` balance under `grant` (C-funding P2): `core` refused first, then the live payee check, the pair's lock (any source's) and rule 5 on the payee, then the source's gates; the grant's cap, the lease (`ContactPayFromBalance`, never a `ContactPayment` lease), the address reservation and rule 5's re-check, the claim, the reference, the payout row and the source record follow, in that order, before anything is signed (item 90). Every refusal before the reservation takes no address; every refusal before the lease keeps the grant. `note` stays in this wallet (M5). Until a source's slice lands it is refused at that source's gates as `contact_pay_quote` says. `platform` (C5b, item 96) pays one `ToContact` move: an address credit withdrawal to the pair's reserved DIP-15 address, the only Core script it can pay (no host input names it). `ContactPayOutcome.state` is `sent` once the withdrawal's document is proved, `not_sent` when it can never execute (the address back with the pair only when nothing was signed), else `pending` with the contact locked until the move's evidence settles it (`resolve_payment_lock`). A `contactPayFromBalance` lease pays once. **Implemented (C5-0; `platform` C5b).** | `ContactError`: as `contact_pay_quote`; `invalid_argument` (an empty grant); rule 5's refusals (`platform.context_unavailable`, `platform.trust_mismatch`, `platform.signer_unavailable`); `platform.grant_exceeded`, `platform.grant_invalid` (a lease of another flow); a definitive Platform refusal's code |
+| `contact_pay_quote(identity, contact, credits, source)` | async | What paying `contact` `credits` from the `shielded` or `platform` balance costs (C-funding P1, P13): `credits` leaves the balance, `expected_duffs` is what the contact receives, about, with the fee estimate and the `PlatformOp` grant to ask for. No Max (M3). `core` is `invalid_argument` first (its payment is the `TxDraft`). Then the payee as `set_contact_recipient` checks it and the pair's lock, then the source. `shielded` is `platform.feature_off{shielded_contact_payment}` until its slice lands (C5a). `platform` (C5b, item 98): below address funds `platform.feature_off{platform_addresses}`; then one proved read of the payment account under rule 5, refused `credits.move_pending{id}` beside any Platform move that may still execute, and planned as a withdrawal of `credits` whose fee source keeps three fee estimates (P8): `fee_credits` is the estimate, `grant.max_credits` the amount plus that band. **Implemented (C5-0; `platform` C5b).** | `ContactError`: unknown wallet; `invalid_argument` (an id, a zero amount, not a contact); `contact.self`; `contact.ineligible`; `contact.channel_broken`; `contact.payment_locked`; `platform.feature_off`; `platform`: `credits.move_pending`, `credits.withdrawal_out_of_range{min, max}`, `platform.insufficient_credits`, rule 5's `platform.context_unavailable` |
+| `contact_pay(identity, contact, credits, source, note, grant, confirm_unrecorded)` | async | Pays `contact` from the `shielded` or `platform` balance under `grant` (C-funding P2): `core` refused first, then the live payee check, the pair's lock (any source's) and rule 5 on the payee, then the source's gates; the grant's cap, the lease (`ContactPayFromBalance`, never a `ContactPayment` lease), the address reservation and rule 5's re-check, the claim, the reference, the payout row and the source record follow, in that order, before anything is signed (item 90). Every refusal before the reservation takes no address; every refusal before the lease keeps the grant. `note` stays in this wallet (M5). Until a source's slice lands it is refused at that source's gates as `contact_pay_quote` says. `platform` (C5b, item 98) pays one `ToContact` move: an address credit withdrawal to the pair's reserved DIP-15 address, the only Core script it can pay (no host input names it). `ContactPayOutcome.state` is `sent` once the withdrawal's document is proved, `not_sent` when it can never execute (the address back with the pair only when nothing was signed), else `pending` with the contact locked until the move's evidence settles it (`resolve_payment_lock`). A `contactPayFromBalance` lease pays once. **Implemented (C5-0; `platform` C5b).** | `ContactError`: as `contact_pay_quote`; `invalid_argument` (an empty grant); rule 5's refusals (`platform.context_unavailable`, `platform.trust_mismatch`, `platform.signer_unavailable`); `platform.grant_exceeded`, `platform.grant_invalid` (a lease of another flow); a definitive Platform refusal's code |
 | `frequent_contacts(identity, limit)` | sync | The Pay screen's frequent strip (Android's rule): at most `limit` (clamped to 1–20) established contacts that are not hidden, the ones `identity` paid most often in the last 90 days first, then the ones that paid it most often; ties by the latest payment, then the id; none without a payment. In memory (the contacts read model and the history); while a writer holds the library's state it answers from the last view it read, empty before one. **Implemented (DP3-02).** | `ContactError`: as `contacts` |
 
 ### 2.6 Notifications
@@ -966,7 +966,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: c2aa2f6dcac5d4840f1252d766ac394ab0bc5cef1faac993a25bee5fee8448c6 version: 76 -->
+<!-- surface-sha256: 2e2331e9c4bb50183ae9e75699d85322ca0e43e2dcdfcd94303d4d16f8f5b9e1 version: 77 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1353,6 +1353,7 @@ pub enum RegistrationError {
     QuoteChanged,
     Name(NameError),
     Invitation(InvitationError),
+    Credits(CreditsError),
     Platform(PlatformError),
 }
 impl RegistrationError {
@@ -1361,6 +1362,7 @@ impl RegistrationError {
 }
 impl From<NameError> for RegistrationError;
 impl From<InvitationError> for RegistrationError;
+impl From<CreditsError> for RegistrationError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NameError {
     Invalid { rules: Vec<UsernameRule> },
@@ -2228,6 +2230,14 @@ pub enum RegistrationFunding {
     ExistingIdentity { identity: String },
     FaucetAssetLock { key: String, proof: String },
     Shielded { denomination: u64 },
+    PlatformAddresses { funding_credits: u64, fee_reserve_credits: u64 },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformRegistrationQuote {
+    pub funding_credits: u64,
+    pub fee_credits: u64,
+    pub fee_reserve_credits: u64,
+    pub debit_credits: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedReadiness {
@@ -2266,6 +2276,7 @@ pub struct RegistrationQuote {
     pub available_duffs: u64,
     pub grant: GrantRequest,
     pub readiness: Option<ShieldedReadiness>,
+    pub platform: Option<PlatformRegistrationQuote>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrationStatus {
@@ -2987,7 +2998,8 @@ The shapes are in §3. What they mean, where the name does not say:
 - **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id, request_inviter}` (a `stash_invitation` id; DP5-02,
   below; `request_inviter` false sends the inviter no contact request, item 64),
   `ExistingIdentity{identity}` (the id goes to the row's `identity` column), `Shielded{denomination}` (the quote's
-  `readiness.denomination` in credits, item 94), and `FaucetAssetLock{key, proof}` for developer builds:
+  `readiness.denomination` in credits, item 94), `PlatformAddresses{funding_credits, fee_reserve_credits}` (the
+  quote's `platform` numbers, item 97), and `FaucetAssetLock{key, proof}` for developer builds:
   - The faucet's `POST /api/asset-lock-proof` takes only a compressed public key and returns the `assetLockProof`
     (hex), the txid and the credits. So the engine keeps the key: `prepare_faucet_lock` derives a fresh registration
     asset-lock key (`m/9'/c'/5'/1'/…`, the `PlatformFunding` scope) and returns its id and public key; the host posts
@@ -3009,7 +3021,8 @@ The shapes are in §3. What they mean, where the name does not say:
   to ask for: `max_duffs` covers the lock and fee, `max_credits` the identity creation, the name and the profile.
   An invitation's quote has `lock_duffs` the invitation's funding, `fee_duffs`, `total_duffs`, `available_duffs`
   and `max_duffs` 0, and `max_credits` with the request to the inviter (item 63). `readiness` is set for `Shielded`
-  funding only (`ShieldedReadiness`, item 94); that quote has every duff field 0.
+  funding only (`ShieldedReadiness`, item 94); that quote has every duff field 0. `platform` is set for
+  `PlatformAddresses` funding only (`PlatformRegistrationQuote`, item 97); that quote has every duff field 0 too.
 - **`TopUpFromPlatformQuote`** (1.0 C3a). `debit_credits = credits + ` all that input 0 keeps (its proved balance
   less its claim, which the fee can take), `grant.max_credits = debit_credits`, `grant.max_duffs = 0`. `inputs[0]` is
   input 0, the fee source; what it keeps is at least the reserve (three times `fee_credits` for the plan's inputs). The claims sum to `credits`. Hosts show
@@ -4629,7 +4642,61 @@ renames or reshapes them takes the next version bump:
     amount. A held top-up admits only an exit of exactly its inputs at its nonces, and the exit's withdrawal document
     decides which of the two executed (C3-9). No new error code.
 
-97. **A contact paid from the Platform balance (C-funding D-C5, C5b, version 76).** `contact_pay_quote` and
+## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
+
+These are the desktop app's own commands and launch rules, recorded here for the UI lane; no contract test checks this
+section. The choice is kept in `<data root>/network.json` (`dw_engine::network_choice`, shared with `dwcli network`):
+`{"network": "mainnet" | "testnet"}`, written atomically; a missing or unreadable file is no choice.
+
+| Command | Semantics | Errors |
+|---|---|---|
+| `getNetworkChoice()` | `NetworkChoiceView{chosen, saved, active, forcedByFlag}`: the saved choice (`mainnet` when none, `saved: false`, which onboarding reads as "not asked yet"), the network the window is on (`active`; `launchInfo.network` follows it), and whether `--network` or a flag of one network pinned the window (`forcedByFlag`; the saved choice then applies only to a launch without the flag). | `io` |
+| `switchNetwork(network)` | `NetworkSwitch{opened, choice}`. A pinned window saves `mainnet` or `testnet` and stays (`opened: null`). Otherwise it moves the window. It closes the window's network through `Engine::close_network_unless_busy`: the network's operations are paused (new ones wait), and it refuses while a Platform flow (a lease not revoked or ended), mixing or an unreturned broadcast runs, checked at once and again once the operations already admitted have finished (up to 2 s; still running then: `draining`). So a flow, a mixing start or a broadcast admitted before the switch is either refused for or finished before the close, never cut. Then the engine's own refusals. On any refusal the session, its drafts, the window network and the choice stay, and the waiting operations run. Once closed (the vault locks, grants go) it opens the other, SPV as at launch; on a failed open it reopens the network it left (`rolledBack`) and saves nothing; on success it sets the window network and title, then saves the choice. The renderer then boots the page again. | `app.network_busy` (`networkBusy{flows, stalled, mixing, broadcast, draining}`; `stalled`: every flow waits for a proof or a grant, which a lock ends), close's `wallet` and `shielded_spend_unresolved` (`networkCloseRefused{reason}`), `app.network_switch_failed` (`networkSwitch{network, rolledBack}`), `invalid_argument` |
+
+- **Which network opens.** `--network` when given; else the saved choice; else mainnet. Read once, when the data root
+  is known (`AppState::new`); a `switchNetwork` moves it afterwards, and the window title follows it. `--network`, or
+  any flag of one network (peers, DAPI, quorum URL, CA certificate, protocol version, `--no-platform`, collateral RPC),
+  pins the window: a switch only saves the choice.
+- **SPV by default.** Opening the launch network starts SPV on mainnet and testnet unless the app was launched with
+  `--no-sync`; on regtest and devnets only with `--sync` (they name their peers; the self-test and the E2E jobs open
+  regtest without `--sync` and see no change). `--sync` is still accepted everywhere; the last of `--sync` and
+  `--no-sync` wins. A failed start leaves the network open, readable offline.
+97. **Registration from the Platform addresses: the quote and the start's checks (C4a-1; F2–F5, F9; version 76).**
+    `RegistrationFunding` gains `PlatformAddresses{funding_credits, fee_reserve_credits}`, `RegistrationQuote` gains
+    `platform: Option<PlatformRegistrationQuote>`, set for that funding only, and `RegistrationError` gains
+    `Credits(CreditsError)`, which carries a Platform plan's `credits.move_pending{id}` (a Platform error inside it is
+    `Platform`). `PlatformRegistrationQuote{funding_credits, fee_credits, fee_reserve_credits, debit_credits}`: the
+    plan reads the payment account's addresses once under rule 5 and is refused with `credits.move_pending` while a
+    move of the wallet holds nonces the read shows unused (a registration signs no other record's terms). The identity
+    receives `funding_credits`, exactly: what its names and profile take, at least dpp's
+    `min_identity_funding_amount`. The inputs follow C-routes C1-4's input-0 planner: input 0 is the first funded
+    address in `PlatformAddress` order whose balance is above the reserve, and keeps `fee_reserve_credits` unclaimed;
+    later addresses below `min_input_amount` are left out; the claims are `funding_credits` with no change output
+    (when a later input's last claim is raised to `min_input_amount`, `funding_credits` is the claims' sum).
+    `fee_credits` is dpp's `calculate_min_required_fee` of an identity create from those inputs with the six
+    registration keys and no output, shown as "about": Platform meters the fee from input 0.
+    `fee_reserve_credits` is three times that fee (the top-up's band) for exactly the inputs the plan takes: a reserve
+    sized for another count plans again, and a selection that never settles on its own count is refused
+    (`platform.insufficient_credits`). Input 0's claim below `min_input_amount` reports input 0's balance against the
+    reserve and that minimum.
+    `debit_credits = funding_credits + fee_reserve_credits`, the planned debit, which sizes the grant (not a bound on
+    the loss: Platform meters the fee from input 0, which C-funding F5 leaves without a ceiling); the quote's `grant` is
+    `max_duffs` 0 and `max_credits` the debit plus the names and the profile; `remaining_credits` is
+    `funding_credits` less the names and the profile. No address above the reserve, or too little in all, is
+    `platform.insufficient_credits`; on mainnet, after the request's own checks and before any name is looked up or
+    the addresses are read, `platform.feature_off{feature:
+    "platform_registration"}` (the flag is off there until its funds ruling, on for every test network); Platform off,
+    `platform.feature_off{feature: "platform"}`; a protocol version
+    without address funds, `platform.feature_off{feature: "platform_addresses"}`. `start_registration` with
+    `PlatformAddresses` plans again before anything is read for the ledger, written or redeemed: numbers other than
+    the plan's are `registration.quote_changed` (C-funding F4); the plan's are still
+    `platform.feature_off{feature: "platform_registration"}`: C4a-2 adds the flow step. The stored `funding` kind
+    `platform_addresses` (`funding_credits`, `fee_reserve_credits`, and, written together by the funding step, `inputs`
+    with each address, the nonce it signs at and its claim, and `identity`, the id those inputs and nonces give;
+    funding version 1) is decoded, and a row of it reads `registration.unsupported` here: never funded, advanced or
+    discarded until C4a-2.
+
+98. **A contact paid from the Platform balance (C-funding D-C5, C5b, version 77).** `contact_pay_quote` and
     `contact_pay` with `source: platform` (§2.5). **Off on mainnet:** there the quote, the payment and
     `begin_flow(ContactPayFromBalance, platform)` keep the refusal every network gave before,
     `platform.feature_off{feature: "platform_contact_payment"}`; testnet, devnet and regtest pay. The payout is a new internal move kind, `ToContact`, beside
@@ -4657,23 +4724,3 @@ renames or reshapes them takes the next version bump:
     (P10):** `PlatformActivityKind::ContactPayment` rows, with `PlatformActivity.contact` from the payout row.
     `ContactError` gains `Credits` for the move's own refusals (`credits.move_pending`,
     `credits.withdrawal_out_of_range`).
-
-## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
-
-These are the desktop app's own commands and launch rules, recorded here for the UI lane; no contract test checks this
-section. The choice is kept in `<data root>/network.json` (`dw_engine::network_choice`, shared with `dwcli network`):
-`{"network": "mainnet" | "testnet"}`, written atomically; a missing or unreadable file is no choice.
-
-| Command | Semantics | Errors |
-|---|---|---|
-| `getNetworkChoice()` | `NetworkChoiceView{chosen, saved, active, forcedByFlag}`: the saved choice (`mainnet` when none, `saved: false`, which onboarding reads as "not asked yet"), the network the window is on (`active`; `launchInfo.network` follows it), and whether `--network` or a flag of one network pinned the window (`forcedByFlag`; the saved choice then applies only to a launch without the flag). | `io` |
-| `switchNetwork(network)` | `NetworkSwitch{opened, choice}`. A pinned window saves `mainnet` or `testnet` and stays (`opened: null`). Otherwise it moves the window. It closes the window's network through `Engine::close_network_unless_busy`: the network's operations are paused (new ones wait), and it refuses while a Platform flow (a lease not revoked or ended), mixing or an unreturned broadcast runs, checked at once and again once the operations already admitted have finished (up to 2 s; still running then: `draining`). So a flow, a mixing start or a broadcast admitted before the switch is either refused for or finished before the close, never cut. Then the engine's own refusals. On any refusal the session, its drafts, the window network and the choice stay, and the waiting operations run. Once closed (the vault locks, grants go) it opens the other, SPV as at launch; on a failed open it reopens the network it left (`rolledBack`) and saves nothing; on success it sets the window network and title, then saves the choice. The renderer then boots the page again. | `app.network_busy` (`networkBusy{flows, stalled, mixing, broadcast, draining}`; `stalled`: every flow waits for a proof or a grant, which a lock ends), close's `wallet` and `shielded_spend_unresolved` (`networkCloseRefused{reason}`), `app.network_switch_failed` (`networkSwitch{network, rolledBack}`), `invalid_argument` |
-
-- **Which network opens.** `--network` when given; else the saved choice; else mainnet. Read once, when the data root
-  is known (`AppState::new`); a `switchNetwork` moves it afterwards, and the window title follows it. `--network`, or
-  any flag of one network (peers, DAPI, quorum URL, CA certificate, protocol version, `--no-platform`, collateral RPC),
-  pins the window: a switch only saves the choice.
-- **SPV by default.** Opening the launch network starts SPV on mainnet and testnet unless the app was launched with
-  `--no-sync`; on regtest and devnets only with `--sync` (they name their peers; the self-test and the E2E jobs open
-  regtest without `--sync` and see no change). `--sync` is still accepted everywhere; the last of `--sync` and
-  `--no-sync` wins. A failed start leaves the network open, readable offline.
