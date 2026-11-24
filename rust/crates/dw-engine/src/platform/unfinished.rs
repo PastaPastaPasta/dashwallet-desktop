@@ -56,7 +56,9 @@ pub enum UnfinishedState {
     /// Proved and not tried, or tried and refused before its signature.
     Ready,
     /// An apply may have executed, unproved: it failed after its signature,
-    /// or Platform answered "already consumed" for it.
+    /// Platform answered "already consumed" for it, or the lock was read back
+    /// from the chain (a restore's or this device's) and Platform may already
+    /// have taken it.
     Checking,
     /// Platform answered "already consumed" for this restored lock,
     /// unproved: listed apart, and checked again on request. Reserved: not

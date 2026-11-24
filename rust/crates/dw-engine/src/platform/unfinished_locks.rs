@@ -19,7 +19,9 @@
 //!   reads its own locks back as its own.
 //! - **What is known before an apply.** The library keeps a restored lock
 //!   "consumption unknown" (`asset_lock/tracked.rs`, `RecoveredFromChain`),
-//!   so a lock is unfinished until an apply is tried. Trying is safe:
+//!   so a lock is unfinished until an apply is tried, and one read back
+//!   from the chain reads Checking until then: it may already be in the
+//!   balance. Its Check again, and Finish transfers, try it. Trying is safe:
 //!   Platform executes at most one apply of an outpoint (every asset-lock
 //!   transition's proof validation refuses a consumed one, rs-drive-abci
 //!   `common/asset_lock/proof/verify_is_not_spent/v0/mod.rs`). Platform's
@@ -641,6 +643,10 @@ pub(crate) fn classify(kind: LockKindId, lock: &KindLock, ev: &Evidence) -> Opti
         UnfinishedState::Checking
     } else if ev.minimum.is_some_and(|min| min.refuses(lock)) {
         UnfinishedState::TooSmall
+    } else if info.status == LockStatus::RecoveredFromChain {
+        // A restore's lock read back from the chain: Platform may already
+        // have taken it, and nothing the wallet reads says whether it did.
+        UnfinishedState::Checking
     } else {
         UnfinishedState::Ready
     };
@@ -878,12 +884,14 @@ where
 /// Finishes every unfinished lock of `kind` under the bulk's `lease`, one
 /// at a time (a refusal leaves that lock pending and the next one runs),
 /// and adds what came of them to `report`: its totals and, when the kind
-/// had any, its [`TransfersReport`]. Only a Ready lock is tried. One whose
-/// apply may already have executed (Checking), with no proof, of a kind not
-/// active, at `vout` ≠ 0 or below the apply's minimum is pending, not
-/// tried (a Checking lock's own "Check again" tries it); one Platform
-/// reported already used is counted in `already_used`, not tried. A lock
-/// another finish settled meanwhile counts in no field.
+/// had any, its [`TransfersReport`]. A Ready lock is tried, and so is a
+/// restored one that reads Checking (Platform may already have taken it; an
+/// apply of a taken lock is refused, so trying is how it is told). This
+/// device's own Checking lock, one with no proof, of a kind not active, at
+/// `vout` ≠ 0 or below the apply's minimum is pending, not tried (a Checking
+/// lock's own "Check again" tries it); one Platform reported already used is
+/// counted in `already_used`, not tried. A lock another finish settled
+/// meanwhile counts in no field.
 pub(crate) async fn finish_kind(
     kind: &impl LockKind,
     lease: &Lease,
@@ -904,14 +912,16 @@ pub(crate) async fn finish_kind(
         still_pending: 0,
     };
     for lock in &listed {
+        let restored_checking =
+            lock.state == UnfinishedState::Checking && lock.origin == LockOrigin::Restored;
         let tried = match lock.state {
-            UnfinishedState::Checking
-            | UnfinishedState::Confirming
+            UnfinishedState::Checking if !restored_checking => None,
+            UnfinishedState::Confirming
             | UnfinishedState::NotActive
             | UnfinishedState::Unsupported
             | UnfinishedState::TooSmall
             | UnfinishedState::ReportedUsed => None,
-            UnfinishedState::Ready => {
+            UnfinishedState::Ready | UnfinishedState::Checking => {
                 let Ok(txid) = lock.txid.parse::<Txid>() else {
                     continue;
                 };

@@ -188,7 +188,7 @@ pub(crate) fn conformance(rig: &impl Rig) {
     let (kind, script) = (rig.funding_type(), rig.credit_script());
     let proved_tx = |n, outputs| transaction(n, outputs, 1_000_000, &script);
     let proved =
-        |tx: &Transaction, vout| tracked(tx, vout, kind, AssetLockStatus::RecoveredFromChain, true);
+        |tx: &Transaction, vout| tracked(tx, vout, kind, AssetLockStatus::ChainLocked, true);
     let row = KindLock::of_row;
 
     // Only a proved apply settles, and only its call ends `Sent`; an
@@ -370,4 +370,67 @@ pub(crate) fn conformance(rig: &impl Rig) {
     );
     assert!(!asked, "a lock too small asks for no lease");
     assert_eq!(rig.applies(), applies);
+
+    // A lock read back from the chain may already be taken: it reads
+    // Checking, and its finish tries it; a proved apply settles it.
+    let restored = tracked(
+        &proved_tx(0x71, 1),
+        0,
+        kind,
+        AssetLockStatus::RecoveredFromChain,
+        true,
+    );
+    rig.track(vec![restored.clone()]);
+    assert_eq!(
+        state(rig, restored.out_point),
+        Some(UnfinishedState::Checking)
+    );
+    rig.next(End::Done);
+    let applies = rig.applies();
+    let (finished, asked) = rig.finish(restored.out_point);
+    assert_eq!(finished.unwrap(), LockFinish::Applied);
+    assert!(asked);
+    assert_eq!(rig.applies(), applies + 1);
+    assert_eq!(state(rig, restored.out_point), None);
+
+    // One Platform already took is answered "already consumed". That alone
+    // is unproved and leaves it Checking; with Platform's proof that it is
+    // consumed, a kind that takes that as finished elsewhere reads it
+    // reported used, and it leaves the list.
+    let unproved = tracked(
+        &proved_tx(0x73, 1),
+        0,
+        kind,
+        AssetLockStatus::RecoveredFromChain,
+        true,
+    );
+    rig.track(vec![unproved.clone()]);
+    rig.next(End::AlreadyConsumed);
+    assert_eq!(
+        rig.finish(unproved.out_point).0.unwrap(),
+        LockFinish::Checking
+    );
+    assert_eq!(
+        state(rig, unproved.out_point),
+        Some(UnfinishedState::Checking)
+    );
+
+    let taken = tracked(
+        &proved_tx(0x72, 1),
+        0,
+        kind,
+        AssetLockStatus::RecoveredFromChain,
+        true,
+    );
+    rig.track(vec![taken.clone()]);
+    rig.prove_spent(taken.out_point, SpentRead::Consumed);
+    rig.next(End::AlreadyConsumed);
+    let finished = rig.finish(taken.out_point).0.unwrap();
+    if rig.reports_used() {
+        assert_eq!(finished, LockFinish::ReportedUsed);
+        assert_eq!(state(rig, taken.out_point), None);
+    } else {
+        assert_eq!(finished, LockFinish::Checking);
+        assert_eq!(state(rig, taken.out_point), Some(UnfinishedState::Checking));
+    }
 }
