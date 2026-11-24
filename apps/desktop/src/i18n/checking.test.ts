@@ -43,9 +43,10 @@ describe("the Checking lines", () => {
 
 describe("the close-this lines", () => {
   it("say one thing in one way: every running step that lets the user close it reads the same sentence", () => {
-    const texts = [...flatten(en).values()].flatMap((m) => (typeof m === "string" ? [m] : Object.values(m)));
-    const lines = texts.filter((m) => /close this\W+Activity/i.test(m));
-    expect(lines.length).toBeGreaterThan(1);
-    expect(lines.filter((m) => !m.endsWith("You can close this: Activity shows it."))).toEqual([]);
+    const all = flatten(en);
+    const keys = ["transfer.move.running.text", "transfer.fund.running.text", "transfer.shielded.running.prove", "transfer.shielded.running.lock", "pay.platform.running.text"];
+    expect(keys.filter((k) => !String(all.get(k)).endsWith("You can close this: Activity shows it."))).toEqual([]);
+    const texts = [...all.values()].flatMap((m) => (typeof m === "string" ? [m] : Object.values(m)));
+    expect(texts.filter((m) => /close this\W+Activity/i.test(m) && !m.endsWith("You can close this: Activity shows it."))).toEqual([]);
   });
 });

@@ -1898,8 +1898,10 @@ input[type="radio"]:disabled {
   user-select: text;
 }
 
-/* Amounts in a confirm list: at the end of the row in tabular digits, so the decimals line up. */
+/* Amounts in a confirm list: tabular digits, aligned on their last digit, so the decimals line up. An amount reads
+ * left to right in any language, so its cell does too, and its end is the right in a right-to-left window as well. */
 .detail-amount {
+  direction: ltr;
   font-variant-numeric: tabular-nums;
   text-align: end;
 }
