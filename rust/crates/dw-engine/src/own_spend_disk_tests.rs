@@ -1533,6 +1533,17 @@ fn a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_finalized_un
             && (accounts.iter()).all(|a| !a.transactions().contains_key(&txid))
     });
     assert!(finalized_only, "key-wallet keeps the child's txid alone");
+    let manager = session.manager().unwrap();
+    let under_mined = engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let core = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        (session.hub.history).read(&id, |txs| crate::tx_actions::settled_under(txs, core).1)
+    });
+    assert!(
+        under_mined.contains(&payment.txid()),
+        "the finalized txid alone puts the payment under a mined child"
+    );
     header_chain(&session, &[(TIP + 1, won), (TIP + 2, hash)]);
     refused(
         &engine,
@@ -2216,13 +2227,18 @@ fn abandoning_a_payment_under_a_locked_child_is_refused_and_its_coin_stays_spent
     kept_under_a_settled_child(&engine, session, id, &payment, &child);
 }
 
-/// Three generations: P, its child C spending P's change, and C's child G
-/// spending C's change, only G InstantSend-locked; then a restart. G proves
-/// C and so P: Abandon of P is not offered and is refused, and P's coin is
-/// never offered (#446).
-#[test]
-fn abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_spent() {
-    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+/// P, its child C spending P's change, and C's child G spending C's
+/// change, only G InstantSend-locked, all stored.
+#[allow(clippy::type_complexity)]
+fn payment_under_a_locked_grandchild() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+    Transaction,
+) {
+    let (dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
     let payment = send(
         &engine,
@@ -2260,6 +2276,16 @@ fn abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_
         &[payment.txid(), child.txid(), grandchild.txid()],
     );
     super::wait_stored_locked(&session, id, grandchild.txid());
+    (dir, engine, session, id, payment, child)
+}
+
+/// Three generations: P, its child C spending P's change, and C's child G
+/// spending C's change, only G InstantSend-locked; then a restart. G proves
+/// C and so P: Abandon of P is not offered and is refused, and P's coin is
+/// never offered (#446).
+#[test]
+fn abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_spent() {
+    let (_dir, engine, session, id, payment, child) = payment_under_a_locked_grandchild();
     let session = reopen(&engine, session);
     start_spv(&engine, &session);
     let extras = engine
@@ -2277,6 +2303,170 @@ fn abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_
         "{result:?}"
     );
     kept_under_a_settled_child(&engine, session, id, &payment, &child);
+}
+
+/// As above, but the child's record doesn't read at the wallet's load, so
+/// nothing links the grandchild to the payment: Abandon refuses until a
+/// restart and a rescan, Remove Unconfirmed keeps it, and its coin stays
+/// spent, in the session and after a restart that reads the child (#611).
+#[test]
+fn abandoning_a_payment_after_a_load_missing_its_child_is_refused() {
+    let (_dir, engine, session, id, payment, child) = payment_under_a_locked_grandchild();
+    let session = reopen(&engine, session);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    session.hub.unreadable_record.lock().unwrap().0 = Some(child.txid());
+    engine.block_on(session.load_wallet(id)).unwrap();
+    start_spv(&engine, &session);
+    let result = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(
+        matches!(
+            result,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::RescanFirst
+            ))
+        ),
+        "{result:?}"
+    );
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 0, "the payment or its funding was dropped");
+    let a = payment.input[0].previous_output;
+    assert!(!abandoned(&engine, &session, id, payment.txid()));
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "the payment's coin is held"
+    );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "the payment's coin is offered"
+    );
+    let session = reopen(&engine, session);
+    kept_under_a_settled_child(&engine, session, id, &payment, &child);
+}
+
+/// A payment P from this wallet to a second loaded wallet, whose lock this
+/// wallet missed, and the second wallet's InstantSend-locked spend C of
+/// what it received, which touches no coin of the first; then a restart.
+/// C is only the second wallet's, and still proves P: Abandon of P is not
+/// offered and refuses, Remove Unconfirmed for all wallets keeps it, and
+/// its coin stays spent (#611).
+#[test]
+fn abandoning_a_transfer_a_second_wallet_spent_locked_is_refused() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    engine
+        .block_on(session.set_load_on_startup(other, true))
+        .unwrap();
+    let a = OutPoint::new(paid.txid(), 0);
+    let to = fresh_address(&engine, &session, other);
+    let payment = send_to(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        &to.to_string(),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    wait_stored(&session, other, &[payment.txid()]);
+    let received = (payment.output.iter())
+        .position(|o| o.script_pubkey == to.script_pubkey())
+        .unwrap();
+    let child = super::spend_of(
+        OutPoint::new(payment.txid(), received as u32),
+        vec![
+            (elsewhere(), COIN / 4),
+            (
+                fresh_address(&engine, &session, other).script_pubkey(),
+                COIN / 8,
+            ),
+        ],
+    );
+    // Delivered with its lock: key-wallet drops an unlocked spend of a
+    // held coin whose input isn't signed for it.
+    instant_lock(&engine, &session, other, &child);
+    wait_stored(&session, other, &[child.txid()]);
+    super::wait_stored_locked(&session, other, child.txid());
+
+    let session = reopen(&engine, session);
+    start_spv(&engine, &session);
+    let extras = engine
+        .block_on(session.tx_detail_extras(id, payment.txid()))
+        .unwrap();
+    assert!(!extras.can_abandon, "Abandon is offered");
+    let result = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(
+        matches!(
+            result,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::SettledDescendant
+            ))
+        ),
+        "{result:?}"
+    );
+    engine.block_on(session.drop_unconfirmed(None)).unwrap();
+    let mut session = session;
+    for state in ["the session", "a restart"] {
+        if state != "the session" {
+            session = reopen(&engine, session);
+        }
+        assert!(!abandoned(&engine, &session, id, payment.txid()), "{state}");
+        assert!(
+            !held(&engine, &session, id).contains(&a),
+            "{state}: A's coin is held"
+        );
+        assert!(
+            !spendable(&engine, &session, id, a),
+            "{state}: A's coin is offered"
+        );
+    }
+}
+
+/// A second loaded wallet whose stored record didn't read at its load: what
+/// it settled could descend from this wallet's payment, so Abandon of an
+/// unlocked payment here refuses until a restart and a rescan (#611).
+#[test]
+fn abandoning_while_a_second_wallet_loaded_incomplete_is_refused() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    engine
+        .block_on(session.set_load_on_startup(other, true))
+        .unwrap();
+    let gift = funding(9, &[fresh_address(&engine, &session, other)], COIN);
+    mempool(&engine, &session, other, &gift);
+    wait_stored(&session, other, &[gift.txid()]);
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let session = reopen(&engine, session);
+    engine.block_on(session.unload_wallet(other)).unwrap();
+    session.hub.unreadable_record.lock().unwrap().0 = Some(gift.txid());
+    engine.block_on(session.load_wallet(other)).unwrap();
+    start_spv(&engine, &session);
+    let result = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(
+        matches!(
+            result,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::RescanFirst
+            ))
+        ),
+        "{result:?}"
+    );
+    assert!(!abandoned(&engine, &session, id, payment.txid()));
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "the payment's coin is offered"
+    );
 }
 
 /// As above, through Remove Unconfirmed: the payment is kept and its coin
