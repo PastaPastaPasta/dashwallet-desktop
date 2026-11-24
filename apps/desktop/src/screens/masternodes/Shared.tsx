@@ -28,6 +28,7 @@ import {
   canAbandon,
   DEFAULT_FEE,
   MAX_SHARED_FEE,
+  feeRowValue,
   fundingLine,
   grantCap,
   handoffLine,
@@ -737,7 +738,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
           {s.fee !== null && (
             <>
               <dt>{t(`${P}.session.fee`)}</dt>
-              <dd>{s.role === "coordinator" ? t(`${P}.funding.feeYours`, { fee: dash(s.fee) }) : t(`${P}.funding.payer`, { coordinator: coordinatorLabel })}</dd>
+              <dd data-testid="sh-fee-value">{feeRowValue(s, dash, coordinatorLabel)}</dd>
             </>
           )}
         </dl>

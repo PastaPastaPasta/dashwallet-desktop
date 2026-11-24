@@ -1142,6 +1142,9 @@ export const masternodes = {
       earlyValue: "{blocks} blocks · leaving alone before then costs {penalty}",
       earlyNone: "None",
       fee: "Network fee",
+      /** The Network fee row's value under its own label: the coordinator's, then a participant's. */
+      feeYoursValue: "{fee}, paid by you",
+      feePayerValue: "Paid by {coordinator}",
       checkHelp: "Send each reply back here. If a check code differs from the one the sender sees, the message changed on the way: ask for it again.",
       close: "Close",
       more: "More",

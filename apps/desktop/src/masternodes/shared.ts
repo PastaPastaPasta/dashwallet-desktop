@@ -290,6 +290,13 @@ export function wayOutShown(s: SharedSession, row: RowKey): "collapsed" | "expan
   return s.overdue ? "expanded" : "collapsed";
 }
 
+/** The session sheet's Network fee row value, under its own "Network fee" label: the fee for the
+ * coordinator who pays it, who pays it for a participant; `null` without a fee. */
+export function feeRowValue(s: SharedSession, dash: (duffs: number) => string, coordinatorLabel: string): string | null {
+  if (s.fee === null) return null;
+  return coordinator(s) ? t("masternodes.shared.session.feeYoursValue", { fee: dash(s.fee) }) : t("masternodes.shared.session.feePayerValue", { coordinator: coordinatorLabel });
+}
+
 /** The exact funding line (§2.3.2): what leaves this wallet and why, from `debit`. */
 export function fundingLine(s: SharedSession, dash: (duffs: number) => string): string | null {
   const p = debitParts(s);

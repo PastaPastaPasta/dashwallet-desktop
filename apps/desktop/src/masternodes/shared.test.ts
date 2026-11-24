@@ -34,6 +34,7 @@ import {
   stageStep,
   unreadableInProgress,
   warningText,
+  feeRowValue,
   spendBackAction,
   spendBackLine,
   wayOutShown,
@@ -337,6 +338,14 @@ describe("Abandon", () => {
       expect(spendBackLine(spend(state), refused), state).not.toMatch(/didn't go out/);
     }
     expect(renderSession({ ...spend("in_history"), stage: { kind: "conflicted" } }, S5_SLICE).row, "settled").toBe("conflicted");
+  });
+
+  it("reads the Network fee row's value without repeating its label", () => {
+    const dash = (d: number) => `${(d / 1e8).toFixed(8)} tDASH`;
+    const coord = coordinator({ kind: "draft" }, "copy", { fee: 1_000 });
+    expect(feeRowValue(coord, dash, "Alice")).toBe("0.00001000 tDASH, paid by you");
+    expect(feeRowValue(participantSession("draft", { fee: 1_000 }), dash, "Alice")).toBe("Paid by Alice");
+    expect(feeRowValue({ ...coord, fee: null }, dash, "Alice")).toBeNull();
   });
 
   it("offers Abandon only while the recovery read lists it", () => {
