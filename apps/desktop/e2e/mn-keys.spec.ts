@@ -15,7 +15,7 @@ const open = async (page: Page, theme: Theme, scenario = "mn-list", before?: () 
   if (before) await before();
   await page.getByTestId("sidebar-masternodes").click();
   await expect(page.getByTestId("page-masternodes")).toBeVisible();
-  await page.getByTestId("mn-tab-more").click();
+  await page.getByTestId("mn-page-more").click();
   await page.getByRole("menuitem", { name: "Masternode keys…" }).click();
   await expect(page.getByTestId("mn-keys")).toBeVisible();
 };

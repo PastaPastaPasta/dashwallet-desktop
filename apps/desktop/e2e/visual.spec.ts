@@ -1079,7 +1079,7 @@ for (const theme of THEMES) {
     await page.goto(fixtureUrl("mn-list", theme));
     await page.getByTestId("toolbar").waitFor();
     await page.getByTestId("sidebar-masternodes").click();
-    await page.getByTestId("mn-tab-more").click();
+    await page.getByTestId("mn-page-more").click();
     await page.getByRole("menuitem", { name: "Masternode keys…" }).click();
     await page.getByTestId("mn-keys-role-operator").click();
     await page.getByTestId("mn-key-0-show").click();

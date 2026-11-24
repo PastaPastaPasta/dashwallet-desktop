@@ -164,7 +164,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           <h1 className="top-intro-title">{GovText.title}</h1>
           {tab === "myMasternodes" && (
             <span className="mg-header-actions" data-testid="mn-actions">
-              <MoreMenu testId="mn-tab-more" items={[{ id: "keys", title: t("masternodes.keys.open"), onSelect: () => ui.set({ dialog: "mnKeys", mnKeysRole: null }) }]} />
+              <MoreMenu testId="mn-page-more" items={[{ id: "keys", title: t("masternodes.keys.open"), onSelect: () => ui.set({ dialog: "mnKeys", mnKeysRole: null }) }]} />
               <DashButton
                 variant="filledBlue"
                 size="small"
