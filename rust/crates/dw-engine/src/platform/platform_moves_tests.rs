@@ -2896,7 +2896,7 @@ fn a_send_on_a_read_behind_a_done_move_is_refused() {
     w.net.fee.store(1, Ordering::SeqCst);
     w.net.fund(a, 5 * DASH);
     let one = WithdrawAmount::Credits { credits: DASH };
-    let moved = w.move_to(one, &w.to.clone(), &w.f.grant(DASH)).unwrap();
+    let moved = w.move_to(one, &w.to.clone(), &w.f.grant(2 * DASH)).unwrap();
     assert_eq!(moved.state, PlatformActivityState::Done);
     w.net.fund(b, 5 * DASH);
     let sent = || w.net.sent.lock().unwrap().len();
