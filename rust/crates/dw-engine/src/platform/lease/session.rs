@@ -31,7 +31,7 @@ use crate::platform::shielded_pool::drain_passes;
 /// CoinJoin drain its coins (0.2 MIX-SHIELD: no `PlatformOp` grant reaches a
 /// CoinJoin coin); the masternode flows their own grant alone (MG-05 §4), as
 /// a masternode withdrawal (MG-13 P12).
-fn kinds_for(flow: FlowKind, source: Option<PaymentSource>) -> &'static [GrantKind] {
+fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
     match flow {
         FlowKind::AcceptAndPay => &[GrantKind::PlatformOp, GrantKind::Spend],
         FlowKind::ContactPayment | FlowKind::Proposal | FlowKind::ShieldDrain => {
@@ -43,11 +43,6 @@ fn kinds_for(flow: FlowKind, source: Option<PaymentSource>) -> &'static [GrantKi
         | FlowKind::SharedMasternode
         | FlowKind::Dissolution => &[GrantKind::MasternodeOp],
         FlowKind::MasternodeWithdraw => &[GrantKind::MasternodeWithdraw],
-        // Each source's key class from its slice on (C5a, C5b).
-        FlowKind::ContactPayFromBalance => match source {
-            Some(PaymentSource::Shielded) => &[GrantKind::PlatformOp],
-            _ => &[],
-        },
         FlowKind::Registration
         | FlowKind::TopUp
         | FlowKind::Withdraw
@@ -59,6 +54,7 @@ fn kinds_for(flow: FlowKind, source: Option<PaymentSource>) -> &'static [GrantKi
         | FlowKind::EnableDashPayKeys
         | FlowKind::PlatformAddressMove
         | FlowKind::PlatformAddressSend
+        | FlowKind::ContactPayFromBalance
         | FlowKind::Shield
         | FlowKind::PlatformAddressFund
         | FlowKind::ShieldedSpend => &[GrantKind::PlatformOp],
@@ -94,7 +90,7 @@ pub(crate) fn issue(
     keys: Option<&[HeldKey]>,
 ) -> Result<Issued, LeaseError> {
     let epoch_before = vault.epoch();
-    let allowed = kinds_for(flow, source);
+    let allowed = kinds_for(flow);
     let mut kinds = Vec::with_capacity(grants.len());
     for g in grants {
         let kind = allowed
@@ -116,8 +112,9 @@ pub(crate) fn issue(
     vault
         .window_lease_allowed(grants)
         .map_err(|_| LeaseError::Invalid)?;
-    // A payout's grant must cap credits; refused before it is redeemed.
-    if flow == FlowKind::ContactPayFromBalance {
+    // A Shielded payout's grant must cap credits; refused before it is
+    // redeemed.
+    if flow == FlowKind::ContactPayFromBalance && source == Some(PaymentSource::Shielded) {
         for g in grants {
             let purpose = vault.grant_purpose(g, GrantKind::PlatformOp, Some(&wallet.0));
             if !matches!(purpose, Ok(GrantPurpose::PlatformOp { max_credits, .. }) if max_credits > 0)
@@ -166,11 +163,14 @@ pub(crate) fn issue(
             GrantPurpose::PlatformOp { max_credits, .. }
                 if matches!(
                     flow,
-                    FlowKind::PlatformAddressMove | FlowKind::PlatformAddressSend
-                ) =>
+                    FlowKind::PlatformAddressMove
+                        | FlowKind::PlatformAddressSend
+                        | FlowKind::ContactPayFromBalance
+                ) && source != Some(PaymentSource::Shielded) =>
             {
-                // "Move to Dash wallet" (release 0.1) and a send to a
-                // Platform address (0.2): the DIP-17 payment keys alone, no
+                // "Move to Dash wallet" (release 0.1), a send to a Platform
+                // address (0.2) and a contact payout from the Platform
+                // balance (C-funding P15): the DIP-17 payment keys alone, no
                 // identity key and no contact crypto.
                 out.credits = max_credits;
                 if max_credits > 0 {

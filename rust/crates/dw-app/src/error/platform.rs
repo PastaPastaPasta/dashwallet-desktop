@@ -363,6 +363,7 @@ impl From<RegistrationError> for AppError {
             R::QuoteChanged => (RegistrationCode::QuoteChanged, None),
             R::Name(e) => return e.into(),
             R::Invitation(e) => return e.into(),
+            R::Credits(e) => return e.into(),
             R::Platform(e) => return e.into(),
         };
         AppError {
@@ -424,6 +425,7 @@ impl From<ContactError> for AppError {
                 Some(ErrorData::Size { bytes, max }),
             ),
             C::Shielded(e) => return e.into(),
+            C::Credits(e) => return (*e).into(),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -616,6 +618,7 @@ mod tests {
             RegistrationError::QuoteChanged,
             RegistrationError::Name(NameError::Taken),
             RegistrationError::Invitation(InvitationError::Expired),
+            RegistrationError::Credits(CreditsError::MovePending { id: s() }),
             RegistrationError::Platform(PlatformError::Timeout),
         ];
         for e in registration {
@@ -650,6 +653,7 @@ mod tests {
                 bytes: 2032,
                 max: 2031,
             },
+            ContactError::Credits(Box::new(CreditsError::MovePending { id: s() })),
             ContactError::Platform(PlatformError::Unavailable),
         ];
         for e in contacts {

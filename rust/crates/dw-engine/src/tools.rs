@@ -82,16 +82,22 @@ pub struct RescanProgress {
     pub current_height: Option<u32>,
     pub target_height: Option<u32>,
     pub started_at: u64,
+    /// The wallets still rescanning because an older build scanned them
+    /// with narrow CoinJoin pools: their first open after the upgrade
+    /// replays them once from their birth.
+    pub upgrade_wallets: Vec<WalletId>,
 }
 
 /// One wallet's part of a running rescan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct WalletRescan {
     /// The filter checkpoint before the rescan; the rescan is done for the
     /// wallet once the checkpoint is back here.
     pub resume_height: u32,
     /// Latest checkpoint reported since the rescan started.
     pub reached: Option<u32>,
+    /// The replay an upgrade owes ([`RescanProgress::upgrade_wallets`]).
+    pub upgrade: bool,
 }
 
 /// What [`NetworkSession::rewind`] does besides storing the replay record.
@@ -124,6 +130,14 @@ impl RescanState {
     /// Whether `wallet` is in the rescan and not back yet.
     pub(crate) fn replaying(&self, wallet: &WalletId) -> bool {
         (self.wallets.get(wallet)).is_some_and(|w| w.reached.unwrap_or(0) < w.resume_height)
+    }
+
+    /// The wallets still rescanning for their upgrade's replay.
+    fn upgrade_wallets(&self) -> Vec<WalletId> {
+        (self.wallets.iter())
+            .filter(|(_, w)| w.upgrade && w.reached.unwrap_or(0) < w.resume_height)
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// The lowest checkpoint among the wallets still rescanning.
@@ -282,6 +296,7 @@ impl NetworkSession {
                 .map(|w| w.resume_height)
                 .max(),
             started_at: r.started_at,
+            upgrade_wallets: r.upgrade_wallets(),
         }))
     }
 
@@ -629,7 +644,9 @@ impl NetworkSession {
         match resumed {
             Ok(Some(target)) => {
                 self.pause_publish().await;
-                self.publish_replay(wallet, record.reached, target);
+                let upgrade =
+                    self.upgrade_replay(wallet).await == Some(crate::keys::upgrade_mark(&record));
+                self.publish_replay(wallet, record.reached, target, upgrade);
             }
             Ok(None) => {
                 tracing::warn!(wallet = %wallet, "replay not resumed: the wallet is not loaded");
@@ -645,7 +662,13 @@ impl NetworkSession {
     /// Shows `wallet`'s replay from above `reached` to `target` as a
     /// rescan: spends wait for it, so it reports progress and can be
     /// cancelled.
-    pub(crate) fn publish_replay(&self, wallet: WalletId, reached: u32, target: u32) {
+    pub(crate) fn publish_replay(
+        &self,
+        wallet: WalletId,
+        reached: u32,
+        target: u32,
+        upgrade: bool,
+    ) {
         self.hub.publish_rescan(|rescan| {
             if rescan.as_ref().is_some_and(RescanState::finished) {
                 *rescan = None;
@@ -661,6 +684,7 @@ impl NetworkSession {
                 WalletRescan {
                     resume_height: target,
                     reached: None,
+                    upgrade,
                 },
             );
         });
@@ -780,7 +804,7 @@ impl NetworkSession {
 
     /// Sets the wallet's birth height in wallet.sqlite, then in memory.
     /// Returns its filter checkpoint.
-    async fn store_birth_height(
+    pub(crate) async fn store_birth_height(
         &self,
         wallet_id: WalletId,
         height: u32,
@@ -881,7 +905,7 @@ impl NetworkSession {
                             *id,
                             WalletRescan {
                                 resume_height,
-                                reached: None,
+                                ..Default::default()
                             },
                         );
                     }
@@ -889,6 +913,9 @@ impl NetworkSession {
             }
         }
         for id in wallets {
+            if self.upgrade_replay(id).await.is_some() {
+                self.set_upgrade_replay(id, None).await;
+            }
             let from = start(&id);
             // Its replay is stored before a lower birth is: a quit in
             // between leaves the rescan owed, not a birth below a checkpoint
@@ -1060,6 +1087,7 @@ mod tests {
                     WalletRescan {
                         resume_height: 100,
                         reached: None,
+                        upgrade: false,
                     },
                 ),
                 (
@@ -1067,6 +1095,7 @@ mod tests {
                     WalletRescan {
                         resume_height: 50,
                         reached: None,
+                        upgrade: false,
                     },
                 ),
             ]),

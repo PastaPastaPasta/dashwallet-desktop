@@ -8,7 +8,7 @@
 //! the moment they arrive and never logged.
 
 mod credits;
-mod flows;
+pub(crate) mod flows;
 mod invitations;
 mod keys;
 mod names;
@@ -926,6 +926,39 @@ commands! {
         let credits = shielded::parse_credits(&credits)?;
         Ok(dashpay
             .unshield_to_core(credits, to, grant, confirm_unrecorded)
+            .await?
+            .into())
+    }
+
+    /// What moving `credits` from Shielded to the wallet's own Platform
+    /// address `to` costs (`null` for its receive address).
+    #[facade("DashPay::unshield_to_platform_quote")]
+    fn unshield_to_platform_quote(
+        state,
+        wallet_id: String,
+        credits: String,
+        to: Option<String>,
+    ) -> ShieldedSpendQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay.unshield_to_platform_quote(credits, to).await?.into())
+    }
+
+    /// Shielded → Platform: unshields `credits` to the wallet's own Platform
+    /// address `to` under `grant`.
+    #[facade("DashPay::unshield_to_platform")]
+    fn unshield_to_platform(
+        state,
+        wallet_id: String,
+        credits: String,
+        to: Option<String>,
+        grant: String,
+        confirm_unrecorded: bool,
+    ) -> ShieldedSpendOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay
+            .unshield_to_platform(credits, to, grant, confirm_unrecorded)
             .await?
             .into())
     }

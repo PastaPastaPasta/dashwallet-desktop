@@ -105,7 +105,7 @@ pub(crate) async fn pay(
     lib: &impl ShieldedLib,
     call: PayCall,
 ) -> Result<ContactPayOutcome, ContactError> {
-    let pair = session.payout_gates(wallet, &call).await?;
+    let pair = session.pay_gates(wallet, &call).await?;
     pay_gated(session, wallet, lib, pair, call).await
 }
 

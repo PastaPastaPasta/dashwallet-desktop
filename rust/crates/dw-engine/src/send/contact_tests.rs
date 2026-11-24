@@ -204,8 +204,13 @@ fn engine_at(root: &std::path::Path) -> Engine {
 
 /// [`fixture`] in the data root `root`, which it does not own.
 fn fixture_at(root: &std::path::Path, encrypted: bool) -> Fixture {
+    fixture_on(root, encrypted, DashNetwork::Regtest)
+}
+
+/// [`fixture_at`] on `network`.
+fn fixture_on(root: &std::path::Path, encrypted: bool, network: DashNetwork) -> Fixture {
     let engine = engine_at(root);
-    let session = open_session(&engine);
+    let session = open_session_on(&engine, network, false);
     let pass: Option<&'static [u8]> = encrypted.then_some(PASS);
     engine
         .block_on(session.vault_op(move |v| v.create(pass)))
@@ -254,9 +259,14 @@ fn open_session(engine: &Engine) -> Arc<NetworkSession> {
 
 /// [`open_session`], as a release build opens it when `release`.
 fn open_session_as(engine: &Engine, release: bool) -> Arc<NetworkSession> {
+    open_session_on(engine, DashNetwork::Regtest, release)
+}
+
+/// [`open_session_as`] on `network`.
+fn open_session_on(engine: &Engine, network: DashNetwork, release: bool) -> Arc<NetworkSession> {
     engine
         .block_on(engine.open_network(
-            DashNetwork::Regtest,
+            network,
             crate::SessionOptions {
                 dapi_addresses: vec!["http://127.0.0.1:1".into()],
                 quorum_url: Some("http://127.0.0.1:1".into()),
@@ -3034,7 +3044,9 @@ mod pay;
 #[path = "contact_shielded_pay_tests.rs"]
 mod shielded_pay;
 
-#[cfg(unix)]
+#[path = "contact_payout_tests.rs"]
+mod payout;
+
 mod kill9;
 
 impl Fixture {

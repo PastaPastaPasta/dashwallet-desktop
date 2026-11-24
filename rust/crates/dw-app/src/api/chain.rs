@@ -245,6 +245,10 @@ pub struct RescanStatus {
     pub target_height: Option<u32>,
     /// UNIX seconds.
     pub started_at: u64,
+    /// Lower-case hex ids of the wallets still rescanning because an older
+    /// version scanned them: the first open after an update replays each
+    /// once from its birth.
+    pub upgrade_wallets: Vec<String>,
 }
 
 impl From<RescanProgress> for RescanStatus {
@@ -254,12 +258,14 @@ impl From<RescanProgress> for RescanStatus {
             current_height,
             target_height,
             started_at,
+            upgrade_wallets,
         } = p;
         RescanStatus {
             from_height,
             current_height,
             target_height,
             started_at,
+            upgrade_wallets: upgrade_wallets.iter().map(ToString::to_string).collect(),
         }
     }
 }

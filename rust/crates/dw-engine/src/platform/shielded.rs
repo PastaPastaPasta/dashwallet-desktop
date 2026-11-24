@@ -312,8 +312,9 @@ pub struct UnrecordedSpend {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedSpendOutcome {
     pub credits: u64,
-    /// The shielded balance after (while `pending`, less the notes the
-    /// spend holds).
+    /// The shielded balance after. While `pending`, the balance before
+    /// less `credits` and the fee: the change is not a note until a pass
+    /// finds it.
     pub balance: u64,
     /// For an unshield, the Core address paid.
     pub to: String,
@@ -389,9 +390,10 @@ pub struct ShieldedActivity {
     /// rows a scan restored (the pool's proofs carry no note height).
     pub block_height: Option<u64>,
     pub status: ShieldedActivityStatus,
-    /// Unix seconds when this device recorded it; `None` for every row a
-    /// scan derived (another wallet's payment, or a shield from another
-    /// device), restored or not.
+    /// Unix seconds when this device recorded it, or for a row a scan
+    /// derived (another wallet's payment), when the engine first saw its
+    /// notes after the wallet's first scan; `None` for a row of that first
+    /// scan (restored) and for one a scan derived that is not incoming.
     pub created_at: Option<u64>,
     /// The DashPay contact a withdrawal paid (C-funding P10): from the
     /// contact payout's row, else by the destination address.
@@ -595,6 +597,42 @@ impl DashPay {
         on_pool_signing(&self.session, wallet, move |session, lib| async move {
             let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
             pool::unshield(&session, wallet, &lib, credits, to, &grant, confirmed).await
+        })
+        .await
+    }
+
+    /// What moving `credits` from Shielded to the wallet's own Platform
+    /// address `to` costs (its receive address when `None`), with the
+    /// refusals of [`Self::unshield_to_platform`].
+    pub async fn unshield_to_platform_quote(
+        &self,
+        credits: u64,
+        to: Option<String>,
+    ) -> Result<ShieldedSpendQuote, ShieldedError> {
+        pool::refuse_on_mainnet(self.session.network().core_network())?;
+        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+            pool::unshield_to_platform_quote(&lib, credits, to.as_deref()).await
+        })
+        .await
+    }
+
+    /// Shielded → Platform: unshields `credits` from the wallet's notes to
+    /// `to`, one of the wallet's own Platform addresses (its receive address
+    /// when `None`; any other is `shielded.invalid_address` before the grant
+    /// is redeemed), under a `ShieldedSpend` lease begun from `grant`;
+    /// `confirm_unrecorded` as for [`Self::shielded_send`].
+    pub async fn unshield_to_platform(
+        &self,
+        credits: u64,
+        to: Option<String>,
+        grant: String,
+        confirm_unrecorded: bool,
+    ) -> Result<ShieldedSpendOutcome, ShieldedError> {
+        pool::refuse_on_mainnet(self.session.network().core_network())?;
+        let wallet = self.wallet_id;
+        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+            let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
+            pool::unshield_to_platform(&session, wallet, &lib, credits, to, &grant, confirmed).await
         })
         .await
     }

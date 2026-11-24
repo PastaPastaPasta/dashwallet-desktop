@@ -28,6 +28,11 @@ export const mnKeys = {
   keychain: (walletId: string, role: MasternodeKeyRoleName, start: number, count: number) => [...m, "keychain", walletId, role, start, count] as const,
   operations: (walletId: string) => [...m, "operations", walletId] as const,
   credits: (hash: string) => ["mnPlatform", hash, "credits"] as const,
+  sharedCapability: (walletId: string) => [...m, "sharedCapability", walletId] as const,
+  sharedSessions: (walletId: string) => [...m, "sharedSessions", walletId] as const,
+  sharedUnreadable: (walletId: string) => [...m, "sharedUnreadable", walletId] as const,
+  sharedSession: (walletId: string, session: string) => [...m, "sharedSession", walletId, session] as const,
+  sharedSessionAll: (walletId: string) => [...m, "sharedSession", walletId] as const,
   registrationKeys: (walletId: string, kind: MasternodeTypeName) => [...m, "registrationKeys", walletId, kind] as const,
 };
 
@@ -36,9 +41,10 @@ export function useMasternodeListState() {
   return useQuery({ queryKey: mnKeys.listState, queryFn: () => b.mnListState() });
 }
 
-export function useMasternodes(walletId: string, enabled = true) {
+/** `retryOnMount` false: a failed read isn't read again just because this observer mounts. */
+export function useMasternodes(walletId: string, enabled = true, retryOnMount = true) {
   const b = useBackend();
-  return useQuery({ queryKey: mnKeys.list(walletId), queryFn: () => b.mnList(walletId), enabled });
+  return useQuery({ queryKey: mnKeys.list(walletId), queryFn: () => b.mnList(walletId), enabled, retryOnMount });
 }
 
 export function useMasternode(walletId: string, hash: string, enabled = true) {
@@ -78,6 +84,30 @@ export function useMasternodeKeys(walletId: string, role: MasternodeKeyRoleName,
 export function useMasternodeOperations(walletId: string, enabled = true) {
   const b = useBackend();
   return useQuery({ queryKey: mnKeys.operations(walletId), queryFn: () => b.mnOperations(walletId), enabled });
+}
+
+/** What the wallet can do with shared masternodes (MG-10 §2.9). */
+export function useSharedCapability(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.sharedCapability(walletId), queryFn: () => b.mnSharedCapability(walletId), enabled });
+}
+
+/** Every shared session of the wallet: the In progress list, the badge and Auto's discovery read (§3.6). */
+export function useSharedSessions(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.sharedSessions(walletId), queryFn: () => b.mnSharedSessions(walletId), enabled });
+}
+
+/** Sessions this wallet can no longer read, listed under In progress with Discard while allowed. */
+export function useSharedUnreadable(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.sharedUnreadable(walletId), queryFn: () => b.mnSharedUnreadable(walletId), enabled });
+}
+
+/** One session; the sheet renders the record a command returns at once and lets the event re-read it. */
+export function useSharedSession(walletId: string, session: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.sharedSession(walletId, session), queryFn: () => b.mnSharedSession(walletId, session), enabled });
 }
 
 /** The wallet's masternode labels and services for governance's vote rows (MG-09 F3). */

@@ -301,8 +301,16 @@ export const settings = {
     more: "More",
     commandLine: "Command-line options",
     commandLineWhy: "These options are not available here yet.",
-    support: "Support, source code and log export",
-    supportWhy: "Support and log export are coming soon.",
+    /** Pages About opens in the browser. */
+    links: {
+      title: "Help and source",
+      issues: "Report a problem",
+      issuesHint: "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.",
+      sourceCode: "Source code",
+      website: "Dash website",
+      /** `{url}` follows as selectable text with a copy button. */
+      failed: "The browser couldn't be opened. Copy the link instead: {url}",
+    },
     license: {
       title: "License",
       intro: "Dash Wallet is free software, released under the MIT License.",

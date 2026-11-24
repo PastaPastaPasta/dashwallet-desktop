@@ -254,6 +254,8 @@ impl NetworkSession {
             (FlowKind::AcceptAndPay, None | Some(PaymentSource::Core)) => {}
             (FlowKind::ContactPayFromBalance, Some(PaymentSource::Shielded))
                 if super::shielded_payout::enabled_on(&self.network) => {}
+            (FlowKind::ContactPayFromBalance, Some(PaymentSource::Platform))
+                if super::contact_payout::refuse_on_mainnet(self).is_ok() => {}
             (FlowKind::AcceptAndPay | FlowKind::ContactPayFromBalance, Some(source)) => {
                 return Err(payout_source(source));
             }
@@ -265,8 +267,8 @@ impl NetworkSession {
             _ => {}
         }
         let lease = match (flow, source) {
-            (FlowKind::ContactPayFromBalance, Some(source)) => {
-                self.begin_payout_lease(wallet_id, source, &grants).await?
+            (FlowKind::ContactPayFromBalance, Some(PaymentSource::Shielded)) => {
+                (self.begin_payout_lease(wallet_id, PaymentSource::Shielded, &grants)).await?
             }
             _ => self.begin_lease(wallet_id, flow, &grants).await?,
         };

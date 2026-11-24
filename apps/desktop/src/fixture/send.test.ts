@@ -127,6 +127,8 @@ describe("fixture send engine", () => {
     };
     expect(await mixed(pay(10_000_000))).toMatchObject({ code: "send.absurd_fee", data: { kind: "fee", fee: 10_000_200 } });
     expect(await mixed(pay(10_000_000, { subtractFeeFromAmount: true }))).toEqual({ fee: 192, sizeBytes: 192, inputCount: 1, change: null, totalSent: 9_999_908, leftOver: 0 });
+    // A rest that covers the fee pays it: the payee is charged nothing and no change is priced (#464).
+    expect(await mixed(pay(9_000_000, { subtractFeeFromAmount: true }))).toEqual({ fee: 1_000_100, sizeBytes: 192, inputCount: 1, change: null, totalSent: 9_000_000, leftOver: 999_908 });
   });
 
   it("names a fully mixed spend's left-over, which its fee already holds (U-06b)", async () => {
@@ -306,6 +308,27 @@ describe("fixture send engine", () => {
       message: "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.",
       data: { kind: "txAction", refusal: "rescanFirst" },
     });
+    clearMocks();
+    installFixture({ scenario: "abandon-settled-child-hidden" });
+    expect(await cmd.txDetailExtras(W, "5d".repeat(32))).toMatchObject({ canAbandon: false, abandoned: false });
+    clearMocks();
+    installFixture({ scenario: "abandon-settled-child" });
+    const held = "5c".repeat(32);
+    expect(await cmd.txDetailExtras(W, held)).toMatchObject({ canAbandon: true, abandoned: false });
+    await expect(cmd.abandonTransaction(W, held)).rejects.toMatchObject({
+      code: "tx_action_refused",
+      message: "transaction action refused: SettledDescendant",
+      data: { kind: "txAction", refusal: "settledDescendant" },
+    });
+    clearMocks();
+    installFixture({ scenario: "abandon-record-unreadable-two-wallets" });
+    const unread = "5f".repeat(32);
+    expect(await cmd.txDetailExtras(W, unread)).toMatchObject({ canAbandon: true, abandoned: false });
+    await expect(cmd.abandonTransaction(W, unread)).rejects.toMatchObject({
+      code: "tx_action_refused",
+      data: { kind: "txAction", refusal: "recordUnreadable" },
+    });
+    await expect(cmd.dropUnconfirmed(null)).rejects.toMatchObject({ data: { kind: "txAction", refusal: "recordUnreadable" } });
   });
 
   it("abandons an unconfirmed incoming payment but never resends it", async () => {

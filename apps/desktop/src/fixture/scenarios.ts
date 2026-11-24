@@ -44,6 +44,7 @@ import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld }
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { newSharedWorld, sharedScenarios, type SharedWorld } from "./shared";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -119,6 +120,10 @@ export interface World {
   explorerOpened?: string[];
   /** How many times `open_releases_page` was called. */
   releasesOpened?: number;
+  /** `open_project_link` calls, in order (the fixture opens nothing). */
+  linksOpened?: string[];
+  /** `open_project_link` fails as when no browser opens. */
+  linkOpenFails?: boolean;
   /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
   protocolCompatibility?: ProtocolCompatibility;
   /** "Ask for my passphrase for every payment". The funded scenario leaves it on, so the
@@ -154,6 +159,8 @@ export interface World {
   governance: GovernanceWorld;
   /** My masternodes: the SPV list, own and tracked masternodes, attached keys (masternodes.ts, MG-10). */
   masternodes: MasternodesWorld;
+  /** Shared masternodes: the capability and the main wallet's sessions (shared.ts, MG-10b). */
+  shared: SharedWorld;
   /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
   rates: RatesWorld;
   /** Updates: what this copy can do, the feed and the install (updates.ts, PK-03). */
@@ -259,6 +266,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
     masternodes: noMasternodesWorld(),
+    shared: newSharedWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
     pending: newPendingWorld(),
@@ -712,6 +720,79 @@ const SCENARIOS = {
     };
     wallet.rows = [row, ...wallet.rows];
     w.send.rescanFirst = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment whose later payment locked while its detail was open: Abandon is
+   * offered and refused, and the detail says why. */
+  "abandon-settled-child": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5c".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChild = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment of the first of two open wallets, whose saved transaction doesn't read:
+   * Abandon is offered and refused, and so is Remove Unconfirmed; both name the wallet and say to
+   * close it, or remove and restore it. */
+  "abandon-record-unreadable-two-wallets": (t) => {
+    const w = twoWallets(base(t));
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
+  /** As `abandon-record-unreadable-two-wallets`, with only that wallet open: the refusal doesn't
+   * say to close it. */
+  "abandon-record-unreadable": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment a later payment spends from, already locked when the detail opens:
+   * Abandon isn't offered. */
+  "abandon-settled-child-hidden": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5d".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChildHidden = [row.txid];
     return w;
   },
   /** A payment this wallet made on another device, seen only by its change before the coins it
@@ -1198,6 +1279,15 @@ const SCENARIOS = {
     main.rows = [];
     return w;
   },
+  /** The first start after an update from 0.1 or 0.2: the funded wallet is replayed once from its
+   * birth, so Home and Pay say why sends wait. The replay does not move on while the scenario is up. */
+  "upgrade-replay": (t) => {
+    const w = base(t);
+    const tip = w.sync.tipHeight!;
+    w.tools.rescan = { fromHeight: tip - 200_000, currentHeight: tip - 150_000, targetHeight: tip, startedAt: secs(FIXTURE_NOW), upgradeWallets: [w.wallets[0].summary.walletId] };
+    w.tools.rescanStep = 0;
+    return w;
+  },
   /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */
   "wallet-behind-stopped": (t) => walletBehind(t, true, false),
   /** The same with nothing found yet: Home shows 0. */
@@ -1569,6 +1659,8 @@ const SCENARIOS = {
   ...governanceScenarios(base),
   // My masternodes (MG-10): masternodes.ts.
   ...masternodesScenarios(base),
+  // Shared masternodes (MG-10b): shared.ts.
+  ...sharedScenarios(base),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesScenarios(base),
   // Transfer (POLISH 25): transfer.ts.

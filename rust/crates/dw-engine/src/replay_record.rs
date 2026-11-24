@@ -156,7 +156,7 @@ pub(crate) enum ReplayNote {
         from: u32,
     },
     /// Tests: answered once every note before it is applied.
-    #[cfg(test)]
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     Settled(tokio::sync::oneshot::Sender<()>),
 }
 
@@ -250,7 +250,7 @@ impl ReplayRecords {
                 .entry(wallet)
                 .or_default()
                 .push((height, from)),
-            #[cfg(test)]
+            #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
             ReplayNote::Settled(_) => {}
         }
         let _ = self.notes.send(note);
@@ -368,7 +368,7 @@ impl ReplayRecords {
                         records.committed(wallet, height, &manager, &hub).await
                     }
                     ReplayNote::Truncated { wallet, .. } => records.truncated(wallet).await,
-                    #[cfg(test)]
+                    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
                     ReplayNote::Settled(done) => {
                         let _ = done.send(());
                     }
@@ -378,7 +378,7 @@ impl ReplayRecords {
     }
 
     /// Tests: waits until the notes queued so far are applied.
-    #[cfg(test)]
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     pub(crate) async fn settled(&self) {
         let (done, applied) = tokio::sync::oneshot::channel();
         self.note(ReplayNote::Settled(done));

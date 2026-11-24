@@ -243,10 +243,7 @@ impl DashPay {
                 .session
                 .on_runtime(async move {
                     let _op = session.enter().await?;
-                    Ok(session
-                        .payout_gates(id, &call)
-                        .await
-                        .map(|pair| (pair, call)))
+                    Ok(session.pay_gates(id, &call).await.map(|pair| (pair, call)))
                 })
                 .await
                 .map_err(PlatformError::from)?;
