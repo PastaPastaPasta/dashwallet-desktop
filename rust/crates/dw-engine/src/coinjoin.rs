@@ -2654,22 +2654,24 @@ impl NetworkSession {
                     this.set_wide_scan(wallet_id, marked).await;
                 }
             }
-            // Wait for the rescan to finish (it reports through the hub); a
-            // stopped SPV client or a closed session ends it unfinished.
+            // Waits until the wallet's replay has ended as sends see it: a
+            // cancel still setting its hold reads as in progress. A
+            // cancelled replay (sends held until a rescan from the birth),
+            // a stopped SPV client and a closed session end it unfinished,
+            // with nothing to report.
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                if this.hub.rescan().is_none() {
-                    break;
+                if !this.rescan_running() {
+                    match this.replay_guard(wallet_id, 0).await {
+                        Ok(_) => break,
+                        Err(EngineError::RescanInProgress) => {}
+                        Err(e) => return Err(e),
+                    }
                 }
                 let running = this.manager().is_ok_and(|m| m.spv().is_started());
                 if !running {
                     return Err(CoinJoinFailure::SpvNotRunning.into());
                 }
-            }
-            // A cancel ends the rescan short of the wallet's target and holds
-            // sends until a rescan from the birth: nothing to report.
-            if (this.hub.wallet_state(&wallet_id)).is_some_and(|s| s.replay_cancelled.is_some()) {
-                return Err(EngineError::RescanInterrupted);
             }
             let known_after = this.hub.history.snapshot(&wallet_id).len();
             let found = known_after.saturating_sub(known_before) as u32;

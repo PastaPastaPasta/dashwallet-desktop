@@ -4167,6 +4167,9 @@ fn recovery_running(
     let recovery = runtime.spawn(async move { s.coinjoin_recovery_scan(id).await });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while session.rescan_progress().unwrap().is_none() {
+        if recovery.is_finished() {
+            panic!("Recovery ended first: {:?}", engine.block_on(recovery));
+        }
         assert!(
             std::time::Instant::now() < deadline,
             "Recovery's rescan did not start"
@@ -4259,7 +4262,15 @@ fn a_recovery_scan_quit_mid_rescan_resumes_at_the_next_start() {
     let ended = engine.block_on(async {
         tokio::time::timeout(std::time::Duration::from_secs(20), recovery).await
     });
-    assert!(matches!(ended, Ok(Ok(Err(_)))), "{ended:?}");
+    assert!(
+        matches!(
+            ended,
+            Ok(Ok(Err(EngineError::CoinJoin(
+                crate::coinjoin::CoinJoinFailure::SpvNotRunning
+            ) | EngineError::NetworkNotOpen(_))))
+        ),
+        "{ended:?}"
+    );
     let raised = crate::coinjoin::RECOVERY_LOOKAHEAD;
     assert_eq!(gap(&engine, &session, id, bip44()), raised);
     assert_eq!(synced_height(&engine, &session, id), birth);
@@ -4286,6 +4297,7 @@ fn a_recovery_scan_whose_marker_write_is_refused_keeps_no_lookahead() {
     let marker = wide_scan(&engine, &session, id);
     let scope = dw_appdb::local_scope(&id.to_string());
     let db = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
     for (name, event) in [
         ("no_marker_insert", "INSERT"),
         ("no_marker_update", "UPDATE"),
