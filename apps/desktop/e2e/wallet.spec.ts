@@ -858,7 +858,7 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-action-note")).toHaveText(
-      "This transaction can't be abandoned. A later transaction that spends from it is already locked or confirmed, so this one will confirm too.",
+      "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
     );
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);
